@@ -41,7 +41,9 @@ export const BASELINE_PUBLICATION_STAGES = Object.freeze([
   "domain-xml-staged",
   "diagnostic-staged",
   "release-manifest-staged",
-  "release-directory-published",
+  "publication-journal-prepared",
+  "cache-release-directory-published",
+  "system-release-directory-published",
   "definition-intent-staged",
   "libvirt-definition-committed",
   "current-manifest-staged",
@@ -402,6 +404,13 @@ async function writeJsonDurably(path, value) {
   await fsyncFile(path);
 }
 
+async function writeJsonAtomicallyDurably(path, value) {
+  const pendingPath = `${path}.pending-${process.pid}-${randomUUID()}`;
+  await writeJsonDurably(pendingPath, value);
+  await rename(pendingPath, path);
+  await fsyncDirectory(dirname(path));
+}
+
 async function assertRegularFile(path, label) {
   const metadata = await stat(path);
   if (!metadata.isFile()) throw new Error(`${label} must be a regular file`);
@@ -526,33 +535,17 @@ async function removeInterruptedPublicationFiles(layout) {
   }
   const parent = dirname(layout.currentManifestPath);
   const currentName = basename(layout.currentManifestPath);
+  const journalName = basename(layout.publicationJournalPath);
   const parentEntries = await readdir(parent, { withFileTypes: true });
   await Promise.all(
     parentEntries
-      .filter((entry) => entry.name.startsWith(`${currentName}.pending-`))
+      .filter(
+        (entry) =>
+          entry.name.startsWith(`${currentName}.pending-`) ||
+          entry.name.startsWith(`${journalName}.pending-`),
+      )
       .map((entry) => rm(`${parent}/${entry.name}`, { force: true })),
   );
-}
-
-async function newestCompleteRelease(config, layout) {
-  const entries = await readdir(layout.systemReleaseRoot, {
-    withFileTypes: true,
-  });
-  const releases = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    try {
-      const complete = await readCompleteRelease(config, layout, entry.name);
-      const metadata = await stat(complete.directory);
-      releases.push({ complete, modifiedAt: metadata.mtimeMs });
-    } catch {
-      // A release directory becomes visible only before its current manifest is
-      // switched. Leave an invalid one unreachable and remove it on the next
-      // intentionally refreshed baseline.
-    }
-  }
-  releases.sort((left, right) => right.modifiedAt - left.modifiedAt);
-  return releases[0]?.complete ?? null;
 }
 
 async function writeCurrentRelease(config, layout, id, { onStaged } = {}) {
@@ -564,66 +557,275 @@ async function writeCurrentRelease(config, layout, id, { onStaged } = {}) {
   await fsyncDirectory(dirname(layout.currentManifestPath));
 }
 
-function publicationIntent(previousRelease, nextRelease) {
+const PUBLICATION_JOURNAL_SCHEMA = "win10-kvm-baseline-publication-journal/v2";
+const PUBLICATION_JOURNAL_PHASES = new Set([
+  "prepared",
+  "cache-release-directory-published",
+  "system-release-directory-published",
+  "definition-intent-staged",
+  "libvirt-definition-committed",
+  "current-manifest-staged",
+  "current-manifest-published",
+]);
+const DEFINITION_RECOVERY_PHASES = new Set([
+  "definition-intent-staged",
+  "libvirt-definition-committed",
+  "current-manifest-staged",
+  "current-manifest-published",
+]);
+
+function publicationJournal(previousRelease, nextRelease, phase) {
   return {
-    schemaVersion: "win10-kvm-baseline-publication-intent/v1",
+    schemaVersion: PUBLICATION_JOURNAL_SCHEMA,
     previousReleaseId: previousRelease?.releaseId ?? null,
     releaseId: nextRelease.releaseId,
+    phase,
   };
 }
 
-async function readPublicationIntent(layout) {
+function validPublicationJournal(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    value.schemaVersion !== PUBLICATION_JOURNAL_SCHEMA ||
+    (value.previousReleaseId !== null &&
+      typeof value.previousReleaseId !== "string") ||
+    typeof value.releaseId !== "string" ||
+    !PUBLICATION_JOURNAL_PHASES.has(value.phase)
+  ) {
+    return false;
+  }
   try {
-    const intent = JSON.parse(
-      await readFile(layout.publicationJournalPath, "utf8"),
-    );
+    releaseId(value.releaseId);
+    if (value.previousReleaseId !== null) releaseId(value.previousReleaseId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readPublicationJournal(layout) {
+  try {
+    const journal = JSON.parse(await readFile(layout.publicationJournalPath, "utf8"));
+    if (validPublicationJournal(journal)) return { kind: "valid", journal };
+
+    // Release v1 wrote the same intent immediately before a definition commit.
+    // Treat it as the equivalent v2 phase rather than publishing an unknown
+    // release before its libvirt definition has been recovered and verified.
     if (
-      intent.schemaVersion !== "win10-kvm-baseline-publication-intent/v1" ||
-      (intent.previousReleaseId !== null &&
-        typeof intent.previousReleaseId !== "string") ||
-      typeof intent.releaseId !== "string"
+      journal?.schemaVersion === "win10-kvm-baseline-publication-intent/v1" &&
+      (journal.previousReleaseId === null ||
+        typeof journal.previousReleaseId === "string") &&
+      typeof journal.releaseId === "string"
     ) {
-      throw new Error("baseline publication definition intent is invalid");
+      return {
+        kind: "valid",
+        journal: {
+          ...journal,
+          schemaVersion: PUBLICATION_JOURNAL_SCHEMA,
+          phase: "definition-intent-staged",
+        },
+      };
     }
-    return intent;
+    return { kind: "invalid" };
   } catch (error) {
-    if (error.code === "ENOENT") return null;
+    if (error.code === "ENOENT") return { kind: "absent" };
+    return { kind: "invalid" };
+  }
+}
+
+async function writePublicationJournal(layout, journal) {
+  if (!validPublicationJournal(journal)) {
+    throw new Error("baseline publication journal is invalid");
+  }
+  await writeJsonAtomicallyDurably(layout.publicationJournalPath, journal);
+}
+
+async function removePublicationJournal(layout) {
+  await rm(layout.publicationJournalPath, { force: true });
+  await fsyncDirectory(dirname(layout.publicationJournalPath));
+}
+
+async function removeRelease(layout, id) {
+  const paths = releasePaths(layout, id);
+  await Promise.all([
+    rm(paths.directory, { recursive: true, force: true }),
+    rm(paths.cacheDirectory, { recursive: true, force: true }),
+  ]);
+  await Promise.all([
+    fsyncDirectory(layout.systemReleaseRoot),
+    fsyncDirectory(layout.cacheReleaseRoot),
+  ]);
+}
+
+async function cleanupOrphanReleaseSidecars(layout) {
+  const entriesFor = async (root) => {
+    try {
+      return await readdir(root, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  const [systemEntries, cacheEntries] = await Promise.all([
+    entriesFor(layout.systemReleaseRoot),
+    entriesFor(layout.cacheReleaseRoot),
+  ]);
+  const directories = (entries) =>
+    new Set(
+      entries
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+        .map((entry) => entry.name),
+    );
+  const systemIds = directories(systemEntries);
+  const cacheIds = directories(cacheEntries);
+  const unmatched = new Set([
+    ...[...systemIds].filter((id) => !cacheIds.has(id)),
+    ...[...cacheIds].filter((id) => !systemIds.has(id)),
+  ]);
+  for (const id of unmatched) await removeRelease(layout, id);
+}
+
+async function readCurrentReleaseOrNull(config, layout) {
+  try {
+    return await readCurrentRelease(config, layout);
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
+    if (
+      /^(published baseline (current|release) manifest|published (system|cache|domain XML|diagnostic)|releaseId must)/.test(
+        error.message,
+      )
+    ) {
+      return null;
+    }
     throw error;
   }
 }
 
-// A current-manifest rename is the sole publication point. A process death
-// before it leaves the prior complete release selected; after it, the new
-// release directory was already synced and is complete.
+async function removeInvalidCurrentManifest(layout) {
+  await rm(layout.currentManifestPath, { force: true });
+  await fsyncDirectory(dirname(layout.currentManifestPath));
+}
+
+async function readCompleteReleaseOrNull(config, layout, id) {
+  try {
+    return await readCompleteRelease(config, layout, id);
+  } catch {
+    return null;
+  }
+}
+
+async function restoreDefinition({
+  release,
+  journal,
+  recoverDefinition,
+  rollbackDefinition,
+  previousRelease,
+}) {
+  if (typeof recoverDefinition !== "function") return false;
+  if (typeof rollbackDefinition !== "function") {
+    throw new Error(
+      "baseline definition recovery requires a libvirt definition rollback",
+    );
+  }
+  try {
+    await recoverDefinition(release, journal);
+    return true;
+  } catch (error) {
+    await rollbackDefinition(previousRelease);
+    throw error;
+  }
+}
+
+// A current-manifest rename remains the publication point. Crucially, a first
+// publication has no current manifest until recovery has redefined and
+// verified the release selected by a durable definition intent.
 export async function recoverPublishedBaseline(
   config,
-  { recoverDefinition } = {},
+  { recoverDefinition, rollbackDefinition } = {},
 ) {
   const layout = baselinePublicationLayout(config);
   await mkdir(layout.systemReleaseRoot, { recursive: true, mode: 0o700 });
   await mkdir(layout.cacheReleaseRoot, { recursive: true, mode: 0o700 });
   await removeInterruptedPublicationFiles(layout);
-  const intent = await readPublicationIntent(layout);
-  let selected;
-  try {
-    selected = await readCurrentRelease(config, layout);
-  } catch (error) {
-    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) {
-      // A pointer to an incomplete release must not remain usable. Select a
-      // complete immutable release instead of exposing a mixed destination.
-    }
+  await cleanupOrphanReleaseSidecars(layout);
+  const journalState = await readPublicationJournal(layout);
+  const selected = await readCurrentReleaseOrNull(config, layout);
+  if (!selected && (await pathExists(layout.currentManifestPath))) {
+    await removeInvalidCurrentManifest(layout);
   }
-  if (!selected) {
-    selected = await newestCompleteRelease(config, layout);
-    if (!selected) return null;
-    await writeCurrentRelease(config, layout, selected.releaseId);
+
+  if (journalState.kind === "absent") return selected;
+  if (journalState.kind === "invalid") {
+    // An unreadable journal cannot prove the definition handoff. Keep an
+    // already-valid current release, remove only unpaired sidecars, and clear
+    // the corrupt file so future baseline work is not blocked.
+    await cleanupOrphanReleaseSidecars(layout);
+    await removePublicationJournal(layout);
+    return selected;
   }
-  if (intent && recoverDefinition) {
-    await recoverDefinition(selected, intent);
-    await rm(layout.publicationJournalPath, { force: true });
-    await fsyncDirectory(dirname(layout.publicationJournalPath));
+
+  const journal = journalState.journal;
+  const candidate = await readCompleteReleaseOrNull(
+    config,
+    layout,
+    journal.releaseId,
+  );
+
+  if (!DEFINITION_RECOVERY_PHASES.has(journal.phase)) {
+    // The durable record proves no definition intent yet. A cache-only final
+    // directory is an orphan; a matched pair is still unpublished and is
+    // deterministically rolled back instead of being guessed as current.
+    await removeRelease(layout, journal.releaseId);
+    await cleanupOrphanReleaseSidecars(layout);
+    await removePublicationJournal(layout);
+    return selected;
   }
-  return selected;
+
+  if (selected) {
+    // A prior current remains authoritative until the new one is atomically
+    // published. If a kill followed the current rename, selected is the new
+    // release and it is reverified before the journal is retired.
+    const restored = await restoreDefinition({
+      release: selected,
+      journal,
+      recoverDefinition,
+      rollbackDefinition,
+      previousRelease:
+        journal.previousReleaseId === null
+          ? null
+          : await readCompleteReleaseOrNull(
+              config,
+              layout,
+              journal.previousReleaseId,
+            ),
+    });
+    if (!restored) return selected;
+    await removePublicationJournal(layout);
+    return selected;
+  }
+
+  if (!candidate) {
+    // No valid candidate can be defined. The first publication stays without
+    // a current manifest and the journal is retired after deterministic
+    // sidecar cleanup.
+    await removeRelease(layout, journal.releaseId);
+    await cleanupOrphanReleaseSidecars(layout);
+    await removePublicationJournal(layout);
+    return null;
+  }
+
+  const restored = await restoreDefinition({
+    release: candidate,
+    journal,
+    recoverDefinition,
+    rollbackDefinition,
+    previousRelease: null,
+  });
+  if (!restored) return null;
+  await writeCurrentRelease(config, layout, candidate.releaseId);
+  await removePublicationJournal(layout);
+  return candidate;
 }
 
 export async function resolvePublishedBaselineRelease(config) {
@@ -716,6 +918,7 @@ export async function publishVerifiedBaselineRelease({
   await onStage("release-staging-created");
   let definitionAttempted = false;
   let currentManifestPublished = false;
+  let journal = null;
   try {
     for (const [
       source,
@@ -743,33 +946,45 @@ export async function publishVerifiedBaselineRelease({
     await fsyncDirectory(systemStagingDirectory);
     await fsyncDirectory(cacheStagingDirectory);
     await onStage("release-manifest-staged");
+    journal = publicationJournal(previousRelease, finalPaths, "prepared");
+    await writePublicationJournal(layout, journal);
+    await onStage("publication-journal-prepared");
     await rename(cacheStagingDirectory, finalPaths.cacheDirectory);
     await fsyncDirectory(layout.cacheReleaseRoot);
+    journal = { ...journal, phase: "cache-release-directory-published" };
+    await writePublicationJournal(layout, journal);
+    await onStage("cache-release-directory-published");
     await rename(systemStagingDirectory, finalPaths.directory);
     await fsyncDirectory(layout.systemReleaseRoot);
-    await onStage("release-directory-published");
-    await writeJsonDurably(
-      layout.publicationJournalPath,
-      publicationIntent(previousRelease, finalPaths),
-    );
-    await fsyncDirectory(dirname(layout.publicationJournalPath));
+    journal = { ...journal, phase: "system-release-directory-published" };
+    await writePublicationJournal(layout, journal);
+    await onStage("system-release-directory-published");
+    journal = { ...journal, phase: "definition-intent-staged" };
+    await writePublicationJournal(layout, journal);
     await onStage("definition-intent-staged");
     definitionAttempted = true;
     await commitDefinition(finalPaths);
+    journal = { ...journal, phase: "libvirt-definition-committed" };
+    await writePublicationJournal(layout, journal);
     await onStage("libvirt-definition-committed");
     await writeCurrentRelease(config, layout, id, {
-      onStaged: async () => onStage("current-manifest-staged"),
+      onStaged: async () => {
+        journal = { ...journal, phase: "current-manifest-staged" };
+        await writePublicationJournal(layout, journal);
+        await onStage("current-manifest-staged");
+      },
     });
     currentManifestPublished = true;
-    await rm(layout.publicationJournalPath, { force: true });
-    await fsyncDirectory(dirname(layout.publicationJournalPath));
+    journal = { ...journal, phase: "current-manifest-published" };
+    await writePublicationJournal(layout, journal);
     await onStage("current-manifest-published");
+    await removePublicationJournal(layout);
     return readCompleteRelease(config, layout, id);
   } catch (error) {
     if (!currentManifestPublished && definitionAttempted) {
       await rollbackDefinition(previousRelease);
-      await rm(layout.publicationJournalPath, { force: true });
-      await fsyncDirectory(dirname(layout.publicationJournalPath));
+      await removeRelease(layout, id);
+      await removePublicationJournal(layout);
     }
     throw error;
   }

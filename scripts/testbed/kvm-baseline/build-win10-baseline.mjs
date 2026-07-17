@@ -626,6 +626,27 @@ async function definePublishedDomain(config, release) {
   ]);
 }
 
+async function defineAndVerifyPublishedDomain(config, release) {
+  await definePublishedDomain(config, release);
+  await verifyDefinedRuntimeDevicesForDomain(
+    config,
+    config.vm.name,
+    runtimeProfileForPublishedRelease(config, release.releaseId),
+  );
+}
+
+async function rollbackPublishedDefinition(config, previousRelease) {
+  if (previousRelease) {
+    await defineAndVerifyPublishedDomain(config, previousRelease);
+    return;
+  }
+  await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
+    { allowFailure: true },
+  );
+}
+
 export async function buildWin10Baseline(
   config,
   { sourceCommit, execute = false } = {},
@@ -655,9 +676,14 @@ export async function buildWin10Baseline(
     );
   }
   const publishedRelease = await recoverPublishedBaseline(config, {
-    recoverDefinition: async (release) => definePublishedDomain(config, release),
+    recoverDefinition: async (release) =>
+      defineAndVerifyPublishedDomain(config, release),
+    rollbackDefinition: async (previousRelease) =>
+      rollbackPublishedDefinition(config, previousRelease),
   });
-  if (publishedRelease) await definePublishedDomain(config, publishedRelease);
+  if (publishedRelease) {
+    await defineAndVerifyPublishedDomain(config, publishedRelease);
+  }
   await assertReadableRegularFile(
     config.guest.administratorPasswordFile,
     "guest.administratorPasswordFile",
@@ -809,23 +835,10 @@ export async function buildWin10Baseline(
       profile: publishedProfile,
       verified: verification.ok === true,
       commitDefinition: async (candidateRelease) => {
-        await definePublishedDomain(config, candidateRelease);
-        await verifyDefinedRuntimeDevicesForDomain(
-          config,
-          config.vm.name,
-          publishedProfile,
-        );
+        await defineAndVerifyPublishedDomain(config, candidateRelease);
       },
       rollbackDefinition: async (previousRelease) => {
-        if (previousRelease) {
-          await definePublishedDomain(config, previousRelease);
-          return;
-        }
-        await run(
-          "virsh",
-          ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
-          { allowFailure: true },
-        );
+        await rollbackPublishedDefinition(config, previousRelease);
       },
     });
     return {

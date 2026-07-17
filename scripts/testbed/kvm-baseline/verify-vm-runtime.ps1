@@ -15,6 +15,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $baselineRoot = "C:\ProgramData\WindowsRuntimeBaseline"
+$toolchainRoot = "C:\ProgramData\VEM\Toolchains"
+$cacheRoot = "D:\runtime-cache\v1"
+$nodeVersion = "24.16.0"
+$pnpmVersion = "11.9.0"
+$turboVersion = "2.10.0"
+$rustNamespace = "rust-1.96.0"
+$pnpmNamespace = "pnpm-11.9.0"
+$turboNamespace = "turbo-2.10.0"
+$nodeNamespace = "node-24.16.0"
 $spiceGuestToolsInstallationPath = Join-Path $baselineRoot "spice-guest-tools-installation.json"
 $interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-report.json"
 $runnerRegistrationPath = Join-Path $baselineRoot "runner-registration.json"
@@ -78,9 +87,51 @@ for ($index = 0; $index -lt $ExpectedSerialRole.Count; $index += 1) {
   $serialRoleDevices += @{ role = $ExpectedSerialRole[$index]; expectedUsbPort = $usbPort; deviceId = $device.DeviceID; name = $device.Name; pnpDeviceId = $device.PNPDeviceID; locationPaths = $locationPaths }
   $remainingSerialPorts = @($remainingSerialPorts | Where-Object { $_.DeviceID -ne $device.DeviceID })
 }
-$tools = @("git", "node", "pnpm", "cargo", "rustc") | ForEach-Object {
-  @{ name = $_; available = $null -ne (Get-Command $_ -ErrorAction SilentlyContinue) }
+function Get-ToolVersion {
+  param([string] $FilePath)
+  $output = & $FilePath "--version" 2>$null
+  if ($LASTEXITCODE -ne 0) { return $null }
+  return ([string]($output | Select-Object -First 1)).Trim()
 }
+
+$tools = @("git", "node", "corepack", "pnpm", "turbo", "cargo", "rustc", "rustup") | ForEach-Object {
+  $command = Get-Command $_ -ErrorAction SilentlyContinue
+  @{
+    name = $_
+    available = $null -ne $command
+    source = if ($null -eq $command) { $null } else { [string]$command.Source }
+    version = if ($null -eq $command) { $null } else { Get-ToolVersion -FilePath $command.Source }
+  }
+}
+$toolVersion = @{}
+foreach ($tool in $tools) { $toolVersion[$tool.name] = $tool.version }
+$expectedMachinePaths = @{
+  CARGO_HOME = "$toolchainRoot\cargo\$rustNamespace"
+  RUSTUP_HOME = "$toolchainRoot\rustup\$rustNamespace"
+  PNPM_HOME = "$toolchainRoot\pnpm\$pnpmNamespace"
+  COREPACK_HOME = "$toolchainRoot\corepack\$nodeNamespace"
+  CARGO_TARGET_DIR = "$cacheRoot\target\$rustNamespace"
+  SCCACHE_DIR = "$cacheRoot\sccache\$rustNamespace"
+  TURBO_CACHE_DIR = "$cacheRoot\turbo\$turboNamespace"
+  npm_config_cache = "$cacheRoot\npm\$nodeNamespace"
+  PNPM_STORE_PATH = "$cacheRoot\pnpm-store\$pnpmNamespace"
+  CARGO_REGISTRY_CACHE = "$cacheRoot\cargo-registry\$rustNamespace"
+  CARGO_GIT_CACHE = "$cacheRoot\cargo-git\$rustNamespace"
+}
+$machinePaths = @{}
+foreach ($entry in $expectedMachinePaths.GetEnumerator()) {
+  $machinePaths[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, "Machine")
+}
+$machinePathsExact = @($expectedMachinePaths.GetEnumerator() | Where-Object {
+  $machinePaths[$_.Key] -cne $_.Value
+}).Count -eq 0
+$executablesOnSystemDisk = @($tools | Where-Object {
+  $_.available -and $_.source -notlike "C:\\*"
+}).Count -eq 0
+$cargoRegistryLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARGO_HOME "registry") -Force -ErrorAction SilentlyContinue
+$cargoGitLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARGO_HOME "git") -Force -ErrorAction SilentlyContinue
+$cargoDownloadCachesOnD = $null -ne $cargoRegistryLink -and $cargoRegistryLink.LinkType -eq "Junction" -and @($cargoRegistryLink.Target) -contains "$cacheRoot\cargo-registry\$rustNamespace" -and $null -ne $cargoGitLink -and $cargoGitLink.LinkType -eq "Junction" -and @($cargoGitLink.Target) -contains "$cacheRoot\cargo-git\$rustNamespace"
+$exactToolchainVersions = $toolVersion.node -ceq "v$nodeVersion" -and $toolVersion.pnpm -ceq $pnpmVersion -and $toolVersion.turbo -ceq $turboVersion -and $toolVersion.cargo -match "^cargo 1\\.96\\.0 " -and $toolVersion.rustc -match "^rustc 1\\.96\\.0 "
 $cacheVolume = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
 $cacheWritable = $null -ne $cacheVolume -and $cacheVolume.FileSystem -eq "NTFS"
 if ($cacheWritable) {
@@ -93,7 +144,7 @@ $checks = @{
   desktop = $interactiveDisplay.desktop.width -eq $ExpectedWidth -and $interactiveDisplay.desktop.height -eq $ExpectedHeight -and $interactiveDisplay.desktop.scalePercent -eq $ExpectedScalePercent
   SSH = (Get-Service sshd -ErrorAction SilentlyContinue).Status -eq "Running"
   runner = $null -ne $runnerService -and $runnerService.Status -eq "Running" -and $runnerRegistration.runnerUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerName -ceq $ExpectedRunnerName -and $runnerRegistration.serviceName -ceq $ExpectedRunnerServiceName -and $runnerConfiguration.agentName -ceq $ExpectedRunnerName -and $runnerConfigurationUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerWorkRoot -ceq "C:\actions-runner\_work"
-  toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0
+  toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0 -and $exactToolchainVersions -and $machinePathsExact -and $executablesOnSystemDisk -and $cargoDownloadCachesOnD
   WebView2 = $null -ne $webView2
   SPICEGuestTools = $null -ne $spiceGuestTools -and $null -ne $qxlDisplayAdapter -and $spiceGuestToolsRebootSemantics
   Audio = $ExpectedAudioModel -ceq "ich9" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $hdaAudioDevices.Count -eq 1
@@ -108,7 +159,7 @@ $report = @{
   runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
   virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; qxlDisplayAdapter = $qxlDisplayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   spiceGuestTools = @{ installed = $null -ne $spiceGuestTools; displayName = $spiceGuestTools.DisplayName; qxlDisplayAdapter = $qxlDisplayAdapter.Name; installation = $spiceGuestToolsInstallation; rebootSemanticsValid = $spiceGuestToolsRebootSemantics }
-  toolchain = $tools
+  toolchain = @{ commands = $tools; expectedMachinePaths = $expectedMachinePaths; machinePaths = $machinePaths; exactVersions = $exactToolchainVersions; executablesOnSystemDisk = $executablesOnSystemDisk; cargoDownloadCachesOnD = $cargoDownloadCachesOnD }
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
 $report | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $OutputPath

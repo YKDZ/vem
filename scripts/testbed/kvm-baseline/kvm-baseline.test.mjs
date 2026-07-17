@@ -111,16 +111,21 @@ function hostIdentity() {
 }
 
 function stagedRelease(config, label, contents) {
-  const stagingDirectory = join(
+  const systemStagingDirectory = join(
     dirname(config.storage.baselinePath),
-    `.release-test-${label}`,
+    `.release-test-system-${label}`,
   );
-  mkdirSync(stagingDirectory, { recursive: true });
+  const cacheStagingDirectory = join(
+    dirname(config.storage.cacheDiskPath),
+    `.release-test-cache-${label}`,
+  );
+  mkdirSync(systemStagingDirectory, { recursive: true });
+  mkdirSync(cacheStagingDirectory, { recursive: true });
   const paths = {
-    system: join(stagingDirectory, "system.qcow2"),
-    cache: join(stagingDirectory, "cache.qcow2"),
-    domainXml: join(stagingDirectory, "runtime-profile.xml"),
-    diagnostic: join(stagingDirectory, "diagnostic.json"),
+    system: join(systemStagingDirectory, "system.qcow2"),
+    cache: join(cacheStagingDirectory, "cache.qcow2"),
+    domainXml: join(systemStagingDirectory, "runtime-profile.xml"),
+    diagnostic: join(systemStagingDirectory, "diagnostic.json"),
   };
   writeFileSync(paths.system, `${contents}-system`);
   writeFileSync(paths.cache, `${contents}-cache`);
@@ -144,6 +149,67 @@ async function publishRelease(config, id, contents, onStage) {
     rollbackDefinition: async () => {},
     onStage,
   });
+}
+
+function readFakeLibvirtState(statePath) {
+  return JSON.parse(readFileSync(statePath, "utf8"));
+}
+
+function writeFakeLibvirtState(statePath, releaseId) {
+  const prior = readFakeLibvirtState(statePath);
+  writeFileSync(
+    statePath,
+    `${JSON.stringify({
+      ...prior,
+      definedReleaseId: releaseId,
+      history: [...prior.history, releaseId],
+    })}\n`,
+  );
+}
+
+function finalReleaseIds(root) {
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .filter((entry) => !entry.startsWith("."))
+    .sort();
+}
+
+function configureCrossFilesystemCache(config, root, label) {
+  const cacheParent = "/dev/shm";
+  if (!existsSync(cacheParent) || statSync(root).dev === statSync(cacheParent).dev) {
+    return null;
+  }
+  const cacheRoot = join(
+    cacheParent,
+    `vem-kvm-baseline-sigkill-${process.pid}-${Date.now()}-${label}`,
+  );
+  config.host.largeFileRoot = "/";
+  config.storage.cacheDiskPath = join(cacheRoot, "win10-runtime-cache.qcow2");
+  return cacheRoot;
+}
+
+async function recoverWithFakeLibvirt(config, statePath) {
+  return recoverPublishedBaseline(config, {
+    recoverDefinition: async (release) => {
+      assert.match(readFileSync(release.systemPath, "utf8"), /^(old|new)-system$/);
+      assert.match(readFileSync(release.cachePath, "utf8"), /^(old|new)-cache$/);
+      writeFakeLibvirtState(statePath, release.releaseId);
+    },
+    rollbackDefinition: async (release) =>
+      writeFakeLibvirtState(statePath, release?.releaseId ?? null),
+  });
+}
+
+function expectedSigkillRelease(stage, hasPriorCurrent) {
+  if (hasPriorCurrent) {
+    return stage === "current-manifest-published"
+      ? "release-new-sigkill"
+      : "release-old-sigkill";
+  }
+  return BASELINE_PUBLICATION_STAGES.indexOf(stage) >=
+    BASELINE_PUBLICATION_STAGES.indexOf("definition-intent-staged")
+    ? "release-new-sigkill"
+    : null;
 }
 
 describe("Linux KVM Windows baseline", () => {
@@ -556,7 +622,7 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
-  it("recovers an interrupted definition handoff to the release selected by the current manifest", async () => {
+  it("recovers a legacy definition intent only after re-verifying the selected current release", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-define-recovery-"));
     try {
       const config = buildConfig(root);
@@ -576,6 +642,7 @@ describe("Linux KVM Windows baseline", () => {
         recoverDefinition: async (selected, intent) => {
           definitions.push({ selected: selected.releaseId, intent });
         },
+        rollbackDefinition: async () => {},
       });
 
       assert.equal(recovered.releaseId, release.releaseId);
@@ -583,9 +650,10 @@ describe("Linux KVM Windows baseline", () => {
         {
           selected: release.releaseId,
           intent: {
-            schemaVersion: "win10-kvm-baseline-publication-intent/v1",
+            schemaVersion: "win10-kvm-baseline-publication-journal/v2",
             previousReleaseId: release.releaseId,
             releaseId: "release-uncommitted-definition",
+            phase: "definition-intent-staged",
           },
         },
       ]);
@@ -609,13 +677,18 @@ describe("Linux KVM Windows baseline", () => {
       );
       cacheReleaseRoot = `${config.storage.cacheDiskPath}.releases`;
       const staged = stagedRelease(config, "wrong-cache-filesystem", "new");
+      const wrongCachePath = join(
+        dirname(staged.system),
+        "wrong-cache.qcow2",
+      );
+      writeFileSync(wrongCachePath, "wrong-cache");
 
       await assert.rejects(
         publishVerifiedBaselineRelease({
           config,
           releaseId: "release-wrong-cache-filesystem",
           stagedSystemPath: staged.system,
-          stagedCachePath: staged.cache,
+          stagedCachePath: wrongCachePath,
           stagedDomainXmlPath: staged.domainXml,
           stagedDiagnosticPath: staged.diagnostic,
           profile: runtimeProfileForPublishedRelease(
@@ -636,81 +709,194 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
-  for (const interruptedStage of BASELINE_PUBLICATION_STAGES) {
-    it(`recovers a complete release after simulated SIGKILL at ${interruptedStage}`, async () => {
-      const root = mkdtempSync(
-        join(tmpdir(), "vem-kvm-baseline-publish-kill-"),
-      );
-      try {
-        const config = buildConfig(root);
-        const oldRelease = await publishRelease(
-          config,
-          "release-old-complete",
-          "old",
-        );
-        const oldCache = readFileSync(oldRelease.cachePath, "utf8");
-        await assert.rejects(
-          publishRelease(
-            config,
-            "release-new-complete",
-            "new",
-            async (stage) => {
-              if (stage === interruptedStage) {
-                throw new Error(`simulated SIGKILL at ${stage}`);
-              }
-            },
-          ),
-          /simulated SIGKILL/,
-        );
+  it("never publishes a first current manifest when recovered definition verification fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-first-recovery-"));
+    try {
+      const config = buildConfig(root);
+      const staged = stagedRelease(config, "first-recovery", "new");
+      const layout = baselinePublicationLayout(config);
+      const statePath = join(root, "fake-libvirt.json");
+      writeFileSync(statePath, '{"definedReleaseId":null,"history":[]}\n');
 
-        const recovered = await recoverPublishedBaseline(config);
-        assert.ok(recovered);
-        const expected =
-          interruptedStage === "current-manifest-published" ? "new" : "old";
-        assert.equal(
-          readFileSync(recovered.systemPath, "utf8"),
-          `${expected}-system`,
-        );
-        assert.equal(
-          readFileSync(recovered.cachePath, "utf8"),
-          `${expected}-cache`,
-        );
-        assert.equal(readFileSync(oldRelease.cachePath, "utf8"), oldCache);
-        assert.match(
-          readFileSync(recovered.domainXmlPath, "utf8"),
-          new RegExp(expected),
-        );
-        const current = JSON.parse(
-          readFileSync(
-            baselinePublicationLayout(config).currentManifestPath,
-            "utf8",
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-first-recovery",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: runtimeProfileForPublishedRelease(
+            config,
+            "release-first-recovery",
           ),
+          verified: true,
+          commitDefinition: async () => {
+            throw new Error("definition must not run before recovery");
+          },
+          rollbackDefinition: async () => {},
+          onStage: async (stage) => {
+            if (stage === "definition-intent-staged") {
+              throw new Error("interrupted before first definition");
+            }
+          },
+        }),
+        /interrupted before first definition/,
+      );
+
+      await assert.rejects(
+        recoverPublishedBaseline(config, {
+          recoverDefinition: async () => {
+            throw new Error("simulated recovered definition verification failure");
+          },
+          rollbackDefinition: async (release) =>
+            writeFakeLibvirtState(statePath, release?.releaseId ?? null),
+        }),
+        /verification failure/,
+      );
+      assert.equal(existsSync(layout.currentManifestPath), false);
+      assert.equal(readFakeLibvirtState(statePath).definedReleaseId, null);
+
+      const recovered = await recoverWithFakeLibvirt(config, statePath);
+      assert.equal(recovered.releaseId, "release-first-recovery");
+      assert.equal(
+        readFakeLibvirtState(statePath).definedReleaseId,
+        "release-first-recovery",
+      );
+      assert.equal(existsSync(layout.currentManifestPath), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans a truncated journal and an unmatched cache sidecar without blocking a valid current release", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-journal-repair-"));
+    try {
+      const config = buildConfig(root);
+      const oldRelease = await publishRelease(config, "release-journal-old", "old");
+      const layout = baselinePublicationLayout(config);
+      const orphanId = "release-orphan-sidecar";
+      const orphanCacheDirectory = join(layout.cacheReleaseRoot, orphanId);
+      mkdirSync(orphanCacheDirectory, { recursive: true });
+      writeFileSync(join(orphanCacheDirectory, "cache.qcow2"), "orphan-cache");
+      writeFileSync(layout.publicationJournalPath, '{"schemaVersion":');
+
+      const recovered = await recoverPublishedBaseline(config);
+
+      assert.equal(recovered.releaseId, oldRelease.releaseId);
+      assert.equal(existsSync(layout.publicationJournalPath), false);
+      assert.equal(existsSync(orphanCacheDirectory), false);
+      assert.deepEqual(
+        finalReleaseIds(layout.systemReleaseRoot),
+        finalReleaseIds(layout.cacheReleaseRoot),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const hasPriorCurrent of [true, false]) {
+    for (const interruptedStage of BASELINE_PUBLICATION_STAGES) {
+      it(`recovers an actual child SIGKILL at ${interruptedStage} with ${hasPriorCurrent ? "a prior current" : "no prior current"}`, async (t) => {
+        const root = mkdtempSync(
+          join(tmpdir(), "vem-kvm-baseline-publish-sigkill-"),
         );
-        assert.deepEqual(current.destinations, {
-          baselinePath: config.storage.baselinePath,
-          cacheDiskPath: config.storage.cacheDiskPath,
-        });
-        assert.deepEqual(current.artifacts, {
-          systemPath: recovered.systemPath,
-          cachePath: recovered.cachePath,
-          domainXmlPath: recovered.domainXmlPath,
-          diagnosticPath: recovered.diagnosticPath,
-        });
-        assert.deepEqual(
-          await resolvePublishedBaselineRelease(config),
-          recovered,
-        );
-        const releaseRoot = baselinePublicationLayout(config).releaseRoot;
-        assert.equal(
-          readdirSync(releaseRoot).some((entry) =>
-            entry.startsWith(".staging-"),
-          ),
-          false,
-        );
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    });
+        let cacheRoot = null;
+        try {
+          const config = buildConfig(root);
+          cacheRoot = configureCrossFilesystemCache(
+            config,
+            root,
+            `${hasPriorCurrent}-${interruptedStage}`,
+          );
+          if (!cacheRoot) {
+            t.skip("a separate /dev/shm filesystem is unavailable");
+            return;
+          }
+          const configPath = join(root, "config.json");
+          const statePath = join(root, "fake-libvirt.json");
+          writeFileSync(statePath, '{"definedReleaseId":null,"history":[]}\n');
+          let oldRelease = null;
+          if (hasPriorCurrent) {
+            oldRelease = await publishRelease(
+              config,
+              "release-old-sigkill",
+              "old",
+            );
+            writeFakeLibvirtState(statePath, oldRelease.releaseId);
+          }
+          writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+
+          const child = spawnSync(
+            process.execPath,
+            [
+              new URL(
+                "./kvm-baseline-publication-kill-child.mjs",
+                import.meta.url,
+              ).pathname,
+              configPath,
+              interruptedStage,
+              statePath,
+            ],
+            { encoding: "utf8" },
+          );
+          assert.equal(child.signal, "SIGKILL", child.stderr);
+
+          const recovered = await recoverWithFakeLibvirt(config, statePath);
+          const expectedReleaseId = expectedSigkillRelease(
+            interruptedStage,
+            hasPriorCurrent,
+          );
+          const layout = baselinePublicationLayout(config);
+          if (expectedReleaseId === null) {
+            assert.equal(recovered, null);
+            assert.equal(existsSync(layout.currentManifestPath), false);
+          } else {
+            assert.equal(recovered.releaseId, expectedReleaseId);
+            assert.equal(
+              readFileSync(recovered.systemPath, "utf8"),
+              expectedReleaseId === "release-new-sigkill"
+                ? "new-system"
+                : "old-system",
+            );
+            assert.equal(
+              readFileSync(recovered.cachePath, "utf8"),
+              expectedReleaseId === "release-new-sigkill"
+                ? "new-cache"
+                : "old-cache",
+            );
+            assert.equal(
+              (await resolvePublishedBaselineRelease(config)).releaseId,
+              expectedReleaseId,
+            );
+          }
+          assert.equal(
+            readFakeLibvirtState(statePath).definedReleaseId,
+            expectedReleaseId,
+          );
+          assert.equal(existsSync(layout.publicationJournalPath), false);
+          assert.deepEqual(
+            finalReleaseIds(layout.systemReleaseRoot),
+            finalReleaseIds(layout.cacheReleaseRoot),
+            "recovery must leave no orphan cache or system sidecar",
+          );
+          for (const releaseRoot of [
+            layout.systemReleaseRoot,
+            layout.cacheReleaseRoot,
+          ]) {
+            assert.equal(
+              readdirSync(releaseRoot).some((entry) =>
+                entry.startsWith(".staging-"),
+              ),
+              false,
+            );
+          }
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+          if (cacheRoot) rmSync(cacheRoot, { recursive: true, force: true });
+        }
+      });
+    }
   }
 
   it("renders a fully unattended zh-CN Windows 10 22H2 installation without retired OOBE skips", () => {
@@ -927,13 +1113,26 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /"--work", \$runnerWorkRoot/);
     assert.doesNotMatch(runtime, /D:\\runtime-cache\\actions-work/);
     assert.match(runtime, /\$nodeVersion = "24\.16\.0"/);
+    assert.match(runtime, /\$pnpmVersion = "11\.9\.0"/);
+    assert.match(runtime, /\$turboVersion = "2\.10\.0"/);
     assert.match(runtime, /\$rustToolchain = "1\.96\.0-x86_64-pc-windows-msvc"/);
-    assert.match(runtime, /pnpm-store\\node-\$nodeVersion/);
-    assert.match(runtime, /cargo\\\$rustCacheNamespace/);
-    assert.match(runtime, /turbo\\turbo-v2/);
-    assert.match(runtime, /RUSTUP_HOME = "C:\\ProgramData\\VEM\\Toolchains\\rustup\\rust-1\.96\.0"/);
+    assert.match(runtime, /\$nodeNamespace = "node-\$nodeVersion"/);
+    assert.match(runtime, /\$pnpmNamespace = "pnpm-\$pnpmVersion"/);
+    assert.match(runtime, /\$turboNamespace = "turbo-\$turboVersion"/);
+    assert.match(runtime, /\$rustNamespace = "rust-1\.96\.0"/);
+    assert.match(runtime, /pnpm-store\\\$pnpmNamespace/);
+    assert.match(runtime, /CARGO_HOME = "\$toolchainRoot\\cargo\\\$rustNamespace"/);
+    assert.doesNotMatch(runtime, /CARGO_HOME = "\$cacheRoot/);
+    assert.match(runtime, /cargo-registry\\\$rustNamespace/);
+    assert.match(runtime, /New-Item -ItemType Junction/);
+    assert.match(runtime, /turbo\\\$turboNamespace/);
+    assert.match(runtime, /RUSTUP_HOME = "\$toolchainRoot\\rustup\\\$rustNamespace"/);
     assert.doesNotMatch(runtime, /RUSTUP_HOME = "D:/);
     assert.match(runtime, /nodejs-lts", "--version=24\.16\.0"/);
+    assert.match(runtime, /corepack\.cmd" -ArgumentList @\("prepare", "pnpm@11\.9\.0", "--activate"\)/);
+    assert.match(runtime, /pnpm\.cmd" -ArgumentList @\("add", "--global", "turbo@2\.10\.0"\)/);
+    assert.match(runtime, /pnpm version does not match \$pnpmVersion/);
+    assert.match(runtime, /Turbo version does not match \$turboVersion/);
     assert.match(runtime, /rustup\.exe" -ArgumentList @\("toolchain", "install", "1\.96\.0-x86_64-pc-windows-msvc"/);
     assert.doesNotMatch(runtime, /rustup\.exe" -ArgumentList @\("default", "stable"/);
     assert.match(runtime, /RunnerArchivePath/);
@@ -963,6 +1162,11 @@ describe("Linux KVM Windows baseline", () => {
     assert.doesNotMatch(verify, /ExpectedSerialDeviceIdentity/);
     assert.match(verify, /lower-controller and scanner USB port roles/);
     assert.doesNotMatch(verify, /serialPorts\.Count -ge 2/);
+    assert.match(verify, /\$pnpmVersion = "11\.9\.0"/);
+    assert.match(verify, /\$turboVersion = "2\.10\.0"/);
+    assert.match(verify, /exactToolchainVersions/);
+    assert.match(verify, /executablesOnSystemDisk/);
+    assert.match(verify, /CARGO_HOME = "\$toolchainRoot\\cargo\\\$rustNamespace"/);
     assert.match(builder, /UserKnownHostsFile=/);
     assert.match(builder, /<Group>Administrators<\/Group>/);
     assert.match(builder, /readJsonWithBom/);

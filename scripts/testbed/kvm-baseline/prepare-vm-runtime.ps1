@@ -17,19 +17,27 @@ $toolchainRoot = "C:\ProgramData\VEM\Toolchains"
 $runnerRoot = "C:\actions-runner"
 $runnerWorkRoot = "C:\actions-runner\_work"
 $nodeVersion = "24.16.0"
+$pnpmVersion = "11.9.0"
+$turboVersion = "2.10.0"
 $rustToolchain = "1.96.0-x86_64-pc-windows-msvc"
-$rustCacheNamespace = "rust-1.96.0"
+$nodeNamespace = "node-$nodeVersion"
+$pnpmNamespace = "pnpm-$pnpmVersion"
+$turboNamespace = "turbo-$turboVersion"
+$rustNamespace = "rust-1.96.0"
 
 function Get-CachePaths {
   return @{
-    PNPM_HOME = "$toolchainRoot\pnpm-home\node-$nodeVersion"
-    CARGO_HOME = "$cacheRoot\cargo\$rustCacheNamespace"
-    RUSTUP_HOME = "C:\ProgramData\VEM\Toolchains\rustup\rust-1.96.0"
-    CARGO_TARGET_DIR = "$cacheRoot\target\$rustCacheNamespace"
-    SCCACHE_DIR = "$cacheRoot\sccache\$rustCacheNamespace"
-    TURBO_CACHE_DIR = "$cacheRoot\turbo\turbo-v2"
-    npm_config_cache = "$cacheRoot\npm\node-$nodeVersion"
-    PNPM_STORE_PATH = "$cacheRoot\pnpm-store\node-$nodeVersion"
+    PNPM_HOME = "$toolchainRoot\pnpm\$pnpmNamespace"
+    COREPACK_HOME = "$toolchainRoot\corepack\$nodeNamespace"
+    CARGO_HOME = "$toolchainRoot\cargo\$rustNamespace"
+    RUSTUP_HOME = "$toolchainRoot\rustup\$rustNamespace"
+    CARGO_TARGET_DIR = "$cacheRoot\target\$rustNamespace"
+    SCCACHE_DIR = "$cacheRoot\sccache\$rustNamespace"
+    TURBO_CACHE_DIR = "$cacheRoot\turbo\$turboNamespace"
+    npm_config_cache = "$cacheRoot\npm\$nodeNamespace"
+    PNPM_STORE_PATH = "$cacheRoot\pnpm-store\$pnpmNamespace"
+    CARGO_REGISTRY_CACHE = "$cacheRoot\cargo-registry\$rustNamespace"
+    CARGO_GIT_CACHE = "$cacheRoot\cargo-git\$rustNamespace"
   }
 }
 
@@ -104,20 +112,40 @@ function Initialize-CacheDisk {
   }
 }
 
+function Set-CargoDownloadCacheLinks {
+  $cachePaths = Get-CachePaths
+  foreach ($entry in @(
+    @{ Name = "registry"; Target = $cachePaths.CARGO_REGISTRY_CACHE },
+    @{ Name = "git"; Target = $cachePaths.CARGO_GIT_CACHE }
+  )) {
+    $link = Join-Path $cachePaths.CARGO_HOME $entry.Name
+    New-Item -ItemType Directory -Force -Path $entry.Target | Out-Null
+    if (Test-Path -LiteralPath $link) {
+      $existing = Get-Item -LiteralPath $link -Force
+      if ($existing.LinkType -ne "Junction") {
+        throw "Cargo $($entry.Name) cache must be a C: junction to the cache disk"
+      }
+      continue
+    }
+    New-Item -ItemType Junction -Path $link -Target $entry.Target | Out-Null
+  }
+}
+
 function Set-CacheEnvironment {
-  New-Item -ItemType Directory -Force -Path $cacheRoot, $runnerRoot, $runnerWorkRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path $cacheRoot, $toolchainRoot, $runnerRoot, $runnerWorkRoot | Out-Null
   Set-Content -Encoding ascii -Path "$cacheRoot\.write-test" -Value "runtime-cache"
   Remove-Item -Force "$cacheRoot\.write-test"
-  foreach ($entry in (Get-CachePaths).GetEnumerator() | Where-Object { $_.Key -ne "PNPM_STORE_PATH" }) {
+  foreach ($entry in (Get-CachePaths).GetEnumerator()) {
     New-Item -ItemType Directory -Force -Path $entry.Value | Out-Null
     [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Machine")
     Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value
   }
+  Set-CargoDownloadCacheLinks
 }
 
 function Refresh-ProcessPath {
   $cachePaths = Get-CachePaths
-  $env:Path = $cachePaths.CARGO_HOME + "\bin;" + $cachePaths.PNPM_HOME + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
+  $env:Path = $cachePaths.CARGO_HOME + "\bin;" + $cachePaths.PNPM_HOME + ";C:\Program Files\nodejs;" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
 }
 
 function Test-WindowsMediaStack {
@@ -144,15 +172,19 @@ function Install-Toolchain {
   Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "nodejs-lts", "--version=24.16.0") -Description "pinned Node.js installation"
   Refresh-ProcessPath
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("enable") -Description "Corepack enable"
+  Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("prepare", "pnpm@11.9.0", "--activate") -Description "pinned pnpm activation"
   Invoke-Native -FilePath "rustup.exe" -ArgumentList @("toolchain", "install", "1.96.0-x86_64-pc-windows-msvc", "--profile", "minimal") -Description "pinned Rust toolchain installation"
   Invoke-Native -FilePath "rustup.exe" -ArgumentList @("default", "1.96.0-x86_64-pc-windows-msvc") -Description "pinned Rust toolchain activation"
   $cachePaths = Get-CachePaths
   New-Item -ItemType Directory -Force -Path $cachePaths.PNPM_STORE_PATH | Out-Null
   Invoke-Native -FilePath "pnpm.cmd" -ArgumentList @("config", "set", "store-dir", $cachePaths.PNPM_STORE_PATH, "--global") -Description "pnpm cache configuration"
-  foreach ($tool in @("git.exe", "node.exe", "pnpm.cmd", "cargo.exe", "rustc.exe")) {
+  Invoke-Native -FilePath "pnpm.cmd" -ArgumentList @("add", "--global", "turbo@2.10.0") -Description "pinned Turbo installation"
+  foreach ($tool in @("git.exe", "node.exe", "corepack.cmd", "pnpm.cmd", "turbo.cmd", "cargo.exe", "rustc.exe", "rustup.exe")) {
     Invoke-Native -FilePath $tool -ArgumentList @("--version") -Description "$tool version probe"
   }
   if ((& node.exe --version).Trim().TrimStart("v") -ne $nodeVersion) { throw "Node.js version does not match $nodeVersion" }
+  if ((& pnpm.cmd --version).Trim() -ne $pnpmVersion) { throw "pnpm version does not match $pnpmVersion" }
+  if ((& turbo.cmd --version).Trim() -ne $turboVersion) { throw "Turbo version does not match $turboVersion" }
   if ((& rustc.exe --version) -notmatch "^rustc 1\\.96\\.0 ") { throw "Rust version does not match $rustToolchain" }
   $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
   if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe is unavailable" }
