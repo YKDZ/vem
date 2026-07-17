@@ -30,33 +30,31 @@ addCheck(
   `${smokePath} should write Runtime Bootstrap for service bring-up`,
 );
 addCheck(
-  "smoke-script-verifies-runtime-configuration-summary",
-  smoke.includes("default-api-base-url-configured") &&
-    smoke.includes("/v1/config/summary") &&
+  "smoke-script-verifies-effective-runtime-configuration",
+  smoke.includes("runtime-bootstrap-owns-provisioning-url") &&
+    smoke.includes("/v1/runtime-configuration") &&
     smoke.includes("sourceDocuments.bootstrap"),
-  `${smokePath} should verify the grouped runtime configuration summary exposes the bootstrap API Base URL`,
+  `${smokePath} should verify the grouped effective runtime configuration exposes Runtime Bootstrap ownership`,
 );
 addCheck(
-  "smoke-script-executes-typed-claim-through-runtime-bootstrap",
-  smoke.includes("/v1/bring-up") &&
-    smoke.includes("/tasks/execute") &&
-    smoke.includes("claimCode") &&
-    smoke.includes("WXYZ-2345"),
-  `${smokePath} should POST a deliberately invalid test claim through the typed Bring-Up cursor`,
+  "smoke-script-executes-real-claim-through-runtime-bootstrap",
+  smoke.includes("/v1/provisioning/claim") &&
+    smoke.includes("[string]$ClaimCode") &&
+    smoke.includes("real-claim-accepted"),
+  `${smokePath} should POST a caller-provided real claim through the narrow provisioning intent`,
 );
 addCheck(
-  "smoke-script-distinguishes-typed-invalid-claim-from-backend-unavailable",
-  smoke.includes("claim-endpoint-reachable-invalid-claim") &&
-    smoke.includes("claim-endpoint-backend-unavailable-fails-smoke") &&
-    smoke.includes("machine_claim_invalid_or_expired") &&
-    smoke.includes("machine_claim_backend_unavailable"),
-  `${smokePath} should pass only after a service API invalid-claim response, not backend unavailable`,
+  "smoke-script-does-not-use-retired-configuration-or-maintenance-routes",
+  !smoke.includes("/v1/config/summary") &&
+    !smoke.includes("/v1/bring-up") &&
+    !smoke.includes("/v1/maintenance/sessions") &&
+    !smoke.includes("MaintenancePin"),
+  `${smokePath} should use only the hard-migrated runtime configuration and claim paths`,
 );
 addCheck(
-  "release-path-has-no-legacy-config-or-claim-endpoints",
-  !smoke.includes('"$baseUrl/v1/config"') &&
-    !smoke.includes("/v1/provisioning/claim"),
-  `${smokePath} must not retain mutable legacy config or direct claim release paths`,
+  "release-path-has-no-legacy-full-config-endpoint",
+  !smoke.includes('"$baseUrl/v1/config"'),
+  `${smokePath} must not retain the mutable legacy full-config path`,
 );
 addCheck(
   "smoke-script-verifies-first-boot-claim-code-page",

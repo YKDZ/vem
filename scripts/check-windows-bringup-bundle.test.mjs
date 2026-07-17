@@ -12,7 +12,7 @@ const readme = readFileSync("public/windows-bringup-bundle.md", "utf8");
 const smoke = readFileSync("scripts/windows/vending-daemon-smoke.ps1", "utf8");
 const daemonIpc = readFileSync("apps/vending-daemon/src/ipc.rs", "utf8");
 
-test("Windows Bring-up bundle delivers executable runtime and a secure maintenance-session path", () => {
+test("Windows Bring-up bundle delivers executable runtime and the clean claim path", () => {
   const result = checkWindowsBringUpBundle({
     workflow,
     readme,
@@ -47,8 +47,8 @@ test("Windows Bring-up bundle checker rejects a smoke script that targets a fake
     workflow,
     readme,
     smoke: smoke.replace(
-      "/v1/bring-up/tasks/execute",
-      "/v1/bring-up/tasks/pretend",
+      "/v1/provisioning/claim",
+      "/v1/provisioning/pretend",
     ),
     daemonIpc,
   });

@@ -36,7 +36,7 @@ function hasPostTo(body, endpoint) {
  * deliberately a small contract parser: each fact represents a required
  * runtime action performed by Get-ProtectedMaintenanceHeaders.
  */
-export function inspectProtectedMaintenanceSmokeContract(smoke) {
+export function inspectRuntimeBootstrapSmokeContract(smoke) {
   const failures = [];
   if (!/runtime-bootstrap\.json/u.test(smoke)) {
     failures.push("smoke does not write Runtime Bootstrap");
@@ -44,8 +44,14 @@ export function inspectProtectedMaintenanceSmokeContract(smoke) {
   if (!/provisioningApiBaseUrl/u.test(smoke)) {
     failures.push("smoke does not set the bootstrap provisioning API base URL");
   }
-  if (!/\/v1\/bring-up\/tasks\/execute/u.test(smoke)) {
-    failures.push("smoke does not exercise the daemon claim task endpoint");
+  if (!/\/v1\/provisioning\/claim/u.test(smoke)) {
+    failures.push("smoke does not exercise the daemon provisioning claim intent");
+  }
+  if (!/\/v1\/runtime-configuration/u.test(smoke)) {
+    failures.push("smoke does not read the effective runtime configuration");
+  }
+  if (/\/v1\/(?:bring-up|config\/summary|maintenance\/sessions)/u.test(smoke)) {
+    failures.push("smoke retains a retired configuration or maintenance route");
   }
   if (/machine-config|x-vem-factory-bootstrap-capability|bootstrap-provisioning-capability/iu.test(smoke)) {
     failures.push("smoke retains a legacy full-config or factory bootstrap path");
@@ -66,7 +72,7 @@ export function inspectBringUpReadmeSessionInvocation(readme) {
 
 function inspectDaemonAuthRoutes(daemonIpc) {
   const failures = [];
-  for (const endpoint of ["/v1/bring-up/tasks/execute"]) {
+  for (const endpoint of ["/v1/provisioning/claim"]) {
     const escaped = endpoint.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     if (!new RegExp(`"${escaped}"\\s*,\\s*post\\(`, "u").test(daemonIpc)) {
       failures.push(`daemon does not expose POST ${endpoint}`);
@@ -104,7 +110,7 @@ export function checkWindowsBringUpBundle({
     "workflow must stage the runtime delivery unit, smoke scripts, README.md, and VERSION.txt",
   );
 
-  const smokeContract = inspectProtectedMaintenanceSmokeContract(smoke);
+  const smokeContract = inspectRuntimeBootstrapSmokeContract(smoke);
   addCheck(
     checks,
     "smoke-runtime-bootstrap-claim-contract-is-real-and-fail-closed",
