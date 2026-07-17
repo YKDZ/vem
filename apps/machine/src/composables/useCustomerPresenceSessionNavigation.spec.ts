@@ -157,6 +157,20 @@ describe("customer presence navigation", () => {
     unmount();
   });
 
+  it("does not interrupt checkout after the customer selects a payment option", async () => {
+    routeName.value = "checkout";
+    const unmount = await mountReturnHomeController();
+    useCheckoutStore().selectedPaymentOptionKey = "mock:mock";
+
+    emitPresence(true, "2026-06-30T08:08:00.000Z");
+    await nextTick();
+    emitPresence(false, "2026-06-30T08:08:05.000Z");
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it("lets the daemon transaction projection outrank the current browsing route when the customer leaves", async () => {
     routeName.value = "product-detail";
     const unmount = await mountReturnHomeController();

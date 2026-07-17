@@ -497,6 +497,12 @@ export function useReturnHomeOnCustomerDeparture(
       if (checkoutStore.customerCheckoutView.stage !== "none") return;
       const routeName =
         typeof route.name === "string" ? route.name : String(route.name ?? "");
+      if (
+        routeName === "checkout" &&
+        checkoutStore.selectedPaymentOptionKey !== null
+      ) {
+        return;
+      }
       if (!routeNames.has(routeName)) return;
       void router.replace(returnRoute);
     },
