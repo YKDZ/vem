@@ -1259,7 +1259,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
             "#/catalog",
           ) ||
           !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
-            "#/result",
+            "#/result/*",
           ) ||
           !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
             cleanup.normal.routeEvidence.initialRoute,
