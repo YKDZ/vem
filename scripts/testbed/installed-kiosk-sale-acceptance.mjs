@@ -375,15 +375,11 @@ if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
 function createRunnerTrust(root) {
   const signingKeyFile = join(root, "runner-ed25519.pem");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  writeFileSync(
-    signingKeyFile,
-    privateKey.export({ type: "pkcs8", format: "pem" }),
-    {
-      mode: 0o600,
-    },
-  );
+  const signingKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
+  writeFileSync(signingKeyFile, signingKeyPem, { mode: 0o600 });
   return {
     signingKeyFile,
+    signingKeyPem,
     publicKey: `ed25519-public-key:base64:${publicKey
       .export({ type: "spki", format: "der" })
       .toString("base64")}`,
@@ -404,8 +400,12 @@ function prepareScannerCode(options, root) {
   return { path, code: scannerCode, owned: true };
 }
 
-function restoreConsumedScannerCode(scanner) {
+function restoreConsumedSerialInputs(scanner, trust) {
   writeFileSync(scanner.path, scanner.code, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  writeFileSync(trust.signingKeyFile, trust.signingKeyPem, {
     mode: 0o600,
     flag: "wx",
   });
@@ -1087,7 +1087,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
           0,
           ...serialEndpointArgs,
         );
-        restoreConsumedScannerCode(scanner);
+        restoreConsumedSerialInputs(scanner, trust);
         await run(serialCommand, "serial conformance", {
           env: nonQueryEnvironment,
         });
