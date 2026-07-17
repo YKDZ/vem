@@ -970,12 +970,12 @@ async function main() {
   const failureMatrixArtifactPaths = startOnly
     ? null
     : customerUiSale
-    ? null
-    : contractTest
       ? null
-      : readFailureMatrixArtifactPaths(
-          readOption("--failure-matrix-artifact-paths-json"),
-        );
+      : contractTest
+        ? null
+        : readFailureMatrixArtifactPaths(
+            readOption("--failure-matrix-artifact-paths-json"),
+          );
   let session;
   let startRequest;
   let injectRequest;
@@ -990,9 +990,7 @@ async function main() {
   const serialRunnerChallenge = runnerChallenge();
   try {
     if (prestartedReportPath) {
-      const prestarted = JSON.parse(
-        readFileSync(prestartedReportPath, "utf8"),
-      );
+      const prestarted = JSON.parse(readFileSync(prestartedReportPath, "utf8"));
       if (
         prestarted?.schemaVersion !==
           "vem-vm-host-adapter-serial-prestart/v1" ||
@@ -1236,50 +1234,50 @@ async function main() {
     }
     if (!startOnly) {
       const conformance = {
-      schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
-      runId,
-      ...(customerUiSale
-        ? {
-            profile: "installed-kiosk-sale",
-            customerUiSale: {
-              orderId: customerUiSale.orderId,
-              paymentId: customerUiSale.paymentId,
-              orderNo: customerUiSale.orderNo,
-              scenarioSha256: customerUiSale.scenarioSha256,
-            },
-          }
-        : {}),
-      requests: {
-        start: startRequest,
-        inject: injectRequest,
-        collect: collectRequest,
-        firstStop: firstStopRequest,
-        repeatedStop: repeatedStopRequest,
-        recoveryStop: recoveryStopRequest,
-      },
-      runnerEvidence: {
-        publicKey: runnerEvidence.publicKey,
-        runnerChallenge: serialRunnerChallenge,
-        operations: runnerEvidence.operations,
-      },
-      session:
-        session === undefined
-          ? null
-          : {
-              serialSessionId: session.serialSessionId,
-              sessionBindingToken: session.sessionBindingToken,
-              deviceMappingDigest: session.deviceMappingDigest,
-            },
-      reports: {
-        start,
-        inject,
-        collect,
-        firstStop,
-        repeatedStop,
-        recoveryStop,
-      },
-      ...(failureMatrix === undefined ? {} : { failureMatrix }),
-    };
+        schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
+        runId,
+        ...(customerUiSale
+          ? {
+              profile: "installed-kiosk-sale",
+              customerUiSale: {
+                orderId: customerUiSale.orderId,
+                paymentId: customerUiSale.paymentId,
+                orderNo: customerUiSale.orderNo,
+                scenarioSha256: customerUiSale.scenarioSha256,
+              },
+            }
+          : {}),
+        requests: {
+          start: startRequest,
+          inject: injectRequest,
+          collect: collectRequest,
+          firstStop: firstStopRequest,
+          repeatedStop: repeatedStopRequest,
+          recoveryStop: recoveryStopRequest,
+        },
+        runnerEvidence: {
+          publicKey: runnerEvidence.publicKey,
+          runnerChallenge: serialRunnerChallenge,
+          operations: runnerEvidence.operations,
+        },
+        session:
+          session === undefined
+            ? null
+            : {
+                serialSessionId: session.serialSessionId,
+                sessionBindingToken: session.sessionBindingToken,
+                deviceMappingDigest: session.deviceMappingDigest,
+              },
+        reports: {
+          start,
+          inject,
+          collect,
+          firstStop,
+          repeatedStop,
+          recoveryStop,
+        },
+        ...(failureMatrix === undefined ? {} : { failureMatrix }),
+      };
       commitRunnerConformance(runnerEvidence, conformance);
       writeFileSync(out, `${JSON.stringify(conformance, null, 2)}\n`, {
         mode: 0o600,
