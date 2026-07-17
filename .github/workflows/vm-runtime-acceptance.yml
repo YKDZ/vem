@@ -131,7 +131,8 @@ jobs:
           set -euo pipefail
           artifact_run_id="${REQUESTED_RUNTIME_ARTIFACT_RUN_ID:-$GITHUB_RUN_ID}"
           [[ "$artifact_run_id" =~ ^[0-9]+$ ]]
-          cache_dir="${VEM_RUNTIME_ARTIFACT_CACHE_ROOT:-}/$artifact_run_id"
+          cache_root="${VEM_RUNTIME_ARTIFACT_CACHE_ROOT:-${RUNNER_TEMP%/_temp}/_runtime-artifact-cache}"
+          cache_dir="$cache_root/$artifact_run_id"
           runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
           if [[ "$cache_dir" = /* ]] && test -f "$cache_dir/WINDOWS-RUNTIME-ARTIFACTS.json" && test -f "$cache_dir/vending-daemon.exe" && test -f "$cache_dir/machine.exe" && test -f "$cache_dir/WebView2Loader.dll"; then
             rm -rf -- "$runtime_dir"
@@ -160,12 +161,13 @@ jobs:
           run-id: ${{ inputs.runtime_artifact_run_id }}
 
       - name: Persist Host Windows Runtime Artifact Cache
-        if: steps.runtime-artifact-cache.outputs.hit != 'true' && env.VEM_RUNTIME_ARTIFACT_CACHE_ROOT != ''
+        if: steps.runtime-artifact-cache.outputs.hit != 'true'
         run: |
           set -euo pipefail
-          [[ "$VEM_RUNTIME_ARTIFACT_CACHE_ROOT" = /* ]]
+          cache_root="${VEM_RUNTIME_ARTIFACT_CACHE_ROOT:-${RUNNER_TEMP%/_temp}/_runtime-artifact-cache}"
+          [[ "$cache_root" = /* ]]
           runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
-          cache_dir="$VEM_RUNTIME_ARTIFACT_CACHE_ROOT/${{ steps.runtime-artifact-cache.outputs.artifact_run_id }}"
+          cache_dir="$cache_root/${{ steps.runtime-artifact-cache.outputs.artifact_run_id }}"
           staging="${cache_dir}.tmp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf -- "$staging"
           mkdir -p "$staging"
