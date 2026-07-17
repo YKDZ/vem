@@ -29,7 +29,11 @@ export function routeForStartup(input: {
   effectiveRuntimeConfiguration: EffectiveMachineRuntimeConfiguration | null;
   restoredTransaction: TransactionSnapshot | null;
 }): StartupRoute {
-  if (!input.daemonAvailable) return "/maintenance";
+  const configuration = input.effectiveRuntimeConfiguration;
+  const hasClaimedIdentity =
+    configuration !== null &&
+    configuration.sourceDocuments.profileCache !== null &&
+    configuration.machine !== null;
   const transactionView = projectCustomerCheckoutView({
     transaction: input.restoredTransaction,
     nowMs: Date.now(),
@@ -45,15 +49,14 @@ export function routeForStartup(input: {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
+  if (!input.daemonAvailable) {
+    return hasClaimedIdentity ? "/offline" : "/maintenance";
+  }
+
   // The accepted profile cache and resulting machine identity are the startup
   // authority. Refresh and sale-capability health remain operational
   // observations; neither may move a claimed machine into Local Operations.
-  const configuration = input.effectiveRuntimeConfiguration;
-  return configuration !== null &&
-    configuration.sourceDocuments.profileCache !== null &&
-    configuration.machine !== null
-    ? "/catalog"
-    : "/maintenance";
+  return hasClaimedIdentity ? "/catalog" : "/maintenance";
 }
 
 /**
@@ -63,10 +66,11 @@ export function routeForStartup(input: {
  */
 export function routeForBootFailure(
   restoredTransaction: TransactionSnapshot | null,
+  effectiveRuntimeConfiguration: EffectiveMachineRuntimeConfiguration | null = null,
 ): StartupRoute {
   return routeForStartup({
-    daemonAvailable: restoredTransaction !== null,
-    effectiveRuntimeConfiguration: null,
+    daemonAvailable: false,
+    effectiveRuntimeConfiguration,
     restoredTransaction,
   });
 }

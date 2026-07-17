@@ -624,6 +624,23 @@ describe("sale-start capability UI flow", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
+  it("keeps a known claimed machine on the customer offline surface when daemon IPC is unavailable", async () => {
+    useMachineStore().applyEffectiveRuntimeConfiguration(
+      effectiveRuntimeConfigurationFixture(true),
+    );
+    getHealthMock.mockRejectedValue(new Error("daemon unavailable"));
+    getEffectiveRuntimeConfigurationMock.mockRejectedValue(
+      new Error("daemon unavailable"),
+    );
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/offline");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
+  });
+
   it("keeps accepted effective configuration as startup authority when sale-start-capability decoding fails", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
     getSaleStartCapabilityMock.mockRejectedValue(

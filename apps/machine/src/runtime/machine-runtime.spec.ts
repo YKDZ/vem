@@ -6,10 +6,12 @@ import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 type RuntimeEventHandlers = {
   onEvent: (event: unknown) => void;
   onStale: () => void;
+  onReconnect?: () => void;
 };
 
-const { getSaleStartCapabilityMock, subscribeEventsMock } = vi.hoisted(() => {
+const { initializeMock, getSaleStartCapabilityMock, subscribeEventsMock } = vi.hoisted(() => {
   return {
+    initializeMock: vi.fn(),
     getSaleStartCapabilityMock: vi.fn(),
     subscribeEventsMock: vi.fn<
       (handlers: RuntimeEventHandlers) => { close(): void }
@@ -19,6 +21,7 @@ const { getSaleStartCapabilityMock, subscribeEventsMock } = vi.hoisted(() => {
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
+    initialize: initializeMock,
     getSaleStartCapability: getSaleStartCapabilityMock,
     subscribeEvents: subscribeEventsMock,
   },
@@ -34,6 +37,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  initializeMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -63,7 +67,7 @@ describe("Machine runtime coordinator", () => {
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
   });
 
-  it("refreshes immediately for capability invalidation and after stream reconnect", async () => {
+  it("reconciles only after the replacement event stream opens", async () => {
     getSaleStartCapabilityMock
       .mockResolvedValueOnce(saleCapabilitySnapshot({ revision: 1 }))
       .mockResolvedValueOnce(saleCapabilitySnapshot({ revision: 2 }))
@@ -94,10 +98,44 @@ describe("Machine runtime coordinator", () => {
     });
 
     handlers.onStale();
+    await Promise.resolve();
+    expect(useSaleCapabilityStore().orderingKey).toBe(
+      "machine-test-daemon:2",
+    );
+
+    handlers.onReconnect?.();
     await vi.waitFor(() => {
       expect(useSaleCapabilityStore().orderingKey).toBe(
         "machine-test-daemon:3",
       );
     });
+    expect(initializeMock).toHaveBeenCalledWith(true);
+  });
+
+  it("retries a failed forced IPC initialization after a bounded backoff", async () => {
+    vi.useFakeTimers();
+    getSaleStartCapabilityMock
+      .mockResolvedValueOnce(saleCapabilitySnapshot({ revision: 1 }))
+      .mockResolvedValueOnce(saleCapabilitySnapshot({ revision: 2 }));
+    initializeMock
+      .mockRejectedValueOnce(new Error("daemon ready file unavailable"))
+      .mockResolvedValueOnce(undefined);
+    startMachineRuntime(pinia);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const firstSubscription = subscribeEventsMock.mock.calls[0];
+    if (!firstSubscription) {
+      throw new Error("runtime did not create an event subscription");
+    }
+    const [handlers] = firstSubscription;
+    handlers.onReconnect?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(initializeMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(initializeMock).toHaveBeenCalledTimes(2);
+    expect(useSaleCapabilityStore().orderingKey).toBe(
+      "machine-test-daemon:2",
+    );
   });
 });

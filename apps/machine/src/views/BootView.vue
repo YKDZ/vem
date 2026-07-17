@@ -119,7 +119,10 @@ async function runBootCheck(): Promise<void> {
       pushStep("daemon 不可用，进入维护页");
       await submitMachineNavigationIntent({
         type: "startup.navigate",
-        target: routeForBootFailure(recoveredTransaction),
+        target: routeForBootFailure(
+          recoveredTransaction,
+          machineStore.effectiveRuntimeConfiguration,
+        ),
       });
     }
   }, 10_000);
@@ -132,23 +135,18 @@ onMounted(async () => {
   } catch (error) {
     if (generation !== bootGeneration) return;
     connectivityStore.markStale(error);
-    if (recoveredTransaction) {
-      pushStep("启动检查超时，继续恢复顾客交易");
-      await submitMachineNavigationIntent({
-        type: "startup.navigate",
-        target: routeForStartup({
-          daemonAvailable: true,
-          effectiveRuntimeConfiguration: null,
-          restoredTransaction: recoveredTransaction,
-        }),
-      });
-    } else {
-      pushStep("启动检查超时，进入维护页");
-      await submitMachineNavigationIntent({
-        type: "startup.navigate",
-        target: { name: "maintenance" },
-      });
-    }
+    pushStep(
+      recoveredTransaction
+        ? "启动检查超时，继续恢复顾客交易"
+        : "启动检查超时，进入离线或维护页",
+    );
+    await submitMachineNavigationIntent({
+      type: "startup.navigate",
+      target: routeForBootFailure(
+        recoveredTransaction,
+        machineStore.effectiveRuntimeConfiguration,
+      ),
+    });
   }
 });
 

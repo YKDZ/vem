@@ -54,6 +54,7 @@ const chromiumChannel = readEnv("PLAYWRIGHT_CHROMIUM_CHANNEL") ?? "chrome";
 const touchscreenSmokeTestMatch = /touchscreen-smoke\.spec\.ts/;
 const runtimeScreenshotsProjectName = "machine-runtime-screenshots";
 const runtimeScreenshotsTestMatch = /machine-runtime-screenshots\.spec\.ts/;
+const realDaemonTestMatch = /machine-real-daemon\.spec\.ts/;
 const explicitRuntimeScreenshotsProject = hasExplicitProjectArg(
   readArgv(),
   runtimeScreenshotsProjectName,
@@ -100,7 +101,11 @@ export default defineConfig({
   projects: [
     {
       name: "machine-runtime-touchscreen",
-      testIgnore: [touchscreenSmokeTestMatch, runtimeScreenshotsTestMatch],
+      testIgnore: [
+        touchscreenSmokeTestMatch,
+        runtimeScreenshotsTestMatch,
+        realDaemonTestMatch,
+      ],
       use: chromiumUse,
     },
     {

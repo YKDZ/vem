@@ -7,7 +7,6 @@ import {
   writeFile,
   readFile,
   rm,
-  stat,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -36,6 +35,13 @@ let daemonOutput: string[] = [];
 let daemonExit: Promise<void> | null = null;
 let provisioningServer: Server | null = null;
 let provisioningBaseUrl = "";
+
+type DaemonReadyFile = {
+  healthzUrl: string;
+  readyzUrl: string;
+  ipcToken: string;
+  generation: string;
+};
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
 const DAEMON_HTTP_BASE_URL = "http://127.0.0.1:7891";
@@ -70,8 +76,64 @@ async function readDaemonBootEndpoint(path: string): Promise<unknown> {
   return JSON.parse(body) as unknown;
 }
 
-async function readyFileMtimeMs(): Promise<number> {
-  return (await stat(join(dataDir, "daemon-ready.json"))).mtimeMs;
+async function readDaemonReadyFile(): Promise<DaemonReadyFile> {
+  return JSON.parse(
+    await readFile(join(dataDir, "daemon-ready.json"), "utf8"),
+  ) as DaemonReadyFile;
+}
+
+async function browserUsesRealDaemon(page: import("@playwright/test").Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    const { getDaemonConnectionInfo } = await import(
+      "/src/native/daemon-connection.ts"
+    );
+    return (await getDaemonConnectionInfo()).mock === false;
+  });
+}
+
+async function startBrowserEventStreamProbe(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.evaluate(async () => {
+    const { daemonClient } = await import("/src/daemon/client.ts");
+    const records: string[] = [];
+    const subscription = daemonClient.subscribeEvents({
+      onEvent: () => undefined,
+      onError: () => records.push("error"),
+      onStale: () => records.push("stale"),
+      onOpen: () => records.push("opened"),
+      onReconnect: () => records.push("reconnected"),
+    });
+    Reflect.set(window, "__vemRealDaemonEventStream", records);
+    Reflect.set(window, "__vemRealDaemonEventSubscription", subscription);
+  });
+}
+
+async function browserEventStreamLifecycle(
+  page: import("@playwright/test").Page,
+): Promise<string[]> {
+  return page.evaluate(() => {
+    const records = Reflect.get(window, "__vemRealDaemonEventStream");
+    return Array.isArray(records)
+      ? records.filter((record): record is string => typeof record === "string")
+      : [];
+  });
+}
+
+async function stopBrowserEventStreamProbe(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.evaluate(() => {
+    const subscription = Reflect.get(window, "__vemRealDaemonEventSubscription");
+    if (
+      typeof subscription === "object" &&
+      subscription !== null &&
+      "close" in subscription &&
+      typeof subscription.close === "function"
+    ) {
+      subscription.close();
+    }
+  });
 }
 
 async function buildDaemonBinary(): Promise<void> {
@@ -329,19 +391,31 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   page,
 }) => {
   await page.goto("/#/boot");
+  await expect.poll(() => browserUsesRealDaemon(page)).toBe(true);
+  await startBrowserEventStreamProbe(page);
+  await expect.poll(async () =>
+    (await browserEventStreamLifecycle(page)).includes("opened"),
+  ).toBe(true);
   await expect(page).toHaveURL(/#\/maintenance$/, { timeout: 20_000 });
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
   await expect(page.getByLabel("认领码")).toBeVisible();
 
-  const readyFileBeforeClaim = await readyFileMtimeMs();
+  const readyBeforeClaim = await readDaemonReadyFile();
   await page.getByLabel("认领码").fill("REAL-0001");
   await page.getByRole("button", { name: "认领机器" }).click();
   await expect(page.getByText("REAL-DAEMON-001")).toBeVisible({
     timeout: 20_000,
   });
   await expect(async () => {
-    expect(await readyFileMtimeMs()).toBeGreaterThan(readyFileBeforeClaim);
+    expect((await readDaemonReadyFile()).generation).not.toBe(
+      readyBeforeClaim.generation,
+    );
   }).toPass({ intervals: [100, 250, 500], timeout: 20_000 });
+  await stopBrowserEventStreamProbe(page);
+  await startBrowserEventStreamProbe(page);
+  await expect.poll(async () =>
+    (await browserEventStreamLifecycle(page)).includes("opened"),
+  ).toBe(true);
   await expect(async () => {
     const response = await fetch(
       `${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`,
@@ -376,6 +450,8 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   });
   effectiveMachineRuntimeConfigurationSchema.parse(configuration);
 
+  await stopBrowserEventStreamProbe(page);
+  await expect(page).toHaveURL(/#\/maintenance$/);
   await page.getByRole("button", { name: "回到目录" }).click();
   await expect(page).toHaveURL(/#\/catalog$/, { timeout: 20_000 });
 });

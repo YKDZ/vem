@@ -754,4 +754,56 @@ describe("DaemonApiClient direct runtime intents", () => {
     expect(second).toHaveBeenCalledOnce();
     for (const subscription of subscriptions) subscription.close();
   });
+
+  it("signals runtime reconciliation only after a disconnected event stream opens again", async () => {
+    vi.useFakeTimers();
+    const onOpen = vi.fn();
+    const onReconnect = vi.fn();
+    const subscription = new DaemonApiClient().subscribeEvents({
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+      onStale: vi.fn(),
+      onOpen,
+      onReconnect,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onOpen).toHaveBeenCalledWith({ reconnected: false });
+    const firstSocket = MockWebSocket.instances[0];
+    if (!firstSocket) throw new Error("initial event socket was not opened");
+    firstSocket.onclose?.();
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(onOpen).toHaveBeenLastCalledWith({ reconnected: true });
+    expect(onReconnect).toHaveBeenCalledOnce();
+    subscription.close();
+  });
+
+  it("retries a failed forced connection refresh with bounded backoff", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn();
+    const subscription = new DaemonApiClient().subscribeEvents({
+      onEvent: vi.fn(),
+      onError,
+      onStale: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const firstSocket = MockWebSocket.instances[0];
+    if (!firstSocket) throw new Error("initial event socket was not opened");
+    vi.mocked(getDaemonConnectionInfo).mockRejectedValueOnce(
+      new Error("daemon ready file unavailable"),
+    );
+    firstSocket.onclose?.();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(onError).toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    subscription.close();
+  });
 });

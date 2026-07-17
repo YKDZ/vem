@@ -14,10 +14,15 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const CAPABILITY_POLL_INTERVAL_MS = 15_000;
+const RECONCILIATION_ATTEMPTS = 3;
+const RECONCILIATION_INITIAL_DELAY_MS = 250;
+const RECONCILIATION_MAX_DELAY_MS = 1_000;
 
 type RuntimeCoordinator = {
   subscription: { close(): void } | null;
   pollTimer: ReturnType<typeof globalThis.setInterval> | null;
+  reconciliation: Promise<void> | null;
+  reconciliationRetryTimer: ReturnType<typeof globalThis.setTimeout> | null;
 };
 
 const coordinators = new WeakMap<Pinia, RuntimeCoordinator>();
@@ -28,6 +33,8 @@ function coordinatorFor(pinia: Pinia): RuntimeCoordinator {
   const coordinator: RuntimeCoordinator = {
     subscription: null,
     pollTimer: null,
+    reconciliation: null,
+    reconciliationRetryTimer: null,
   };
   coordinators.set(pinia, coordinator);
   return coordinator;
@@ -92,19 +99,68 @@ function dispatchDaemonEvent(pinia: Pinia, event: DaemonEvent): void {
   }
 }
 
-function refreshAfterStreamReconnect(pinia: Pinia): void {
+async function reconciliationDelay(
+  coordinator: RuntimeCoordinator,
+  milliseconds: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    coordinator.reconciliationRetryTimer = globalThis.setTimeout(() => {
+      coordinator.reconciliationRetryTimer = null;
+      resolve();
+    }, milliseconds);
+  });
+}
+
+async function reconcileAfterStreamReconnect(
+  pinia: Pinia,
+  coordinator: RuntimeCoordinator,
+): Promise<void> {
   const connectivityStore = useConnectivityStore(pinia);
   const catalogStore = useCatalogStore(pinia);
   const checkoutStore = useCheckoutStore(pinia);
   const mqttStore = useMqttStore(pinia);
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
-  void Promise.allSettled([
-    connectivityStore.refresh(),
-    saleCapabilityStore.refresh(),
-    catalogStore.refresh(),
-    mqttStore.refresh(),
-    checkoutStore.refreshCurrentTransaction(),
-  ]);
+  let retryDelayMs = RECONCILIATION_INITIAL_DELAY_MS;
+
+  for (let attempt = 0; attempt < RECONCILIATION_ATTEMPTS; attempt += 1) {
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- each forced IPC read must finish before deciding whether this bounded reconciliation needs another attempt.
+      await daemonClient.initialize(true);
+      // oxlint-disable-next-line no-await-in-loop -- all projections belong to the same reconnect observation and must settle before retrying it.
+      const results = await Promise.allSettled([
+        connectivityStore.refresh(),
+        saleCapabilityStore.refresh(),
+        catalogStore.refresh(),
+        mqttStore.refresh(),
+        checkoutStore.refreshCurrentTransaction(),
+      ]);
+      const failed = results.find((result) => result.status === "rejected");
+      if (!failed) return;
+      throw failed.reason;
+    } catch (error) {
+      connectivityStore.markStale(error);
+      saleCapabilityStore.markStale(error);
+      if (attempt + 1 >= RECONCILIATION_ATTEMPTS) return;
+      // oxlint-disable-next-line no-await-in-loop -- bounded exponential backoff keeps the single coordinator from overlapping reconnect attempts.
+      await reconciliationDelay(coordinator, retryDelayMs);
+      retryDelayMs = Math.min(
+        retryDelayMs * 2,
+        RECONCILIATION_MAX_DELAY_MS,
+      );
+    }
+  }
+}
+
+function scheduleStreamReconciliation(pinia: Pinia): void {
+  const coordinator = coordinatorFor(pinia);
+  if (coordinator.reconciliation) return;
+  const reconciliation = reconcileAfterStreamReconnect(pinia, coordinator);
+  coordinator.reconciliation = reconciliation;
+  void reconciliation.finally(() => {
+    if (coordinator.reconciliation === reconciliation) {
+      coordinator.reconciliation = null;
+    }
+  });
 }
 
 function recordUnknownDaemonEvent(
@@ -133,7 +189,11 @@ export function startMachineRuntime(pinia: Pinia): void {
       saleCapabilityStore.markStale(error);
     },
     onStale: () => {
-      refreshAfterStreamReconnect(pinia);
+      connectivityStore.markStale();
+      saleCapabilityStore.markStale("daemon event stream disconnected");
+    },
+    onReconnect: () => {
+      scheduleStreamReconciliation(pinia);
     },
   });
   coordinator.pollTimer = globalThis.setInterval(() => {
@@ -150,4 +210,9 @@ export function stopMachineRuntime(pinia: Pinia): void {
     globalThis.clearInterval(coordinator.pollTimer);
     coordinator.pollTimer = null;
   }
+  if (coordinator.reconciliationRetryTimer !== null) {
+    globalThis.clearTimeout(coordinator.reconciliationRetryTimer);
+    coordinator.reconciliationRetryTimer = null;
+  }
+  coordinator.reconciliation = null;
 }

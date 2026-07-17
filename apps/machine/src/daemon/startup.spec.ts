@@ -151,18 +151,19 @@ describe("routeForStartup", () => {
     }
   });
 
-  it("does not enter catalog when the daemon itself is unavailable", () => {
+  it("keeps a claimed machine on the customer offline surface when daemon IPC is unavailable", () => {
     expect(
       routeForStartup({
         daemonAvailable: false,
         effectiveRuntimeConfiguration: configuration(true),
         restoredTransaction: null,
       }),
-    ).toBe("/maintenance");
+    ).toBe("/offline");
   });
 
   it("preserves a recovered transaction if an ordinary boot read fails", () => {
     expect(routeForBootFailure(transaction("wait_payment"))).toBe("/payment");
     expect(routeForBootFailure(null)).toBe("/maintenance");
+    expect(routeForBootFailure(null, configuration(true))).toBe("/offline");
   });
 });

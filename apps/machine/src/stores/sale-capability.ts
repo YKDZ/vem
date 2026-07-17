@@ -115,6 +115,12 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
           return "older";
         }
         if (snapshot.revision === current.revision) {
+          if (refreshSequence !== undefined) {
+            this.latestAcceptedRefreshSequence = Math.max(
+              this.latestAcceptedRefreshSequence,
+              refreshSequence,
+            );
+          }
           this.lastRejectedObservation = null;
           return "same";
         }

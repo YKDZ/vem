@@ -170,6 +170,26 @@ describe("useSaleCapabilityStore", () => {
     expect(store.lastRejectedObservation).toBe("daemon-before-restart:99");
   });
 
+  it("uses a newer same-tuple response as the barrier for an older generation", async () => {
+    const olderDifferentGeneration = deferred<SaleStartCapabilitySnapshot>();
+    getSaleStartCapabilityMock
+      .mockReturnValueOnce(olderDifferentGeneration.promise)
+      .mockResolvedValueOnce(capability("daemon-a", 5, true));
+    const store = useSaleCapabilityStore();
+    store.acceptSnapshot(capability("daemon-a", 5, true));
+
+    const olderRefresh = store.refresh();
+    await store.refresh();
+    olderDifferentGeneration.resolve(capability("daemon-b", 1, false));
+    await olderRefresh;
+
+    expect(store.orderingKey).toBe("daemon-a:5");
+    expect(store.canStartSale).toBe(true);
+    expect(store.stale).toBe(false);
+    expect(store.diagnostic).toBeNull();
+    expect(store.lastRejectedObservation).toBe("daemon-b:1");
+  });
+
   it("retains the accepted capability and marks diagnostics stale after refresh failure", async () => {
     const store = useSaleCapabilityStore();
     store.acceptSnapshot(capability("daemon-a", 4, true));

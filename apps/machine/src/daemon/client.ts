@@ -744,12 +744,33 @@ export class DaemonApiClient {
     onUnknownEvent?: (event: UnknownDaemonEvent) => void;
     onError: (error: Error) => void;
     onStale: () => void;
+    onOpen?: (input: { reconnected: boolean }) => void;
+    onReconnect?: () => void;
   }): Subscription {
     let closed = false;
     let socket: WebSocket | null = null;
     let retryMs = 500;
+    let hasOpened = false;
+    let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     const seenEventIds = new Set<string>();
     const seenEventIdQueue: string[] = [];
+
+    const scheduleReconnect = (): void => {
+      if (closed || retryTimer !== null) return;
+      const delayMs = retryMs;
+      retryMs = Math.min(retryMs * 2, 10_000);
+      retryTimer = globalThis.setTimeout(() => {
+        retryTimer = null;
+        void connect().catch((error: unknown) => {
+          handlers.onError(
+            error instanceof Error
+              ? error
+              : new DaemonUnavailableError(String(error)),
+          );
+          scheduleReconnect();
+        });
+      }, delayMs);
+    };
 
     const connect = async (): Promise<void> => {
       const connection = await this.initialize(true);
@@ -757,7 +778,11 @@ export class DaemonApiClient {
       socket = new WebSocket(url);
       socket.onopen = () => {
         if (closed) return;
+        const reconnected = hasOpened;
+        hasOpened = true;
         retryMs = 500;
+        handlers.onOpen?.({ reconnected });
+        if (reconnected) handlers.onReconnect?.();
       };
       socket.onmessage = (message) => {
         if (closed) return;
@@ -784,16 +809,7 @@ export class DaemonApiClient {
       socket.onclose = () => {
         if (closed) return;
         handlers.onStale();
-        globalThis.setTimeout(() => {
-          void connect().catch((error: unknown) => {
-            handlers.onError(
-              error instanceof Error
-                ? error
-                : new DaemonUnavailableError(String(error)),
-            );
-          });
-        }, retryMs);
-        retryMs = Math.min(retryMs * 2, 10_000);
+        scheduleReconnect();
       };
     };
 
@@ -803,11 +819,16 @@ export class DaemonApiClient {
           ? error
           : new DaemonUnavailableError(String(error)),
       );
+      scheduleReconnect();
     });
 
     return {
       close: () => {
         closed = true;
+        if (retryTimer !== null) {
+          globalThis.clearTimeout(retryTimer);
+          retryTimer = null;
+        }
         if (socket) {
           socket.onopen = null;
           socket.onmessage = null;
