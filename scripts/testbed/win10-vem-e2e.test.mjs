@@ -726,6 +726,19 @@ describe("simulated hardware serial acceptance evidence", () => {
             calls.push(label);
             assert.equal(env.DATABASE_URL, undefined);
             const out = command[command.indexOf("--out") + 1];
+            if (label === "serial conformance prestart") {
+              assert.equal(command.includes("--start-only"), true);
+              writeFileSync(
+                out,
+                JSON.stringify({
+                  schemaVersion: "vem-vm-host-adapter-serial-prestart/v1",
+                  runId: "RUN-180-EVIDENCE",
+                  session: { sessionId: "serial-session-180" },
+                }),
+                "utf8",
+              );
+              return { status: 0 };
+            }
             if (label === "simulated hardware fixture") {
               writeFileSync(
                 out,
@@ -757,6 +770,11 @@ describe("simulated hardware serial acceptance evidence", () => {
             }
             const scannerCodePath =
               command[command.indexOf("--scanner-code-file") + 1];
+            assert.equal(command.includes("--prestarted-report"), true);
+            assert.equal(
+              command[command.indexOf("--prestarted-report") + 1],
+              join(root, "profile", "serial-prestart.json"),
+            );
             assert.notEqual(scannerCodePath, scannerInput);
             assert.equal(
               readFileSync(scannerCodePath, "utf8"),
@@ -819,6 +837,14 @@ describe("simulated hardware serial acceptance evidence", () => {
             return { status: 0 };
           },
           runRemote(_options, script) {
+            if (script.includes("scannerAdapter = 'serial_text'")) {
+              calls.push("serial activation");
+              return {
+                lowerControllerPort: "COM1",
+                scannerPort: "COM2",
+                health: { hardwareOnline: true, scannerOnline: true },
+              };
+            }
             if (script.includes("acceptance_overlay_cdp")) {
               calls.push("cleanup");
               return {
@@ -1006,6 +1032,8 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
       assert.equal(readFileSync(scannerInput, "utf8"), "CALLER-SCANNER-CODE\n");
       assert.deepEqual(calls, [
+        "serial conformance prestart",
+        "serial activation",
         "simulated hardware fixture",
         "launch",
         "authoritative platform raw baseline query",

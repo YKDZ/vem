@@ -944,6 +944,12 @@ async function main() {
   const approvedRuntimeBase = readOption("--approved-runtime-base");
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
+  const startOnly = process.argv.includes("--start-only");
+  const prestartedReportPath = readOption("--prestarted-report", {
+    optional: true,
+  });
+  if (startOnly && prestartedReportPath)
+    throw new Error("--start-only cannot be combined with --prestarted-report");
   const customerUiSale = readCustomerUiSaleBinding();
   const contractTest =
     process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
@@ -961,7 +967,9 @@ async function main() {
   let repeatedStop;
   let recoveryStop;
   let failureMatrix;
-  const failureMatrixArtifactPaths = customerUiSale
+  const failureMatrixArtifactPaths = startOnly
+    ? null
+    : customerUiSale
     ? null
     : contractTest
       ? null
@@ -981,27 +989,59 @@ async function main() {
   const runnerEvidence = protectedRunnerSigningKey();
   const serialRunnerChallenge = runnerChallenge();
   try {
-    startRequest = requestFor({
-      operation: "start-serial-session",
-      runId,
-      targetIdentity,
-      lifecycleReference,
-      approvedRuntimeBase,
-      saleCorrelationId,
-      saleBinding: null,
-      ...maintenanceEndpointContext,
-    });
-    start = await runVmHostAdapter({
-      request: startRequest,
-      workDirectory,
-      environment,
-    });
+    if (prestartedReportPath) {
+      const prestarted = JSON.parse(
+        readFileSync(prestartedReportPath, "utf8"),
+      );
+      if (
+        prestarted?.schemaVersion !==
+          "vem-vm-host-adapter-serial-prestart/v1" ||
+        prestarted.runId !== runId
+      )
+        throw new Error("prestarted serial report does not match this run");
+      startRequest = prestarted.request;
+      start = prestarted.report;
+    } else {
+      startRequest = requestFor({
+        operation: "start-serial-session",
+        runId,
+        targetIdentity,
+        lifecycleReference,
+        approvedRuntimeBase,
+        saleCorrelationId,
+        saleBinding: null,
+        ...maintenanceEndpointContext,
+      });
+      start = await runVmHostAdapter({
+        request: startRequest,
+        workDirectory,
+        environment,
+      });
+    }
     const startReportDigest = commitRunnerOperation(
       runnerEvidence,
       "start",
       start,
     );
     session = start.serialSession;
+    if (startOnly) {
+      writeFileSync(
+        out,
+        `${JSON.stringify(
+          {
+            schemaVersion: "vem-vm-host-adapter-serial-prestart/v1",
+            runId,
+            request: startRequest,
+            report: start,
+            session,
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      return;
+    }
     preparedSale = customerUiSale
       ? {
           saleCorrelationId,
@@ -1171,7 +1211,7 @@ async function main() {
   } catch (error) {
     primaryError = error;
   } finally {
-    if (session && !repeatedStop) {
+    if (session && !repeatedStop && !startOnly) {
       try {
         recoveryStopRequest = requestFor({
           operation: "stop-serial-session",
@@ -1194,7 +1234,8 @@ async function main() {
         if (!primaryError) primaryError = error;
       }
     }
-    const conformance = {
+    if (!startOnly) {
+      const conformance = {
       schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
       runId,
       ...(customerUiSale
@@ -1239,17 +1280,18 @@ async function main() {
       },
       ...(failureMatrix === undefined ? {} : { failureMatrix }),
     };
-    commitRunnerConformance(runnerEvidence, conformance);
-    writeFileSync(out, `${JSON.stringify(conformance, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    if (!primaryError)
-      validateSerialConformanceReport(conformance, {
-        expectedRunnerPublicKey: runnerEvidence.expectedRunnerPublicKey,
-        expectedAdapterIdentity: contractTest
-          ? start?.adapter?.identity
-          : process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY,
+      commitRunnerConformance(runnerEvidence, conformance);
+      writeFileSync(out, `${JSON.stringify(conformance, null, 2)}\n`, {
+        mode: 0o600,
       });
+      if (!primaryError)
+        validateSerialConformanceReport(conformance, {
+          expectedRunnerPublicKey: runnerEvidence.expectedRunnerPublicKey,
+          expectedAdapterIdentity: contractTest
+            ? start?.adapter?.identity
+            : process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY,
+        });
+    }
   }
   if (primaryError) throw primaryError;
 }
