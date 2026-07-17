@@ -1,6 +1,21 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const nativeAudio = vi.hoisted(() => ({
+  isTauriRuntime: vi.fn<() => boolean>(),
+  callTauriCommand: vi.fn(),
+  listen: vi.fn(),
+}));
+
+vi.mock("@/native/tauri", () => ({
+  isTauriRuntime: nativeAudio.isTauriRuntime,
+  callTauriCommand: nativeAudio.callTauriCommand,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: nativeAudio.listen,
+}));
+
 import type { HealthSnapshot, TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -11,6 +26,7 @@ import {
   createBrowserMachineAudioPlaybackDriver,
   createMachineAudioPlayback,
   createMockMachineAudioPlaybackDriver,
+  createTauriNativeMachineAudioPlaybackDriver,
   type BrowserMachineAudioElement,
 } from "./machine-audio-playback";
 
@@ -188,6 +204,9 @@ function readinessObservation() {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  nativeAudio.isTauriRuntime.mockReturnValue(false);
+  nativeAudio.callTauriCommand.mockReset();
+  nativeAudio.listen.mockReset();
 });
 
 describe("createMachineAudioPlayback", () => {
@@ -399,6 +418,51 @@ describe("createMachineAudioPlayback", () => {
       sourceUrl: "/assets/payment-succeeded.wav",
       message: null,
     });
+  });
+
+  it("invokes the installed Tauri default-output command and observes its terminal event", async () => {
+    let completed: ((event: { payload: { requestId: string } }) => void) | null = null;
+    const unlisten = vi.fn();
+    nativeAudio.isTauriRuntime.mockReturnValue(true);
+    nativeAudio.listen.mockImplementation(async (_event, listener) => {
+      completed = listener as typeof completed;
+      return unlisten;
+    });
+    nativeAudio.callTauriCommand.mockResolvedValue(undefined);
+    const driver = createTauriNativeMachineAudioPlaybackDriver();
+    if (!driver) throw new Error("expected installed Tauri native audio driver");
+    const playback = createMachineAudioPlayback({ driver, volume: 0.4 });
+
+    const started = await playback.playLocal("/assets/maintenance-test-tone.wav");
+    const requestId = playback.latestDiagnostic()?.requestId;
+
+    expect(started).toBe(true);
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "started",
+      driver: "native",
+      sourceUrl: "/assets/maintenance-test-tone.wav",
+    });
+    expect(nativeAudio.callTauriCommand).toHaveBeenCalledWith(
+      "play_machine_audio",
+      expect.objectContaining({
+        requestId,
+        sourceUrl: "/assets/maintenance-test-tone.wav",
+        volume: 0.4,
+      }),
+    );
+
+    const completion = completed as unknown as
+      | ((event: { payload: { requestId: string } }) => void)
+      | null;
+    if (!completion) throw new Error("native completion listener was not installed");
+    completion({ payload: { requestId: requestId ?? "missing" } });
+
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "completed",
+      driver: "native",
+      sourceUrl: "/assets/maintenance-test-tone.wav",
+    });
+    expect(unlisten).toHaveBeenCalledOnce();
   });
 
   it("falls back when native playback is unavailable", async () => {

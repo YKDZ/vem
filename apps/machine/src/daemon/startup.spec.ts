@@ -1,656 +1,160 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
+import type { TransactionSnapshot } from "./schemas";
 import { routeForBootFailure, routeForStartup } from "./startup";
 
+function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
+  return {
+    sourceDocuments: { profileCache: claimed ? {} : null },
+    machine: claimed ? { code: "MACHINE-001" } : null,
+    profileRefresh: { status: claimed ? "accepted" : "unclaimed" },
+  } as unknown as EffectiveMachineRuntimeConfiguration;
+}
+
+function transaction(
+  nextAction: TransactionSnapshot["nextAction"],
+): TransactionSnapshot {
+  return {
+    orderId: "550e8400-e29b-41d4-a716-446655440001",
+    orderNo: "ORD-STARTUP-001",
+    productSummary: null,
+    paymentId: null,
+    paymentNo: null,
+    paymentMethod: nextAction === "wait_payment" ? "qr_code" : null,
+    paymentProvider: nextAction === "wait_payment" ? "alipay" : null,
+    paymentUrl: nextAction === "wait_payment" ? "https://pay.example/order" : null,
+    paymentStatus: nextAction === "wait_payment" ? "pending" : null,
+    orderStatus: nextAction === "wait_payment" ? "pending_payment" : null,
+    totalAmountCents: nextAction === "wait_payment" ? 1200 : null,
+    vending: null,
+    nextAction,
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: null,
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-07-17T00:00:00.000Z",
+  } as TransactionSnapshot;
+}
+
 describe("routeForStartup", () => {
-  const healthBase = {
-    status: "healthy" as const,
-    process: {
-      component: "daemon",
-      level: "info",
-      code: "ok",
-      message: "ok",
-      updatedAt: "2026-01-01T00:00:00Z",
-    },
-    components: [],
-    configConfigured: true,
-    databaseOnline: true,
-    backendOnline: true,
-    mqttConnected: true,
-    outboxSize: 0,
-    outboxMax: 100,
-    hardwareOnline: true,
-    scannerOnline: true,
-    visionOnline: true,
-    remoteOpsActive: false,
-    currentTransaction: null,
-    operatorReason: "",
-    updatedAt: "2026-01-01T00:00:00Z",
-  };
-  it("routes offline when daemon unavailable", () => {
+  it("keeps an unclaimed bootstrap in Local Operations", () => {
     expect(
       routeForStartup({
-        daemonAvailable: false,
-        health: null,
-        ready: null,
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: configuration(false),
         restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
 
-  it("keeps a recovered payment transaction when a later ordinary Boot read fails", () => {
-    expect(
-      routeForBootFailure({
-        orderId: "o",
-        orderNo: "ord",
-        productSummary: null,
-        paymentId: null,
-        paymentNo: null,
-        paymentMethod: "qr_code",
-        paymentProvider: "alipay",
-        paymentUrl: "https://pay.example/ord",
-        paymentStatus: "pending",
-        orderStatus: "pending_payment",
-        totalAmountCents: 100,
-        vending: null,
-        nextAction: "wait_payment",
-        maskedAuthCode: null,
-        paymentCodeAttempt: null,
-        expiresAt: null,
-        errorCode: null,
-        errorMessage: null,
-        operatorHint: null,
-        updatedAt: "2026-07-14T00:00:00Z",
-      }),
-    ).toBe("/payment");
-  });
-
-  it("routes maintenance when config missing", () => {
+  it("uses the accepted provisioning profile as catalog authority even when readiness is degraded", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
-        health: { ...healthBase, configConfigured: false },
-        ready: null,
-        restoredTransaction: null,
-      }),
-    ).toBe("/maintenance");
-  });
-
-  it("fails closed when daemon is available but its bring-up projection is unavailable", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: null,
-      }),
-    ).toBe("/maintenance");
-  });
-
-  it("routes incomplete daemon bring-up to the bring-up console", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        bringUp: {
-          state: "claim_required",
-          blockingReasons: [
-            {
-              code: "CLAIM_REQUIRED",
-              component: "provisioning",
-              message:
-                "machine must be claimed before runtime profile can be applied",
-            },
-          ],
-          diagnostics: [],
-          readinessLevel: "not_ready",
-          hardwareMode: "production",
-          allowedActions: {
-            configureNetwork: false,
-            claimMachine: true,
-            retryClaim: false,
-            convergeMaintenanceTunnel: false,
-            syncProfile: false,
-            resolveTopology: false,
-            runRuntimeAcceptance: false,
-            runHardwareAcceptance: false,
-            attestStock: false,
-            startSales: false,
-          },
-          currentTask: {
-            contractVersion: 1,
-            taskId: "bring_up.claim_machine",
-            taskVersion: 1,
-            kind: "claim_machine",
-            intent: "claim_machine",
-            rotateMaintenanceIdentity: false,
-            projection: {
-              type: "claim_code",
-              rotateMaintenanceIdentity: false,
-            },
-          },
-          progress: [
-            { kind: "provisioning", status: "current", evidence: "durable" },
-          ],
-          updatedAt: "2026-07-04T00:00:00Z",
-        },
-        ready: null,
-        restoredTransaction: null,
-      }),
-    ).toBe("/bring-up");
-  });
-
-  it("keeps a daemon-projected current task on the bring-up route even when legacy state is runtime-ready", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        bringUp: {
-          state: "runtime_ready",
-          blockingReasons: [],
-          diagnostics: [],
-          readinessLevel: "runtime_ready",
-          hardwareMode: "production",
-          allowedActions: {
-            configureNetwork: false,
-            claimMachine: false,
-            retryClaim: false,
-            convergeMaintenanceTunnel: false,
-            syncProfile: false,
-            resolveTopology: false,
-            runRuntimeAcceptance: true,
-            runHardwareAcceptance: false,
-            attestStock: false,
-            startSales: false,
-          },
-          currentTask: {
-            contractVersion: 1,
-            taskId: "bring_up.hardware_acceptance",
-            taskVersion: 1,
-            kind: "run_hardware_acceptance",
-            intent: "open_maintenance",
-            rotateMaintenanceIdentity: false,
-            projection: {
-              type: "hardware_acceptance",
-              component: "hardware",
-            },
-          },
-          progress: [
-            { kind: "hardware", status: "current", evidence: "volatile" },
-          ],
-          updatedAt: "2026-07-14T00:00:00Z",
-        },
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-07-14T00:00:00Z",
-        },
-        restoredTransaction: null,
-      }),
-    ).toBe("/bring-up");
-  });
-
-  it("uses daemon bring-up snapshot instead of local config-error inference", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: { ...healthBase, configConfigured: false },
-        bringUp: {
-          state: "sell_ready",
-          blockingReasons: [],
-          diagnostics: [],
-          readinessLevel: "sell_ready",
-          hardwareMode: "production",
-          allowedActions: {
-            configureNetwork: false,
-            claimMachine: false,
-            retryClaim: false,
-            convergeMaintenanceTunnel: false,
-            syncProfile: false,
-            resolveTopology: false,
-            runRuntimeAcceptance: true,
-            runHardwareAcceptance: false,
-            attestStock: false,
-            startSales: true,
-          },
-          currentTask: null,
-          progress: [],
-          updatedAt: "2026-07-04T00:00:00Z",
-        },
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
+        effectiveRuntimeConfiguration: configuration(true),
         restoredTransaction: null,
       }),
     ).toBe("/catalog");
   });
 
-  it("fails closed when an old daemon omits the required bring-up projection", () => {
+  it("fails closed to Local Operations when the effective snapshot is unavailable", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
-        health: healthBase,
-        bringUp: null,
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-07-14T00:00:00Z",
-        },
+        effectiveRuntimeConfiguration: null,
         restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
 
-  it("routes payment", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        bringUp: {
-          state: "sell_ready",
-          blockingReasons: [],
-          diagnostics: [],
-          readinessLevel: "sell_ready",
-          hardwareMode: "production",
-          allowedActions: {
-            configureNetwork: false,
-            claimMachine: false,
-            retryClaim: false,
-            convergeMaintenanceTunnel: false,
-            syncProfile: false,
-            resolveTopology: false,
-            runRuntimeAcceptance: true,
-            runHardwareAcceptance: false,
-            attestStock: false,
-            startSales: true,
-          },
-          currentTask: null,
-          progress: [],
-          updatedAt: "2026-07-04T00:00:00Z",
-        },
-        ready: null,
-        restoredTransaction: {
-          orderId: "o",
-          orderNo: "ord",
-          productSummary: null,
-          paymentId: null,
-          paymentNo: null,
-          paymentMethod: "qr_code",
-          paymentProvider: "alipay",
-          paymentUrl: "https://pay.example/ord",
-          paymentStatus: "pending",
-          orderStatus: "pending_payment",
-          totalAmountCents: 100,
-          vending: null,
-          nextAction: "wait_payment",
-          maskedAuthCode: null,
-          paymentCodeAttempt: null,
-          expiresAt: null,
-          errorCode: null,
-          errorMessage: null,
-          operatorHint: null,
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-      }),
-    ).toBe("/payment");
-  });
+  it("requires accepted claim state and machine identity, not a cache-shape heuristic", () => {
+    const missingMachine = {
+      ...configuration(true),
+      machine: null,
+    } as EffectiveMachineRuntimeConfiguration;
+    const unacceptedClaim = {
+      ...configuration(true),
+      profileRefresh: { status: "refreshing" },
+    } as unknown as EffectiveMachineRuntimeConfiguration;
 
-  it("recovers an explicit restored transaction before startup fallbacks", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        bringUp: {
-          state: "claim_required",
-          blockingReasons: [
-            {
-              code: "CLAIM_REQUIRED",
-              component: "provisioning",
-              message:
-                "machine must be claimed before runtime profile can be applied",
-            },
-          ],
-          diagnostics: [],
-          readinessLevel: "not_ready",
-          hardwareMode: "production",
-          allowedActions: {
-            configureNetwork: false,
-            claimMachine: true,
-            retryClaim: false,
-            convergeMaintenanceTunnel: false,
-            syncProfile: false,
-            resolveTopology: false,
-            runRuntimeAcceptance: false,
-            runHardwareAcceptance: false,
-            attestStock: false,
-            startSales: false,
-          },
-          currentTask: null,
-          progress: [],
-          updatedAt: "2026-07-04T00:00:00Z",
-        },
-        ready: {
-          ready: false,
-          canSell: false,
-          mode: "maintenance",
-          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "maintenance",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: {
-          orderId: "o",
-          orderNo: "ord",
-          productSummary: null,
-          paymentId: null,
-          paymentNo: null,
-          paymentMethod: "qr_code",
-          paymentProvider: "alipay",
-          paymentUrl: "https://pay.example/ord",
-          paymentStatus: "pending",
-          orderStatus: "pending_payment",
-          totalAmountCents: 100,
-          vending: null,
-          nextAction: "wait_payment",
-          maskedAuthCode: null,
-          paymentCodeAttempt: null,
-          expiresAt: null,
-          errorCode: null,
-          errorMessage: null,
-          operatorHint: null,
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-      }),
-    ).toBe("/payment");
-  });
-
-  it("keeps active transaction recovery ahead of non-ready bring-up state", () => {
-    const cases = [
-      ["wait_payment", "/payment"],
-      ["dispensing", "/dispensing"],
-      [
-        "refund_pending",
-        { name: "result", params: { kind: "refund_pending" } },
-      ],
-    ] as const;
-
-    for (const [nextAction, expectedRoute] of cases) {
+    for (const effectiveRuntimeConfiguration of [missingMachine, unacceptedClaim]) {
       expect(
         routeForStartup({
           daemonAvailable: true,
-          health: healthBase,
-          bringUp: {
-            state: "topology_mismatch",
-            blockingReasons: [
-              {
-                code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
-                component: "topology",
-                message:
-                  "factory hardware slot topology does not match platform expectation",
-              },
-            ],
-            diagnostics: [],
-            readinessLevel: "not_ready",
-            hardwareMode: "production",
-            allowedActions: {
-              configureNetwork: false,
-              claimMachine: false,
-              retryClaim: false,
-              convergeMaintenanceTunnel: false,
-              syncProfile: false,
-              resolveTopology: true,
-              runRuntimeAcceptance: false,
-              runHardwareAcceptance: false,
-              attestStock: false,
-              startSales: false,
-            },
-            currentTask: null,
-            progress: [],
-            updatedAt: "2026-07-04T00:00:00Z",
-          },
-          ready: null,
-          restoredTransaction: {
-            orderId: "o",
-            orderNo: "ord",
-            productSummary: null,
-            paymentId: null,
-            paymentNo: null,
-            paymentMethod: "qr_code",
-            paymentProvider: "alipay",
-            paymentUrl: "https://pay.example/ord",
-            paymentStatus:
-              nextAction === "wait_payment" ? "pending" : "succeeded",
-            orderStatus:
-              nextAction === "wait_payment"
-                ? "pending_payment"
-                : nextAction === "dispensing"
-                  ? "dispensing"
-                  : "refund_pending",
-            totalAmountCents: 100,
-            vending: null,
-            nextAction,
-            maskedAuthCode: null,
-            paymentCodeAttempt: null,
-            expiresAt: null,
-            errorCode: null,
-            errorMessage: null,
-            operatorHint: null,
-            updatedAt: "2026-01-01T00:00:00Z",
-          },
+          effectiveRuntimeConfiguration,
+          restoredTransaction: null,
         }),
-      ).toEqual(expectedRoute);
+      ).toBe("/maintenance");
     }
-  });
 
-  it("routes dispensing", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
-        health: healthBase,
-        ready: null,
-        restoredTransaction: {
-          orderId: null,
-          orderNo: "ord",
-          productSummary: null,
-          paymentId: null,
-          paymentNo: null,
-          paymentMethod: null,
-          paymentProvider: null,
-          paymentUrl: null,
-          paymentStatus: null,
-          orderStatus: null,
-          totalAmountCents: null,
-          vending: null,
-          nextAction: "dispensing",
-          maskedAuthCode: null,
-          paymentCodeAttempt: null,
-          expiresAt: null,
-          errorCode: null,
-          errorMessage: null,
-          operatorHint: null,
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
+        effectiveRuntimeConfiguration: {
+          ...configuration(true),
+          sourceDocuments: { profileCache: null },
+        } as unknown as EffectiveMachineRuntimeConfiguration,
+        restoredTransaction: null,
+      }),
+    ).toBe("/catalog");
+  });
+
+  it("keeps recovered payment navigation ahead of an unclaimed configuration", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: configuration(false),
+        restoredTransaction: transaction("wait_payment"),
+      }),
+    ).toBe("/payment");
+  });
+
+  it("keeps recovered dispensing and terminal navigation ahead of configuration routing", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: configuration(false),
+        restoredTransaction: transaction("dispensing"),
       }),
     ).toBe("/dispensing");
-  });
 
-  it("routes result", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
-        health: healthBase,
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: {
-          orderId: null,
-          orderNo: "ord",
-          productSummary: null,
-          paymentId: null,
-          paymentNo: null,
-          paymentMethod: null,
-          paymentProvider: null,
-          paymentUrl: null,
-          paymentStatus: null,
-          orderStatus: null,
-          totalAmountCents: null,
-          vending: null,
-          nextAction: "success",
-          maskedAuthCode: null,
-          paymentCodeAttempt: null,
-          expiresAt: null,
-          errorCode: null,
-          errorMessage: null,
-          operatorHint: null,
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-      }),
-    ).toMatchObject({ name: "result", params: { kind: "success" } });
-  });
-
-  it("routes unknown dispense result to manual handling", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: {
-          orderId: null,
-          orderNo: "ord",
-          productSummary: null,
-          paymentId: null,
-          paymentNo: null,
-          paymentMethod: null,
-          paymentProvider: null,
-          paymentUrl: null,
-          paymentStatus: null,
-          orderStatus: null,
-          totalAmountCents: null,
-          vending: {
-            commandId: null,
-            commandNo: "cmd",
-            status: "result_unknown",
-            lastError: "unknown dispense result",
-          },
-          nextAction: "manual_handling",
-          maskedAuthCode: null,
-          paymentCodeAttempt: null,
-          expiresAt: null,
-          errorCode: null,
-          errorMessage: null,
-          operatorHint: null,
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
+        effectiveRuntimeConfiguration: configuration(false),
+        restoredTransaction: transaction("manual_handling"),
       }),
     ).toMatchObject({ name: "result", params: { kind: "manual_handling" } });
   });
 
-  it("does not use an offline fallback without daemon bring-up", () => {
+  it("keeps each terminal customer result ahead of Local Operations", () => {
+    const terminalCases = ["success", "payment_failed", "closed", "refund_pending"] as const;
+    for (const nextAction of terminalCases) {
+      expect(
+        routeForStartup({
+          daemonAvailable: true,
+          effectiveRuntimeConfiguration: configuration(false),
+          restoredTransaction: transaction(nextAction),
+        }),
+      ).toMatchObject({ name: "result", params: { kind: nextAction } });
+    }
+  });
+
+  it("does not enter catalog when the daemon itself is unavailable", () => {
     expect(
       routeForStartup({
-        daemonAvailable: true,
-        health: { ...healthBase },
-        ready: {
-          ready: true,
-          canSell: false,
-          mode: "daemon",
-          blockingCodes: ["mqtt"],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "offline",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
+        daemonAvailable: false,
+        effectiveRuntimeConfiguration: configuration(true),
         restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
 
-  it("routes maintenance when ready snapshot suggests maintenance", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: { ...healthBase },
-        ready: {
-          ready: false,
-          canSell: false,
-          mode: "maintenance",
-          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-          blockingReasons: [
-            {
-              code: "WHOLE_MACHINE_HARDWARE_FAULT",
-              component: "hardware",
-              message: "hardware fault",
-            },
-          ],
-          degradedReasons: [],
-          suggestedRoute: "maintenance",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: null,
-      }),
-    ).toBe("/maintenance");
-  });
-
-  it("does not use a catalog fallback when bring-up is absent", () => {
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        health: healthBase,
-        ready: {
-          ready: true,
-          canSell: true,
-          mode: "daemon",
-          blockingCodes: [],
-          blockingReasons: [],
-          degradedReasons: [],
-          suggestedRoute: "catalog",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-        restoredTransaction: null,
-      }),
-    ).toBe("/maintenance");
+  it("preserves a recovered transaction if an ordinary boot read fails", () => {
+    expect(routeForBootFailure(transaction("wait_payment"))).toBe("/payment");
+    expect(routeForBootFailure(null)).toBe("/maintenance");
   });
 });

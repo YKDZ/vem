@@ -1,8 +1,10 @@
 import {
+  type ClearHardwareBindingRequest,
   type ConfirmHardwareBindingRequest,
   type EffectiveMachineRuntimeConfiguration,
   type SetAudioPreferencesRequest,
   type SetScannerProtocolParametersRequest,
+  clearHardwareBindingRequestSchema,
   confirmHardwareBindingRequestSchema,
   effectiveMachineRuntimeConfigurationSchema,
   setAudioPreferencesRequestSchema,
@@ -26,7 +28,6 @@ import {
 
 import {
   catalogSnapshotSchema,
-  bringUpSnapshotSchema,
   daemonEventSchema,
   hardwareSelfCheckSchema,
   manualDispenseDiagnosticResultSchema,
@@ -44,14 +45,13 @@ import {
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
   maintenanceEnrollmentStatusSchema,
-  maintenanceSessionSchema,
+  provisioningClaimResponseSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
   visionStatusSchema,
   wifiScanResponseSchema,
   type CatalogSnapshot,
-  type BringUpSnapshot,
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
@@ -63,8 +63,8 @@ import {
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
   type MaintenanceEnrollmentStatus,
-  type MaintenanceSession,
   type NetworkSettingsResponse,
+  type ProvisioningClaimResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
@@ -156,15 +156,12 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   retry401?: boolean;
-  maintenanceSessionOverride?: MaintenanceSession | null;
   signal?: AbortSignal;
 };
 
 type Subscription = {
   close(): void;
 };
-
-export type MaintenanceSessionRouteScope = "maintenance" | "bring-up";
 
 const MAX_SEEN_EVENT_IDS = 1000;
 // Network setup failures carry five independently typed diagnostics.  Leave
@@ -219,9 +216,6 @@ async function readDaemonResponseText(
   }
   return { exceeded: false, text: new TextDecoder().decode(body) };
 }
-const MAX_TIMEOUT_MS = 2_147_483_647;
-const MAINTENANCE_REVOKE_TIMEOUT_MS = 2_000;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -232,18 +226,6 @@ function isUnknownArray(value: unknown): value is unknown[] {
 
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
-  private maintenanceSession: MaintenanceSession | null = null;
-  // A session is daemon-owned state, but this route scope makes the browser
-  // handoff explicit: Maintenance may issue it and only Bring-Up may receive
-  // it. A normal route departure drops the browser-side bearer immediately.
-  private maintenanceSessionRouteScope: MaintenanceSessionRouteScope | null =
-    null;
-  private maintenanceSessionExpiryTimer: ReturnType<
-    typeof globalThis.setTimeout
-  > | null = null;
-  private readonly maintenanceSessionInvalidationListeners = new Set<
-    () => void
-  >();
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventIdQueue: string[] = [];
 
@@ -252,18 +234,11 @@ export class DaemonApiClient {
     options: RequestOptions = {},
   ): Promise<unknown> {
     const connection = await this.initialize();
-    const maintenanceSession =
-      options.maintenanceSessionOverride === undefined
-        ? this.currentMaintenanceSession
-        : options.maintenanceSessionOverride;
     const response = await fetch(`${connection.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${connection.token}`,
         "Content-Type": "application/json",
-        ...(maintenanceSession
-          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
-          : {}),
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -273,9 +248,6 @@ export class DaemonApiClient {
     });
 
     if (response.status === 401 && options.retry401 !== false) {
-      // A 401 means the daemon connection has changed (normally a restart).
-      // Maintenance capabilities are daemon-memory state and cannot survive it.
-      this.clearMaintenanceSession();
       await this.initialize(true);
       return this.request(path, { ...options, retry401: false });
     }
@@ -294,11 +266,6 @@ export class DaemonApiClient {
     const statusMessage = `${path} returned HTTP ${response.status}`;
 
     if (!response.ok) {
-      if (response.status === 403 && maintenanceSession) {
-        // The daemon owns session state. A restart or scope denial must not
-        // leave a stale browser-side capability displayed as authorized.
-        this.clearMaintenanceSessionForId(maintenanceSession.sessionId);
-      }
       if (body.exceeded) {
         throw new DaemonUnavailableError(
           `${statusMessage}; response body exceeds the safe read limit`,
@@ -364,21 +331,16 @@ export class DaemonApiClient {
     options: Omit<RequestOptions, "body"> = {},
   ): Promise<Blob> {
     const connection = await this.initialize();
-    const maintenanceSession = this.currentMaintenanceSession;
     const response = await fetch(`${connection.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${connection.token}`,
-        ...(maintenanceSession
-          ? { "x-vem-maintenance-session": maintenanceSession.sessionId }
-          : {}),
       },
     }).catch((error: unknown) => {
       throw new DaemonUnavailableError("daemon request failed", error);
     });
 
     if (response.status === 401 && options.retry401 !== false) {
-      this.clearMaintenanceSession();
       await this.initialize(true);
       return this.requestBlob(path, { ...options, retry401: false });
     }
@@ -412,80 +374,12 @@ export class DaemonApiClient {
     return this.connection;
   }
 
-  get currentMaintenanceSession(): MaintenanceSession | null {
-    if (
-      this.maintenanceSession &&
-      Date.parse(this.maintenanceSession.expiresAt) <= Date.now()
-    ) {
-      return null;
-    }
-    return this.maintenanceSession;
-  }
-
-  hasMaintenanceSessionForRoute(route: MaintenanceSessionRouteScope): boolean {
-    return (
-      this.currentMaintenanceSession !== null &&
-      this.maintenanceSessionRouteScope === route
-    );
-  }
-
-  getMaintenanceSessionForRoute(
-    route: MaintenanceSessionRouteScope,
-  ): MaintenanceSession | null {
-    return this.hasMaintenanceSessionForRoute(route)
-      ? this.currentMaintenanceSession
-      : null;
-  }
-
   async getHealth(): Promise<HealthSnapshot> {
     return healthSnapshotSchema.parse(await this.request("/healthz"));
   }
 
   async getReady(): Promise<ReadySnapshot> {
     return readySnapshotSchema.parse(await this.request("/readyz"));
-  }
-
-  async getBringUp(): Promise<BringUpSnapshot> {
-    return bringUpSnapshotSchema.parse(await this.request("/v1/bring-up"));
-  }
-
-  async executeBringUpTask(
-    task: NonNullable<BringUpSnapshot["currentTask"]>,
-    mutation: unknown,
-  ): Promise<unknown> {
-    const maintenanceSession = this.currentMaintenanceSession;
-    const protectedMutation =
-      task.kind === "reclaim_machine" &&
-      isRecord(mutation) &&
-      mutation.type === "claim_machine" &&
-      maintenanceSession
-        ? {
-            ...mutation,
-            maintenanceAuthorization: {
-              sessionId: maintenanceSession.sessionId,
-            },
-          }
-        : mutation;
-    try {
-      return await this.request("/v1/bring-up/tasks/execute", {
-        method: "POST",
-        body: {
-          contractVersion: task.contractVersion,
-          taskId: task.taskId,
-          taskVersion: task.taskVersion,
-          kind: task.kind,
-          intent: task.intent,
-          mutation: protectedMutation,
-        },
-      });
-    } catch (error: unknown) {
-      // The cursor uses 400/422 for a completed network attempt whose
-      // diagnostics are meaningful to the operator. Keep those typed facts
-      // instead of replacing them with a generic transport failure.
-      const structured = parseNetworkSettingsRejection(error);
-      if (structured) return structured;
-      throw error;
-    }
   }
 
   async scanWifiNetworks(): Promise<WifiScanResponse> {
@@ -500,135 +394,37 @@ export class DaemonApiClient {
     );
   }
 
+  async applyNetworkSettings(input: {
+    ssid: string;
+    password: string;
+    hidden: boolean;
+  }): Promise<NetworkSettingsResponse> {
+    try {
+      return networkSettingsResponseSchema.parse(
+        await this.request("/v1/network/settings", {
+          method: "POST",
+          body: input,
+        }),
+      );
+    } catch (error) {
+      const structured = parseNetworkSettingsRejection(error);
+      if (structured) return structured;
+      throw error;
+    }
+  }
+
+  async claimMachine(claimCode: string): Promise<ProvisioningClaimResponse> {
+    return provisioningClaimResponseSchema.parse(
+      await this.request("/v1/provisioning/claim", {
+        method: "POST",
+        body: { claimCode: claimCode.trim().toUpperCase() },
+      }),
+    );
+  }
+
   async getMaintenanceStatus(): Promise<MaintenanceEnrollmentStatus> {
     return maintenanceEnrollmentStatusSchema.parse(
       await this.request("/v1/maintenance/status"),
-    );
-  }
-
-  async beginMaintenanceSession(
-    pin: string,
-    scopes: string[] = [],
-    operatorId = "front-panel",
-  ): Promise<MaintenanceSession> {
-    const session = maintenanceSessionSchema.parse(
-      await this.request("/v1/maintenance/sessions", {
-        method: "POST",
-        body: { pin, scopes, operatorId },
-      }),
-    );
-    this.maintenanceSession = session;
-    this.maintenanceSessionRouteScope = "maintenance";
-    this.scheduleMaintenanceSessionExpiry();
-    return session;
-  }
-
-  handoffMaintenanceSessionToBringUp(): boolean {
-    if (!this.hasMaintenanceSessionForRoute("maintenance")) {
-      return false;
-    }
-    this.maintenanceSessionRouteScope = "bring-up";
-    return true;
-  }
-
-  handoffMaintenanceSessionToMaintenance(): boolean {
-    if (!this.hasMaintenanceSessionForRoute("bring-up")) {
-      return false;
-    }
-    this.maintenanceSessionRouteScope = "maintenance";
-    return true;
-  }
-
-  releaseMaintenanceSessionRoute(route: MaintenanceSessionRouteScope): void {
-    if (this.maintenanceSessionRouteScope === route) {
-      this.clearMaintenanceSession();
-    }
-  }
-
-  async revokeMaintenanceSessionRoute(
-    route: MaintenanceSessionRouteScope,
-  ): Promise<void> {
-    const session = this.maintenanceSession;
-    if (this.maintenanceSessionRouteScope !== route || !session) {
-      return;
-    }
-    await this.revokeCapturedMaintenanceSession(session);
-  }
-
-  private async revokeCapturedMaintenanceSession(
-    session: MaintenanceSession,
-  ): Promise<void> {
-    const abort = new AbortController();
-    const timeout = globalThis.setTimeout(() => {
-      abort.abort();
-    }, MAINTENANCE_REVOKE_TIMEOUT_MS);
-    try {
-      await this.request("/v1/maintenance/sessions/revoke", {
-        method: "POST",
-        retry401: false,
-        maintenanceSessionOverride: session,
-        signal: abort.signal,
-      });
-    } finally {
-      globalThis.clearTimeout(timeout);
-      this.clearMaintenanceSessionForId(session.sessionId);
-    }
-  }
-
-  onMaintenanceSessionInvalidated(listener: () => void): () => void {
-    this.maintenanceSessionInvalidationListeners.add(listener);
-    return () => {
-      this.maintenanceSessionInvalidationListeners.delete(listener);
-    };
-  }
-
-  clearMaintenanceSession(): void {
-    if (this.maintenanceSessionExpiryTimer !== null) {
-      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
-      this.maintenanceSessionExpiryTimer = null;
-    }
-    const hadSession = this.maintenanceSession !== null;
-    this.maintenanceSession = null;
-    this.maintenanceSessionRouteScope = null;
-    if (!hadSession) return;
-    for (const listener of this.maintenanceSessionInvalidationListeners) {
-      listener();
-    }
-  }
-
-  private clearMaintenanceSessionForId(sessionId: string): void {
-    if (this.maintenanceSession?.sessionId === sessionId) {
-      this.clearMaintenanceSession();
-    }
-  }
-
-  private scheduleMaintenanceSessionExpiry(): void {
-    if (this.maintenanceSessionExpiryTimer !== null) {
-      globalThis.clearTimeout(this.maintenanceSessionExpiryTimer);
-      this.maintenanceSessionExpiryTimer = null;
-    }
-    const session = this.maintenanceSession;
-    if (!session) return;
-    const remainingMs = Date.parse(session.expiresAt) - Date.now();
-    if (remainingMs <= 0) {
-      void this.revokeCapturedMaintenanceSession(session).catch(
-        () => undefined,
-      );
-      return;
-    }
-    this.maintenanceSessionExpiryTimer = globalThis.setTimeout(
-      () => {
-        this.maintenanceSessionExpiryTimer = null;
-        if (this.maintenanceSession?.sessionId !== session.sessionId) return;
-        if (Date.parse(session.expiresAt) > Date.now()) {
-          this.scheduleMaintenanceSessionExpiry();
-          return;
-        }
-        void this.revokeCapturedMaintenanceSession(session).catch(() => {
-          // The revoke method clears this exact local session in finally.
-        });
-      },
-      Math.min(remainingMs, MAX_TIMEOUT_MS),
     );
   }
 
@@ -865,6 +661,22 @@ export class DaemonApiClient {
     );
   }
 
+  async clearDeviceBinding(
+    role: "lower_controller" | "scanner",
+  ): Promise<EffectiveMachineRuntimeConfiguration> {
+    const request: ClearHardwareBindingRequest =
+      clearHardwareBindingRequestSchema.parse({});
+    return effectiveMachineRuntimeConfigurationSchema.parse(
+      await this.request(
+        `/v1/runtime-configuration/intents/hardware-bindings/${role}/clear`,
+        {
+          method: "POST",
+          body: request,
+        },
+      ),
+    );
+  }
+
   async setScannerProtocolParameters(
     body: SetScannerProtocolParametersRequest,
   ): Promise<EffectiveMachineRuntimeConfiguration> {
@@ -922,9 +734,6 @@ export class DaemonApiClient {
       headers: { Authorization: `Bearer ${connection.token}` },
     });
     if (!response.ok) {
-      if (response.status === 401) {
-        this.clearMaintenanceSession();
-      }
       throw new DaemonUnavailableError(
         `/v1/logs/export returned HTTP ${response.status}`,
       );
@@ -974,9 +783,6 @@ export class DaemonApiClient {
       };
       socket.onclose = () => {
         if (closed) return;
-        // WebSocket disconnect is the only direct restart signal the kiosk
-        // receives. Treat it as an invalidated daemon-owned session.
-        this.clearMaintenanceSession();
         handlers.onStale();
         globalThis.setTimeout(() => {
           void connect().catch((error: unknown) => {

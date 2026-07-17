@@ -12,8 +12,15 @@ type MachineState = {
   health: HealthSnapshot | null;
   loading: boolean;
   error: string | null;
-  audioPreferences: EffectiveMachineRuntimeConfiguration["experience"]["audio"];
 };
+
+const defaultAudioPreferences: EffectiveMachineRuntimeConfiguration["experience"]["audio"] =
+  {
+    volume: 0.7,
+    cuesEnabled: false,
+    presenceCuesEnabled: false,
+    transactionCuesEnabled: false,
+  };
 
 export const useMachineStore = defineStore("machine", {
   state: (): MachineState => ({
@@ -22,12 +29,6 @@ export const useMachineStore = defineStore("machine", {
     health: null,
     loading: false,
     error: null,
-    audioPreferences: {
-      volume: 0.7,
-      cuesEnabled: false,
-      presenceCuesEnabled: false,
-      transactionCuesEnabled: false,
-    },
   }),
   getters: {
     machineCode: (state): string | null =>
@@ -43,7 +44,9 @@ export const useMachineStore = defineStore("machine", {
         state.health?.configConfigured &&
         state.effectiveRuntimeConfiguration?.machine?.code,
       ),
-    customerAudio: (state) => state.audioPreferences,
+    customerAudio: (state) =>
+      state.effectiveRuntimeConfiguration?.experience.audio ??
+      defaultAudioPreferences,
   },
   actions: {
     applyHealth(snapshot: HealthSnapshot): void {
@@ -53,20 +56,14 @@ export const useMachineStore = defineStore("machine", {
       configuration: EffectiveMachineRuntimeConfiguration,
     ): void {
       this.effectiveRuntimeConfiguration = configuration;
-      this.applyCustomerAudioPreferences(configuration.experience.audio);
-      this.configLoaded = true;
-    },
-    applyCustomerAudioPreferences(
-      preferences: EffectiveMachineRuntimeConfiguration["experience"]["audio"],
-    ): void {
-      this.audioPreferences = preferences;
       useAudioCueStore().applySettings({
-        enabled: preferences.cuesEnabled,
+        enabled: configuration.experience.audio.cuesEnabled,
         categories: {
-          presence: preferences.presenceCuesEnabled,
-          transaction: preferences.transactionCuesEnabled,
+          presence: configuration.experience.audio.presenceCuesEnabled,
+          transaction: configuration.experience.audio.transactionCuesEnabled,
         },
       });
+      this.configLoaded = true;
     },
     async loadEffectiveRuntimeConfiguration(): Promise<void> {
       this.loading = true;

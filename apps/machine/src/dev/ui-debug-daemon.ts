@@ -12,7 +12,6 @@ import {
 } from "@vem/shared";
 
 import type {
-  BringUpSnapshot,
   CatalogSnapshot,
   HardwareSelfCheck,
   NaturalContextSnapshot,
@@ -159,48 +158,6 @@ function uiDebugConnection(): DaemonConnectionInfo {
 
 function currentSaleView(): SaleViewSnapshot {
   return getSaleViewForScenario(getActiveUiDebugScenarioId());
-}
-
-function currentBringUp(): BringUpSnapshot {
-  return {
-    state: "topology_mismatch",
-    blockingReasons: [
-      {
-        code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
-        component: "topology",
-        message: "平台货道拓扑与本机下位机返回不一致",
-      },
-    ],
-    diagnostics: [
-      {
-        code: "LOWER_CONTROLLER_SLOT_COUNT",
-        component: "lower-controller",
-        message: "下位机返回 4 个货道，平台档案期望 6 个货道",
-      },
-      {
-        code: "RUNTIME_ACCEPTANCE_PENDING",
-        component: "acceptance",
-        message: "Runtime Acceptance 尚未完成",
-      },
-    ],
-    readinessLevel: "not_ready",
-    hardwareMode: "production",
-    allowedActions: {
-      configureNetwork: true,
-      claimMachine: false,
-      retryClaim: true,
-      convergeMaintenanceTunnel: false,
-      syncProfile: true,
-      resolveTopology: true,
-      runRuntimeAcceptance: true,
-      runHardwareAcceptance: false,
-      attestStock: false,
-      startSales: false,
-    },
-    currentTask: null,
-    progress: [],
-    updatedAt: nowIso(),
-  };
 }
 
 function applyUiDebugNetworkSettings(): NetworkSettingsResponse {
@@ -799,20 +756,6 @@ export function installUiDebugDaemon(): void {
   };
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;
-  client.getBringUp = async () => currentBringUp();
-  client.beginMaintenanceSession = async (
-    pin: string,
-    requestedScopes: string[] = [],
-  ) => {
-    if (pin !== "2468") {
-      throw new Error("维护 PIN 验证失败");
-    }
-    return {
-      sessionId: "ui-debug-maintenance-session",
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-      scopes: Array.from(new Set(["maintenance.mutate", ...requestedScopes])),
-    };
-  };
   client.applyNetworkSettings = async () => applyUiDebugNetworkSettings();
   client.getEffectiveRuntimeConfiguration = async () =>
     currentScenario().runtimeConfiguration;

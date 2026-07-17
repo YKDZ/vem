@@ -121,10 +121,27 @@ async function runBootCheck(): Promise<void> {
       // customer journey when the boot bound expires.
       const healthRequest = daemonClient.getHealth();
       const readyRequest = daemonClient.getReady();
-      const bringUpRequest = daemonClient.getBringUp();
+      const configurationRequest = daemonClient.getEffectiveRuntimeConfiguration();
       const saleReadinessRequest = daemonClient.getSaleReadiness();
-      const transaction = await daemonClient.getCurrentTransaction();
+      const transactionRequest = daemonClient.getCurrentTransaction();
+      const [
+        transactionResult,
+        healthResult,
+        readyResult,
+        configurationResult,
+        saleReadinessResult,
+      ] = await Promise.allSettled([
+        transactionRequest,
+        healthRequest,
+        readyRequest,
+        configurationRequest,
+        saleReadinessRequest,
+      ]);
       if (!ownsBoot(signal, generation)) return;
+      if (transactionResult.status === "rejected") {
+        throw transactionResult.reason;
+      }
+      const transaction = transactionResult.value;
 
       const startupTransaction = checkoutStore.shouldIgnoreTransaction(
         transaction,
@@ -136,27 +153,28 @@ async function runBootCheck(): Promise<void> {
         checkoutStore.applyTransaction(startupTransaction, { restored: true });
       }
 
-      const [health, ready, bringUp, saleReadiness] = await Promise.all([
-        healthRequest,
-        readyRequest,
-        bringUpRequest,
-        saleReadinessRequest,
-      ]);
-      if (!ownsBoot(signal, generation)) return;
-      machineStore.applyHealth(health);
-      connectivityStore.applyHealth(health);
-      connectivityStore.applyReady(ready);
-      connectivityStore.applySaleReadiness(saleReadiness);
-
-      pushStep("同步配置");
-      try {
-        await machineStore.loadEffectiveRuntimeConfiguration();
-        if (!ownsBoot(signal, generation)) return;
-      } catch (error) {
-        if (!ownsBoot(signal, generation)) return;
-        connectivityStore.markStale(error);
-        pushStep("daemon 配置读取失败，进入领取页确认配置");
+      if (configurationResult.status === "rejected") {
+        throw configurationResult.reason;
       }
+      const configuration = configurationResult.value;
+      if (healthResult.status === "fulfilled") {
+        machineStore.applyHealth(healthResult.value);
+        connectivityStore.applyHealth(healthResult.value);
+      } else {
+        connectivityStore.markStale(healthResult.reason);
+      }
+      if (readyResult.status === "fulfilled") {
+        connectivityStore.applyReady(readyResult.value);
+      } else {
+        connectivityStore.markStale(readyResult.reason);
+      }
+      if (saleReadinessResult.status === "fulfilled") {
+        connectivityStore.applySaleReadiness(saleReadinessResult.value);
+      } else {
+        connectivityStore.markStale(saleReadinessResult.reason);
+      }
+      if (!ownsBoot(signal, generation)) return;
+      machineStore.applyEffectiveRuntimeConfiguration(configuration);
 
       pushStep("同步目录和展示状态");
       await Promise.allSettled([
@@ -193,9 +211,7 @@ async function runBootCheck(): Promise<void> {
         type: "startup.navigate",
         target: routeForStartup({
           daemonAvailable: true,
-          health,
-          bringUp,
-          ready,
+          effectiveRuntimeConfiguration: configuration,
           restoredTransaction: startupTransaction,
         }),
       });
@@ -224,9 +240,7 @@ onMounted(async () => {
         type: "startup.navigate",
         target: routeForStartup({
           daemonAvailable: true,
-          health: null,
-          bringUp: null,
-          ready: null,
+          effectiveRuntimeConfiguration: null,
           restoredTransaction: recoveredTransaction,
         }),
       });

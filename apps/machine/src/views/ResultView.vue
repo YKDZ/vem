@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import type {
   CustomerCheckoutResultDetailIntent,
@@ -123,10 +123,38 @@ const requiresMaintenanceReview = computed(() => {
 const canManuallyReturn = computed(
   () => activeReturnPolicy.value?.canManualReturn === true,
 );
+const AUTO_RETURN_SECONDS = 8;
+const autoReturnRemainingSeconds = ref<number | null>(null);
 let returningToCatalog = false;
+let autoReturnTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+
+function stopAutoReturn(): void {
+  if (autoReturnTimer !== null) {
+    globalThis.clearInterval(autoReturnTimer);
+    autoReturnTimer = null;
+  }
+  autoReturnRemainingSeconds.value = null;
+}
+
+function startAutoReturn(): void {
+  if (activeReturnPolicy.value?.canAutoReturn !== true) return;
+  stopAutoReturn();
+  autoReturnRemainingSeconds.value = AUTO_RETURN_SECONDS;
+  autoReturnTimer = globalThis.setInterval(() => {
+    const remaining = autoReturnRemainingSeconds.value;
+    if (remaining === null) return;
+    if (remaining <= 1) {
+      stopAutoReturn();
+      void backToCatalog();
+      return;
+    }
+    autoReturnRemainingSeconds.value = remaining - 1;
+  }, 1_000);
+}
 
 async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
+  stopAutoReturn();
   returningToCatalog = true;
   const readinessConfirmed = await refreshResultReadiness();
   const returnPolicy = activeReturnPolicy.value;
@@ -154,7 +182,13 @@ async function refreshResultReadiness(): Promise<boolean> {
   return resultReadinessError.value === null;
 }
 
-void refreshResultReadiness();
+onMounted(() => {
+  void refreshResultReadiness().then((ready) => {
+    if (ready) startAutoReturn();
+  });
+});
+
+onUnmounted(stopAutoReturn);
 </script>
 
 <template>
@@ -304,6 +338,9 @@ void refreshResultReadiness();
         </p>
         <p v-else-if="resultReadinessError" class="result-detail">
           无法确认设备恢复状态，当前保持本次处理结果。
+        </p>
+        <p v-if="autoReturnRemainingSeconds !== null" class="result-detail">
+          {{ autoReturnRemainingSeconds }} 秒后自动返回首页。
         </p>
 
         <section v-if="canManuallyReturn" class="result-notice">

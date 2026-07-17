@@ -1,42 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 
-import type { MaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
-
 import {
-  protectedTouchKeyboardLetterRows,
-  protectedTouchKeyboardNumberRows,
-  protectedTouchKeyboardSymbolRows,
+  touchKeyboardLetterRows,
+  touchKeyboardNumberRows,
+  touchKeyboardSymbolRows,
 } from "@/touch-keyboard/layouts";
-import { createProtectedTouchKeyboardController } from "@/touch-keyboard/protected-touch-keyboard";
+import { createTouchKeyboardController } from "@/touch-keyboard/touch-keyboard";
 
-const props = defineProps<{
-  routeName: string;
-  maintenanceSession: MaintenanceTouchKeyboardSession | null;
-}>();
-
-const controller = createProtectedTouchKeyboardController(() => ({
-  routeName: props.routeName,
-  maintenanceSessionIdentity: props.maintenanceSession?.identity ?? null,
-  maintenanceSessionGeneration: props.maintenanceSession?.generation ?? 0,
-}));
+const controller = createTouchKeyboardController();
 const { state } = controller;
 let removeFocusPolicy: (() => void) | null = null;
 
 const activeRows = computed(() => {
-  if (state.layout === "numbers") return protectedTouchKeyboardNumberRows;
-  if (state.layout === "symbols") return protectedTouchKeyboardSymbolRows;
-  return protectedTouchKeyboardLetterRows;
+  if (state.layout === "numbers") return touchKeyboardNumberRows;
+  if (state.layout === "symbols") return touchKeyboardSymbolRows;
+  return touchKeyboardLetterRows;
 });
 const numericOnly = computed(
   () =>
     state.target instanceof HTMLInputElement && state.target.type === "number",
-);
-
-watch(
-  () => [props.routeName, props.maintenanceSession?.generation] as const,
-  () => controller.reconcileAccess(),
-  { flush: "sync" },
 );
 
 watch(
@@ -60,15 +43,15 @@ onUnmounted(() => {
 
 <template>
   <section
-    data-test="protected-touch-keyboard"
-    class="protected-touch-keyboard"
+    data-test="touch-keyboard"
+    class="touch-keyboard"
     :hidden="!state.open"
-    aria-label="受保护触摸键盘"
+    aria-label="触摸键盘"
   >
-    <div class="protected-touch-keyboard__toolbar">
+    <div class="touch-keyboard__toolbar">
       <span>触摸键盘</span>
       <button
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         data-test="touch-keyboard-dismiss"
         @pointerdown.prevent
@@ -81,12 +64,12 @@ onUnmounted(() => {
     <div
       v-for="(row, rowIndex) in activeRows"
       :key="`${state.layout}-${rowIndex}`"
-      class="protected-touch-keyboard__row"
+      class="touch-keyboard__row"
     >
       <button
         v-for="key in row"
         :key="key"
-        class="protected-touch-keyboard__key"
+        class="touch-keyboard__key"
         type="button"
         :data-key="key"
         @pointerdown.prevent
@@ -96,10 +79,10 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div class="protected-touch-keyboard__row">
+    <div class="touch-keyboard__row">
       <button
         v-if="state.layout === 'letters'"
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         data-test="touch-keyboard-shift"
         @pointerdown.prevent
@@ -109,7 +92,7 @@ onUnmounted(() => {
       </button>
       <button
         v-if="!numericOnly && state.layout !== 'letters'"
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         @pointerdown.prevent
         @click="controller.setLayout('letters')"
@@ -118,7 +101,7 @@ onUnmounted(() => {
       </button>
       <button
         v-if="!numericOnly && state.layout !== 'numbers'"
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         @pointerdown.prevent
         @click="controller.setLayout('numbers')"
@@ -127,7 +110,7 @@ onUnmounted(() => {
       </button>
       <button
         v-if="!numericOnly && state.layout !== 'symbols'"
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         @pointerdown.prevent
         @click="controller.setLayout('symbols')"
@@ -136,7 +119,7 @@ onUnmounted(() => {
       </button>
       <button
         v-if="!numericOnly"
-        class="protected-touch-keyboard__space"
+        class="touch-keyboard__space"
         type="button"
         data-key=" "
         @pointerdown.prevent
@@ -145,7 +128,7 @@ onUnmounted(() => {
         空格
       </button>
       <button
-        class="protected-touch-keyboard__utility"
+        class="touch-keyboard__utility"
         type="button"
         data-test="touch-keyboard-backspace"
         @pointerdown.prevent
@@ -154,7 +137,7 @@ onUnmounted(() => {
         删除
       </button>
       <button
-        class="protected-touch-keyboard__submit"
+        class="touch-keyboard__submit"
         type="button"
         data-test="touch-keyboard-submit"
         @pointerdown.prevent
@@ -167,7 +150,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.protected-touch-keyboard {
+.touch-keyboard {
   position: fixed;
   z-index: 1000;
   right: 0;
@@ -181,12 +164,12 @@ onUnmounted(() => {
   touch-action: manipulation;
 }
 
-.protected-touch-keyboard[hidden] {
+.touch-keyboard[hidden] {
   display: none;
 }
 
-.protected-touch-keyboard__toolbar,
-.protected-touch-keyboard__row {
+.touch-keyboard__toolbar,
+.touch-keyboard__row {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -195,12 +178,12 @@ onUnmounted(() => {
   max-width: 1040px;
 }
 
-.protected-touch-keyboard__toolbar {
+.touch-keyboard__toolbar {
   justify-content: space-between;
   font-weight: 700;
 }
 
-.protected-touch-keyboard button {
+.touch-keyboard button {
   min-width: 64px;
   min-height: 58px;
   border: 1px solid rgb(148 163 184 / 28%);
@@ -211,23 +194,23 @@ onUnmounted(() => {
   font-weight: 700;
 }
 
-.protected-touch-keyboard button:active {
+.touch-keyboard button:active {
   background: rgb(14 165 233);
 }
 
-.protected-touch-keyboard__key {
+.touch-keyboard__key {
   flex: 1 1 0;
 }
 
-.protected-touch-keyboard__utility {
+.touch-keyboard__utility {
   padding: 0 18px;
 }
 
-.protected-touch-keyboard__space {
+.touch-keyboard__space {
   flex: 1 1 260px;
 }
 
-.protected-touch-keyboard__submit {
+.touch-keyboard__submit {
   padding: 0 24px;
   background: rgb(52 211 153) !important;
   color: rgb(2 6 23) !important;

@@ -421,7 +421,9 @@ describe("ResultView", () => {
     });
 
     expect(host.textContent).toContain("出货成功");
-    expect(host.textContent).not.toContain("秒后自动返回首页");
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("8 秒后自动返回首页。");
+    });
     expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
     expect(host.textContent).not.toContain("等待人工处理");
   });

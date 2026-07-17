@@ -75,15 +75,6 @@ export const machineRoutes: RouteRecordRaw[] = [
     component: async () => import("@/views/MaintenanceView.vue"),
   },
   {
-    path: "/bring-up",
-    name: "bring-up",
-    component: async () => import("@/views/MachineProvisioningView.vue"),
-  },
-  {
-    path: "/provisioning",
-    redirect: "/bring-up",
-  },
-  {
     path: "/:pathMatch(.*)*",
     redirect: "/boot",
   },

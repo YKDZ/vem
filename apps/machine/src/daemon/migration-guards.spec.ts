@@ -23,6 +23,22 @@ const forbidden = [
   "localOutbox",
 ];
 
+const removedRuntimePaths = [
+  "BringUpSnapshot",
+  "/v1/bring-up",
+  "simulated_hardware_ready",
+  "maintenanceSession",
+  "x-vem-maintenance-session",
+  "beginMaintenanceSession",
+  "maintenance-authorization",
+  "ProtectedTouchKeyboard",
+  "maintenance-session-route",
+  "MachineProvisioningView",
+  "native/scanner",
+  "scanner_self_check",
+  "start_scanner",
+];
+
 function transactionContractOffenders(source: string): string[] {
   const offenders: string[] = [];
   const transactionSchemaAlias = source.match(
@@ -136,6 +152,16 @@ function files(dir: string): string[] {
   });
 }
 
+function allProductionSourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return allProductionSourceFiles(path);
+    return /\.(ts|vue)$/.test(path) && !path.endsWith(".spec.ts")
+      ? [path]
+      : [];
+  });
+}
+
 describe("machine-ui daemon migration guards", () => {
   it("does not reference old critical runtime APIs from production src", () => {
     const root = new URL("../..", import.meta.url).pathname;
@@ -145,6 +171,20 @@ describe("machine-ui daemon migration guards", () => {
         .filter((term) => content.includes(term))
         .map((term) => `${relative(root, file)}:${term}`);
     });
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("does not retain retired Bring-Up, PIN, or duplicate scanner paths in any production source root", () => {
+    const root = new URL("../..", import.meta.url).pathname;
+    const offenders = allProductionSourceFiles(join(root, "src")).flatMap(
+      (file) => {
+        const content = readFileSync(file, "utf8");
+        return removedRuntimePaths
+          .filter((term) => content.includes(term))
+          .map((term) => `${relative(root, file)}:${term}`);
+      },
+    );
 
     expect(offenders).toEqual([]);
   });

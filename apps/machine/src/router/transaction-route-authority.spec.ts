@@ -216,7 +216,7 @@ describe("transaction route authority", () => {
     authority.dispose();
   });
 
-  it("does not let customer inactivity exit maintenance or bring-up", async () => {
+  it("does not let customer inactivity exit Local Operations", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const router = createRouter({
@@ -224,7 +224,6 @@ describe("transaction route authority", () => {
       routes: [
         { path: "/catalog", name: "catalog", component: {} },
         { path: "/maintenance", name: "maintenance", component: {} },
-        { path: "/bring-up", name: "bring-up", component: {} },
       ],
     });
     const authority = createMachineNavigationAuthority(router, pinia);
@@ -232,9 +231,6 @@ describe("transaction route authority", () => {
     await authority.submit({ type: "customer.inactive" });
     expect(router.currentRoute.value.name).toBe("maintenance");
 
-    await router.push("/bring-up");
-    await authority.submit({ type: "customer.inactive" });
-    expect(router.currentRoute.value.name).toBe("bring-up");
     authority.dispose();
   });
 

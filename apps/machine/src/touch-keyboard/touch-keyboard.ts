@@ -1,30 +1,13 @@
 import { reactive } from "vue";
 
-export type ProtectedTouchKeyboardAccess = {
-  routeName: string;
-  maintenanceSessionIdentity: string | null;
-  maintenanceSessionGeneration: number;
-};
-
 type EligibleInput = HTMLInputElement | HTMLTextAreaElement;
 
-export type ProtectedTouchKeyboardState = {
+export type TouchKeyboardState = {
   open: boolean;
   layout: "letters" | "numbers" | "symbols";
   uppercase: boolean;
   target: EligibleInput | null;
 };
-
-function accessKey(access: ProtectedTouchKeyboardAccess): string | null {
-  if (access.routeName === "bring-up") return "bring-up";
-  if (
-    access.routeName === "maintenance" &&
-    access.maintenanceSessionIdentity !== null
-  ) {
-    return `maintenance:${access.maintenanceSessionGeneration}:${access.maintenanceSessionIdentity}`;
-  }
-  return null;
-}
 
 function isEligibleInput(target: EventTarget | null): target is EligibleInput {
   if (
@@ -51,7 +34,7 @@ function isEligibleInput(target: EventTarget | null): target is EligibleInput {
 
 function initialLayout(
   target: EligibleInput,
-): ProtectedTouchKeyboardState["layout"] {
+): TouchKeyboardState["layout"] {
   if (
     target instanceof HTMLInputElement &&
     (target.type === "number" || target.inputMode === "numeric")
@@ -93,58 +76,21 @@ function updateTargetValue(
   );
 }
 
-export function createProtectedTouchKeyboardController(
-  getAccess: () => ProtectedTouchKeyboardAccess,
-) {
-  const state = reactive<ProtectedTouchKeyboardState>({
+export function createTouchKeyboardController() {
+  const state = reactive<TouchKeyboardState>({
     open: false,
     layout: "letters",
     uppercase: false,
     target: null,
   });
-  let openedAccessKey: string | null = null;
-
   function close(): void {
     state.open = false;
     state.uppercase = false;
     state.target = null;
-    openedAccessKey = null;
-  }
-
-  function clearMaintenanceInputBuffer(): void {
-    const target = state.target;
-    if (
-      !target ||
-      !openedAccessKey?.startsWith("maintenance:") ||
-      target.value.length === 0
-    ) {
-      return;
-    }
-    target.value = "";
-    if (target.type !== "number") target.setSelectionRange(0, 0);
-    target.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        inputType: "deleteContentBackward",
-        data: null,
-      }),
-    );
-  }
-
-  function reconcileAccess(): void {
-    const currentAccessKey = accessKey(getAccess());
-    if (
-      currentAccessKey === null ||
-      (state.open && currentAccessKey !== openedAccessKey)
-    ) {
-      clearMaintenanceInputBuffer();
-      close();
-    }
   }
 
   function onFocusIn(event: FocusEvent): void {
-    const currentAccessKey = accessKey(getAccess());
-    if (currentAccessKey === null || !isEligibleInput(event.target)) {
+    if (!isEligibleInput(event.target)) {
       close();
       return;
     }
@@ -152,7 +98,6 @@ export function createProtectedTouchKeyboardController(
     state.layout = initialLayout(event.target);
     state.uppercase = false;
     state.open = true;
-    openedAccessKey = currentAccessKey;
   }
 
   function install(ownerDocument: Document): () => void {
@@ -206,7 +151,7 @@ export function createProtectedTouchKeyboardController(
     close();
   }
 
-  function setLayout(layout: ProtectedTouchKeyboardState["layout"]): void {
+  function setLayout(layout: TouchKeyboardState["layout"]): void {
     if (!state.open) return;
     state.layout = layout;
     state.uppercase = false;
@@ -228,7 +173,6 @@ export function createProtectedTouchKeyboardController(
     dismiss,
     enter,
     install,
-    reconcileAccess,
     setLayout,
     submit,
     toggleUppercase,

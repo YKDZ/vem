@@ -12,7 +12,6 @@ const {
   subscribeEventsMock,
   getHealthMock,
   getReadyMock,
-  getBringUpMock,
   getEffectiveRuntimeConfigurationMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
@@ -33,7 +32,6 @@ const {
   subscribeEventsMock: vi.fn(),
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
-  getBringUpMock: vi.fn(),
   getEffectiveRuntimeConfigurationMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
@@ -73,7 +71,6 @@ vi.mock("@/daemon/client", () => ({
     subscribeEvents: subscribeEventsMock,
     getHealth: getHealthMock,
     getReady: getReadyMock,
-    getBringUp: getBringUpMock,
     getEffectiveRuntimeConfiguration: getEffectiveRuntimeConfigurationMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
@@ -153,7 +150,6 @@ beforeEach(() => {
   );
   initializeMock.mockResolvedValue(undefined);
   subscribeEventsMock.mockReturnValue({ close: vi.fn() });
-  getBringUpMock.mockResolvedValue(bringUpSnapshot("sell_ready"));
   getSaleViewMock.mockRejectedValue(new Error("sale view not mocked"));
   getCurrentTransactionMock.mockResolvedValue({
     orderId: null,
@@ -333,13 +329,21 @@ function makeCatalogItem(): MachineCatalogItem {
   };
 }
 
-function effectiveRuntimeConfigurationFixture(): EffectiveMachineRuntimeConfiguration {
-  return {
+function effectiveRuntimeConfigurationFixture(
+  claimed = true,
+): EffectiveMachineRuntimeConfiguration {
+  const configuration = {
     schemaVersion: 1,
     generation: 1,
     sourceRevisions: {
       bootstrapSchemaVersion: 1,
-      profile: null,
+      profile: claimed
+        ? {
+            generation: 1,
+            profileRevision: 1,
+            acceptedAt: "2026-07-17T00:00:00.000Z",
+          }
+        : null,
       localSettingsRevision: 0,
     },
     sourceDocuments: {
@@ -349,9 +353,9 @@ function effectiveRuntimeConfigurationFixture(): EffectiveMachineRuntimeConfigur
         hardwareModel: "test",
         topology: { identity: "test", version: "1" },
       },
-      profileCache: null,
+      profileCache: claimed ? {} : null,
     },
-    machine: null,
+    machine: claimed ? { code: "MACHINE-001" } : null,
     platform: null,
     hardware: {
       model: "test",
@@ -387,8 +391,9 @@ function effectiveRuntimeConfigurationFixture(): EffectiveMachineRuntimeConfigur
       audio: { volume: 0.7, cuesEnabled: false, presenceCuesEnabled: false, transactionCuesEnabled: false },
     },
     secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
-    profileRefresh: { status: "unclaimed", lastError: null },
+    profileRefresh: { status: claimed ? "accepted" : "unclaimed", lastError: null },
   };
+  return configuration as unknown as EffectiveMachineRuntimeConfiguration;
 }
 
 function applyVisionTryOnConfig(): void {
@@ -604,54 +609,6 @@ function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
   };
 }
 
-function bringUpSnapshot(
-  state: "claim_required" | "sell_ready" = "sell_ready",
-) {
-  return {
-    state,
-    blockingReasons:
-      state === "claim_required"
-        ? [
-            {
-              code: "CLAIM_REQUIRED",
-              component: "provisioning",
-              message:
-                "machine must be claimed before runtime profile can be applied",
-            },
-          ]
-        : [],
-    diagnostics: [],
-    readinessLevel: state === "sell_ready" ? "sell_ready" : "not_ready",
-    hardwareMode: state === "sell_ready" ? "production" : "simulated",
-    allowedActions: {
-      configureNetwork: false,
-      claimMachine: state === "claim_required",
-      retryClaim: state === "claim_required",
-      syncProfile: false,
-      resolveTopology: false,
-      runRuntimeAcceptance: state === "sell_ready",
-      runHardwareAcceptance: false,
-      attestStock: false,
-      startSales: state === "sell_ready",
-    },
-    currentTask:
-      state === "claim_required"
-        ? {
-            contractVersion: 1,
-            kind: "claim_machine",
-            intent: "claim_machine",
-            rotateMaintenanceIdentity: false,
-            projection: {
-              type: "claim_code",
-              rotateMaintenanceIdentity: false,
-            },
-          }
-        : null,
-    progress: [],
-    updatedAt: "2026-07-04T00:00:00Z",
-  };
-}
-
 function applyBlockedSaleReadiness(): void {
   const health = {
     status: "healthy" as const,
@@ -749,8 +706,7 @@ async function mountView(component: object): Promise<HTMLElement> {
 }
 
 describe("sale readiness UI flow", () => {
-  it("routes first boot machines without provisioning to the bring-up console", async () => {
-    getBringUpMock.mockResolvedValue(bringUpSnapshot("claim_required"));
+  it("routes first boot machines without provisioning to Local Operations", async () => {
     getHealthMock.mockResolvedValue({
       ...healthSnapshot(),
       configConfigured: false,
@@ -762,18 +718,17 @@ describe("sale readiness UI flow", () => {
     });
     getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
     getEffectiveRuntimeConfigurationMock.mockResolvedValue(
-      effectiveRuntimeConfigurationFixture(),
+      effectiveRuntimeConfigurationFixture(false),
     );
 
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/bring-up");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
     });
   });
 
   it("does not route to catalog when startup config loading fails", async () => {
-    getBringUpMock.mockResolvedValue(bringUpSnapshot("claim_required"));
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
     getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
@@ -784,9 +739,29 @@ describe("sale readiness UI flow", () => {
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/bring-up");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
+  it("keeps accepted effective configuration as startup authority when sale-readiness decoding fails", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockRejectedValue(
+      new Error("sale readiness decoder rejected a stale daemon projection"),
+    );
+    getEffectiveRuntimeConfigurationMock.mockResolvedValue(
+      effectiveRuntimeConfigurationFixture(true),
+    );
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(useMachineStore().effectiveRuntimeConfiguration?.profileRefresh.status).toBe(
+      "accepted",
+    );
   });
 
   it("does not render raw current-transaction parse errors during boot", async () => {
@@ -1542,7 +1517,7 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          machineCode: null,
+          machineCode: "MACHINE-001",
         }),
         {
           catalogKey: item.catalogKey,

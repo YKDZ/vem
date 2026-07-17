@@ -2,17 +2,12 @@ import {
   projectCustomerCheckoutView,
   type CustomerCheckoutRouteTarget,
 } from "@/checkout/customer-checkout-view";
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
-import type {
-  BringUpSnapshot,
-  HealthSnapshot,
-  ReadySnapshot,
-  TransactionSnapshot,
-} from "./schemas";
+import type { TransactionSnapshot } from "./schemas";
 
 export type StartupRoute =
   | "/maintenance"
-  | "/bring-up"
   | "/offline"
   | "/catalog"
   | "/payment"
@@ -30,9 +25,7 @@ function startupRouteFromProjectionTarget(
 
 export function routeForStartup(input: {
   daemonAvailable: boolean;
-  health: HealthSnapshot | null;
-  bringUp?: BringUpSnapshot | null;
-  ready: ReadySnapshot | null;
+  effectiveRuntimeConfiguration: EffectiveMachineRuntimeConfiguration | null;
   restoredTransaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
@@ -42,46 +35,24 @@ export function routeForStartup(input: {
     dismissedTerminalOrderNos: [],
     restored: true,
     readiness: {
-      saleReady: input.ready?.canSell === true,
-      suggestedRoute:
-        input.ready?.suggestedRoute === "maintenance"
-          ? "maintenance"
-          : input.ready?.suggestedRoute === "catalog"
-            ? "catalog"
-            : "offline",
-      requiresMaintenanceReview:
-        input.ready?.suggestedRoute === "maintenance" ||
-        input.ready?.blockingCodes.includes("WHOLE_MACHINE_HARDWARE_FAULT") ===
-          true,
+      saleReady: false,
+      suggestedRoute: "offline",
+      requiresMaintenanceReview: false,
     },
   });
   if (transactionView.stage !== "none") {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
-  // A missing or old daemon projection is not a compatibility mode. Fail
-  // closed in Maintenance rather than reconstructing bring-up from legacy
-  // config/readiness flags or presenting an offline bypass.
-  if (!input.bringUp) return "/maintenance";
-
-  // The daemon's current task is the authoritative Bring-Up cursor.  Do not
-  // let a readiness summary make the console skip an unfinished task.
-  if (input.bringUp.currentTask) return "/bring-up";
-
-  const bringUpReady =
-    input.bringUp?.state === "sell_ready" ||
-    input.bringUp?.state === "runtime_ready" ||
-    input.bringUp?.state === "simulated_hardware_ready";
-  if (!bringUpReady) return "/maintenance";
-
-  if (input.bringUp.state === "sell_ready") return "/catalog";
-  if (
-    bringUpReady &&
-    (input.ready?.canSell || input.bringUp?.allowedActions.startSales)
-  ) {
-    return "/catalog";
-  }
-  return "/maintenance";
+  // Claim acceptance and the resulting machine identity are the startup
+  // authority. Readiness and the cache's renderer shape are operational
+  // observations; neither may move a claimed machine into Local Operations.
+  const configuration = input.effectiveRuntimeConfiguration;
+  return configuration !== null &&
+    configuration.profileRefresh.status === "accepted" &&
+    configuration.machine !== null
+    ? "/catalog"
+    : "/maintenance";
 }
 
 /**
@@ -94,9 +65,7 @@ export function routeForBootFailure(
 ): StartupRoute {
   return routeForStartup({
     daemonAvailable: restoredTransaction !== null,
-    health: null,
-    bringUp: null,
-    ready: null,
+    effectiveRuntimeConfiguration: null,
     restoredTransaction,
   });
 }

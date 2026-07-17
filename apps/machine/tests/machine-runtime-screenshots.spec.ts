@@ -227,9 +227,6 @@ async function expectCoreElements(
     case "maintenance":
       await expectMaintenanceConsoleScreenshot(page);
       break;
-    case "bring-up-console":
-      await expectBringUpConsoleScreenshot(page);
-      break;
     default:
       throw new Error(
         `No core screenshot assertion defined for scenario ${scenario.id}`,
@@ -284,25 +281,6 @@ async function expectMaintenanceConsoleScreenshot(page: Page): Promise<void> {
 
   await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
   await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
-}
-
-async function expectBringUpConsoleScreenshot(page: Page): Promise<void> {
-  await expect(
-    page.getByRole("heading", { name: "首次部署控制台" }),
-  ).toBeVisible();
-  await expect(page.getByText("本机状态已由 daemon 确认")).toBeVisible();
-  await expect(page.getByText("当前任务：正在确认本机状态")).toBeVisible();
-  await expect(page.getByLabel("首次部署进度")).toBeVisible();
-
-  await expect(page.getByText("货道拓扑不匹配")).toHaveCount(0);
-  await expect(
-    page.getByText("平台货道拓扑与本机下位机返回不一致"),
-  ).toHaveCount(0);
-  await expect(page.getByText("Bring-Up Console")).toHaveCount(0);
-  await expect(page.getByText("Runtime Acceptance")).toHaveCount(0);
-  await expect(page.getByText("Protected Maintenance Mode")).toHaveCount(0);
-  await expect(page.getByText("PROVISIONING")).toHaveCount(0);
-  await expect(page.getByText("Diagnostics")).toHaveCount(0);
 }
 
 async function loadMachineRuntimeScreenshotScenario(

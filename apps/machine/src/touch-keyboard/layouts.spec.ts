@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  protectedTouchKeyboardLetterRows,
-  protectedTouchKeyboardNumberRows,
-  protectedTouchKeyboardSymbolRows,
+  touchKeyboardLetterRows,
+  touchKeyboardNumberRows,
+  touchKeyboardSymbolRows,
 } from "./layouts";
 
-describe("protected touch keyboard layouts", () => {
+describe("touch keyboard layouts", () => {
   it("reaches every printable ASCII character required by Wi-Fi passwords", () => {
-    const lowerLetters = protectedTouchKeyboardLetterRows.flat();
+    const lowerLetters = touchKeyboardLetterRows.flat();
     const reachable = new Set([
       ...lowerLetters,
       ...lowerLetters.map((character) => character.toUpperCase()),
-      ...protectedTouchKeyboardNumberRows.flat(),
-      ...protectedTouchKeyboardSymbolRows.flat(),
+      ...touchKeyboardNumberRows.flat(),
+      ...touchKeyboardSymbolRows.flat(),
       " ",
     ]);
     const printableAscii = Array.from({ length: 95 }, (_, index) =>

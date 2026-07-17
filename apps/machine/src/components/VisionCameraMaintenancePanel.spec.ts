@@ -77,12 +77,9 @@ function contract() {
   };
 }
 
-async function render(props: {
-  maintenanceAuthorized: boolean;
-  mode: "bring-up" | "maintenance";
-}) {
+async function render() {
   document.body.innerHTML = '<div id="app"></div>';
-  const app = createApp(VisionCameraMaintenancePanel, props);
+  const app = createApp(VisionCameraMaintenancePanel);
   mountedApp = app;
   app.mount("#app");
   await nextTick();
@@ -141,11 +138,8 @@ describe("VisionCameraMaintenancePanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads and renders the contract after maintenance authorization", async () => {
-    const host = await render({
-      maintenanceAuthorized: true,
-      mode: "maintenance",
-    });
+  it("loads and renders the daemon-owned contract directly", async () => {
+    const host = await render();
 
     expect(getVisionCameraMaintenanceContractMock).toHaveBeenCalled();
     expect(host.textContent).toContain("vem.vision.camera-maintenance/v2");
@@ -156,10 +150,7 @@ describe("VisionCameraMaintenancePanel", () => {
   });
 
   it("tests and confirms a role using generation-scoped evidence", async () => {
-    const host = await render({
-      maintenanceAuthorized: true,
-      mode: "bring-up",
-    });
+    const host = await render();
 
     const testButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("测试顶部角色"),

@@ -2,8 +2,8 @@
 import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
-import ProtectedTouchKeyboard from "@/components/ProtectedTouchKeyboard.vue";
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
+import TouchKeyboard from "@/components/TouchKeyboard.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
@@ -11,7 +11,6 @@ import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-load
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { router } from "@/router";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
-import { maintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const route = useRoute();
 const cleanupCustomerEventSources = installCustomerEventSources({
@@ -61,9 +60,6 @@ onMounted(() => {
 <template>
   <TransactionRecoveryBoundary>
     <RouterView />
-    <ProtectedTouchKeyboard
-      :route-name="typeof route.name === 'string' ? route.name : ''"
-      :maintenance-session="maintenanceTouchKeyboardSession"
-    />
+    <TouchKeyboard />
   </TransactionRecoveryBoundary>
 </template>

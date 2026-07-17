@@ -7,7 +7,7 @@ describe("stock movement retry disposition", () => {
   it.each([
     [400, "stock_movement_record_failed"],
     [400, "machine_code_missing"],
-    [403, "maintenance_session_invalid"],
+    [403, "stock_movement_forbidden"],
     [422, "request_payload_invalid"],
   ])(
     "clears the pending fingerprint after definite HTTP %i rejection %s",

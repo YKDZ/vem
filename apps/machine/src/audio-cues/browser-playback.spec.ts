@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import type {
   HealthSnapshot,
@@ -38,6 +39,14 @@ type NaturalContextWeather = NonNullable<
 type NaturalContextCalendar = NonNullable<
   NaturalContextSnapshot["externalEnvironment"]["calendar"]
 >;
+
+function applyEffectiveAudioPreferences(
+  audio: EffectiveMachineRuntimeConfiguration["experience"]["audio"],
+): void {
+  useMachineStore().applyEffectiveRuntimeConfiguration({
+    experience: { audio },
+  } as EffectiveMachineRuntimeConfiguration);
+}
 
 function createPlaybackHarness(
   driverFactory: () => MachineAudioPlaybackDriver = () =>
@@ -344,7 +353,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("uses loaded global Machine Audio volume for live browser cue playback", async () => {
-    useMachineStore().applyCustomerAudioPreferences({
+    applyEffectiveAudioPreferences({
       volume: 0.35,
       cuesEnabled: true,
       presenceCuesEnabled: true,
@@ -464,7 +473,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("delegates autonomous cue playback to the Windows default output", async () => {
-    useMachineStore().applyCustomerAudioPreferences({
+    applyEffectiveAudioPreferences({
       volume: 0.7,
       cuesEnabled: true,
       presenceCuesEnabled: true,
@@ -498,7 +507,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("uses the Windows default output for native customer playback", async () => {
-    useMachineStore().applyCustomerAudioPreferences({
+    applyEffectiveAudioPreferences({
       volume: 0.7,
       cuesEnabled: true,
       presenceCuesEnabled: true,

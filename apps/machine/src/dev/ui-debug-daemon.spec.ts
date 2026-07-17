@@ -97,14 +97,13 @@ describe("ui debug daemon", () => {
     expect(localStorage.getItem(UI_DEBUG_TRANSACTION_STORAGE_KEY)).toBeNull();
   });
 
-  it("provides a protected maintenance session for interactive UI fixtures", async () => {
+  it("uses direct provisioning intents for interactive UI fixtures", async () => {
     installUiDebugDaemon();
 
     await expect(
-      daemonClient.beginMaintenanceSession("2468"),
+      daemonClient.claimMachine("UI-DEBUG-CLAIM"),
     ).resolves.toMatchObject({
-      sessionId: "ui-debug-maintenance-session",
-      scopes: ["maintenance.mutate"],
+      status: "provisioned",
     });
   });
 });

@@ -5,19 +5,9 @@ import type {
   VisionCameraMaintenanceTestResponse,
 } from "@vem/shared";
 
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 
 import { daemonClient } from "@/daemon/client";
-
-const props = withDefaults(
-  defineProps<{
-    maintenanceAuthorized: boolean;
-    mode: "bring-up" | "maintenance";
-  }>(),
-  {
-    mode: "maintenance",
-  },
-);
 
 const loading = ref(false);
 const contract = ref<VisionCameraMaintenanceContract | null>(null);
@@ -80,7 +70,6 @@ function clearPreviewUrls(): void {
 }
 
 async function refreshContract(force = false): Promise<void> {
-  if (!props.maintenanceAuthorized) return;
   if (loading.value) return;
   loading.value = true;
   if (force) message.value = null;
@@ -97,7 +86,7 @@ async function refreshContract(force = false): Promise<void> {
 }
 
 async function loadPreview(candidateId: string): Promise<void> {
-  if (!props.maintenanceAuthorized || previewLoading[candidateId]) return;
+  if (previewLoading[candidateId]) return;
   previewLoading[candidateId] = true;
   message.value = null;
   try {
@@ -118,7 +107,6 @@ async function testRole(
   role: VisionCameraMaintenanceRole,
   candidateId: string,
 ): Promise<void> {
-  if (!props.maintenanceAuthorized) return;
   message.value = null;
   try {
     tested[role] = await daemonClient.testVisionCameraRole(role, {
@@ -137,7 +125,7 @@ async function confirmRole(
   candidateId: string,
 ): Promise<void> {
   const evidence = tested[role];
-  if (!props.maintenanceAuthorized || !evidence) return;
+  if (!evidence) return;
   message.value = null;
   try {
     await daemonClient.confirmVisionCameraRole(role, {
@@ -160,31 +148,13 @@ function scheduleRefresh(): void {
     window.clearInterval(refreshTimer);
     refreshTimer = null;
   }
-  if (!props.maintenanceAuthorized) return;
   refreshTimer = window.setInterval(() => {
     void refreshContract();
   }, 5000);
 }
 
-watch(
-  () => props.maintenanceAuthorized,
-  (authorized) => {
-    if (!authorized) {
-      contract.value = null;
-      message.value = null;
-      clearPreviewUrls();
-      scheduleRefresh();
-      return;
-    }
-    void refreshContract();
-    scheduleRefresh();
-  },
-);
-
 onMounted(() => {
-  if (props.maintenanceAuthorized) {
-    void refreshContract();
-  }
+  void refreshContract();
   scheduleRefresh();
 });
 
@@ -213,25 +183,14 @@ onUnmounted(() => {
       <button
         class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-40"
         type="button"
-        :disabled="!maintenanceAuthorized || loading"
+        :disabled="loading"
         @click="refreshContract(true)"
       >
         刷新视觉角色
       </button>
     </div>
 
-    <p
-      v-if="!maintenanceAuthorized"
-      class="mt-3 rounded-2xl bg-amber-500/15 p-3 text-sm text-amber-100"
-    >
-      {{
-        mode === "bring-up"
-          ? "先验证维护 PIN，再读取和确认视觉摄像头角色。"
-          : "先验证维护 PIN，再读取和确认视觉摄像头角色。"
-      }}
-    </p>
-
-    <template v-else-if="contract">
+    <template v-if="contract">
       <p class="mt-3 text-xs text-slate-400">
         合同版本 {{ contract.contractVersion }} · generation
         {{ contract.generation }}

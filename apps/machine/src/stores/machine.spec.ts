@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import { useAudioCueStore } from "./audio-cues";
 import { useMachineStore } from "./machine";
@@ -11,12 +12,16 @@ beforeEach(() => {
 
 describe("useMachineStore", () => {
   it("applies daemon-owned effective audio preferences to the runtime cue store", () => {
-    useMachineStore().applyCustomerAudioPreferences({
-      volume: 0.7,
-      cuesEnabled: true,
-      presenceCuesEnabled: true,
-      transactionCuesEnabled: false,
-    });
+    useMachineStore().applyEffectiveRuntimeConfiguration({
+      experience: {
+        audio: {
+          volume: 0.7,
+          cuesEnabled: true,
+          presenceCuesEnabled: true,
+          transactionCuesEnabled: false,
+        },
+      },
+    } as EffectiveMachineRuntimeConfiguration);
 
     const request = useAudioCueStore().requestCue({
       category: "presence",

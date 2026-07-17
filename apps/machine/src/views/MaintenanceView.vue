@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import {
   formatMachineSlotCoordinate,
+  type EffectiveMachineRuntimeConfiguration,
   type PaymentProviderEnvironmentDiagnostic,
   type StockMaintenanceTask,
 } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
-import { useRoute } from "vue-router";
 
-import type { MachineAudioPlaybackDiagnostic } from "@/audio-playback/machine-audio-playback";
-import type {
-  DeviceBindingSnapshot,
-  MaintenanceSession,
-} from "@/daemon/schemas";
+import {
+  createMachineAudioPlayback,
+  createTauriNativeMachineAudioPlaybackDriver,
+  type MachineAudioPlayback,
+  type MachineAudioPlaybackDiagnostic,
+} from "@/audio-playback/machine-audio-playback";
+import type { DeviceBindingSnapshot } from "@/daemon/schemas";
 
+import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
@@ -20,8 +23,10 @@ import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePa
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
-import type { VisionTryOnSession } from "@/native/vision";
+import {
+  openVisionTryOnSession,
+  type VisionTryOnSession,
+} from "@/native/vision";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
@@ -32,9 +37,7 @@ import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
-import { setMaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
-const route = useRoute();
 const catalogStore = useCatalogStore();
 const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
@@ -45,17 +48,6 @@ const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
-const maintenanceAuthentication = reactive({
-  pin: "",
-  loading: false,
-  message: null as string | null,
-});
-const maintenanceSession = ref<MaintenanceSession | null>(null);
-const maintenanceSessionAuthorized = computed(
-  () =>
-    maintenanceSession.value !== null &&
-    Date.parse(maintenanceSession.value.expiresAt) > Date.now(),
-);
 const paymentEnvironmentDiagnostic =
   ref<PaymentProviderEnvironmentDiagnostic | null>(null);
 const paymentEnvironmentMessage = ref<string | null>(null);
@@ -92,7 +84,6 @@ const paymentEnvironmentErrorLabel = computed(() => {
       return "尚未读取";
   }
 });
-let removeMaintenanceSessionInvalidationListener: (() => void) | null = null;
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
 const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
 const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
@@ -101,7 +92,6 @@ const DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS = 40;
 const DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS = 1000;
 let diagnosticsRefreshTimer: number | null = null;
 let diagnosticsRefreshInFlight: Promise<void> | null = null;
-const showProtectedDesktopExit = computed(() => false);
 const wholeMachineMaintenanceLock = computed(
   () =>
     connectivityStore.ready?.blockingReasons.find(
@@ -164,6 +154,22 @@ const effectiveRuntimeConfigurationRows = computed(() => {
       value: configuration.hardware.model,
     },
     {
+      label: "Runtime Bootstrap 所有者",
+      value: "部署",
+    },
+    {
+      label: "Provisioning Profile 所有者",
+      value: "平台",
+    },
+    {
+      label: "Profile 版本",
+      value: String(configuration.sourceRevisions.profile?.profileRevision ?? "未接受"),
+    },
+    {
+      label: "Profile 接受时间",
+      value: configuration.sourceRevisions.profile?.acceptedAt ?? "未接受",
+    },
+    {
       label: "本地设置版本",
       value: String(configuration.sourceRevisions.localSettingsRevision),
     },
@@ -208,7 +214,6 @@ const naturalContextDiagnosticMessage = computed(() =>
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
-    !maintenanceSessionAuthorized.value ||
     !wholeMachineMaintenanceLock.value ||
     !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
     wholeMachineLockMaintenance.operatorNote.trim().length === 0,
@@ -226,77 +231,32 @@ const returnToCatalogBlockedReason = computed(() => {
   }
   return "机器未就绪。";
 });
-const operatorEnteredMaintenance = computed(() => {
-  const source = route.query.source;
-  return Array.isArray(source)
-    ? source.includes("operator")
-    : source === "operator";
+const hasAcceptedProvisioningProfile = computed(
+  () => {
+    const configuration = machineStore.effectiveRuntimeConfiguration;
+    return Boolean(configuration?.sourceDocuments.profileCache && configuration.machine);
+  },
+);
+
+const commissioning = reactive({
+  ssid: "",
+  password: "",
+  hidden: false,
+  loading: false,
+  message: null as string | null,
+  wifiNetworks: [] as string[],
+  claimCode: "",
+  claiming: false,
 });
 
-async function beginProtectedMaintenance(): Promise<void> {
-  maintenanceAuthentication.loading = true;
-  maintenanceAuthentication.message = null;
-  try {
-    const scopes = [
-      ...(operatorEnteredMaintenance.value ? ["maintenance.reclaim"] : []),
-      ...(operatorEnteredMaintenance.value
-        ? ["maintenance.manual_dispense"]
-        : []),
-      ...(showProtectedDesktopExit.value ? ["maintenance.desktop_exit"] : []),
-    ];
-    const session = await daemonClient.beginMaintenanceSession(
-      maintenanceAuthentication.pin,
-      scopes,
-      operatorEnteredMaintenance.value ? "operator-console" : "front-panel",
-    );
-    setMaintenanceSession(session);
-    await refreshPaymentEnvironmentDiagnostic();
-    maintenanceAuthentication.pin = "";
-    maintenanceAuthentication.message = `已验证维护会话，${new Date(session.expiresAt).toLocaleTimeString("zh-CN")} 前有效。`;
-  } catch (error) {
-    clearMaintenanceSession();
-    maintenanceAuthentication.message =
-      error instanceof Error ? error.message : "维护 PIN 验证失败";
-  } finally {
-    maintenanceAuthentication.loading = false;
-  }
-}
+const scannerProtocolForm = reactive({
+  baudRate: 9_600,
+  frameSuffix: "crlf" as "crlf" | "lf" | "cr" | "none",
+  saving: false,
+  message: null as string | null,
+});
 
-function setMaintenanceSession(session: MaintenanceSession): void {
-  clearRenderedMaintenanceSession();
-  maintenanceSession.value = session;
-  setMaintenanceTouchKeyboardSession(session.sessionId);
-}
-
-function clearRenderedMaintenanceSession(): void {
-  maintenanceSession.value = null;
-  paymentEnvironmentDiagnostic.value = null;
-  paymentEnvironmentMessage.value = null;
-  setMaintenanceTouchKeyboardSession(null);
-}
-
-function clearMaintenanceSession(): void {
-  clearRenderedMaintenanceSession();
-  daemonClient.clearMaintenanceSession();
-}
-
-function clearMaintenanceSessionAfterAuthorizationFailure(
-  error: unknown,
-): void {
-  if (
-    error instanceof Error &&
-    /HTTP 403|authorization_denied/i.test(error.message)
-  ) {
-    clearMaintenanceSession();
-    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
-  }
-}
-
-const audioPreferencesForm = reactive({
-  volumePercent: 70,
-  cuesEnabled: false,
-  presenceCuesEnabled: false,
-  transactionCuesEnabled: false,
+const audioPreferenceMutation = reactive({
   saving: false,
   message: null as string | null,
 });
@@ -312,15 +272,73 @@ let tryOnPreviewDiagnosticSession: VisionTryOnSession | null = null;
 let maintenanceViewMounted = false;
 let tryOnPreviewDiagnosticSequence = 0;
 
-function syncAudioPreferencesForm(): void {
-  const preferences = machineStore.customerAudio;
-  audioPreferencesForm.volumePercent = machineAudioVolumePercent(
-    preferences.volume,
-  );
-  audioPreferencesForm.cuesEnabled = preferences.cuesEnabled;
-  audioPreferencesForm.presenceCuesEnabled = preferences.presenceCuesEnabled;
-  audioPreferencesForm.transactionCuesEnabled =
-    preferences.transactionCuesEnabled;
+function syncScannerProtocolForm(): void {
+  const protocol =
+    machineStore.effectiveRuntimeConfiguration?.hardware.scannerProtocol;
+  scannerProtocolForm.baudRate = protocol?.baudRate ?? 9_600;
+  scannerProtocolForm.frameSuffix = protocol?.frameSuffix ?? "crlf";
+}
+
+async function reloadEffectiveRuntimeConfiguration(): Promise<void> {
+  await machineStore.loadEffectiveRuntimeConfiguration();
+  syncScannerProtocolForm();
+}
+
+async function loadWifiNetworks(): Promise<void> {
+  commissioning.wifiNetworks = [];
+  try {
+    commissioning.wifiNetworks = (
+      await daemonClient.scanWifiNetworks()
+    ).networks.map((network) => network.ssid);
+  } catch (error) {
+    commissioning.message =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function submitNetworkSettings(): Promise<void> {
+  if (!commissioning.ssid.trim() || commissioning.loading) return;
+  commissioning.loading = true;
+  commissioning.message = null;
+  try {
+    const result = await daemonClient.applyNetworkSettings({
+      ssid: commissioning.ssid.trim(),
+      password: commissioning.password,
+      hidden: commissioning.hidden,
+    });
+    commissioning.password = "";
+    commissioning.message = result.operatorGuidance;
+    await reloadEffectiveRuntimeConfiguration();
+  } catch (error) {
+    commissioning.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    commissioning.loading = false;
+  }
+}
+
+async function submitClaim(): Promise<void> {
+  if (!commissioning.claimCode.trim() || commissioning.claiming) return;
+  commissioning.claiming = true;
+  commissioning.message = null;
+  try {
+    await daemonClient.claimMachine(commissioning.claimCode);
+    commissioning.claimCode = "";
+    await reloadEffectiveRuntimeConfiguration();
+    await refreshDiagnostics();
+    commissioning.message = "机器认领已接受，正在读取当前运行状态。";
+  } catch (error) {
+    commissioning.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    commissioning.claiming = false;
+  }
+}
+
+function isOperatorEnteredMaintenance(): boolean {
+  if (typeof window === "undefined") return false;
+  const query = window.location.hash.split("?", 2)[1] ?? "";
+  return new URLSearchParams(query).get("source") === "operator";
 }
 
 type DiagnosticSerializationState = {
@@ -457,21 +475,8 @@ function boundDiagnosticString(
 
 onMounted(async () => {
   maintenanceViewMounted = true;
-  const handedOffSession =
-    daemonClient.getMaintenanceSessionForRoute("maintenance");
-  if (handedOffSession) {
-    setMaintenanceSession(handedOffSession);
-    maintenanceAuthentication.message = "已继续首次部署的维护会话。";
-  }
-  removeMaintenanceSessionInvalidationListener =
-    daemonClient.onMaintenanceSessionInvalidated(() => {
-      clearMaintenanceSession();
-      maintenanceAuthentication.message =
-        "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
-    });
   try {
-    await machineStore.loadEffectiveRuntimeConfiguration();
-    syncAudioPreferencesForm();
+    await reloadEffectiveRuntimeConfiguration();
   } catch {
     // Runtime diagnostics remain available when the configuration projection is unavailable.
   }
@@ -479,17 +484,23 @@ onMounted(async () => {
     refreshStockMaintenanceView(),
     refreshDiagnostics(),
   ]);
+  if (
+    !isOperatorEnteredMaintenance() &&
+    connectivityStore.ready?.canSell === true
+  ) {
+    await submitMachineNavigationIntent({
+      type: "readiness.navigate",
+      target: { name: "catalog" },
+    });
+    return;
+  }
   startDiagnosticsAutoRefresh();
 });
 
 onUnmounted(() => {
   maintenanceViewMounted = false;
-  removeMaintenanceSessionInvalidationListener?.();
-  removeMaintenanceSessionInvalidationListener = null;
   stopDiagnosticsAutoRefresh();
-  void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
-  clearRenderedMaintenanceSession();
-  void daemonClient.revokeMaintenanceSessionRoute("maintenance");
+  machineAudioTestPlayback.playback?.stop();
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -570,8 +581,6 @@ function startNewManualDispenseDiagnostic(): void {
 }
 
 async function runManualDispenseDiagnostic(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value || !operatorEnteredMaintenance.value)
-    return;
   manualDispenseDiagnostic.loading = true;
   manualDispenseDiagnostic.message = null;
   try {
@@ -588,7 +597,6 @@ async function runManualDispenseDiagnostic(): Promise<void> {
         ? `诊断出货完成（${result.diagnosticId}）。请立即执行库存核对。`
         : `诊断结果 ${result.outcome}（${result.diagnosticId}）。请核实实物并执行库存核对。`;
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     manualDispenseDiagnostic.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -623,7 +631,6 @@ async function testDeviceBinding(
   role: "lower_controller" | "scanner",
   identityKey: string,
 ): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) return;
   deviceBindingMaintenance.loading = true;
   deviceBindingMaintenance.message = null;
   try {
@@ -634,7 +641,6 @@ async function testDeviceBinding(
     };
     deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}测试通过：${result.currentPort}`;
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     deviceBindingMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -647,7 +653,6 @@ async function confirmDeviceBinding(
   identityKey: string,
 ): Promise<void> {
   if (
-    !maintenanceSessionAuthorized.value ||
     deviceBindingMaintenance.tested[role]?.identityKey !== identityKey
   )
     return;
@@ -657,19 +662,64 @@ async function confirmDeviceBinding(
     const tested = deviceBindingMaintenance.tested[role];
     if (!tested) return;
     delete deviceBindingMaintenance.tested[role];
-    const result = await daemonClient.confirmDeviceBinding(
+    await daemonClient.confirmDeviceBinding(
       role,
       identityKey,
       tested.testEvidenceToken,
     );
-    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}已绑定到 ${result.currentPort}`;
-    await Promise.all([refreshDeviceBindings(), refreshDiagnostics()]);
+    await Promise.all([
+      reloadEffectiveRuntimeConfiguration(),
+      refreshDeviceBindings(),
+      refreshDiagnostics(),
+    ]);
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}稳定身份已绑定。`;
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     deviceBindingMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     deviceBindingMaintenance.loading = false;
+  }
+}
+
+async function clearDeviceBinding(
+  role: "lower_controller" | "scanner",
+): Promise<void> {
+  if (deviceBindingMaintenance.loading) return;
+  deviceBindingMaintenance.loading = true;
+  deviceBindingMaintenance.message = null;
+  try {
+    await daemonClient.clearDeviceBinding(role);
+    delete deviceBindingMaintenance.tested[role];
+    await Promise.all([
+      reloadEffectiveRuntimeConfiguration(),
+      refreshDeviceBindings(),
+      refreshDiagnostics(),
+    ]);
+    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}稳定身份绑定已清除。`;
+  } catch (error) {
+    deviceBindingMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    deviceBindingMaintenance.loading = false;
+  }
+}
+
+async function saveScannerProtocolParameters(): Promise<void> {
+  if (scannerProtocolForm.saving) return;
+  scannerProtocolForm.saving = true;
+  scannerProtocolForm.message = null;
+  try {
+    await daemonClient.setScannerProtocolParameters({
+      baudRate: scannerProtocolForm.baudRate,
+      frameSuffix: scannerProtocolForm.frameSuffix,
+    });
+    await reloadEffectiveRuntimeConfiguration();
+    scannerProtocolForm.message = "扫码器协议参数已应用。";
+  } catch (error) {
+    scannerProtocolForm.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    scannerProtocolForm.saving = false;
   }
 }
 
@@ -688,11 +738,6 @@ const wholeMachineLockMaintenance = reactive({
     portPath?: string | null;
     checkedAt: string;
   },
-});
-
-const desktopMaintenance = reactive({
-  loading: false,
-  message: null as string | null,
 });
 
 const catalogNavigation = reactive({
@@ -756,33 +801,45 @@ const machineAudioTestPlayback = reactive({
   driver: "unknown",
   diagnostic: null as MachineAudioPlaybackDiagnostic | null,
   volume: machineStore.customerAudio.volume,
+  playback: null as MachineAudioPlayback | null,
 });
-const daemonAudioCalibrationSource = "daemon://audio-output-calibration";
 
-async function saveAudioPreferences(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) {
-    audioPreferencesForm.message = "请先验证维护 PIN。";
-    return;
-  }
-  audioPreferencesForm.saving = true;
-  audioPreferencesForm.message = null;
+type AudioPreferencePatch = Partial<
+  EffectiveMachineRuntimeConfiguration["experience"]["audio"]
+>;
+
+async function updateAudioPreferences(
+  patch: AudioPreferencePatch,
+): Promise<void> {
+  if (audioPreferenceMutation.saving) return;
+  audioPreferenceMutation.saving = true;
+  audioPreferenceMutation.message = null;
   try {
-    const configuration = await daemonClient.setAudioPreferences({
-      volume: audioPreferencesForm.volumePercent / 100,
-      cuesEnabled: audioPreferencesForm.cuesEnabled,
-      presenceCuesEnabled: audioPreferencesForm.presenceCuesEnabled,
-      transactionCuesEnabled: audioPreferencesForm.transactionCuesEnabled,
+    await daemonClient.setAudioPreferences({
+      ...machineStore.customerAudio,
+      ...patch,
     });
-    machineStore.applyEffectiveRuntimeConfiguration(configuration);
-    syncAudioPreferencesForm();
-    audioPreferencesForm.message = "顾客音频偏好已保存。";
+    await reloadEffectiveRuntimeConfiguration();
+    audioPreferenceMutation.message = "顾客音频偏好已保存。";
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
-    audioPreferencesForm.message =
+    audioPreferenceMutation.message =
       error instanceof Error ? error.message : String(error);
   } finally {
-    audioPreferencesForm.saving = false;
+    audioPreferenceMutation.saving = false;
   }
+}
+
+function checkedInputValue(event: Event): boolean {
+  return event.target instanceof HTMLInputElement && event.target.checked;
+}
+
+function audioVolumeFromInput(event: Event): number {
+  if (!(event.target instanceof HTMLInputElement)) {
+    return machineStore.customerAudio.volume;
+  }
+  const percent = Number(event.target.value);
+  if (!Number.isFinite(percent)) return machineStore.customerAudio.volume;
+  return Math.min(100, Math.max(0, percent)) / 100;
 }
 
 const latestMachineAudioTestPlaybackRows = computed(() => {
@@ -820,26 +877,36 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
 });
 
 async function playMachineAudioTestPlayback(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) {
-    machineAudioTestPlayback.message = "请先验证维护 PIN。";
-    return;
-  }
   machineAudioTestPlayback.loading = true;
   machineAudioTestPlayback.message = null;
   try {
-    const volume = audioPreferencesForm.volumePercent / 100;
+    const volume = machineStore.customerAudio.volume;
     machineAudioTestPlayback.volume = volume;
-    machineAudioTestPlayback.driver = "native";
-    machineAudioTestPlayback.diagnostic = {
-      requestId: crypto.randomUUID(),
-      status: "started",
-      driver: "native",
-      sourceUrl: daemonAudioCalibrationSource,
-      message: null,
-      recordedAt: new Date().toISOString(),
-    };
-    machineAudioTestPlayback.message =
-      "音频测试会使用 Windows 默认输出设备。";
+    const nativeDriver = createTauriNativeMachineAudioPlaybackDriver();
+    if (!nativeDriver) {
+      throw new Error("测试音频只能在已安装的 Windows Tauri 运行时播放");
+    }
+    const playback = createMachineAudioPlayback({
+      driver: nativeDriver,
+      volume,
+      onDiagnostic: (diagnostic) => {
+        machineAudioTestPlayback.diagnostic = diagnostic;
+        machineAudioTestPlayback.driver = diagnostic.driver;
+        if (diagnostic.status === "completed") {
+          machineAudioTestPlayback.message = "Windows 默认输出设备已完成测试播放。";
+        }
+        if (diagnostic.status === "failed") {
+          machineAudioTestPlayback.message = diagnostic.message;
+        }
+      },
+    });
+    machineAudioTestPlayback.playback = playback;
+    const started = await playback.playLocal(maintenanceTestToneUrl);
+    machineAudioTestPlayback.diagnostic = playback.latestDiagnostic();
+    if (!started) {
+      throw new Error("Windows 默认输出设备未开始播放测试音频");
+    }
+    machineAudioTestPlayback.message = "Windows 默认输出设备已开始测试播放，等待完成结果。";
   } catch (error) {
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
@@ -872,8 +939,39 @@ async function stopTryOnPreviewDiagnostic(): Promise<void> {
   }
 }
 
+async function startTryOnPreviewDiagnostic(): Promise<void> {
+  if (tryOnPreviewDiagnostic.loading) return;
+  await stopTryOnPreviewDiagnostic();
+  tryOnPreviewDiagnosticSequence += 1;
+  const sequence = tryOnPreviewDiagnosticSequence;
+  tryOnPreviewDiagnostic.loading = true;
+  tryOnPreviewDiagnostic.message = null;
+  try {
+    const session = await openVisionTryOnSession({
+      machineCode: machineStore.machineCode,
+    });
+    if (!maintenanceViewMounted || sequence !== tryOnPreviewDiagnosticSequence) {
+      await session.stop("replaced");
+      return;
+    }
+    tryOnPreviewDiagnosticSession = session;
+    tryOnPreviewDiagnostic.previewUrl = session.previewUrl;
+    tryOnPreviewDiagnostic.sessionId = session.sessionId;
+    tryOnPreviewDiagnostic.streamType = session.streamType;
+    tryOnPreviewDiagnostic.message = "试衣预览诊断已启动。";
+  } catch (error) {
+    if (maintenanceViewMounted && sequence === tryOnPreviewDiagnosticSequence) {
+      tryOnPreviewDiagnostic.message =
+        error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (sequence === tryOnPreviewDiagnosticSequence) {
+      tryOnPreviewDiagnostic.loading = false;
+    }
+  }
+}
+
 async function runHardwareCheck(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) return;
   hardwareMaintenance.loading = true;
   hardwareMaintenance.message = null;
   try {
@@ -884,9 +982,7 @@ async function runHardwareCheck(): Promise<void> {
       portPath: result.portPath,
       checkedAt: new Date().toISOString(),
     };
-    if (result.configUpdated) {
-      await machineStore.loadEffectiveRuntimeConfiguration();
-    }
+    if (result.configUpdated) await reloadEffectiveRuntimeConfiguration();
     const details = [
       result.portPath ? `端口 ${result.portPath}` : null,
       result.resolutionSource ? `来源 ${result.resolutionSource}` : null,
@@ -906,7 +1002,6 @@ async function runHardwareCheck(): Promise<void> {
       result.online ? "硬件就绪" : "硬件告警"
     }：${result.message}${details.length > 0 ? `（${details.join("；")}）` : ""}`;
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     hardwareMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
@@ -962,9 +1057,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
       refreshDeviceBindings(),
-      ...(maintenanceSessionAuthorized.value
-        ? [refreshPaymentEnvironmentDiagnostic()]
-        : []),
+      refreshPaymentEnvironmentDiagnostic(),
     ]);
   } catch (error) {
     diagnostics.message =
@@ -975,7 +1068,6 @@ async function runDiagnosticsRefresh(): Promise<void> {
 }
 
 async function refreshPaymentEnvironmentDiagnostic(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) return;
   paymentEnvironmentMessage.value = null;
   try {
     paymentEnvironmentDiagnostic.value =
@@ -1001,7 +1093,6 @@ function stopDiagnosticsAutoRefresh(): void {
 }
 
 async function clearWholeMachineLock(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) return;
   wholeMachineLockMaintenance.loading = true;
   wholeMachineLockMaintenance.message = null;
   try {
@@ -1012,7 +1103,6 @@ async function clearWholeMachineLock(): Promise<void> {
     wholeMachineLockMaintenance.operatorNote = "";
     await refreshDiagnostics();
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     const message = error instanceof Error ? error.message : String(error);
     wholeMachineLockMaintenance.message = message.includes(
       "must be healthy before clearing whole-machine lock",
@@ -1068,34 +1158,24 @@ function blockerRecoveryLabel(code: string): string {
     return "执行硬件自检";
   }
   if (code === "NO_SALEABLE_SLOTS") return "打开库存维护";
-  if (code === "MACHINE_AUTH_MISSING") return "打开首次部署控制台";
+  if (code === "MACHINE_AUTH_MISSING") return "完成机器认领";
   return "刷新关联诊断";
 }
 
-function blockerRecoveryRequiresSession(code: string): boolean {
-  return (
-    code === "MACHINE_AUTH_MISSING" ||
-    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
-    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
-    code.startsWith("PRODUCTION_DISPENSE_PATH_")
-  );
-}
-
-function blockerRecoveryDisabled(code: string): boolean {
-  return (
-    (blockerRecoveryRequiresSession(code) &&
-      !maintenanceSessionAuthorized.value) ||
-    hardwareMaintenance.loading ||
-    diagnostics.loading
-  );
+function blockerRecoveryDisabled(): boolean {
+  return hardwareMaintenance.loading || diagnostics.loading;
 }
 
 async function runBlockerRecovery(code: string): Promise<void> {
   if (code === "MACHINE_AUTH_MISSING") {
-    await openProtectedBringUpConsole();
+    commissioning.message = "请在本页完成网络设置和机器认领。";
     return;
   }
-  if (blockerRecoveryRequiresSession(code)) {
+  if (
+    code === "LOWER_CONTROLLER_UNAVAILABLE" ||
+    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code.startsWith("PRODUCTION_DISPENSE_PATH_")
+  ) {
     await runHardwareCheck();
     return;
   }
@@ -1200,57 +1280,6 @@ async function returnToCatalog(): Promise<void> {
   });
 }
 
-async function returnToDesktop(): Promise<void> {
-  const session = maintenanceSession.value;
-  if (
-    !showProtectedDesktopExit.value ||
-    !session ||
-    !maintenanceSessionAuthorized.value
-  ) {
-    return;
-  }
-  desktopMaintenance.loading = true;
-  desktopMaintenance.message = "正在回到 Windows 桌面";
-  try {
-    if (!isTauriRuntime()) {
-      desktopMaintenance.message = "当前不是 Tauri 运行环境，无法退出全屏应用";
-      return;
-    }
-    await callTauriCommand<void>("return_to_desktop", {
-      sessionId: session.sessionId,
-    });
-  } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
-    desktopMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-    desktopMaintenance.loading = false;
-  }
-}
-
-async function openProtectedBringUpConsole(): Promise<void> {
-  if (!maintenanceSessionAuthorized.value) {
-    return;
-  }
-  if (!daemonClient.handoffMaintenanceSessionToBringUp()) {
-    clearMaintenanceSession();
-    maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
-    return;
-  }
-  try {
-    await submitMachineNavigationIntent({
-      type: "operator.navigate",
-      target: {
-        path: "/bring-up",
-        query: { source: "protected-maintenance" },
-      },
-    });
-  } catch (error) {
-    clearMaintenanceSession();
-    maintenanceAuthentication.message =
-      error instanceof Error ? error.message : "无法打开首次部署控制台";
-  }
-}
-
 async function exportLogs(): Promise<void> {
   diagnostics.logsMessage = null;
   try {
@@ -1351,7 +1380,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
       ? "批次已存在，已恢复原同步状态。"
       : "库存批次已提交，等待平台逐货道确认。";
   } catch (error) {
-    clearMaintenanceSessionAfterAuthorizationFailure(error);
     stockMaintenance.message =
       error instanceof Error
         ? `${error.message}；本机服务保留批次状态，可刷新后恢复。`
@@ -1377,62 +1405,84 @@ async function submitStockMaintenanceTask(): Promise<void> {
       </header>
 
       <section
-        class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4"
+        v-if="!hasAcceptedProvisioningProfile"
+        class="mt-4 grid gap-4 rounded-3xl border border-amber-200/30 bg-amber-500/10 p-4 text-left md:grid-cols-2"
+        aria-label="机器认领"
       >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="text-left">
-            <p class="text-sm font-semibold text-slate-100">维护授权</p>
-            <p class="mt-1 text-sm text-slate-300">
-              健康与阻塞诊断始终可查看；修改机器前需验证 PIN。
-            </p>
+        <form class="grid gap-3" @submit.prevent="submitNetworkSettings">
+          <div class="flex items-center justify-between gap-3">
+            <p class="font-semibold text-white">本地网络</p>
+            <button
+              class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 text-sm font-bold text-sky-100"
+              type="button"
+              :disabled="commissioning.loading"
+              @click="loadWifiNetworks"
+            >
+              扫描网络
+            </button>
           </div>
-          <span
-            class="text-sm font-semibold"
-            :class="
-              maintenanceSessionAuthorized
-                ? 'text-emerald-200'
-                : 'text-amber-200'
-            "
+          <select
+            v-if="commissioning.wifiNetworks.length > 0"
+            v-model="commissioning.ssid"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+            aria-label="可用网络"
           >
-            {{ maintenanceSessionAuthorized ? "已授权" : "只读" }}
-          </span>
-        </div>
-        <form
-          v-if="!maintenanceSessionAuthorized"
-          class="mt-3 flex flex-wrap gap-3"
-          @submit.prevent="beginProtectedMaintenance"
-        >
+            <option value="">选择网络</option>
+            <option v-for="ssid in commissioning.wifiNetworks" :key="ssid" :value="ssid">
+              {{ ssid }}
+            </option>
+          </select>
           <input
-            v-model="maintenanceAuthentication.pin"
-            class="kiosk-touch-target min-w-40 rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-white outline-none"
-            type="password"
-            inputmode="numeric"
+            v-model.trim="commissioning.ssid"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
             autocomplete="off"
-            placeholder="维护 PIN"
-            aria-label="维护 PIN"
+            placeholder="网络名称"
+            aria-label="网络名称"
+            required
           />
+          <input
+            v-model="commissioning.password"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+            type="password"
+            autocomplete="off"
+            placeholder="网络密码"
+            aria-label="网络密码"
+          />
+          <label class="flex items-center gap-2 text-sm text-slate-200">
+            <input v-model="commissioning.hidden" type="checkbox" /> 隐藏网络
+          </label>
           <button
-            class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+            class="kiosk-touch-target rounded-xl bg-sky-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
             type="submit"
-            :disabled="
-              maintenanceAuthentication.loading ||
-              !maintenanceAuthentication.pin
-            "
+            :disabled="commissioning.loading || !commissioning.ssid"
           >
-            验证并解锁
+            {{ commissioning.loading ? "连接中" : "应用网络" }}
           </button>
         </form>
-        <p
-          v-if="maintenanceAuthentication.message"
-          class="mt-3 text-sm text-slate-200"
-          aria-live="polite"
-        >
-          {{ maintenanceAuthentication.message }}
+        <form class="grid content-start gap-3" @submit.prevent="submitClaim">
+          <p class="font-semibold text-white">机器认领</p>
+          <input
+            v-model.trim="commissioning.claimCode"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+            autocomplete="off"
+            placeholder="认领码"
+            aria-label="认领码"
+            required
+          />
+          <button
+            class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+            type="submit"
+            :disabled="commissioning.claiming || !commissioning.claimCode"
+          >
+            {{ commissioning.claiming ? "认领中" : "认领机器" }}
+          </button>
+        </form>
+        <p v-if="commissioning.message" class="md:col-span-2 text-sm text-amber-100">
+          {{ commissioning.message }}
         </p>
       </section>
 
       <section
-        v-if="maintenanceSessionAuthorized"
         class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
         aria-label="支付环境诊断"
       >
@@ -1471,15 +1521,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <button
             class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
             type="button"
-            :disabled="blockerRecoveryDisabled(blocker.code)"
+            :disabled="blockerRecoveryDisabled()"
             @click="runBlockerRecovery(blocker.code)"
           >
-            {{
-              blockerRecoveryRequiresSession(blocker.code) &&
-              !maintenanceSessionAuthorized
-                ? "先验证 PIN"
-                : blockerRecoveryLabel(blocker.code)
-            }}
+            {{ blockerRecoveryLabel(blocker.code) }}
           </button>
           <details class="mt-3 text-sm text-rose-100/80">
             <summary>技术证据</summary>
@@ -1489,7 +1534,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
       </section>
 
       <section
-        v-if="operatorEnteredMaintenance"
         class="mt-4 grid gap-3 md:grid-cols-2"
         aria-label="维护任务概览"
       >
@@ -1500,14 +1544,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <p class="mt-1 text-sm text-slate-300">
             查看本地服务、平台与 MQTT 状态。
           </p>
-          <button
-            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100"
-            type="button"
-            :disabled="diagnostics.loading"
-            @click="refreshDiagnostics"
-          >
-            刷新诊断
-          </button>
           <details class="mt-3 text-sm text-slate-300">
             <summary>技术证据</summary>
             <p class="mt-2">
@@ -1525,9 +1561,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <button
             class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
             type="button"
-            :disabled="
-              !maintenanceSessionAuthorized || hardwareMaintenance.loading
-            "
+            :disabled="hardwareMaintenance.loading"
             @click="runHardwareCheck"
           >
             执行设备检查
@@ -1546,7 +1580,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
       </section>
 
       <section
-        v-if="operatorEnteredMaintenance && deviceBindingMaintenance.snapshot"
+        v-if="deviceBindingMaintenance.snapshot"
         class="mt-4 grid gap-3"
         aria-label="设备稳定身份绑定"
       >
@@ -1604,10 +1638,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 <button
                   class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 font-bold text-sky-100 disabled:opacity-40"
                   type="button"
-                  :disabled="
-                    !maintenanceSessionAuthorized ||
-                    deviceBindingMaintenance.loading
-                  "
+                  :disabled="deviceBindingMaintenance.loading"
                   @click="
                     testDeviceBinding(role.role, candidate.identity.identityKey)
                   "
@@ -1618,7 +1649,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   class="kiosk-touch-target rounded-xl bg-emerald-300 px-3 py-2 font-bold text-slate-950 disabled:opacity-40"
                   type="button"
                   :disabled="
-                    !maintenanceSessionAuthorized ||
                     deviceBindingMaintenance.loading ||
                     deviceBindingMaintenance.tested[role.role]?.identityKey !==
                       candidate.identity.identityKey
@@ -1631,6 +1661,15 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   "
                 >
                   确认绑定
+                </button>
+                <button
+                  v-if="role.binding"
+                  class="kiosk-touch-target rounded-xl border border-rose-200/30 px-3 py-2 font-bold text-rose-100 disabled:opacity-40"
+                  type="button"
+                  :disabled="deviceBindingMaintenance.loading"
+                  @click="clearDeviceBinding(role.role)"
+                >
+                  清除绑定
                 </button>
               </div>
             </div>
@@ -1665,8 +1704,48 @@ async function submitStockMaintenanceTask(): Promise<void> {
         </p>
       </section>
 
+      <form
+        class="mt-4 grid gap-3 rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left md:grid-cols-[1fr_1fr_auto]"
+        aria-label="扫码器协议"
+        @submit.prevent="saveScannerProtocolParameters"
+      >
+        <label class="grid gap-1 text-sm text-slate-200">
+          波特率
+          <input
+            v-model.number="scannerProtocolForm.baudRate"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+            min="1200"
+            max="230400"
+            step="1"
+            type="number"
+            required
+          />
+        </label>
+        <label class="grid gap-1 text-sm text-slate-200">
+          帧尾
+          <select
+            v-model="scannerProtocolForm.frameSuffix"
+            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+          >
+            <option value="crlf">CRLF</option>
+            <option value="lf">LF</option>
+            <option value="cr">CR</option>
+            <option value="none">无</option>
+          </select>
+        </label>
+        <button
+          class="kiosk-touch-target self-end rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+          type="submit"
+          :disabled="scannerProtocolForm.saving"
+        >
+          {{ scannerProtocolForm.saving ? "应用中" : "应用扫码器协议" }}
+        </button>
+        <p v-if="scannerProtocolForm.message" class="md:col-span-3 text-sm text-sky-100">
+          {{ scannerProtocolForm.message }}
+        </p>
+      </form>
+
       <section
-        v-if="operatorEnteredMaintenance"
         class="mt-6 rounded-3xl border border-amber-200/20 bg-amber-500/10 p-5"
         data-test="manual-dispense-diagnostic"
       >
@@ -1722,9 +1801,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <button
             class="kiosk-touch-target self-end rounded-xl bg-amber-200 px-4 py-3 font-bold text-slate-950 disabled:opacity-40"
             type="submit"
-            :disabled="
-              !maintenanceSessionAuthorized || manualDispenseDiagnostic.loading
-            "
+            :disabled="manualDispenseDiagnostic.loading"
           >
             {{ manualDispenseDiagnostic.loading ? "执行中" : "出货一件" }}
           </button>
@@ -1737,11 +1814,67 @@ async function submitStockMaintenanceTask(): Promise<void> {
         </p>
       </section>
 
-      <VisionCameraMaintenancePanel
-        v-if="operatorEnteredMaintenance"
-        :maintenance-authorized="maintenanceSessionAuthorized"
-        mode="maintenance"
-      />
+      <VisionCameraMaintenancePanel />
+
+      <section
+        class="mt-6 rounded-3xl border border-sky-200/20 bg-slate-950/30 p-5 text-left"
+        aria-label="视觉试衣预览诊断"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="font-semibold text-sky-100">视觉试衣预览诊断</p>
+            <p class="mt-1 text-sm text-slate-300">
+              直接验证本机视觉服务的临时预览会话。
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-3">
+            <button
+              class="kiosk-touch-target rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+              type="button"
+              :disabled="tryOnPreviewDiagnostic.loading"
+              @click="startTryOnPreviewDiagnostic"
+            >
+              {{ tryOnPreviewDiagnostic.loading ? "启动中" : "启动试衣预览" }}
+            </button>
+            <button
+              v-if="tryOnPreviewDiagnostic.previewUrl"
+              class="kiosk-touch-target rounded-xl border border-rose-200/30 px-4 py-3 font-bold text-rose-100"
+              type="button"
+              @click="stopTryOnPreviewDiagnostic"
+            >
+              释放试衣预览
+            </button>
+          </div>
+        </div>
+        <p
+          v-if="tryOnPreviewDiagnostic.message"
+          class="mt-3 text-sm text-sky-100"
+          aria-live="polite"
+        >
+          {{ tryOnPreviewDiagnostic.message }}
+        </p>
+        <div
+          v-if="tryOnPreviewDiagnostic.previewUrl"
+          class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_16rem]"
+        >
+          <img
+            :src="tryOnPreviewDiagnostic.previewUrl"
+            alt="视觉试衣预览"
+            class="aspect-video w-full rounded-xl bg-slate-950 object-cover"
+            data-test="try-on-camera-preview"
+          />
+          <dl class="grid content-start gap-3 text-sm text-slate-200">
+            <div>
+              <dt class="text-slate-400">预览流</dt>
+              <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
+            </div>
+            <div>
+              <dt class="text-slate-400">预览地址</dt>
+              <dd class="break-all">{{ tryOnPreviewDiagnostic.previewUrl }}</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
@@ -1753,7 +1886,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
           class="mt-4 grid gap-4"
           @submit.prevent="submitStockMaintenanceTask"
         >
-          <fieldset :disabled="!maintenanceSessionAuthorized" class="contents">
+          <fieldset class="contents">
             <div class="grid gap-3">
               <article
                 v-for="slot in stockMaintenance.task?.slots ?? []"
@@ -1818,11 +1951,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <button
                 class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
                 type="submit"
-                :disabled="
-                  !maintenanceSessionAuthorized ||
-                  stockMaintenance.loading ||
-                  !stockTaskCanSubmit
-                "
+                :disabled="stockMaintenance.loading || !stockTaskCanSubmit"
               >
                 {{ stockTaskIsRefill ? "确认补货" : "提交盘点" }}
               </button>
@@ -1854,15 +1983,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
               回到目录
             </button>
             <button
-              v-if="showProtectedDesktopExit && maintenanceSessionAuthorized"
-              class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
-              type="button"
-              :disabled="desktopMaintenance.loading"
-              @click="returnToDesktop"
-            >
-              回到 Windows 桌面
-            </button>
-            <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
               :disabled="diagnostics.loading"
@@ -1880,9 +2000,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
-              :disabled="
-                !maintenanceSessionAuthorized || hardwareMaintenance.loading
-              "
+            :disabled="hardwareMaintenance.loading"
               @click="runHardwareCheck"
             >
               硬件自检
@@ -2211,12 +2329,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
           {{ diagnostics.logsMessage }}
         </p>
         <p
-          v-if="desktopMaintenance.message"
-          class="mt-4 rounded-2xl bg-slate-500/15 p-4 text-slate-100"
-        >
-          {{ desktopMaintenance.message }}
-        </p>
-        <p
           v-if="hardwareMaintenance.message"
           class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
         >
@@ -2246,25 +2358,31 @@ async function submitStockMaintenanceTask(): Promise<void> {
           <fieldset class="grid gap-3 text-left md:grid-cols-3">
             <label class="flex items-center gap-3">
               <input
-                v-model="audioPreferencesForm.cuesEnabled"
+                :checked="machineStore.customerAudio.cuesEnabled"
+                :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
+                @change="updateAudioPreferences({ cuesEnabled: checkedInputValue($event) })"
               />
               <span class="text-sm font-semibold text-slate-200">启用机器音频提示</span>
             </label>
             <label class="flex items-center gap-3">
               <input
-                v-model="audioPreferencesForm.presenceCuesEnabled"
+                :checked="machineStore.customerAudio.presenceCuesEnabled"
+                :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
+                @change="updateAudioPreferences({ presenceCuesEnabled: checkedInputValue($event) })"
               />
               <span class="text-sm font-semibold text-slate-200">来人音频提示</span>
             </label>
             <label class="flex items-center gap-3">
               <input
-                v-model="audioPreferencesForm.transactionCuesEnabled"
+                :checked="machineStore.customerAudio.transactionCuesEnabled"
+                :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
+                @change="updateAudioPreferences({ transactionCuesEnabled: checkedInputValue($event) })"
               />
               <span class="text-sm font-semibold text-slate-200">交易音频提示</span>
             </label>
@@ -2273,40 +2391,34 @@ async function submitStockMaintenanceTask(): Promise<void> {
             <span class="text-sm font-semibold text-slate-200">机器音频音量</span>
             <div class="flex items-center gap-3">
               <input
-                v-model.number="audioPreferencesForm.volumePercent"
+                :value="machineAudioVolumePercent(machineStore.customerAudio.volume)"
+                :disabled="audioPreferenceMutation.saving"
                 class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
                 data-test="machine-audio-volume-percent"
                 max="100"
                 min="0"
                 step="1"
                 type="number"
+                @change="updateAudioPreferences({ volume: audioVolumeFromInput($event) })"
               />
               <span class="text-sm font-bold text-slate-200">%</span>
             </div>
           </label>
           <div class="flex flex-wrap gap-3">
             <button
-              class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-              type="button"
-              :disabled="audioPreferencesForm.saving || !maintenanceSessionAuthorized"
-              @click="saveAudioPreferences"
-            >
-              保存音频偏好
-            </button>
-            <button
               class="kiosk-touch-target rounded-2xl border border-cyan-200/30 px-4 py-3 font-bold text-cyan-100 disabled:opacity-50"
               type="button"
-              :disabled="machineAudioTestPlayback.loading || !maintenanceSessionAuthorized"
+              :disabled="machineAudioTestPlayback.loading"
               @click="playMachineAudioTestPlayback"
             >
               播放测试音频
             </button>
           </div>
           <p
-            v-if="audioPreferencesForm.message"
+            v-if="audioPreferenceMutation.message"
             class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
           >
-            {{ audioPreferencesForm.message }}
+            {{ audioPreferenceMutation.message }}
           </p>
           <dl class="grid gap-3 md:grid-cols-2">
             <div

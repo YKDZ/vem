@@ -1,8 +1,16 @@
 import { test, expect } from "@playwright/test";
+import { effectiveMachineRuntimeConfigurationSchema } from "@vem/shared";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import {
+  healthSnapshotSchema,
+  readySnapshotSchema,
+  transactionSnapshotSchema,
+} from "../src/daemon/schemas";
 
 type DaemonProcess = {
   kill(signal?: string): boolean;
@@ -19,9 +27,18 @@ let runtimeRoot = "";
 let dataDir = "";
 let daemonOutput: string[] = [];
 let daemonExit: Promise<void> | null = null;
+let provisioningServer: Server | null = null;
+let provisioningBaseUrl = "";
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
 const DAEMON_HTTP_BASE_URL = "http://127.0.0.1:7891";
+const REPOSITORY_ROOT = new URL("../../..", import.meta.url).pathname;
+const DAEMON_BINARY = join(
+  REPOSITORY_ROOT,
+  "target",
+  "debug",
+  process.platform === "win32" ? "vending-daemon.exe" : "vending-daemon",
+);
 
 test.setTimeout(DAEMON_START_TIMEOUT_MS);
 
@@ -35,29 +52,47 @@ function formatDaemonOutput(): string {
   return daemonOutput.join("").trim();
 }
 
-test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
-  testInfo.setTimeout(DAEMON_START_TIMEOUT_MS);
-  runtimeRoot = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
-  dataDir = join(runtimeRoot, "vending-daemon");
-  await mkdir(dataDir, { recursive: true });
-  daemonOutput = [];
-  await writeFile(join(dataDir, "ipc-token"), "dev-token");
-  await writeFile(
-    join(runtimeRoot, "runtime-bootstrap.json"),
-    JSON.stringify({
-      schemaVersion: 1,
-      provisioningApiBaseUrl: "http://127.0.0.1:9/api",
-      hardwareModel: "vem-prod-24",
-      topology: { identity: "vem-prod-24", version: "v1" },
-    }),
+async function readDaemonBootEndpoint(path: string): Promise<unknown> {
+  const response = await fetch(`${DAEMON_HTTP_BASE_URL}${path}`, {
+    headers: { Authorization: "Bearer dev-token" },
+  });
+  const body = await response.text();
+  expect(
+    response.ok,
+    `${path} returned HTTP ${response.status}: ${body}`,
+  ).toBe(true);
+  return JSON.parse(body) as unknown;
+}
+
+async function buildDaemonBinary(): Promise<void> {
+  const build = spawn("cargo", ["build", "-p", "vending-daemon"], {
+    env: { ...process.env, CARGO_TERM_COLOR: "never" },
+  });
+  let output = "";
+  build.stdout.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  build.stderr.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  const result = await new Promise<{ code: number | null; signal: string | null }>(
+    (resolve) => {
+      build.on("exit", (code, signal) => {
+        resolve({ code, signal });
+      });
+    },
   );
+  if (result.code !== 0) {
+    throw new Error(
+      `build vending-daemon failed code=${result.code} signal=${result.signal}\n${output}`,
+    );
+  }
+}
+
+function startDaemonProcess(): void {
   daemon = spawn(
-    "cargo",
+    DAEMON_BINARY,
     [
-      "run",
-      "-p",
-      "vending-daemon",
-      "--",
       "--console",
       "--data-dir",
       dataDir,
@@ -86,6 +121,94 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   daemon.on("exit", (code, signal) => {
     recordDaemonOutput("process", `exited code=${code} signal=${signal}\n`);
   });
+}
+
+test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
+  testInfo.setTimeout(DAEMON_START_TIMEOUT_MS);
+  await buildDaemonBinary();
+  runtimeRoot = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
+  dataDir = join(runtimeRoot, "vending-daemon");
+  await mkdir(dataDir, { recursive: true });
+  daemonOutput = [];
+  await writeFile(join(dataDir, "ipc-token"), "dev-token");
+  provisioningServer = createServer((request, response) => {
+    if (
+      request.method !== "POST" ||
+      request.url !== "/api/machines/claim"
+    ) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        machine: {
+          id: "550e8400-e29b-41d4-a716-446655440001",
+          code: "REAL-DAEMON-001",
+          name: "Real Daemon Test",
+          status: "online",
+          locationLabel: "test lab",
+        },
+        credentials: {
+          machineSecret: "machine-secret-0123456789-0123456789",
+          mqttSigningSecret: "mqtt-signing-secret-0123456789-0123456789",
+          mqttConnection: {
+            url: "mqtt://127.0.0.1:1883",
+            clientId: "real-daemon-test",
+            username: "machine",
+            password: "mqtt-password",
+          },
+        },
+        apiBaseUrl: "http://127.0.0.1:3000/api",
+        runtimeEndpoints: {
+          apiBasePath: "/api",
+          machineAuthTokenPath: "/api/machine-auth/token",
+          machineApiBasePath: "/api/machines/REAL-DAEMON-001",
+          mqttTopicPrefix: "vem/machines/REAL-DAEMON-001",
+        },
+        hardwareProfile: {
+          profile: "production",
+          controller: { required: true, protocol: "vem-vending-controller" },
+          paymentScanner: { required: true, supportsPaymentCode: true },
+          vision: { required: false, supportsRecommendations: true },
+        },
+        hardwareModel: "vem-prod-24",
+        hardwareSlotTopology: { identity: "vem-prod-24", version: "v1" },
+        paymentCapability: {
+          profile: "production",
+          qrCodeEnabled: true,
+          paymentCodeEnabled: true,
+          serverTime: "2026-07-17T08:00:00.000Z",
+        },
+        metadata: {
+          profileVersion: 1,
+          profileRevision: 1,
+          claimCodeId: "550e8400-e29b-41d4-a716-446655440002",
+          claimedAt: "2026-07-17T08:00:00.000Z",
+          serverTime: "2026-07-17T08:00:00.000Z",
+        },
+      }),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    provisioningServer?.once("error", reject);
+    provisioningServer?.listen(0, "127.0.0.1", resolve);
+  });
+  const address = provisioningServer.address();
+  if (!address || typeof address === "string") {
+    throw new Error("provisioning test server did not allocate a TCP port");
+  }
+  provisioningBaseUrl = `http://127.0.0.1:${address.port}/api`;
+  await writeFile(
+    join(runtimeRoot, "runtime-bootstrap.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      provisioningApiBaseUrl: provisioningBaseUrl,
+      hardwareModel: "vem-prod-24",
+      topology: { identity: "vem-prod-24", version: "v1" },
+    }),
+  );
+  startDaemonProcess();
   await expect(async () => {
     const readyPath = join(dataDir, "daemon-ready.json");
     try {
@@ -151,27 +274,71 @@ test.afterAll(async () => {
       ]);
     }
   }
+  if (provisioningServer) {
+    await new Promise<void>((resolve, reject) => {
+      provisioningServer?.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
 });
 
-test("browser UI routes using real daemon ready snapshots", async ({
-  context,
-  page,
-}) => {
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", {
-      name: /首次部署控制台|暂时无法购买|设备离线|生产维护|请选择商品类别/,
-    }),
-  ).toBeVisible();
-  await page.close();
+test("real daemon clean bootstrap claims through Local Operations and then routes to catalog", async ({ page }) => {
+  await page.goto("/#/boot");
+  await expect(page).toHaveURL(/#\/maintenance$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  await expect(page.getByLabel("认领码")).toBeVisible();
 
-  const bootPage = await context.newPage();
-  await bootPage.goto("/#/boot");
-  await expect(bootPage).toHaveURL(
-    /#\/(bring-up|offline|catalog|maintenance)$/,
-    {
-      timeout: 20_000,
-    },
-  );
+  await page.getByLabel("认领码").fill("real-claim-001");
+  await page.getByRole("button", { name: "认领机器" }).click();
+  await expect(page.getByText("REAL-DAEMON-001")).toBeVisible({ timeout: 20_000 });
+
+  const claimedDaemonExit = daemonExit;
+  daemon?.kill("SIGKILL");
+  const exited = await Promise.race([
+    claimedDaemonExit?.then(() => true) ?? Promise.resolve(true),
+    new Promise<false>((resolve) => {
+      setTimeout(() => {
+        resolve(false);
+      }, 20_000);
+    }),
+  ]);
+  if (!exited) {
+    throw new Error(`daemon did not stop for supervised runtime restart\n${formatDaemonOutput()}`);
+  }
+  startDaemonProcess();
+  await expect(async () => {
+    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`, {
+      headers: { Authorization: "Bearer dev-token" },
+    });
+    expect(response.ok).toBe(true);
+    const configuration = (await response.json()) as {
+      machine?: { code?: unknown } | null;
+      profileRefresh?: { status?: unknown };
+    };
+    expect(configuration.machine?.code).toBe("REAL-DAEMON-001");
+    expect(configuration.profileRefresh?.status).toBe("accepted");
+  }).toPass({ intervals: [250, 500, 1000], timeout: 20_000 });
+
+  const [health, ready, transaction, saleReadiness, configuration] =
+    await Promise.all([
+      readDaemonBootEndpoint("/healthz"),
+      readDaemonBootEndpoint("/readyz"),
+      readDaemonBootEndpoint("/v1/transactions/current"),
+      readDaemonBootEndpoint("/v1/sale-readiness"),
+      readDaemonBootEndpoint("/v1/runtime-configuration"),
+    ]);
+  healthSnapshotSchema.parse(health);
+  readySnapshotSchema.parse(ready);
+  transactionSnapshotSchema.parse(transaction);
+  expect(saleReadiness).toEqual(expect.any(Object));
+  effectiveMachineRuntimeConfigurationSchema.parse(configuration);
+
+  await page.goto("/#/boot");
+  await expect(page).toHaveURL(/#\/catalog$/, { timeout: 20_000 });
 });

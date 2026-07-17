@@ -8,8 +8,7 @@ export type MachineRuntimeScenarioCategory =
   | "dispensing"
   | "result"
   | "offline"
-  | "maintenance"
-  | "bring_up";
+  | "maintenance";
 
 export type MachineRuntimeScenarioScreenshotStatus = "included" | "deferred";
 
@@ -257,18 +256,6 @@ export const machineRuntimeScenarios = [
     setup: ["装载维护拦截 fixture", "装载诊断状态 fixture"],
     visualChecks: ["展示维护控制台", "展示销售阻塞原因", "展示诊断区域"],
     touchChecks: ["诊断刷新或返回售卖入口按钮满足触屏尺寸"],
-    screenshot: "included",
-    ciTier: "smoke",
-  },
-  {
-    id: "bring-up-console",
-    name: "首次部署控制台",
-    category: "bring_up",
-    targetRoute: "/bring-up",
-    fixtureScenarioId: "blocked",
-    setup: ["装载 bring-up fixture", "装载维护拦截 fixture"],
-    visualChecks: ["展示 bring-up 状态", "展示阻塞原因", "展示受保护维护入口"],
-    touchChecks: ["网络、领取、导出入口满足触屏尺寸"],
     screenshot: "included",
     ciTier: "smoke",
   },
