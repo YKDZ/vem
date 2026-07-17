@@ -123,6 +123,20 @@ describe("Daemon IPC contract generator", () => {
           ]),
           cwd: root,
         }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
+            expect.stringContaining(
+              "src/generated/runtime_configuration.rs",
+            ),
+            expect.stringContaining("schemas/runtime_configuration.schema.json"),
+          ]),
+          cwd: root,
+        }),
       ]);
 
       const schema = JSON.parse(

@@ -86,6 +86,21 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
         "degraded"
     );
 
+    let restarted = CleanRuntimeConfigurationStore::new(
+        store.profile_cache_path().parent().expect("config dir").parent().expect("data dir").to_path_buf(),
+        secrets.clone(),
+    );
+    assert_eq!(
+        restarted
+            .effective_projection()
+            .await
+            .expect("projection after restart")
+            .profile_refresh
+            .status
+            .to_string(),
+        "degraded"
+    );
+
     store.clear_claim().await.expect("local reset");
     assert!(store
         .load_profile_cache()

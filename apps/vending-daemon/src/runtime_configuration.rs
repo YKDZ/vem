@@ -30,6 +30,13 @@ struct ClaimTransactionJournal {
     profile_generation: u64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProfileRefreshState {
+    schema_version: u8,
+    last_error: String,
+}
+
 /// The clean configuration boundary. Deployment owns Runtime Bootstrap while
 /// the daemon owns the accepted profile cache and credential extraction.
 pub struct CleanRuntimeConfigurationStore {
@@ -61,6 +68,10 @@ impl CleanRuntimeConfigurationStore {
 
     pub fn claim_journal_path(&self) -> PathBuf {
         self.data_dir.join("config").join("claim-transaction.json")
+    }
+
+    pub fn profile_refresh_state_path(&self) -> PathBuf {
+        self.data_dir.join("config").join("profile-refresh.json")
     }
 
     /// Finishes a committed transaction or removes every claim artifact from
@@ -183,7 +194,7 @@ impl CleanRuntimeConfigurationStore {
         }
 
         remove_optional_file(&self.claim_journal_path()).await?;
-        *self.refresh_error.lock().await = None;
+        self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
         Ok(cache)
     }
@@ -216,7 +227,7 @@ impl CleanRuntimeConfigurationStore {
             self.secrets.write_secret(account, "").await?;
         }
         remove_optional_file(&self.claim_journal_path()).await?;
-        *self.refresh_error.lock().await = None;
+        self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
         Ok(())
     }
@@ -227,7 +238,7 @@ impl CleanRuntimeConfigurationStore {
         let bootstrap = self.load_bootstrap().await?;
         let cache = self.load_profile_cache().await?;
         let secrets = self.secrets.status().await?;
-        let refresh_error = self.refresh_error.lock().await.clone();
+        let refresh_error = self.load_refresh_error().await?;
         let status = if cache.is_none() {
             "unclaimed"
         } else if refresh_error.is_some() {
@@ -252,6 +263,40 @@ impl CleanRuntimeConfigurationStore {
 
     async fn record_refresh_error(&self, error: &str) {
         *self.refresh_error.lock().await = Some(error.to_string());
+        let _ = write_atomic_json(
+            &self.profile_refresh_state_path(),
+            &ProfileRefreshState {
+                schema_version: 1,
+                last_error: error.to_string(),
+            },
+        )
+        .await;
+    }
+
+    async fn load_refresh_error(&self) -> Result<Option<String>, String> {
+        if let Some(error) = self.refresh_error.lock().await.clone() {
+            return Ok(Some(error));
+        }
+        let Some(value) = read_optional_json(
+            self.profile_refresh_state_path(),
+            "provisioning profile refresh state",
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let state: ProfileRefreshState = serde_json::from_value(value)
+            .map_err(|error| format!("provisioning profile refresh state invalid: {error}"))?;
+        if state.schema_version != 1 || state.last_error.trim().is_empty() {
+            return Err("provisioning profile refresh state invalid".to_string());
+        }
+        *self.refresh_error.lock().await = Some(state.last_error.clone());
+        Ok(Some(state.last_error))
+    }
+
+    async fn clear_refresh_error(&self) {
+        *self.refresh_error.lock().await = None;
+        let _ = remove_optional_file(&self.profile_refresh_state_path()).await;
     }
 
     async fn recover_claim_transaction_locked(&self) -> Result<(), String> {
@@ -288,8 +333,8 @@ impl CleanRuntimeConfigurationStore {
             self.secrets.write_secret(account, "").await?;
         }
         remove_optional_file(&self.claim_journal_path()).await?;
-        *self.refresh_error.lock().await =
-            Some("claim transaction recovered after interruption".to_string());
+        self.record_refresh_error("claim transaction recovered after interruption")
+            .await;
         self.generation.store(journal.generation, Ordering::Release);
         Ok(())
     }

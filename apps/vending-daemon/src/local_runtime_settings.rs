@@ -112,6 +112,35 @@ impl LocalRuntimeSettingsStore {
             .map(|_| ())
     }
 
+    pub async fn set_scanner_protocol(
+        &self,
+        protocol: Option<ScannerProtocolParameters>,
+    ) -> Result<u64, String> {
+        if let Some(protocol) = protocol.as_ref() {
+            if !(1_200..=230_400).contains(&protocol.baud_rate) {
+                return Err("scanner baud rate is outside the supported range".to_string());
+            }
+        }
+        let _guard = self.lock.lock().await;
+        let mut settings = self.load_unlocked().await?;
+        settings.scanner_protocol = protocol;
+        settings.revision = settings.revision.saturating_add(1);
+        self.write_unlocked(&settings).await?;
+        Ok(settings.revision)
+    }
+
+    pub async fn set_audio_preferences(&self, audio: AudioPreferences) -> Result<u64, String> {
+        if !(0.0..=1.0).contains(&audio.volume) {
+            return Err("audio volume must be between zero and one".to_string());
+        }
+        let _guard = self.lock.lock().await;
+        let mut settings = self.load_unlocked().await?;
+        settings.audio = audio;
+        settings.revision = settings.revision.saturating_add(1);
+        self.write_unlocked(&settings).await?;
+        Ok(settings.revision)
+    }
+
     async fn load_unlocked(&self) -> Result<LocalRuntimeSettings, String> {
         let content = match fs::read_to_string(&self.path).await {
             Ok(content) => content,
@@ -239,5 +268,35 @@ mod tests {
             .await
             .expect("settings file");
         assert!(!persisted_json.contains("COM"));
+    }
+
+    #[tokio::test]
+    async fn persists_only_scanner_protocol_and_audio_preferences_as_local_settings() {
+        let temp = tempfile::tempdir().expect("temp");
+        let store = LocalRuntimeSettingsStore::new(temp.path().join("vending-daemon"));
+
+        store
+            .set_scanner_protocol(Some(ScannerProtocolParameters {
+                baud_rate: 115_200,
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Lf,
+            }))
+            .await
+            .expect("save scanner protocol");
+        store
+            .set_audio_preferences(AudioPreferences {
+                volume: 0.45,
+                cues_enabled: true,
+                presence_cues_enabled: true,
+                transaction_cues_enabled: false,
+            })
+            .await
+            .expect("save audio preferences");
+
+        let settings = store.load().await.expect("load settings");
+        assert_eq!(settings.scanner_protocol.expect("protocol").baud_rate, 115_200);
+        assert_eq!(settings.audio.volume, 0.45);
+        let persisted = fs::read_to_string(store.path()).await.expect("settings file");
+        assert!(!persisted.contains("endpointId"));
+        assert!(!persisted.contains("COM"));
     }
 }
