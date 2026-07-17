@@ -423,12 +423,14 @@ jobs:
           })}\n`, { mode: 0o600 });
           NODE
 
-      - name: Deploy Current Vending Daemon To Overlay
+      - name: Deploy Current Windows Runtime To Overlay
         run: |
           set -euo pipefail
           runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
           daemon="$runtime_dir/vending-daemon.exe"
-          test -f "$daemon"
+          machine="$runtime_dir/machine.exe"
+          webview_loader="$runtime_dir/WebView2Loader.dll"
+          test -f "$daemon" -a -f "$machine" -a -f "$webview_loader"
           endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)')"
           endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))')"
           ssh_options=(
@@ -444,7 +446,9 @@ jobs:
           )
           target="${WINDOWS_SSH_USER}@${endpoint_host}"
           scp -O -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
-          remote_script='$ErrorActionPreference = "Stop"; $daemon = "C:\VEM\bringup\vending-daemon.exe"; $manifestPath = "C:\ProgramData\VEM\factory\factory-runtime-manifest.json"; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination $daemon -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Force; $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json; $component = @($manifest.components | Where-Object { $_.component -eq "daemon" }); if ($component.Count -ne 1) { throw "Factory runtime manifest daemon component is missing or ambiguous" }; $component[0].sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $daemon).Hash.ToLowerInvariant(); [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false)); Start-Service -Name "VemVendingDaemon"'
+          scp -O -P "$endpoint_port" "${ssh_options[@]}" "$machine" "$target:C:/Windows/Temp/vem-current-machine.exe"
+          scp -O -P "$endpoint_port" "${ssh_options[@]}" "$webview_loader" "$target:C:/Windows/Temp/vem-current-WebView2Loader.dll"
+          remote_script='$ErrorActionPreference = "Stop"; $runtimeRoot = "C:\VEM\bringup"; $daemon = Join-Path $runtimeRoot "vending-daemon.exe"; $machine = Join-Path $runtimeRoot "machine.exe"; $webviewLoader = Join-Path $runtimeRoot "WebView2Loader.dll"; $manifestPath = "C:\ProgramData\VEM\factory\factory-runtime-manifest.json"; Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue; Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination $daemon -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-machine.exe" -Destination $machine -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-WebView2Loader.dll" -Destination $webviewLoader -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe","C:\Windows\Temp\vem-current-machine.exe","C:\Windows\Temp\vem-current-WebView2Loader.dll" -Force; $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json; foreach ($entry in @(@{ component = "daemon"; path = $daemon }, @{ component = "ui"; path = $machine })) { $component = @($manifest.components | Where-Object { $_.component -eq $entry.component }); if ($component.Count -ne 1) { throw "Factory runtime manifest $($entry.component) component is missing or ambiguous" }; $component[0].sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.path).Hash.ToLowerInvariant() }; [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false)); Start-Service -Name "VemVendingDaemon"; Start-ScheduledTask -TaskName "VEMMachineUI"'
           encoded_script="$(printf '%s' "$remote_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
           ssh -p "$endpoint_port" "${ssh_options[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded_script"
 
