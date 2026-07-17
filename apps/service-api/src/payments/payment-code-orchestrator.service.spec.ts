@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
+import type {
+  PaymentCodeCapableProvider,
+  PaymentProviderRuntimeConfig,
+} from "./payment-provider.interface";
 
+import { MockPaymentProvider } from "./mock-payment.provider";
 import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
 
 const baseConfig: PaymentProviderRuntimeConfig = {
@@ -24,6 +28,7 @@ type OrchestratorPrivateMethods = {
 function makeHarness(overrides?: {
   config?: PaymentProviderRuntimeConfig;
   provider?: Record<string, unknown>;
+  providerInstance?: PaymentCodeCapableProvider;
   attempt?: Record<string, unknown>;
 }) {
   let attempt = {
@@ -100,7 +105,7 @@ function makeHarness(overrides?: {
     replayed: false,
   });
 
-  const provider = {
+  const defaultProvider = {
     chargePaymentCode: vi.fn().mockResolvedValue({
       status: "succeeded",
       providerTradeNo: "ALI-TXN-001",
@@ -121,6 +126,7 @@ function makeHarness(overrides?: {
     }),
     ...overrides?.provider,
   };
+  const provider = overrides?.providerInstance ?? defaultProvider;
   const registry = {
     getPaymentCodeProvider: vi.fn().mockReturnValue(provider),
   };
@@ -194,6 +200,44 @@ describe("PaymentCodeOrchestratorService", () => {
       }),
     );
     expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the test provider through the normal scanner submit and payment transition", async () => {
+    const mockProvider = new MockPaymentProvider({
+      paymentMockEnabled: true,
+      paymentWebhookBaseUrl: "http://localhost:3000/api/payments/webhooks",
+    } as never);
+    const { service, paymentsService } = makeHarness({
+      config: {
+        providerCode: "mock",
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      },
+      providerInstance: mockProvider,
+    });
+
+    const result = await service.submit({
+      orderNo: "ORD001",
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-mock-serial",
+      source: "serial_text",
+      clientIp: "127.0.0.1",
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      nextAction: "dispensing",
+    });
+    expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "payment-1",
+        providerTradeNo: "MOCK-CODE-PCA001",
+        status: "succeeded",
+      }),
+    );
   });
 
   it("does not return dispensing when provider success cannot be safely applied", async () => {

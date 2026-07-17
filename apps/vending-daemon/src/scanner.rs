@@ -1,4 +1,5 @@
 use crate::events::DaemonEvent;
+use crate::transaction::{ArmedPaymentCode, PaymentCodeScanArmer};
 use std::{
     future::Future,
     sync::{
@@ -24,14 +25,16 @@ pub struct ScannerRuntime {
     config: ScannerRuntimeConfig,
     runtime_generation: u64,
     shutdown: CancellationToken,
-    tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    tx_raw: mpsc::Sender<ArmedPaymentCode>,
+    payment_code_scan_armer: PaymentCodeScanArmer,
     tx_events: broadcast::Sender<DaemonEvent>,
 }
 
 #[derive(Clone)]
 pub struct ScannerRuntimeController {
-    tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    tx_raw: mpsc::Sender<ArmedPaymentCode>,
     tx_events: broadcast::Sender<DaemonEvent>,
+    payment_code_scan_armer: PaymentCodeScanArmer,
     state: std::sync::Arc<tokio::sync::Mutex<Option<RunningScannerRuntime>>>,
     next_generation: Arc<AtomicU64>,
 }
@@ -45,12 +48,14 @@ struct RunningScannerRuntime {
 
 impl ScannerRuntimeController {
     pub fn new(
-        tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+        tx_raw: mpsc::Sender<ArmedPaymentCode>,
         tx_events: broadcast::Sender<DaemonEvent>,
+        payment_code_scan_armer: PaymentCodeScanArmer,
     ) -> Self {
         Self {
             tx_raw,
             tx_events,
+            payment_code_scan_armer,
             state: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             next_generation: Arc::new(AtomicU64::new(1)),
         }
@@ -132,6 +137,7 @@ impl ScannerRuntimeController {
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
+            self.payment_code_scan_armer.clone(),
         );
         *state = Some(RunningScannerRuntime {
             config,
@@ -155,6 +161,7 @@ impl ScannerRuntimeController {
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
+            self.payment_code_scan_armer.clone(),
         );
         let task = tokio::spawn(runtime.run());
         let readiness = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -216,9 +223,10 @@ impl ScannerRuntimeController {
 impl ScannerRuntime {
     pub fn new(
         config: ScannerRuntimeConfig,
-        tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+        tx_raw: mpsc::Sender<ArmedPaymentCode>,
         tx_events: broadcast::Sender<DaemonEvent>,
         shutdown: CancellationToken,
+        payment_code_scan_armer: PaymentCodeScanArmer,
     ) -> Self {
         Self::with_generation(config, 1, tx_raw, tx_events, shutdown)
     }
@@ -236,6 +244,7 @@ impl ScannerRuntime {
             shutdown,
             tx_raw,
             tx_events,
+            payment_code_scan_armer,
         }
     }
 
@@ -399,7 +408,14 @@ impl ScannerRuntime {
                             source: self.config.source.clone(),
                             scanned_at_ms: raw.scanned_at_ms,
                         });
-                        if let Err(error) = self.tx_raw.send(raw).await {
+                        let Some(arm) = self
+                            .payment_code_scan_armer
+                            .consume_at(raw.scanned_at_ms)
+                            .await
+                        else {
+                            continue;
+                        };
+                        if let Err(error) = self.tx_raw.send(ArmedPaymentCode { raw, arm }).await {
                             return Err(format!("submit scanner code failed: {error}"));
                         }
                     }
@@ -430,6 +446,7 @@ mod tests {
             raw_tx,
             event_tx,
             shutdown.clone(),
+            PaymentCodeScanArmer::default(),
         );
         let handle = tokio::spawn(runtime.run());
 
@@ -461,6 +478,7 @@ mod tests {
             raw_tx,
             event_tx,
             shutdown.clone(),
+            PaymentCodeScanArmer::default(),
         );
 
         let handle = tokio::spawn(runtime.run());
@@ -487,7 +505,8 @@ mod tests {
     async fn scanner_controller_restores_previous_runtime_when_reconfigure_fails() {
         let (raw_tx, _raw_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(16);
-        let controller = ScannerRuntimeController::new(raw_tx, event_tx);
+        let controller =
+            ScannerRuntimeController::new(raw_tx, event_tx, PaymentCodeScanArmer::default());
         let disabled = ScannerRuntimeConfig {
             port_path: None,
             baud_rate: 9_600,

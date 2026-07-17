@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use vending_daemon::{
     events::DaemonEvent,
     scanner::{ScannerRuntime, ScannerRuntimeConfig},
+    transaction::PaymentCodeScanArmer,
 };
 
 #[tokio::test]
@@ -18,6 +19,7 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
     let (raw_tx, mut raw_rx) = mpsc::channel(4);
     let (events_tx, mut events_rx) = broadcast::channel(8);
     let shutdown = CancellationToken::new();
+    let payment_code_scan_armer = PaymentCodeScanArmer::default();
     let runtime = ScannerRuntime::new(
         ScannerRuntimeConfig {
             port_path: Some(scanner_pty.slave_path.to_string_lossy().to_string()),
@@ -28,6 +30,7 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         raw_tx,
         events_tx,
         shutdown.clone(),
+        payment_code_scan_armer.clone(),
     );
     let task = tokio::spawn(runtime.run());
 
@@ -42,6 +45,29 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         }
     }
 
+    scanner_pty.write(b"stale-before-arm\r\n").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
+            .await
+            .is_err(),
+        "a complete pre-arm frame must not enter the payment path"
+    );
+    let stale_event = loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("stale scanner event timeout")
+            .expect("scanner event channel closed");
+        if matches!(event, DaemonEvent::ScannerCode { .. }) {
+            break event;
+        }
+    };
+    let stale_public_event = serde_json::to_string(&stale_event).expect("serialize stale event");
+    assert!(stale_public_event.contains("stal****-arm"));
+    assert!(!stale_public_event.contains("stale-before-arm"));
+    payment_code_scan_armer
+        .arm_for_order("ORDER-SCANNER-PTY")
+        .await;
+
     scanner_pty
         .write(b"\xffinvalid\r\n621234567890123456\r\n")
         .await;
@@ -49,8 +75,8 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         .await
         .expect("valid scanner frame timeout")
         .expect("scanner raw channel closed");
-    assert_eq!(raw.auth_code, "621234567890123456");
-    assert_eq!(raw.masked_code, "6212****3456");
+    assert_eq!(raw.raw.auth_code, "621234567890123456");
+    assert_eq!(raw.raw.masked_code, "6212****3456");
 
     let event = loop {
         let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())

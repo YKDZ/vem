@@ -29,7 +29,9 @@ use crate::{
         LocalStateStore,
     },
     stock_upload::StockMovementUploadRuntime,
-    transaction::{is_active_transaction, TransactionStateMachine},
+    transaction::{
+        is_active_transaction, ArmedPaymentCode, PaymentCodeScanArmer, TransactionStateMachine,
+    },
     vision::VisionSupervisor,
 };
 
@@ -145,9 +147,14 @@ async fn run_console_cycle(
         Some(data_dir.join("logs").join("serial-protocol.jsonl")),
     )?;
 
-    let (tx_raw, rx_raw) = mpsc::channel(16);
+    let (tx_raw, rx_raw) = mpsc::channel::<ArmedPaymentCode>(16);
     let (events_tx, _) = broadcast::channel(64);
-    let scanner_runtime = ScannerRuntimeController::new(tx_raw.clone(), events_tx.clone());
+    let payment_code_scan_armer = PaymentCodeScanArmer::default();
+    let scanner_runtime = ScannerRuntimeController::new(
+        tx_raw.clone(),
+        events_tx.clone(),
+        payment_code_scan_armer.clone(),
+    );
     scanner_runtime
         .start(scanner_runtime_config(
             &settings,
@@ -183,10 +190,15 @@ async fn run_console_cycle(
             .map(|value| value.profile.machine.code.to_string()),
         events_tx.clone(),
     )
+    .with_payment_code_scan_armer(payment_code_scan_armer)
     .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
         status_cache.clone(),
         state.clone(),
     ));
+    // Reconcile a recovered waiting-payment session before the scanner watcher
+    // can consume any complete serial frame. A refresh failure preserves the
+    // local session and its arm, matching ordinary transaction recovery.
+    let _ = transaction.restore_current().await;
     let ui = ipc::UiRuntimeServices {
         backend: backend.clone(),
         transaction,
@@ -226,16 +238,8 @@ async fn run_console_cycle(
     ));
     let payment_watcher = tokio::spawn(run_payment_code_watcher(
         rx_raw,
-        state.clone(),
-        events_tx.clone(),
+        ipc_ctx.ui.transaction.clone(),
         ipc_ctx.ui.status_cache.clone(),
-        profile
-            .as_ref()
-            .map(|value| value.profile.machine.code.to_string()),
-        credentials
-            .as_ref()
-            .map(|value| value.machine_secret.clone()),
-        backend.clone(),
         stop_token.clone(),
     ));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
@@ -688,36 +692,28 @@ fn scanner_unavailable(
 }
 
 async fn run_payment_code_watcher(
-    mut rx: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
-    state: LocalStateStore,
-    events: broadcast::Sender<DaemonEvent>,
+    mut rx: mpsc::Receiver<ArmedPaymentCode>,
+    machine: TransactionStateMachine,
     status_cache: ipc::RuntimeStatusCache,
-    machine_code: Option<String>,
-    machine_secret: Option<String>,
-    backend: Arc<BackendClient>,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
-    let Some(machine_code) = machine_code else {
-        return Ok(());
-    };
-    if machine_secret.is_none() {
-        return Ok(());
-    }
-    let machine = TransactionStateMachine::new(state.clone(), backend, Some(machine_code), events)
-        .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
-            status_cache.clone(),
-            state,
-        ));
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            code = rx.recv() => {
-                let Some(code) = code else { return Ok(()); };
-                let Ok(Some(snapshot)) = machine.restore_current().await else { continue; };
-                if snapshot.order_no.is_none() { continue; }
+            scan = rx.recv() => {
+                let Some(scan) = scan else { return Ok(()); };
                 let health = status_cache.scanner.read().await.clone();
                 if health.online && health.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT {
-                    let _ = machine.submit_payment_code(code, vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT, Some(health)).await;
+                    let _ = machine
+                        .submit_armed_payment_code(
+                            scan.arm,
+                            scan.raw,
+                            vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
+                            Some(health),
+                        )
+                        .await;
+                } else {
+                    machine.discard_armed_payment_code(&scan.arm).await;
                 }
             }
         }

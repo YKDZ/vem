@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -23,6 +24,18 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
 describe("installed kiosk sale preflight", () => {
+  it("proves payment-code acceptance cannot use development submit intents", () => {
+    const acceptance = readFileSync(
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
+      "utf8",
+    );
+
+    assert.match(acceptance, /--scanner-code-file/);
+    assert.doesNotMatch(acceptance, /dev-submit-payment-code/);
+    assert.doesNotMatch(acceptance, /manual_dev/);
+    assert.doesNotMatch(acceptance, /browser_test/);
+  });
+
   it("selects a physically available catalog category", () => {
     const steps = buildInstalledKioskSaleScenarioSteps("vm-normal");
     assert.match(JSON.stringify(steps), /catalog-category.*:not\(:disabled\)/);

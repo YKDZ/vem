@@ -202,6 +202,17 @@ mod tests {
     }
 
     #[test]
+    fn scanner_framer_discards_a_malformed_frame_before_the_next_attempt() {
+        let mut framer = ScannerFramer::default();
+        assert!(framer.push_bytes(b"6212\xffbad\r\n", 1_000).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 1_001);
+
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
     fn public_event_does_not_serialize_auth_code() {
         let event = PublicScannerEvent {
             masked_code: "6212****3456".to_string(),

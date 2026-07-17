@@ -360,7 +360,7 @@ pub struct IpcContext {
     pub state: LocalStateStore,
     pub hardware: HardwareSupervisor,
     pub events: broadcast::Sender<DaemonEvent>,
-    pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    pub runtime_tx: mpsc::Sender<crate::transaction::ArmedPaymentCode>,
     pub scanner_runtime: ScannerRuntimeController,
     pub serial_device_platform: device_binding::SharedSerialDevicePlatform,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
@@ -3124,7 +3124,8 @@ mod tests {
         let sources = Arc::new(RuntimeSources::new(data_dir.clone(), secrets.clone()));
         let backend = Arc::new(BackendClient::new(api_base_url));
         let (events, _) = broadcast::channel(8);
-        let (raw_tx, _) = mpsc::channel(2);
+        let (raw_tx, _) = mpsc::channel::<crate::transaction::ArmedPaymentCode>(2);
+        let payment_code_scan_armer = crate::transaction::PaymentCodeScanArmer::default();
         let cache = RuntimeStatusCache::new(None, state.clone()).await;
         let transaction =
             TransactionStateMachine::new(state.clone(), backend.clone(), None, events.clone());
@@ -3139,7 +3140,11 @@ mod tests {
                 )),
                 events: events.clone(),
                 runtime_tx: raw_tx.clone(),
-                scanner_runtime: ScannerRuntimeController::new(raw_tx, events),
+                scanner_runtime: ScannerRuntimeController::new(
+                    raw_tx,
+                    events,
+                    payment_code_scan_armer,
+                ),
                 serial_device_platform: Arc::new(device_binding::WindowsSerialDevicePlatform),
                 device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
                 sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),

@@ -25,10 +25,17 @@ import type {
 
 import { AppConfigService } from "../config/app-config.service";
 
+type MockPaymentCodeTrade = {
+  providerTradeNo: string;
+  paidAt: Date;
+  status: "succeeded" | "reversed";
+};
+
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
   readonly code = "mock";
   readonly supportsPartialRefund = true;
+  private readonly paymentCodeTrades = new Map<string, MockPaymentCodeTrade>();
 
   constructor(
     @Inject(AppConfigService) private readonly config: AppConfigService,
@@ -51,15 +58,46 @@ export class MockPaymentProvider implements PaymentProvider {
   ): Promise<ProviderPaymentCodeChargeResult> {
     if (!this.config.paymentMockEnabled)
       throw new Error("mock payment code is disabled");
-    return {
-      status: "succeeded",
+    const existing = this.paymentCodeTrades.get(input.paymentNo);
+    if (existing) {
+      return this.paymentCodeResult(input.paymentNo, existing);
+    }
+    const trade: MockPaymentCodeTrade = {
       providerTradeNo: `MOCK-CODE-${input.paymentNo}`,
       paidAt: new Date(),
+      status: "succeeded",
+    };
+    this.paymentCodeTrades.set(input.paymentNo, trade);
+    return this.paymentCodeResult(
+      input.paymentNo,
+      trade,
+      input.authCode.length,
+    );
+  }
+
+  private paymentCodeResult(
+    paymentNo: string,
+    trade: MockPaymentCodeTrade,
+    authCodeLength?: number,
+  ): ProviderPaymentCodeChargeResult {
+    if (trade.status === "reversed") {
+      return {
+        status: "reversed",
+        providerTradeNo: trade.providerTradeNo,
+        providerStatus: "TESTBED_SCANNER_REVERSED",
+        rawPayload: { provider: "mock", source: "payment_code", paymentNo },
+      };
+    }
+    return {
+      status: "succeeded",
+      providerTradeNo: trade.providerTradeNo,
+      paidAt: trade.paidAt,
       providerStatus: "TESTBED_SCANNER_ACCEPTED",
       rawPayload: {
         provider: "mock",
         source: "payment_code",
-        authCodeLength: input.authCode.length,
+        paymentNo,
+        ...(authCodeLength === undefined ? {} : { authCodeLength }),
       },
     };
   }
@@ -67,23 +105,38 @@ export class MockPaymentProvider implements PaymentProvider {
   async queryPaymentCode(
     input: ProviderPaymentCodeQueryInput,
   ): Promise<ProviderPaymentCodeQueryResult> {
-    return {
-      status: "succeeded",
-      providerTradeNo: input.providerTradeNo,
-      paidAt: new Date(),
-      providerStatus: "TESTBED_SCANNER_ACCEPTED",
-      rawPayload: { provider: "mock", source: "payment_code" },
-    };
+    const trade = this.paymentCodeTrades.get(input.paymentNo);
+    if (!trade || trade.providerTradeNo !== input.providerTradeNo) {
+      return {
+        status: "unknown",
+        providerTradeNo: input.providerTradeNo,
+        providerStatus: "TESTBED_SCANNER_TRADE_NOT_FOUND",
+        rawPayload: {
+          provider: "mock",
+          source: "payment_code",
+          paymentNo: input.paymentNo,
+        },
+      };
+    }
+    return this.paymentCodeResult(input.paymentNo, trade);
   }
 
   async reversePaymentCode(
-    _input: ProviderPaymentCodeReverseInput,
+    input: ProviderPaymentCodeReverseInput,
   ): Promise<ProviderPaymentCodeReverseResult> {
+    const trade = this.paymentCodeTrades.get(input.paymentNo);
+    if (trade && trade.providerTradeNo === input.providerTradeNo) {
+      trade.status = "reversed";
+    }
     return {
       status: "reversed",
       recall: true,
       providerStatus: "TESTBED_REVERSED",
-      rawPayload: { provider: "mock", source: "payment_code" },
+      rawPayload: {
+        provider: "mock",
+        source: "payment_code",
+        paymentNo: input.paymentNo,
+      },
     };
   }
 

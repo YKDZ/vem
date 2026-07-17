@@ -33,6 +33,100 @@ struct CheckoutCreationRecovery {
 pub(crate) type PaymentCodeSubmitGuard =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
+/// A scanner arm belongs to one current payment-code checkout attempt. The
+/// scanner supplies its capture timestamp, so queued bytes from before a new
+/// order was armed cannot be attached to that new order by a delayed watcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentCodeScanArm {
+    order_no: String,
+    attempt_id: String,
+    armed_at_ms: u128,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArmedPaymentCode {
+    pub raw: vending_core::scanner::RawPaymentCode,
+    pub arm: PaymentCodeScanArm,
+}
+
+#[derive(Clone, Debug)]
+enum PaymentCodeScanArmState {
+    Armed(PaymentCodeScanArm),
+    Consumed(PaymentCodeScanArm),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PaymentCodeScanArmer {
+    state: Arc<Mutex<Option<PaymentCodeScanArmState>>>,
+}
+
+impl PaymentCodeScanArmer {
+    pub async fn arm_for_order(&self, order_no: &str) {
+        self.arm(order_no).await;
+    }
+
+    async fn arm(&self, order_no: &str) {
+        self.arm_at(order_no, crate::state::store::now_millis())
+            .await;
+    }
+
+    async fn arm_at(&self, order_no: &str, armed_at_ms: u128) {
+        let mut state = self.state.lock().await;
+        if matches!(
+            state.as_ref(),
+            Some(PaymentCodeScanArmState::Armed(arm) | PaymentCodeScanArmState::Consumed(arm))
+                if arm.order_no == order_no
+        ) {
+            return;
+        }
+        *state = Some(PaymentCodeScanArmState::Armed(PaymentCodeScanArm {
+            order_no: order_no.to_string(),
+            attempt_id: Uuid::new_v4().simple().to_string(),
+            armed_at_ms,
+        }));
+    }
+
+    async fn clear(&self) {
+        *self.state.lock().await = None;
+    }
+
+    async fn clear_matching(&self, expected: &PaymentCodeScanArm) {
+        let mut state = self.state.lock().await;
+        let matches_expected = matches!(
+            state.as_ref(),
+            Some(PaymentCodeScanArmState::Armed(arm) | PaymentCodeScanArmState::Consumed(arm))
+                if arm == expected
+        );
+        if matches_expected {
+            *state = None;
+        }
+    }
+
+    /// Consumes an arm only when the scanner decoded the complete frame after
+    /// that exact order/attempt was armed. A consumed arm remains observable
+    /// until the transaction starts or rejects submission, preventing a
+    /// refresh from re-arming a duplicate frame in the intervening window.
+    pub(crate) async fn consume_at(&self, scanned_at_ms: u128) -> Option<PaymentCodeScanArm> {
+        let mut state = self.state.lock().await;
+        let Some(PaymentCodeScanArmState::Armed(arm)) = state.as_ref() else {
+            return None;
+        };
+        if scanned_at_ms < arm.armed_at_ms {
+            return None;
+        }
+        let arm = arm.clone();
+        *state = Some(PaymentCodeScanArmState::Consumed(arm.clone()));
+        Some(arm)
+    }
+
+    async fn is_consumed(&self, expected: &PaymentCodeScanArm) -> bool {
+        matches!(
+            self.state.lock().await.as_ref(),
+            Some(PaymentCodeScanArmState::Consumed(arm)) if arm == expected
+        )
+    }
+}
+
 #[derive(Clone)]
 pub struct TransactionStateMachine {
     state: LocalStateStore,
@@ -40,6 +134,7 @@ pub struct TransactionStateMachine {
     events: broadcast::Sender<DaemonEvent>,
     machine_code: Option<String>,
     payment_code_submit_guard: Option<PaymentCodeSubmitGuard>,
+    payment_code_scan_armer: PaymentCodeScanArmer,
     /// Owns the complete checkout creation critical section.  The local
     /// session is durable, but two IPC requests can both observe it as empty
     /// before either has received the platform's order response.
@@ -59,6 +154,7 @@ impl TransactionStateMachine {
             events,
             machine_code,
             payment_code_submit_guard: None,
+            payment_code_scan_armer: PaymentCodeScanArmer::default(),
             checkout_creation_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -68,33 +164,75 @@ impl TransactionStateMachine {
         self
     }
 
+    pub(crate) fn with_payment_code_scan_armer(mut self, armer: PaymentCodeScanArmer) -> Self {
+        self.payment_code_scan_armer = armer;
+        self
+    }
+
     pub async fn restore_current(
         &self,
     ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
-        if let Some(current) = self.refresh_current_from_backend().await? {
-            return Ok(Some(current));
-        }
-        let Some(recovery) = self
-            .state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(None);
-        };
+        let current = if let Some(current) = self.refresh_current_from_backend().await? {
+            Some(current)
+        } else {
+            let Some(recovery) = self
+                .state
+                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+                .await
+                .map_err(|error| error.to_string())?
+            else {
+                self.sync_payment_code_scan_arm(None).await;
+                return Ok(None);
+            };
 
-        // The platform's machine-order idempotency key is the durable source
-        // of truth across a daemon restart. Replaying it either returns the
-        // already-created order or creates the order exactly once.
-        self.create_order_with_idempotency(
-            &recovery.payment_method,
-            recovery.payment_provider_code,
-            recovery.items,
-            recovery.profile_snapshot,
-            Some(&recovery.idempotency_key),
-        )
-        .await
-        .map(Some)
+            // The platform's machine-order idempotency key is the durable source
+            // of truth across a daemon restart. Replaying it either returns the
+            // already-created order or creates the order exactly once.
+            Some(
+                self.create_order_with_idempotency(
+                    &recovery.payment_method,
+                    recovery.payment_provider_code,
+                    recovery.items,
+                    recovery.profile_snapshot,
+                    Some(&recovery.idempotency_key),
+                )
+                .await?,
+            )
+        };
+        self.sync_payment_code_scan_arm(current.as_ref()).await;
+        Ok(current)
+    }
+
+    pub(crate) async fn submit_armed_payment_code(
+        &self,
+        arm: PaymentCodeScanArm,
+        raw: vending_core::scanner::RawPaymentCode,
+        source: &str,
+        scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        if !self.payment_code_scan_armer.is_consumed(&arm).await {
+            return Err("IGNORED_PAYMENT_CODE_ARM_MISMATCH".to_string());
+        }
+        let result = self
+            .submit_payment_code_scoped(raw, source, scanner_health, Some(&arm))
+            .await;
+        self.payment_code_scan_armer.clear_matching(&arm).await;
+        result
+    }
+
+    pub(crate) async fn discard_armed_payment_code(&self, arm: &PaymentCodeScanArm) {
+        self.payment_code_scan_armer.clear_matching(arm).await;
+    }
+
+    async fn sync_payment_code_scan_arm(
+        &self,
+        current: Option<&vending_core::domain::InternalCurrentTransactionSnapshot>,
+    ) {
+        let Some(order_no) = current.and_then(payment_code_waiting_order_no) else {
+            self.payment_code_scan_armer.clear().await;
+            return;
+        };
+        self.payment_code_scan_armer.arm(order_no).await;
     }
 
     async fn refresh_current_from_backend(
@@ -184,9 +322,13 @@ impl TransactionStateMachine {
         let _checkout_creation = self.checkout_creation_lock.lock().await;
         if let Some(current) = self.refresh_current_from_backend().await? {
             if is_active_transaction(&current) {
+                self.sync_payment_code_scan_arm(Some(&current)).await;
                 return Ok(current);
             }
         }
+        // A new order must never inherit a scanner frame or arm from a
+        // terminal/replaced transaction.
+        self.payment_code_scan_armer.clear().await;
 
         let machine_code = self
             .machine_code
@@ -296,6 +438,7 @@ impl TransactionStateMachine {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "current transaction missing after create order".to_string())?;
+        self.sync_payment_code_scan_arm(Some(&current)).await;
         self.emit_transaction_changed(&order_no, &current);
         Ok(current)
     }
@@ -304,6 +447,9 @@ impl TransactionStateMachine {
         &self,
         order_no: &str,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        // Cancel starts by invalidating a captured frame, rather than waiting
+        // for the backend response to make the session terminal.
+        self.payment_code_scan_armer.clear().await;
         let machine_code = self
             .machine_code
             .as_deref()
@@ -322,6 +468,40 @@ impl TransactionStateMachine {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "current transaction missing after cancel order".to_string())?;
 
+        self.sync_payment_code_scan_arm(Some(&current)).await;
+        self.emit_transaction_changed(order_no, &current);
+        Ok(current)
+    }
+
+    pub async fn mark_mock_payment(
+        &self,
+        order_no: &str,
+        succeed: bool,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        self.payment_code_scan_armer.clear().await;
+        let machine_code = self
+            .machine_code
+            .as_deref()
+            .ok_or_else(|| "machine code is required".to_string())?;
+
+        self.backend.mark_mock_payment(order_no, succeed).await?;
+        let status_json = self
+            .backend
+            .get_order_status(machine_code, order_no)
+            .await?;
+        self.state
+            .apply_backend_order_status(order_no, status_json)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let current = self
+            .state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "current transaction missing after mock payment".to_string())?;
+
+        self.sync_payment_code_scan_arm(Some(&current)).await;
         self.emit_transaction_changed(order_no, &current);
         Ok(current)
     }
@@ -339,6 +519,17 @@ impl TransactionStateMachine {
         source: &str,
         scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        self.submit_payment_code_scoped(raw, source, scanner_health, None)
+            .await
+    }
+
+    async fn submit_payment_code_scoped(
+        &self,
+        raw: vending_core::scanner::RawPaymentCode,
+        source: &str,
+        scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
+        expected_arm: Option<&PaymentCodeScanArm>,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let machine_code = self
             .machine_code
             .as_deref()
@@ -351,30 +542,27 @@ impl TransactionStateMachine {
         let Some(snapshot) = snapshot else {
             return Err("NO_ACTIVE_TRANSACTION".to_string());
         };
-        if snapshot.payment_method.as_deref() != Some("payment_code") {
-            return Err("IGNORED_NON_PAYMENT_CODE_TRANSACTION".to_string());
-        }
-        if !matches!(
-            snapshot.next_action,
-            Some(InternalCheckoutFlowAction::WaitPayment)
-        ) {
-            return Err("IGNORED_TRANSACTION_NOT_WAITING_PAYMENT".to_string());
-        }
-        if let Some(guard) = &self.payment_code_submit_guard {
-            guard().await?;
-        }
-        if let Some(attempt) = snapshot.payment_code_attempt.as_ref() {
-            if matches!(
-                attempt.status.as_deref(),
-                Some("submitting" | "user_confirming" | "querying" | "processing")
-            ) {
-                return Err("ACTIVE_PAYMENT_CODE_ATTEMPT".to_string());
-            }
-        }
         let order_no = snapshot
             .order_no
             .clone()
             .ok_or_else(|| "ORDER_NO_MISSING".to_string())?;
+        if let Some(arm) = expected_arm {
+            if arm.order_no != order_no || !self.payment_code_scan_armer.is_consumed(arm).await {
+                return Err("IGNORED_PAYMENT_CODE_ARM_MISMATCH".to_string());
+            }
+        }
+        if payment_code_waiting_order_no(&snapshot) != Some(order_no.as_str()) {
+            return Err("IGNORED_TRANSACTION_NOT_WAITING_PAYMENT".to_string());
+        }
+        // The legacy development intent still reaches the normal transaction
+        // and Service API path, but it cannot leave the physical scanner arm
+        // live beside a direct submission.
+        if expected_arm.is_none() {
+            self.payment_code_scan_armer.clear().await;
+        }
+        if let Some(guard) = &self.payment_code_submit_guard {
+            guard().await?;
+        }
         let idempotency_key = self
             .state
             .begin_payment_code_attempt(
@@ -389,6 +577,9 @@ impl TransactionStateMachine {
                 StoreError::ActivePaymentCodeAttempt => "ACTIVE_PAYMENT_CODE_ATTEMPT".to_string(),
                 _ => error.to_string(),
             })?;
+        if let Some(arm) = expected_arm {
+            self.payment_code_scan_armer.clear_matching(arm).await;
+        }
 
         if let Some(current) = self
             .state
@@ -396,6 +587,7 @@ impl TransactionStateMachine {
             .await
             .map_err(|error| error.to_string())?
         {
+            self.sync_payment_code_scan_arm(Some(&current)).await;
             self.emit_transaction_changed(&order_no, &current);
         }
 
@@ -440,6 +632,7 @@ impl TransactionStateMachine {
                     .await
                     .map_err(|error| error.to_string())?
                 {
+                    self.sync_payment_code_scan_arm(Some(&current)).await;
                     self.emit_transaction_changed(&order_no, &current);
                 }
                 return Err(submit_error.unwrap_or_else(|| "BACKEND_SUBMIT_FAILED".to_string()));
@@ -511,6 +704,7 @@ impl TransactionStateMachine {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "CURRENT_TRANSACTION_MISSING".to_string())?;
 
+        self.sync_payment_code_scan_arm(Some(&current)).await;
         self.emit_transaction_changed(&order_no, &current);
         if should_follow_payment_code_attempt(&current) {
             self.spawn_payment_code_status_refresh(order_no);
@@ -552,13 +746,18 @@ impl TransactionStateMachine {
                 .await
                 .map_err(|error| error.to_string())?
             else {
+                self.payment_code_scan_armer.clear().await;
                 return Ok(());
             };
+            self.sync_payment_code_scan_arm(Some(&current)).await;
             self.emit_transaction_changed(&order_no, &current);
             if !should_follow_payment_code_attempt(&current) {
                 return Ok(());
             }
         }
+        // The local poll deadline is terminal for the scanner arm even when
+        // provider reconciliation continues on the Service API side.
+        self.payment_code_scan_armer.clear().await;
         Ok(())
     }
 
@@ -603,6 +802,21 @@ fn should_follow_payment_code_attempt(
                 "submitting" | "user_confirming" | "querying" | "processing"
             )
         })
+}
+
+fn payment_code_waiting_order_no(
+    current: &vending_core::domain::InternalCurrentTransactionSnapshot,
+) -> Option<&str> {
+    if current.payment_method.as_deref() != Some("payment_code")
+        || !matches!(
+            current.next_action,
+            Some(InternalCheckoutFlowAction::WaitPayment)
+        )
+        || current.payment_code_attempt.is_some()
+    {
+        return None;
+    }
+    current.order_no.as_deref()
 }
 
 pub fn is_active_transaction(
@@ -1615,5 +1829,191 @@ mod tests {
                 .and_then(|attempt| attempt.status.as_deref()),
             Some("querying")
         );
+    }
+
+    #[tokio::test]
+    async fn armed_serial_scan_creates_one_attempt_and_projects_success_once() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ARMED-SUCCESS",
+                payment_method: "payment_code",
+                payment_provider: Some("mock"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        let submit = Mock::given(method("POST"))
+            .and(path(
+                "/machine-orders/ORDER-ARMED-SUCCESS/payment-code/submit",
+            ))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORDER-ARMED-SUCCESS",
+                "paymentNo": "PAY-ARMED-SUCCESS",
+                "attemptNo": 1,
+                "status": "succeeded",
+                "nextAction": "dispensing",
+                "message": "支付成功，正在出货",
+                "canRetry": false,
+                "serverTime": "2026-06-10T00:00:00.000Z"
+            })))
+            .expect(1)
+            .mount_as_scoped(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-ARMED-SUCCESS/status"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORDER-ARMED-SUCCESS",
+                "machineCode": "M-1",
+                "orderStatus": "paid",
+                "nextAction": "dispensing",
+                "payment": {
+                    "paymentNo": "PAY-ARMED-SUCCESS",
+                    "method": "payment_code",
+                    "providerCode": "mock",
+                    "status": "succeeded",
+                    "paymentUrl": null
+                },
+                "paymentCodeAttempt": {
+                    "attemptNo": 1,
+                    "status": "succeeded",
+                    "maskedAuthCode": "2829****4955",
+                    "source": "serial_text",
+                    "idempotencyKey": "ORDER-ARMED-SUCCESS:attempt-1",
+                    "submittedAt": "2026-06-10T00:00:01.000Z",
+                    "lastCheckedAt": "2026-06-10T00:00:01.000Z",
+                    "canRetry": false,
+                    "message": "支付成功，正在出货"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            backend,
+            Some("M-1".to_string()),
+            events_tx,
+        );
+        machine
+            .payment_code_scan_armer
+            .arm_at("ORDER-ARMED-SUCCESS", 1_000)
+            .await;
+        let arm = machine
+            .payment_code_scan_armer
+            .consume_at(1_001)
+            .await
+            .expect("consume armed scanner frame");
+        assert!(machine
+            .payment_code_scan_armer
+            .consume_at(1_001)
+            .await
+            .is_none());
+
+        let current = machine
+            .submit_armed_payment_code(
+                arm,
+                vending_core::scanner::RawPaymentCode {
+                    auth_code: "2829123456784955".to_string(),
+                    masked_code: "2829****4955".to_string(),
+                    scanned_at_ms: 1_001,
+                },
+                vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
+                None,
+            )
+            .await
+            .expect("submit one armed payment-code attempt");
+
+        assert_eq!(
+            current.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+        assert_eq!(
+            current
+                .payment_code_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.status.as_deref()),
+            Some("succeeded")
+        );
+        drop(submit);
+    }
+
+    #[tokio::test]
+    async fn payment_code_scan_arm_rejects_pre_arm_and_duplicate_frames() {
+        let armer = PaymentCodeScanArmer::default();
+        armer.arm_at("ORDER-ARM-A", 1_000).await;
+
+        assert!(armer.consume_at(999).await.is_none());
+
+        let consumed = armer
+            .consume_at(1_000)
+            .await
+            .expect("frame observed after arm");
+        assert_eq!(consumed.order_no, "ORDER-ARM-A");
+        assert!(armer.is_consumed(&consumed).await);
+        assert!(armer.consume_at(1_001).await.is_none());
+
+        armer.clear_matching(&consumed).await;
+        assert!(!armer.is_consumed(&consumed).await);
+    }
+
+    #[tokio::test]
+    async fn payment_code_scan_arm_rejects_delayed_order_a_frame_after_order_b_is_armed() {
+        let armer = PaymentCodeScanArmer::default();
+        armer.arm_at("ORDER-ARM-A", 1_000).await;
+
+        // The scanner decoded this code for order A, but the watcher has not
+        // received its scoped event yet when order B replaces A.
+        let delayed_order_a = armer
+            .consume_at(1_001)
+            .await
+            .expect("order A frame is scoped at scanner receipt");
+        armer.arm_at("ORDER-ARM-B", 2_000).await;
+        assert!(!armer.is_consumed(&delayed_order_a).await);
+
+        let order_b = armer
+            .consume_at(2_000)
+            .await
+            .expect("order B frame observed after its arm");
+        assert_eq!(order_b.order_no, "ORDER-ARM-B");
+        assert!(armer.consume_at(2_001).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn payment_code_scan_arm_clear_removes_terminal_failure_cancel_and_next_order_state() {
+        let armer = PaymentCodeScanArmer::default();
+        armer.arm_at("ORDER-ARM-A", 1_000).await;
+        armer.clear().await;
+        assert!(armer.consume_at(1_001).await.is_none());
+
+        armer.arm_at("ORDER-ARM-B", 2_000).await;
+        let order_b = armer
+            .consume_at(2_001)
+            .await
+            .expect("new order is independently armed");
+        assert_eq!(order_b.order_no, "ORDER-ARM-B");
     }
 }
