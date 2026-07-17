@@ -955,10 +955,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
       "serial conformance prestart",
       { env: nonQueryEnvironment },
     );
-    runRemote(remote, buildInstalledKioskSerialActivationScript());
     await run(plan.fixtureCommand, "simulated hardware fixture", {
       env: nonQueryEnvironment,
     });
+    // Bring-up applies the fixture's machine profile and can restart device
+    // runtimes. Prove the production serial path is ready after that change,
+    // immediately before the customer journey begins.
+    runRemote(remote, buildInstalledKioskSerialActivationScript());
     launch = runRemote(remote, buildInstalledKioskSaleLaunchScript());
     if (
       launch?.prelaunch?.principal == null ||
