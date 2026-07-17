@@ -1,11 +1,11 @@
 import { onBeforeUnmount, ref } from "vue";
-import { useRouter } from "vue-router";
+
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 
 const MAINTENANCE_TAP_THRESHOLD = 7;
 const MAINTENANCE_TAP_RESET_MS = 1600;
 
 export function useMaintenanceEntry() {
-  const router = useRouter();
   const maintenanceTapCount = ref(0);
   let maintenanceTapResetTimer: number | null = null;
 
@@ -21,7 +21,10 @@ export function useMaintenanceEntry() {
     maintenanceTapCount.value += 1;
     if (maintenanceTapCount.value >= MAINTENANCE_TAP_THRESHOLD) {
       maintenanceTapCount.value = 0;
-      void router.push({ path: "/maintenance", query: { source: "operator" } });
+      void submitMachineNavigationIntent({
+        type: "operator.navigate",
+        target: { path: "/maintenance", query: { source: "operator" } },
+      });
       return;
     }
     maintenanceTapResetTimer = window.setTimeout(() => {

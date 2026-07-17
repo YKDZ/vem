@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
 
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
 import type { MachineCatalogItem } from "@/types/catalog";
@@ -26,12 +25,12 @@ import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
-const router = useRouter();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
 const machineStore = useMachineStore();
@@ -328,9 +327,12 @@ function toDisplayProduct(
 }
 
 async function openProductDetail(product: DisplayProduct): Promise<void> {
-  await router.push({
-    name: "product-detail",
-    params: { catalogKey: product.item.catalogKey },
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: {
+      name: "product-detail",
+      params: { catalogKey: product.item.catalogKey },
+    },
   });
 }
 

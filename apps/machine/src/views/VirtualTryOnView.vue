@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 
 import {
   managedMediaDiagnosticKey,
   resolveManagedMediaReference,
 } from "@/catalog/managed-media";
 import { useTryOnPreview } from "@/composables/useTryOnPreview";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 
 const route = useRoute();
-const router = useRouter();
 const catalogStore = useCatalogStore();
 const machineStore = useMachineStore();
 const { previewUrl, errorMessage, isStarting, startPreview, stopPreview } =
@@ -80,10 +80,13 @@ onBeforeUnmount(() => {
 
 async function exitTryOn(): Promise<void> {
   await stopPreview("user_exit");
-  await router.push({
-    name: "product-detail",
-    params: { catalogKey: catalogKey.value },
-    query: { variantId: variantId.value },
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: {
+      name: "product-detail",
+      params: { catalogKey: catalogKey.value },
+      query: { variantId: variantId.value },
+    },
   });
 }
 

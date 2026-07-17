@@ -5,7 +5,10 @@ import { createMemoryHistory, createRouter } from "vue-router";
 
 import { useCheckoutStore } from "@/stores/checkout";
 
-import { installTransactionRouteAuthority } from "./transaction-route-authority";
+import {
+  createMachineNavigationAuthority,
+  installTransactionRouteAuthority,
+} from "./transaction-route-authority";
 
 function activePaymentTransaction() {
   return {
@@ -35,6 +38,77 @@ function activePaymentTransaction() {
 describe("transaction route authority", () => {
   beforeEach(() => {
     window.localStorage.clear();
+  });
+
+  it("keeps a touched product journey ahead of vision departure and readiness refreshes", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/products/:id", name: "product-detail", component: {} },
+        { path: "/checkout", name: "checkout", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia, {
+      now: () => 1_000,
+    });
+
+    await authority.submit({
+      type: "customer.navigate",
+      target: { name: "product-detail", params: { id: "product-1" } },
+    });
+    await authority.submit({ type: "customer.touch", atMs: 1_000 });
+    await authority.submit({ type: "presence.departed" });
+    await authority.submit({
+      type: "readiness.navigate",
+      target: { name: "catalog" },
+    });
+
+    expect(router.currentRoute.value.name).toBe("product-detail");
+    expect(authority.trace.snapshot().map((record) => record.decision)).toEqual(
+      ["accepted", "accepted", "rejected", "rejected"],
+    );
+    expect(authority.trace.snapshot()[2]).toMatchObject({
+      intentType: "presence.departed",
+      reasonCode: "touchscreen_session_active",
+      transactionOrderNo: null,
+      readinessRevision: null,
+    });
+    authority.dispose();
+  });
+
+  it("starts the touchscreen customer session from the first direct pointer interaction", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/products/:id", name: "product-detail", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    await authority.submit({
+      type: "customer.navigate",
+      target: { name: "product-detail", params: { id: "product-1" } },
+    });
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await authority.submit({ type: "presence.departed" });
+
+    expect(router.currentRoute.value.name).toBe("product-detail");
+    expect(authority.trace.snapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intentType: "customer.touch",
+          reasonCode: "touchscreen_session_renewed",
+        }),
+      ]),
+    );
+    authority.dispose();
   });
 
   it("keeps an active daemon payment projection ahead of generic catalog navigation", async () => {

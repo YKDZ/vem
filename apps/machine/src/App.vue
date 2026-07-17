@@ -1,23 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
-import { RouterView, useRoute, useRouter } from "vue-router";
+import { RouterView, useRoute } from "vue-router";
 
 import ProtectedTouchKeyboard from "@/components/ProtectedTouchKeyboard.vue";
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
-import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
+import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
+import { router } from "@/router";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { maintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
 const route = useRoute();
-const router = useRouter();
 const cleanupCustomerEventSources = installCustomerEventSources({
   routeName: computed(() => route.name),
 });
 const cleanupActiveTransactionSync = installActiveTransactionSync();
-useReturnHomeOnCustomerDeparture();
+installPresenceDepartureNavigation();
 installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 
@@ -44,12 +45,15 @@ function isDevDirectRouteAllowed(): boolean {
   return new URLSearchParams(window.location.search).get("uiDebug") === "1";
 }
 
-onMounted(async () => {
+onMounted(() => {
   if (isDevDirectRouteAllowed()) {
     return;
   }
   if (route.name !== "boot") {
-    await router.replace({ name: "boot" });
+    void submitMachineNavigationIntent({
+      type: "startup.navigate",
+      target: { name: "boot" },
+    });
   }
 });
 </script>

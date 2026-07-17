@@ -7,9 +7,8 @@ import {
   type Ref,
   type WatchStopHandle,
 } from "vue";
-import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
-import { useCheckoutStore } from "@/stores/checkout";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
 
@@ -18,12 +17,6 @@ import { recordCustomerSourceFact } from "./useCustomerEventSources";
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS = 20_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
-const RETURN_HOME_ROUTE_NAMES = new Set([
-  "product-detail",
-  "virtual-try-on",
-  "checkout",
-]);
-
 const FESTIVAL_MAP: Record<string, string> = {
   spring_festival: "spring_festival",
   new_years_day: "new_years_day",
@@ -476,35 +469,14 @@ export function usePresenceInteraction(
   return useCustomerPresenceSession(options);
 }
 
-export function useReturnHomeOnCustomerDeparture(
-  options: {
-    returnRoute?: RouteLocationRaw;
-    routeNames?: Set<string>;
-  } = {},
-): void {
-  const route = useRoute();
-  const router = useRouter();
+export function installPresenceDepartureNavigation(): void {
   const session = useCustomerPresenceSession();
-  const checkoutStore = useCheckoutStore();
-  const routeNames = options.routeNames ?? RETURN_HOME_ROUTE_NAMES;
-  const returnRoute = options.returnRoute ?? { name: "catalog" };
 
   watch(
     () => session.state.value.personPresent,
     (personPresent, wasPresent) => {
       if (personPresent || !wasPresent) return;
-      if (checkoutStore.loading) return;
-      if (checkoutStore.customerCheckoutView.stage !== "none") return;
-      const routeName =
-        typeof route.name === "string" ? route.name : String(route.name ?? "");
-      if (
-        routeName === "checkout" &&
-        checkoutStore.selectedPaymentOptionKey !== null
-      ) {
-        return;
-      }
-      if (!routeNames.has(routeName)) return;
-      void router.replace(returnRoute);
+      void submitMachineNavigationIntent({ type: "presence.departed" });
     },
   );
 }

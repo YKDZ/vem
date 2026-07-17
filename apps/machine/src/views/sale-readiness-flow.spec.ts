@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, defineComponent, h, nextTick, ref, type App } from "vue";
+import { createApp, nextTick, type App } from "vue";
 
 const {
   routerPushMock,
@@ -20,6 +20,7 @@ const {
   createOrderMock,
   subscribeVisionProfilesMock,
   openVisionTryOnSessionMock,
+  submitMachineNavigationIntentMock,
   routeParams,
   routeQuery,
   routeName,
@@ -40,9 +41,14 @@ const {
   createOrderMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
   routeParams: {} as Record<string, string>,
   routeQuery: {} as Record<string, string>,
   routeName: { value: "catalog" },
+}));
+
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 vi.mock("vue-router", () => ({
@@ -90,10 +96,7 @@ import type {
 } from "@/types/catalog";
 
 import { onCustomerEvent } from "@/composables/useCustomerEvents";
-import {
-  resetCustomerPresenceSessionForTests,
-  useReturnHomeOnCustomerDeparture,
-} from "@/composables/usePresenceInteraction";
+import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 import { machineConfigDefaults } from "@/config/machine-config";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
@@ -122,6 +125,18 @@ beforeEach(() => {
   setActivePinia(pinia);
   window.localStorage.clear();
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (intent.type === "customer.navigate") {
+      routerPushMock(intent.target);
+      return;
+    }
+    if (intent.type === "transaction.projection") {
+      const target = useCheckoutStore().customerCheckoutView.routeTarget;
+      routerReplaceMock("path" in target ? target.path : target);
+      return;
+    }
+    if ("target" in intent) routerReplaceMock(intent.target);
+  });
   for (const key of Object.keys(routeParams)) {
     delete routeParams[key];
   }
@@ -1310,7 +1325,7 @@ describe("sale readiness UI flow", () => {
     buyButton.click();
     await nextTick();
 
-    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(routerPushMock).toHaveBeenCalledWith({ name: "checkout" });
     expect(observed).toEqual([{ type: "product.selected" }]);
     expect("orderKey" in observed[0]).toBe(false);
   });
@@ -1838,7 +1853,7 @@ describe("sale readiness UI flow", () => {
     buyButton!.click();
     await nextTick();
 
-    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(routerPushMock).toHaveBeenCalledWith({ name: "checkout" });
     expect(useCheckoutStore().selectedItem?.variantId).toBe(
       silhouettedVariant.variantId,
     );
@@ -1930,7 +1945,7 @@ describe("sale readiness UI flow", () => {
     buyButton!.click();
     await nextTick();
 
-    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(routerPushMock).toHaveBeenCalledWith({ name: "checkout" });
     expect(useCheckoutStore().selectedItem?.variantId).toBe(
       silhouettedVariant.variantId,
     );
@@ -2014,73 +2029,6 @@ describe("sale readiness UI flow", () => {
         query: { variantId: silhouettedVariant.variantId },
       });
     });
-  });
-
-  it("stops the try-on session when customer departure returns home", async () => {
-    const item = makeCatalogItem();
-    const silhouettedVariant: MachineCatalogItem = {
-      ...item,
-      variantId: "550e8400-e29b-41d4-a716-446655440023",
-      sku: "TEE-BASIC-L-WHITE",
-      size: "L",
-      color: "白色",
-      tryOnSilhouetteUrl:
-        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-    };
-    useCatalogStore().applySnapshot({
-      items: [silhouettedVariant],
-      source: "local_stock",
-      planogramVersion: "PLAN-1",
-      lastUpdatedAt: "2026-06-04T00:00:00Z",
-    });
-    applyVisionTryOnConfig();
-    const { previewUrl, stop } = mockTryOnSession();
-    routeName.value = "virtual-try-on";
-    routeParams.catalogKey = item.catalogKey;
-    routeQuery.variantId = silhouettedVariant.variantId;
-    const showTryOn = ref(true);
-    routerReplaceMock.mockImplementation(async () => {
-      showTryOn.value = false;
-      routeName.value = "catalog";
-    });
-
-    const App = defineComponent({
-      setup() {
-        useReturnHomeOnCustomerDeparture();
-        return () => (showTryOn.value ? h(VirtualTryOnView) : null);
-      },
-    });
-    const host = await mountView(App);
-
-    await vi.waitFor(() => {
-      expect(
-        host
-          .querySelector<HTMLImageElement>('[data-test="try-on-preview"]')
-          ?.getAttribute("src"),
-      ).toBe(previewUrl);
-    });
-    useVisionStore().applyPresenceStatus({
-      eventId: "VISION-PRESENCE-PRESENT",
-      state: "approach",
-      reason: "person_present_but_not_close",
-      detectedAt: "2026-06-30T08:05:00.000Z",
-      personPresent: true,
-      closeNow: false,
-      close: false,
-      closeTrigger: null,
-      proximity: { present: true },
-    });
-    await nextTick();
-    useVisionStore().applyPersonDeparted({
-      eventId: "VISION-DEPARTURE-TRY-ON-001",
-      detectedAt: "2026-06-30T08:05:05.000Z",
-      lastSeenAt: "2026-06-30T08:05:04.000Z",
-      reason: "left_frame",
-    });
-    await nextTick();
-
-    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
-    expect(stop).toHaveBeenCalledWith("route_leave");
   });
 
   it("stops a stale try-on session if startup completes after unmount", async () => {

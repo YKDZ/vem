@@ -8,13 +8,19 @@ const {
   getCurrentTransactionMock,
   getSaleViewMock,
   getScannerStatusMock,
+  submitMachineNavigationIntentMock,
   routerReplaceMock,
 } = vi.hoisted(() => ({
   cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   getScannerStatusMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
   routerReplaceMock: vi.fn(),
+}));
+
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 vi.mock("vue-router", () => ({
@@ -147,6 +153,14 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-11T06:16:32.320Z"));
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (intent.type === "transaction.projection") {
+      const target = useCheckoutStore().customerCheckoutView.routeTarget;
+      routerReplaceMock("path" in target ? target.path : target);
+      return;
+    }
+    if ("target" in intent) routerReplaceMock(intent.target);
+  });
   getCurrentTransactionMock.mockResolvedValue(expiredQrConfirmingTransaction());
   cancelOrderMock.mockResolvedValue({
     ...expiredQrConfirmingTransaction(),
@@ -188,7 +202,7 @@ describe("PaymentView", () => {
     expect(host.textContent).toContain("正在确认支付结果");
     expect(host.textContent).toContain("订单凭证");
     expect(host.textContent).toContain("ORD-CONFIRM-001");
-    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
   });
 
   it("disables cancel while expired QR payment is confirming", async () => {
@@ -431,7 +445,7 @@ describe("PaymentView", () => {
     await mountView();
     await flushPromises();
 
-    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
     expect(checkoutStore.customerCheckoutView).toMatchObject({
       stage: "payment",
       orderCredential: "ORD-CANCEL-001",

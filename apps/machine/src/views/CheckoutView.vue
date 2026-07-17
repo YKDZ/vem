@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
 
 import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
@@ -12,13 +11,13 @@ import { topCategoryForItem } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
-const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
@@ -109,7 +108,7 @@ async function submitOrder(): Promise<void> {
   if (!canSubmit.value) return;
   try {
     await checkoutStore.createOrder();
-    await router.replace("/payment");
+    await submitMachineNavigationIntent({ type: "transaction.projection" });
   } catch {
     // checkoutStore.error is rendered in the page.
   }
@@ -133,7 +132,15 @@ async function submitOrder(): Promise<void> {
           class="checkout-back kiosk-touch-target"
           type="button"
           aria-label="返回"
-          @click="router.back()"
+          @click="
+            submitMachineNavigationIntent({
+              type: 'customer.navigate',
+              target: {
+                name: 'product-detail',
+                params: { catalogKey: item.catalogKey },
+              },
+            })
+          "
         >
           <span aria-hidden="true">&lt;</span>
           返回
@@ -323,7 +330,12 @@ async function submitOrder(): Promise<void> {
         <button
           class="kiosk-touch-target"
           type="button"
-          @click="router.replace('/catalog')"
+          @click="
+            submitMachineNavigationIntent({
+              type: 'customer.navigate',
+              target: { name: 'catalog' },
+            })
+          "
         >
           返回商品列表
         </button>

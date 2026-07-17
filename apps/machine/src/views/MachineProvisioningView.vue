@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
 
 import type {
   BringUpSnapshot,
@@ -16,10 +15,10 @@ import {
   provisioningClaimResponseSchema,
 } from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useMachineStore } from "@/stores/machine";
 
 const machineStore = useMachineStore();
-const router = useRouter();
 
 const claimForm = reactive({ claimCode: "" });
 const networkForm = reactive({ ssid: "", password: "", hidden: false });
@@ -377,9 +376,12 @@ async function continueProtectedMaintenance(): Promise<void> {
     maintenanceAuthentication.message = "维护会话已失效，请重新验证 PIN。";
     return;
   }
-  await router.replace({
-    path: "/maintenance",
-    query: { source: "protected-bring-up" },
+  await submitMachineNavigationIntent({
+    type: "operator.navigate",
+    target: {
+      path: "/maintenance",
+      query: { source: "protected-bring-up" },
+    },
   });
 }
 
@@ -474,7 +476,10 @@ async function submitClaim(): Promise<void> {
     machineStore.configLoaded = true;
     claimForm.claimCode = "";
     await refreshBringUp();
-    await router.replace("/boot");
+    await submitMachineNavigationIntent({
+      type: "startup.navigate",
+      target: { name: "boot" },
+    });
   } catch (error) {
     statusMessage.value =
       error instanceof DaemonUnavailableError

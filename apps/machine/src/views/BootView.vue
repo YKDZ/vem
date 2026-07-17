@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { useRouter } from "vue-router";
 
 import type {
   DaemonEvent,
@@ -12,6 +11,7 @@ import { runBoundedBootCheck } from "@/daemon/boot-check";
 import { daemonClient } from "@/daemon/client";
 import { routeForBootFailure, routeForStartup } from "@/daemon/startup";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -22,7 +22,6 @@ import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
-const router = useRouter();
 const machineStore = useMachineStore();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
@@ -190,8 +189,9 @@ async function runBootCheck(): Promise<void> {
       }
 
       pushStep("根据 daemon 状态选择页面");
-      await router.replace(
-        routeForStartup({
+      await submitMachineNavigationIntent({
+        type: "startup.navigate",
+        target: routeForStartup({
           daemonAvailable: true,
           health,
           config: machineStore.configSummary,
@@ -199,12 +199,15 @@ async function runBootCheck(): Promise<void> {
           ready,
           restoredTransaction: startupTransaction,
         }),
-      );
+      });
     } catch (error) {
       if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
       pushStep("daemon 不可用，进入维护页");
-      await router.replace(routeForBootFailure(recoveredTransaction));
+      await submitMachineNavigationIntent({
+        type: "startup.navigate",
+        target: routeForBootFailure(recoveredTransaction),
+      });
     }
   }, 10_000);
 }
@@ -218,8 +221,9 @@ onMounted(async () => {
     connectivityStore.markStale(error);
     if (recoveredTransaction) {
       pushStep("启动检查超时，继续恢复顾客交易");
-      await router.replace(
-        routeForStartup({
+      await submitMachineNavigationIntent({
+        type: "startup.navigate",
+        target: routeForStartup({
           daemonAvailable: true,
           health: null,
           config: null,
@@ -227,10 +231,13 @@ onMounted(async () => {
           ready: null,
           restoredTransaction: recoveredTransaction,
         }),
-      );
+      });
     } else {
       pushStep("启动检查超时，进入维护页");
-      await router.replace("/maintenance");
+      await submitMachineNavigationIntent({
+        type: "startup.navigate",
+        target: { name: "maintenance" },
+      });
     }
   }
 });

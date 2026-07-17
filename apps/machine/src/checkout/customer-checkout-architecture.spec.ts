@@ -23,6 +23,16 @@ function daemonEventConsumptionOffenders(source: string): string[] {
   );
 }
 
+function directRouteWriterOffenders(source: string): string[] {
+  return [
+    [/\buseRouter\s*\(/, "useRouter"],
+    [/\brouter\s*\.\s*(?:push|replace|back|go)\b/, "router write"],
+    [/\$router\s*\.\s*(?:push|replace|back|go)\b/, "$router write"],
+  ].flatMap(([pattern, label]) =>
+    (pattern as RegExp).test(source) ? [label as string] : [],
+  );
+}
+
 describe("customer checkout projection architecture", () => {
   it("keeps removed current transaction models out of the checkout store", () => {
     const checkoutStore = readSource("src/stores/checkout.ts");
@@ -111,5 +121,28 @@ describe("customer checkout projection architecture", () => {
         const event = daemonEventSchema.parse(raw);
       `),
     ).toEqual(["daemonClient.subscribeEvents", "daemonEventSchema"]);
+  });
+
+  it("keeps non-debug views and composables from writing routes directly", () => {
+    const paths = [
+      "src/App.vue",
+      "src/composables/useMaintenanceEntry.ts",
+      "src/composables/usePresenceInteraction.ts",
+      "src/views/BootView.vue",
+      "src/views/CatalogView.vue",
+      "src/views/CheckoutView.vue",
+      "src/views/DispensingView.vue",
+      "src/views/MachineProvisioningView.vue",
+      "src/views/MaintenanceView.vue",
+      "src/views/OfflineView.vue",
+      "src/views/PaymentView.vue",
+      "src/views/ProductDetailView.vue",
+      "src/views/ResultView.vue",
+      "src/views/VirtualTryOnView.vue",
+    ];
+
+    for (const path of paths) {
+      expect(directRouteWriterOffenders(readSource(path))).toEqual([]);
+    }
   });
 });

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 
 import type { MachineCatalogVariantCandidate } from "@/types/catalog";
 
@@ -13,6 +13,7 @@ import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { emitCustomerEvent } from "@/composables/useCustomerEvents";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
@@ -25,7 +26,6 @@ type VariantOption = {
 };
 
 const route = useRoute();
-const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
@@ -269,16 +269,22 @@ async function purchase(): Promise<void> {
   if (!concreteItem || !canBuy.value) return;
   checkoutStore.selectItem(concreteItem);
   emitCustomerEvent({ type: "product.selected" });
-  await router.push("/checkout");
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: { name: "checkout" },
+  });
 }
 
 async function enterTryOn(): Promise<void> {
   const variant = selectedVariant.value;
   if (!variant?.tryOnSilhouetteUrl) return;
-  await router.push({
-    name: "virtual-try-on",
-    params: { catalogKey: catalogKey.value },
-    query: { variantId: variant.variantId },
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: {
+      name: "virtual-try-on",
+      params: { catalogKey: catalogKey.value },
+      query: { variantId: variant.variantId },
+    },
   });
 }
 </script>
@@ -303,7 +309,12 @@ async function enterTryOn(): Promise<void> {
         class="detail-back-button kiosk-touch-target"
         type="button"
         aria-label="返回商品列表"
-        @click="router.push('/catalog')"
+        @click="
+          submitMachineNavigationIntent({
+            type: 'customer.navigate',
+            target: { name: 'catalog' },
+          })
+        "
       >
         <span aria-hidden="true">&lt;</span>
         返回
@@ -500,7 +511,12 @@ async function enterTryOn(): Promise<void> {
         <button
           class="kiosk-touch-target"
           type="button"
-          @click="router.push('/catalog')"
+          @click="
+            submitMachineNavigationIntent({
+              type: 'customer.navigate',
+              target: { name: 'catalog' },
+            })
+          "
         >
           返回商品列表
         </button>

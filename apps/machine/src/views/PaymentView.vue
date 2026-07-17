@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
-import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
@@ -12,11 +11,11 @@ import {
 } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useScannerStore } from "@/stores/scanner";
 import { formatCents, formatCountdown } from "@/utils/format";
 
-const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const scannerStore = useScannerStore();
 
@@ -123,29 +122,19 @@ const showMockControls = computed(
     }) && daemonClient.currentConnection?.mock === true,
 );
 
-async function routeByStatus(): Promise<void> {
-  const target = checkoutView.value.routeTarget;
-  if ("path" in target) {
-    await router.replace(target.path);
-    return;
-  }
-  if (target.name === "payment") return;
-  await router.replace(target);
-}
-
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
-  await routeByStatus();
+  await submitMachineNavigationIntent({ type: "transaction.projection" });
 }
 
 async function simulateSuccess(): Promise<void> {
   await checkoutStore.markMockSucceeded();
-  await routeByStatus();
+  await submitMachineNavigationIntent({ type: "transaction.projection" });
 }
 
 async function simulateFail(): Promise<void> {
   await checkoutStore.markMockFailed();
-  await routeByStatus();
+  await submitMachineNavigationIntent({ type: "transaction.projection" });
 }
 
 async function cancelOrder(): Promise<void> {
@@ -153,12 +142,15 @@ async function cancelOrder(): Promise<void> {
   try {
     await checkoutStore.cancelCurrentOrder({ preserveSelectedItem: true });
     if (catalogKey) {
-      await router.replace({
-        name: "product-detail",
-        params: { catalogKey },
+      await submitMachineNavigationIntent({
+        type: "customer.navigate",
+        target: { name: "product-detail", params: { catalogKey } },
       });
     } else {
-      await router.replace("/catalog");
+      await submitMachineNavigationIntent({
+        type: "customer.navigate",
+        target: { name: "catalog" },
+      });
     }
   } catch {
     // checkoutStore.error already carries the operator-facing message.
@@ -167,7 +159,7 @@ async function cancelOrder(): Promise<void> {
 
 onMounted(async () => {
   if (!hasPaymentTransaction.value) {
-    await routeByStatus();
+    await submitMachineNavigationIntent({ type: "transaction.projection" });
     return;
   }
   await refreshStatus();
@@ -392,7 +384,12 @@ onUnmounted(() => {
         <button
           class="kiosk-touch-target"
           type="button"
-          @click="router.replace('/catalog')"
+          @click="
+            submitMachineNavigationIntent({
+              type: 'customer.navigate',
+              target: { name: 'catalog' },
+            })
+          "
         >
           返回商品列表
         </button>

@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useConnectivityStore } from "@/stores/connectivity";
 
-const router = useRouter();
 const connectivityStore = useConnectivityStore();
 
 const reasonText = computed(() => {
@@ -72,7 +71,10 @@ const supportHint = computed(() => {
 });
 
 async function retryBoot(): Promise<void> {
-  await router.replace("/boot");
+  await submitMachineNavigationIntent({
+    type: "startup.navigate",
+    target: { name: "boot" },
+  });
 }
 </script>
 

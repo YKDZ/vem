@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
 
-const router = useRouter();
 const checkoutStore = useCheckoutStore();
 
 let pollTimer: number | undefined;
@@ -102,14 +101,7 @@ function syncPickupRemainingSeconds(): void {
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
   syncPickupRemainingSeconds();
-  const target = checkoutView.value.routeTarget;
-  if ("path" in target) {
-    if (target.path !== "/dispensing") {
-      await router.replace(target.path);
-    }
-    return;
-  }
-  await router.replace(target);
+  await submitMachineNavigationIntent({ type: "transaction.projection" });
 }
 
 onMounted(async () => {
@@ -276,7 +268,12 @@ onUnmounted(() => {
         <button
           class="kiosk-touch-target"
           type="button"
-          @click="router.replace('/catalog')"
+          @click="
+            submitMachineNavigationIntent({
+              type: 'customer.navigate',
+              target: { name: 'catalog' },
+            })
+          "
         >
           返回商品列表
         </button>

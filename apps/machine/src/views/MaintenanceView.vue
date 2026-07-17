@@ -7,7 +7,7 @@ import {
   type PaymentProviderEnvironmentDiagnostic,
 } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 
 import type { MachineAudioPlaybackDiagnostic } from "@/audio-playback/machine-audio-playback";
 import type {
@@ -36,6 +36,7 @@ import {
   openVisionTryOnSession,
   type VisionTryOnSession,
 } from "@/native/vision";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -47,7 +48,6 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 import { setMaintenanceTouchKeyboardSession } from "@/touch-keyboard/maintenance-authorization";
 
-const router = useRouter();
 const route = useRoute();
 const catalogStore = useCatalogStore();
 const audioCueStore = useAudioCueStore();
@@ -1274,7 +1274,10 @@ async function returnToCatalogAfterSystemRecovery(): Promise<void> {
     return;
   }
   if (connectivityStore.ready?.canSell === true) {
-    await router.replace("/catalog");
+    await submitMachineNavigationIntent({
+      type: "readiness.navigate",
+      target: { name: "catalog" },
+    });
   }
 }
 
@@ -1492,7 +1495,10 @@ async function returnToCatalog(): Promise<void> {
     return;
   }
   catalogNavigation.message = null;
-  await router.replace("/catalog");
+  await submitMachineNavigationIntent({
+    type: "operator.navigate",
+    target: { name: "catalog" },
+  });
 }
 
 async function returnToDesktop(): Promise<void> {
@@ -1532,9 +1538,12 @@ async function openProtectedBringUpConsole(): Promise<void> {
     return;
   }
   try {
-    await router.replace({
-      path: "/bring-up",
-      query: { source: "protected-maintenance" },
+    await submitMachineNavigationIntent({
+      type: "operator.navigate",
+      target: {
+        path: "/bring-up",
+        query: { source: "protected-maintenance" },
+      },
     });
   } catch (error) {
     clearMaintenanceSession();

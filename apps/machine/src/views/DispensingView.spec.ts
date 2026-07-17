@@ -3,9 +3,18 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-const { getCurrentTransactionMock, routerReplaceMock } = vi.hoisted(() => ({
+const {
+  getCurrentTransactionMock,
+  routerReplaceMock,
+  submitMachineNavigationIntentMock,
+} = vi.hoisted(() => ({
   getCurrentTransactionMock: vi.fn(),
   routerReplaceMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
+}));
+
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 vi.mock("vue-router", () => ({
@@ -109,6 +118,14 @@ beforeEach(() => {
   setActivePinia(pinia);
   vi.useFakeTimers();
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (intent.type === "transaction.projection") {
+      const target = useCheckoutStore().customerCheckoutView.routeTarget;
+      routerReplaceMock("path" in target ? target.path : target);
+      return;
+    }
+    if ("target" in intent) routerReplaceMock(intent.target);
+  });
   getCurrentTransactionMock.mockResolvedValue(dispensingTransaction());
 });
 
@@ -243,7 +260,7 @@ describe("DispensingView", () => {
       HTMLElement,
     );
     expect(host.textContent).toContain("正在出货");
-    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(routerReplaceMock).toHaveBeenCalledWith("/dispensing");
   });
 
   it("shows dispensing state from the customer checkout view without legacy order state", async () => {

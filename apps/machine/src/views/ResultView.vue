@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 
 import type {
   CustomerCheckoutResultDetailIntent,
@@ -13,10 +12,10 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 
-const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 
@@ -144,18 +143,6 @@ let autoReturnTimer: number | null = null;
 let autoReturnStartedAt = 0;
 let returningToCatalog = false;
 
-async function routeToProjectedTarget(): Promise<void> {
-  if (checkoutView.value.stage === "result") {
-    return;
-  }
-  const target = checkoutView.value.routeTarget;
-  if ("path" in target) {
-    await router.replace(target.path);
-    return;
-  }
-  await router.replace(target);
-}
-
 function stopAutoReturn(): void {
   if (autoReturnTimer !== null) {
     window.clearInterval(autoReturnTimer);
@@ -206,7 +193,10 @@ async function backToCatalog(): Promise<void> {
         error instanceof Error ? error.message : String(error);
     });
   }
-  await router.replace(targetRoute);
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: { name: projectedTargetRoute },
+  });
 }
 
 async function refreshResultReadiness(): Promise<boolean> {
@@ -227,15 +217,12 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  void routeToProjectedTarget();
-  void refreshResultReadiness();
-});
+void refreshResultReadiness();
 
 watch(
   () => checkoutView.value.routeTarget,
   () => {
-    void routeToProjectedTarget();
+    void submitMachineNavigationIntent({ type: "transaction.projection" });
   },
 );
 

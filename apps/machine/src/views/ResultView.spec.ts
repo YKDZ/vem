@@ -15,12 +15,18 @@ const {
   getSaleViewMock,
   routeParams,
   routerReplaceMock,
+  submitMachineNavigationIntentMock,
 } = vi.hoisted(() => ({
   getReadyMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
   routerReplaceMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
+}));
+
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 vi.mock("vue-router", () => ({
@@ -348,6 +354,22 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-06-11T06:16:32.320Z"));
   window.localStorage.clear();
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (intent.type === "transaction.projection") {
+      if (useCheckoutStore().customerCheckoutView.stage === "none") return;
+      const target = useCheckoutStore().customerCheckoutView.routeTarget;
+      routerReplaceMock("path" in target ? target.path : target);
+      return;
+    }
+    if ("target" in intent) {
+      const target = intent.target;
+      routerReplaceMock(
+        "name" in target && Object.keys(target).length === 1
+          ? `/${target.name}`
+          : target,
+      );
+    }
+  });
   routeParams.kind = "dispense_failed";
   getSaleViewMock.mockResolvedValue({
     items: [],
@@ -650,7 +672,6 @@ describe("ResultView", () => {
       },
     });
     expect(host.textContent).toContain("设备需要维护检查");
-    expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });
 
@@ -742,8 +763,9 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("等待人工处理");
     expect(host.textContent).not.toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).not.toContain("出货结果待确认");
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      name: "result",
+      params: { kind: "manual_handling" },
     });
   });
 
