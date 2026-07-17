@@ -394,7 +394,7 @@ jobs:
           )
           target="${WINDOWS_SSH_USER}@${endpoint_host}"
           scp -O -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
-          remote_script='$ErrorActionPreference = "Stop"; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination "C:\VEM\bringup\vending-daemon.exe" -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Force; Start-Service -Name "VemVendingDaemon"'
+          remote_script='$ErrorActionPreference = "Stop"; $daemon = "C:\VEM\bringup\vending-daemon.exe"; $manifestPath = "C:\ProgramData\VEM\factory\factory-runtime-manifest.json"; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination $daemon -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Force; $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json; $component = @($manifest.inputs.components | Where-Object { $_.component -eq "daemon" }); if ($component.Count -ne 1) { throw "Factory runtime manifest daemon component is missing or ambiguous" }; $component[0].sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $daemon).Hash.ToLowerInvariant(); [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false)); Start-Service -Name "VemVendingDaemon"'
           encoded_script="$(printf '%s' "$remote_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
           ssh -p "$endpoint_port" "${ssh_options[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded_script"
 
