@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PAYMENT_CODE_SOURCE_SERIAL_TEXT: &str = "serial_text";
 pub const SCANNER_MAX_FRAME_BYTES: usize = 256;
+pub const SCANNER_FRAME_IDLE_TIMEOUT_MS: u128 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +46,7 @@ pub struct ScannerFramer {
     suffix: ScannerFrameSuffix,
     frame: Vec<u8>,
     invalid_frame: bool,
+    last_input_at_ms: Option<u128>,
     last_code: String,
     last_at_ms: u128,
 }
@@ -61,12 +63,24 @@ impl ScannerFramer {
             suffix,
             frame: Vec::new(),
             invalid_frame: false,
+            last_input_at_ms: None,
             last_code: String::new(),
             last_at_ms: 0,
         }
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8], now_ms: u128) -> Vec<RawPaymentCode> {
+        if (!self.frame.is_empty() || self.invalid_frame)
+            && self
+                .last_input_at_ms
+                .is_some_and(|last| now_ms.saturating_sub(last) >= SCANNER_FRAME_IDLE_TIMEOUT_MS)
+        {
+            self.frame.clear();
+            self.invalid_frame = false;
+        }
+        if !bytes.is_empty() {
+            self.last_input_at_ms = Some(now_ms);
+        }
         let mut out = Vec::new();
         for byte in bytes {
             match self.suffix {
@@ -162,6 +176,29 @@ mod tests {
         assert_eq!(first.len(), 1);
         let second = framer.push_bytes(b"621234567890123456\r\n", 2_000);
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn scanner_framer_discards_a_partial_frame_after_idle_timeout() {
+        let mut framer = ScannerFramer::default();
+        assert!(framer.push_bytes(b"stale-partial", 1_000).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_discards_an_overlong_frame_before_the_next_attempt() {
+        let mut framer = ScannerFramer::default();
+        let oversized = vec![b'1'; SCANNER_MAX_FRAME_BYTES + 1];
+        assert!(framer.push_bytes(&oversized, 1_000).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
     }
 
     #[test]
