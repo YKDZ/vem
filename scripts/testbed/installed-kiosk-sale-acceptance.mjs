@@ -401,7 +401,14 @@ function prepareScannerCode(options, root) {
   writeFileSync(path, scannerCode, {
     mode: 0o600,
   });
-  return { path, owned: true };
+  return { path, code: scannerCode, owned: true };
+}
+
+function restoreConsumedScannerCode(scanner) {
+  writeFileSync(scanner.path, scanner.code, {
+    mode: 0o600,
+    flag: "wx",
+  });
 }
 
 async function runCommand(command, label, { env = process.env } = {}) {
@@ -1080,6 +1087,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
           0,
           ...serialEndpointArgs,
         );
+        restoreConsumedScannerCode(scanner);
         await run(serialCommand, "serial conformance", {
           env: nonQueryEnvironment,
         });
