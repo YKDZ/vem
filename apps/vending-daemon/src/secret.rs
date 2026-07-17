@@ -6,6 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 pub const KEYRING_SERVICE: &str = "com.vem.machine";
@@ -18,14 +19,16 @@ pub const MQTT_PASSWORD_ACCOUNT: &str = "mqtt_password";
 pub const MACHINE_SECRET_ROLLBACK_ACCOUNT: &str = "machine_secret.rollback";
 pub const MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT: &str = "mqtt_signing_secret.rollback";
 pub const MQTT_PASSWORD_ROLLBACK_ACCOUNT: &str = "mqtt_password.rollback";
+pub const CREDENTIAL_ROLLBACK_READY_ACCOUNT: &str = "credentials.rollback.ready";
 
-const SECRET_ACCOUNTS: [&str; 6] = [
+const SECRET_ACCOUNTS: [&str; 7] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
     MACHINE_SECRET_ROLLBACK_ACCOUNT,
     MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
     MQTT_PASSWORD_ROLLBACK_ACCOUNT,
+    CREDENTIAL_ROLLBACK_READY_ACCOUNT,
 ];
 
 #[cfg(any(windows, test))]
@@ -93,10 +96,48 @@ impl FileSecretStore {
             MACHINE_SECRET_ROLLBACK_ACCOUNT => "machine_secret.rollback",
             MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT => "mqtt_signing_secret.rollback",
             MQTT_PASSWORD_ROLLBACK_ACCOUNT => "mqtt_password.rollback",
+            CREDENTIAL_ROLLBACK_READY_ACCOUNT => "credentials.rollback.ready",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
     }
+}
+
+async fn write_secret_file_durable(
+    dir: &Path,
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), String> {
+    let temp_path = path.with_extension("tmp");
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temp_path)
+        .await
+        .map_err(|error| format!("write {label} failed: {error}"))?;
+    file.write_all(bytes)
+        .await
+        .map_err(|error| format!("write {label} failed: {error}"))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("sync {label} failed: {error}"))?;
+    drop(file);
+    harden_machine_protected_file_permissions(&temp_path).await?;
+    tokio::fs::rename(&temp_path, path)
+        .await
+        .map_err(|error| format!("replace {label} failed: {error}"))?;
+    harden_machine_protected_file_permissions(path).await?;
+    sync_secret_directory(dir, label).await
+}
+
+async fn sync_secret_directory(dir: &Path, label: &str) -> Result<(), String> {
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || std::fs::File::open(dir)?.sync_all())
+        .await
+        .map_err(|error| format!("join {label} directory sync failed: {error}"))?
+        .map_err(|error| format!("sync {label} directory failed: {error}"))
 }
 
 impl ProtectedLocalSecretStore {
@@ -114,6 +155,7 @@ impl ProtectedLocalSecretStore {
             MACHINE_SECRET_ROLLBACK_ACCOUNT => "machine_secret.rollback.dpapi",
             MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT => "mqtt_signing_secret.rollback.dpapi",
             MQTT_PASSWORD_ROLLBACK_ACCOUNT => "mqtt_password.rollback.dpapi",
+            CREDENTIAL_ROLLBACK_READY_ACCOUNT => "credentials.rollback.ready.dpapi",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -183,7 +225,8 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MQTT_PASSWORD_ACCOUNT => Some("VEM_MQTT_PASSWORD"),
         MACHINE_SECRET_ROLLBACK_ACCOUNT
         | MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT
-        | MQTT_PASSWORD_ROLLBACK_ACCOUNT => None,
+        | MQTT_PASSWORD_ROLLBACK_ACCOUNT
+        | CREDENTIAL_ROLLBACK_READY_ACCOUNT => None,
         _ => None,
     }
 }
@@ -245,21 +288,12 @@ impl SecretStore for FileSecretStore {
             .map_err(|error| format!("create file secret dir failed: {error}"))?;
         if value.is_empty() {
             match tokio::fs::remove_file(path).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => return sync_secret_directory(&self.dir, "file secret").await,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(format!("remove file secret failed: {error}")),
             }
         }
-        let temp_path = path.with_extension("tmp");
-        tokio::fs::write(&temp_path, value)
-            .await
-            .map_err(|error| format!("write file secret failed: {error}"))?;
-        harden_machine_protected_file_permissions(&temp_path).await?;
-        tokio::fs::rename(&temp_path, &path)
-            .await
-            .map_err(|error| format!("replace file secret failed: {error}"))?;
-        harden_machine_protected_file_permissions(&path).await?;
-        Ok(())
+        write_secret_file_durable(&self.dir, &path, value.as_bytes(), "file secret").await
     }
 
     async fn clear_all(&self) -> Result<(), String> {
@@ -310,7 +344,7 @@ impl SecretStore for ProtectedLocalSecretStore {
             .map_err(|error| format!("create protected local secret dir failed: {error}"))?;
         if value.is_empty() {
             match tokio::fs::remove_file(path).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => return sync_secret_directory(&self.dir, "protected local secret").await,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(format!("remove protected local secret failed: {error}")),
             }
@@ -318,16 +352,7 @@ impl SecretStore for ProtectedLocalSecretStore {
         let blob = protect_secret_blob(value)
             .await
             .map_err(|error| format!("protect local secret failed: {error}"))?;
-        let temp_path = path.with_extension("tmp");
-        tokio::fs::write(&temp_path, blob)
-            .await
-            .map_err(|error| format!("write protected local secret failed: {error}"))?;
-        harden_machine_protected_file_permissions(&temp_path).await?;
-        tokio::fs::rename(&temp_path, &path)
-            .await
-            .map_err(|error| format!("replace protected local secret failed: {error}"))?;
-        harden_machine_protected_file_permissions(&path).await?;
-        Ok(())
+        write_secret_file_durable(&self.dir, &path, &blob, "protected local secret").await
     }
 
     async fn clear_all(&self) -> Result<(), String> {

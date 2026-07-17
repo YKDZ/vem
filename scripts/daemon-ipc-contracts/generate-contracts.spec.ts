@@ -95,6 +95,7 @@ describe("Daemon IPC contract generator", () => {
             expect.stringContaining("node_modules/oxfmt/dist/cli.js"),
             expect.stringContaining("transaction_checkout.schema.json"),
             expect.stringContaining("scanner_status_invalid.snapshots.json"),
+            expect.stringContaining("sale_start_capability.schema.json"),
           ]),
           cwd: root,
         }),
@@ -133,6 +134,20 @@ describe("Daemon IPC contract generator", () => {
             expect.stringContaining("src/generated/runtime_configuration.rs"),
             expect.stringContaining(
               "schemas/runtime_configuration.schema.json",
+            ),
+          ]),
+          cwd: root,
+        }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
+            expect.stringContaining("src/generated/sale_start_capability.rs"),
+            expect.stringContaining(
+              "schemas/sale_start_capability.schema.json",
             ),
           ]),
           cwd: root,

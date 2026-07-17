@@ -100,3 +100,29 @@ async fn daemon_reports_vision_disabled_from_the_accepted_profile_without_a_pin_
     );
     daemon.terminate().await;
 }
+
+#[tokio::test]
+async fn daemon_starts_vision_when_recommendations_are_supported_but_vision_is_not_required() {
+    let fixture = serde_json::json!({
+        "machineCode": "MACHINE-VISION-RECOMMENDATIONS",
+        "apiBaseUrl": "http://127.0.0.1:9/api",
+        "mqttUrl": "mqtt://127.0.0.1:1883",
+        "hardwareModel": "vem-test-24",
+        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" },
+        "hardwareProfile": {
+            "profile": "production",
+            "controller": { "required": true, "protocol": "vem-vending-controller" },
+            "paymentScanner": { "required": true, "supportsPaymentCode": true },
+            "vision": { "required": false, "supportsRecommendations": true }
+        }
+    });
+    let mut daemon = DaemonHarness::start(fixture, &[], &[])
+        .await
+        .expect("start daemon");
+
+    let vision = daemon.get_json("/v1/vision/status").await;
+    assert_eq!(vision["enabled"], true);
+    assert_ne!(vision["message"], "disabled");
+
+    daemon.terminate().await;
+}

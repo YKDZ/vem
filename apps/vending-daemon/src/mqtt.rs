@@ -615,9 +615,6 @@ impl MqttSyncRuntime {
             .whole_machine_maintenance_lock()
             .await
             .map_err(|error| format!("read whole-machine maintenance lock failed: {error}"))?;
-        let sale_readiness = self
-            .heartbeat_sale_readiness(whole_machine_lock.is_some(), hardware_status.online)
-            .await?;
         let physical_stock_attestation = self
             .state
             .physical_stock_attestation_status()
@@ -633,7 +630,6 @@ impl MqttSyncRuntime {
                 "hardwareStatus": heartbeat_hardware_status,
                 "hardwareMessage": hardware_status.message,
                 "wholeMachineMaintenanceLock": whole_machine_lock,
-                "saleReadiness": sale_readiness,
                 "physicalStockAttestation": physical_stock_attestation,
                 "environment": serde_json::to_value(environment)
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
@@ -650,56 +646,6 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
-    }
-
-    async fn heartbeat_sale_readiness(
-        &self,
-        whole_machine_locked: bool,
-        hardware_online: bool,
-    ) -> Result<serde_json::Value, String> {
-        if let Some(context) = self.readiness_context.as_ref() {
-            let snapshot = crate::ipc::machine_sale_readiness_snapshot(context)
-                .await
-                .map_err(|error| format!("read sale readiness failed: {error}"))?;
-            let blocking_codes = snapshot
-                .get("blockingCodes")
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let can_start_sale = snapshot
-                .get("canStartNetworkAuthorizedSale")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            let state = if whole_machine_locked {
-                "locked"
-            } else if can_start_sale {
-                "restored"
-            } else {
-                "blocked"
-            };
-            return Ok(json!({
-                "state": state,
-                "blockingCodes": blocking_codes,
-            }));
-        }
-
-        let mut blocking_codes = Vec::new();
-        if whole_machine_locked {
-            blocking_codes.push("WHOLE_MACHINE_HARDWARE_FAULT");
-        } else if !hardware_online {
-            blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
-        }
-        let state = if whole_machine_locked {
-            "locked"
-        } else if hardware_online {
-            "restored"
-        } else {
-            "blocked"
-        };
-        Ok(json!({
-            "state": state,
-            "blockingCodes": blocking_codes,
-        }))
     }
 
     pub async fn flush_due_outbox(&self) -> Result<OutboxFlushResult, String> {

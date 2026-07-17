@@ -1,22 +1,17 @@
 import type { INestApplication } from "@nestjs/common";
 
 import { Test } from "@nestjs/testing";
+import { and, auditLogs, DrizzleDB, eq, inArray } from "@vem/db";
 import {
-  and,
-  auditLogs,
-  DrizzleDB,
-  eq,
-  inArray,
-  maintenancePeers,
-  maintenanceSessions,
-} from "@vem/db";
+  machineProvisioningProfileSchema,
+  machineProvisioningProfileSnapshotSchema,
+} from "@vem/shared";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { ApiResponse } from "./flow-test-helpers";
 
 import { AppConfigService } from "../config/app-config.service";
-import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
 import {
   DrizzleEphemeralPlatformStackRepository,
   prepareEphemeralPlatformStack,
@@ -30,18 +25,8 @@ describe(
     let appConfig: AppConfigService;
     let db: DrizzleDB;
     let api: ReturnType<typeof request>;
-    let maintenanceAccess: MaintenanceAccessService;
-    const selectedRelay = {
-      id: "550e8400-e29b-41d4-a716-446655440010",
-      publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      tunnelAddress: "10.91.0.1",
-    };
     const claimEnvironment = {
       MACHINE_PROVISIONING_PROFILE: "testbed",
-      MAINTENANCE_RELAY_PEER_ID: selectedRelay.id,
-      MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
-      MAINTENANCE_RELAY_PUBLIC_KEY: selectedRelay.publicKey,
-      MAINTENANCE_RELAY_TUNNEL_ADDRESS: selectedRelay.tunnelAddress,
     } as const;
     const previousEnvironment = Object.fromEntries(
       Object.keys(claimEnvironment).map((key) => [key, process.env[key]]),
@@ -61,21 +46,6 @@ describe(
       appConfig = app.get(AppConfigService);
       db = new DrizzleDB(appConfig.databaseUrl);
       await db.connect();
-      maintenanceAccess = app.get(MaintenanceAccessService);
-      await db.client
-        .insert(maintenancePeers)
-        .values({ ...selectedRelay, role: "relay", status: "active" })
-        .onConflictDoNothing({ target: maintenancePeers.id });
-      await db.client
-        .insert(maintenancePeers)
-        .values({
-          id: "550e8400-e29b-41d4-a716-446655440011",
-          role: "relay",
-          publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-          tunnelAddress: "10.91.0.2",
-          status: "active",
-        })
-        .onConflictDoNothing({ target: maintenancePeers.id });
       const httpServer = app.getHttpServer() as Parameters<typeof request>[0];
       api = request(httpServer);
     }, 120_000);
@@ -112,12 +82,8 @@ describe(
         reset: true,
         now: new Date(),
       });
-      const maintenancePublicKey =
-        "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=";
       const claimPayload = {
         claimCode: prepared.testbedMachine.claim.claimCode,
-        maintenancePublicKey,
-        provisioningProfile: "testbed",
       };
 
       const responses = await Promise.all([
@@ -126,32 +92,17 @@ describe(
       ]);
 
       expect(responses.map((response) => response.status)).toEqual([201, 201]);
-      const first = responses[0].body as ApiResponse<{
-        machine: { id: string; code: string };
-        credentials: { machineSecret: string };
-      }>;
-      expect(responses[1].body.data).toEqual(first.data);
-      expect(
-        await db.client
-          .select({ publicKey: maintenancePeers.publicKey })
-          .from(maintenancePeers)
-          .where(eq(maintenancePeers.machineId, first.data.machine.id)),
-      ).toEqual([{ publicKey: maintenancePublicKey }]);
-      expect(
-        await db.client
-          .select({ id: maintenanceSessions.id })
-          .from(maintenanceSessions)
-          .where(
-            eq(maintenanceSessions.targetMachineId, first.data.machine.id),
-          ),
-      ).toEqual([]);
+      const first = machineProvisioningProfileSchema.parse(
+        (responses[0].body as ApiResponse<unknown>).data,
+      );
+      expect(responses[1].body.data).toEqual(first);
 
       const claimAudits = await db.client
         .select({ action: auditLogs.action, afterJson: auditLogs.afterJson })
         .from(auditLogs)
         .where(
           and(
-            eq(auditLogs.resourceId, first.data.machine.id),
+            eq(auditLogs.resourceId, first.machine.id),
             inArray(auditLogs.action, [
               "machines.claimCode.consume",
               "machines.claimCode.replay",
@@ -222,66 +173,32 @@ describe(
         mockPaymentAcknowledged: true,
       });
 
-      const claimResponse = await api.post("/api/machines/claim").send({
+      const retiredClaimResponse = await api.post("/api/machines/claim").send({
         claimCode: second.testbedMachine.claim.claimCode,
         maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        provisioningProfile: "testbed",
+      });
+      expect(retiredClaimResponse.status).toBe(400);
+      const claimResponse = await api.post("/api/machines/claim").send({
+        claimCode: second.testbedMachine.claim.claimCode,
       });
       expect(claimResponse.status).toBe(201);
-      const claimed = claimResponse.body as ApiResponse<{
-        machine: { id: string; code: string };
-        credentials: {
-          machineSecret: string;
-          mqttConnection: { url: string; clientId: string };
-        };
-        hardwareSlotTopology: { identity: string; version: string };
-      }>;
-      expect(claimed.code).toBe(0);
-      expect(claimed.data.machine.code).toBe(second.testbedMachine.code);
-      expect(claimed.data.hardwareSlotTopology).toEqual({
+      const claimedEnvelope = claimResponse.body as ApiResponse<unknown>;
+      const claimed = machineProvisioningProfileSchema.parse(
+        claimedEnvelope.data,
+      );
+      expect(claimedEnvelope.code).toBe(0);
+      expect(claimed.machine.code).toBe(second.testbedMachine.code);
+      expect(claimed.hardwareSlotTopology).toEqual({
         identity: second.hardwareSlotTopology.identity,
         version: second.hardwareSlotTopology.version,
       });
-      expect(claimed.data.credentials.mqttConnection.url).toBe(
-        appConfig.mqttUrl,
-      );
-      const machinePeers = await db.client
-        .select({
-          publicKey: maintenancePeers.publicKey,
-          tunnelAddress: maintenancePeers.tunnelAddress,
-        })
-        .from(maintenancePeers)
-        .where(eq(maintenancePeers.machineId, claimed.data.machine.id));
-      expect(machinePeers).toEqual([
-        {
-          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-          tunnelAddress: expect.any(String),
-        },
-      ]);
-      expect(
-        await db.client
-          .select({ id: maintenanceSessions.id })
-          .from(maintenanceSessions)
-          .where(
-            eq(maintenanceSessions.targetMachineId, claimed.data.machine.id),
-          ),
-      ).toEqual([]);
-      const relayDesiredState = await maintenanceAccess.getRelayDesiredState();
-      expect(relayDesiredState.peers).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            role: "machine",
-            publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-          }),
-        ]),
-      );
-      expect(relayDesiredState.authorizations).toEqual([]);
+      expect(claimed.credentials.mqttConnection.url).toBe(appConfig.mqttUrl);
       const claimAudits = await db.client
         .select({ action: auditLogs.action, afterJson: auditLogs.afterJson })
         .from(auditLogs)
         .where(
           and(
-            eq(auditLogs.resourceId, claimed.data.machine.id),
+            eq(auditLogs.resourceId, claimed.machine.id),
             inArray(auditLogs.action, [
               "machines.claimCode.consume",
               "machines.claimCode.replay",
@@ -300,7 +217,7 @@ describe(
 
       const tokenResponse = await api.post("/api/machine-auth/token").send({
         machineCode: second.testbedMachine.code,
-        machineSecret: claimed.data.credentials.machineSecret,
+        machineSecret: claimed.credentials.machineSecret,
       });
       expect(tokenResponse.status).toBe(201);
       const tokenBody = tokenResponse.body as ApiResponse<{
@@ -308,6 +225,17 @@ describe(
       }>;
       expect(tokenBody.code).toBe(0);
       const auth = { Authorization: `Bearer ${tokenBody.data.accessToken}` };
+      const refreshResponse = await api
+        .get(`/api/machines/${second.testbedMachine.code}/provisioning-profile`)
+        .set(auth);
+      expect(refreshResponse.status).toBe(200);
+      const refreshed = machineProvisioningProfileSnapshotSchema.parse(
+        (refreshResponse.body as ApiResponse<unknown>).data,
+      );
+      expect(refreshed.metadata.profileRevision).toBe(
+        claimed.metadata.profileRevision,
+      );
+      expect(refreshed).not.toHaveProperty("credentials");
 
       const publishedResponse = await api
         .get(

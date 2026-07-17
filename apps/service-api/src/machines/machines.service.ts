@@ -52,6 +52,7 @@ import {
   machineClaimRequestSchema,
   mqttSignedEnvelopeSchema,
   machineProvisioningProfileSchema,
+  machineProvisioningProfileSnapshotSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
@@ -63,6 +64,7 @@ import {
   type MachineClaimRequest,
   type GenerateMachineClaimCodeRequest,
   type MachineProvisioningProfile,
+  type MachineProvisioningProfileSnapshot,
   type MachinePlanogramSlot,
   type GenerateMachineClaimCodeResponse,
   type PublishMachinePlanogramVersion,
@@ -2049,20 +2051,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     if (!parsed.success) {
       throw new BadRequestException("Invalid machine claim request");
     }
-    const claimRequest = {
-      ...parsed.data,
-      provisioningProfile:
-        parsed.data.provisioningProfile ??
-        this.config.machineProvisioningProfile,
-    };
-    if (
-      claimRequest.provisioningProfile !==
-      this.config.machineProvisioningProfile
-    ) {
-      throw new ConflictException(
-        "Machine provisioning profile does not match service profile",
-      );
-    }
+    const claimRequest = parsed.data;
     const lookupDigest = digestMachineClaimCodeLookup(
       claimRequest.claimCode,
       this.config.machineClaimLookupHmacKey,
@@ -2110,15 +2099,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       await this.recordFailedMachineClaim(claimCode, now);
       throw this.invalidMachineClaimCode();
     }
-    const requestsMaintenanceRotation =
-      claimRequest.maintenanceRotation === "rotate";
-    if ((claimCode.purpose === "reclaim") !== requestsMaintenanceRotation) {
-      throw new ConflictException(
-        claimCode.purpose === "reclaim"
-          ? "Machine reclaim requires maintenance identity rotation"
-          : "Initial machine claim cannot rotate a maintenance identity",
-      );
-    }
     if (
       claimCode.state === "consumed" &&
       claimCode.claimResponseEncryptedJson &&
@@ -2126,7 +2106,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     ) {
       const replayProfile = this.parseMachineClaimReplay(
         claimCode.claimResponseEncryptedJson,
-        claimRequest,
       );
       if (replayProfile) {
         await this.recordMachineClaimReplay(claimCode, now);
@@ -2147,12 +2126,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const buildProfile = (
       claimCodeId: string,
       secretVersion: number,
-      maintenance: {
-        peer: { publicKey: string; tunnelAddress: string };
-        relay: { publicKey: string; tunnelAddress: string };
-        endpoint: string;
-        reclaimExpiresAt: Date | null;
-      },
     ): MachineProvisioningProfile => ({
       machine: {
         id: claimCode.machineId,
@@ -2209,26 +2182,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         paymentCodeEnabled: true,
         serverTime: toIso(now),
       },
-      provisioningProfile: claimRequest.provisioningProfile,
-      maintenance: {
-        publicKey: maintenance.peer.publicKey,
-        tunnelAddress: maintenance.peer.tunnelAddress,
-        address: `${maintenance.peer.tunnelAddress}/32`,
-        endpoint: maintenance.endpoint,
-        relay: {
-          publicKey: maintenance.relay.publicKey,
-          tunnelAddress: maintenance.relay.tunnelAddress,
-          address: `${maintenance.relay.tunnelAddress}/32`,
-        },
-        roleRoutes: {
-          relay: `${maintenance.relay.tunnelAddress}/32`,
-          runner: this.config.maintenanceAddressPools.runner.cidr,
-          maintainer: this.config.maintenanceAddressPools.maintainer.cidr,
-        },
-        ...(claimCode.purpose === "reclaim" && maintenance.reclaimExpiresAt
-          ? { reclaimExpiresAt: maintenance.reclaimExpiresAt.toISOString() }
-          : {}),
-      },
       metadata: {
         profileVersion: 1,
         profileRevision: secretVersion,
@@ -2271,10 +2224,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             ),
           );
         const replayProfile = winner?.claimResponseEncryptedJson
-          ? this.parseMachineClaimReplay(
-              winner.claimResponseEncryptedJson,
-              claimRequest,
-            )
+          ? this.parseMachineClaimReplay(winner.claimResponseEncryptedJson)
           : undefined;
         if (replayProfile) {
           await this.recordMachineClaimReplay(claimCode, now, tx);
@@ -2305,117 +2255,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       if (!rotatedMachine) {
         throw this.invalidMachineClaimCode();
       }
-      const [relay] = await tx
-        .select({
-          publicKey: maintenancePeers.publicKey,
-          tunnelAddress: maintenancePeers.tunnelAddress,
-        })
-        .from(maintenancePeers)
-        .where(
-          and(
-            eq(maintenancePeers.id, this.config.maintenanceRelayPeerId),
-            eq(maintenancePeers.role, "relay"),
-            eq(maintenancePeers.status, "active"),
-            isNull(maintenancePeers.revokedAt),
-          ),
-        );
-      if (!relay) {
-        throw new ConflictException("Maintenance relay peer is not configured");
-      }
-      if (relay.publicKey !== this.config.maintenanceRelayPublicKey) {
-        throw new ConflictException(
-          "Maintenance relay peer does not match service profile",
-        );
-      }
-      if (relay.tunnelAddress !== this.config.maintenanceRelayTunnelAddress) {
-        throw new ConflictException(
-          "Maintenance relay peer does not match service profile",
-        );
-      }
-      const endpoint = this.config.maintenanceRelayEndpoint;
-
-      const [duplicatePublicKey] = await tx
-        .select({ id: maintenancePeers.id })
-        .from(maintenancePeers)
-        .where(
-          eq(maintenancePeers.publicKey, claimRequest.maintenancePublicKey),
-        )
-        .limit(1);
-      if (duplicatePublicKey) {
-        throw new ConflictException(
-          "Maintenance peer public key already exists",
-        );
-      }
-
-      const usedRows = await tx
-        .select({ tunnelAddress: maintenancePeers.tunnelAddress })
-        .from(maintenancePeers);
-      const usedAddresses = new Set(usedRows.map((row) => row.tunnelAddress));
-      const pool = this.config.maintenanceAddressPools.machine;
-      const usableAddressCount = pool.lastHost - pool.firstHost + 1;
-      let peer: { publicKey: string; tunnelAddress: string } | undefined;
-      const reclaimExpiresAt =
-        claimCode.purpose === "reclaim"
-          ? new Date(
-              now.getTime() +
-                (this.config.machineReclaimHandshakeTimeoutSeconds ?? 300) *
-                  1_000,
-            )
-          : null;
-      // oxlint-disable no-await-in-loop -- allocation retries are serialized inside the claim transaction
-      for (let attempt = 0; attempt < usableAddressCount; attempt += 1) {
-        const tunnelAddress = allocateTunnelAddress(pool, usedAddresses);
-        let created: { publicKey: string; tunnelAddress: string } | undefined;
-        try {
-          [created] = await tx
-            .insert(maintenancePeers)
-            .values({
-              role: "machine",
-              publicKey: claimRequest.maintenancePublicKey,
-              tunnelAddress,
-              machineId: claimCode.machineId,
-              status:
-                claimCode.purpose === "reclaim" ? "pending_reclaim" : "active",
-              reclaimExpiresAt,
-            })
-            .onConflictDoNothing({ target: maintenancePeers.tunnelAddress })
-            .returning({
-              publicKey: maintenancePeers.publicKey,
-              tunnelAddress: maintenancePeers.tunnelAddress,
-            });
-        } catch (error) {
-          const constraint =
-            error && typeof error === "object" && "constraint" in error
-              ? (error as { constraint?: unknown }).constraint
-              : undefined;
-          if (constraint === "maintenance_peers_pending_machine_unique") {
-            throw new ConflictException(
-              "Machine reclaim handshake is already pending",
-            );
-          }
-          throw error;
-        }
-        if (created) {
-          peer = created;
-          break;
-        }
-        usedAddresses.add(tunnelAddress);
-      }
-      // oxlint-enable no-await-in-loop
-      if (!peer) {
-        throw new ConflictException(
-          "Machine maintenance address pool is exhausted",
-        );
-      }
-      await this.maintenanceAccessService.projectDesiredStateAfterPeerMutation(
-        tx,
-        now,
-      );
-      const maintenance = { peer, relay, endpoint, reclaimExpiresAt };
       const profile = buildProfile(
         consumedClaimCode.id,
         rotatedMachine.secretVersion,
-        maintenance,
       );
       await tx
         .update(machineClaimCodes)
@@ -2443,12 +2285,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             state: "consumed",
             secretVersion: rotatedMachine.secretVersion,
             claimedAt: toIso(now),
-            ...(claimCode.purpose === "reclaim"
-              ? {
-                  maintenancePeerState: "pending_reclaim",
-                  reclaimExpiresAt: reclaimExpiresAt?.toISOString(),
-                }
-              : {}),
           },
         },
         tx,
@@ -2461,18 +2297,60 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return claimResult.profile;
   }
 
+  async getOwnProvisioningProfile(
+    machineId: string,
+  ): Promise<MachineProvisioningProfileSnapshot> {
+    const [claim] = await this.db
+      .select({
+        encryptedProfile: machineClaimCodes.claimResponseEncryptedJson,
+      })
+      .from(machineClaimCodes)
+      .where(
+        and(
+          eq(machineClaimCodes.machineId, machineId),
+          eq(machineClaimCodes.state, "consumed"),
+          isNotNull(machineClaimCodes.claimResponseEncryptedJson),
+        ),
+      )
+      .orderBy(desc(machineClaimCodes.consumedAt))
+      .limit(1);
+    if (!claim?.encryptedProfile) {
+      throw new NotFoundException(
+        "Accepted machine provisioning profile not found",
+      );
+    }
+
+    const accepted = machineProvisioningProfileSchema.parse(
+      this.machineCredentialService.decryptClaimResponse(
+        claim.encryptedProfile,
+      ),
+    );
+    if (accepted.machine.id !== machineId) {
+      throw new ConflictException(
+        "Provisioning profile machine identity mismatch",
+      );
+    }
+    const { credentials, ...profile } = accepted;
+    return machineProvisioningProfileSnapshotSchema.parse({
+      ...profile,
+      mqttConnection: {
+        url: credentials.mqttConnection.url,
+        clientId: credentials.mqttConnection.clientId,
+        username: credentials.mqttConnection.username ?? null,
+      },
+      paymentCapability: profile.paymentCapability,
+      metadata: profile.metadata,
+    });
+  }
+
   private parseMachineClaimReplay(
     encrypted: unknown,
-    request: MachineClaimRequest,
   ): MachineProvisioningProfile | undefined {
     try {
       const replay =
         this.machineCredentialService.decryptClaimResponse(encrypted);
       const profile = machineProvisioningProfileSchema.parse(replay);
-      return profile.provisioningProfile === request.provisioningProfile &&
-        profile.maintenance.publicKey === request.maintenancePublicKey
-        ? profile
-        : undefined;
+      return profile;
     } catch {
       return undefined;
     }

@@ -40,7 +40,10 @@ use crate::{
     runtime_configuration::RuntimeSources,
     scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     state::{
-        store::{MachinePlanogramInput, StockMovementInput, OUTBOX_MAX_EVENTS},
+        store::{
+            MachinePlanogramInput, PhysicalStockAttestationInput, StockMaintenanceBatchInput,
+            StockMovementInput, OUTBOX_MAX_EVENTS,
+        },
         LocalStateStore,
     },
     transaction::TransactionStateMachine,
@@ -129,6 +132,33 @@ struct LocalEnvironmentControlRequest {
     target_temperature_celsius: Option<i8>,
     vent_speed: Option<u8>,
     timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClearWholeMachineMaintenanceLockRequest {
+    operator_note: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManualDispenseDiagnosticRequest {
+    idempotency_key: String,
+    slot_code: String,
+    layer_no: u32,
+    cell_no: u32,
+    #[serde(default = "default_manual_dispense_quantity")]
+    quantity: u32,
+    #[serde(default = "default_manual_dispense_timeout")]
+    timeout_seconds: u64,
+}
+
+fn default_manual_dispense_quantity() -> u32 {
+    1
+}
+
+fn default_manual_dispense_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -249,6 +279,15 @@ pub struct RuntimeStatusCache {
     pub catalog: Arc<tokio::sync::RwLock<CatalogSnapshot>>,
     pub environment: Arc<tokio::sync::RwLock<vending_core::environment::EnvironmentHeartbeatCache>>,
     pub network: Arc<tokio::sync::RwLock<Option<NetworkSettingsResponse>>>,
+    sale_start_generation: String,
+    sale_start_state: Arc<Mutex<SaleStartCapabilityState>>,
+}
+
+#[derive(Debug, Default)]
+struct SaleStartCapabilityState {
+    revision: u64,
+    fingerprint: Option<Vec<u8>>,
+    last_accepted: Option<daemon_ipc_contracts::SaleStartCapabilitySnapshot>,
 }
 
 impl RuntimeStatusCache {
@@ -259,7 +298,14 @@ impl RuntimeStatusCache {
         let outbox_size = state.outbox_size().await.unwrap_or_default() as usize;
         let mqtt_url = profile.map(|profile| profile.profile.mqtt_connection.url.clone());
         let vision_expected = profile
-            .map(|profile| profile.profile.hardware_profile.vision.required)
+            .map(|profile| {
+                profile.profile.hardware_profile.vision.required
+                    || profile
+                        .profile
+                        .hardware_profile
+                        .vision
+                        .supports_recommendations
+            })
             .unwrap_or(false);
         Self {
             sync: Arc::new(tokio::sync::RwLock::new(
@@ -312,6 +358,8 @@ impl RuntimeStatusCache {
                 vending_core::environment::EnvironmentHeartbeatCache::default(),
             )),
             network: Arc::new(tokio::sync::RwLock::new(None)),
+            sale_start_generation: uuid::Uuid::new_v4().simple().to_string(),
+            sale_start_state: Arc::new(Mutex::new(SaleStartCapabilityState::default())),
         }
     }
 }
@@ -345,6 +393,7 @@ pub struct IpcContext {
 const GATE_IDLE: u8 = 0;
 const GATE_SALE: u8 = 1;
 const GATE_BINDING: u8 = 2;
+const GATE_MANUAL_DISPENSE: u8 = 3;
 
 #[derive(Debug, Default)]
 pub(crate) struct SaleBindingOperationGate {
@@ -360,6 +409,11 @@ impl SaleBindingOperationGate {
         self: &Arc<Self>,
     ) -> Result<SaleBindingOperationLease, u8> {
         self.acquire(GATE_BINDING)
+    }
+    pub(crate) fn try_acquire_manual_dispense(
+        self: &Arc<Self>,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        self.acquire(GATE_MANUAL_DISPENSE)
     }
     fn acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
         self.state
@@ -427,7 +481,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/network/available", get(available_networks))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
-        .route("/v1/sale-readiness", get(sale_readiness))
+        .route("/v1/sale-start-capability", get(sale_start_capability))
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order))
         .route("/v1/intents/cancel-order", post(cancel_order))
@@ -440,6 +494,26 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/:order_no", get(current_transaction))
         .route("/v1/stock/planogram", post(apply_planogram))
         .route("/v1/stock/movements", post(record_stock_movement))
+        .route(
+            "/v1/stock/maintenance-task",
+            get(stock_maintenance_task).post(submit_stock_maintenance_batch),
+        )
+        .route(
+            "/v1/stock/attestation",
+            post(record_physical_stock_attestation),
+        )
+        .route(
+            "/v1/maintenance/whole-machine-lock/clear",
+            post(clear_whole_machine_maintenance_lock),
+        )
+        .route(
+            "/v1/maintenance/payment-environment",
+            get(payment_environment_diagnostic),
+        )
+        .route(
+            "/v1/maintenance/manual-dispense-diagnostic",
+            post(manual_dispense_diagnostic),
+        )
         .route("/v1/hardware/self-check", post(hardware_self_check))
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route("/v1/hardware-bindings/:role/test", post(test_binding))
@@ -592,28 +666,7 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
 
 async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     let aggregate = crate::health::HealthAggregator::new(ctx.state.clone());
-    let mut snapshot = aggregate.ready_snapshot().await;
-    let readiness = machine_sale_readiness_snapshot(&ctx).await.unwrap_or_else(|error| serde_json::json!({ "canStartNetworkAuthorizedSale": false, "blockingCodes": [error] }));
-    if !readiness
-        .get("canStartNetworkAuthorizedSale")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        snapshot.ready = false;
-        snapshot.can_sell = false;
-        snapshot.mode = "maintenance".to_string();
-        snapshot.blocking_codes = readiness
-            .get("blockingCodes")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(ToString::to_string))
-                    .collect()
-            })
-            .unwrap_or_else(|| vec!["MACHINE_NOT_READY".to_string()]);
-    }
-    Json(snapshot)
+    Json(aggregate.ready_snapshot().await)
 }
 
 fn component(
@@ -720,7 +773,7 @@ async fn claim_machine(
     if let Err(error) = validate_machine_provisioning_profile(&profile) {
         return error_response(StatusCode::BAD_REQUEST, "machine_profile_invalid", error);
     }
-    let machine_code = profile.machine.code.clone();
+    let machine_code = profile.machine.code.to_string();
     if let Err(error) = clean.accept_profile(&profile).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -845,81 +898,324 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
     }
 }
 
-async fn sale_readiness(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+async fn sale_start_capability(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    match machine_sale_readiness_snapshot(&ctx).await {
+    match sale_start_capability_snapshot(&ctx).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "sale_readiness_failed",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sale_start_capability_unavailable",
             error,
         ),
     }
 }
 
-pub(crate) async fn machine_sale_readiness_snapshot(
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentOption {
+    option_key: String,
+    provider_code: String,
+    method: String,
+    display_name: String,
+    description: String,
+    icon: String,
+    #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    disabled_reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentOptions {
+    options: Vec<BackendPaymentOption>,
+    default_option_key: Option<String>,
+    default_provider_code: Option<String>,
+}
+
+struct SaleStartCapabilityObservation {
+    profile: daemon_ipc_contracts::ProvisioningProfileCache,
+    topology: crate::runtime_configuration::HardwareTopologyReadiness,
+    hardware: vending_core::hardware::HardwareStatus,
+    whole_machine_locked: bool,
+    has_saleable_slot: bool,
+    mqtt_connected: bool,
+    scanner_ready: bool,
+    scanner_code: String,
+    scanner_message: String,
+    platform_default_option_key: Option<String>,
+    platform_default_provider_code: Option<String>,
+    payment_options: Vec<BackendPaymentOption>,
+}
+
+fn capability_reason(
+    code: impl Into<String>,
+    component: impl Into<String>,
+    message: impl Into<String>,
+) -> daemon_ipc_contracts::SaleStartCapabilityReason {
+    daemon_ipc_contracts::SaleStartCapabilityReason {
+        code: code.into(),
+        component: component.into(),
+        message: message.into(),
+    }
+}
+
+fn capability_degradation(
+    code: impl Into<String>,
+    component: impl Into<String>,
+    message: impl Into<String>,
+) -> daemon_ipc_contracts::SaleStartCapabilityDegradation {
+    daemon_ipc_contracts::SaleStartCapabilityDegradation {
+        code: code.into(),
+        component: component.into(),
+        message: message.into(),
+    }
+}
+
+fn payment_method_allowed_by_profile(
+    method: &str,
+    profile: &daemon_ipc_contracts::ProvisioningProfileCache,
+) -> bool {
+    match method {
+        "qr_code" => profile.profile.payment_capability.qr_code_enabled,
+        "payment_code" => profile.profile.payment_capability.payment_code_enabled,
+        "mock" => true,
+        _ => false,
+    }
+}
+
+fn evaluate_sale_start_capability(
+    observation: &SaleStartCapabilityObservation,
+    generation: String,
+    revision: std::num::NonZeroU64,
+    observed_at: String,
+) -> daemon_ipc_contracts::SaleStartCapabilitySnapshot {
+    let options = observation
+        .payment_options
+        .iter()
+        .filter(|option| payment_method_allowed_by_profile(&option.method, &observation.profile))
+        .map(|option| {
+            let scanner_blocked = option.method == "payment_code" && !observation.scanner_ready;
+            daemon_ipc_contracts::SaleStartCapabilityPaymentOption {
+                option_key: option.option_key.clone(),
+                provider_code: option.provider_code.clone(),
+                method: option.method.clone(),
+                display_name: option.display_name.clone(),
+                description: option.description.clone(),
+                icon: option.icon.clone(),
+                recommended: option.recommended,
+                ready: !option.disabled && !scanner_blocked,
+                disabled_reason: if scanner_blocked {
+                    Some(observation.scanner_message.clone())
+                } else {
+                    option.disabled_reason.clone()
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let payment_ready = options.iter().any(|option| option.ready);
+    let default = observation
+        .platform_default_option_key
+        .as_deref()
+        .and_then(|key| {
+            options
+                .iter()
+                .find(|option| option.option_key == key && option.ready)
+        })
+        .or_else(|| options.iter().find(|option| option.ready));
+
+    let mut blockers = Vec::new();
+    if !observation.topology.ready {
+        blockers.push(capability_reason(
+            observation.topology.code.clone(),
+            "hardware_slot_topology",
+            observation.topology.message.clone(),
+        ));
+    }
+    if !observation.hardware.online {
+        blockers.push(capability_reason(
+            "LOWER_CONTROLLER_UNAVAILABLE",
+            "hardware",
+            observation.hardware.message.clone(),
+        ));
+    }
+    if observation.whole_machine_locked {
+        blockers.push(capability_reason(
+            "WHOLE_MACHINE_LOCKED",
+            "hardware",
+            "lower controller recovery is required",
+        ));
+    }
+    if !observation.has_saleable_slot {
+        blockers.push(capability_reason(
+            "NO_SALEABLE_SLOTS",
+            "stock",
+            "no active planogram slot has saleable stock",
+        ));
+    }
+    if !observation.mqtt_connected {
+        blockers.push(capability_reason(
+            "MQTT_UNAVAILABLE",
+            "sync",
+            "network-authorized sale synchronization is unavailable",
+        ));
+    }
+    if !payment_ready {
+        blockers.push(capability_reason(
+            "NO_PAYMENT_OPTIONS",
+            "payment_options",
+            "no profile-supported payment option is ready",
+        ));
+    }
+
+    let mut degradations = Vec::new();
+    if options.iter().any(|option| option.method == "payment_code")
+        && !observation.scanner_ready
+        && payment_ready
+    {
+        degradations.push(capability_degradation(
+            observation.scanner_code.clone(),
+            "scanner",
+            observation.scanner_message.clone(),
+        ));
+    }
+    daemon_ipc_contracts::SaleStartCapabilitySnapshot {
+        generation: daemon_ipc_contracts::SaleStartCapabilityGeneration::try_from(generation)
+            .expect("capability generation is non-empty"),
+        revision,
+        observed_at,
+        can_start_sale: blockers.is_empty(),
+        blockers,
+        degradations,
+        payment_options: daemon_ipc_contracts::SaleStartCapabilityPaymentOptions {
+            ready: payment_ready,
+            default_option_key: default.map(|option| option.option_key.clone()),
+            default_provider_code: default
+                .map(|option| option.provider_code.clone())
+                .or_else(|| observation.platform_default_provider_code.clone()),
+            options,
+        },
+    }
+}
+
+async fn observe_sale_start_capability(
     ctx: &IpcContext,
-) -> Result<serde_json::Value, String> {
-    let mut blocking = Vec::<String>::new();
-    let profile = match ctx.runtime_sources.require_profile().await {
-        Ok(value) => Some(value),
-        Err(_) => {
-            blocking.push("MACHINE_NOT_CLAIMED".to_string());
-            None
-        }
-    };
+) -> Result<SaleStartCapabilityObservation, String> {
+    let profile = ctx.runtime_sources.require_profile().await?;
     let topology = ctx.runtime_sources.hardware_topology_readiness().await?;
-    if !topology.ready {
-        blocking.push(topology.code.clone());
-    }
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
-    if !hardware.online {
-        blocking.push("LOWER_CONTROLLER_UNAVAILABLE".to_string());
-    }
-    if ctx
+    let whole_machine_locked = ctx
         .state
         .whole_machine_maintenance_lock()
         .await
         .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        blocking.push("WHOLE_MACHINE_LOCKED".to_string());
-    }
-    let machine_code = profile
-        .as_ref()
-        .map(|value| value.profile.machine.code.to_string());
+        .is_some();
     let sale_view = ctx
         .state
-        .sale_view(machine_code)
+        .sale_view(Some(profile.profile.machine.code.to_string()))
         .await
         .map_err(|error| error.to_string())?;
-    if !sale_view
+    let has_saleable_slot = sale_view
         .items
         .iter()
-        .any(|item| item.slot_sales_state == "sale_ready" && item.saleable_stock > 0)
-    {
-        blocking.push("NO_SALEABLE_SLOTS".to_string());
-    }
+        .any(|item| item.slot_sales_state == "sale_ready" && item.saleable_stock > 0);
+    let sync = ctx.ui.status_cache.sync.read().await.clone();
     let scanner = ctx.ui.status_cache.scanner.read().await.clone();
-    let payment_code = scanner_payment_readiness(&scanner);
-    let capability = profile
-        .as_ref()
-        .map(|value| &value.profile.payment_capability);
-    let methods = serde_json::json!([
-        { "method": "qr_code", "providerCode": "wechat_pay", "ready": capability.is_some_and(|value| value.qr_code_enabled), "disabledReason": if capability.is_some_and(|value| value.qr_code_enabled) { serde_json::Value::Null } else { serde_json::Value::String("payment capability unavailable".to_string()) } },
-        { "method": "payment_code", "providerCode": "wechat_pay", "ready": capability.is_some_and(|value| value.payment_code_enabled) && payment_code.0, "disabledReason": if payment_code.0 { serde_json::Value::Null } else { serde_json::Value::String(payment_code.1.clone()) } }
-    ]);
-    Ok(serde_json::json!({
-        "canStartNetworkAuthorizedSale": blocking.is_empty(),
-        "blockingCodes": blocking,
-        "components": {
-            "hardware": { "ready": hardware.online, "code": if hardware.online { "HARDWARE_READY" } else { "LOWER_CONTROLLER_UNAVAILABLE" }, "message": hardware.message },
-            "topology": { "ready": topology.ready, "code": topology.code, "message": topology.message },
-            "paymentOptions": { "methods": methods },
-        }
+    let (scanner_ready, scanner_message) = scanner_payment_readiness(&scanner);
+    let payment_value = ctx.ui.backend.get_payment_options().await?;
+    let payment: BackendPaymentOptions = serde_json::from_value(payment_value)
+        .map_err(|error| format!("payment options contract invalid: {error}"))?;
+    Ok(SaleStartCapabilityObservation {
+        profile,
+        topology,
+        hardware,
+        whole_machine_locked,
+        has_saleable_slot,
+        mqtt_connected: sync.mqtt_connected,
+        scanner_ready,
+        scanner_code: scanner.code,
+        scanner_message,
+        platform_default_option_key: payment.default_option_key,
+        platform_default_provider_code: payment.default_provider_code,
+        payment_options: payment.options,
+    })
+}
+
+fn capability_fingerprint(snapshot: &daemon_ipc_contracts::SaleStartCapabilitySnapshot) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "canStartSale": snapshot.can_start_sale,
+        "blockers": snapshot.blockers,
+        "degradations": snapshot.degradations,
+        "paymentOptions": snapshot.payment_options,
     }))
+    .expect("capability snapshot is serializable")
+}
+
+async fn sale_start_capability_snapshot(
+    ctx: &IpcContext,
+) -> Result<daemon_ipc_contracts::SaleStartCapabilitySnapshot, String> {
+    let mut state = ctx.ui.status_cache.sale_start_state.lock().await;
+    let observation = observe_sale_start_capability(ctx).await;
+    let provisional = match observation {
+        Ok(observation) => evaluate_sale_start_capability(
+            &observation,
+            ctx.ui.status_cache.sale_start_generation.clone(),
+            std::num::NonZeroU64::new(1).expect("one"),
+            crate::state::store::now_iso(),
+        ),
+        Err(error) => {
+            let Some(mut stale) = state.last_accepted.clone() else {
+                return Err(error);
+            };
+            stale
+                .degradations
+                .retain(|reason| reason.code != "CAPABILITY_STALE");
+            stale.degradations.push(capability_degradation(
+                "CAPABILITY_STALE",
+                "sale_start_capability",
+                error,
+            ));
+            stale
+        }
+    };
+    let fingerprint = capability_fingerprint(&provisional);
+    let changed = state
+        .fingerprint
+        .as_ref()
+        .is_some_and(|current| current != &fingerprint);
+    if state.fingerprint.as_ref() != Some(&fingerprint) {
+        state.revision = state.revision.saturating_add(1).max(1);
+        state.fingerprint = Some(fingerprint);
+    }
+    let mut snapshot = provisional;
+    snapshot.revision = std::num::NonZeroU64::new(state.revision).expect("revision");
+    if !snapshot
+        .degradations
+        .iter()
+        .any(|reason| reason.code == "CAPABILITY_STALE")
+    {
+        state.last_accepted = Some(snapshot.clone());
+    }
+    if changed {
+        let _ = ctx.events.send(DaemonEvent::SaleStartCapabilityChanged {
+            event_id: uuid::Uuid::new_v4().simple().to_string(),
+            updated_at: crate::state::store::now_iso(),
+            generation: snapshot.generation.to_string(),
+            revision: snapshot.revision.get(),
+        });
+    }
+    Ok(snapshot)
+}
+
+pub(crate) async fn refresh_sale_start_capability(ctx: &IpcContext) {
+    let _ = sale_start_capability_snapshot(ctx).await;
 }
 
 fn scanner_payment_readiness(
@@ -992,15 +1288,23 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    if ctx.runtime_sources.require_profile().await.is_err() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "machine_not_claimed",
-            "machine provisioning profile has not been claimed",
-        );
-    }
-    match ctx.ui.backend.get_payment_options().await {
-        Ok(value) => Json(value).into_response(),
+    match sale_start_capability_snapshot(&ctx).await {
+        Ok(capability) => Json(serde_json::json!({
+            "options": capability.payment_options.options.into_iter().map(|option| serde_json::json!({
+                "optionKey": option.option_key,
+                "providerCode": option.provider_code,
+                "method": option.method,
+                "displayName": option.display_name,
+                "description": option.description,
+                "icon": option.icon,
+                "recommended": option.recommended,
+                "disabled": !option.ready,
+                "disabledReason": option.disabled_reason,
+            })).collect::<Vec<_>>(),
+            "defaultOptionKey": capability.payment_options.default_option_key,
+            "defaultProviderCode": capability.payment_options.default_provider_code,
+            "serverTime": crate::state::store::now_iso(),
+        })).into_response(),
         Err(error) => error_response(
             StatusCode::BAD_GATEWAY,
             "payment_options_unavailable",
@@ -1038,7 +1342,7 @@ async fn create_order(
             "quantity must be exactly 1 for lower controller protocol v1",
         );
     }
-    let readiness = match machine_sale_readiness_snapshot(&ctx).await {
+    let capability = match sale_start_capability_snapshot(&ctx).await {
         Ok(value) => value,
         Err(error) => {
             return error_response(
@@ -1048,11 +1352,7 @@ async fn create_order(
             )
         }
     };
-    if !readiness
-        .get("canStartNetworkAuthorizedSale")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
+    if !capability.can_start_sale {
         return error_response(
             StatusCode::BAD_REQUEST,
             "create_order_blocked",
@@ -1081,14 +1381,21 @@ async fn create_order(
             "selected payment provider is required",
         );
     }
-    let capability = &profile.profile.payment_capability;
-    if (input.payment_method == "qr_code" && !capability.qr_code_enabled)
-        || (input.payment_method == "payment_code" && !capability.payment_code_enabled)
-    {
+    let selected_provider = input
+        .payment_provider_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let payment_option_ready = capability.payment_options.options.iter().any(|option| {
+        option.method == input.payment_method
+            && selected_provider.is_none_or(|provider| option.provider_code == provider)
+            && option.ready
+    });
+    if !payment_option_ready {
         return error_response(
             StatusCode::BAD_REQUEST,
             "create_order_blocked",
-            "selected payment method is unavailable",
+            "selected payment option is unavailable",
         );
     }
     let sale_view = match ctx
@@ -1333,10 +1640,97 @@ async fn apply_planogram(
         );
     }
     match ctx.state.apply_planogram(input).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(value) => {
+            refresh_sale_start_capability(&ctx).await;
+            Json(value).into_response()
+        }
         Err(error) => error_response(
             StatusCode::BAD_REQUEST,
             "planogram_apply_failed",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn stock_maintenance_task(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    match ctx.state.stock_maintenance_task().await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => error_response(
+            StatusCode::BAD_REQUEST,
+            "stock_maintenance_task_unavailable",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn submit_stock_maintenance_batch(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<StockMaintenanceBatchInput>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let profile = match ctx.runtime_sources.require_profile().await {
+        Ok(value) => value,
+        Err(error) => return error_response(StatusCode::CONFLICT, "machine_not_claimed", error),
+    };
+    match ctx
+        .state
+        .submit_stock_maintenance_batch(
+            input,
+            "local_operations",
+            &profile.profile.machine.code.to_string(),
+            &profile.profile.api_base_url,
+        )
+        .await
+    {
+        Ok(value) => {
+            refresh_sale_start_capability(&ctx).await;
+            (StatusCode::CREATED, Json(value)).into_response()
+        }
+        Err(error) => error_response(
+            StatusCode::BAD_REQUEST,
+            "stock_maintenance_batch_failed",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn record_physical_stock_attestation(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<PhysicalStockAttestationInput>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let profile = match ctx.runtime_sources.require_profile().await {
+        Ok(value) => value,
+        Err(error) => return error_response(StatusCode::CONFLICT, "machine_not_claimed", error),
+    };
+    match ctx
+        .state
+        .record_physical_stock_attestation_with_upload(
+            input,
+            Some(&profile.profile.machine.code.to_string()),
+            Some(&profile.profile.api_base_url),
+        )
+        .await
+    {
+        Ok(value) => {
+            refresh_sale_start_capability(&ctx).await;
+            (StatusCode::CREATED, Json(value)).into_response()
+        }
+        Err(error) => error_response(
+            StatusCode::BAD_REQUEST,
+            "physical_stock_attestation_failed",
             error.to_string(),
         ),
     }
@@ -1363,7 +1757,10 @@ async fn record_stock_movement(
         )
         .await
     {
-        Ok(value) => Json(value).into_response(),
+        Ok(value) => {
+            refresh_sale_start_capability(&ctx).await;
+            Json(value).into_response()
+        }
         Err(error) => error_response(
             StatusCode::BAD_REQUEST,
             "stock_movement_failed",
@@ -1381,7 +1778,363 @@ async fn hardware_self_check(
     }
     let status = ctx.hardware.self_check().await;
     *ctx.ui.status_cache.hardware.write().await = status.clone();
+    refresh_sale_start_capability(&ctx).await;
     Json(status).into_response()
+}
+
+async fn clear_whole_machine_maintenance_lock(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<ClearWholeMachineMaintenanceLockRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let operator_note = input.operator_note.trim();
+    if operator_note.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "operator_note_required",
+            "operator note is required to clear whole-machine lock",
+        );
+    }
+    let previous = match ctx.state.whole_machine_maintenance_lock().await {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "whole_machine_lock_read_failed",
+                error.to_string(),
+            )
+        }
+    };
+    let Some(previous_lock) = previous else {
+        return Json(serde_json::json!({ "cleared": false })).into_response();
+    };
+    let evidence = match ctx.state.whole_machine_lock_recovery_evidence().await {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "self_check_evidence_required",
+                "run lower-controller self-check before clearing whole-machine lock",
+            )
+        }
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "whole_machine_lock_evidence_read_failed",
+                error.to_string(),
+            )
+        }
+    };
+    if !evidence.online
+        || evidence.checked_at < previous_lock.created_at
+        || !evidence.production_dispense_path_ready
+        || evidence.adapter == "mock"
+        || evidence
+            .port_path
+            .as_deref()
+            .is_some_and(|path| path.trim_start().starts_with("tcp://"))
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "production_dispense_path_required",
+            "fresh production lower-controller recovery evidence is required",
+        );
+    }
+    let audit = crate::state::store::WholeMachineMaintenanceLockClearAudit {
+        id: uuid::Uuid::new_v4().to_string(),
+        operator_note: operator_note.to_string(),
+        cleared_at: crate::state::store::now_iso(),
+        previous: previous_lock.clone(),
+        recovery_evidence: evidence,
+    };
+    if let Err(error) = ctx
+        .state
+        .clear_whole_machine_maintenance_lock_with_audit(&audit)
+        .await
+    {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "whole_machine_lock_clear_failed",
+            error.to_string(),
+        );
+    }
+    refresh_sale_start_capability(&ctx).await;
+    Json(serde_json::json!({ "cleared": true, "previous": previous_lock })).into_response()
+}
+
+async fn payment_environment_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    match ctx.ui.backend.get_payment_environment_diagnostic().await {
+        Ok(value) if value.is_object() => Json(value).into_response(),
+        Ok(_) => error_response(
+            StatusCode::BAD_GATEWAY,
+            "payment_environment_diagnostic_invalid",
+            "payment provider environment diagnostic is invalid",
+        ),
+        Err(error) => error_response(
+            StatusCode::BAD_GATEWAY,
+            "payment_environment_diagnostic_failed",
+            error,
+        ),
+    }
+}
+
+async fn manual_dispense_diagnostic(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<ManualDispenseDiagnosticRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let key = request.idempotency_key.trim();
+    if key.is_empty()
+        || key.len() > 96
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || request.slot_code.trim().is_empty()
+        || request.slot_code.len() > 32
+        || request.quantity != 1
+        || !(1..=120).contains(&request.timeout_seconds)
+        || request.layer_no == 0
+        || request.layer_no > 255
+        || request.cell_no == 0
+        || request.cell_no > 255
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_manual_dispense_diagnostic_request",
+            "bounded idempotencyKey, slot, quantity=1 and timeoutSeconds 1..120 are required",
+        );
+    }
+    let _lease = match ctx.sale_binding_gate.try_acquire_manual_dispense() {
+        Ok(value) => value,
+        Err(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_controller_busy",
+                "sale or hardware reconfiguration is active",
+            )
+        }
+    };
+    match ctx.state.current_transaction_snapshot().await {
+        Ok(Some(value)) if crate::transaction::is_active_transaction(&value) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_active_sale",
+                "manual dispense is unavailable during an active sale",
+            )
+        }
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "manual_dispense_sale_state_unavailable",
+                error.to_string(),
+            )
+        }
+        _ => {}
+    }
+    let (binding, binding_revision) = match ctx
+        .runtime_sources
+        .local_device_binding_snapshot(LocalDeviceRole::LowerController)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "manual_dispense_binding_unavailable",
+                error,
+            )
+        }
+    };
+    let Some(binding) = binding else {
+        return error_response(
+            StatusCode::CONFLICT,
+            "manual_dispense_controller_unbound",
+            "stable lower-controller binding is required",
+        );
+    };
+    let observed = match ctx.serial_device_platform.discover().await {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "manual_dispense_controller_discovery_unavailable",
+                error,
+            )
+        }
+    };
+    let resolved_port = match device_binding::resolve_bound_port(&binding.identity, &observed) {
+        device_binding::BindingResolution::Resolved(value) => value,
+        device_binding::BindingResolution::Missing => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_controller_binding_missing",
+                "the bound lower controller is not currently attached",
+            )
+        }
+        device_binding::BindingResolution::Ambiguous(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_controller_binding_ambiguous",
+                "the bound lower controller does not resolve to one current port",
+            )
+        }
+    };
+    let controller = ctx.hardware.self_check().await;
+    if !controller.online
+        || controller.adapter == "mock"
+        || controller.port_path.as_deref() != Some(resolved_port.as_str())
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "manual_dispense_controller_unresolved",
+            "manual dispense requires the online production runtime to match the bound controller",
+        );
+    }
+    let diagnostic_id = format!("manual-dispense-{}", uuid::Uuid::new_v4().simple());
+    let command = vending_core::hardware::DispenseCommandPayload {
+        command_no: diagnostic_id.clone(),
+        order_no: "MANUAL-DIAGNOSTIC".to_string(),
+        slot: vending_core::hardware::SlotPayload {
+            layer_no: request.layer_no,
+            cell_no: request.cell_no,
+            slot_code: request.slot_code.trim().to_string(),
+        },
+        quantity: request.quantity,
+        timeout_seconds: request.timeout_seconds,
+    };
+    let pending = crate::state::store::ManualDispenseDiagnostic {
+        diagnostic_id: diagnostic_id.clone(),
+        idempotency_key: key.to_string(),
+        request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
+            request.slot_code.trim(),
+            u64::from(request.layer_no),
+            u64::from(request.cell_no),
+            u64::from(request.quantity),
+            request.timeout_seconds,
+        ),
+        status: "pending".to_string(),
+        operator_id: "local_operations".to_string(),
+        session_correlation_id: diagnostic_id.clone(),
+        controller: serde_json::json!({
+            "stableIdentity": binding.identity,
+            "adapter": controller.adapter,
+            "portPath": controller.port_path,
+            "bindingRevision": binding_revision,
+        }),
+        command: serde_json::to_value(&command).unwrap_or_default(),
+        started_at: crate::state::store::now_iso(),
+        completed_at: None,
+        raw_result: None,
+        normalized_result: None,
+        reconciliation_status: "open".to_string(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::days(90)).to_rfc3339(),
+    };
+    match ctx.state.reserve_manual_dispense_diagnostic(&pending).await {
+        Ok(crate::state::store::ManualDispenseReservation::Existing(existing)) => {
+            let existing = if existing.status == "pending" {
+                match ctx
+                    .state
+                    .mark_pending_manual_dispense_result_unknown(&existing.diagnostic_id)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "manual_dispense_unknown_evidence_write_failed",
+                            error.to_string(),
+                        )
+                    }
+                }
+            } else {
+                existing
+            };
+            return Json(serde_json::json!({
+                "diagnosticId": existing.diagnostic_id,
+                "outcome": existing.status,
+                "stockReconciliationRequired": true,
+                "reconciliationStatus": existing.reconciliation_status,
+                "replayed": true,
+            }))
+            .into_response();
+        }
+        Ok(crate::state::store::ManualDispenseReservation::Reserved(_)) => {}
+        Err(error) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_pending_evidence_write_failed",
+                error.to_string(),
+            )
+        }
+    }
+    let result = match tokio::time::timeout(
+        Duration::from_secs(request.timeout_seconds.saturating_add(10)),
+        ctx.hardware.dispense(command.clone()),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_) => vending_core::hardware::DispenseResultPayload {
+            command_no: command.command_no,
+            success: false,
+            error_code: Some("RESULT_UNKNOWN".to_string()),
+            message: "manual dispense result unknown after local timeout".to_string(),
+            reported_at: crate::state::store::now_iso(),
+        },
+    };
+    let outcome = if result.success {
+        "completed"
+    } else if result.error_code.as_deref() == Some("RESULT_UNKNOWN") {
+        "result_unknown"
+    } else {
+        "failed"
+    };
+    let normalized = serde_json::json!({
+        "outcome": outcome,
+        "errorCode": result.error_code,
+        "reportedAt": result.reported_at,
+    });
+    let record = match ctx
+        .state
+        .finish_manual_dispense_diagnostic(
+            &diagnostic_id,
+            outcome,
+            serde_json::to_value(&result).unwrap_or_default(),
+            normalized.clone(),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "manual_dispense_terminal_evidence_write_failed",
+                error.to_string(),
+            )
+        }
+    };
+    Json(serde_json::json!({
+        "diagnosticId": record.diagnostic_id,
+        "outcome": outcome,
+        "errorCode": normalized["errorCode"],
+        "reportedAt": normalized["reportedAt"],
+        "stockReconciliationRequired": true,
+        "reconciliationStatus": "open",
+        "replayed": false,
+    }))
+    .into_response()
 }
 
 async fn device_binding_snapshot(
@@ -2306,7 +3059,7 @@ mod tests {
     fn claim_profile(api_base_url: &str) -> serde_json::Value {
         serde_json::json!({
             "machine": { "id": "550e8400-e29b-41d4-a716-446655440001", "code": "VEM-CLAIM-01", "name": "Claimed machine", "status": "offline", "locationLabel": null },
-            "credentials": { "machineSecret": "m".repeat(32), "mqttSigningSecret": "s".repeat(32), "mqttConnection": { "url": "mqtt://broker.example:1883", "clientId": "vem-VEM-CLAIM-01", "username": "machine", "password": "mqtt-password" } },
+            "credentials": { "machineSecret": "m".repeat(32), "machineSecretVersion": 1, "mqttSigningSecret": "s".repeat(32), "mqttConnection": { "url": "mqtt://broker.example:1883", "clientId": "vem-VEM-CLAIM-01", "username": "machine", "password": "mqtt-password" } },
             "apiBaseUrl": api_base_url,
             "runtimeEndpoints": { "apiBasePath": "/api", "machineAuthTokenPath": "/api/machine-auth/token", "machineApiBasePath": "/api/machines/VEM-CLAIM-01", "mqttTopicPrefix": "vem/machines/VEM-CLAIM-01" },
             "hardwareProfile": { "profile": "production", "controller": { "required": true, "protocol": "vem-vending-controller" }, "paymentScanner": { "required": true, "supportsPaymentCode": true }, "vision": { "required": false, "supportsRecommendations": false } },
@@ -2322,7 +3075,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
-            .and(body_json(serde_json::json!({ "claimCode": "CLAIM-01" })))
+            .and(body_json(serde_json::json!({ "claimCode": "CLAI-0001" })))
             .respond_with(ResponseTemplate::new(200).set_body_json(claim_profile(&server.uri())))
             .expect(1)
             .mount(&server)
@@ -2344,12 +3097,21 @@ mod tests {
                     .uri("/v1/provisioning/claim")
                     .header("authorization", "Bearer test-token")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"claimCode":"claim-01"}"#))
+                    .body(Body::from(r#"{"claimCode":"clai-0001"}"#))
                     .expect("request"),
             )
             .await
             .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
+        let response_status = response.status();
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("claim response body");
+        assert_eq!(
+            response_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&response_body)
+        );
         let cache = tokio::fs::read_to_string(data_dir.join("config/profile-cache.json"))
             .await
             .expect("profile cache");
@@ -2369,5 +3131,396 @@ mod tests {
                 .await
                 .expect("settings path")
         );
+    }
+
+    #[tokio::test]
+    async fn sale_start_capability_route_tracks_real_dependencies_and_filters_profile_payments() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "options": [
+                    { "optionKey": "qr_code:alipay", "providerCode": "alipay", "method": "qr_code", "displayName": "QR", "description": "QR payment", "icon": "qr", "recommended": true, "disabled": false, "disabledReason": null },
+                    { "optionKey": "payment_code:alipay", "providerCode": "alipay", "method": "payment_code", "displayName": "Payment code", "description": "Scan payment code", "icon": "scan", "recommended": false, "disabled": false, "disabledReason": null }
+                ],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay"
+            })))
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        tokio::fs::write(
+            temp.path().join("runtime-bootstrap.json"),
+            serde_json::json!({ "schemaVersion": 1, "provisioningApiBaseUrl": server.uri(), "hardwareModel": "vem-prod-24", "topology": { "identity": "vem-prod-24", "version": "v1" } }).to_string(),
+        ).await.expect("bootstrap");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+        let mut profile_value = claim_profile(&server.uri());
+        profile_value["paymentCapability"]["qrCodeEnabled"] = serde_json::json!(false);
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(profile_value).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("payment-options-token")
+            .await;
+        ctx.state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-CAPABILITY".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![crate::state::store::MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440012".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440013".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                    product_name: "Water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        ctx.state
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-CAPABILITY".to_string(),
+                planogram_version: "PLAN-CAPABILITY".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "test".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("stock");
+        *ctx.ui.status_cache.hardware.write().await = vending_core::hardware::HardwareStatus {
+            adapter: "serial".to_string(),
+            online: true,
+            message: "controller ready".to_string(),
+            port_path: Some("COM5".to_string()),
+            resolution_source: Some("stable_usb_binding".to_string()),
+            bound_usb_identity: None,
+            candidates: vec![],
+        };
+        ctx.ui.status_cache.sync.write().await.mqtt_connected = true;
+        *ctx.ui.status_cache.scanner.write().await = vending_core::scanner::ScannerHealthSnapshot {
+            online: true,
+            adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+            port: Some("COM6".to_string()),
+            level: vending_core::health::HealthLevel::Ok,
+            code: "SCANNER_READY".to_string(),
+            message: "scanner ready".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        };
+        let mut events = ctx.events.subscribe();
+
+        let payment_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/payment-options")
+                    .header("authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("payment request"),
+            )
+            .await
+            .expect("payment response");
+        assert_eq!(payment_response.status(), StatusCode::OK);
+        let payment_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(payment_response.into_body(), usize::MAX)
+                .await
+                .expect("payment body"),
+        )
+        .expect("payment json");
+        assert_eq!(
+            payment_json["options"].as_array().expect("options").len(),
+            1
+        );
+        assert_eq!(payment_json["options"][0]["method"], "payment_code");
+
+        let rejected_qr_order = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/intents/create-order")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "inventoryId": "550e8400-e29b-41d4-a716-446655440012",
+                            "quantity": 1,
+                            "planogramVersion": "PLAN-CAPABILITY",
+                            "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                            "slotCode": "A1",
+                            "paymentMethod": "qr_code",
+                            "paymentProviderCode": "alipay",
+                            "profileSnapshot": null,
+                            "idempotencyKey": "CAPABILITY-QR-REJECTED"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("create order request"),
+            )
+            .await
+            .expect("create order response");
+        let rejected_qr_status = rejected_qr_order.status();
+        let rejected_qr_body = axum::body::to_bytes(rejected_qr_order.into_body(), usize::MAX)
+            .await
+            .expect("rejected QR body");
+        assert_eq!(
+            rejected_qr_status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&rejected_qr_body)
+        );
+
+        let ready = sale_start_capability_snapshot(&ctx)
+            .await
+            .expect("ready capability");
+        assert!(ready.can_start_sale);
+        assert_eq!(ready.payment_options.options.len(), 1);
+        let initial_revision = ready.revision.get();
+        let generation = ready.generation.to_string();
+
+        ctx.ui.status_cache.scanner.write().await.online = false;
+        let blocked_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/sale-start-capability")
+                    .header("authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("capability request"),
+            )
+            .await
+            .expect("capability response");
+        assert_eq!(blocked_response.status(), StatusCode::OK);
+        let blocked: daemon_ipc_contracts::SaleStartCapabilitySnapshot = serde_json::from_slice(
+            &axum::body::to_bytes(blocked_response.into_body(), usize::MAX)
+                .await
+                .expect("capability body"),
+        )
+        .expect("generated capability");
+        assert!(!blocked.can_start_sale);
+        assert!(blocked.revision.get() > initial_revision);
+        assert_eq!(blocked.generation.to_string(), generation);
+        assert!(matches!(
+            events.recv().await.expect("capability change event"),
+            DaemonEvent::SaleStartCapabilityChanged { revision, .. } if revision == blocked.revision.get()
+        ));
+
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(503))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let stale = sale_start_capability_snapshot(&ctx)
+            .await
+            .expect("last accepted stale capability");
+        assert_eq!(stale.generation.to_string(), generation);
+        assert!(stale.revision.get() > blocked.revision.get());
+        assert!(stale
+            .degradations
+            .iter()
+            .any(|reason| reason.code == "CAPABILITY_STALE"));
+
+        let restarted_cache =
+            RuntimeStatusCache::new(Some(&profile_cache(&profile)), ctx.state).await;
+        assert_ne!(restarted_cache.sale_start_generation, generation);
+        assert_eq!(restarted_cache.sale_start_state.lock().await.revision, 0);
+    }
+
+    #[tokio::test]
+    async fn local_operations_routes_use_narrow_token_only_boundaries() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-environment-diagnostic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "environment": "production",
+                "providers": []
+            })))
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        tokio::fs::write(
+            temp.path().join("runtime-bootstrap.json"),
+            serde_json::json!({ "schemaVersion": 1, "provisioningApiBaseUrl": server.uri(), "hardwareModel": "vem-prod-24", "topology": { "identity": "vem-prod-24", "version": "v1" } }).to_string(),
+        ).await.expect("bootstrap");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("operations-token")
+            .await;
+        let planogram: MachinePlanogramInput = serde_json::from_value(serde_json::json!({
+            "planogramVersion": "PLAN-OPERATIONS",
+            "source": "test",
+            "appliedBy": null,
+            "slots": [{
+                "slotId": "550e8400-e29b-41d4-a716-446655440021",
+                "slotCode": "A1",
+                "layerNo": 1,
+                "cellNo": 1,
+                "capacity": 8,
+                "parLevel": 6,
+                "inventoryId": "550e8400-e29b-41d4-a716-446655440022",
+                "variantId": "550e8400-e29b-41d4-a716-446655440023",
+                "productId": "550e8400-e29b-41d4-a716-446655440024",
+                "productName": "Water",
+                "productDescription": null,
+                "coverImageUrl": null,
+                "categoryId": null,
+                "categoryName": null,
+                "sku": "WATER-OPS",
+                "size": null,
+                "color": null,
+                "priceCents": 200,
+                "productSortOrder": 1,
+                "targetGender": null
+            }]
+        }))
+        .expect("planogram");
+        ctx.state
+            .apply_planogram(planogram)
+            .await
+            .expect("planogram");
+
+        let task_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stock/maintenance-task")
+                    .header("authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("task request"),
+            )
+            .await
+            .expect("task response");
+        assert_eq!(task_response.status(), StatusCode::OK);
+        let task: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(task_response.into_body(), usize::MAX)
+                .await
+                .expect("task body"),
+        )
+        .expect("task json");
+        let mode = task["mode"].as_str().expect("task mode");
+        let slot_input = if mode == "refill" {
+            serde_json::json!({ "slotCode": "A1", "addition": 3 })
+        } else {
+            serde_json::json!({ "slotCode": "A1", "quantity": 3 })
+        };
+        let submit_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stock/maintenance-task")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "taskId": task["taskId"],
+                            "mode": mode,
+                            "slots": [slot_input]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("submit request"),
+            )
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::CREATED);
+
+        let diagnostic_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/maintenance/payment-environment")
+                    .header("authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("diagnostic request"),
+            )
+            .await
+            .expect("diagnostic response");
+        assert_eq!(diagnostic_response.status(), StatusCode::OK);
+
+        let lock_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/maintenance/whole-machine-lock/clear")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"operatorNote":"verified recovery"}"#))
+                    .expect("lock request"),
+            )
+            .await
+            .expect("lock response");
+        assert_eq!(lock_response.status(), StatusCode::OK);
+
+        let manual_response = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/maintenance/manual-dispense-diagnostic")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"idempotencyKey":"manual-ops-1","slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}"#,
+                    ))
+                    .expect("manual request"),
+            )
+            .await
+            .expect("manual response");
+        assert_eq!(manual_response.status(), StatusCode::CONFLICT);
+    }
+
+    fn profile_cache(
+        profile: &daemon_ipc_contracts::MachineProvisioningProfile,
+    ) -> daemon_ipc_contracts::ProvisioningProfileCache {
+        let mut snapshot = serde_json::to_value(profile).expect("profile value");
+        snapshot
+            .as_object_mut()
+            .expect("profile object")
+            .remove("credentials");
+        snapshot["mqttConnection"] = serde_json::json!({
+            "url": profile.credentials.mqtt_connection.url,
+            "clientId": profile.credentials.mqtt_connection.client_id,
+            "username": profile.credentials.mqtt_connection.username,
+        });
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "generation": 1,
+            "acceptedAt": "2026-07-17T00:00:00Z",
+            "profile": snapshot,
+        }))
+        .expect("profile cache")
     }
 }

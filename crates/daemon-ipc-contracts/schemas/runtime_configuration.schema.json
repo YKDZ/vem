@@ -149,15 +149,17 @@
                             },
                             "status": {
                               "type": "string",
-                              "minLength": 1,
-                              "maxLength": 64
+                              "enum": [
+                                "online",
+                                "offline",
+                                "maintenance",
+                                "disabled"
+                              ]
                             },
                             "locationLabel": {
                               "anyOf": [
                                 {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 256
+                                  "type": "string"
                                 },
                                 {
                                   "type": "null"
@@ -204,34 +206,6 @@
                             "machineApiBasePath",
                             "mqttTopicPrefix"
                           ],
-                          "additionalProperties": false
-                        },
-                        "mqttConnection": {
-                          "type": "object",
-                          "properties": {
-                            "url": {
-                              "type": "string",
-                              "format": "uri"
-                            },
-                            "clientId": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 128
-                            },
-                            "username": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            }
-                          },
-                          "required": ["url", "clientId", "username"],
                           "additionalProperties": false
                         },
                         "hardwareProfile": {
@@ -325,15 +299,17 @@
                               "const": "production"
                             },
                             "qrCodeEnabled": {
+                              "default": true,
                               "type": "boolean"
                             },
                             "paymentCodeEnabled": {
+                              "default": true,
                               "type": "boolean"
                             },
                             "serverTime": {
                               "type": "string",
                               "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
                             }
                           },
                           "required": [
@@ -364,12 +340,12 @@
                             "claimedAt": {
                               "type": "string",
                               "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
                             },
                             "serverTime": {
                               "type": "string",
                               "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
                             }
                           },
                           "required": [
@@ -380,18 +356,45 @@
                             "serverTime"
                           ],
                           "additionalProperties": false
+                        },
+                        "mqttConnection": {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "format": "uri"
+                            },
+                            "clientId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "username": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": ["url", "clientId"],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "machine",
                         "apiBaseUrl",
                         "runtimeEndpoints",
-                        "mqttConnection",
                         "hardwareProfile",
                         "hardwareModel",
                         "hardwareSlotTopology",
                         "paymentCapability",
-                        "metadata"
+                        "metadata",
+                        "mqttConnection"
                       ],
                       "additionalProperties": false
                     }
@@ -435,15 +438,12 @@
                 },
                 "status": {
                   "type": "string",
-                  "minLength": 1,
-                  "maxLength": 64
+                  "enum": ["online", "offline", "maintenance", "disabled"]
                 },
                 "locationLabel": {
                   "anyOf": [
                     {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 256
+                      "type": "string"
                     },
                     {
                       "type": "null"
@@ -512,8 +512,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1,
-                          "maxLength": 128
+                          "minLength": 1
                         },
                         {
                           "type": "null"
@@ -521,7 +520,7 @@
                       ]
                     }
                   },
-                  "required": ["url", "clientId", "username"],
+                  "required": ["url", "clientId"],
                   "additionalProperties": false
                 },
                 "paymentCapability": {
@@ -532,15 +531,17 @@
                       "const": "production"
                     },
                     "qrCodeEnabled": {
+                      "default": true,
                       "type": "boolean"
                     },
                     "paymentCodeEnabled": {
+                      "default": true,
                       "type": "boolean"
                     },
                     "serverTime": {
                       "type": "string",
                       "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
                     }
                   },
                   "required": [
@@ -1040,6 +1041,547 @@
         "cuesEnabled",
         "presenceCuesEnabled",
         "transactionCuesEnabled"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "claimCode": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{4}-[A-Z0-9]{4}$"
+        }
+      },
+      "required": ["claimCode"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "status": {
+              "type": "string",
+              "enum": ["online", "offline", "maintenance", "disabled"]
+            },
+            "locationLabel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["id", "code", "name", "status", "locationLabel"],
+          "additionalProperties": false
+        },
+        "credentials": {
+          "type": "object",
+          "properties": {
+            "machineSecret": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 256
+            },
+            "machineSecretVersion": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "mqttSigningSecret": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 256
+            },
+            "mqttConnection": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "clientId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "username": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "password": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["url", "clientId"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "machineSecret",
+            "machineSecretVersion",
+            "mqttSigningSecret",
+            "mqttConnection"
+          ],
+          "additionalProperties": false
+        },
+        "apiBaseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "runtimeEndpoints": {
+          "type": "object",
+          "properties": {
+            "apiBasePath": {
+              "type": "string",
+              "const": "/api"
+            },
+            "machineAuthTokenPath": {
+              "type": "string",
+              "const": "/api/machine-auth/token"
+            },
+            "machineApiBasePath": {
+              "type": "string",
+              "pattern": "^\\/api\\/machines\\/[^/]+$"
+            },
+            "mqttTopicPrefix": {
+              "type": "string",
+              "pattern": "^vem\\/machines\\/[^/]+$"
+            }
+          },
+          "required": [
+            "apiBasePath",
+            "machineAuthTokenPath",
+            "machineApiBasePath",
+            "mqttTopicPrefix"
+          ],
+          "additionalProperties": false
+        },
+        "hardwareProfile": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "const": "production"
+            },
+            "controller": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "protocol": {
+                  "type": "string",
+                  "const": "vem-vending-controller"
+                }
+              },
+              "required": ["required", "protocol"],
+              "additionalProperties": false
+            },
+            "paymentScanner": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "supportsPaymentCode": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["required", "supportsPaymentCode"],
+              "additionalProperties": false
+            },
+            "vision": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "supportsRecommendations": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["required", "supportsRecommendations"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["profile", "controller", "paymentScanner", "vision"],
+          "additionalProperties": false
+        },
+        "hardwareModel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "hardwareSlotTopology": {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["identity", "version"],
+          "additionalProperties": false
+        },
+        "paymentCapability": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "const": "production"
+            },
+            "qrCodeEnabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "paymentCodeEnabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            }
+          },
+          "required": [
+            "profile",
+            "qrCodeEnabled",
+            "paymentCodeEnabled",
+            "serverTime"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "profileVersion": {
+              "type": "number",
+              "const": 1
+            },
+            "profileRevision": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "claimCodeId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "claimedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            }
+          },
+          "required": [
+            "profileVersion",
+            "profileRevision",
+            "claimCodeId",
+            "claimedAt",
+            "serverTime"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "machine",
+        "credentials",
+        "apiBaseUrl",
+        "runtimeEndpoints",
+        "hardwareProfile",
+        "hardwareModel",
+        "hardwareSlotTopology",
+        "paymentCapability",
+        "metadata"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "status": {
+              "type": "string",
+              "enum": ["online", "offline", "maintenance", "disabled"]
+            },
+            "locationLabel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["id", "code", "name", "status", "locationLabel"],
+          "additionalProperties": false
+        },
+        "apiBaseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "runtimeEndpoints": {
+          "type": "object",
+          "properties": {
+            "apiBasePath": {
+              "type": "string",
+              "const": "/api"
+            },
+            "machineAuthTokenPath": {
+              "type": "string",
+              "const": "/api/machine-auth/token"
+            },
+            "machineApiBasePath": {
+              "type": "string",
+              "pattern": "^\\/api\\/machines\\/[^/]+$"
+            },
+            "mqttTopicPrefix": {
+              "type": "string",
+              "pattern": "^vem\\/machines\\/[^/]+$"
+            }
+          },
+          "required": [
+            "apiBasePath",
+            "machineAuthTokenPath",
+            "machineApiBasePath",
+            "mqttTopicPrefix"
+          ],
+          "additionalProperties": false
+        },
+        "hardwareProfile": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "const": "production"
+            },
+            "controller": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "protocol": {
+                  "type": "string",
+                  "const": "vem-vending-controller"
+                }
+              },
+              "required": ["required", "protocol"],
+              "additionalProperties": false
+            },
+            "paymentScanner": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "supportsPaymentCode": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["required", "supportsPaymentCode"],
+              "additionalProperties": false
+            },
+            "vision": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "supportsRecommendations": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["required", "supportsRecommendations"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["profile", "controller", "paymentScanner", "vision"],
+          "additionalProperties": false
+        },
+        "hardwareModel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "hardwareSlotTopology": {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["identity", "version"],
+          "additionalProperties": false
+        },
+        "paymentCapability": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "const": "production"
+            },
+            "qrCodeEnabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "paymentCodeEnabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            }
+          },
+          "required": [
+            "profile",
+            "qrCodeEnabled",
+            "paymentCodeEnabled",
+            "serverTime"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "profileVersion": {
+              "type": "number",
+              "const": 1
+            },
+            "profileRevision": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "claimCodeId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "claimedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            }
+          },
+          "required": [
+            "profileVersion",
+            "profileRevision",
+            "claimCodeId",
+            "claimedAt",
+            "serverTime"
+          ],
+          "additionalProperties": false
+        },
+        "mqttConnection": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "clientId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["url", "clientId"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "machine",
+        "apiBaseUrl",
+        "runtimeEndpoints",
+        "hardwareProfile",
+        "hardwareModel",
+        "hardwareSlotTopology",
+        "paymentCapability",
+        "metadata",
+        "mqttConnection"
       ],
       "additionalProperties": false
     }

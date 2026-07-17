@@ -22,6 +22,34 @@ import { MachinesController } from "./machines.controller";
 import { MachinesService } from "./machines.service";
 
 describe("MachinesController environment commands", () => {
+  it("exposes only the authenticated machine's provisioning refresh snapshot", async () => {
+    const snapshot = { machine: { id: "machine-1", code: "M001" } };
+    const getOwnProvisioningProfile = vi.fn().mockResolvedValue(snapshot);
+    const controller = new MachinesController({
+      getOwnProvisioningProfile,
+    } as never);
+    const guards =
+      Reflect.getMetadata(
+        GUARDS_METADATA,
+        MachinesController.prototype.getOwnProvisioningProfile,
+      ) ?? [];
+
+    expect(guards).toContain(MachineAuthGuard);
+    await expect(
+      controller.getOwnProvisioningProfile(
+        { id: "machine-1", code: "M001" } as never,
+        "M001",
+      ),
+    ).resolves.toEqual(snapshot);
+    expect(getOwnProvisioningProfile).toHaveBeenCalledWith("machine-1");
+    await expect(
+      controller.getOwnProvisioningProfile(
+        { id: "machine-1", code: "M001" } as never,
+        "M002",
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
   it("requires machines.write and forwards the requester when updating machine location", async () => {
     const updateMachine = vi.fn().mockResolvedValue({ id: "machine-1" });
     const controller = new MachinesController({ updateMachine } as never);
@@ -354,16 +382,12 @@ describe("MachinesController claim code lifecycle", () => {
     await expect(
       controller.claimMachine({
         claimCode: "ABCD-2345",
-        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        provisioningProfile: "production",
       }),
     ).resolves.toEqual({
       machine: { id: "machine-1", code: "M001" },
     });
     expect(claimMachine).toHaveBeenCalledWith({
       claimCode: "ABCD-2345",
-      maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-      provisioningProfile: "production",
     });
   });
 
@@ -407,15 +431,11 @@ describe("MachinesController claim code lifecycle", () => {
       .post("/machines/claim")
       .send({
         claimCode: "ABCD-2345",
-        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        provisioningProfile: "production",
       })
       .expect(201);
 
     expect(claimMachine).toHaveBeenCalledWith({
       claimCode: "ABCD-2345",
-      maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-      provisioningProfile: "production",
     });
     transform.mockRestore();
   });

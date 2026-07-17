@@ -1,12 +1,14 @@
 mod support;
 
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use axum::{extract::State, routing::post, Json, Router};
 use reqwest::StatusCode;
 use support::process::DaemonHarness;
 use tokio_tungstenite::connect_async;
-use wiremock::{
-    matchers::{body_json, method, path},
-    Mock, MockServer, ResponseTemplate,
-};
 
 fn claimed_fixture() -> serde_json::Value {
     serde_json::json!({
@@ -46,7 +48,8 @@ async fn ipc_exposes_runtime_boundaries_without_legacy_summary_or_maintenance_ga
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
     let runtime = daemon.get_json("/v1/runtime-configuration").await;
-    assert_eq!(runtime["profileRefresh"]["status"], "accepted");
+    assert_eq!(runtime["profileRefresh"]["status"], "degraded");
+    assert!(runtime["profileRefresh"]["lastError"].is_string());
     assert_eq!(runtime["machine"]["code"], "MACHINE-IPC");
     let runtime_text = runtime.to_string();
     assert!(!runtime_text.contains("machine-secret-for-integration-tests-0001"));
@@ -107,19 +110,39 @@ async fn ipc_exposes_runtime_boundaries_without_legacy_summary_or_maintenance_ga
 
 #[tokio::test]
 async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/machines/claim"))
-        .and(body_json(
-            serde_json::json!({ "claimCode": "CLAIM-IPC-01" }),
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(claim_profile(&server.uri())))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("strict claim listener");
+    let api_base_url = format!("http://{}", listener.local_addr().expect("claim address"));
+    let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+        serde_json::from_value(claim_profile(&api_base_url))
+            .expect("shared generated claim profile");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let claim_state = (profile, calls.clone());
+    let claim_api = Router::new()
+        .route(
+            "/machines/claim",
+            post(
+                |State((profile, calls)): State<(
+                    daemon_ipc_contracts::MachineProvisioningProfile,
+                    Arc<AtomicUsize>,
+                )>,
+                 Json(request): Json<daemon_ipc_contracts::MachineClaimRequest>| async move {
+                    assert_eq!(request.claim_code.to_string(), "CLAI-0001");
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Json(profile)
+                },
+            ),
+        )
+        .with_state(claim_state);
+    let claim_task = tokio::spawn(async move {
+        axum::serve(listener, claim_api)
+            .await
+            .expect("strict claim API");
+    });
     let fixture = serde_json::json!({
         "machineCode": null,
-        "apiBaseUrl": server.uri(),
+        "apiBaseUrl": api_base_url,
         "hardwareModel": "vem-test-24",
         "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
     });
@@ -132,7 +155,7 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
         .post(format!("{base}/v1/provisioning/claim"))
         .header("Authorization", daemon.bearer())
         .json(&serde_json::json!({
-            "claimCode": "claim-ipc-01",
+            "claimCode": "clai-0001",
             "machineSecret": "must-not-be-an-ipc-input"
         }))
         .send()
@@ -143,7 +166,7 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
     let response = client
         .post(format!("{base}/v1/provisioning/claim"))
         .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({ "claimCode": "claim-ipc-01" }))
+        .json(&serde_json::json!({ "claimCode": "clai-0001" }))
         .send()
         .await
         .expect("claim response");
@@ -172,7 +195,9 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
             .await
             .expect("local settings path")
     );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     daemon.terminate().await;
+    claim_task.abort();
 }
 
 fn claim_profile(api_base_url: &str) -> serde_json::Value {
@@ -180,6 +205,7 @@ fn claim_profile(api_base_url: &str) -> serde_json::Value {
         "machine": { "id": "550e8400-e29b-41d4-a716-446655440001", "code": "MACHINE-CLAIM-IPC", "name": "Claimed machine", "status": "offline", "locationLabel": null },
         "credentials": {
             "machineSecret": "machine-secret-claim-000000000000000",
+            "machineSecretVersion": 1,
             "mqttSigningSecret": "mqtt-signing-secret-claim-000000000000",
             "mqttConnection": { "url": "mqtt://broker.example:1883", "clientId": "vem-MACHINE-CLAIM-IPC", "username": "machine", "password": "mqtt-password" }
         },

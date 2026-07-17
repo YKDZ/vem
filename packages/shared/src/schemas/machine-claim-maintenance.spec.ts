@@ -26,18 +26,14 @@ const validMaintenanceIdentity = () => ({
   },
 });
 
-describe("Machine Claim maintenance identity contract", () => {
-  it("carries the machine public key and returns relay facts and stable routes", () => {
+describe("Machine claim and maintenance identity contracts", () => {
+  it("keeps claim input narrow while provisioning uses the shared generated source", () => {
     expect(
       machineClaimRequestSchema.parse({
         claimCode: "abcd-2345",
-        maintenancePublicKey: PUBLIC_KEY,
-        provisioningProfile: "testbed",
       }),
     ).toEqual({
       claimCode: "ABCD-2345",
-      maintenancePublicKey: PUBLIC_KEY,
-      provisioningProfile: "testbed",
     });
 
     const profile = machineProvisioningProfileSchema.parse({
@@ -75,23 +71,6 @@ describe("Machine Claim maintenance identity contract", () => {
         paymentCodeEnabled: true,
         serverTime: "2026-07-10T00:00:00.000Z",
       },
-      provisioningProfile: "testbed",
-      maintenance: {
-        publicKey: PUBLIC_KEY,
-        tunnelAddress: "10.91.16.10",
-        address: "10.91.16.10/32",
-        endpoint: "relay.example:51820",
-        relay: {
-          publicKey: RELAY_KEY,
-          tunnelAddress: "10.91.0.1",
-          address: "10.91.0.1/32",
-        },
-        roleRoutes: {
-          relay: "10.91.0.1/32",
-          runner: "10.91.1.0/24",
-          maintainer: "10.91.3.0/24",
-        },
-      },
       metadata: {
         profileVersion: 1,
         profileRevision: 2,
@@ -101,44 +80,27 @@ describe("Machine Claim maintenance identity contract", () => {
       },
     });
 
-    expect(profile.maintenance.address).toBe("10.91.16.10/32");
-    expect(profile.maintenance.roleRoutes.runner).toBe("10.91.1.0/24");
-    expect(
-      machineProvisioningProfileSchema.safeParse({
-        ...profile,
-        maintenance: {
-          ...profile.maintenance,
-          endpoint: "https://relay.example:51820",
-        },
-      }).success,
-    ).toBe(false);
+    expect(profile.credentials.machineSecretVersion).toBe(2);
+    expect(profile.hardwareProfile.vision.supportsRecommendations).toBe(true);
   });
 
-  it("accepts an explicit rotation marker without changing first-claim payloads", () => {
+  it("rejects every retired maintenance and profile-selection claim field", () => {
     expect(
-      machineClaimRequestSchema.parse({
+      machineClaimRequestSchema.safeParse({
         claimCode: "abcd-2345",
         maintenancePublicKey: PUBLIC_KEY,
         provisioningProfile: "testbed",
         maintenanceRotation: "rotate",
-      }).maintenanceRotation,
-    ).toBe("rotate");
-    expect(
-      machineClaimRequestSchema.parse({
-        claimCode: "abcd-2345",
-        maintenancePublicKey: PUBLIC_KEY,
-        provisioningProfile: "testbed",
-      }),
-    ).not.toHaveProperty("maintenanceRotation");
+      }).success,
+    ).toBe(false);
   });
 
-  it("allows a clean Runtime Bootstrap claim to defer the profile selection to Service API", () => {
+  it("allows Runtime Bootstrap to submit only a normalized claim code", () => {
     expect(
       machineClaimRequestSchema.parse({
         claimCode: "abcd-2345",
-        maintenancePublicKey: PUBLIC_KEY,
       }),
-    ).not.toHaveProperty("provisioningProfile");
+    ).toEqual({ claimCode: "ABCD-2345" });
   });
 
   it("binds machine and relay /32 addresses to their tunnel addresses", () => {

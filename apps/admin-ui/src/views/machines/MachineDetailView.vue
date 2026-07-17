@@ -53,11 +53,6 @@ import {
   projectProductionPilotReadinessCheck,
 } from "./production-pilot-readiness-copy";
 
-type MachineSaleReadinessHeartbeat = {
-  state?: "locked" | "blocked" | "restored";
-  blockingCodes?: string[];
-};
-
 type WholeMachineMaintenanceLockHeartbeat = {
   code?: string;
   message?: string;
@@ -153,11 +148,6 @@ const productionPilotReadinessRows = computed(
       reasonCode: check.reasonCode,
       actionCode: check.actionCode,
     })) ?? [],
-);
-const saleReadiness = computed(
-  () =>
-    (heartbeat.value?.saleReadiness as MachineSaleReadinessHeartbeat | null) ??
-    null,
 );
 const wholeMachineMaintenanceLock = computed(
   () =>
@@ -333,20 +323,6 @@ function hardwareStatusLabel(status: string | undefined): string {
   if (status === "degraded") return "降级";
   if (status === "faulted") return "异常";
   return "未知";
-}
-
-function saleReadinessStateLabel(status: string | undefined): string {
-  if (status === "locked") return "整机锁定";
-  if (status === "blocked") return "阻塞";
-  if (status === "restored") return "已恢复";
-  return "未知";
-}
-
-function saleReadinessStateColor(status: string | undefined): string {
-  if (status === "locked") return "error";
-  if (status === "blocked") return "warning";
-  if (status === "restored") return "success";
-  return "default";
 }
 
 function productionPilotReadinessStatusLabel(
@@ -789,14 +765,6 @@ onMounted(() => {
               >
                 {{ hardwareStatusLabel(heartbeat?.hardwareStatus) }}
               </a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item label="销售就绪">
-              <a-tag :color="saleReadinessStateColor(saleReadiness?.state)">
-                {{ saleReadinessStateLabel(saleReadiness?.state) }}
-              </a-tag>
-              <span v-if="saleReadiness?.blockingCodes?.length" class="ml-2">
-                {{ saleReadiness.blockingCodes.join("、") }}
-              </span>
             </a-descriptions-item>
             <a-descriptions-item
               v-if="wholeMachineMaintenanceLock"

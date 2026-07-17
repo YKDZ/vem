@@ -9,6 +9,7 @@ import {
 import {
   type DaemonIpcJsonSchemaDocument,
   exportDaemonIpcScannerStatusJsonSchema,
+  exportDaemonIpcSaleStartCapabilityJsonSchema,
   exportDaemonIpcTransactionCheckoutJsonSchema,
 } from "@vem/shared/schemas/daemon-ipc";
 import { exportRuntimeConfigurationJsonSchema } from "@vem/shared/schemas/runtime-configuration";
@@ -50,6 +51,8 @@ type GeneratorPaths = {
   scannerInvalidFixturePath: string;
   runtimeConfigurationSchemaPath: string;
   runtimeConfigurationGeneratedPath: string;
+  saleStartCapabilitySchemaPath: string;
+  saleStartCapabilityGeneratedPath: string;
 };
 
 export type DaemonIpcGeneratedContractInputs = {
@@ -64,6 +67,9 @@ export type DaemonIpcGeneratedContractInputs = {
     invalidFixtures: Array<{ name: string; snapshot: unknown }>;
   };
   runtimeConfiguration: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
+  saleStartCapability: {
     schema: DaemonIpcJsonSchemaDocument;
   };
 };
@@ -114,6 +120,14 @@ function defaultPaths(repoRoot: string): GeneratorPaths {
     runtimeConfigurationGeneratedPath: resolve(
       crateRoot,
       "src/generated/runtime_configuration.rs",
+    ),
+    saleStartCapabilitySchemaPath: resolve(
+      crateRoot,
+      "schemas/sale_start_capability.schema.json",
+    ),
+    saleStartCapabilityGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/sale_start_capability.rs",
     ),
   };
 }
@@ -192,6 +206,10 @@ function writeGeneratorInputs(
     paths.runtimeConfigurationSchemaPath,
     inputs.runtimeConfiguration.schema,
   );
+  writeJson(
+    paths.saleStartCapabilitySchemaPath,
+    inputs.saleStartCapability.schema,
+  );
 }
 
 function formatGeneratorJsonInputs(
@@ -210,6 +228,7 @@ function formatGeneratorJsonInputs(
       paths.scannerValidFixturePath,
       paths.scannerInvalidFixturePath,
       paths.runtimeConfigurationSchemaPath,
+      paths.saleStartCapabilitySchemaPath,
     ],
     {
       cwd: repoRoot,
@@ -329,6 +348,9 @@ export function buildDaemonIpcGeneratedContractInputs(): DaemonIpcGeneratedContr
     runtimeConfiguration: {
       schema: exportRuntimeConfigurationJsonSchema(),
     },
+    saleStartCapability: {
+      schema: exportDaemonIpcSaleStartCapabilityJsonSchema(),
+    },
   };
 }
 
@@ -381,6 +403,16 @@ export function generateDaemonIpcContracts(
       cargoTypifyVersion,
       "packages/shared/src/schemas/runtime-configuration.ts",
     );
+    runCargoTypify(
+      repoRoot,
+      targetPaths.saleStartCapabilitySchemaPath,
+      targetPaths.saleStartCapabilityGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.saleStartCapabilityGeneratedPath,
+      cargoTypifyVersion,
+    );
     return { mode, checkedPaths, changedPaths: [] };
   }
 
@@ -417,6 +449,16 @@ export function generateDaemonIpcContracts(
       actualPaths.runtimeConfigurationGeneratedPath,
       cargoTypifyVersion,
       "packages/shared/src/schemas/runtime-configuration.ts",
+    );
+    runCargoTypify(
+      repoRoot,
+      actualPaths.saleStartCapabilitySchemaPath,
+      actualPaths.saleStartCapabilityGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.saleStartCapabilityGeneratedPath,
+      cargoTypifyVersion,
     );
     const changedPaths = assertFreshGeneratedOutputs(
       targetPaths,

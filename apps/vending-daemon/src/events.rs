@@ -17,6 +17,12 @@ pub enum DaemonEvent {
         updated_at: String,
         snapshot: vending_core::health::ReadySnapshot,
     },
+    SaleStartCapabilityChanged {
+        event_id: String,
+        updated_at: String,
+        generation: String,
+        revision: u64,
+    },
     ScannerHealthChanged {
         event_id: String,
         updated_at: String,

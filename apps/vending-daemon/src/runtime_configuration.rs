@@ -362,10 +362,11 @@ impl CleanRuntimeConfigurationStore {
         };
         if self.runtime_bootstrap_path().exists() {
             let bootstrap = self.load_bootstrap().await?;
-            if bootstrap.hardware_model.to_string() != profile.hardware_model
+            if bootstrap.hardware_model.to_string() != profile.hardware_model.as_str()
                 || bootstrap.topology.identity.to_string()
-                    != profile.hardware_slot_topology.identity
-                || bootstrap.topology.version.to_string() != profile.hardware_slot_topology.version
+                    != profile.hardware_slot_topology.identity.as_str()
+                || bootstrap.topology.version.to_string()
+                    != profile.hardware_slot_topology.version.as_str()
             {
                 self.record_refresh_error("profile hardware does not match Runtime Bootstrap")
                     .await;
@@ -375,14 +376,21 @@ impl CleanRuntimeConfigurationStore {
             }
         }
         if accepted_cache.is_some_and(|accepted| {
-            u64::try_from(profile.metadata.profile_revision)
-                .is_ok_and(|revision| revision < accepted.profile.metadata.profile_revision.get())
+            profile.metadata.profile_revision.get()
+                < accepted.profile.metadata.profile_revision.get()
         }) {
             self.record_refresh_error("profile revision is older than the accepted profile")
                 .await;
             return Err(
                 "provisioning profile revision is older than the accepted profile".to_string(),
             );
+        }
+        let previous = credential_snapshot(self.secrets.as_ref()).await?;
+        if let Err(error) = write_credential_backups(self.secrets.as_ref(), &previous).await {
+            let _ = clear_credential_backups(self.secrets.as_ref()).await;
+            self.record_refresh_error("profile credential rollback preparation failed")
+                .await;
+            return Err(error);
         }
         let journal = ClaimTransactionJournal {
             schema_version: 1,
@@ -391,12 +399,8 @@ impl CleanRuntimeConfigurationStore {
             profile_generation: generation,
             phase: "credentials_replacing".to_string(),
         };
-        write_atomic_json(&self.claim_journal_path(), &journal).await?;
-        let previous = credential_snapshot(self.secrets.as_ref()).await?;
-        if let Err(error) = write_credential_backups(self.secrets.as_ref(), &previous).await {
-            remove_optional_file(&self.claim_journal_path()).await?;
-            self.record_refresh_error("profile credential rollback preparation failed")
-                .await;
+        if let Err(error) = write_atomic_json(&self.claim_journal_path(), &journal).await {
+            clear_credential_backups(self.secrets.as_ref()).await?;
             return Err(error);
         }
         let replacements = [
@@ -414,7 +418,8 @@ impl CleanRuntimeConfigurationStore {
                     .credentials
                     .mqtt_connection
                     .password
-                    .as_deref()
+                    .as_ref()
+                    .map(|value| value.as_str())
                     .unwrap_or(""),
             ),
         ];
@@ -444,6 +449,73 @@ impl CleanRuntimeConfigurationStore {
         self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
         Ok(cache)
+    }
+
+    pub async fn accept_refreshed_profile(
+        &self,
+        profile: &daemon_ipc_contracts::MachineProvisioningProfileSnapshot,
+    ) -> Result<Option<ProvisioningProfileCache>, String> {
+        let _mutation = self.mutation_lock.lock().await;
+        self.recover_claim_transaction_locked().await?;
+        let Some(accepted) = self.load_profile_cache().await? else {
+            self.record_refresh_error("profile refresh requires an accepted claim")
+                .await;
+            return Err("profile refresh requires an accepted claim".to_string());
+        };
+        if accepted.profile.machine.id != profile.machine.id
+            || accepted.profile.machine.code.as_str() != profile.machine.code.as_str()
+        {
+            self.record_refresh_error("profile refresh machine identity changed")
+                .await;
+            return Err("profile refresh machine identity changed".to_string());
+        }
+        let accepted_revision = accepted.profile.metadata.profile_revision.get();
+        let refresh_revision = profile.metadata.profile_revision.get();
+        if refresh_revision < accepted_revision {
+            self.record_refresh_error("profile revision is older than the accepted profile")
+                .await;
+            return Err(
+                "provisioning profile revision is older than the accepted profile".to_string(),
+            );
+        }
+        if refresh_revision == accepted_revision {
+            if serde_json::to_value(&accepted.profile).ok() == serde_json::to_value(profile).ok() {
+                self.clear_refresh_error().await;
+                return Ok(None);
+            }
+            self.record_refresh_error("profile changed without a newer revision")
+                .await;
+            return Err("provisioning profile changed without a newer revision".to_string());
+        }
+
+        let bootstrap = self.load_bootstrap().await?;
+        if bootstrap.hardware_model.as_str() != profile.hardware_model.as_str()
+            || bootstrap.topology.identity.as_str()
+                != profile.hardware_slot_topology.identity.as_str()
+            || bootstrap.topology.version.as_str()
+                != profile.hardware_slot_topology.version.as_str()
+        {
+            self.record_refresh_error("profile hardware does not match Runtime Bootstrap")
+                .await;
+            return Err(
+                "provisioning profile hardware does not match Runtime Bootstrap".to_string(),
+            );
+        }
+
+        let generation = self
+            .generation
+            .load(Ordering::Acquire)
+            .max(accepted.generation.get())
+            .saturating_add(1);
+        let cache = profile_cache_from_snapshot(profile, generation)?;
+        write_atomic_json(&self.profile_cache_path(), &cache).await?;
+        self.clear_refresh_error().await;
+        self.generation.store(generation, Ordering::Release);
+        Ok(Some(cache))
+    }
+
+    pub async fn mark_profile_refresh_degraded(&self, error: &str) {
+        self.record_refresh_error(error).await;
     }
 
     /// Reclaim and local reset remove only the daemon-owned claim state. The
@@ -614,6 +686,15 @@ impl CleanRuntimeConfigurationStore {
                 return Ok(());
             }
             if journal.phase == "credentials_replacing" {
+                if !credential_backups_ready(self.secrets.as_ref()).await? {
+                    remove_optional_file(&self.claim_journal_path()).await?;
+                    self.record_refresh_error(
+                        "profile replacement journal had no durable credential backups; retained current credentials",
+                    )
+                    .await;
+                    self.generation.store(journal.generation, Ordering::Release);
+                    return Ok(());
+                }
                 restore_credentials_from_backups(self.secrets.as_ref()).await?;
                 clear_credential_backups(self.secrets.as_ref()).await?;
                 remove_optional_file(&self.claim_journal_path()).await?;
@@ -746,7 +827,19 @@ async fn write_credential_backups(
             .await
             .map_err(|error| format!("persist credential rollback copy failed: {error}"))?;
     }
+    store
+        .write_secret(crate::secret::CREDENTIAL_ROLLBACK_READY_ACCOUNT, "ready")
+        .await
+        .map_err(|error| format!("persist credential rollback marker failed: {error}"))?;
     Ok(())
+}
+
+async fn credential_backups_ready(store: &dyn SecretStore) -> Result<bool, String> {
+    Ok(store
+        .read_secret(crate::secret::CREDENTIAL_ROLLBACK_READY_ACCOUNT)
+        .await?
+        .as_deref()
+        == Some("ready"))
 }
 
 async fn restore_credentials_from_backups(store: &dyn SecretStore) -> Result<(), String> {
@@ -770,6 +863,10 @@ async fn clear_credential_backups(store: &dyn SecretStore) -> Result<(), String>
             .await
             .map_err(|error| format!("clear credential rollback copy failed: {error}"))?;
     }
+    store
+        .write_secret(crate::secret::CREDENTIAL_ROLLBACK_READY_ACCOUNT, "")
+        .await
+        .map_err(|error| format!("clear credential rollback marker failed: {error}"))?;
     Ok(())
 }
 
@@ -777,8 +874,7 @@ fn profile_cache_from_claim(
     profile: &MachineProvisioningProfile,
     generation: u64,
 ) -> Result<ProvisioningProfileCache, String> {
-    if profile.metadata.profile_version != 1
-        || profile.metadata.profile_revision < 1
+    if profile.metadata.profile_version != 1.0
         || profile.hardware_profile.profile != "production"
         || !profile.hardware_profile.controller.required
         || profile.hardware_profile.controller.protocol != "vem-vending-controller"
@@ -820,4 +916,17 @@ fn profile_cache_from_claim(
     });
     serde_json::from_value(cache)
         .map_err(|error| format!("provisioning profile cache contract invalid: {error}"))
+}
+
+fn profile_cache_from_snapshot(
+    profile: &daemon_ipc_contracts::MachineProvisioningProfileSnapshot,
+    generation: u64,
+) -> Result<ProvisioningProfileCache, String> {
+    serde_json::from_value(json!({
+        "schemaVersion": 1,
+        "generation": generation,
+        "acceptedAt": chrono::Utc::now().to_rfc3339(),
+        "profile": profile,
+    }))
+    .map_err(|error| format!("provisioning profile refresh contract invalid: {error}"))
 }

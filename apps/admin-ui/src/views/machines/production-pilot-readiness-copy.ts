@@ -37,19 +37,6 @@ function machineHeartbeatMessage(
   return "机器未在线，或平台尚未收到可用心跳。";
 }
 
-function saleReadinessMessage(
-  check: Extract<
-    ProductionPilotReadinessCheck,
-    { kind: "machine_sale_readiness" }
-  >,
-): string {
-  if (check.reasonCode === "restored") return "机器运行时报告售卖就绪已恢复。";
-  if (check.evidence.blockingCodes.length === 0) {
-    return "机器运行时尚未报告售卖就绪恢复。";
-  }
-  return `机器运行时仍有售卖阻塞：${check.evidence.blockingCodes.join("、")}。`;
-}
-
 function stockAttestationMessage(
   check: Extract<
     ProductionPilotReadinessCheck,
@@ -90,17 +77,6 @@ export function projectProductionPilotReadinessCheck(
           check.actionCode === "continue_daily_inspection"
             ? "继续日常巡检。"
             : "恢复机器网络连接，并等待平台收到新的机器心跳。",
-      };
-    case "machine_sale_readiness":
-      return {
-        code: productionPilotCheckCode(check),
-        label: "机器售卖就绪",
-        statusLabel,
-        message: saleReadinessMessage(check),
-        operatorAction:
-          check.actionCode === "continue_daily_inspection"
-            ? "继续日常巡检。"
-            : "先在机器维护界面处理售卖阻塞，再进入生产试运营。",
       };
     case "payment_readiness":
       return {

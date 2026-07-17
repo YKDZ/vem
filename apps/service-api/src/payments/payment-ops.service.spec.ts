@@ -1385,7 +1385,7 @@ describe("PaymentOpsService.getMachinePreflight", () => {
     }
   });
 
-  it("uses heartbeat saleReadiness payment option disabled reason in machine preflight", async () => {
+  it("uses scanner heartbeat evidence to filter payment-code options in machine preflight", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
     const db = makeDb();
@@ -1406,36 +1406,10 @@ describe("PaymentOpsService.getMachinePreflight", () => {
             hardwareAdapter: "serial",
             hardwarePortPath: "COM5",
             hardwareStatus: "ok",
-            saleReadiness: {
-              state: "blocked",
-              blockingCodes: ["PAYMENT_CODE_SCANNER_UNAVAILABLE"],
-              components: {
-                paymentOptions: {
-                  ready: true,
-                  code: "PAYMENT_OPTIONS_DEGRADED",
-                  message: "qr available",
-                  methods: [
-                    {
-                      method: "qr_code",
-                      optionKey: "qr_code:alipay",
-                      providerCode: "alipay",
-                      ready: true,
-                    },
-                    {
-                      method: "payment_code",
-                      optionKey: "payment_code:alipay",
-                      providerCode: "alipay",
-                      ready: false,
-                      disabledReason: "扫码器不可用：scanner usb not found",
-                    },
-                  ],
-                },
-                scannerCapability: {
-                  ready: false,
-                  code: "SCANNER_UNAVAILABLE",
-                  message: "scanner usb not found",
-                },
-              },
+            scannerHealth: {
+              status: "offline",
+              online: false,
+              message: "scanner usb not found",
             },
           },
         },
@@ -1493,13 +1467,11 @@ describe("PaymentOpsService.getMachinePreflight", () => {
       ).toMatchObject({
         severity: "warning",
         passed: false,
-        message:
-          "付款码支付已启用，但扫码模块未就绪：扫码器不可用：scanner usb not found",
+        message: "付款码支付已启用，但扫码模块未就绪：scanner usb not found",
         evidence: {
-          capabilityReady: false,
-          capabilityCode: "SCANNER_UNAVAILABLE",
-          methodReady: false,
-          methodDisabledReason: "扫码器不可用：scanner usb not found",
+          status: "offline",
+          online: false,
+          message: "scanner usb not found",
         },
       });
     } finally {

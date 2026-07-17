@@ -11,15 +11,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{io::AsyncReadExt, process::Child, time::sleep};
 use vending_daemon::{
-    provisioning::{
-        HardwareSlotTopologyIdentity, MachineProvisioningProfile, ProductionControllerProfile,
-        ProductionMachineHardwareProfile, ProductionMachinePaymentCapability,
-        ProductionPaymentScannerProfile, ProductionVisionProfile, ProvisioningCredentials,
-        ProvisioningMachine, ProvisioningMetadata, ProvisioningMqttConnection,
-        ProvisioningRuntimeEndpoints,
-    },
-    runtime_configuration::CleanRuntimeConfigurationStore,
-    secret::ProtectedLocalSecretStore,
+    provisioning::MachineProvisioningProfile,
+    runtime_configuration::CleanRuntimeConfigurationStore, secret::ProtectedLocalSecretStore,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,101 +217,62 @@ fn profile_from_fixture(
         .iter()
         .find(|(name, _)| matches!(*name, "VEM_MQTT_PASSWORD" | "mqtt_password"))
         .map(|(_, value)| (*value).to_string());
-    MachineProvisioningProfile {
-        machine: ProvisioningMachine {
-            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            code: machine_code.to_string(),
-            name: fixture_string(fixture, "machineName", "Integration Test Machine"),
-            status: fixture_string(fixture, "machineStatus", "online"),
-            location_label: fixture
-                .get("machineLocationLabel")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
+    serde_json::from_value(json!({
+        "machine": {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "code": machine_code,
+            "name": fixture_string(fixture, "machineName", "Integration Test Machine"),
+            "status": fixture_string(fixture, "machineStatus", "online"),
+            "locationLabel": fixture.get("machineLocationLabel").and_then(Value::as_str),
         },
-        credentials: ProvisioningCredentials {
-            machine_secret,
-            mqtt_signing_secret,
-            mqtt_connection: ProvisioningMqttConnection {
-                url: fixture_string(fixture, "mqttUrl", "mqtt://127.0.0.1:1883"),
-                client_id: fixture_string(
+        "credentials": {
+            "machineSecret": machine_secret,
+            "machineSecretVersion": 1,
+            "mqttSigningSecret": mqtt_signing_secret,
+            "mqttConnection": {
+                "url": fixture_string(fixture, "mqttUrl", "mqtt://127.0.0.1:1883"),
+                "clientId": fixture_string(
                     fixture,
                     "mqttClientId",
                     &format!("vem-machine-{machine_code}"),
                 ),
-                username: fixture
-                    .get("mqttUsername")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
-                password: mqtt_password,
+                "username": fixture.get("mqttUsername").and_then(Value::as_str),
+                "password": mqtt_password,
             },
         },
-        api_base_url: fixture_string(fixture, "apiBaseUrl", "http://127.0.0.1:9/api"),
-        runtime_endpoints: ProvisioningRuntimeEndpoints {
-            api_base_path: "/api".to_string(),
-            machine_auth_token_path: "/api/machine-auth/token".to_string(),
-            machine_api_base_path: format!("/api/machines/{machine_code}"),
-            mqtt_topic_prefix: format!("vem/machines/{machine_code}"),
+        "apiBaseUrl": fixture_string(fixture, "apiBaseUrl", "http://127.0.0.1:9/api"),
+        "runtimeEndpoints": {
+            "apiBasePath": "/api",
+            "machineAuthTokenPath": "/api/machine-auth/token",
+            "machineApiBasePath": format!("/api/machines/{machine_code}"),
+            "mqttTopicPrefix": format!("vem/machines/{machine_code}"),
         },
-        hardware_profile: serde_json::from_value(
-            fixture.get("hardwareProfile").cloned().unwrap_or_else(|| {
-                json!({
-                    "profile": "production",
-                    "controller": { "required": true, "protocol": "vem-vending-controller" },
-                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
-                    "vision": { "required": false, "supportsRecommendations": true },
-                })
-            }),
-        )
-        .unwrap_or(ProductionMachineHardwareProfile {
-            profile: "production".to_string(),
-            controller: ProductionControllerProfile {
-                required: true,
-                protocol: "vem-vending-controller".to_string(),
-            },
-            payment_scanner: ProductionPaymentScannerProfile {
-                required: true,
-                supports_payment_code: true,
-            },
-            vision: ProductionVisionProfile {
-                required: false,
-                supports_recommendations: true,
-            },
-        }),
-        hardware_model: hardware_model.to_string(),
-        hardware_slot_topology: HardwareSlotTopologyIdentity {
-            identity: topology_identity.to_string(),
-            version: topology_version.to_string(),
+        "hardwareProfile": fixture.get("hardwareProfile").cloned().unwrap_or_else(|| json!({
+            "profile": "production",
+            "controller": { "required": true, "protocol": "vem-vending-controller" },
+            "paymentScanner": { "required": true, "supportsPaymentCode": true },
+            "vision": { "required": false, "supportsRecommendations": true },
+        })),
+        "hardwareModel": hardware_model,
+        "hardwareSlotTopology": {
+            "identity": topology_identity,
+            "version": topology_version,
         },
-        payment_capability: serde_json::from_value(
-            fixture
-                .get("paymentCapability")
-                .cloned()
-                .unwrap_or_else(|| {
-                    json!({
-                        "profile": "production",
-                        "qrCodeEnabled": true,
-                        "paymentCodeEnabled": true,
-                        "serverTime": "2026-07-17T00:00:00Z",
-                    })
-                }),
-        )
-        .unwrap_or(ProductionMachinePaymentCapability {
-            profile: "production".to_string(),
-            qr_code_enabled: true,
-            payment_code_enabled: true,
-            server_time: "2026-07-17T00:00:00Z".to_string(),
-            options: vec![],
-            default_option_key: None,
-            default_provider_code: None,
-        }),
-        metadata: ProvisioningMetadata {
-            profile_version: 1,
-            profile_revision: 1,
-            claim_code_id: "550e8400-e29b-41d4-a716-446655440111".to_string(),
-            claimed_at: "2026-07-17T00:00:00Z".to_string(),
-            server_time: "2026-07-17T00:00:00Z".to_string(),
+        "paymentCapability": fixture.get("paymentCapability").cloned().unwrap_or_else(|| json!({
+            "profile": "production",
+            "qrCodeEnabled": true,
+            "paymentCodeEnabled": true,
+            "serverTime": "2026-07-17T00:00:00Z",
+        })),
+        "metadata": {
+            "profileVersion": 1,
+            "profileRevision": 1,
+            "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+            "claimedAt": "2026-07-17T00:00:00Z",
+            "serverTime": "2026-07-17T00:00:00Z",
         },
-    }
+    }))
+    .expect("integration profile fixture must match the generated shared contract")
 }
 
 fn fixture_string(fixture: &Value, key: &str, default: &str) -> String {

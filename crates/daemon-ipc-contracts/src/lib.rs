@@ -5,6 +5,7 @@ use std::fmt;
 #[doc(hidden)]
 mod generated {
     pub mod runtime_configuration;
+    pub mod sale_start_capability;
     pub mod scanner_status;
     pub mod transaction_checkout;
 }
@@ -18,6 +19,18 @@ pub type PaymentCodeAttemptSummary =
 pub type PickupReminder =
     generated::transaction_checkout::CurrentTransactionSnapshotVendingPickupReminder;
 pub type ScannerRuntimeStatus = generated::scanner_status::ScannerRuntimeStatus;
+pub type SaleStartCapabilitySnapshot =
+    generated::sale_start_capability::SaleStartCapabilitySnapshot;
+pub type SaleStartCapabilityGeneration =
+    generated::sale_start_capability::SaleStartCapabilitySnapshotGeneration;
+pub type SaleStartCapabilityPaymentOption =
+    generated::sale_start_capability::SaleStartCapabilitySnapshotPaymentOptionsOptionsItem;
+pub type SaleStartCapabilityPaymentOptions =
+    generated::sale_start_capability::SaleStartCapabilitySnapshotPaymentOptions;
+pub type SaleStartCapabilityReason =
+    generated::sale_start_capability::SaleStartCapabilitySnapshotBlockersItem;
+pub type SaleStartCapabilityDegradation =
+    generated::sale_start_capability::SaleStartCapabilitySnapshotDegradationsItem;
 pub type EffectiveMachineRuntimeConfiguration =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype0;
 pub type ProvisioningProfileCache =
@@ -34,6 +47,12 @@ pub type ScannerProtocolFrameSuffix =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype3FrameSuffix;
 pub type SetAudioPreferencesRequest =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype4;
+pub type MachineClaimRequest =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype5;
+pub type MachineProvisioningProfile =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype6;
+pub type MachineProvisioningProfileSnapshot =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype7;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

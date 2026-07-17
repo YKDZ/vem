@@ -51,7 +51,8 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
     let persisted = tokio::fs::read_to_string(store.profile_cache_path())
         .await
         .expect("profile cache");
-    assert!(!persisted.contains(&accepted.credentials.machine_secret));
+    let accepted_machine_secret = accepted.credentials.machine_secret.to_string();
+    assert!(!persisted.contains(&accepted_machine_secret));
     assert_eq!(
         vending_daemon::secret::SecretStore::read_secret(
             secrets.as_ref(),
@@ -59,7 +60,7 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
         )
         .await
         .expect("machine secret"),
-        Some(accepted.credentials.machine_secret.clone())
+        Some(accepted.credentials.machine_secret.to_string())
     );
 
     let mut invalid = accepted.clone();
@@ -260,6 +261,13 @@ async fn interrupted_profile_replacement_restores_the_last_known_good_claim() {
     .expect("rollback mqtt password");
     vending_daemon::secret::SecretStore::write_secret(
         secrets.as_ref(),
+        vending_daemon::secret::CREDENTIAL_ROLLBACK_READY_ACCOUNT,
+        "ready",
+    )
+    .await
+    .expect("rollback marker");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
         vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
         "replacement-secret-without-new-cache",
     )
@@ -297,7 +305,74 @@ async fn interrupted_profile_replacement_restores_the_last_known_good_claim() {
         )
         .await
         .expect("machine secret"),
-        Some(accepted.credentials.machine_secret)
+        Some(accepted.credentials.machine_secret.to_string())
+    );
+}
+
+#[tokio::test]
+async fn replacement_journal_without_durable_backups_preserves_current_claim_and_credentials() {
+    let temp = tempfile::tempdir().expect("temp");
+    let data_dir = temp.path().join("VEM").join("vending-daemon");
+    let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
+    tokio::fs::create_dir_all(bootstrap_path.parent().expect("parent"))
+        .await
+        .expect("bootstrap directory");
+    tokio::fs::write(
+        &bootstrap_path,
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("bootstrap");
+
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let store = CleanRuntimeConfigurationStore::new(data_dir.clone(), secrets.clone());
+    store
+        .accept_profile(&valid_profile())
+        .await
+        .expect("accepted");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        "replacement-secret-without-durable-backups",
+    )
+    .await
+    .expect("replacement secret");
+    tokio::fs::write(
+        store.claim_journal_path(),
+        r#"{"schemaVersion":1,"operation":"accept","generation":2,"profileGeneration":2,"phase":"credentials_replacing"}"#,
+    )
+    .await
+    .expect("journal");
+
+    let restarted = CleanRuntimeConfigurationStore::new(data_dir, secrets.clone());
+    restarted
+        .recover_claim_transaction()
+        .await
+        .expect("recover without backups");
+
+    assert!(restarted
+        .load_profile_cache()
+        .await
+        .expect("cache")
+        .is_some());
+    assert_eq!(
+        vending_daemon::secret::SecretStore::read_secret(
+            secrets.as_ref(),
+            vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        )
+        .await
+        .expect("secret"),
+        Some("replacement-secret-without-durable-backups".to_string())
+    );
+    assert_eq!(
+        restarted
+            .effective_projection()
+            .await
+            .expect("projection")
+            .profile_refresh
+            .status
+            .to_string(),
+        "degraded"
     );
 }
 
@@ -318,7 +393,7 @@ async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile
     let store =
         CleanRuntimeConfigurationStore::new(data_dir, Arc::new(InMemorySecretStore::default()));
     let mut newest = valid_profile();
-    newest.metadata.profile_revision = 2;
+    newest.metadata.profile_revision = std::num::NonZeroU64::new(2).expect("revision");
     store.accept_profile(&newest).await.expect("newest profile");
 
     assert!(store.accept_profile(&valid_profile()).await.is_err());
@@ -346,6 +421,7 @@ fn valid_profile() -> vending_daemon::provisioning::MachineProvisioningProfile {
         },
         "credentials": {
             "machineSecret": "m".repeat(32),
+            "machineSecretVersion": 1,
             "mqttSigningSecret": "s".repeat(32),
             "mqttConnection": {
                 "url": "mqtt://service.example:1883",

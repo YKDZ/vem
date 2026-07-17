@@ -459,9 +459,7 @@ pub mod error {
 #[doc = "                \"locationLabel\": {"]
 #[doc = "                  \"anyOf\": ["]
 #[doc = "                    {"]
-#[doc = "                      \"type\": \"string\","]
-#[doc = "                      \"maxLength\": 256,"]
-#[doc = "                      \"minLength\": 1"]
+#[doc = "                      \"type\": \"string\""]
 #[doc = "                    },"]
 #[doc = "                    {"]
 #[doc = "                      \"type\": \"null\""]
@@ -475,8 +473,12 @@ pub mod error {
 #[doc = "                },"]
 #[doc = "                \"status\": {"]
 #[doc = "                  \"type\": \"string\","]
-#[doc = "                  \"maxLength\": 64,"]
-#[doc = "                  \"minLength\": 1"]
+#[doc = "                  \"enum\": ["]
+#[doc = "                    \"online\","]
+#[doc = "                    \"offline\","]
+#[doc = "                    \"maintenance\","]
+#[doc = "                    \"disabled\""]
+#[doc = "                  ]"]
 #[doc = "                }"]
 #[doc = "              },"]
 #[doc = "              \"additionalProperties\": false"]
@@ -505,8 +507,7 @@ pub mod error {
 #[doc = "                  \"type\": \"object\","]
 #[doc = "                  \"required\": ["]
 #[doc = "                    \"clientId\","]
-#[doc = "                    \"url\","]
-#[doc = "                    \"username\""]
+#[doc = "                    \"url\""]
 #[doc = "                  ],"]
 #[doc = "                  \"properties\": {"]
 #[doc = "                    \"clientId\": {"]
@@ -522,7 +523,6 @@ pub mod error {
 #[doc = "                      \"anyOf\": ["]
 #[doc = "                        {"]
 #[doc = "                          \"type\": \"string\","]
-#[doc = "                          \"maxLength\": 128,"]
 #[doc = "                          \"minLength\": 1"]
 #[doc = "                        },"]
 #[doc = "                        {"]
@@ -543,6 +543,7 @@ pub mod error {
 #[doc = "                  ],"]
 #[doc = "                  \"properties\": {"]
 #[doc = "                    \"paymentCodeEnabled\": {"]
+#[doc = "                      \"default\": true,"]
 #[doc = "                      \"type\": \"boolean\""]
 #[doc = "                    },"]
 #[doc = "                    \"profile\": {"]
@@ -550,12 +551,13 @@ pub mod error {
 #[doc = "                      \"const\": \"production\""]
 #[doc = "                    },"]
 #[doc = "                    \"qrCodeEnabled\": {"]
+#[doc = "                      \"default\": true,"]
 #[doc = "                      \"type\": \"boolean\""]
 #[doc = "                    },"]
 #[doc = "                    \"serverTime\": {"]
 #[doc = "                      \"type\": \"string\","]
 #[doc = "                      \"format\": \"date-time\","]
-#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                    }"]
 #[doc = "                  },"]
 #[doc = "                  \"additionalProperties\": false"]
@@ -854,9 +856,7 @@ pub mod error {
 #[doc = "                            \"locationLabel\": {"]
 #[doc = "                              \"anyOf\": ["]
 #[doc = "                                {"]
-#[doc = "                                  \"type\": \"string\","]
-#[doc = "                                  \"maxLength\": 256,"]
-#[doc = "                                  \"minLength\": 1"]
+#[doc = "                                  \"type\": \"string\""]
 #[doc = "                                },"]
 #[doc = "                                {"]
 #[doc = "                                  \"type\": \"null\""]
@@ -870,8 +870,12 @@ pub mod error {
 #[doc = "                            },"]
 #[doc = "                            \"status\": {"]
 #[doc = "                              \"type\": \"string\","]
-#[doc = "                              \"maxLength\": 64,"]
-#[doc = "                              \"minLength\": 1"]
+#[doc = "                              \"enum\": ["]
+#[doc = "                                \"online\","]
+#[doc = "                                \"offline\","]
+#[doc = "                                \"maintenance\","]
+#[doc = "                                \"disabled\""]
+#[doc = "                              ]"]
 #[doc = "                            }"]
 #[doc = "                          },"]
 #[doc = "                          \"additionalProperties\": false"]
@@ -894,7 +898,7 @@ pub mod error {
 #[doc = "                            \"claimedAt\": {"]
 #[doc = "                              \"type\": \"string\","]
 #[doc = "                              \"format\": \"date-time\","]
-#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                            },"]
 #[doc = "                            \"profileRevision\": {"]
 #[doc = "                              \"type\": \"integer\","]
@@ -908,7 +912,7 @@ pub mod error {
 #[doc = "                            \"serverTime\": {"]
 #[doc = "                              \"type\": \"string\","]
 #[doc = "                              \"format\": \"date-time\","]
-#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                            }"]
 #[doc = "                          },"]
 #[doc = "                          \"additionalProperties\": false"]
@@ -917,8 +921,7 @@ pub mod error {
 #[doc = "                          \"type\": \"object\","]
 #[doc = "                          \"required\": ["]
 #[doc = "                            \"clientId\","]
-#[doc = "                            \"url\","]
-#[doc = "                            \"username\""]
+#[doc = "                            \"url\""]
 #[doc = "                          ],"]
 #[doc = "                          \"properties\": {"]
 #[doc = "                            \"clientId\": {"]
@@ -934,7 +937,6 @@ pub mod error {
 #[doc = "                              \"anyOf\": ["]
 #[doc = "                                {"]
 #[doc = "                                  \"type\": \"string\","]
-#[doc = "                                  \"maxLength\": 128,"]
 #[doc = "                                  \"minLength\": 1"]
 #[doc = "                                },"]
 #[doc = "                                {"]
@@ -955,6 +957,7 @@ pub mod error {
 #[doc = "                          ],"]
 #[doc = "                          \"properties\": {"]
 #[doc = "                            \"paymentCodeEnabled\": {"]
+#[doc = "                              \"default\": true,"]
 #[doc = "                              \"type\": \"boolean\""]
 #[doc = "                            },"]
 #[doc = "                            \"profile\": {"]
@@ -962,12 +965,13 @@ pub mod error {
 #[doc = "                              \"const\": \"production\""]
 #[doc = "                            },"]
 #[doc = "                            \"qrCodeEnabled\": {"]
+#[doc = "                              \"default\": true,"]
 #[doc = "                              \"type\": \"boolean\""]
 #[doc = "                            },"]
 #[doc = "                            \"serverTime\": {"]
 #[doc = "                              \"type\": \"string\","]
 #[doc = "                              \"format\": \"date-time\","]
-#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                            }"]
 #[doc = "                          },"]
 #[doc = "                          \"additionalProperties\": false"]
@@ -1154,6 +1158,611 @@ pub mod error {
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"claimCode\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"claimCode\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^[A-Z0-9]{4}-[A-Z0-9]{4}$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"apiBaseUrl\","]
+#[doc = "        \"credentials\","]
+#[doc = "        \"hardwareModel\","]
+#[doc = "        \"hardwareProfile\","]
+#[doc = "        \"hardwareSlotTopology\","]
+#[doc = "        \"machine\","]
+#[doc = "        \"metadata\","]
+#[doc = "        \"paymentCapability\","]
+#[doc = "        \"runtimeEndpoints\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"apiBaseUrl\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uri\""]
+#[doc = "        },"]
+#[doc = "        \"credentials\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"machineSecret\","]
+#[doc = "            \"machineSecretVersion\","]
+#[doc = "            \"mqttConnection\","]
+#[doc = "            \"mqttSigningSecret\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"machineSecret\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 256,"]
+#[doc = "              \"minLength\": 32"]
+#[doc = "            },"]
+#[doc = "            \"machineSecretVersion\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
+#[doc = "            },"]
+#[doc = "            \"mqttConnection\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"clientId\","]
+#[doc = "                \"url\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"clientId\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"password\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"url\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"format\": \"uri\""]
+#[doc = "                },"]
+#[doc = "                \"username\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"mqttSigningSecret\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 256,"]
+#[doc = "              \"minLength\": 32"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"hardwareModel\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"hardwareProfile\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"controller\","]
+#[doc = "            \"paymentScanner\","]
+#[doc = "            \"profile\","]
+#[doc = "            \"vision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"controller\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"protocol\","]
+#[doc = "                \"required\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"protocol\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"const\": \"vem-vending-controller\""]
+#[doc = "                },"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\","]
+#[doc = "                  \"const\": true"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"paymentScanner\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"required\","]
+#[doc = "                \"supportsPaymentCode\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\","]
+#[doc = "                  \"const\": true"]
+#[doc = "                },"]
+#[doc = "                \"supportsPaymentCode\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"profile\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"production\""]
+#[doc = "            },"]
+#[doc = "            \"vision\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"required\","]
+#[doc = "                \"supportsRecommendations\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                },"]
+#[doc = "                \"supportsRecommendations\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"hardwareSlotTopology\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"identity\","]
+#[doc = "            \"version\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"identity\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"version\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"machine\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"code\","]
+#[doc = "            \"id\","]
+#[doc = "            \"locationLabel\","]
+#[doc = "            \"name\","]
+#[doc = "            \"status\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"code\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 64,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"id\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uuid\","]
+#[doc = "              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "            },"]
+#[doc = "            \"locationLabel\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"name\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"status\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"online\","]
+#[doc = "                \"offline\","]
+#[doc = "                \"maintenance\","]
+#[doc = "                \"disabled\""]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"metadata\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"claimCodeId\","]
+#[doc = "            \"claimedAt\","]
+#[doc = "            \"profileRevision\","]
+#[doc = "            \"profileVersion\","]
+#[doc = "            \"serverTime\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"claimCodeId\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uuid\","]
+#[doc = "              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "            },"]
+#[doc = "            \"claimedAt\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            },"]
+#[doc = "            \"profileRevision\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
+#[doc = "            },"]
+#[doc = "            \"profileVersion\": {"]
+#[doc = "              \"type\": \"number\","]
+#[doc = "              \"const\": 1"]
+#[doc = "            },"]
+#[doc = "            \"serverTime\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"paymentCapability\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"paymentCodeEnabled\","]
+#[doc = "            \"profile\","]
+#[doc = "            \"qrCodeEnabled\","]
+#[doc = "            \"serverTime\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"paymentCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"profile\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"production\""]
+#[doc = "            },"]
+#[doc = "            \"qrCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"serverTime\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"runtimeEndpoints\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"apiBasePath\","]
+#[doc = "            \"machineApiBasePath\","]
+#[doc = "            \"machineAuthTokenPath\","]
+#[doc = "            \"mqttTopicPrefix\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"apiBasePath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"/api\""]
+#[doc = "            },"]
+#[doc = "            \"machineApiBasePath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "            },"]
+#[doc = "            \"machineAuthTokenPath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"/api/machine-auth/token\""]
+#[doc = "            },"]
+#[doc = "            \"mqttTopicPrefix\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"apiBaseUrl\","]
+#[doc = "        \"hardwareModel\","]
+#[doc = "        \"hardwareProfile\","]
+#[doc = "        \"hardwareSlotTopology\","]
+#[doc = "        \"machine\","]
+#[doc = "        \"metadata\","]
+#[doc = "        \"mqttConnection\","]
+#[doc = "        \"paymentCapability\","]
+#[doc = "        \"runtimeEndpoints\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"apiBaseUrl\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uri\""]
+#[doc = "        },"]
+#[doc = "        \"hardwareModel\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"hardwareProfile\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"controller\","]
+#[doc = "            \"paymentScanner\","]
+#[doc = "            \"profile\","]
+#[doc = "            \"vision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"controller\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"protocol\","]
+#[doc = "                \"required\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"protocol\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"const\": \"vem-vending-controller\""]
+#[doc = "                },"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\","]
+#[doc = "                  \"const\": true"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"paymentScanner\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"required\","]
+#[doc = "                \"supportsPaymentCode\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\","]
+#[doc = "                  \"const\": true"]
+#[doc = "                },"]
+#[doc = "                \"supportsPaymentCode\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"profile\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"production\""]
+#[doc = "            },"]
+#[doc = "            \"vision\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"required\","]
+#[doc = "                \"supportsRecommendations\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"required\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                },"]
+#[doc = "                \"supportsRecommendations\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"hardwareSlotTopology\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"identity\","]
+#[doc = "            \"version\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"identity\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"version\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"machine\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"code\","]
+#[doc = "            \"id\","]
+#[doc = "            \"locationLabel\","]
+#[doc = "            \"name\","]
+#[doc = "            \"status\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"code\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 64,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"id\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uuid\","]
+#[doc = "              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "            },"]
+#[doc = "            \"locationLabel\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"name\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"status\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"online\","]
+#[doc = "                \"offline\","]
+#[doc = "                \"maintenance\","]
+#[doc = "                \"disabled\""]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"metadata\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"claimCodeId\","]
+#[doc = "            \"claimedAt\","]
+#[doc = "            \"profileRevision\","]
+#[doc = "            \"profileVersion\","]
+#[doc = "            \"serverTime\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"claimCodeId\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uuid\","]
+#[doc = "              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "            },"]
+#[doc = "            \"claimedAt\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            },"]
+#[doc = "            \"profileRevision\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
+#[doc = "            },"]
+#[doc = "            \"profileVersion\": {"]
+#[doc = "              \"type\": \"number\","]
+#[doc = "              \"const\": 1"]
+#[doc = "            },"]
+#[doc = "            \"serverTime\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"mqttConnection\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"clientId\","]
+#[doc = "            \"url\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"clientId\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"url\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uri\""]
+#[doc = "            },"]
+#[doc = "            \"username\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"paymentCapability\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"paymentCodeEnabled\","]
+#[doc = "            \"profile\","]
+#[doc = "            \"qrCodeEnabled\","]
+#[doc = "            \"serverTime\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"paymentCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"profile\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"production\""]
+#[doc = "            },"]
+#[doc = "            \"qrCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"serverTime\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"date-time\","]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"runtimeEndpoints\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"apiBasePath\","]
+#[doc = "            \"machineApiBasePath\","]
+#[doc = "            \"machineAuthTokenPath\","]
+#[doc = "            \"mqttTopicPrefix\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"apiBasePath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"/api\""]
+#[doc = "            },"]
+#[doc = "            \"machineApiBasePath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "            },"]
+#[doc = "            \"machineAuthTokenPath\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"/api/machine-auth/token\""]
+#[doc = "            },"]
+#[doc = "            \"mqttTopicPrefix\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
 #[doc = "    }"]
 #[doc = "  ]"]
 #[doc = "}"]
@@ -1191,6 +1800,24 @@ pub struct RuntimeConfigurationContract {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub subtype_4: ::std::option::Option<RuntimeConfigurationContractSubtype4>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_5: ::std::option::Option<RuntimeConfigurationContractSubtype5>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_6: ::std::option::Option<RuntimeConfigurationContractSubtype6>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_7: ::std::option::Option<RuntimeConfigurationContractSubtype7>,
 }
 impl ::std::default::Default for RuntimeConfigurationContract {
     fn default() -> Self {
@@ -1200,6 +1827,9 @@ impl ::std::default::Default for RuntimeConfigurationContract {
             subtype_2: Default::default(),
             subtype_3: Default::default(),
             subtype_4: Default::default(),
+            subtype_5: Default::default(),
+            subtype_6: Default::default(),
+            subtype_7: Default::default(),
         }
     }
 }
@@ -1626,9 +2256,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "            \"locationLabel\": {"]
 #[doc = "              \"anyOf\": ["]
 #[doc = "                {"]
-#[doc = "                  \"type\": \"string\","]
-#[doc = "                  \"maxLength\": 256,"]
-#[doc = "                  \"minLength\": 1"]
+#[doc = "                  \"type\": \"string\""]
 #[doc = "                },"]
 #[doc = "                {"]
 #[doc = "                  \"type\": \"null\""]
@@ -1642,8 +2270,12 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "            },"]
 #[doc = "            \"status\": {"]
 #[doc = "              \"type\": \"string\","]
-#[doc = "              \"maxLength\": 64,"]
-#[doc = "              \"minLength\": 1"]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"online\","]
+#[doc = "                \"offline\","]
+#[doc = "                \"maintenance\","]
+#[doc = "                \"disabled\""]
+#[doc = "              ]"]
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"additionalProperties\": false"]
@@ -1672,8 +2304,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "              \"type\": \"object\","]
 #[doc = "              \"required\": ["]
 #[doc = "                \"clientId\","]
-#[doc = "                \"url\","]
-#[doc = "                \"username\""]
+#[doc = "                \"url\""]
 #[doc = "              ],"]
 #[doc = "              \"properties\": {"]
 #[doc = "                \"clientId\": {"]
@@ -1689,7 +2320,6 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                  \"anyOf\": ["]
 #[doc = "                    {"]
 #[doc = "                      \"type\": \"string\","]
-#[doc = "                      \"maxLength\": 128,"]
 #[doc = "                      \"minLength\": 1"]
 #[doc = "                    },"]
 #[doc = "                    {"]
@@ -1710,6 +2340,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "              ],"]
 #[doc = "              \"properties\": {"]
 #[doc = "                \"paymentCodeEnabled\": {"]
+#[doc = "                  \"default\": true,"]
 #[doc = "                  \"type\": \"boolean\""]
 #[doc = "                },"]
 #[doc = "                \"profile\": {"]
@@ -1717,12 +2348,13 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                  \"const\": \"production\""]
 #[doc = "                },"]
 #[doc = "                \"qrCodeEnabled\": {"]
+#[doc = "                  \"default\": true,"]
 #[doc = "                  \"type\": \"boolean\""]
 #[doc = "                },"]
 #[doc = "                \"serverTime\": {"]
 #[doc = "                  \"type\": \"string\","]
 #[doc = "                  \"format\": \"date-time\","]
-#[doc = "                  \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                  \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                }"]
 #[doc = "              },"]
 #[doc = "              \"additionalProperties\": false"]
@@ -2021,9 +2653,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                        \"locationLabel\": {"]
 #[doc = "                          \"anyOf\": ["]
 #[doc = "                            {"]
-#[doc = "                              \"type\": \"string\","]
-#[doc = "                              \"maxLength\": 256,"]
-#[doc = "                              \"minLength\": 1"]
+#[doc = "                              \"type\": \"string\""]
 #[doc = "                            },"]
 #[doc = "                            {"]
 #[doc = "                              \"type\": \"null\""]
@@ -2037,8 +2667,12 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                        },"]
 #[doc = "                        \"status\": {"]
 #[doc = "                          \"type\": \"string\","]
-#[doc = "                          \"maxLength\": 64,"]
-#[doc = "                          \"minLength\": 1"]
+#[doc = "                          \"enum\": ["]
+#[doc = "                            \"online\","]
+#[doc = "                            \"offline\","]
+#[doc = "                            \"maintenance\","]
+#[doc = "                            \"disabled\""]
+#[doc = "                          ]"]
 #[doc = "                        }"]
 #[doc = "                      },"]
 #[doc = "                      \"additionalProperties\": false"]
@@ -2061,7 +2695,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                        \"claimedAt\": {"]
 #[doc = "                          \"type\": \"string\","]
 #[doc = "                          \"format\": \"date-time\","]
-#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                        },"]
 #[doc = "                        \"profileRevision\": {"]
 #[doc = "                          \"type\": \"integer\","]
@@ -2075,7 +2709,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                        \"serverTime\": {"]
 #[doc = "                          \"type\": \"string\","]
 #[doc = "                          \"format\": \"date-time\","]
-#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                        }"]
 #[doc = "                      },"]
 #[doc = "                      \"additionalProperties\": false"]
@@ -2084,8 +2718,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                      \"type\": \"object\","]
 #[doc = "                      \"required\": ["]
 #[doc = "                        \"clientId\","]
-#[doc = "                        \"url\","]
-#[doc = "                        \"username\""]
+#[doc = "                        \"url\""]
 #[doc = "                      ],"]
 #[doc = "                      \"properties\": {"]
 #[doc = "                        \"clientId\": {"]
@@ -2101,7 +2734,6 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                          \"anyOf\": ["]
 #[doc = "                            {"]
 #[doc = "                              \"type\": \"string\","]
-#[doc = "                              \"maxLength\": 128,"]
 #[doc = "                              \"minLength\": 1"]
 #[doc = "                            },"]
 #[doc = "                            {"]
@@ -2122,6 +2754,7 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                      ],"]
 #[doc = "                      \"properties\": {"]
 #[doc = "                        \"paymentCodeEnabled\": {"]
+#[doc = "                          \"default\": true,"]
 #[doc = "                          \"type\": \"boolean\""]
 #[doc = "                        },"]
 #[doc = "                        \"profile\": {"]
@@ -2129,12 +2762,13 @@ impl ::std::default::Default for RuntimeConfigurationContract {
 #[doc = "                          \"const\": \"production\""]
 #[doc = "                        },"]
 #[doc = "                        \"qrCodeEnabled\": {"]
+#[doc = "                          \"default\": true,"]
 #[doc = "                          \"type\": \"boolean\""]
 #[doc = "                        },"]
 #[doc = "                        \"serverTime\": {"]
 #[doc = "                          \"type\": \"string\","]
 #[doc = "                          \"format\": \"date-time\","]
-#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                        }"]
 #[doc = "                      },"]
 #[doc = "                      \"additionalProperties\": false"]
@@ -4817,9 +5451,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "    \"locationLabel\": {"]
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 256,"]
-#[doc = "          \"minLength\": 1"]
+#[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"type\": \"null\""]
@@ -4833,8 +5465,12 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "    },"]
 #[doc = "    \"status\": {"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 64,"]
-#[doc = "      \"minLength\": 1"]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"online\","]
+#[doc = "        \"offline\","]
+#[doc = "        \"maintenance\","]
+#[doc = "        \"disabled\""]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -4847,8 +5483,7 @@ pub struct RuntimeConfigurationContractSubtype0Machine {
     pub code: RuntimeConfigurationContractSubtype0MachineCode,
     pub id: ::uuid::Uuid,
     #[serde(rename = "locationLabel")]
-    pub location_label:
-        ::std::option::Option<RuntimeConfigurationContractSubtype0MachineLocationLabel>,
+    pub location_label: ::std::option::Option<::std::string::String>,
     pub name: RuntimeConfigurationContractSubtype0MachineName,
     pub status: RuntimeConfigurationContractSubtype0MachineStatus,
 }
@@ -4919,84 +5554,6 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineCode {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`RuntimeConfigurationContractSubtype0MachineLocationLabel`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 256,"]
-#[doc = "  \"minLength\": 1"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct RuntimeConfigurationContractSubtype0MachineLocationLabel(::std::string::String);
-impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineLocationLabel {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineLocationLabel>
-    for ::std::string::String
-{
-    fn from(value: RuntimeConfigurationContractSubtype0MachineLocationLabel) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineLocationLabel {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 256usize {
-            return Err("longer than 256 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineLocationLabel {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String>
-    for RuntimeConfigurationContractSubtype0MachineLocationLabel
-{
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String>
-    for RuntimeConfigurationContractSubtype0MachineLocationLabel
-{
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineLocationLabel {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -5093,37 +5650,57 @@ impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0Mach
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 64,"]
-#[doc = "  \"minLength\": 1"]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"online\","]
+#[doc = "    \"offline\","]
+#[doc = "    \"maintenance\","]
+#[doc = "    \"disabled\""]
+#[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct RuntimeConfigurationContractSubtype0MachineStatus(::std::string::String);
-impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineStatus {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum RuntimeConfigurationContractSubtype0MachineStatus {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "maintenance")]
+    Maintenance,
+    #[serde(rename = "disabled")]
+    Disabled,
 }
-impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineStatus>
-    for ::std::string::String
-{
-    fn from(value: RuntimeConfigurationContractSubtype0MachineStatus) -> Self {
-        value.0
+impl ::std::fmt::Display for RuntimeConfigurationContractSubtype0MachineStatus {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Online => f.write_str("online"),
+            Self::Offline => f.write_str("offline"),
+            Self::Maintenance => f.write_str("maintenance"),
+            Self::Disabled => f.write_str("disabled"),
+        }
     }
 }
 impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineStatus {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 64usize {
-            return Err("longer than 64 characters".into());
+        match value {
+            "online" => Ok(Self::Online),
+            "offline" => Ok(Self::Offline),
+            "maintenance" => Ok(Self::Maintenance),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err("invalid value".into()),
         }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
     }
 }
 impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineStatus {
@@ -5152,18 +5729,6 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineStatus {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
 #[doc = "`RuntimeConfigurationContractSubtype0Platform`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -5186,8 +5751,7 @@ impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0Mach
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"clientId\","]
-#[doc = "        \"url\","]
-#[doc = "        \"username\""]
+#[doc = "        \"url\""]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"clientId\": {"]
@@ -5203,7 +5767,6 @@ impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0Mach
 #[doc = "          \"anyOf\": ["]
 #[doc = "            {"]
 #[doc = "              \"type\": \"string\","]
-#[doc = "              \"maxLength\": 128,"]
 #[doc = "              \"minLength\": 1"]
 #[doc = "            },"]
 #[doc = "            {"]
@@ -5224,6 +5787,7 @@ impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0Mach
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"paymentCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"profile\": {"]
@@ -5231,12 +5795,13 @@ impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0Mach
 #[doc = "          \"const\": \"production\""]
 #[doc = "        },"]
 #[doc = "        \"qrCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"serverTime\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"date-time\","]
-#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -5295,8 +5860,7 @@ pub struct RuntimeConfigurationContractSubtype0Platform {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"clientId\","]
-#[doc = "    \"url\","]
-#[doc = "    \"username\""]
+#[doc = "    \"url\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"clientId\": {"]
@@ -5312,7 +5876,6 @@ pub struct RuntimeConfigurationContractSubtype0Platform {
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
 #[doc = "          \"minLength\": 1"]
 #[doc = "        },"]
 #[doc = "        {"]
@@ -5331,6 +5894,7 @@ pub struct RuntimeConfigurationContractSubtype0PlatformMqttConnection {
     #[serde(rename = "clientId")]
     pub client_id: RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId,
     pub url: ::std::string::String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub username:
         ::std::option::Option<RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername>,
 }
@@ -5425,7 +5989,6 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
 #[doc = "  \"minLength\": 1"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -5451,9 +6014,6 @@ impl ::std::convert::From<RuntimeConfigurationContractSubtype0PlatformMqttConnec
 impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
         if value.chars().count() < 1usize {
             return Err("shorter than 1 characters".into());
         }
@@ -5517,6 +6077,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"paymentCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"profile\": {"]
@@ -5524,12 +6085,13 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "      \"const\": \"production\""]
 #[doc = "    },"]
 #[doc = "    \"qrCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"serverTime\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"date-time\","]
-#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -6151,9 +6713,7 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                    \"locationLabel\": {"]
 #[doc = "                      \"anyOf\": ["]
 #[doc = "                        {"]
-#[doc = "                          \"type\": \"string\","]
-#[doc = "                          \"maxLength\": 256,"]
-#[doc = "                          \"minLength\": 1"]
+#[doc = "                          \"type\": \"string\""]
 #[doc = "                        },"]
 #[doc = "                        {"]
 #[doc = "                          \"type\": \"null\""]
@@ -6167,8 +6727,12 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                    },"]
 #[doc = "                    \"status\": {"]
 #[doc = "                      \"type\": \"string\","]
-#[doc = "                      \"maxLength\": 64,"]
-#[doc = "                      \"minLength\": 1"]
+#[doc = "                      \"enum\": ["]
+#[doc = "                        \"online\","]
+#[doc = "                        \"offline\","]
+#[doc = "                        \"maintenance\","]
+#[doc = "                        \"disabled\""]
+#[doc = "                      ]"]
 #[doc = "                    }"]
 #[doc = "                  },"]
 #[doc = "                  \"additionalProperties\": false"]
@@ -6191,7 +6755,7 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                    \"claimedAt\": {"]
 #[doc = "                      \"type\": \"string\","]
 #[doc = "                      \"format\": \"date-time\","]
-#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                    },"]
 #[doc = "                    \"profileRevision\": {"]
 #[doc = "                      \"type\": \"integer\","]
@@ -6205,7 +6769,7 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                    \"serverTime\": {"]
 #[doc = "                      \"type\": \"string\","]
 #[doc = "                      \"format\": \"date-time\","]
-#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                    }"]
 #[doc = "                  },"]
 #[doc = "                  \"additionalProperties\": false"]
@@ -6214,8 +6778,7 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                  \"type\": \"object\","]
 #[doc = "                  \"required\": ["]
 #[doc = "                    \"clientId\","]
-#[doc = "                    \"url\","]
-#[doc = "                    \"username\""]
+#[doc = "                    \"url\""]
 #[doc = "                  ],"]
 #[doc = "                  \"properties\": {"]
 #[doc = "                    \"clientId\": {"]
@@ -6231,7 +6794,6 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                      \"anyOf\": ["]
 #[doc = "                        {"]
 #[doc = "                          \"type\": \"string\","]
-#[doc = "                          \"maxLength\": 128,"]
 #[doc = "                          \"minLength\": 1"]
 #[doc = "                        },"]
 #[doc = "                        {"]
@@ -6252,6 +6814,7 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                  ],"]
 #[doc = "                  \"properties\": {"]
 #[doc = "                    \"paymentCodeEnabled\": {"]
+#[doc = "                      \"default\": true,"]
 #[doc = "                      \"type\": \"boolean\""]
 #[doc = "                    },"]
 #[doc = "                    \"profile\": {"]
@@ -6259,12 +6822,13 @@ pub struct RuntimeConfigurationContractSubtype0SecretStatus {
 #[doc = "                      \"const\": \"production\""]
 #[doc = "                    },"]
 #[doc = "                    \"qrCodeEnabled\": {"]
+#[doc = "                      \"default\": true,"]
 #[doc = "                      \"type\": \"boolean\""]
 #[doc = "                    },"]
 #[doc = "                    \"serverTime\": {"]
 #[doc = "                      \"type\": \"string\","]
 #[doc = "                      \"format\": \"date-time\","]
-#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "                    }"]
 #[doc = "                  },"]
 #[doc = "                  \"additionalProperties\": false"]
@@ -6852,9 +7416,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "            \"locationLabel\": {"]
 #[doc = "              \"anyOf\": ["]
 #[doc = "                {"]
-#[doc = "                  \"type\": \"string\","]
-#[doc = "                  \"maxLength\": 256,"]
-#[doc = "                  \"minLength\": 1"]
+#[doc = "                  \"type\": \"string\""]
 #[doc = "                },"]
 #[doc = "                {"]
 #[doc = "                  \"type\": \"null\""]
@@ -6868,8 +7430,12 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "            },"]
 #[doc = "            \"status\": {"]
 #[doc = "              \"type\": \"string\","]
-#[doc = "              \"maxLength\": 64,"]
-#[doc = "              \"minLength\": 1"]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"online\","]
+#[doc = "                \"offline\","]
+#[doc = "                \"maintenance\","]
+#[doc = "                \"disabled\""]
+#[doc = "              ]"]
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"additionalProperties\": false"]
@@ -6892,7 +7458,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "            \"claimedAt\": {"]
 #[doc = "              \"type\": \"string\","]
 #[doc = "              \"format\": \"date-time\","]
-#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "            },"]
 #[doc = "            \"profileRevision\": {"]
 #[doc = "              \"type\": \"integer\","]
@@ -6906,7 +7472,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "            \"serverTime\": {"]
 #[doc = "              \"type\": \"string\","]
 #[doc = "              \"format\": \"date-time\","]
-#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"additionalProperties\": false"]
@@ -6915,8 +7481,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"required\": ["]
 #[doc = "            \"clientId\","]
-#[doc = "            \"url\","]
-#[doc = "            \"username\""]
+#[doc = "            \"url\""]
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"clientId\": {"]
@@ -6932,7 +7497,6 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "              \"anyOf\": ["]
 #[doc = "                {"]
 #[doc = "                  \"type\": \"string\","]
-#[doc = "                  \"maxLength\": 128,"]
 #[doc = "                  \"minLength\": 1"]
 #[doc = "                },"]
 #[doc = "                {"]
@@ -6953,6 +7517,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"paymentCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
 #[doc = "              \"type\": \"boolean\""]
 #[doc = "            },"]
 #[doc = "            \"profile\": {"]
@@ -6960,12 +7525,13 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "              \"const\": \"production\""]
 #[doc = "            },"]
 #[doc = "            \"qrCodeEnabled\": {"]
+#[doc = "              \"default\": true,"]
 #[doc = "              \"type\": \"boolean\""]
 #[doc = "            },"]
 #[doc = "            \"serverTime\": {"]
 #[doc = "              \"type\": \"string\","]
 #[doc = "              \"format\": \"date-time\","]
-#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"additionalProperties\": false"]
@@ -7158,9 +7724,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "        \"locationLabel\": {"]
 #[doc = "          \"anyOf\": ["]
 #[doc = "            {"]
-#[doc = "              \"type\": \"string\","]
-#[doc = "              \"maxLength\": 256,"]
-#[doc = "              \"minLength\": 1"]
+#[doc = "              \"type\": \"string\""]
 #[doc = "            },"]
 #[doc = "            {"]
 #[doc = "              \"type\": \"null\""]
@@ -7174,8 +7738,12 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "        },"]
 #[doc = "        \"status\": {"]
 #[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 64,"]
-#[doc = "          \"minLength\": 1"]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"online\","]
+#[doc = "            \"offline\","]
+#[doc = "            \"maintenance\","]
+#[doc = "            \"disabled\""]
+#[doc = "          ]"]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -7198,7 +7766,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "        \"claimedAt\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"date-time\","]
-#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "        },"]
 #[doc = "        \"profileRevision\": {"]
 #[doc = "          \"type\": \"integer\","]
@@ -7212,7 +7780,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "        \"serverTime\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"date-time\","]
-#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -7221,8 +7789,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"clientId\","]
-#[doc = "        \"url\","]
-#[doc = "        \"username\""]
+#[doc = "        \"url\""]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"clientId\": {"]
@@ -7238,7 +7805,6 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "          \"anyOf\": ["]
 #[doc = "            {"]
 #[doc = "              \"type\": \"string\","]
-#[doc = "              \"maxLength\": 128,"]
 #[doc = "              \"minLength\": 1"]
 #[doc = "            },"]
 #[doc = "            {"]
@@ -7259,6 +7825,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"paymentCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"profile\": {"]
@@ -7266,12 +7833,13 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
 #[doc = "          \"const\": \"production\""]
 #[doc = "        },"]
 #[doc = "        \"qrCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"serverTime\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"date-time\","]
-#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -7705,9 +8273,7 @@ impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSub
 #[doc = "    \"locationLabel\": {"]
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 256,"]
-#[doc = "          \"minLength\": 1"]
+#[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"type\": \"null\""]
@@ -7721,8 +8287,12 @@ impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSub
 #[doc = "    },"]
 #[doc = "    \"status\": {"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 64,"]
-#[doc = "      \"minLength\": 1"]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"online\","]
+#[doc = "        \"offline\","]
+#[doc = "        \"maintenance\","]
+#[doc = "        \"disabled\""]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -7735,9 +8305,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfil
     pub code: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode,
     pub id: ::uuid::Uuid,
     #[serde(rename = "locationLabel")]
-    pub location_label: ::std::option::Option<
-        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
-    >,
+    pub location_label: ::std::option::Option<::std::string::String>,
     pub name: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName,
     pub status: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
 }
@@ -7821,98 +8389,6 @@ impl ::std::convert::TryFrom<::std::string::String>
 }
 impl<'de> ::serde::Deserialize<'de>
     for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
-{
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 256,"]
-#[doc = "  \"minLength\": 1"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel(
-    ::std::string::String,
-);
-impl ::std::ops::Deref
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
-{
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl
-    ::std::convert::From<
-        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
-    > for ::std::string::String
-{
-    fn from(
-        value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
-    ) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
-{
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 256usize {
-            return Err("longer than 256 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str>
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
-{
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String>
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
-{
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String>
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
-{
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de>
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -8024,33 +8500,47 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 64,"]
-#[doc = "  \"minLength\": 1"]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"online\","]
+#[doc = "    \"offline\","]
+#[doc = "    \"maintenance\","]
+#[doc = "    \"disabled\""]
+#[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus(
-    ::std::string::String,
-);
-impl ::std::ops::Deref
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "maintenance")]
+    Maintenance,
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+impl ::std::fmt::Display
     for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl
-    ::std::convert::From<
-        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
-    > for ::std::string::String
-{
-    fn from(
-        value: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
-    ) -> Self {
-        value.0
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Online => f.write_str("online"),
+            Self::Offline => f.write_str("offline"),
+            Self::Maintenance => f.write_str("maintenance"),
+            Self::Disabled => f.write_str("disabled"),
+        }
     }
 }
 impl ::std::str::FromStr
@@ -8058,13 +8548,13 @@ impl ::std::str::FromStr
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 64usize {
-            return Err("longer than 64 characters".into());
+        match value {
+            "online" => Ok(Self::Online),
+            "offline" => Ok(Self::Offline),
+            "maintenance" => Ok(Self::Maintenance),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err("invalid value".into()),
         }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
     }
 }
 impl ::std::convert::TryFrom<&str>
@@ -8095,20 +8585,6 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de>
-    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
-{
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
 #[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMetadata`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -8132,7 +8608,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "    \"claimedAt\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"date-time\","]
-#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "    },"]
 #[doc = "    \"profileRevision\": {"]
 #[doc = "      \"type\": \"integer\","]
@@ -8146,7 +8622,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "    \"serverTime\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"date-time\","]
-#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -8176,8 +8652,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfil
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"clientId\","]
-#[doc = "    \"url\","]
-#[doc = "    \"username\""]
+#[doc = "    \"url\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"clientId\": {"]
@@ -8193,7 +8668,6 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfil
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
 #[doc = "          \"minLength\": 1"]
 #[doc = "        },"]
 #[doc = "        {"]
@@ -8208,7 +8682,7 @@ pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnection { # [serde (rename = "clientId")] pub client_id : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId , pub url : :: std :: string :: String , pub username : :: std :: option :: Option < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername > , }
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnection { # [serde (rename = "clientId")] pub client_id : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId , pub url : :: std :: string :: String , # [serde (default , skip_serializing_if = "::std::option::Option::is_none")] pub username : :: std :: option :: Option < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername > , }
 #[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -8298,7 +8772,6 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
 #[doc = "  \"minLength\": 1"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -8322,9 +8795,6 @@ impl ::std::str::FromStr
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
         if value.chars().count() < 1usize {
             return Err("shorter than 1 characters".into());
         }
@@ -8388,6 +8858,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"paymentCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"profile\": {"]
@@ -8395,12 +8866,13 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "      \"const\": \"production\""]
 #[doc = "    },"]
 #[doc = "    \"qrCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"serverTime\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"date-time\","]
-#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -8913,4 +9385,3637 @@ pub struct RuntimeConfigurationContractSubtype4 {
     #[serde(rename = "transactionCuesEnabled")]
     pub transaction_cues_enabled: bool,
     pub volume: f64,
+}
+#[doc = "`RuntimeConfigurationContractSubtype5`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"claimCode\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"claimCode\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^[A-Z0-9]{4}-[A-Z0-9]{4}$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype5 {
+    #[serde(rename = "claimCode")]
+    pub claim_code: RuntimeConfigurationContractSubtype5ClaimCode,
+}
+#[doc = "`RuntimeConfigurationContractSubtype5ClaimCode`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Z0-9]{4}-[A-Z0-9]{4}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype5ClaimCode(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype5ClaimCode {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype5ClaimCode> for ::std::string::String {
+    fn from(value: RuntimeConfigurationContractSubtype5ClaimCode) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype5ClaimCode {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Z0-9]{4}-[A-Z0-9]{4}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Z0-9]{4}-[A-Z0-9]{4}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype5ClaimCode {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype5ClaimCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype5ClaimCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype5ClaimCode {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"apiBaseUrl\","]
+#[doc = "    \"credentials\","]
+#[doc = "    \"hardwareModel\","]
+#[doc = "    \"hardwareProfile\","]
+#[doc = "    \"hardwareSlotTopology\","]
+#[doc = "    \"machine\","]
+#[doc = "    \"metadata\","]
+#[doc = "    \"paymentCapability\","]
+#[doc = "    \"runtimeEndpoints\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"apiBaseUrl\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"credentials\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"machineSecret\","]
+#[doc = "        \"machineSecretVersion\","]
+#[doc = "        \"mqttConnection\","]
+#[doc = "        \"mqttSigningSecret\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"machineSecret\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 256,"]
+#[doc = "          \"minLength\": 32"]
+#[doc = "        },"]
+#[doc = "        \"machineSecretVersion\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"mqttConnection\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"clientId\","]
+#[doc = "            \"url\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"clientId\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"password\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"url\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uri\""]
+#[doc = "            },"]
+#[doc = "            \"username\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"mqttSigningSecret\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 256,"]
+#[doc = "          \"minLength\": 32"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"hardwareModel\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"hardwareProfile\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"controller\","]
+#[doc = "        \"paymentScanner\","]
+#[doc = "        \"profile\","]
+#[doc = "        \"vision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"controller\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"protocol\","]
+#[doc = "            \"required\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"protocol\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"vem-vending-controller\""]
+#[doc = "            },"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\","]
+#[doc = "              \"const\": true"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"paymentScanner\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"required\","]
+#[doc = "            \"supportsPaymentCode\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\","]
+#[doc = "              \"const\": true"]
+#[doc = "            },"]
+#[doc = "            \"supportsPaymentCode\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"profile\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"production\""]
+#[doc = "        },"]
+#[doc = "        \"vision\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"required\","]
+#[doc = "            \"supportsRecommendations\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"supportsRecommendations\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"hardwareSlotTopology\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"identity\","]
+#[doc = "        \"version\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"identity\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"version\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"machine\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"code\","]
+#[doc = "        \"id\","]
+#[doc = "        \"locationLabel\","]
+#[doc = "        \"name\","]
+#[doc = "        \"status\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"code\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 64,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"id\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"locationLabel\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"status\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"online\","]
+#[doc = "            \"offline\","]
+#[doc = "            \"maintenance\","]
+#[doc = "            \"disabled\""]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"metadata\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"claimCodeId\","]
+#[doc = "        \"claimedAt\","]
+#[doc = "        \"profileRevision\","]
+#[doc = "        \"profileVersion\","]
+#[doc = "        \"serverTime\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"claimCodeId\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"claimedAt\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        },"]
+#[doc = "        \"profileRevision\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"profileVersion\": {"]
+#[doc = "          \"type\": \"number\","]
+#[doc = "          \"const\": 1"]
+#[doc = "        },"]
+#[doc = "        \"serverTime\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"paymentCapability\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"paymentCodeEnabled\","]
+#[doc = "        \"profile\","]
+#[doc = "        \"qrCodeEnabled\","]
+#[doc = "        \"serverTime\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"paymentCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"profile\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"production\""]
+#[doc = "        },"]
+#[doc = "        \"qrCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"serverTime\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"runtimeEndpoints\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"apiBasePath\","]
+#[doc = "        \"machineApiBasePath\","]
+#[doc = "        \"machineAuthTokenPath\","]
+#[doc = "        \"mqttTopicPrefix\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"apiBasePath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"/api\""]
+#[doc = "        },"]
+#[doc = "        \"machineApiBasePath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "        },"]
+#[doc = "        \"machineAuthTokenPath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"/api/machine-auth/token\""]
+#[doc = "        },"]
+#[doc = "        \"mqttTopicPrefix\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6 {
+    #[serde(rename = "apiBaseUrl")]
+    pub api_base_url: ::std::string::String,
+    pub credentials: RuntimeConfigurationContractSubtype6Credentials,
+    #[serde(rename = "hardwareModel")]
+    pub hardware_model: RuntimeConfigurationContractSubtype6HardwareModel,
+    #[serde(rename = "hardwareProfile")]
+    pub hardware_profile: RuntimeConfigurationContractSubtype6HardwareProfile,
+    #[serde(rename = "hardwareSlotTopology")]
+    pub hardware_slot_topology: RuntimeConfigurationContractSubtype6HardwareSlotTopology,
+    pub machine: RuntimeConfigurationContractSubtype6Machine,
+    pub metadata: RuntimeConfigurationContractSubtype6Metadata,
+    #[serde(rename = "paymentCapability")]
+    pub payment_capability: RuntimeConfigurationContractSubtype6PaymentCapability,
+    #[serde(rename = "runtimeEndpoints")]
+    pub runtime_endpoints: RuntimeConfigurationContractSubtype6RuntimeEndpoints,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6Credentials`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"machineSecret\","]
+#[doc = "    \"machineSecretVersion\","]
+#[doc = "    \"mqttConnection\","]
+#[doc = "    \"mqttSigningSecret\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"machineSecret\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 256,"]
+#[doc = "      \"minLength\": 32"]
+#[doc = "    },"]
+#[doc = "    \"machineSecretVersion\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"mqttConnection\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"clientId\","]
+#[doc = "        \"url\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"clientId\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"password\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"url\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uri\""]
+#[doc = "        },"]
+#[doc = "        \"username\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"mqttSigningSecret\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 256,"]
+#[doc = "      \"minLength\": 32"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6Credentials {
+    #[serde(rename = "machineSecret")]
+    pub machine_secret: RuntimeConfigurationContractSubtype6CredentialsMachineSecret,
+    #[serde(rename = "machineSecretVersion")]
+    pub machine_secret_version: ::std::num::NonZeroU64,
+    #[serde(rename = "mqttConnection")]
+    pub mqtt_connection: RuntimeConfigurationContractSubtype6CredentialsMqttConnection,
+    #[serde(rename = "mqttSigningSecret")]
+    pub mqtt_signing_secret: RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMachineSecret`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 32"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMachineSecret(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6CredentialsMachineSecret {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6CredentialsMachineSecret>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6CredentialsMachineSecret) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6CredentialsMachineSecret {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 32usize {
+            return Err("shorter than 32 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6CredentialsMachineSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMachineSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMachineSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6CredentialsMachineSecret
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMqttConnection`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"clientId\","]
+#[doc = "    \"url\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"clientId\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"password\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"url\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"username\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMqttConnection {
+    #[serde(rename = "clientId")]
+    pub client_id: RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub password: ::std::option::Option<
+        RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword,
+    >,
+    pub url: ::std::string::String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub username: ::std::option::Option<
+        RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername,
+    >,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionClientId
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionPassword
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttConnectionUsername
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 32"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 32usize {
+            return Err("shorter than 32 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6CredentialsMqttSigningSecret
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareModel`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6HardwareModel(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6HardwareModel {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6HardwareModel>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6HardwareModel) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6HardwareModel {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype6HardwareModel {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype6HardwareModel {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareProfile`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"controller\","]
+#[doc = "    \"paymentScanner\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"vision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"controller\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"protocol\","]
+#[doc = "        \"required\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"protocol\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"vem-vending-controller\""]
+#[doc = "        },"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\","]
+#[doc = "          \"const\": true"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"paymentScanner\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"required\","]
+#[doc = "        \"supportsPaymentCode\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\","]
+#[doc = "          \"const\": true"]
+#[doc = "        },"]
+#[doc = "        \"supportsPaymentCode\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"production\""]
+#[doc = "    },"]
+#[doc = "    \"vision\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"required\","]
+#[doc = "        \"supportsRecommendations\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"supportsRecommendations\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6HardwareProfile {
+    pub controller: RuntimeConfigurationContractSubtype6HardwareProfileController,
+    #[serde(rename = "paymentScanner")]
+    pub payment_scanner: RuntimeConfigurationContractSubtype6HardwareProfilePaymentScanner,
+    pub profile: ::std::string::String,
+    pub vision: RuntimeConfigurationContractSubtype6HardwareProfileVision,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareProfileController`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"protocol\","]
+#[doc = "    \"required\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"protocol\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"vem-vending-controller\""]
+#[doc = "    },"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\","]
+#[doc = "      \"const\": true"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6HardwareProfileController {
+    pub protocol: ::std::string::String,
+    pub required: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareProfilePaymentScanner`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"required\","]
+#[doc = "    \"supportsPaymentCode\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\","]
+#[doc = "      \"const\": true"]
+#[doc = "    },"]
+#[doc = "    \"supportsPaymentCode\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6HardwareProfilePaymentScanner {
+    pub required: bool,
+    #[serde(rename = "supportsPaymentCode")]
+    pub supports_payment_code: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareProfileVision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"required\","]
+#[doc = "    \"supportsRecommendations\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"supportsRecommendations\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6HardwareProfileVision {
+    pub required: bool,
+    #[serde(rename = "supportsRecommendations")]
+    pub supports_recommendations: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareSlotTopology`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"identity\","]
+#[doc = "    \"version\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"identity\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"version\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6HardwareSlotTopology {
+    pub identity: RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity,
+    pub version: RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyIdentity
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6HardwareSlotTopologyVersion
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6Machine`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"code\","]
+#[doc = "    \"id\","]
+#[doc = "    \"locationLabel\","]
+#[doc = "    \"name\","]
+#[doc = "    \"status\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"code\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 64,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"id\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"locationLabel\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"name\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"status\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"online\","]
+#[doc = "        \"offline\","]
+#[doc = "        \"maintenance\","]
+#[doc = "        \"disabled\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6Machine {
+    pub code: RuntimeConfigurationContractSubtype6MachineCode,
+    pub id: ::uuid::Uuid,
+    #[serde(rename = "locationLabel")]
+    pub location_label: ::std::option::Option<::std::string::String>,
+    pub name: RuntimeConfigurationContractSubtype6MachineName,
+    pub status: RuntimeConfigurationContractSubtype6MachineStatus,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6MachineCode`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 64,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6MachineCode(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6MachineCode {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6MachineCode>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6MachineCode) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6MachineCode {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 64usize {
+            return Err("longer than 64 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype6MachineCode {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype6MachineCode {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6MachineName`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6MachineName(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6MachineName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6MachineName>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6MachineName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6MachineName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype6MachineName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineName
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineName
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype6MachineName {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6MachineStatus`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"online\","]
+#[doc = "    \"offline\","]
+#[doc = "    \"maintenance\","]
+#[doc = "    \"disabled\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum RuntimeConfigurationContractSubtype6MachineStatus {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "maintenance")]
+    Maintenance,
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+impl ::std::fmt::Display for RuntimeConfigurationContractSubtype6MachineStatus {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Online => f.write_str("online"),
+            Self::Offline => f.write_str("offline"),
+            Self::Maintenance => f.write_str("maintenance"),
+            Self::Disabled => f.write_str("disabled"),
+        }
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6MachineStatus {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "online" => Ok(Self::Online),
+            "offline" => Ok(Self::Offline),
+            "maintenance" => Ok(Self::Maintenance),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype6MachineStatus {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineStatus
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6MachineStatus
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6Metadata`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"claimCodeId\","]
+#[doc = "    \"claimedAt\","]
+#[doc = "    \"profileRevision\","]
+#[doc = "    \"profileVersion\","]
+#[doc = "    \"serverTime\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"claimCodeId\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"claimedAt\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    },"]
+#[doc = "    \"profileRevision\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"profileVersion\": {"]
+#[doc = "      \"type\": \"number\","]
+#[doc = "      \"const\": 1"]
+#[doc = "    },"]
+#[doc = "    \"serverTime\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6Metadata {
+    #[serde(rename = "claimCodeId")]
+    pub claim_code_id: ::uuid::Uuid,
+    #[serde(rename = "claimedAt")]
+    pub claimed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    #[serde(rename = "profileRevision")]
+    pub profile_revision: ::std::num::NonZeroU64,
+    #[serde(rename = "profileVersion")]
+    pub profile_version: f64,
+    #[serde(rename = "serverTime")]
+    pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6PaymentCapability`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"paymentCodeEnabled\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"qrCodeEnabled\","]
+#[doc = "    \"serverTime\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"paymentCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"production\""]
+#[doc = "    },"]
+#[doc = "    \"qrCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"serverTime\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6PaymentCapability {
+    #[serde(rename = "paymentCodeEnabled")]
+    pub payment_code_enabled: bool,
+    pub profile: ::std::string::String,
+    #[serde(rename = "qrCodeEnabled")]
+    pub qr_code_enabled: bool,
+    #[serde(rename = "serverTime")]
+    pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6RuntimeEndpoints`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"apiBasePath\","]
+#[doc = "    \"machineApiBasePath\","]
+#[doc = "    \"machineAuthTokenPath\","]
+#[doc = "    \"mqttTopicPrefix\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"apiBasePath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"/api\""]
+#[doc = "    },"]
+#[doc = "    \"machineApiBasePath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "    },"]
+#[doc = "    \"machineAuthTokenPath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"/api/machine-auth/token\""]
+#[doc = "    },"]
+#[doc = "    \"mqttTopicPrefix\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype6RuntimeEndpoints {
+    #[serde(rename = "apiBasePath")]
+    pub api_base_path: ::std::string::String,
+    #[serde(rename = "machineApiBasePath")]
+    pub machine_api_base_path:
+        RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath,
+    #[serde(rename = "machineAuthTokenPath")]
+    pub machine_auth_token_path: ::std::string::String,
+    #[serde(rename = "mqttTopicPrefix")]
+    pub mqtt_topic_prefix: RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix,
+}
+#[doc = "`RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^\\/api\\/machines\\/[^/]+$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^\\/api\\/machines\\/[^/]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMachineApiBasePath
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^vem\\/machines\\/[^/]+$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^vem\\/machines\\/[^/]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype6RuntimeEndpointsMqttTopicPrefix
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"apiBaseUrl\","]
+#[doc = "    \"hardwareModel\","]
+#[doc = "    \"hardwareProfile\","]
+#[doc = "    \"hardwareSlotTopology\","]
+#[doc = "    \"machine\","]
+#[doc = "    \"metadata\","]
+#[doc = "    \"mqttConnection\","]
+#[doc = "    \"paymentCapability\","]
+#[doc = "    \"runtimeEndpoints\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"apiBaseUrl\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"hardwareModel\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"hardwareProfile\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"controller\","]
+#[doc = "        \"paymentScanner\","]
+#[doc = "        \"profile\","]
+#[doc = "        \"vision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"controller\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"protocol\","]
+#[doc = "            \"required\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"protocol\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"const\": \"vem-vending-controller\""]
+#[doc = "            },"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\","]
+#[doc = "              \"const\": true"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"paymentScanner\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"required\","]
+#[doc = "            \"supportsPaymentCode\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\","]
+#[doc = "              \"const\": true"]
+#[doc = "            },"]
+#[doc = "            \"supportsPaymentCode\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"profile\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"production\""]
+#[doc = "        },"]
+#[doc = "        \"vision\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"required\","]
+#[doc = "            \"supportsRecommendations\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"required\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"supportsRecommendations\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"hardwareSlotTopology\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"identity\","]
+#[doc = "        \"version\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"identity\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"version\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"machine\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"code\","]
+#[doc = "        \"id\","]
+#[doc = "        \"locationLabel\","]
+#[doc = "        \"name\","]
+#[doc = "        \"status\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"code\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 64,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"id\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"locationLabel\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"status\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"online\","]
+#[doc = "            \"offline\","]
+#[doc = "            \"maintenance\","]
+#[doc = "            \"disabled\""]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"metadata\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"claimCodeId\","]
+#[doc = "        \"claimedAt\","]
+#[doc = "        \"profileRevision\","]
+#[doc = "        \"profileVersion\","]
+#[doc = "        \"serverTime\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"claimCodeId\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"claimedAt\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        },"]
+#[doc = "        \"profileRevision\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"profileVersion\": {"]
+#[doc = "          \"type\": \"number\","]
+#[doc = "          \"const\": 1"]
+#[doc = "        },"]
+#[doc = "        \"serverTime\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"mqttConnection\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"clientId\","]
+#[doc = "        \"url\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"clientId\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"url\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uri\""]
+#[doc = "        },"]
+#[doc = "        \"username\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"paymentCapability\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"paymentCodeEnabled\","]
+#[doc = "        \"profile\","]
+#[doc = "        \"qrCodeEnabled\","]
+#[doc = "        \"serverTime\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"paymentCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"profile\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"production\""]
+#[doc = "        },"]
+#[doc = "        \"qrCodeEnabled\": {"]
+#[doc = "          \"default\": true,"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"serverTime\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"date-time\","]
+#[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"runtimeEndpoints\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"apiBasePath\","]
+#[doc = "        \"machineApiBasePath\","]
+#[doc = "        \"machineAuthTokenPath\","]
+#[doc = "        \"mqttTopicPrefix\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"apiBasePath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"/api\""]
+#[doc = "        },"]
+#[doc = "        \"machineApiBasePath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "        },"]
+#[doc = "        \"machineAuthTokenPath\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"/api/machine-auth/token\""]
+#[doc = "        },"]
+#[doc = "        \"mqttTopicPrefix\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7 {
+    #[serde(rename = "apiBaseUrl")]
+    pub api_base_url: ::std::string::String,
+    #[serde(rename = "hardwareModel")]
+    pub hardware_model: RuntimeConfigurationContractSubtype7HardwareModel,
+    #[serde(rename = "hardwareProfile")]
+    pub hardware_profile: RuntimeConfigurationContractSubtype7HardwareProfile,
+    #[serde(rename = "hardwareSlotTopology")]
+    pub hardware_slot_topology: RuntimeConfigurationContractSubtype7HardwareSlotTopology,
+    pub machine: RuntimeConfigurationContractSubtype7Machine,
+    pub metadata: RuntimeConfigurationContractSubtype7Metadata,
+    #[serde(rename = "mqttConnection")]
+    pub mqtt_connection: RuntimeConfigurationContractSubtype7MqttConnection,
+    #[serde(rename = "paymentCapability")]
+    pub payment_capability: RuntimeConfigurationContractSubtype7PaymentCapability,
+    #[serde(rename = "runtimeEndpoints")]
+    pub runtime_endpoints: RuntimeConfigurationContractSubtype7RuntimeEndpoints,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareModel`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7HardwareModel(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7HardwareModel {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7HardwareModel>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7HardwareModel) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7HardwareModel {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7HardwareModel {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype7HardwareModel {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareProfile`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"controller\","]
+#[doc = "    \"paymentScanner\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"vision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"controller\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"protocol\","]
+#[doc = "        \"required\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"protocol\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"vem-vending-controller\""]
+#[doc = "        },"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\","]
+#[doc = "          \"const\": true"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"paymentScanner\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"required\","]
+#[doc = "        \"supportsPaymentCode\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\","]
+#[doc = "          \"const\": true"]
+#[doc = "        },"]
+#[doc = "        \"supportsPaymentCode\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"production\""]
+#[doc = "    },"]
+#[doc = "    \"vision\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"required\","]
+#[doc = "        \"supportsRecommendations\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"required\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"supportsRecommendations\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7HardwareProfile {
+    pub controller: RuntimeConfigurationContractSubtype7HardwareProfileController,
+    #[serde(rename = "paymentScanner")]
+    pub payment_scanner: RuntimeConfigurationContractSubtype7HardwareProfilePaymentScanner,
+    pub profile: ::std::string::String,
+    pub vision: RuntimeConfigurationContractSubtype7HardwareProfileVision,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareProfileController`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"protocol\","]
+#[doc = "    \"required\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"protocol\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"vem-vending-controller\""]
+#[doc = "    },"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\","]
+#[doc = "      \"const\": true"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7HardwareProfileController {
+    pub protocol: ::std::string::String,
+    pub required: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareProfilePaymentScanner`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"required\","]
+#[doc = "    \"supportsPaymentCode\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\","]
+#[doc = "      \"const\": true"]
+#[doc = "    },"]
+#[doc = "    \"supportsPaymentCode\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7HardwareProfilePaymentScanner {
+    pub required: bool,
+    #[serde(rename = "supportsPaymentCode")]
+    pub supports_payment_code: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareProfileVision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"required\","]
+#[doc = "    \"supportsRecommendations\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"required\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"supportsRecommendations\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7HardwareProfileVision {
+    pub required: bool,
+    #[serde(rename = "supportsRecommendations")]
+    pub supports_recommendations: bool,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareSlotTopology`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"identity\","]
+#[doc = "    \"version\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"identity\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"version\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7HardwareSlotTopology {
+    pub identity: RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity,
+    pub version: RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyIdentity
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype7HardwareSlotTopologyVersion
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7Machine`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"code\","]
+#[doc = "    \"id\","]
+#[doc = "    \"locationLabel\","]
+#[doc = "    \"name\","]
+#[doc = "    \"status\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"code\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 64,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"id\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"locationLabel\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"name\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"status\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"online\","]
+#[doc = "        \"offline\","]
+#[doc = "        \"maintenance\","]
+#[doc = "        \"disabled\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7Machine {
+    pub code: RuntimeConfigurationContractSubtype7MachineCode,
+    pub id: ::uuid::Uuid,
+    #[serde(rename = "locationLabel")]
+    pub location_label: ::std::option::Option<::std::string::String>,
+    pub name: RuntimeConfigurationContractSubtype7MachineName,
+    pub status: RuntimeConfigurationContractSubtype7MachineStatus,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MachineCode`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 64,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7MachineCode(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7MachineCode {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7MachineCode>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7MachineCode) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7MachineCode {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 64usize {
+            return Err("longer than 64 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7MachineCode {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineCode
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype7MachineCode {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MachineName`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7MachineName(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7MachineName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7MachineName>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7MachineName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7MachineName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7MachineName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineName
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineName
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype7MachineName {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MachineStatus`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"online\","]
+#[doc = "    \"offline\","]
+#[doc = "    \"maintenance\","]
+#[doc = "    \"disabled\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum RuntimeConfigurationContractSubtype7MachineStatus {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "maintenance")]
+    Maintenance,
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+impl ::std::fmt::Display for RuntimeConfigurationContractSubtype7MachineStatus {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Online => f.write_str("online"),
+            Self::Offline => f.write_str("offline"),
+            Self::Maintenance => f.write_str("maintenance"),
+            Self::Disabled => f.write_str("disabled"),
+        }
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7MachineStatus {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "online" => Ok(Self::Online),
+            "offline" => Ok(Self::Offline),
+            "maintenance" => Ok(Self::Maintenance),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7MachineStatus {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineStatus
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7MachineStatus
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7Metadata`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"claimCodeId\","]
+#[doc = "    \"claimedAt\","]
+#[doc = "    \"profileRevision\","]
+#[doc = "    \"profileVersion\","]
+#[doc = "    \"serverTime\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"claimCodeId\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"claimedAt\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    },"]
+#[doc = "    \"profileRevision\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"profileVersion\": {"]
+#[doc = "      \"type\": \"number\","]
+#[doc = "      \"const\": 1"]
+#[doc = "    },"]
+#[doc = "    \"serverTime\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7Metadata {
+    #[serde(rename = "claimCodeId")]
+    pub claim_code_id: ::uuid::Uuid,
+    #[serde(rename = "claimedAt")]
+    pub claimed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    #[serde(rename = "profileRevision")]
+    pub profile_revision: ::std::num::NonZeroU64,
+    #[serde(rename = "profileVersion")]
+    pub profile_version: f64,
+    #[serde(rename = "serverTime")]
+    pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MqttConnection`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"clientId\","]
+#[doc = "    \"url\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"clientId\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"url\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"username\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7MqttConnection {
+    #[serde(rename = "clientId")]
+    pub client_id: RuntimeConfigurationContractSubtype7MqttConnectionClientId,
+    pub url: ::std::string::String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub username: ::std::option::Option<RuntimeConfigurationContractSubtype7MqttConnectionUsername>,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MqttConnectionClientId`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7MqttConnectionClientId(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7MqttConnectionClientId {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7MqttConnectionClientId>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7MqttConnectionClientId) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7MqttConnectionClientId {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7MqttConnectionClientId {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7MqttConnectionClientId
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7MqttConnectionClientId
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype7MqttConnectionClientId {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7MqttConnectionUsername`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7MqttConnectionUsername(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7MqttConnectionUsername {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7MqttConnectionUsername>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7MqttConnectionUsername) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7MqttConnectionUsername {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype7MqttConnectionUsername {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7MqttConnectionUsername
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7MqttConnectionUsername
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype7MqttConnectionUsername {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7PaymentCapability`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"paymentCodeEnabled\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"qrCodeEnabled\","]
+#[doc = "    \"serverTime\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"paymentCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"production\""]
+#[doc = "    },"]
+#[doc = "    \"qrCodeEnabled\": {"]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"serverTime\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"date-time\","]
+#[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z))$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7PaymentCapability {
+    #[serde(rename = "paymentCodeEnabled")]
+    pub payment_code_enabled: bool,
+    pub profile: ::std::string::String,
+    #[serde(rename = "qrCodeEnabled")]
+    pub qr_code_enabled: bool,
+    #[serde(rename = "serverTime")]
+    pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7RuntimeEndpoints`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"apiBasePath\","]
+#[doc = "    \"machineApiBasePath\","]
+#[doc = "    \"machineAuthTokenPath\","]
+#[doc = "    \"mqttTopicPrefix\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"apiBasePath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"/api\""]
+#[doc = "    },"]
+#[doc = "    \"machineApiBasePath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "    },"]
+#[doc = "    \"machineAuthTokenPath\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"/api/machine-auth/token\""]
+#[doc = "    },"]
+#[doc = "    \"mqttTopicPrefix\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype7RuntimeEndpoints {
+    #[serde(rename = "apiBasePath")]
+    pub api_base_path: ::std::string::String,
+    #[serde(rename = "machineApiBasePath")]
+    pub machine_api_base_path:
+        RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath,
+    #[serde(rename = "machineAuthTokenPath")]
+    pub machine_auth_token_path: ::std::string::String,
+    #[serde(rename = "mqttTopicPrefix")]
+    pub mqtt_topic_prefix: RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix,
+}
+#[doc = "`RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^\\/api\\/machines\\/[^/]+$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^\\/api\\/machines\\/[^/]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMachineApiBasePath
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^vem\\/machines\\/[^/]+$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^vem\\/machines\\/[^/]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for RuntimeConfigurationContractSubtype7RuntimeEndpointsMqttTopicPrefix
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
 }

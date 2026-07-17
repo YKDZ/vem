@@ -71,14 +71,6 @@ type EnabledChannelProviderSetup = {
   environments: Array<"sandbox" | "production">;
 };
 
-type HeartbeatSaleReadinessMethod = {
-  method: string;
-  optionKey: string | null;
-  providerCode: string | null;
-  ready: boolean;
-  disabledReason: string | null;
-};
-
 function readHeartbeatStringField(
   heartbeat: LatestMachineHeartbeat,
   field: string,
@@ -122,31 +114,11 @@ function readBooleanFromRecord(
   return typeof value === "boolean" ? value : null;
 }
 
-function recordFromObject(value: object): Record<string, unknown> {
-  const record: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    record[key] = Reflect.get(value, key);
-  }
-  return record;
-}
-
 function isPaymentCodeScannerReady(heartbeat: LatestMachineHeartbeat): boolean {
   const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
   const status = readStringFromRecord(scannerHealth, "status");
   const online = readBooleanFromRecord(scannerHealth, "online");
   return status === "ready" || status === "online" || online === true;
-}
-
-function readHeartbeatSaleReadinessComponent(
-  heartbeat: LatestMachineHeartbeat,
-  componentName: string,
-): Record<string, unknown> | null {
-  const saleReadiness = readHeartbeatRecordField(heartbeat, "saleReadiness");
-  const components = saleReadiness?.["components"];
-  if (typeof components !== "object" || components === null) return null;
-  const component: unknown = Reflect.get(components, componentName);
-  if (typeof component !== "object" || component === null) return null;
-  return recordFromObject(component);
 }
 
 function parsePaymentChannelKey(
@@ -158,59 +130,6 @@ function parsePaymentChannelKey(
   }
   if (channelKey === "qr_code:wechat_pay") return ["qr_code", "wechat_pay"];
   return ["payment_code", "wechat_pay"];
-}
-
-function isPaymentCodeLocallyReady(
-  heartbeat: LatestMachineHeartbeat,
-  methods: HeartbeatSaleReadinessMethod[],
-): boolean {
-  const scannerCapability = readHeartbeatSaleReadinessComponent(
-    heartbeat,
-    "scannerCapability",
-  );
-  const scannerCapabilityReady = readBooleanFromRecord(
-    scannerCapability,
-    "ready",
-  );
-  return (
-    methods.some((item) => item.method === "payment_code" && item.ready) ||
-    scannerCapabilityReady === true ||
-    isPaymentCodeScannerReady(heartbeat)
-  );
-}
-
-function readHeartbeatSaleReadinessMethods(
-  heartbeat: LatestMachineHeartbeat,
-): HeartbeatSaleReadinessMethod[] {
-  const saleReadiness = readHeartbeatRecordField(heartbeat, "saleReadiness");
-  const components = saleReadiness?.["components"];
-  if (typeof components !== "object" || components === null) return [];
-  const paymentOptions = Reflect.get(components, "paymentOptions");
-  if (typeof paymentOptions !== "object" || paymentOptions === null) return [];
-  const methods = Reflect.get(paymentOptions, "methods");
-  if (!Array.isArray(methods)) return [];
-
-  return methods.flatMap((item): HeartbeatSaleReadinessMethod[] => {
-    if (typeof item !== "object" || item === null) return [];
-    const method = Reflect.get(item, "method");
-    const ready = Reflect.get(item, "ready");
-    if (typeof method !== "string" || typeof ready !== "boolean") return [];
-    const optionKey = Reflect.get(item, "optionKey");
-    const providerCode = Reflect.get(item, "providerCode");
-    const disabledReason = Reflect.get(item, "disabledReason");
-    return [
-      {
-        method,
-        ready,
-        optionKey: typeof optionKey === "string" ? optionKey : null,
-        providerCode: typeof providerCode === "string" ? providerCode : null,
-        disabledReason:
-          typeof disabledReason === "string" && disabledReason.trim().length > 0
-            ? disabledReason
-            : null,
-      },
-    ];
-  });
 }
 
 function hasNonEmptyString(
@@ -456,35 +375,9 @@ export class PaymentOpsService {
     const hasPaymentCodeOption = options.options.some(
       (item) => item.method === "payment_code",
     );
-    const heartbeatPaymentMethods =
-      readHeartbeatSaleReadinessMethods(latestHeartbeat);
-    const paymentCodeLocallyReady = isPaymentCodeLocallyReady(
-      latestHeartbeat,
-      heartbeatPaymentMethods,
-    );
-    const heartbeatMethodsByOptionKey = new Map(
-      heartbeatPaymentMethods
-        .filter((item) => item.optionKey !== null)
-        .map((item) => [item.optionKey, item]),
-    );
-    const heartbeatMethodsByChannel = new Map(
-      heartbeatPaymentMethods
-        .filter((item) => item.providerCode !== null)
-        .map((item) => [`${item.method}:${item.providerCode}`, item]),
-    );
-    const locallyAnnotatedOptions = options.options.map((item) => {
-      const localEvidence =
-        heartbeatMethodsByOptionKey.get(item.optionKey) ??
-        heartbeatMethodsByChannel.get(`${item.method}:${item.providerCode}`);
-      if (!localEvidence || localEvidence.ready) return item;
-      return {
-        ...item,
-        disabled: true,
-        disabledReason: localEvidence.disabledReason ?? item.disabledReason,
-      };
-    });
+    const paymentCodeLocallyReady = isPaymentCodeScannerReady(latestHeartbeat);
     const availableProviders = withRecommendedPaymentOptions(
-      locallyAnnotatedOptions.filter((item) => {
+      options.options.filter((item) => {
         if (item.disabled) return false;
         return item.method !== "payment_code" || paymentCodeLocallyReady;
       }),
@@ -524,12 +417,7 @@ export class PaymentOpsService {
     checks.push(this.checkProductionDispensePath(latestHeartbeat));
 
     if (hasPaymentCodeOption) {
-      checks.push(
-        this.checkPaymentCodeScannerRuntime(
-          latestHeartbeat,
-          heartbeatPaymentMethods,
-        ),
-      );
+      checks.push(this.checkPaymentCodeScannerRuntime(latestHeartbeat));
     }
 
     const criticalFailed = checks.some(
@@ -699,32 +587,14 @@ export class PaymentOpsService {
 
   private checkPaymentCodeScannerRuntime(
     heartbeat: LatestMachineHeartbeat,
-    heartbeatMethods: HeartbeatSaleReadinessMethod[],
   ): PaymentOpsCheck {
     const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
     const status = readStringFromRecord(scannerHealth, "status");
     const message = readStringFromRecord(scannerHealth, "message");
     const online = readBooleanFromRecord(scannerHealth, "online");
-    const scannerCapability = readHeartbeatSaleReadinessComponent(
-      heartbeat,
-      "scannerCapability",
-    );
-    const capabilityReady = readBooleanFromRecord(scannerCapability, "ready");
-    const capabilityCode = readStringFromRecord(scannerCapability, "code");
-    const capabilityMessage = readStringFromRecord(
-      scannerCapability,
-      "message",
-    );
-    const methodEvidence = heartbeatMethods.find(
-      (item) => item.method === "payment_code",
-    );
-    const ready = isPaymentCodeLocallyReady(heartbeat, heartbeatMethods);
-    const reported =
-      scannerHealth !== null ||
-      scannerCapability !== null ||
-      methodEvidence !== undefined;
-    const disabledReason =
-      methodEvidence?.disabledReason ?? capabilityMessage ?? message;
+    const ready = isPaymentCodeScannerReady(heartbeat);
+    const reported = scannerHealth !== null;
+    const disabledReason = message;
 
     if (ready) {
       return {
@@ -736,11 +606,6 @@ export class PaymentOpsService {
           status,
           online,
           message,
-          capabilityReady,
-          capabilityCode,
-          capabilityMessage,
-          methodReady: methodEvidence?.ready ?? null,
-          methodDisabledReason: methodEvidence?.disabledReason ?? null,
         },
       };
     }
@@ -760,11 +625,6 @@ export class PaymentOpsService {
         status,
         online,
         message,
-        capabilityReady,
-        capabilityCode,
-        capabilityMessage,
-        methodReady: methodEvidence?.ready ?? null,
-        methodDisabledReason: methodEvidence?.disabledReason ?? null,
       },
     };
   }

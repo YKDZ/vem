@@ -34,6 +34,8 @@ use crate::{
 };
 
 const PLATFORM_STOCK_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+const PROFILE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const SALE_START_CAPABILITY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct ConsoleRunConfig {
@@ -215,6 +217,7 @@ async fn run_console_cycle(
         events_tx.subscribe(),
         ipc_ctx.ui.status_cache.clone(),
         Some(stop_token.clone()),
+        Some(ipc_ctx.clone()),
     ));
     let payment_watcher = tokio::spawn(run_payment_code_watcher(
         rx_raw,
@@ -227,13 +230,18 @@ async fn run_console_cycle(
         credentials
             .as_ref()
             .map(|value| value.machine_secret.clone()),
-        backend,
+        backend.clone(),
         stop_token.clone(),
     ));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
         hardware.clone(),
         state.clone(),
         ipc_ctx.ui.status_cache.clone(),
+        Some(ipc_ctx.clone()),
+        stop_token.clone(),
+    ));
+    let sale_start_capability = tokio::spawn(run_sale_start_capability_polling(
+        ipc_ctx.clone(),
         stop_token.clone(),
     ));
     let binding_watch = tokio::spawn(run_device_binding_watch(
@@ -259,15 +267,22 @@ async fn run_console_cycle(
         runtime_sources.clone(),
         state.clone(),
         ipc_ctx.ui.backend.clone(),
+        ipc_ctx.clone(),
         profile
             .as_ref()
             .map(|value| value.profile.machine.code.to_string()),
         stop_token.clone(),
     ));
-    let vision_task = if profile
-        .as_ref()
-        .is_some_and(|value| value.profile.hardware_profile.vision.required)
-    {
+    let profile_refresh = tokio::spawn(run_provisioning_profile_refresh_watcher(
+        runtime_sources.clone(),
+        backend.clone(),
+        profile
+            .as_ref()
+            .map(|value| value.profile.machine.code.to_string()),
+        events_tx.clone(),
+        stop_token.clone(),
+    ));
+    let vision_task = if profile.as_ref().is_some_and(vision_profile_enabled) {
         let vision = VisionSupervisor::new(
             profile
                 .as_ref()
@@ -296,9 +311,11 @@ async fn run_console_cycle(
         cache_updates,
         payment_watcher,
         hardware_health,
+        sale_start_capability,
         binding_watch,
         stock_upload,
         stock_sync,
+        profile_refresh,
         vision_task,
         ipc_task,
     ];
@@ -329,6 +346,66 @@ async fn run_console_cycle(
         let _ = task.await;
     }
     Ok(exit)
+}
+
+fn vision_profile_enabled(profile: &daemon_ipc_contracts::ProvisioningProfileCache) -> bool {
+    let vision = &profile.profile.hardware_profile.vision;
+    vision.required || vision.supports_recommendations
+}
+
+pub(crate) async fn refresh_provisioning_profile_once(
+    runtime_sources: &RuntimeSources,
+    backend: &BackendClient,
+    machine_code: &str,
+) -> Result<bool, String> {
+    let profile = match backend.get_provisioning_profile(machine_code).await {
+        Ok(profile) => profile,
+        Err(error) => {
+            runtime_sources
+                .clean_runtime_configuration()
+                .mark_profile_refresh_degraded(&error)
+                .await;
+            return Err(error);
+        }
+    };
+    runtime_sources
+        .clean_runtime_configuration()
+        .accept_refreshed_profile(&profile)
+        .await
+        .map(|accepted| accepted.is_some())
+}
+
+async fn run_provisioning_profile_refresh_watcher(
+    runtime_sources: Arc<RuntimeSources>,
+    backend: Arc<BackendClient>,
+    machine_code: Option<String>,
+    events: broadcast::Sender<DaemonEvent>,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let Some(machine_code) = machine_code else {
+        shutdown.cancelled().await;
+        return Ok(());
+    };
+    let mut interval = time::interval(PROFILE_REFRESH_INTERVAL);
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => {}
+        }
+        match refresh_provisioning_profile_once(&runtime_sources, &backend, &machine_code).await {
+            Ok(true) => {
+                let _ = events.send(DaemonEvent::RuntimeReconfigureRequested {
+                    event_id: uuid::Uuid::new_v4().simple().to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                    reason: "provisioning_profile_refreshed".to_string(),
+                    machine_code: Some(machine_code.clone()),
+                });
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("provisioning profile refresh degraded: {error}"),
+        }
+    }
 }
 
 fn resolve_bound_port(
@@ -639,6 +716,7 @@ async fn run_platform_stock_sync_watcher(
     runtime_sources: Arc<RuntimeSources>,
     state: LocalStateStore,
     backend: Arc<BackendClient>,
+    ipc_context: IpcContext,
     machine_code: Option<String>,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
@@ -646,11 +724,11 @@ async fn run_platform_stock_sync_watcher(
         return Ok(());
     };
     loop {
-        if let Err(error) =
-            sync_platform_planogram_and_stock(&runtime_sources, &state, &backend, &machine_code)
-                .await
+        match sync_platform_planogram_and_stock(&runtime_sources, &state, &backend, &machine_code)
+            .await
         {
-            eprintln!("platform stock sync failed: {error}");
+            Ok(()) => ipc::refresh_sale_start_capability(&ipc_context).await,
+            Err(error) => eprintln!("platform stock sync failed: {error}"),
         }
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
@@ -743,23 +821,49 @@ async fn run_hardware_health_watcher(
     hardware: HardwareSupervisor,
     state: LocalStateStore,
     status_cache: ipc::RuntimeStatusCache,
+    sale_start_context: Option<IpcContext>,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     loop {
         let status = hardware.self_check().await;
-        if let Some(code) =
+        let lock_changed = if let Some(code) =
             crate::state::store::classify_whole_machine_hardware_status_fault(&status)
         {
-            let _ = state
+            state
                 .record_whole_machine_hardware_fault_lock(
                     "hardware_health_watcher",
                     &status.message,
                     Some(code),
                 )
-                .await;
+                .await
+                .is_ok()
+        } else {
+            false
+        };
+        let changed = {
+            let mut cached = status_cache.hardware.write().await;
+            let changed = cached.online != status.online || cached.message != status.message;
+            *cached = status;
+            changed
+        };
+        if (changed || lock_changed) && sale_start_context.is_some() {
+            ipc::refresh_sale_start_capability(sale_start_context.as_ref().expect("context")).await;
         }
-        *status_cache.hardware.write().await = status;
         tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = time::sleep(std::time::Duration::from_secs(10)) => {} }
+    }
+}
+
+async fn run_sale_start_capability_polling(
+    ctx: IpcContext,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let mut interval = time::interval(SALE_START_CAPABILITY_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => ipc::refresh_sale_start_capability(&ctx).await,
+        }
     }
 }
 
@@ -767,8 +871,15 @@ async fn cache_daemon_events(
     mut events: broadcast::Receiver<DaemonEvent>,
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
+    sale_start_context: Option<IpcContext>,
 ) -> Result<(), String> {
     while let Ok(event) = events.recv().await {
+        let capability_input_changed = matches!(
+            &event,
+            DaemonEvent::MqttChanged { .. }
+                | DaemonEvent::ScannerHealthChanged { .. }
+                | DaemonEvent::RuntimeReconfigureRequested { .. }
+        );
         match event {
             DaemonEvent::MqttChanged {
                 connected,
@@ -806,6 +917,11 @@ async fn cache_daemon_events(
             }
             _ => {}
         }
+        if capability_input_changed {
+            if let Some(context) = sale_start_context.as_ref() {
+                ipc::refresh_sale_start_capability(context).await;
+            }
+        }
     }
     Ok(())
 }
@@ -842,6 +958,139 @@ async fn wait_for_local_signal() -> Result<(), String> {
     use tokio::signal::unix::{self, SignalKind};
     let mut terminate = unix::signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
     tokio::select! { _ = tokio::signal::ctrl_c() => Ok(()), _ = terminate.recv() => Ok(()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{num::NonZeroU64, sync::Arc};
+
+    use wiremock::{
+        matchers::{header, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use super::refresh_provisioning_profile_once;
+    use crate::{
+        backend::BackendClient, runtime_configuration::RuntimeSources, secret::InMemorySecretStore,
+    };
+
+    #[tokio::test]
+    async fn production_refresh_accepts_newer_profile_and_retains_it_when_refresh_degrades() {
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("VEM").join("vending-daemon");
+        tokio::fs::create_dir_all(temp.path().join("VEM"))
+            .await
+            .expect("runtime root");
+        tokio::fs::write(
+            temp.path().join("VEM").join("runtime-bootstrap.json"),
+            r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+        )
+        .await
+        .expect("bootstrap");
+        let sources = RuntimeSources::new(data_dir, Arc::new(InMemorySecretStore::default()));
+        let accepted: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(test_profile()).expect("accepted profile");
+        let cache = sources
+            .clean_runtime_configuration()
+            .accept_profile(&accepted)
+            .await
+            .expect("accept profile");
+
+        let mut refreshed_value = serde_json::to_value(&cache.profile).expect("profile snapshot");
+        refreshed_value["machine"]["name"] = serde_json::json!("Refreshed machine");
+        refreshed_value["metadata"]["profileRevision"] = serde_json::json!(2);
+        let refreshed: daemon_ipc_contracts::MachineProvisioningProfileSnapshot =
+            serde_json::from_value(refreshed_value).expect("refreshed profile");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-REFRESH-01/provisioning-profile"))
+            .and(header("authorization", "Bearer refresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&refreshed))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = BackendClient::new(server.uri());
+        backend.set_access_token_for_tests("refresh-token").await;
+
+        assert!(
+            refresh_provisioning_profile_once(&sources, &backend, "VEM-REFRESH-01")
+                .await
+                .expect("valid refresh")
+        );
+        assert_eq!(
+            sources
+                .require_profile()
+                .await
+                .expect("new profile")
+                .profile
+                .metadata
+                .profile_revision,
+            NonZeroU64::new(2).expect("revision")
+        );
+
+        let unavailable = BackendClient::new(MockServer::start().await.uri());
+        unavailable
+            .set_access_token_for_tests("refresh-token")
+            .await;
+        assert!(
+            refresh_provisioning_profile_once(&sources, &unavailable, "VEM-REFRESH-01")
+                .await
+                .is_err()
+        );
+
+        let mut invalid_value = serde_json::to_value(&refreshed).expect("invalid profile source");
+        invalid_value["metadata"]["profileRevision"] = serde_json::json!(3);
+        invalid_value["hardwareModel"] = serde_json::json!("different-hardware");
+        let invalid: daemon_ipc_contracts::MachineProvisioningProfileSnapshot =
+            serde_json::from_value(invalid_value).expect("contract-valid invalid hardware");
+        let invalid_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-REFRESH-01/provisioning-profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(invalid))
+            .mount(&invalid_server)
+            .await;
+        let invalid_backend = BackendClient::new(invalid_server.uri());
+        invalid_backend
+            .set_access_token_for_tests("refresh-token")
+            .await;
+        assert!(
+            refresh_provisioning_profile_once(&sources, &invalid_backend, "VEM-REFRESH-01")
+                .await
+                .is_err()
+        );
+
+        let retained = sources.require_profile().await.expect("last known good");
+        assert_eq!(retained.profile.metadata.profile_revision.get(), 2);
+        assert_eq!(
+            retained.profile.machine.name.to_string(),
+            "Refreshed machine"
+        );
+        assert_eq!(
+            sources
+                .clean_runtime_configuration()
+                .effective_projection()
+                .await
+                .expect("projection")
+                .profile_refresh
+                .status
+                .to_string(),
+            "degraded"
+        );
+    }
+
+    fn test_profile() -> serde_json::Value {
+        serde_json::json!({
+            "machine": { "id": "550e8400-e29b-41d4-a716-446655440001", "code": "VEM-REFRESH-01", "name": "Machine", "status": "offline", "locationLabel": null },
+            "credentials": { "machineSecret": "m".repeat(32), "machineSecretVersion": 1, "mqttSigningSecret": "s".repeat(32), "mqttConnection": { "url": "mqtt://service.example:1883", "clientId": "vem-machine-VEM-REFRESH-01", "username": "machine", "password": "mqtt-password" } },
+            "apiBaseUrl": "https://service.example/api",
+            "runtimeEndpoints": { "apiBasePath": "/api", "machineAuthTokenPath": "/api/machine-auth/token", "machineApiBasePath": "/api/machines/VEM-REFRESH-01", "mqttTopicPrefix": "vem/machines/VEM-REFRESH-01" },
+            "hardwareProfile": { "profile": "production", "controller": { "required": true, "protocol": "vem-vending-controller" }, "paymentScanner": { "required": true, "supportsPaymentCode": true }, "vision": { "required": false, "supportsRecommendations": true } },
+            "hardwareModel": "vem-prod-24",
+            "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "v1" },
+            "paymentCapability": { "profile": "production", "qrCodeEnabled": true, "paymentCodeEnabled": true, "serverTime": "2026-07-17T00:00:00Z" },
+            "metadata": { "profileVersion": 1, "profileRevision": 1, "claimCodeId": "550e8400-e29b-41d4-a716-446655440002", "claimedAt": "2026-07-17T00:00:00Z", "serverTime": "2026-07-17T00:00:00Z" }
+        })
+    }
 }
 
 #[cfg(not(unix))]

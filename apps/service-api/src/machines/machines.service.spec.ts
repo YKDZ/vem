@@ -31,11 +31,8 @@ import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-enviro
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
 
-const maintenancePublicKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 const claimRequest = (claimCode: string) => ({
   claimCode,
-  maintenancePublicKey,
-  provisioningProfile: "production" as const,
 });
 
 describe("MachinesService", () => {
@@ -198,10 +195,6 @@ describe("MachinesService", () => {
                       errorCode: "JAMMED",
                       createdAt: "2026-05-05T12:00:01.000Z",
                     },
-                    saleReadiness: {
-                      state: "locked",
-                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -237,10 +230,6 @@ describe("MachinesService", () => {
           network: "online",
           mqttConnected: true,
           hardwareStatus: "faulted",
-          saleReadiness: {
-            state: "locked",
-            blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-          },
           wholeMachineMaintenanceLock: expect.objectContaining({
             code: "WHOLE_MACHINE_HARDWARE_FAULT",
             slotCode: "A1",
@@ -347,10 +336,6 @@ describe("MachinesService", () => {
                       errorCode: "JAMMED",
                       createdAt: "2026-05-05T12:00:01.000Z",
                     },
-                    saleReadiness: {
-                      state: "locked",
-                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -395,10 +380,6 @@ describe("MachinesService", () => {
         network: "online",
         mqttConnected: true,
         hardwareStatus: "faulted",
-        saleReadiness: {
-          state: "locked",
-          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-        },
         wholeMachineMaintenanceLock: expect.objectContaining({
           code: "WHOLE_MACHINE_HARDWARE_FAULT",
           slotCode: "A1",
@@ -538,10 +519,6 @@ describe("MachinesService", () => {
                       status: "ready",
                       message: "real lower-controller serial path ready",
                     },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -648,10 +625,6 @@ describe("MachinesService", () => {
                     mqttConnected: true,
                     scannerHealth: { status: "online" },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -734,10 +707,6 @@ describe("MachinesService", () => {
                     hardwarePortPath: "COM5",
                     hardwareStatus: "ok",
                     scannerHealth: { status: "online" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -817,15 +786,9 @@ describe("MachinesService", () => {
                     network: "online",
                     mqttConnected: true,
                     scannerHealth: { status: "online" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                      components: {
-                        productionDispensePath: {
-                          status: "ready",
-                          message: "real lower-controller serial path ready",
-                        },
-                      },
+                    productionDispensePath: {
+                      status: "ready",
+                      message: "real lower-controller serial path ready",
                     },
                     physicalStockAttestation: {
                       status: "ready",
@@ -920,10 +883,6 @@ describe("MachinesService", () => {
                       message: "scanner ready",
                     },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -1013,10 +972,6 @@ describe("MachinesService", () => {
                     mqttConnected: true,
                     scannerHealth: { online: true },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -1097,10 +1052,6 @@ describe("MachinesService", () => {
                     mqttConnected: true,
                     scannerHealth: { online: true },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -1184,10 +1135,6 @@ describe("MachinesService", () => {
                       message: "scanner offline",
                     },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -1274,10 +1221,6 @@ describe("MachinesService", () => {
                     hardwarePortPath: "COM5",
                     hardwareStatus: "ok",
                     scannerHealth: { status: "online" },
-                    saleReadiness: {
-                      state: "locked",
-                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-                    },
                     wholeMachineMaintenanceLock: {
                       code: "WHOLE_MACHINE_HARDWARE_FAULT",
                       message: "pickup platform blocked",
@@ -1305,12 +1248,6 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.status).toBe("blocked");
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          kind: "machine_sale_readiness",
-          reasonCode: "blocked",
-          status: "blocked",
-          actionCode: "resolve_machine_sale_blockers",
-        }),
         expect.objectContaining({
           kind: "payment_readiness",
           reasonCode: "no_production_provider",
@@ -1365,10 +1302,6 @@ describe("MachinesService", () => {
                     hardwarePortPath: "COM5",
                     hardwareStatus: "ok",
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -1457,10 +1390,6 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     scannerHealth: { status: "online" },
                     productionDispensePath: { status: "ready" },
-                    saleReadiness: {
-                      state: "restored",
-                      blockingCodes: [],
-                    },
                     physicalStockAttestation: {
                       status: "ready",
                       planogramVersion: "PLAN-1",
@@ -3467,24 +3396,13 @@ describe("MachinesService claim code lifecycle", () => {
     vi.useRealTimers();
   });
 
-  it("rejects malformed maintenance keys before claim lookup", async () => {
+  it("rejects retired claim fields before claim lookup", async () => {
     await expect(
       service.claimMachine({
         claimCode: "ABCD-2345",
         maintenancePublicKey: "not-a-wireguard-key",
-        provisioningProfile: "production",
       } as never),
     ).rejects.toThrow(BadRequestException);
-    expect(mockDb.select).not.toHaveBeenCalled();
-  });
-
-  it("rejects a production/testbed profile mismatch before claim lookup", async () => {
-    await expect(
-      service.claimMachine({
-        ...claimRequest("ABCD-2345"),
-        provisioningProfile: "testbed",
-      }),
-    ).rejects.toThrow(ConflictException);
     expect(mockDb.select).not.toHaveBeenCalled();
   });
 
@@ -3526,69 +3444,7 @@ describe("MachinesService claim code lifecycle", () => {
     };
   }
 
-  it("requires explicit rotation intent for reclaim but rejects it for first claim", async () => {
-    const selectCandidate = (purpose: "first_claim" | "reclaim") => ({
-      from: () => ({
-        innerJoin: () => ({
-          where: () => ({
-            limit: async () => [claimCandidate({ purpose })],
-          }),
-        }),
-      }),
-    });
-    mockDb.select
-      .mockReturnValueOnce(selectCandidate("reclaim"))
-      .mockReturnValueOnce(selectCandidate("first_claim"));
-
-    await expect(
-      service.claimMachine(claimRequest("ABCD-2345")),
-    ).rejects.toThrow("Machine reclaim requires maintenance identity rotation");
-    await expect(
-      service.claimMachine({
-        ...claimRequest("ABCD-2345"),
-        maintenanceRotation: "rotate",
-      }),
-    ).rejects.toThrow(
-      "Initial machine claim cannot rotate a maintenance identity",
-    );
-    expect(mockDb.transaction).not.toHaveBeenCalled();
-  });
-
-  function addMaintenanceMutationMocks(tx: Record<string, unknown>) {
-    const select = vi.fn();
-    const selectResult = (rows: unknown[]) => ({
-      from: () => ({
-        where: () => ({
-          limit: async () => rows,
-        }),
-      }),
-    });
-    select
-      .mockReturnValueOnce({
-        from: () => ({
-          where: async () => [
-            {
-              publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-              tunnelAddress: "10.91.0.1",
-            },
-          ],
-        }),
-      })
-      .mockReturnValueOnce(selectResult([]))
-      .mockReturnValueOnce({ from: () => Promise.resolve([]) });
-    tx.select = select;
-    tx.insert = vi.fn().mockReturnValue({
-      values: (values: unknown) => {
-        maintenancePeerInsertValues(values);
-        return {
-          onConflictDoNothing: () => ({
-            returning: async () => [
-              { publicKey: maintenancePublicKey, tunnelAddress: "10.91.16.1" },
-            ],
-          }),
-        };
-      },
-    });
+  function addClaimResponseMutationMock(tx: Record<string, unknown>) {
     (tx.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
       set: () => ({ where: async () => [] }),
     });
@@ -3628,6 +3484,7 @@ describe("MachinesService claim code lifecycle", () => {
         paymentScanner: { required: true as const, supportsPaymentCode: true },
         vision: { required: false, supportsRecommendations: true },
       },
+      hardwareModel: "vem-prod-24",
       hardwareSlotTopology: {
         identity: "vem-prod-24",
         version: "2026-06-adr0026",
@@ -3638,31 +3495,44 @@ describe("MachinesService claim code lifecycle", () => {
         paymentCodeEnabled: true,
         serverTime: claimCodeNow.toISOString(),
       },
-      provisioningProfile: "production" as const,
-      maintenance: {
-        publicKey: maintenancePublicKey,
-        tunnelAddress: "10.91.16.1",
-        address: "10.91.16.1/32",
-        endpoint: "relay.example:51820",
-        relay: {
-          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-          tunnelAddress: "10.91.0.1",
-          address: "10.91.0.1/32",
-        },
-        roleRoutes: {
-          relay: "10.91.0.1/32",
-          runner: "10.91.1.0/24",
-          maintainer: "10.91.3.0/24",
-        },
-      },
       metadata: {
         profileVersion: 1 as const,
+        profileRevision: 2,
         claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
         claimedAt: claimCodeNow.toISOString(),
         serverTime: claimCodeNow.toISOString(),
       },
     };
   }
+
+  it("returns the stable non-secret accepted profile snapshot for daemon refresh", async () => {
+    const encrypted = { v: 1, ciphertext: "encrypted-refresh-profile" };
+    const profile = replayProfile();
+    decryptClaimResponse.mockReturnValueOnce(profile);
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: async () => [{ encryptedProfile: encrypted }],
+          }),
+        }),
+      }),
+    });
+
+    const snapshot = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+
+    expect(snapshot).not.toHaveProperty("credentials");
+    expect(snapshot.mqttConnection).toEqual({
+      url: profile.credentials.mqttConnection.url,
+      clientId: profile.credentials.mqttConnection.clientId,
+      username: null,
+    });
+    expect(snapshot.metadata).toEqual(profile.metadata);
+    expect(snapshot.paymentCapability).toEqual(profile.paymentCapability);
+    expect(decryptClaimResponse).toHaveBeenCalledWith(encrypted);
+  });
 
   it("replays the atomically persisted response after an interrupted claim without allocating another identity", async () => {
     const encrypted = { v: 1, ciphertext: "encrypted-claim-response" };
@@ -3792,7 +3662,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
-    addMaintenanceMutationMocks(tx);
+    addClaimResponseMutationMock(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -3939,7 +3809,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
-    addMaintenanceMutationMocks(tx);
+    addClaimResponseMutationMock(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -3953,10 +3823,7 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const result = await service.claimMachine({
-      ...claimRequest("ABCD-2345"),
-      maintenanceRotation: "rotate",
-    });
+    const result = await service.claimMachine(claimRequest("ABCD-2345"));
 
     expect(result.credentials).toEqual(
       expect.objectContaining({
@@ -3968,20 +3835,11 @@ describe("MachinesService claim code lifecycle", () => {
       identity: "vem-prod-24",
       version: "2026-06-adr0026",
     });
-    expect(result.maintenance.reclaimExpiresAt).toBe(
-      "2026-06-08T16:35:00.000Z",
-    );
     expect(rotateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         secretHash: "scrypt:reclaim-machine-secret-hash",
         secretVersion: expect.anything(),
         credentialRevokedAt: null,
-      }),
-    );
-    expect(maintenancePeerInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: "pending_reclaim",
-        reclaimExpiresAt: new Date("2026-06-08T16:35:00.000Z"),
       }),
     );
     expect(auditRecord).toHaveBeenCalledWith(
@@ -3997,8 +3855,6 @@ describe("MachinesService claim code lifecycle", () => {
           state: "consumed",
           secretVersion: rotatedSecretVersion,
           claimedAt: "2026-06-08T16:30:00.000Z",
-          maintenancePeerState: "pending_reclaim",
-          reclaimExpiresAt: "2026-06-08T16:35:00.000Z",
         },
       },
       tx,
@@ -4107,7 +3963,7 @@ describe("MachinesService claim code lifecycle", () => {
         .mockReturnValueOnce({ set: consumeSet })
         .mockReturnValueOnce({ set: rotateSet }),
     };
-    addMaintenanceMutationMocks(tx);
+    addClaimResponseMutationMock(tx);
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
@@ -4121,10 +3977,7 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const profile = await service.claimMachine({
-      ...claimRequest("ABCD-2345"),
-      maintenanceRotation: "rotate",
-    });
+    const profile = await service.claimMachine(claimRequest("ABCD-2345"));
 
     expect(profile.credentials.machineSecret).toBe(newMachineSecret);
     expect(profile.credentials.mqttSigningSecret).toBe(newMqttSigningSecret);

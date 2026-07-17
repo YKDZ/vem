@@ -60,28 +60,6 @@ function evidenceStatus(
   return typeof value === "string" ? value : null;
 }
 
-function nestedEvidenceStatus(
-  payload: MachineHeartbeatStatusPayload | null | undefined,
-  field: string,
-  nestedField: string,
-  evidenceField: string,
-): string | null {
-  const nested = evidenceObject(payload, field)?.[nestedField];
-  if (typeof nested !== "object" || nested === null || Array.isArray(nested)) {
-    return null;
-  }
-  const evidence = Reflect.get(nested, evidenceField);
-  if (
-    typeof evidence !== "object" ||
-    evidence === null ||
-    Array.isArray(evidence)
-  ) {
-    return null;
-  }
-  const status = Reflect.get(evidence, "status");
-  return typeof status === "string" ? status : null;
-}
-
 function evidenceString(
   payload: MachineHeartbeatStatusPayload | null | undefined,
   field: string,
@@ -98,20 +76,6 @@ function evidenceBoolean(
 ): boolean | null {
   const value = evidenceObject(payload, field)?.[key];
   return typeof value === "boolean" ? value : null;
-}
-
-function saleReadinessState(
-  value: string | null,
-): "locked" | "blocked" | "restored" | null {
-  if (value === "locked" || value === "blocked" || value === "restored") {
-    return value;
-  }
-  return null;
-}
-
-function stringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string");
 }
 
 function nullableString(value: unknown): string | null {
@@ -142,14 +106,10 @@ export function evaluateProductionPilotReadiness(
   const hasProductionPaymentProvider = productionProviderCount > 0;
   const scannerStatus = evidenceStatus(payload, "scannerHealth");
   const scannerOnline = evidenceBoolean(payload, "scannerHealth", "online");
-  const productionDispensePathStatus =
-    evidenceStatus(payload, "productionDispensePath") ??
-    nestedEvidenceStatus(
-      payload,
-      "saleReadiness",
-      "components",
-      "productionDispensePath",
-    );
+  const productionDispensePathStatus = evidenceStatus(
+    payload,
+    "productionDispensePath",
+  );
   const physicalStockAttestationStatus = evidenceStatus(
     payload,
     "physicalStockAttestation",
@@ -177,13 +137,6 @@ export function evaluateProductionPilotReadiness(
   const managedMachineUpdateStatus = evidenceStatus(
     payload,
     "managedMachineUpdate",
-  );
-  const saleReadiness = evidenceObject(payload, "saleReadiness");
-  const currentSaleReadinessState = saleReadinessState(
-    evidenceString(payload, "saleReadiness", "state"),
-  );
-  const saleReadinessBlockingCodes = stringArray(
-    saleReadiness?.["blockingCodes"],
   );
   const maintenanceLock = evidenceObject(
     payload,
@@ -238,20 +191,6 @@ export function evaluateProductionPilotReadiness(
         lastSeenAt: input.machine.lastSeenAt
           ? input.machine.lastSeenAt.toISOString()
           : null,
-      },
-    }),
-    check({
-      kind: "machine_sale_readiness",
-      reasonCode:
-        currentSaleReadinessState === "restored" ? "restored" : "blocked",
-      status: currentSaleReadinessState === "restored" ? "ready" : "blocked",
-      actionCode:
-        currentSaleReadinessState === "restored"
-          ? "continue_daily_inspection"
-          : "resolve_machine_sale_blockers",
-      evidence: {
-        saleReadinessState: currentSaleReadinessState,
-        blockingCodes: saleReadinessBlockingCodes,
       },
     }),
     check({

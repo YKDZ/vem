@@ -12,7 +12,6 @@ const readyInput = {
     statusPayload: {
       scannerHealth: { status: "online" },
       productionDispensePath: { status: "ready" },
-      saleReadiness: { state: "restored" as const, blockingCodes: [] },
       physicalStockAttestation: { status: "ready", planogramVersion: "PLAN-1" },
       recoveryDrill: { status: "ready" },
       managedMachineUpdate: { status: "ready" },

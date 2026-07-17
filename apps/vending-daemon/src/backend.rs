@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::provisioning::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -379,8 +378,10 @@ impl BackendClient {
     pub async fn claim_machine_from_bootstrap(
         &self,
         claim_code: &str,
-    ) -> Result<MachineProvisioningProfile, String> {
-        let body = serde_json::json!({ "claimCode": claim_code });
+    ) -> Result<daemon_ipc_contracts::MachineProvisioningProfile, String> {
+        let body: daemon_ipc_contracts::MachineClaimRequest =
+            serde_json::from_value(serde_json::json!({ "claimCode": claim_code }))
+                .map_err(|error| format!("machine claim request invalid: {error}"))?;
         let response = self
             .client
             .post(self.endpoint("/machines/claim"))
@@ -407,6 +408,20 @@ impl BackendClient {
         let value = Self::unwrap_api_response(value)?;
         serde_json::from_value(value)
             .map_err(|error| format!("backend response parse failed: {error}"))
+    }
+
+    pub async fn get_provisioning_profile(
+        &self,
+        machine_code: &str,
+    ) -> Result<daemon_ipc_contracts::MachineProvisioningProfileSnapshot, String> {
+        self.request_json_typed(
+            reqwest::Method::GET,
+            &format!("/machines/{machine_code}/provisioning-profile"),
+            None,
+            true,
+        )
+        .await
+        .map_err(|error| format!("backend provisioning profile invalid: {error}"))
     }
 
     pub async fn create_order(
@@ -850,9 +865,9 @@ mod tests {
             .await
             .expect("profile");
 
-        assert_eq!(profile.machine.code, "VEM-TESTBED-WINVM-01");
+        assert_eq!(profile.machine.code.to_string(), "VEM-TESTBED-WINVM-01");
         assert_eq!(
-            profile.credentials.mqtt_connection.client_id,
+            profile.credentials.mqtt_connection.client_id.to_string(),
             "vem-machine-VEM-TESTBED-WINVM-01"
         );
         assert!(profile.payment_capability.payment_code_enabled);

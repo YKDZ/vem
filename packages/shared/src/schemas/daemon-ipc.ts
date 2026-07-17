@@ -31,6 +31,8 @@ export const daemonIpcReadyReasonSchema = z
   })
   .strict();
 
+export const daemonIpcOperationalReasonSchema = daemonIpcReadyReasonSchema;
+
 export const daemonIpcHealthSnapshotSchema = z
   .object({
     status: z.enum([
@@ -83,6 +85,39 @@ export const daemonIpcReadySnapshotSchema = z
       "result",
     ]),
     updatedAt: z.string(),
+  })
+  .strict();
+
+export const daemonIpcSaleStartCapabilityPaymentOptionSchema = z
+  .object({
+    optionKey: z.string(),
+    providerCode: z.string(),
+    method: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    icon: z.string(),
+    recommended: z.boolean(),
+    ready: z.boolean(),
+    disabledReason: z.string().nullable(),
+  })
+  .strict();
+
+export const daemonIpcSaleStartCapabilitySnapshotSchema = z
+  .object({
+    generation: z.string().min(1),
+    revision: z.number().int().positive(),
+    observedAt: z.string(),
+    canStartSale: z.boolean(),
+    blockers: z.array(daemonIpcOperationalReasonSchema),
+    degradations: z.array(daemonIpcOperationalReasonSchema),
+    paymentOptions: z
+      .object({
+        ready: z.boolean(),
+        defaultOptionKey: z.string().nullable(),
+        defaultProviderCode: z.string().nullable(),
+        options: z.array(daemonIpcSaleStartCapabilityPaymentOptionSchema),
+      })
+      .strict(),
   })
   .strict();
 
@@ -369,6 +404,7 @@ const daemonIpcKnownEventEnvelopeSchema = daemonIpcEventEnvelopeSchema.strict();
 export const daemonIpcKnownEventNotificationTypeSchema = z.enum([
   "health_changed",
   "ready_changed",
+  "sale_start_capability_changed",
   "scanner_health_changed",
   "scanner_code",
   "transaction_changed",
@@ -395,6 +431,15 @@ export const daemonIpcReadyChangedEventSchema =
     .extend({
       type: z.literal("ready_changed"),
       snapshot: daemonIpcReadySnapshotSchema,
+    })
+    .strict();
+
+export const daemonIpcSaleStartCapabilityChangedEventSchema =
+  daemonIpcKnownEventEnvelopeSchema
+    .extend({
+      type: z.literal("sale_start_capability_changed"),
+      generation: z.string().min(1),
+      revision: z.number().int().positive(),
     })
     .strict();
 
@@ -466,6 +511,7 @@ export const daemonIpcKnownEventNotificationSchema = z.discriminatedUnion(
   [
     daemonIpcHealthChangedEventSchema,
     daemonIpcReadyChangedEventSchema,
+    daemonIpcSaleStartCapabilityChangedEventSchema,
     daemonIpcScannerHealthChangedEventSchema,
     daemonIpcScannerCodeEventSchema,
     daemonIpcTransactionChangedEventSchema,
@@ -754,6 +800,19 @@ export function exportDaemonIpcScannerStatusJsonSchema(): DaemonIpcJsonSchemaDoc
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     title: "ScannerRuntimeStatus",
+    ...root,
+  };
+}
+
+export function exportDaemonIpcSaleStartCapabilityJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "SaleStartCapabilitySnapshot",
+    daemonIpcSaleStartCapabilitySnapshotSchema,
+  );
+
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "SaleStartCapabilitySnapshot",
     ...root,
   };
 }

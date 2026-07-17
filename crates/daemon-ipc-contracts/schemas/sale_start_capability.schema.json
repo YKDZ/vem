@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SaleStartCapabilitySnapshot",
+  "type": "object",
+  "properties": {
+    "generation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "observedAt": {
+      "type": "string"
+    },
+    "canStartSale": {
+      "type": "boolean"
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["code", "component", "message"],
+        "additionalProperties": false
+      }
+    },
+    "degradations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["code", "component", "message"],
+        "additionalProperties": false
+      }
+    },
+    "paymentOptions": {
+      "type": "object",
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "defaultOptionKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "defaultProviderCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "optionKey": {
+                "type": "string"
+              },
+              "providerCode": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "icon": {
+                "type": "string"
+              },
+              "recommended": {
+                "type": "boolean"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "disabledReason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "optionKey",
+              "providerCode",
+              "method",
+              "displayName",
+              "description",
+              "icon",
+              "recommended",
+              "ready",
+              "disabledReason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "ready",
+        "defaultOptionKey",
+        "defaultProviderCode",
+        "options"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "generation",
+    "revision",
+    "observedAt",
+    "canStartSale",
+    "blockers",
+    "degradations",
+    "paymentOptions"
+  ],
+  "additionalProperties": false
+}

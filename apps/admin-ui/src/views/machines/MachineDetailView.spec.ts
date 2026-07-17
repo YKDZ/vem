@@ -644,43 +644,15 @@ describe("MachineDetailView", () => {
           errorCode: "JAMMED",
           createdAt: "2026-06-26T08:00:00.000Z",
         },
-        saleReadiness: {
-          state: "locked",
-          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-        },
       },
     });
 
     const { root } = await mountView();
 
     expect(root.textContent).toContain("硬件异常");
-    expect(root.textContent).toContain("整机锁定");
     expect(root.textContent).toContain("WHOLE_MACHINE_HARDWARE_FAULT");
     expect(root.textContent).toContain("pickup platform blocked");
     expect(root.textContent).not.toContain("硬件ok");
-  });
-
-  it("renders blocked sale readiness from heartbeat after lock has cleared", async () => {
-    apiMocks.getMachine.mockResolvedValue({
-      ...machineFixture(),
-      latestHeartbeatStatus: {
-        ...machineFixture().latestHeartbeatStatus,
-        hardwareStatus: "ok",
-        wholeMachineMaintenanceLock: null,
-        saleReadiness: {
-          state: "blocked",
-          blockingCodes: ["PRODUCTION_DISPENSE_PATH_MOCK"],
-        },
-      },
-    });
-
-    const { root } = await mountView();
-
-    expect(root.textContent).toContain("硬件正常");
-    expect(root.textContent).toContain("阻塞");
-    expect(root.textContent).toContain("PRODUCTION_DISPENSE_PATH_MOCK");
-    expect(root.textContent).not.toContain("已恢复");
-    expect(root.textContent).not.toContain("整机锁定");
   });
 
   it("renders a distinct ready production pilot diagnostic gate summary for daily inspection", async () => {
@@ -706,16 +678,6 @@ describe("MachineDetailView", () => {
             },
           },
           {
-            kind: "machine_sale_readiness",
-            reasonCode: "restored",
-            status: "ready",
-            actionCode: "continue_daily_inspection",
-            evidence: {
-              saleReadinessState: "restored",
-              blockingCodes: [],
-            },
-          },
-          {
             kind: "payment_readiness",
             reasonCode: "ready",
             status: "ready",
@@ -733,7 +695,6 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("生产试运营诊断门禁");
     expect(root.textContent).toContain("生产试运营就绪");
     expect(root.textContent).toContain("在线与心跳");
-    expect(root.textContent).toContain("机器售卖就绪");
     expect(root.textContent).toContain("真实支付就绪");
     expect(root.textContent).toContain("机器在线，心跳仍在有效窗口内。");
     expect(root.textContent).toContain("继续日常巡检。");

@@ -1946,14 +1946,9 @@ describe("shared API contract", () => {
           errorCode: "JAMMED",
           createdAt: "2026-06-26T07:55:00.000Z",
         },
-        saleReadiness: {
-          state: "locked",
-          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-        },
       },
     });
 
-    expect(result.statusPayload.saleReadiness?.state).toBe("locked");
     expect(result.statusPayload.wholeMachineMaintenanceLock?.slotCode).toBe(
       "A1",
     );
@@ -2135,12 +2130,10 @@ describe("shared API contract", () => {
     ).toBe("ABCD-2345");
   });
 
-  it("accepts only approved machine provisioning profile categories", () => {
+  it("accepts only the narrow claim code contract", () => {
     expect(
       machineClaimRequestSchema.parse({
         claimCode: "ABCD-2345",
-        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        provisioningProfile: "production",
       }).claimCode,
     ).toBe("ABCD-2345");
 
@@ -2188,23 +2181,6 @@ describe("shared API contract", () => {
         qrCodeEnabled: true,
         paymentCodeEnabled: true,
         serverTime: "2026-06-08T16:30:00.000Z",
-      },
-      provisioningProfile: "production",
-      maintenance: {
-        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        tunnelAddress: "10.91.16.10",
-        address: "10.91.16.10/32",
-        endpoint: "127.0.0.1:51820",
-        relay: {
-          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-          tunnelAddress: "10.91.0.1",
-          address: "10.91.0.1/32",
-        },
-        roleRoutes: {
-          relay: "10.91.0.1/32",
-          runner: "10.91.1.0/24",
-          maintainer: "10.91.3.0/24",
-        },
       },
       metadata: {
         profileVersion: 1,

@@ -233,6 +233,21 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
+  @Get(":code/provisioning-profile")
+  async getOwnProvisioningProfile(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ) {
+    if (code !== machine.code) {
+      throw new ForbiddenException(
+        "Machine can only read its own provisioning profile",
+      );
+    }
+    return await this.machinesService.getOwnProvisioningProfile(machine.id);
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
   @Get(":code/maintenance-identity")
   async getOwnMaintenanceIdentity(
     @CurrentMachine() machine: AuthenticatedMachine,

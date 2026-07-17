@@ -16,7 +16,6 @@ import {
   maintenanceWireGuardEndpointSchema,
   maintenanceWireGuardPublicKeySchema,
 } from "./maintenance-access";
-import { machinePaymentOptionSchema } from "./orders";
 
 function isIanaTimeZone(value: string): boolean {
   try {
@@ -337,13 +336,6 @@ export const machineHeartbeatStatusPayloadSchema = z
       })
       .nullable()
       .optional(),
-    saleReadiness: z
-      .object({
-        state: z.enum(["locked", "blocked", "restored"]),
-        blockingCodes: z.array(z.string()).default([]),
-      })
-      .loose()
-      .optional(),
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),
@@ -371,12 +363,6 @@ export const adminMachineHeartbeatStatusPayloadSchema = z.strictObject({
       createdAt: z.iso.datetime().optional(),
     })
     .nullable()
-    .optional(),
-  saleReadiness: z
-    .strictObject({
-      state: z.enum(["locked", "blocked", "restored"]),
-      blockingCodes: z.array(z.string()).default([]),
-    })
     .optional(),
   doorOpen: z.boolean().optional(),
   localQueueSize: z.int().nonnegative().optional(),
@@ -464,11 +450,6 @@ const machineHeartbeatEvidenceSchema = z.strictObject({
   lastSeenAt: z.iso.datetime().nullable(),
 });
 
-const machineSaleReadinessEvidenceSchema = z.strictObject({
-  saleReadinessState: z.enum(["locked", "blocked", "restored"]).nullable(),
-  blockingCodes: z.array(z.string()),
-});
-
 const paymentReadinessEvidenceSchema = z.strictObject({
   productionProviderCount: z.int().nonnegative(),
 });
@@ -521,15 +502,6 @@ export const productionPilotReadinessCheckSchema = z.discriminatedUnion(
       reasonCode: z.enum(["online", "stale", "missing"]),
       actionCode: z.enum(["continue_daily_inspection", "restore_connectivity"]),
       evidence: machineHeartbeatEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("machine_sale_readiness"),
-      reasonCode: z.enum(["restored", "blocked"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "resolve_machine_sale_blockers",
-      ]),
-      evidence: machineSaleReadinessEvidenceSchema,
     }),
     productionPilotReadinessCheckBaseSchema.extend({
       kind: z.literal("payment_readiness"),
@@ -932,9 +904,6 @@ export const machineClaimRequestSchema = z.strictObject({
     .trim()
     .transform((value) => value.toUpperCase())
     .pipe(z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)),
-  maintenancePublicKey: maintenanceWireGuardPublicKeySchema,
-  provisioningProfile: z.enum(["production", "testbed"]).optional(),
-  maintenanceRotation: z.literal("rotate").optional(),
 });
 
 export const machineProvisioningMaintenanceIdentitySchema = z
@@ -1023,51 +992,12 @@ export const hardwareSlotTopologyIdentitySchema = z.strictObject({
   version: z.string().min(1).max(128),
 });
 
-const legacyProductionMachinePaymentOptionSchema =
-  machinePaymentOptionSchema.refine(
-    (option) =>
-      (option.providerCode === "wechat_pay" ||
-        option.providerCode === "alipay") &&
-      (option.method === "qr_code" || option.method === "payment_code"),
-    {
-      message:
-        "Production machine payment capability can only include qr_code or payment_code real-provider methods",
-    },
-  );
-
-const productionMachinePaymentCapabilityV1Schema = z.strictObject({
+export const productionMachinePaymentCapabilitySchema = z.strictObject({
   profile: z.literal("production"),
   qrCodeEnabled: z.boolean().default(true),
   paymentCodeEnabled: z.boolean().default(true),
   serverTime: z.iso.datetime(),
 });
-
-const legacyProductionMachinePaymentCapabilitySchema = z
-  .strictObject({
-    profile: z.literal("production"),
-    options: z.array(legacyProductionMachinePaymentOptionSchema),
-    defaultOptionKey: z
-      .string()
-      .regex(/^(qr_code|payment_code):(wechat_pay|alipay)$/)
-      .nullable(),
-    defaultProviderCode: z.enum(["wechat_pay", "alipay"]).nullable(),
-    serverTime: z.iso.datetime(),
-  })
-  .transform((capability) => ({
-    profile: capability.profile,
-    qrCodeEnabled: capability.options.some(
-      (option) => option.method === "qr_code",
-    ),
-    paymentCodeEnabled: capability.options.some(
-      (option) => option.method === "payment_code",
-    ),
-    serverTime: capability.serverTime,
-  }));
-
-export const productionMachinePaymentCapabilitySchema = z.union([
-  productionMachinePaymentCapabilityV1Schema,
-  legacyProductionMachinePaymentCapabilitySchema,
-]);
 
 export const machineProvisioningProfileSchema = z.strictObject({
   machine: z.strictObject({
@@ -1099,8 +1029,6 @@ export const machineProvisioningProfileSchema = z.strictObject({
   hardwareModel: z.string().min(1).max(128),
   hardwareSlotTopology: hardwareSlotTopologyIdentitySchema,
   paymentCapability: productionMachinePaymentCapabilitySchema,
-  provisioningProfile: z.enum(["production", "testbed"]),
-  maintenance: machineProvisioningMaintenanceIdentitySchema,
   metadata: z.strictObject({
     profileVersion: z.literal(1),
     profileRevision: z.int().positive(),

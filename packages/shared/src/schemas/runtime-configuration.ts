@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { hardwareSlotTopologyIdentitySchema } from "./machines";
+import {
+  hardwareSlotTopologyIdentitySchema,
+  machineClaimRequestSchema,
+  machineProvisioningProfileSchema,
+} from "./machines";
 
 export const runtimeBootstrapSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -9,63 +13,21 @@ export const runtimeBootstrapSchema = z.strictObject({
   topology: hardwareSlotTopologyIdentitySchema,
 });
 
-const cachedProvisioningProfileSchema = z.strictObject({
-  machine: z.strictObject({
-    id: z.uuid(),
-    code: z.string().trim().min(1).max(64),
-    name: z.string().trim().min(1).max(128),
-    status: z.string().trim().min(1).max(64),
-    locationLabel: z.string().trim().min(1).max(256).nullable(),
-  }),
-  apiBaseUrl: z.url(),
-  runtimeEndpoints: z.strictObject({
-    apiBasePath: z.literal("/api"),
-    machineAuthTokenPath: z.literal("/api/machine-auth/token"),
-    machineApiBasePath: z.string().regex(/^\/api\/machines\/[^/]+$/),
-    mqttTopicPrefix: z.string().regex(/^vem\/machines\/[^/]+$/),
-  }),
-  mqttConnection: z.strictObject({
-    url: z.url(),
-    clientId: z.string().trim().min(1).max(128),
-    username: z.string().trim().min(1).max(128).nullable(),
-  }),
-  hardwareProfile: z.strictObject({
-    profile: z.literal("production"),
-    controller: z.strictObject({
-      required: z.literal(true),
-      protocol: z.literal("vem-vending-controller"),
+const claimMqttConnectionSchema =
+  machineProvisioningProfileSchema.shape.credentials.shape.mqttConnection;
+
+export const machineProvisioningProfileSnapshotSchema =
+  machineProvisioningProfileSchema.omit({ credentials: true }).extend({
+    mqttConnection: claimMqttConnectionSchema.omit({ password: true }).extend({
+      username: claimMqttConnectionSchema.shape.username.nullable(),
     }),
-    paymentScanner: z.strictObject({
-      required: z.literal(true),
-      supportsPaymentCode: z.boolean(),
-    }),
-    vision: z.strictObject({
-      required: z.boolean(),
-      supportsRecommendations: z.boolean(),
-    }),
-  }),
-  hardwareModel: z.string().trim().min(1).max(128),
-  hardwareSlotTopology: hardwareSlotTopologyIdentitySchema,
-  paymentCapability: z.strictObject({
-    profile: z.literal("production"),
-    qrCodeEnabled: z.boolean(),
-    paymentCodeEnabled: z.boolean(),
-    serverTime: z.iso.datetime({ offset: true }),
-  }),
-  metadata: z.strictObject({
-    profileVersion: z.literal(1),
-    profileRevision: z.number().int().positive(),
-    claimCodeId: z.uuid(),
-    claimedAt: z.iso.datetime({ offset: true }),
-    serverTime: z.iso.datetime({ offset: true }),
-  }),
-});
+  });
 
 export const provisioningProfileCacheSchema = z.strictObject({
   schemaVersion: z.literal(1),
   generation: z.number().int().positive(),
   acceptedAt: z.iso.datetime({ offset: true }),
-  profile: cachedProvisioningProfileSchema,
+  profile: machineProvisioningProfileSnapshotSchema,
 });
 
 const secretStatusSchema = z.strictObject({
@@ -131,21 +93,23 @@ export const effectiveMachineRuntimeConfigurationSchema = z.strictObject({
     bootstrap: runtimeBootstrapSchema,
     profileCache: provisioningProfileCacheSchema.nullable(),
   }),
-  machine: cachedProvisioningProfileSchema.shape.machine.nullable(),
+  machine: machineProvisioningProfileSnapshotSchema.shape.machine.nullable(),
   platform: z
     .strictObject({
-      apiBaseUrl: cachedProvisioningProfileSchema.shape.apiBaseUrl,
-      runtimeEndpoints: cachedProvisioningProfileSchema.shape.runtimeEndpoints,
-      mqttConnection: cachedProvisioningProfileSchema.shape.mqttConnection,
+      apiBaseUrl: machineProvisioningProfileSnapshotSchema.shape.apiBaseUrl,
+      runtimeEndpoints:
+        machineProvisioningProfileSnapshotSchema.shape.runtimeEndpoints,
+      mqttConnection:
+        machineProvisioningProfileSnapshotSchema.shape.mqttConnection,
       paymentCapability:
-        cachedProvisioningProfileSchema.shape.paymentCapability,
+        machineProvisioningProfileSnapshotSchema.shape.paymentCapability,
     })
     .nullable(),
   hardware: z.strictObject({
     model: runtimeBootstrapSchema.shape.hardwareModel,
     topology: runtimeBootstrapSchema.shape.topology,
     expectedProfile:
-      cachedProvisioningProfileSchema.shape.hardwareProfile.nullable(),
+      machineProvisioningProfileSnapshotSchema.shape.hardwareProfile.nullable(),
     lowerControllerBinding: localSerialRoleBindingSchema.nullable(),
     scannerBinding: localSerialRoleBindingSchema.nullable(),
     scannerProtocol: scannerProtocolParametersSchema.nullable(),
@@ -163,6 +127,9 @@ export const effectiveMachineRuntimeConfigurationSchema = z.strictObject({
 export type RuntimeBootstrap = z.infer<typeof runtimeBootstrapSchema>;
 export type ProvisioningProfileCache = z.infer<
   typeof provisioningProfileCacheSchema
+>;
+export type MachineProvisioningProfileSnapshot = z.infer<
+  typeof machineProvisioningProfileSnapshotSchema
 >;
 export type EffectiveMachineRuntimeConfiguration = z.infer<
   typeof effectiveMachineRuntimeConfigurationSchema
@@ -194,6 +161,9 @@ export function exportRuntimeConfigurationJsonSchema(): RuntimeConfigurationJson
       clearHardwareBindingRequestSchema,
       setScannerProtocolParametersRequestSchema,
       setAudioPreferencesRequestSchema,
+      machineClaimRequestSchema,
+      machineProvisioningProfileSchema,
+      machineProvisioningProfileSnapshotSchema,
     ]),
   );
   return {

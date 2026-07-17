@@ -287,9 +287,6 @@ export function toAdminMachineHeartbeatStatus(
     ...(status.wholeMachineMaintenanceLock === undefined
       ? {}
       : { wholeMachineMaintenanceLock: status.wholeMachineMaintenanceLock }),
-    ...(status.saleReadiness === undefined
-      ? {}
-      : { saleReadiness: status.saleReadiness }),
     ...(status.doorOpen === undefined ? {} : { doorOpen: status.doorOpen }),
     ...(status.localQueueSize === undefined
       ? {}
