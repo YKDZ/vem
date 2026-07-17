@@ -8,7 +8,7 @@ use nix::{
     pty::{grantpt, posix_openpt, ptsname_r, unlockpt},
     sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg},
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub struct PtyHarness {
     pub slave_path: PathBuf,
@@ -60,6 +60,10 @@ impl PtyHarness {
     pub async fn write(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).await.expect("write pty bytes");
         self.master.flush().await.expect("flush pty bytes");
+    }
+
+    pub async fn read_exact(&mut self, bytes: &mut [u8]) {
+        self.master.read_exact(bytes).await.expect("read pty bytes");
     }
 }
 

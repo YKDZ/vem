@@ -6855,14 +6855,24 @@ fn merge_local_dispense_progress(
 
     let local = local_backend_status_json
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+    let local_command_no = local
+        .as_ref()
+        .and_then(|value| value.pointer("/vending/commandNo"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let local_progress_stage = local
+        .as_ref()
+        .and_then(|value| value.pointer("/vending/fulfillmentProgressStage"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
     let local_reminder = local
         .as_ref()
         .and_then(|value| value.pointer("/vending/pickupReminder"))
         .filter(|value| value.is_object())
         .cloned();
-    let Some(local_reminder) = local_reminder else {
+    if local_command_no.is_none() && local_progress_stage.is_none() && local_reminder.is_none() {
         return backend_status;
-    };
+    }
 
     if !backend_status.is_object() {
         return backend_status;
@@ -6881,13 +6891,22 @@ fn merge_local_dispense_progress(
             .get("commandNo")
             .and_then(|value| value.as_str())
             .map(ToString::to_string);
-        let local_command_no = local
-            .as_ref()
-            .and_then(|value| value.pointer("/vending/commandNo"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string);
         if backend_command_no.is_none() || backend_command_no == local_command_no {
-            vending.insert("pickupReminder".to_string(), local_reminder);
+            if let Some(local_command_no) = local_command_no {
+                vending.insert(
+                    "commandNo".to_string(),
+                    serde_json::Value::String(local_command_no),
+                );
+            }
+            if let Some(local_progress_stage) = local_progress_stage {
+                vending.insert(
+                    "fulfillmentProgressStage".to_string(),
+                    serde_json::Value::String(local_progress_stage),
+                );
+            }
+            if let Some(local_reminder) = local_reminder {
+                vending.insert("pickupReminder".to_string(), local_reminder);
+            }
         }
     }
     backend_status
