@@ -56,6 +56,10 @@ function hostnameOrAddress(value, label) {
   return result;
 }
 
+function pathInside(path, root) {
+  return path.startsWith(`${root}/`);
+}
+
 export function validateBaselineBuildConfig(input) {
   const config = object(input, "baseline config");
   if (config.schemaVersion !== "win10-kvm-baseline/v1") {
@@ -66,6 +70,8 @@ export function validateBaselineBuildConfig(input) {
   if (host.libvirtUri !== "qemu:///system") {
     throw new Error("host.libvirtUri must be qemu:///system");
   }
+  absolutePath(host.lockPath, "host.lockPath");
+  const largeFileRoot = absolutePath(host.largeFileRoot, "host.largeFileRoot");
   const vm = object(config.vm, "vm");
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{1,62}$/.test(string(vm.name, "vm.name"))) {
     throw new Error("vm.name must be a portable libvirt domain name");
@@ -87,11 +93,17 @@ export function validateBaselineBuildConfig(input) {
   if (baselinePath === cacheDiskPath) {
     throw new Error("storage baseline and persistent cache disks must differ");
   }
+  if (!pathInside(baselinePath, largeFileRoot) || !pathInside(cacheDiskPath, largeFileRoot)) {
+    throw new Error("storage baseline and persistent cache disks must stay under host.largeFileRoot");
+  }
   for (const key of ["systemDiskGiB", "cacheDiskGiB", "minimumFreeGiB"]) {
     integer(storage[key], `storage.${key}`);
   }
   const media = object(config.media, "media");
-  absolutePath(media.windowsIsoPath, "media.windowsIsoPath");
+  const windowsIsoPath = absolutePath(media.windowsIsoPath, "media.windowsIsoPath");
+  if (!pathInside(windowsIsoPath, largeFileRoot)) {
+    throw new Error("media.windowsIsoPath must stay under host.largeFileRoot");
+  }
   integer(media.windowsImageIndex, "media.windowsImageIndex");
   for (const key of ["webView2InstallerUri", "runnerArchiveUri"]) {
     const value = string(media[key], `media.${key}`);
@@ -112,7 +124,23 @@ export function validateBaselineBuildConfig(input) {
   if (!/^https:\/\/github\.com\//.test(string(runner.url, "runner.url"))) {
     throw new Error("runner.url must be a GitHub HTTPS URL");
   }
-  absolutePath(runner.registrationTokenFile, "runner.registrationTokenFile");
+  const registrationTokenProvider = object(
+    runner.registrationTokenProvider,
+    "runner.registrationTokenProvider",
+  );
+  absolutePath(
+    registrationTokenProvider.command,
+    "runner.registrationTokenProvider.command",
+  );
+  if (
+    registrationTokenProvider.arguments !== undefined &&
+    (!Array.isArray(registrationTokenProvider.arguments) ||
+      registrationTokenProvider.arguments.some(
+        (argument) => typeof argument !== "string",
+      ))
+  ) {
+    throw new Error("runner.registrationTokenProvider.arguments must be an array of strings");
+  }
   string(runner.name, "runner.name");
   return config;
 }

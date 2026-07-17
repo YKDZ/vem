@@ -159,12 +159,16 @@ async function collectHostObservation(config) {
   };
 }
 
-function unattendedXml(config) {
+export function renderUnattendedXml(config) {
   const password = escapeXml(config.__secrets.administratorPassword);
   const user = escapeXml(config.guest.sshUser);
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage><UILanguage>zh-CN</UILanguage></SetupUILanguage>
+      <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <DiskConfiguration><Disk wcm:action="add"><DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk><CreatePartitions><CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>500</Size></CreatePartition><CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition></CreatePartitions><ModifyPartitions><ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Active>true</Active><Format>NTFS</Format><Label>System</Label></ModifyPartition><ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition></ModifyPartitions></Disk></DiskConfiguration>
       <ImageInstall><OSImage><InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>${config.media.windowsImageIndex}</Value></MetaData></InstallFrom><InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo></OSImage></ImageInstall>
@@ -172,8 +176,11 @@ function unattendedXml(config) {
     </component>
   </settings>
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>zh-CN</InputLocale><SystemLocale>zh-CN</SystemLocale><UILanguage>zh-CN</UILanguage><UserLocale>zh-CN</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <OOBE><HideEULAPage>true</HideEULAPage><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <OOBE><HideEULAPage>true</HideEULAPage><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>${user}</Name><Group>Administrators</Group><Password><Value>${password}</Value><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
       <AutoLogon><Username>${user}</Username><Password><Value>${password}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount></AutoLogon>
       <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); &amp; (Join-Path $drive 'bootstrap.ps1')"</CommandLine><Description>Prepare runtime baseline</Description></SynchronousCommand></FirstLogonCommands>
@@ -221,7 +228,7 @@ async function createConfigurationMedia(config, stagingDirectory) {
   };
   await writeFile(
     join(mediaRoot, "autounattend.xml"),
-    unattendedXml(protectedConfig),
+    renderUnattendedXml(protectedConfig),
     { mode: 0o600 },
   );
   await writeFile(join(mediaRoot, "bootstrap.ps1"), bootstrapScript(), {
@@ -286,13 +293,21 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
       const sshOptions = guestSshOptions(config, knownHostsPath);
       const result = await run("ssh", [...sshOptions, target, "exit"], { allowFailure: true });
       if (!result.failed) {
-        const token = (await readFile(config.runner.registrationTokenFile, "utf8")).trim();
-        if (!token) throw new Error("runner registration token file must not be empty");
+        const preparationScript = join(stagingDirectory, "prepare-toolchain.ps1");
+        await writeFile(
+          preparationScript,
+          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain\n`,
+          { mode: 0o600 },
+        );
+        await run("scp", [...sshOptions, preparationScript, `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`]);
+        await run("ssh", [...sshOptions, target, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1"]);
+        const token = await acquireRunnerRegistrationToken(config);
+        const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
         const runnerScript = join(stagingDirectory, "register-runner.ps1");
-        await writeFile(runnerScript, `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(config.runner.name)}\n`, { mode: 0o600 });
+        await writeFile(runnerScript, `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`, { mode: 0o600 });
         await run("scp", [...sshOptions, runnerScript, `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`]);
         await run("ssh", [...sshOptions, target, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1"]);
-        await run("ssh", [...sshOptions, target, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -OutputPath ${verificationPath}`]);
+        await run("ssh", [...sshOptions, target, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -OutputPath ${verificationPath}`]);
       await run("scp", [
         ...sshOptions,
         `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
@@ -309,6 +324,16 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
   throw new Error(
     "timed out waiting for Windows guest prerequisite verification",
   );
+}
+
+async function acquireRunnerRegistrationToken(config) {
+  const provider = config.runner.registrationTokenProvider;
+  const result = await run(provider.command, provider.arguments ?? []);
+  const token = result.stdout.trim();
+  if (!token || /\s/.test(token)) {
+    throw new Error("runner registration token provider returned an invalid token");
+  }
+  return token;
 }
 
 async function pathExists(path) {
@@ -355,6 +380,35 @@ async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
   throw new Error("guest did not shut down cleanly within five minutes");
 }
 
+async function captureInactiveDomainXml(config) {
+  const result = await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "dumpxml", "--inactive", config.vm.name],
+    { allowFailure: true },
+  );
+  return result.failed ? null : result.stdout;
+}
+
+async function restoreInactiveDomain(config, previousXml, stagingDirectory) {
+  if (previousXml === null) {
+    await run(
+      "virsh",
+      ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
+      { allowFailure: true },
+    );
+    return;
+  }
+  const previousXmlPath = join(stagingDirectory, "previous-inactive-domain.xml");
+  await writeFile(previousXmlPath, previousXml, { mode: 0o600 });
+  await run("virsh", [
+    "--connect",
+    config.host.libvirtUri,
+    "define",
+    previousXmlPath,
+    "--validate",
+  ]);
+}
+
 export async function buildWin10Baseline(
   config,
   { sourceCommit, execute = false } = {},
@@ -374,7 +428,10 @@ export async function buildWin10Baseline(
     execute,
   };
   if (!execute) return plan;
-  const lockPath = `${config.storage.baselinePath}.build-lock`;
+  await mkdir(dirname(config.storage.baselinePath), { recursive: true });
+  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
+  await mkdir(dirname(config.host.lockPath), { recursive: true });
+  const lockPath = config.host.lockPath;
   try {
     await mkdir(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -400,10 +457,6 @@ export async function buildWin10Baseline(
     config.guest.sshPrivateKeyFile,
     "guest.sshPrivateKeyFile",
   );
-  await assertReadableRegularFile(
-    config.runner.registrationTokenFile,
-    "runner.registrationTokenFile",
-  );
   const publishedBaselineExists = await pathExists(config.storage.baselinePath);
   const persistentCacheExists = await pathExists(config.storage.cacheDiskPath);
   if (publishedBaselineExists && !persistentCacheExists) {
@@ -411,8 +464,6 @@ export async function buildWin10Baseline(
       "a published baseline requires its persistent cache disk before rebuild",
     );
   }
-  await mkdir(dirname(config.storage.baselinePath), { recursive: true });
-  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
   const stagingDirectory = await mkdtemp(
     join(
       dirname(config.storage.baselinePath),
@@ -494,12 +545,7 @@ export async function buildWin10Baseline(
     await writeFile(finalXmlPath, renderLibvirtDomainXml(profile), {
       mode: 0o600,
     });
-    await run("virsh", [
-      "--connect",
-      config.host.libvirtUri,
-      "define",
-      finalXmlPath,
-    ]);
+    const previousInactiveXml = await captureInactiveDomainXml(config);
     const diagnostic = {
       schemaVersion: "win10-kvm-baseline-diagnostic/v1",
       sourceCommit: sourceCommit ?? null,
@@ -513,16 +559,34 @@ export async function buildWin10Baseline(
       `${JSON.stringify(diagnostic, null, 2)}\n`,
       { mode: 0o600 },
     );
+    const stagedStableXmlPath = join(stagingDirectory, "stable-domain.xml");
+    await copyFile(finalXmlPath, stagedStableXmlPath);
     const publication = [
       { stagedPath, destinationPath: config.storage.baselinePath },
       { stagedPath: stagedDiagnosticPath, destinationPath: `${config.storage.baselinePath}.diagnostic.json` },
+      { stagedPath: stagedStableXmlPath, destinationPath: `${config.storage.baselinePath}.domain.xml` },
     ];
     if (!persistentCacheExists) publication.splice(1, 0, { stagedPath: stagedCachePath, destinationPath: config.storage.cacheDiskPath });
-    await replaceFilesTransaction(publication, async (_entry, count) => {
-      if (count === publication.length) {
-        await run("virsh", ["--connect", config.host.libvirtUri, "define", finalXmlPath]);
+    let stableDomainPublicationStarted = false;
+    try {
+      await replaceFilesTransaction(publication, async (_entry, count) => {
+        if (count === publication.length) {
+          stableDomainPublicationStarted = true;
+          await run("virsh", [
+            "--connect",
+            config.host.libvirtUri,
+            "define",
+            `${config.storage.baselinePath}.domain.xml`,
+            "--validate",
+          ]);
+        }
+      });
+    } catch (error) {
+      if (stableDomainPublicationStarted) {
+        await restoreInactiveDomain(config, previousInactiveXml, stagingDirectory);
       }
-    });
+      throw error;
+    }
     return { ...plan, verification, promoted: true };
   } catch (error) {
     await destroyAndUndefine(config, constructionDomain);

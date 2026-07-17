@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: vem-windows-runtime-testbed
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -41,10 +41,22 @@ jobs:
         env:
           BASELINE_CONFIG_PATH: ${{ inputs.baseline_config_path }}
           SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
         run: |
           set -euo pipefail
           test "${BASELINE_CONFIG_PATH#/}" != "$BASELINE_CONFIG_PATH"
           test -f "$BASELINE_CONFIG_PATH"
+          node - "$BASELINE_CONFIG_PATH" <<'NODE'
+          const fs = require("node:fs");
+          const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (
+            typeof process.env.VEM_VM_HOST_LOCK_PATH !== "string" ||
+            !process.env.VEM_VM_HOST_LOCK_PATH.startsWith("/") ||
+            config.host?.lockPath !== process.env.VEM_VM_HOST_LOCK_PATH
+          ) {
+            throw new Error("baseline config host.lockPath must equal VEM_VM_HOST_LOCK_PATH");
+          }
+          NODE
           node scripts/testbed/kvm-baseline/build-win10-baseline.mjs \
             --config "$BASELINE_CONFIG_PATH" \
             --source-commit "$SOURCE_COMMIT" \

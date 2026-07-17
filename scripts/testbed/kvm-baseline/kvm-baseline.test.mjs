@@ -9,9 +9,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
-import { buildWin10Baseline } from "./build-win10-baseline.mjs";
+import {
+  buildWin10Baseline,
+  renderUnattendedXml,
+} from "./build-win10-baseline.mjs";
 import {
   createRuntimeProfile,
   renderLibvirtDomainXml,
@@ -31,6 +35,8 @@ function buildConfig(root) {
     host: {
       address: "kvm-builder.example.test",
       libvirtUri: "qemu:///system",
+      lockPath: join(root, "locks", "vem-windows-runtime-testbed.lock"),
+      largeFileRoot: root,
     },
     vm: {
       name: "win10-runtime-baseline",
@@ -67,7 +73,10 @@ function buildConfig(root) {
     },
     runner: {
       url: "https://github.com/example/runtime",
-      registrationTokenFile: join(root, "secrets", "runner-token"),
+      registrationTokenProvider: {
+        command: join(root, "bin", "issue-runner-token"),
+        arguments: ["--repository", "example/runtime"],
+      },
       name: "win10-runtime-baseline-runner",
     },
   };
@@ -114,6 +123,11 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /target dev="sdd" bus="sata"/);
     assert.doesNotMatch(xml, /device="cdrom"[\s\S]*target dev="sd[ab]"/);
     assert.doesNotMatch(xml, /192\.168\.2\.22|\/mnt\/user|Unraid/i);
+    const parsed = spawnSync("xmllint", ["--noout", "-"], {
+      input: xml,
+      encoding: "utf8",
+    });
+    assert.equal(parsed.status, 0, parsed.stderr);
   });
 
   it("requires caller-owned identity, storage, media, network, and runner inputs", () => {
@@ -122,10 +136,10 @@ describe("Linux KVM Windows baseline", () => {
       const config = buildConfig(root);
       assert.deepEqual(validateBaselineBuildConfig(config), config);
 
-      delete config.runner.registrationTokenFile;
+      delete config.runner.registrationTokenProvider;
       assert.throws(
         () => validateBaselineBuildConfig(config),
-        /runner\.registrationTokenFile/,
+        /runner\.registrationTokenProvider/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -248,30 +262,59 @@ describe("Linux KVM Windows baseline", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-rollback-"));
     const system = join(root, "system.qcow2");
     const diagnostic = join(root, "system.qcow2.diagnostic.json");
+    const domainXml = join(root, "system.qcow2.domain.xml");
     const stagedSystem = join(root, "staged-system.qcow2");
     const stagedDiagnostic = join(root, "staged-diagnostic.json");
+    const stagedDomainXml = join(root, "staged-domain.xml");
     try {
       writeFileSync(system, "previous-system");
       writeFileSync(diagnostic, "previous-diagnostic");
+      writeFileSync(domainXml, "previous-domain-xml");
       writeFileSync(stagedSystem, "verified-system");
       writeFileSync(stagedDiagnostic, "verified-diagnostic");
+      writeFileSync(stagedDomainXml, "verified-domain-xml");
       await assert.rejects(
         replaceFilesTransaction(
           [
             { stagedPath: stagedSystem, destinationPath: system },
             { stagedPath: stagedDiagnostic, destinationPath: diagnostic },
+            { stagedPath: stagedDomainXml, destinationPath: domainXml },
           ],
           async (_entry, count) => {
-            if (count === 2) throw new Error("injected define failure");
+            if (count === 3) throw new Error("injected remote define failure");
           },
         ),
-        /injected define failure/,
+        /injected remote define failure/,
       );
       assert.equal(readFileSync(system, "utf8"), "previous-system");
       assert.equal(readFileSync(diagnostic, "utf8"), "previous-diagnostic");
+      assert.equal(readFileSync(domainXml, "utf8"), "previous-domain-xml");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("renders a fully unattended zh-CN Windows 10 22H2 installation without retired OOBE skips", () => {
+    const config = buildConfig("/var/tmp/vem-kvm-baseline");
+    const xml = renderUnattendedXml({
+      ...config,
+      __secrets: { administratorPassword: "test-password" },
+    });
+
+    assert.match(xml, /Microsoft-Windows-International-Core-WinPE/);
+    assert.match(xml, /Microsoft-Windows-International-Core/);
+    assert.match(xml, /<InputLocale>zh-CN<\/InputLocale>/);
+    assert.match(xml, /<SystemLocale>zh-CN<\/SystemLocale>/);
+    assert.match(xml, /<UILanguage>zh-CN<\/UILanguage>/);
+    assert.match(xml, /<UserLocale>zh-CN<\/UserLocale>/);
+    assert.match(xml, /<HideOnlineAccountScreens>true<\/HideOnlineAccountScreens>/);
+    assert.match(xml, /<HideWirelessSetupInOOBE>true<\/HideWirelessSetupInOOBE>/);
+    assert.doesNotMatch(xml, /SkipMachineOOBE/i);
+    const parsed = spawnSync("xmllint", ["--noout", "-"], {
+      input: xml,
+      encoding: "utf8",
+    });
+    assert.equal(parsed.status, 0, parsed.stderr);
   });
 
   it("keeps guest preparation separate from VM-only runner and toolchain setup", () => {
@@ -297,7 +340,8 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(shared, /PlugPlay/);
     assert.match(shared, /W32Time/);
     assert.match(shared, /Stop-Service/);
-    assert.match(shared, /ChangeDisplaySettings/);
+    assert.match(shared, /CDS_UPDATEREGISTRY/);
+    assert.match(shared, /interactive-display-report\.json/);
     assert.match(runtime, /Initialize-Disk/);
     assert.match(runtime, /FileSystemLabel/);
     assert.match(runtime, /SetEnvironmentVariable/);
@@ -305,11 +349,15 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /\.write-test/);
     assert.doesNotMatch(shared, /config\.cmd|actions-runner|choco install/i);
     assert.match(runtime, /config\.cmd/);
-    assert.match(runtime, /choco install/i);
-    assert.ok(
-      runtime.indexOf("config.cmd") < runtime.indexOf("choco install"),
-      "runner registration happens before the long toolchain installation",
-    );
+    assert.match(runtime, /choco\.exe/);
+    assert.ok(runtime.indexOf("choco.exe") < runtime.indexOf("config.cmd"));
+    assert.match(runtime, /vswhere\.exe/);
+    assert.match(runtime, /Microsoft\.VisualStudio\.Workload\.VCTools/);
+    assert.match(runtime, /cl\.exe/);
+    assert.match(runtime, /MFStartup/);
+    assert.match(runtime, /FilterGraph/);
+    assert.match(verify, /interactive-display-report\.json/);
+    assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(builder, /UserKnownHostsFile=/);
     assert.match(builder, /readJsonWithBom/);
     assert.match(builder, /domifaddr/);
@@ -326,6 +374,30 @@ describe("Linux KVM Windows baseline", () => {
     }
     assert.match(verify, /AudioDeviceRole/);
     assert.match(verify, /cacheDisk/);
+
+    for (const script of [
+      "shared-guest-preparation.ps1",
+      "prepare-vm-runtime.ps1",
+      "verify-vm-runtime.ps1",
+    ]) {
+      const parsed = spawnSync(
+        "pwsh",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "$null = [scriptblock]::Create([IO.File]::ReadAllText($env:BASELINE_PS_PARSE_PATH))",
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            BASELINE_PS_PARSE_PATH: new URL(`./${script}`, root).pathname,
+          },
+        },
+      );
+      assert.equal(parsed.status, 0, `${script}: ${parsed.stderr}`);
+    }
   });
 
   it("discovers a lease address for the fixed guest MAC rather than trusting a configured IP", () => {
@@ -359,12 +431,29 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(workflow, /workflow_dispatch:/);
     assert.match(workflow, /concurrency:/);
     assert.match(workflow, /vem-windows-runtime-testbed/);
+    assert.match(workflow, /cancel-in-progress: true/);
     assert.match(workflow, /default: vem-runtime/);
     assert.match(workflow, /build-win10-baseline\.mjs/);
     assert.doesNotMatch(
       workflow,
       /upload-artifact|scripts\/factory|build-factory-iso/i,
     );
+  });
+
+  it("uses the same latest-wins concurrency group and caller-owned host lock for baseline and acceptance", () => {
+    const baselineWorkflow = readFileSync(
+      ".github/workflows/build-win10-kvm-baseline.yml",
+      "utf8",
+    );
+    const acceptanceWorkflow = readFileSync(
+      ".github/workflows/vm-runtime-acceptance.yml",
+      "utf8",
+    );
+    assert.match(baselineWorkflow, /group: vem-windows-runtime-testbed/);
+    assert.match(acceptanceWorkflow, /group: vem-windows-runtime-testbed/);
+    assert.match(acceptanceWorkflow, /VEM_VM_HOST_LOCK_PATH/);
+    assert.match(acceptanceWorkflow, /Acquire Host Global Lock/);
+    assert.match(acceptanceWorkflow, /Release Host Global Lock/);
   });
 
   it("keeps the new baseline boundary independent of historical image tooling", () => {
