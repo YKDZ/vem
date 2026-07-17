@@ -393,7 +393,7 @@ jobs:
             -o ProxyCommand=none
           )
           target="${WINDOWS_SSH_USER}@${endpoint_host}"
-          scp -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
+          scp -O -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
           remote_script='$ErrorActionPreference = "Stop"; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination "C:\VEM\bringup\vending-daemon.exe" -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Force; Start-Service -Name "VemVendingDaemon"'
           encoded_script="$(printf '%s' "$remote_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
           ssh -p "$endpoint_port" "${ssh_options[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded_script"
