@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -20,17 +21,22 @@ import {
   recoverStaleConstructionDomains,
   renderUnattendedXml,
   SPICE_GUEST_TOOLS_INSTALLER_FILE,
+  verifyDefinedRuntimeDevices,
 } from "./build-win10-baseline.mjs";
 import {
   createRuntimeProfile,
   renderLibvirtDomainXml,
 } from "./libvirt-runtime-profile.mjs";
 import {
+  BASELINE_PUBLICATION_STAGES,
+  baselinePublicationLayout,
   evaluateHostPreflight,
   parseGuestAddress,
-  promoteVerifiedBaseline,
+  publishVerifiedBaselineRelease,
   readJsonWithBom,
-  replaceFilesTransaction,
+  recoverPublishedBaseline,
+  resolvePublishedBaselineRelease,
+  runtimeProfileForPublishedRelease,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
@@ -90,6 +96,48 @@ function buildConfig(root) {
       name: "win10-runtime-baseline-runner",
     },
   };
+}
+
+function hostIdentity() {
+  return {
+    hostnames: ["kvm-builder.example.test"],
+    addresses: ["192.0.2.10"],
+    resolvedConfiguredAddresses: ["192.0.2.10"],
+  };
+}
+
+function stagedRelease(config, label, contents) {
+  const stagingDirectory = join(
+    dirname(config.storage.baselinePath),
+    `.release-test-${label}`,
+  );
+  mkdirSync(stagingDirectory, { recursive: true });
+  const paths = {
+    system: join(stagingDirectory, "system.qcow2"),
+    cache: join(stagingDirectory, "cache.qcow2"),
+    domainXml: join(stagingDirectory, "runtime-profile.xml"),
+    diagnostic: join(stagingDirectory, "diagnostic.json"),
+  };
+  writeFileSync(paths.system, `${contents}-system`);
+  writeFileSync(paths.cache, `${contents}-cache`);
+  writeFileSync(paths.domainXml, `<domain>${contents}</domain>`);
+  writeFileSync(paths.diagnostic, JSON.stringify({ contents }));
+  return paths;
+}
+
+async function publishRelease(config, id, contents, onStage) {
+  const staged = stagedRelease(config, id, contents);
+  return publishVerifiedBaselineRelease({
+    config,
+    releaseId: id,
+    stagedSystemPath: staged.system,
+    stagedCachePath: staged.cache,
+    stagedDomainXmlPath: staged.domainXml,
+    stagedDiagnosticPath: staged.diagnostic,
+    profile: runtimeProfileForPublishedRelease(config, id),
+    verified: true,
+    onStage,
+  });
 }
 
 describe("Linux KVM Windows baseline", () => {
@@ -156,6 +204,41 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
+  it("verifies the defined ICH9/SPICE audio and exact USB serial role devices", () => {
+    const profile = createRuntimeProfile({
+      vmName: "win10-runtime-baseline",
+      systemDiskPath: "/srv/vm/win10.qcow2",
+      cacheDiskPath: "/srv/vm/win10-cache.qcow2",
+      networkName: "runtime-testbed",
+      macAddress: "52:54:00:12:34:56",
+    });
+    const xml = renderLibvirtDomainXml(profile);
+
+    assert.deepEqual(verifyDefinedRuntimeDevices(xml, profile), {
+      audio: { model: "ich9", backend: "spice", defaultDevice: true },
+      serialRoles: ["lower-controller", "scanner"],
+    });
+    assert.throws(
+      () =>
+        verifyDefinedRuntimeDevices(
+          xml.replace('<sound model="ich9"/>', '<sound model="ac97"/>'),
+          profile,
+        ),
+      /default ICH9 audio device/,
+    );
+    assert.throws(
+      () =>
+        verifyDefinedRuntimeDevices(
+          xml.replace(
+            'alias name="serial-scanner"',
+            'alias name="serial-extra"',
+          ),
+          profile,
+        ),
+      /USB serial role scanner is invalid/,
+    );
+  });
+
   it("requires caller-owned identity, storage, media, network, and runner inputs", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-"));
     try {
@@ -186,6 +269,7 @@ describe("Linux KVM Windows baseline", () => {
       assert.throws(
         () =>
           evaluateHostPreflight(config, {
+            hostIdentity: hostIdentity(),
             kvmAvailable: false,
             libvirtAvailable: true,
             commands: [
@@ -215,6 +299,7 @@ describe("Linux KVM Windows baseline", () => {
       assert.throws(
         () =>
           evaluateHostPreflight(config, {
+            hostIdentity: hostIdentity(),
             kvmAvailable: true,
             libvirtAvailable: true,
             commands: [
@@ -243,6 +328,7 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.deepEqual(
         evaluateHostPreflight(config, {
+          hostIdentity: hostIdentity(),
           kvmAvailable: true,
           libvirtAvailable: true,
           commands: [
@@ -269,72 +355,147 @@ describe("Linux KVM Windows baseline", () => {
         }),
         { ok: true },
       );
+      assert.throws(
+        () =>
+          evaluateHostPreflight(config, {
+            hostIdentity: {
+              hostnames: ["another-host.example.test"],
+              addresses: ["192.0.2.11"],
+              resolvedConfiguredAddresses: ["192.0.2.12"],
+            },
+            kvmAvailable: true,
+            libvirtAvailable: true,
+            commands: [
+              "virsh",
+              "virt-install",
+              "qemu-img",
+              "xorriso",
+              "ssh",
+              "scp",
+              "flock",
+            ],
+            cpuCount: 8,
+            availableMemoryMiB: 16 * 1024,
+            installationMedia: {
+              windowsIso: true,
+              spiceGuestToolsInstaller: true,
+            },
+            networkActive: true,
+            storageAvailableBytes: {
+              baseline: 80 * 1024 ** 3,
+              cache: 80 * 1024 ** 3,
+            },
+          }),
+        /host\.address must identify the executing host/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("only replaces the published baseline after a verified staged image exists", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-promote-"));
-    const baselinePath = join(root, "images", "win10.qcow2");
-    const stagedPath = join(root, "images", ".staging", "win10.qcow2");
+  it("rejects unverified release publication before it can create a current manifest", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-unverified-"));
     try {
-      mkdirSync(dirname(stagedPath), { recursive: true });
-      writeFileSync(baselinePath, "previous");
-      assert.rejects(
-        promoteVerifiedBaseline({ stagedPath, baselinePath, verified: false }),
+      const config = buildConfig(root);
+      const staged = stagedRelease(config, "unverified", "new");
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-unverified",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: {},
+          verified: false,
+        }),
         /verification/,
       );
-      assert.equal(readFileSync(baselinePath, "utf8"), "previous");
-
-      writeFileSync(stagedPath, "verified");
-      await promoteVerifiedBaseline({
-        stagedPath,
-        baselinePath,
-        verified: true,
-      });
-      assert.equal(readFileSync(baselinePath, "utf8"), "verified");
-      assert.equal(existsSync(stagedPath), false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rolls back every published artifact when a later publication stage fails", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-rollback-"));
-    const system = join(root, "system.qcow2");
-    const diagnostic = join(root, "system.qcow2.diagnostic.json");
-    const domainXml = join(root, "system.qcow2.domain.xml");
-    const stagedSystem = join(root, "staged-system.qcow2");
-    const stagedDiagnostic = join(root, "staged-diagnostic.json");
-    const stagedDomainXml = join(root, "staged-domain.xml");
-    try {
-      writeFileSync(system, "previous-system");
-      writeFileSync(diagnostic, "previous-diagnostic");
-      writeFileSync(domainXml, "previous-domain-xml");
-      writeFileSync(stagedSystem, "verified-system");
-      writeFileSync(stagedDiagnostic, "verified-diagnostic");
-      writeFileSync(stagedDomainXml, "verified-domain-xml");
-      await assert.rejects(
-        replaceFilesTransaction(
-          [
-            { stagedPath: stagedSystem, destinationPath: system },
-            { stagedPath: stagedDiagnostic, destinationPath: diagnostic },
-            { stagedPath: stagedDomainXml, destinationPath: domainXml },
-          ],
-          async (_entry, count) => {
-            if (count === 3) throw new Error("injected remote define failure");
-          },
-        ),
-        /injected remote define failure/,
+      assert.equal(
+        existsSync(baselinePublicationLayout(config).currentManifestPath),
+        false,
       );
-      assert.equal(readFileSync(system, "utf8"), "previous-system");
-      assert.equal(readFileSync(diagnostic, "utf8"), "previous-diagnostic");
-      assert.equal(readFileSync(domainXml, "utf8"), "previous-domain-xml");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  for (const interruptedStage of BASELINE_PUBLICATION_STAGES) {
+    it(`recovers a complete release after simulated SIGKILL at ${interruptedStage}`, async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-kvm-baseline-publish-kill-"),
+      );
+      try {
+        const config = buildConfig(root);
+        const oldRelease = await publishRelease(
+          config,
+          "release-old-complete",
+          "old",
+        );
+        const oldCache = readFileSync(oldRelease.cachePath, "utf8");
+        await assert.rejects(
+          publishRelease(
+            config,
+            "release-new-complete",
+            "new",
+            async (stage) => {
+              if (stage === interruptedStage) {
+                throw new Error(`simulated SIGKILL at ${stage}`);
+              }
+            },
+          ),
+          /simulated SIGKILL/,
+        );
+
+        const recovered = await recoverPublishedBaseline(config);
+        assert.ok(recovered);
+        const expected =
+          interruptedStage === "current-manifest-published" ? "new" : "old";
+        assert.equal(
+          readFileSync(recovered.systemPath, "utf8"),
+          `${expected}-system`,
+        );
+        assert.equal(
+          readFileSync(recovered.cachePath, "utf8"),
+          `${expected}-cache`,
+        );
+        assert.equal(readFileSync(oldRelease.cachePath, "utf8"), oldCache);
+        assert.match(
+          readFileSync(recovered.domainXmlPath, "utf8"),
+          new RegExp(expected),
+        );
+        const current = JSON.parse(
+          readFileSync(
+            baselinePublicationLayout(config).currentManifestPath,
+            "utf8",
+          ),
+        );
+        assert.deepEqual(current.destinations, {
+          baselinePath: config.storage.baselinePath,
+          cacheDiskPath: config.storage.cacheDiskPath,
+        });
+        assert.deepEqual(current.artifacts, {
+          systemPath: recovered.systemPath,
+          cachePath: recovered.cachePath,
+          domainXmlPath: recovered.domainXmlPath,
+          diagnosticPath: recovered.diagnosticPath,
+        });
+        assert.deepEqual(
+          await resolvePublishedBaselineRelease(config),
+          recovered,
+        );
+        const releaseRoot = baselinePublicationLayout(config).releaseRoot;
+        assert.equal(
+          readdirSync(releaseRoot).some((entry) =>
+            entry.startsWith(".staging-"),
+          ),
+          false,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("renders a fully unattended zh-CN Windows 10 22H2 installation without retired OOBE skips", () => {
     const config = buildConfig("/var/tmp/vem-kvm-baseline");
@@ -360,19 +521,20 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /<LogonCount>2<\/LogonCount>/);
     assert.match(xml, /<settings pass="specialize">/);
     assert.match(xml, /Microsoft-Windows-Deployment/);
-    assert.match(
-      xml,
-      /C:\\ProgramData\\WindowsRuntimeBaseline\\media/,
-    );
-    const specializeCommand = /<settings pass="specialize">[\s\S]*?<Path>([^<]+)<\/Path>/.exec(
-      xml,
-    )?.[1];
+    assert.match(xml, /C:\\ProgramData\\WindowsRuntimeBaseline\\media/);
+    const specializeCommand =
+      /<settings pass="specialize">[\s\S]*?<Path>([^<]+)<\/Path>/.exec(
+        xml,
+      )?.[1];
     assert.ok(specializeCommand);
     assert.ok(
       specializeCommand.length < 260,
       "specialize RunSynchronous Path must fit the Win10 WCM scalar limit",
     );
-    assert.match(specializeCommand, /if exist %d:\\baseline-config\.json xcopy/);
+    assert.match(
+      specializeCommand,
+      /if exist %d:\\baseline-config\.json xcopy/,
+    );
     assert.doesNotMatch(specializeCommand, /Win32_CDROMDrive|Get-Volume/);
     assert.match(
       xml,
@@ -419,9 +581,18 @@ describe("Linux KVM Windows baseline", () => {
         readFileSync(join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE), "utf8"),
         "spice-tools",
       );
+      assert.equal(existsSync(join(mediaRoot, "prepare-vm-runtime.ps1")), true);
       assert.match(
         bootstrapScript(),
         /-SpiceGuestToolsInstallerPath \(Join-Path \$mediaRoot \$config\.spiceGuestToolsInstallerFile\)/,
+      );
+      assert.match(
+        bootstrapScript(),
+        /shared-guest-preparation\.ps1"\) -WebView2InstallerUri[\s\S]*-AuthorizedKeysPath/,
+      );
+      assert.match(
+        bootstrapScript(),
+        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
       );
       assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
       assert.deepEqual(commands[0][0], "xorriso");
@@ -451,27 +622,43 @@ describe("Linux KVM Windows baseline", () => {
     );
 
     assert.match(shared, /WebView2/);
-    assert.match(shared, /SpiceGuestToolsInstallerPath/);
-    assert.match(shared, /New-ScheduledTaskPrincipal -UserId "SYSTEM"/);
-    assert.match(shared, /-Argument "\/S"/);
-    assert.match(shared, /exitCode -eq 3010/);
-    assert.match(shared, /exitCode -eq 1641/);
-    const spiceInstallFunction = shared.slice(
-      shared.indexOf("function Install-SpiceGuestTools"),
-      shared.indexOf("function Disable-RemainingAutomaticLogon"),
+    assert.match(shared, /PlugPlay/);
+    assert.match(shared, /W32Time/);
+    assert.match(shared, /Stop-Service/);
+    assert.match(shared, /OpenSSH\.Server/);
+    assert.match(shared, /Direct physical SSH host preparation/);
+    assert.doesNotMatch(
+      shared,
+      /SpiceGuestToolsInstallerPath|QXL|Restart-Computer|Set-ClientDisplayMode/,
+    );
+    assert.match(
+      shared,
+      /\[Parameter\(Mandatory = \$true\)\] \[string\] \$WebView2InstallerUri/,
+    );
+    assert.match(
+      shared,
+      /\[Parameter\(Mandatory = \$true\)\] \[string\] \$AuthorizedKeysPath/,
+    );
+    assert.doesNotMatch(shared, /SpiceGuestTools|QXL|actions-runner/i);
+    assert.match(runtime, /PrepareKvmGuest/);
+    assert.match(runtime, /SpiceGuestToolsInstallerPath/);
+    assert.match(runtime, /New-ScheduledTaskPrincipal -UserId "SYSTEM"/);
+    assert.match(runtime, /-Argument "\/S"/);
+    assert.match(runtime, /exitCode -eq 3010/);
+    assert.match(runtime, /exitCode -eq 1641/);
+    assert.match(runtime, /QXL/);
+    const spiceInstallFunction = runtime.slice(
+      runtime.indexOf("function Install-SpiceGuestTools"),
+      runtime.indexOf("function Disable-RemainingAutomaticLogon"),
     );
     assert.ok(
-      spiceInstallFunction.indexOf("phase = \"installing\"") <
-        spiceInstallFunction.indexOf(
-          "Invoke-SpiceGuestToolsInstallerAsSystem",
-        ),
+      spiceInstallFunction.indexOf('phase = "installing"') <
+        spiceInstallFunction.indexOf("Invoke-SpiceGuestToolsInstallerAsSystem"),
       "the reboot resume state must be durable before the installer starts",
     );
     assert.ok(
       spiceInstallFunction.indexOf("Register-SpiceGuestToolsResume") <
-        spiceInstallFunction.indexOf(
-          "Invoke-SpiceGuestToolsInstallerAsSystem",
-        ),
+        spiceInstallFunction.indexOf("Invoke-SpiceGuestToolsInstallerAsSystem"),
       "RunOnce must be registered before the installer can reboot Windows",
     );
     assert.match(
@@ -488,14 +675,11 @@ describe("Linux KVM Windows baseline", () => {
       /if \(\$exitCode -eq 0\)[\s\S]*Remove-SpiceGuestToolsResume/,
     );
     assert.ok(
-      shared.indexOf("Install-SpiceGuestTools") <
-        shared.indexOf("Set-ClientDisplayMode -Width"),
+      runtime.indexOf("Install-SpiceGuestTools") <
+        runtime.indexOf("Set-ClientDisplayMode -Width"),
     );
-    assert.match(shared, /PlugPlay/);
-    assert.match(shared, /W32Time/);
-    assert.match(shared, /Stop-Service/);
-    assert.match(shared, /CDS_UPDATEREGISTRY/);
-    assert.match(shared, /interactive-display-report\.json/);
+    assert.match(runtime, /CDS_UPDATEREGISTRY/);
+    assert.match(runtime, /interactive-display-report\.json/);
     assert.match(
       shared,
       /icacls\.exe" -ArgumentList @\(\$administratorsKeys, "\/inheritance:r", "\/grant", "\*S-1-5-32-544:F", "\/grant", "SYSTEM:F"\)/,
@@ -506,6 +690,12 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /SetEnvironmentVariable/);
     assert.match(runtime, /\$env:Path/);
     assert.match(runtime, /\.write-test/);
+    assert.match(runtime, /C:\\actions-runner\\_work/);
+    assert.match(runtime, /"--work", \$runnerWorkRoot/);
+    assert.doesNotMatch(runtime, /D:\\runtime-cache\\actions-work/);
+    assert.match(runtime, /pnpm-store\\node-lts/);
+    assert.match(runtime, /cargo\\rust-stable/);
+    assert.match(runtime, /turbo\\turbo-v2/);
     assert.doesNotMatch(shared, /config\.cmd|actions-runner|choco install/i);
     assert.match(runtime, /config\.cmd/);
     assert.match(runtime, /choco\.exe/);
@@ -520,10 +710,23 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(verify, /QXL/);
     assert.match(verify, /rebootSemanticsValid/);
     assert.doesNotMatch(verify, /PrimaryScreen/);
+    assert.match(verify, /ExpectedRunnerUrl/);
+    assert.match(verify, /ExpectedRunnerName/);
+    assert.match(verify, /ExpectedRunnerServiceName/);
+    assert.match(verify, /ExpectedAudioModel/);
+    assert.match(verify, /ExpectedAudioBackend/);
+    assert.match(verify, /ExpectedSerialRole/);
+    assert.match(verify, /ExpectedSerialDeviceIdentity/);
+    assert.match(verify, /lower-controller and scanner QEMU USB serial roles/);
+    assert.doesNotMatch(verify, /serialPorts\.Count -ge 2/);
     assert.match(builder, /UserKnownHostsFile=/);
     assert.match(builder, /<Group>Administrators<\/Group>/);
     assert.match(builder, /readJsonWithBom/);
     assert.match(builder, /domifaddr/);
+    assert.match(builder, /qemu-img", \[\s*"convert"/);
+    assert.match(builder, /publishVerifiedBaselineRelease/);
+    assert.match(builder, /PrepareKvmGuest/);
+    assert.match(builder, /USB\\\\VID_0403&PID_6001/);
     assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
     for (const expected of [
       "SSH",

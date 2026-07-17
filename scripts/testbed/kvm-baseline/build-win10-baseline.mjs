@@ -2,6 +2,7 @@
 
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { constants } from "node:fs";
 import {
   access,
@@ -14,7 +15,7 @@ import {
   statfs,
   writeFile,
 } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { availableParallelism, hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -22,11 +23,14 @@ import { renderLibvirtDomainXml } from "./libvirt-runtime-profile.mjs";
 import {
   REQUIRED_COMMANDS,
   assertReadableRegularFile,
+  baselinePublicationLayout,
   evaluateHostPreflight,
   parseGuestAddress,
+  publishVerifiedBaselineRelease,
   readJsonWithBom,
-  replaceFilesTransaction,
+  recoverPublishedBaseline,
   runtimeProfileForConfig,
+  runtimeProfileForPublishedRelease,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
@@ -116,6 +120,31 @@ async function kvmDeviceAvailable() {
   }
 }
 
+async function collectExecutingHostIdentity(configuredAddress) {
+  const hostnames = new Set([hostname().toLowerCase()]);
+  const fqdn = await run("hostname", ["-f"], { allowFailure: true });
+  if (!fqdn.failed && fqdn.stdout.trim())
+    hostnames.add(fqdn.stdout.trim().toLowerCase());
+  const addresses = new Set();
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.address) addresses.add(entry.address.toLowerCase());
+    }
+  }
+  const resolvedConfiguredAddresses = new Set(
+    (
+      await lookup(configuredAddress, { all: true, verbatim: true }).catch(
+        () => [],
+      )
+    ).map((entry) => entry.address.toLowerCase()),
+  );
+  return {
+    hostnames: [...hostnames],
+    addresses: [...addresses],
+    resolvedConfiguredAddresses: [...resolvedConfiguredAddresses],
+  };
+}
+
 function commandExists(command) {
   return (
     spawnSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" })
@@ -143,6 +172,7 @@ async function collectHostObservation(config) {
     /^MemAvailable:\s+(\d+)/m.exec(memory)?.[1] ?? 0,
   );
   return {
+    hostIdentity: await collectExecutingHostIdentity(config.host.address),
     kvmAvailable: await kvmDeviceAvailable(),
     libvirtAvailable: !libvirt.failed,
     commands,
@@ -206,7 +236,8 @@ $config = Get-Content -Raw (Join-Path $mediaRoot "baseline-config.json") | Conve
 ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
-& (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
+& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
@@ -332,6 +363,75 @@ function powershellLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function xmlAttributeEquals(element, attribute, value) {
+  const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${attribute}=(['\"])${escaped}\\1`).test(element);
+}
+
+// The guest sees PnP identities, while libvirt remains authoritative for the
+// exact ICH9/SPICE and USB-serial role definition.
+export function verifyDefinedRuntimeDevices(domainXml, profile) {
+  const xml = String(domainXml);
+  const audio = [...xml.matchAll(/<audio\b[^>]*\/?>(?:<\/audio>)?/g)];
+  const sounds = [...xml.matchAll(/<sound\b[^>]*\/?>(?:<\/sound>)?/g)];
+  if (
+    audio.length !== 1 ||
+    !xmlAttributeEquals(audio[0][0], "id", "1") ||
+    !xmlAttributeEquals(audio[0][0], "type", profile.audio.backend)
+  ) {
+    throw new Error(
+      "defined domain must contain exactly one SPICE audio backend",
+    );
+  }
+  if (
+    sounds.length !== 1 ||
+    !xmlAttributeEquals(sounds[0][0], "model", profile.audio.model) ||
+    /\baudio=(['"])/.test(sounds[0][0])
+  ) {
+    throw new Error("defined domain must use the default ICH9 audio device");
+  }
+  const serial = [...xml.matchAll(/<serial\b[^>]*>([\s\S]*?)<\/serial>/g)];
+  if (serial.length !== profile.serialRoles.length) {
+    throw new Error(
+      "defined domain must contain exactly the configured USB serial roles",
+    );
+  }
+  const serialRoles = serial.map((entry, index) => {
+    const definition = entry[0];
+    const role = profile.serialRoles[index];
+    if (
+      !/<target\b[^>]*\btype=(['"])usb-serial\1/.test(definition) ||
+      !xmlAttributeEquals(definition, "port", String(index)) ||
+      !xmlAttributeEquals(definition, "name", `serial-${role}`)
+    ) {
+      throw new Error(`defined domain USB serial role ${role} is invalid`);
+    }
+    return role;
+  });
+  return {
+    audio: {
+      model: profile.audio.model,
+      backend: profile.audio.backend,
+      defaultDevice: profile.audio.defaultDevice,
+    },
+    serialRoles,
+  };
+}
+
+async function verifyDefinedRuntimeDevicesForDomain(
+  config,
+  domainName,
+  profile,
+) {
+  const { stdout } = await run("virsh", [
+    "--connect",
+    config.host.libvirtUri,
+    "dumpxml",
+    domainName,
+  ]);
+  return verifyDefinedRuntimeDevices(stdout, profile);
+}
+
 async function waitForGuestVerification(config, domainName, stagingDirectory) {
   const verificationPath =
     "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
@@ -387,7 +487,7 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
         await run("ssh", [
           ...sshOptions,
           target,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -OutputPath ${verificationPath}`,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedAudioBackend 'spice' -ExpectedAudioDeviceIdentity 'SPICE' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialDeviceIdentity 'USB\\VID_0403&PID_6001','USB\\VID_0403&PID_6001' -OutputPath ${powershellLiteral(verificationPath)}"`,
         ]);
         await run("scp", [
           ...sshOptions,
@@ -417,15 +517,6 @@ async function acquireRunnerRegistrationToken(config) {
     );
   }
   return token;
-}
-
-async function pathExists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function domainState(config) {
@@ -503,40 +594,12 @@ async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
   throw new Error("guest did not shut down cleanly within five minutes");
 }
 
-async function captureInactiveDomainXml(config) {
-  const result = await run(
-    "virsh",
-    [
-      "--connect",
-      config.host.libvirtUri,
-      "dumpxml",
-      "--inactive",
-      config.vm.name,
-    ],
-    { allowFailure: true },
-  );
-  return result.failed ? null : result.stdout;
-}
-
-async function restoreInactiveDomain(config, previousXml, stagingDirectory) {
-  if (previousXml === null) {
-    await run(
-      "virsh",
-      ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
-      { allowFailure: true },
-    );
-    return;
-  }
-  const previousXmlPath = join(
-    stagingDirectory,
-    "previous-inactive-domain.xml",
-  );
-  await writeFile(previousXmlPath, previousXml, { mode: 0o600 });
+async function definePublishedDomain(config, release) {
   await run("virsh", [
     "--connect",
     config.host.libvirtUri,
     "define",
-    previousXmlPath,
+    release.domainXmlPath,
     "--validate",
   ]);
 }
@@ -562,13 +625,14 @@ export async function buildWin10Baseline(
   };
   if (!execute) return plan;
   await mkdir(dirname(config.storage.baselinePath), { recursive: true });
-  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
+  const publishedRelease = await recoverPublishedBaseline(config);
   const state = await domainState(config);
   if (state && state !== "shut off") {
     throw new Error(
       "the published baseline VM must be shut off before a rebuild",
     );
   }
+  if (publishedRelease) await definePublishedDomain(config, publishedRelease);
   await assertReadableRegularFile(
     config.guest.administratorPasswordFile,
     "guest.administratorPasswordFile",
@@ -585,31 +649,14 @@ export async function buildWin10Baseline(
     config.media.spiceGuestToolsInstallerPath,
     "media.spiceGuestToolsInstallerPath",
   );
-  const publishedBaselineExists = await pathExists(config.storage.baselinePath);
-  const persistentCacheExists = await pathExists(config.storage.cacheDiskPath);
-  if (publishedBaselineExists && !persistentCacheExists) {
-    throw new Error(
-      "a published baseline requires its persistent cache disk before rebuild",
-    );
-  }
   const stagingDirectory = await mkdtemp(
     join(
       dirname(config.storage.baselinePath),
       "." + config.vm.name + ".staging-",
     ),
   );
-  const cacheStagingDirectory = persistentCacheExists
-    ? stagingDirectory
-    : await mkdtemp(
-        join(
-          dirname(config.storage.cacheDiskPath),
-          "." + config.vm.name + ".cache-staging-",
-        ),
-      );
   const stagedPath = join(stagingDirectory, "system.qcow2");
-  const stagedCachePath = persistentCacheExists
-    ? config.storage.cacheDiskPath
-    : join(cacheStagingDirectory, "cache.qcow2");
+  const stagedCachePath = join(stagingDirectory, "cache.qcow2");
   const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
   try {
     await run("qemu-img", [
@@ -619,7 +666,17 @@ export async function buildWin10Baseline(
       stagedPath,
       `${config.storage.systemDiskGiB}G`,
     ]);
-    if (!persistentCacheExists) {
+    if (publishedRelease) {
+      await run("qemu-img", [
+        "convert",
+        "-f",
+        "qcow2",
+        "-O",
+        "qcow2",
+        publishedRelease.cachePath,
+        stagedCachePath,
+      ]);
+    } else {
       await run("qemu-img", [
         "create",
         "-f",
@@ -669,6 +726,11 @@ export async function buildWin10Baseline(
       constructionDomain,
       stagingDirectory,
     );
+    const virtualDevices = await verifyDefinedRuntimeDevicesForDomain(
+      config,
+      constructionDomain,
+      constructionProfile,
+    );
     await shutdownGuestAndWait(config, constructionDomain, stagingDirectory);
     await run("qemu-img", ["check", stagedPath]);
     await run("qemu-img", ["check", stagedCachePath]);
@@ -678,17 +740,22 @@ export async function buildWin10Baseline(
       "undefine",
       constructionDomain,
     ]);
+    const nextReleaseId = `release-${randomUUID()}`;
+    const publishedProfile = runtimeProfileForPublishedRelease(
+      config,
+      nextReleaseId,
+    );
     const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
-    await writeFile(finalXmlPath, renderLibvirtDomainXml(profile), {
+    await writeFile(finalXmlPath, renderLibvirtDomainXml(publishedProfile), {
       mode: 0o600,
     });
-    const previousInactiveXml = await captureInactiveDomainXml(config);
     const diagnostic = {
       schemaVersion: "win10-kvm-baseline-diagnostic/v1",
       sourceCommit: sourceCommit ?? null,
       verifiedAt: new Date().toISOString(),
-      profile,
+      profile: publishedProfile,
       verification,
+      virtualDevices,
     };
     const stagedDiagnosticPath = join(stagingDirectory, "diagnostic.json");
     await writeFile(
@@ -696,57 +763,32 @@ export async function buildWin10Baseline(
       `${JSON.stringify(diagnostic, null, 2)}\n`,
       { mode: 0o600 },
     );
-    const stagedStableXmlPath = join(stagingDirectory, "stable-domain.xml");
-    await copyFile(finalXmlPath, stagedStableXmlPath);
-    const publication = [
-      { stagedPath, destinationPath: config.storage.baselinePath },
-      {
-        stagedPath: stagedDiagnosticPath,
-        destinationPath: `${config.storage.baselinePath}.diagnostic.json`,
+    const release = await publishVerifiedBaselineRelease({
+      config,
+      releaseId: nextReleaseId,
+      stagedSystemPath: stagedPath,
+      stagedCachePath,
+      stagedDomainXmlPath: finalXmlPath,
+      stagedDiagnosticPath,
+      profile: publishedProfile,
+      verified: verification.ok === true,
+    });
+    await definePublishedDomain(config, release);
+    return {
+      ...plan,
+      verification,
+      promoted: true,
+      publication: {
+        currentManifestPath:
+          baselinePublicationLayout(config).currentManifestPath,
+        releaseId: release.releaseId,
       },
-      {
-        stagedPath: stagedStableXmlPath,
-        destinationPath: `${config.storage.baselinePath}.domain.xml`,
-      },
-    ];
-    if (!persistentCacheExists)
-      publication.splice(1, 0, {
-        stagedPath: stagedCachePath,
-        destinationPath: config.storage.cacheDiskPath,
-      });
-    let stableDomainPublicationStarted = false;
-    try {
-      await replaceFilesTransaction(publication, async (_entry, count) => {
-        if (count === publication.length) {
-          stableDomainPublicationStarted = true;
-          await run("virsh", [
-            "--connect",
-            config.host.libvirtUri,
-            "define",
-            `${config.storage.baselinePath}.domain.xml`,
-            "--validate",
-          ]);
-        }
-      });
-    } catch (error) {
-      if (stableDomainPublicationStarted) {
-        await restoreInactiveDomain(
-          config,
-          previousInactiveXml,
-          stagingDirectory,
-        );
-      }
-      throw error;
-    }
-    return { ...plan, verification, promoted: true };
+    };
   } catch (error) {
     await destroyAndUndefine(config, constructionDomain);
     throw error;
   } finally {
     await rm(stagingDirectory, { recursive: true, force: true });
-    if (cacheStagingDirectory !== stagingDirectory) {
-      await rm(cacheStagingDirectory, { recursive: true, force: true });
-    }
   }
 }
 
