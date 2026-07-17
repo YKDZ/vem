@@ -111,17 +111,13 @@ jobs:
           [[ "$VEM_VM_HOST_ADAPTER" = /* && -x "$VEM_VM_HOST_ADAPTER" ]]
           ip -o -4 addr show scope global | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -Fx "$VEM_RUNTIME_PLATFORM_HOST"
 
-      - name: Verify Runner pnpm
+      - name: Verify Runner Toolchain
         run: |
           set -euo pipefail
+          command -v node
           command -v pnpm
+          [[ "$(node --version)" =~ ^v24\. ]]
           pnpm --version
-
-      - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24
-          cache: pnpm
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
@@ -178,14 +174,14 @@ jobs:
           rm -rf -- "$cache_dir"
           mv "$staging" "$cache_dir"
 
-      - name: Restore Turbo cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: .turbo/cache
-          key: ${{ runner.os }}-turbo-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-${{ github.job }}-
-            ${{ runner.os }}-turbo-
+      - name: Use Host Turbo Cache
+        run: |
+          set -euo pipefail
+          cache_root="${RUNNER_TEMP%/_temp}/_turbo-cache"
+          [[ "$cache_root" = /* ]]
+          mkdir -p "$cache_root" .turbo
+          rm -rf .turbo/cache
+          ln -s "$cache_root" .turbo/cache
 
       - name: Prepare Local VM Testbed SSH Access
         run: |
