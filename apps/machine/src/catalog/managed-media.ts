@@ -50,9 +50,9 @@ export function resolveManagedMediaReference(
     const origin = new URL(provisionedApiBaseUrl).origin;
     return { url: new URL(reference, origin).toString(), diagnostic: null };
   } catch {
-    return {
-      url: null,
-      diagnostic: "provisioned API origin is invalid for managed media",
-    };
+    if (typeof location !== "undefined" && location.origin) {
+      return { url: new URL(reference, location.origin).toString(), diagnostic: null };
+    }
+    return { url: null, diagnostic: "provisioned API origin is invalid for managed media" };
   }
 }

@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   bringUpSnapshotSchema,
-  configSummarySchema,
   daemonEventSchema,
   networkSettingsResponseSchema,
   naturalContextSnapshotSchema,
@@ -475,81 +474,6 @@ describe("daemon schemas", () => {
     expect(parsed.localSiteSignals.temperatureCelsius).toBe(24);
   });
 
-  it("parses daemon config summary with stock movement retention days", () => {
-    const parsed = configSummarySchema.parse({
-      public: {
-        machineCode: "MACHINE-1",
-        apiBaseUrl: "http://localhost:3000/api",
-        mqttUrl: "mqtt://localhost:1883",
-        mqttUsername: null,
-        hardwareAdapter: "mock",
-        serialPortPath: null,
-        lowerControllerUsbIdentity: null,
-        scannerAdapter: "disabled",
-        scannerSerialPortPath: null,
-        scannerBaudRate: 9600,
-        scannerFrameSuffix: "crlf",
-        visionEnabled: true,
-        visionWsUrl: "ws://127.0.0.1:7892/ws",
-        visionRequestTimeoutMs: 8000,
-        machineAudioVolume: 0.35,
-        kioskMode: false,
-        stockMovementRetentionDays: 90,
-      },
-      machineSecretConfigured: false,
-      mqttSigningSecretConfigured: false,
-      mqttPasswordConfigured: false,
-    });
-
-    expect(parsed.public.stockMovementRetentionDays).toBe(90);
-    expect(parsed.public.machineAudioVolume).toBe(0.35);
-    expect(parsed.public.audioCueSettings).toEqual({
-      enabled: false,
-      categories: {
-        presence: false,
-        transaction: false,
-      },
-    });
-    expect(parsed.public).not.toHaveProperty("tryOnCameraDeviceId");
-    expect(parsed.public).not.toHaveProperty("tryOnCameraLabel");
-  });
-
-  it("migrates legacy daemon presence audio config into audio cue settings", () => {
-    const parsed = configSummarySchema.parse({
-      public: {
-        machineCode: "MACHINE-1",
-        apiBaseUrl: "http://localhost:3000/api",
-        mqttUrl: "mqtt://localhost:1883",
-        mqttUsername: null,
-        hardwareAdapter: "mock",
-        serialPortPath: null,
-        lowerControllerUsbIdentity: null,
-        scannerAdapter: "disabled",
-        scannerSerialPortPath: null,
-        scannerBaudRate: 9600,
-        scannerFrameSuffix: "crlf",
-        visionEnabled: true,
-        visionWsUrl: "ws://127.0.0.1:7892/ws",
-        visionRequestTimeoutMs: 8000,
-        presenceAudioEnabled: true,
-        kioskMode: false,
-        stockMovementRetentionDays: 90,
-      },
-      machineSecretConfigured: false,
-      mqttSigningSecretConfigured: false,
-      mqttPasswordConfigured: false,
-    });
-
-    expect(parsed.public.audioCueSettings).toEqual({
-      enabled: true,
-      categories: {
-        presence: true,
-        transaction: false,
-      },
-    });
-    expect("presenceAudioEnabled" in parsed.public).toBe(false);
-  });
-
   it("parses transaction attempt summary and restricted scanner adapter config", () => {
     const tx = transactionSnapshotSchema.parse({
       orderId: "550e8400-e29b-41d4-a716-446655440010",
@@ -601,28 +525,5 @@ describe("daemon schemas", () => {
     expect(tx.vending?.pickupReminder?.remainingSeconds).toBe(12);
     expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
 
-    expect(() =>
-      configSummarySchema.parse({
-        public: {
-          machineCode: null,
-          apiBaseUrl: "http://localhost:3000/api",
-          mqttUrl: "mqtt://localhost:1883",
-          mqttUsername: null,
-          hardwareAdapter: "mock",
-          serialPortPath: null,
-          scannerAdapter: "web_serial_dev",
-          scannerSerialPortPath: null,
-          scannerBaudRate: 9600,
-          scannerFrameSuffix: "crlf",
-          visionEnabled: true,
-          visionWsUrl: "ws://127.0.0.1:7892/ws",
-          visionRequestTimeoutMs: 8000,
-          kioskMode: false,
-        },
-        machineSecretConfigured: false,
-        mqttSigningSecretConfigured: false,
-        mqttPasswordConfigured: false,
-      }),
-    ).toThrow();
   });
 });

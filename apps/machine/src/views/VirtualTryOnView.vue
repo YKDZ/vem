@@ -40,7 +40,7 @@ const silhouetteDiagnosticLocation = computed(
 const silhouetteResolution = computed(() =>
   resolveManagedMediaReference(
     selectedVariant.value?.tryOnSilhouetteUrl,
-    machineStore.config.apiBaseUrl,
+    machineStore.platformApiBaseUrl ?? "",
   ),
 );
 const silhouetteUrl = computed(() => silhouetteResolution.value.url);

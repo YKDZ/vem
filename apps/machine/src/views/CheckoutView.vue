@@ -166,7 +166,7 @@ async function submitOrder(): Promise<void> {
               <ManagedMediaImage
                 :reference="item.coverImageUrl"
                 :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
-                :api-base-url="machineStore.config.apiBaseUrl"
+                :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                 :fallback="fallbackImage"
                 :alt="item.productName"
                 :class="{ 'product-image-fallback': !item.coverImageUrl }"

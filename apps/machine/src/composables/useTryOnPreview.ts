@@ -47,10 +47,13 @@ export function useTryOnPreview(): {
     }
 
     try {
-      const session = await openVisionTryOnSession(machineStore.config, {
-        catalogKey: input.catalogKey,
-        variantId: input.variantId,
-      });
+      const session = await openVisionTryOnSession(
+        { machineCode: machineStore.machineCode },
+        {
+          catalogKey: input.catalogKey,
+          variantId: input.variantId,
+        },
+      );
       if (sequence !== requestSequence) {
         await session.stop("replaced");
         return;

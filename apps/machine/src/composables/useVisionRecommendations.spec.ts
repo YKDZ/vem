@@ -9,8 +9,6 @@ import type {
   VisionProfileResultPayload,
 } from "@/native/vision";
 
-import { machineConfigDefaults } from "@/config/machine-config";
-import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
 const { subscribeVisionProfilesMock } = vi.hoisted(() => ({
@@ -423,24 +421,10 @@ describe("useVisionRecommendations", () => {
     expect(diagnosticPayload).not.toContain("VISION-OLD-001");
   });
 
-  it("does not subscribe or publish a diagnostic payload when vision is disabled", async () => {
+  it("subscribes through the daemon-owned runtime vision connection", async () => {
     useVisionStore().applyLatestProfileResult(
       profilePayload("VISION-STALE-DISABLED"),
     );
-    useMachineStore().$patch({
-      configLoaded: true,
-      configSummary: {
-        public: {
-          ...machineConfigDefaults,
-          visionEnabled: false,
-        },
-        machineSecretConfigured: false,
-        mqttSigningSecretConfigured: false,
-        mqttPasswordConfigured: false,
-        provisioned: true,
-        provisioningIssues: [],
-      },
-    });
     const App = defineComponent({
       setup() {
         useVisionRecommendations();
@@ -451,7 +435,6 @@ describe("useVisionRecommendations", () => {
     createApp(App).use(pinia).mount(host);
     await nextTick();
 
-    expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
-    expect(useVisionStore().latestDiagnosticPayload).toBeNull();
+    expect(subscribeVisionProfilesMock).toHaveBeenCalledTimes(1);
   });
 });

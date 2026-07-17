@@ -121,7 +121,7 @@ async function executeProtectedNetworkTask(
 }
 
 describe("DaemonApiClient", () => {
-  it("reads the safe runtime configuration summary instead of legacy config IPC", async () => {
+  it("reads the generated effective runtime configuration projection", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -130,56 +130,19 @@ describe("DaemonApiClient", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
-        JSON.stringify({
-          configuredState: {
-            factoryManifest: true,
-            localBringUpSettings: true,
-            provisioningProfileCache: false,
-            machineSecretConfigured: false,
-            mqttSigningSecretConfigured: false,
-            mqttPasswordConfigured: false,
-            maintenancePinConfigured: false,
-          },
-          provisioningProfileCache: null,
-          effectivePublic: {
-            machineCode: null,
-            apiBaseUrl: "http://127.0.0.1:26849/api",
-            mqttUrl: "mqtt://127.0.0.1:1883",
-            mqttUsername: null,
-            hardwareAdapter: "mock",
-            serialPortPath: null,
-            scannerAdapter: "disabled",
-            scannerSerialPortPath: null,
-            scannerBaudRate: 9600,
-            scannerFrameSuffix: "crlf",
-            visionEnabled: false,
-            visionWsUrl: "ws://127.0.0.1:7892/ws",
-            visionRequestTimeoutMs: 8000,
-            kioskMode: true,
-          },
-        }),
+        JSON.stringify(effectiveRuntimeConfigurationFixture()),
         { status: 200 },
       ),
     );
 
-    await expect(daemonClient.getConfig()).resolves.toMatchObject({
-      provisioned: false,
-      provisioningIssues: [
-        "provisioning_profile_cache_missing",
-        "maintenance_pin_not_configured",
-      ],
+    await expect(daemonClient.getEffectiveRuntimeConfiguration()).resolves.toMatchObject({
+      machine: null,
+      profileRefresh: { status: "unclaimed" },
     });
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7891/v1/config/summary",
+      "http://127.0.0.1:7891/v1/runtime-configuration",
       expect.any(Object),
     );
-  });
-
-  it("never sends a mutable legacy configuration request", async () => {
-    await expect(
-      daemonClient.saveConfig({ machineCode: "M001" }),
-    ).rejects.toThrow("直接配置编辑已禁用");
-    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("issues a daemon-maintained scoped session and attaches its opaque id only to later IPC calls", async () => {
@@ -963,12 +926,9 @@ describe("DaemonApiClient", () => {
     });
   });
 
-  it("does not expose legacy direct claim, network, or mutable config clients", async () => {
+  it("does not expose legacy direct claim or network clients", async () => {
     expect(daemonClient).not.toHaveProperty("claimMachine");
     expect(daemonClient).not.toHaveProperty("applyNetworkSettings");
-    await expect(
-      daemonClient.saveConfig({ machineCode: "M001" }),
-    ).rejects.toThrow("直接配置编辑已禁用");
   });
 
   it("reads maintenance enrollment diagnostics without private key material", async () => {
@@ -1950,3 +1910,46 @@ describe("DaemonApiClient", () => {
     subscription.close();
   });
 });
+
+function effectiveRuntimeConfigurationFixture() {
+  const bootstrap = {
+    schemaVersion: 1,
+    provisioningApiBaseUrl: "http://127.0.0.1:26849/api",
+    hardwareModel: "vem-prod-24",
+    topology: { identity: "vem-prod-24", version: "v1" },
+  };
+  return {
+    schemaVersion: 1,
+    generation: 0,
+    sourceRevisions: {
+      bootstrapSchemaVersion: 1,
+      profile: null,
+      localSettingsRevision: 0,
+    },
+    sourceDocuments: { bootstrap, profileCache: null },
+    machine: null,
+    platform: null,
+    hardware: {
+      model: bootstrap.hardwareModel,
+      topology: bootstrap.topology,
+      expectedProfile: null,
+      lowerControllerBinding: null,
+      scannerBinding: null,
+      scannerProtocol: null,
+    },
+    experience: {
+      audio: {
+        volume: 0.7,
+        cuesEnabled: false,
+        presenceCuesEnabled: false,
+        transactionCuesEnabled: false,
+      },
+    },
+    secretStatus: {
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    },
+    profileRefresh: { status: "unclaimed", lastError: null },
+  };
+}

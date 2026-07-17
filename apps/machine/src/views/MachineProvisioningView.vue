@@ -16,9 +16,6 @@ import {
 } from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
-import { useMachineStore } from "@/stores/machine";
-
-const machineStore = useMachineStore();
 
 const claimForm = reactive({ claimCode: "" });
 const networkForm = reactive({ ssid: "", password: "", hidden: false });
@@ -466,14 +463,12 @@ async function submitClaim(): Promise<void> {
   submitting.value = true;
   const claimCode = claimForm.claimCode.trim().toUpperCase();
   try {
-    const result = provisioningClaimResponseSchema.parse(
+    provisioningClaimResponseSchema.parse(
       await daemonClient.executeBringUpTask(task, {
         type: "claim_machine",
         claimCode,
       }),
     );
-    machineStore.configSummary = result.config;
-    machineStore.configLoaded = true;
     claimForm.claimCode = "";
     await refreshBringUp();
     await submitMachineNavigationIntent({

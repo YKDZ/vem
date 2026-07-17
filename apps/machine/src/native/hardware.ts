@@ -1,9 +1,8 @@
 import { z } from "zod";
 
-import { hardwareAdapterSchema } from "@/config/machine-config";
-
 import { callTauriCommand, isTauriRuntime } from "./tauri";
 
+const hardwareAdapterSchema = z.enum(["mock", "serial"]);
 export const hardwareStatusSchema = z.enum(["ok", "degraded"]);
 
 export const hardwareSelfCheckResultSchema = z.object({

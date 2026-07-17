@@ -97,7 +97,6 @@ import type {
 
 import { onCustomerEvent } from "@/composables/useCustomerEvents";
 import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
-import { machineConfigDefaults } from "@/config/machine-config";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -356,21 +355,38 @@ function makeCatalogItem(): MachineCatalogItem {
 }
 
 function applyVisionTryOnConfig(): void {
-  useMachineStore().$patch({
-    configLoaded: true,
-    configSummary: {
-      public: {
-        ...machineConfigDefaults,
-        machineCode: "M001",
-        visionEnabled: true,
-        visionWsUrl: "ws://127.0.0.1:7892/ws",
-      },
-      machineSecretConfigured: true,
-      mqttSigningSecretConfigured: true,
-      mqttPasswordConfigured: false,
-      provisioned: true,
-      provisioningIssues: [],
+  useMachineStore().applyEffectiveRuntimeConfiguration({
+    schemaVersion: 1,
+    generation: 1,
+    sourceRevisions: {
+      bootstrapSchemaVersion: 1,
+      profile: null,
+      localSettingsRevision: 0,
     },
+    sourceDocuments: {
+      bootstrap: {
+        schemaVersion: 1,
+        provisioningApiBaseUrl: "http://localhost:3000",
+        hardwareModel: "test",
+        topology: { identity: "test", version: "1" },
+      },
+      profileCache: null,
+    },
+    machine: null,
+    platform: null,
+    hardware: {
+      model: "test",
+      topology: { identity: "test", version: "1" },
+      expectedProfile: null,
+      lowerControllerBinding: null,
+      scannerBinding: null,
+      scannerProtocol: null,
+    },
+    experience: {
+      audio: { volume: 0.7, cuesEnabled: false, presenceCuesEnabled: false, transactionCuesEnabled: false },
+    },
+    secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
+    profileRefresh: { status: "unclaimed", lastError: null },
   });
 }
 
@@ -1543,7 +1559,7 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          visionWsUrl: "ws://127.0.0.1:7892/ws",
+          machineCode: null,
         }),
         {
           catalogKey: item.catalogKey,

@@ -27,83 +27,6 @@ const usbIdentitySchema = z.object({
   serialNumber: z.string().nullable().default(null),
 });
 
-const audioCueSettingsSchema = z.object({
-  enabled: z.boolean().default(false),
-  categories: z
-    .object({
-      presence: z.boolean().default(false),
-      transaction: z.boolean().default(false),
-    })
-    .default({
-      presence: false,
-      transaction: false,
-    }),
-});
-
-const machineAudioOutputBindingSchema = z
-  .object({
-    endpointId: z.string().trim().min(1),
-    friendlyName: z.string().trim().min(1).nullable().default(null),
-    confirmedHeardAt: z.iso.datetime(),
-    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  })
-  .nullable()
-  .default(null);
-
-const configSummaryPublicSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return value;
-    }
-    const publicConfig: Record<string, unknown> = {
-      ...Object.fromEntries(Object.entries(value)),
-    };
-    if (
-      !("audioCueSettings" in publicConfig) &&
-      typeof publicConfig.presenceAudioEnabled === "boolean"
-    ) {
-      publicConfig.audioCueSettings = {
-        enabled: publicConfig.presenceAudioEnabled,
-        categories: {
-          presence: publicConfig.presenceAudioEnabled,
-          transaction: false,
-        },
-      };
-    }
-    delete publicConfig.presenceAudioEnabled;
-    return publicConfig;
-  },
-  z.object({
-    machineCode: z.string().nullable(),
-    machineLocationLabel: z.string().nullable().optional(),
-    apiBaseUrl: z.string(),
-    mqttUrl: z.string(),
-    mqttUsername: z.string().nullable(),
-    hardwareAdapter: z.enum(["mock", "serial"]),
-    serialPortPath: z.string().nullable(),
-    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerAdapter: z.enum(["disabled", "serial_text"]),
-    scannerSerialPortPath: z.string().nullable(),
-    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerBaudRate: z.number().int(),
-    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
-    visionEnabled: z.boolean(),
-    visionWsUrl: z.string(),
-    visionRequestTimeoutMs: z.number().int(),
-    machineAudioVolume: z.number().min(0).max(1).default(0.7),
-    machineAudioOutputBinding: machineAudioOutputBindingSchema.default(null),
-    audioCueSettings: audioCueSettingsSchema.default({
-      enabled: false,
-      categories: {
-        presence: false,
-        transaction: false,
-      },
-    }),
-    kioskMode: z.boolean(),
-    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
-  }),
-);
-
 const lowerControllerCandidateSchema = z.object({
   portPath: z.string(),
   usbIdentity: usbIdentitySchema.nullable().optional(),
@@ -167,68 +90,6 @@ export const readySnapshotSchema = z.object({
   ]),
   updatedAt: z.string(),
 });
-
-export const configSummarySchema = z.object({
-  public: configSummaryPublicSchema,
-  machineSecretConfigured: z.boolean(),
-  mqttSigningSecretConfigured: z.boolean(),
-  mqttPasswordConfigured: z.boolean(),
-  maintenancePinConfigured: z.boolean().default(false),
-  provisioned: z.boolean().default(false),
-  provisioningIssues: z.array(z.string()).default([]),
-});
-
-const runtimeConfigurationStateSchema = z.object({
-  factoryManifest: z.boolean(),
-  localBringUpSettings: z.boolean(),
-  provisioningProfileCache: z.boolean(),
-  machineSecretConfigured: z.boolean(),
-  mqttSigningSecretConfigured: z.boolean(),
-  mqttPasswordConfigured: z.boolean(),
-  maintenancePinConfigured: z.boolean(),
-});
-
-const runtimeConfigurationSummarySchema = z.object({
-  configuredState: runtimeConfigurationStateSchema,
-  provisioningProfileCache: z.unknown().nullable(),
-  effectivePublic: configSummaryPublicSchema,
-});
-
-/**
- * `/v1/config/summary` is the read-only configuration projection.  The
- * legacy `/v1/config` mutation endpoint is deliberately unavailable, so the
- * browser must derive its existing UI summary from this safe runtime view.
- */
-export function configSummaryFromRuntimeConfigurationSummary(
-  value: unknown,
-): z.infer<typeof configSummarySchema> {
-  const summary = runtimeConfigurationSummarySchema.parse(value);
-  const { configuredState } = summary;
-  const provisioned =
-    summary.provisioningProfileCache !== null &&
-    summary.effectivePublic.machineCode !== null &&
-    configuredState.maintenancePinConfigured;
-  const provisioningIssues: string[] = [];
-  if (
-    summary.provisioningProfileCache === null ||
-    summary.effectivePublic.machineCode === null
-  ) {
-    provisioningIssues.push("provisioning_profile_cache_missing");
-  }
-  if (!configuredState.maintenancePinConfigured) {
-    provisioningIssues.push("maintenance_pin_not_configured");
-  }
-
-  return configSummarySchema.parse({
-    public: summary.effectivePublic,
-    machineSecretConfigured: configuredState.machineSecretConfigured,
-    mqttSigningSecretConfigured: configuredState.mqttSigningSecretConfigured,
-    mqttPasswordConfigured: configuredState.mqttPasswordConfigured,
-    maintenancePinConfigured: configuredState.maintenancePinConfigured,
-    provisioned,
-    provisioningIssues,
-  });
-}
 
 export const maintenanceSessionSchema = z.object({
   sessionId: z.string().min(1),
@@ -414,7 +275,6 @@ export const provisioningClaimResponseSchema = z.object({
   status: z.literal("provisioned"),
   machineCode: z.string(),
   restartRequested: z.boolean(),
-  config: configSummarySchema,
 });
 
 export const maintenanceEnrollmentStatusSchema = z.object({
@@ -750,7 +610,6 @@ export const daemonEventSchema = daemonIpcEventNotificationSchema;
 
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
-export type ConfigSummary = z.infer<typeof configSummarySchema>;
 export type MaintenanceSession = z.infer<typeof maintenanceSessionSchema>;
 export type BringUpSnapshot = z.infer<typeof bringUpSnapshotSchema>;
 export type NetworkSettingsResponse = z.infer<

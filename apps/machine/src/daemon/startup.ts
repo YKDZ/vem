@@ -5,7 +5,6 @@ import {
 
 import type {
   BringUpSnapshot,
-  ConfigSummary,
   HealthSnapshot,
   ReadySnapshot,
   TransactionSnapshot,
@@ -32,7 +31,6 @@ function startupRouteFromProjectionTarget(
 export function routeForStartup(input: {
   daemonAvailable: boolean;
   health: HealthSnapshot | null;
-  config?: ConfigSummary | null;
   bringUp?: BringUpSnapshot | null;
   ready: ReadySnapshot | null;
   restoredTransaction: TransactionSnapshot | null;
@@ -97,7 +95,6 @@ export function routeForBootFailure(
   return routeForStartup({
     daemonAvailable: restoredTransaction !== null,
     health: null,
-    config: null,
     bringUp: null,
     ready: null,
     restoredTransaction,

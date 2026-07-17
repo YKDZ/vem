@@ -22,24 +22,6 @@ vi.mock("@/native/daemon-connection", () => ({
   getDaemonConnectionInfo: vi.fn(),
 }));
 
-const publicConfig = {
-  machineCode: "M001",
-  machineLocationLabel: "E2E lab",
-  apiBaseUrl: "http://127.0.0.1:3000/api",
-  mqttUrl: "mqtt://127.0.0.1:1883",
-  mqttUsername: "machine",
-  hardwareAdapter: "mock",
-  serialPortPath: null,
-  scannerAdapter: "disabled",
-  scannerSerialPortPath: null,
-  scannerBaudRate: 9600,
-  scannerFrameSuffix: "crlf",
-  visionEnabled: true,
-  visionWsUrl: "ws://127.0.0.1:7892/ws",
-  visionRequestTimeoutMs: 8000,
-  kioskMode: true,
-};
-
 const emptyTransaction = {
   orderId: null,
   orderNo: null,
@@ -323,20 +305,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     respondJson(res, fixtures.ready);
     return;
   }
-  if (url.pathname === "/v1/config/summary") {
-    const payload = {
-      configuredState: {
-        factoryManifest: true,
-        localBringUpSettings: true,
-        provisioningProfileCache: true,
-        machineSecretConfigured: true,
-        mqttSigningSecretConfigured: true,
-        mqttPasswordConfigured: true,
-        maintenancePinConfigured: true,
-      },
-      provisioningProfileCache: { machineCode: "M001" },
-      effectivePublic: publicConfig,
-    };
+  if (url.pathname === "/v1/runtime-configuration") {
+    const payload = effectiveRuntimeConfigurationFixture();
     expectNoSecretFields(payload);
     respondJson(res, payload);
     return;
@@ -526,11 +496,11 @@ describe("machine daemon client integration", () => {
     expect(options.defaultOptionKey).toBe("qr_code:alipay");
   });
 
-  it("retains the Machine Location Label in config summaries", async () => {
-    const config = await daemonClient.getConfig();
+  it("retains the Machine Location Label in the effective configuration", async () => {
+    const config = await daemonClient.getEffectiveRuntimeConfiguration();
 
-    expect(config.public.machineLocationLabel).toBe("E2E lab");
-    expect(config.public).not.toHaveProperty("machineLocationText");
+    expect(config.machine?.locationLabel).toBe("E2E lab");
+    expect(config.machine).not.toHaveProperty("machineLocationText");
   });
 
   it("loads Natural Context Projection from daemon IPC", async () => {
@@ -548,3 +518,105 @@ describe("machine daemon client integration", () => {
     );
   });
 });
+
+function effectiveRuntimeConfigurationFixture() {
+  const bootstrap = {
+    schemaVersion: 1,
+    provisioningApiBaseUrl: "http://127.0.0.1:3000/api",
+    hardwareModel: "vem-prod-24",
+    topology: { identity: "vem-prod-24", version: "v1" },
+  };
+  const profile = {
+    machine: {
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      code: "M001",
+      name: "E2E machine",
+      status: "online",
+      locationLabel: "E2E lab",
+    },
+    apiBaseUrl: bootstrap.provisioningApiBaseUrl,
+    runtimeEndpoints: {
+      apiBasePath: "/api",
+      machineAuthTokenPath: "/api/machine-auth/token",
+      machineApiBasePath: "/api/machines/M001",
+      mqttTopicPrefix: "vem/machines/M001",
+    },
+    mqttConnection: {
+      url: "mqtt://127.0.0.1:1883",
+      clientId: "vem-machine-M001",
+      username: "machine",
+    },
+    hardwareProfile: {
+      profile: "production",
+      controller: { required: true, protocol: "vem-vending-controller" },
+      paymentScanner: { required: true, supportsPaymentCode: true },
+      vision: { required: false, supportsRecommendations: true },
+    },
+    hardwareModel: bootstrap.hardwareModel,
+    hardwareSlotTopology: bootstrap.topology,
+    paymentCapability: {
+      profile: "production",
+      qrCodeEnabled: true,
+      paymentCodeEnabled: true,
+      serverTime: "2026-07-17T00:00:00.000Z",
+    },
+    metadata: {
+      profileVersion: 1,
+      profileRevision: 1,
+      claimCodeId: "550e8400-e29b-41d4-a716-446655440002",
+      claimedAt: "2026-07-17T00:00:00.000Z",
+      serverTime: "2026-07-17T00:00:00.000Z",
+    },
+  };
+  return {
+    schemaVersion: 1,
+    generation: 1,
+    sourceRevisions: {
+      bootstrapSchemaVersion: 1,
+      profile: {
+        generation: 1,
+        profileRevision: 1,
+        acceptedAt: "2026-07-17T00:00:00.000Z",
+      },
+      localSettingsRevision: 0,
+    },
+    sourceDocuments: {
+      bootstrap,
+      profileCache: {
+        schemaVersion: 1,
+        generation: 1,
+        acceptedAt: "2026-07-17T00:00:00.000Z",
+        profile,
+      },
+    },
+    machine: profile.machine,
+    platform: {
+      apiBaseUrl: profile.apiBaseUrl,
+      runtimeEndpoints: profile.runtimeEndpoints,
+      mqttConnection: profile.mqttConnection,
+      paymentCapability: profile.paymentCapability,
+    },
+    hardware: {
+      model: bootstrap.hardwareModel,
+      topology: bootstrap.topology,
+      expectedProfile: profile.hardwareProfile,
+      lowerControllerBinding: null,
+      scannerBinding: null,
+      scannerProtocol: null,
+    },
+    experience: {
+      audio: {
+        volume: 0.7,
+        cuesEnabled: false,
+        presenceCuesEnabled: false,
+        transactionCuesEnabled: false,
+      },
+    },
+    secretStatus: {
+      machineSecretConfigured: true,
+      mqttSigningSecretConfigured: true,
+      mqttPasswordConfigured: true,
+    },
+    profileRefresh: { status: "accepted", lastError: null },
+  };
+}

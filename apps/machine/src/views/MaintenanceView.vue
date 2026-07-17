@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import {
-  type DaemonIpcAudioOutputBindingSnapshot,
-  type DaemonIpcAudioOutputTestResponse,
   formatMachineSlotCoordinate,
-  type StockMaintenanceTask,
   type PaymentProviderEnvironmentDiagnostic,
+  type StockMaintenanceTask,
 } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 
 import type { MachineAudioPlaybackDiagnostic } from "@/audio-playback/machine-audio-playback";
@@ -18,24 +16,12 @@ import type {
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import {
-  machineConfigDefaults,
-  type HardwareAdapter,
-  type MachineConfig,
-  type MachineAudioOutputBinding,
-  type ScannerAdapter,
-} from "@/config/machine-config";
-import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
-import {
-  openVisionTryOnSession,
-  type VisionTryOnSession,
-} from "@/native/vision";
+import type { VisionTryOnSession } from "@/native/vision";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
@@ -115,15 +101,7 @@ const DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS = 40;
 const DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS = 1000;
 let diagnosticsRefreshTimer: number | null = null;
 let diagnosticsRefreshInFlight: Promise<void> | null = null;
-const runtimeFlags = reactive({
-  advancedMaintenanceConfig: false,
-});
-const showAdvancedDebugConfig = computed(
-  () => runtimeFlags.advancedMaintenanceConfig,
-);
-const showProtectedDesktopExit = computed(
-  () => runtimeFlags.advancedMaintenanceConfig,
-);
+const showProtectedDesktopExit = computed(() => false);
 const wholeMachineMaintenanceLock = computed(
   () =>
     connectivityStore.ready?.blockingReasons.find(
@@ -149,23 +127,23 @@ const latestVisionDiagnosticPayloadText = computed(() => {
 const audioCueSettingsRows = computed(() => [
   {
     label: "全局音频提示",
-    value: machineStore.config.audioCueSettings.enabled ? "已启用" : "已停用",
+    value: machineStore.customerAudio.cuesEnabled ? "已启用" : "已停用",
   },
   {
     label: "来人音频提示",
-    value: machineStore.config.audioCueSettings.categories.presence
+    value: machineStore.customerAudio.presenceCuesEnabled
       ? "已启用"
       : "已停用",
   },
   {
     label: "交易音频提示",
-    value: machineStore.config.audioCueSettings.categories.transaction
+    value: machineStore.customerAudio.transactionCuesEnabled
       ? "已启用"
       : "已停用",
   },
   {
     label: "机器音频音量",
-    value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
+    value: `${machineAudioVolumePercent(machineStore.customerAudio.volume)}%`,
   },
 ]);
 
@@ -192,72 +170,6 @@ const effectiveRuntimeConfigurationRows = computed(() => {
   ];
 });
 
-const machineAudioOutputMaintenance = reactive({
-  loading: false,
-  saving: false,
-  message: null as string | null,
-  snapshot: null as DaemonIpcAudioOutputBindingSnapshot | null,
-  selectedEndpointId: null as string | null,
-  heardConfirmation: false,
-  testEvidence: null as DaemonIpcAudioOutputTestResponse | null,
-});
-
-const machineAudioOutputCandidates = computed(
-  () => machineAudioOutputMaintenance.snapshot?.candidates ?? [],
-);
-
-const confirmedMachineAudioOutputBinding =
-  computed<MachineAudioOutputBinding | null>(
-    () => machineStore.config.machineAudioOutputBinding,
-  );
-const observedMachineAudioOutputBinding = computed(
-  () => machineAudioOutputMaintenance.snapshot?.currentObservation ?? null,
-);
-const selectedMachineAudioOutputCandidate = computed(
-  () =>
-    machineAudioOutputCandidates.value.find(
-      (candidate) =>
-        candidate.endpointId ===
-        machineAudioOutputMaintenance.selectedEndpointId,
-    ) ?? null,
-);
-const machineAudioOutputBindingRows = computed(() => {
-  const binding = confirmedMachineAudioOutputBinding.value;
-  const observed = observedMachineAudioOutputBinding.value;
-  if (!binding) {
-    return [
-      { label: "绑定状态", value: "未确认近场顾客扬声器" },
-      { label: "当前观察", value: "必须先选择端点并确认“我听到了”" },
-    ];
-  }
-  return [
-    {
-      label: "绑定状态",
-      value: observed ? "已确认" : "已确认，但当前未检测到端点",
-    },
-    {
-      label: "端点",
-      value:
-        observed?.friendlyName ?? binding.friendlyName ?? binding.endpointId,
-    },
-    {
-      label: "端点 ID",
-      value: binding.endpointId,
-    },
-    {
-      label: "当前观察",
-      value: observed
-        ? observed.isDefault
-          ? "已检测到（当前也是 Windows 默认输出）"
-          : "已检测到"
-        : "未检测到；顾客音频会保持阻塞",
-    },
-    {
-      label: "人工确认时间",
-      value: binding.confirmedHeardAt,
-    },
-  ];
-});
 const latestAudioCueDiagnosticRows = computed(() => {
   const diagnostic = audioCueStore.latestPlaybackDiagnostic;
   if (!diagnostic) return [];
@@ -380,51 +292,13 @@ function clearMaintenanceSessionAfterAuthorizationFailure(
   }
 }
 
-function cloneLowerControllerUsbIdentity(
-  identity: MachineConfig["lowerControllerUsbIdentity"],
-) {
-  return identity
-    ? {
-        vendorId: identity.vendorId,
-        productId: identity.productId,
-        serialNumber: identity.serialNumber ?? null,
-      }
-    : null;
-}
-
-const form = reactive({
-  machineCode: machineConfigDefaults.machineCode,
-  machineLocationLabel: machineConfigDefaults.machineLocationLabel,
-  apiBaseUrl: machineConfigDefaults.apiBaseUrl,
-  mqttUrl: machineConfigDefaults.mqttUrl,
-  mqttUsername: machineConfigDefaults.mqttUsername,
-  hardwareAdapter: machineConfigDefaults.hardwareAdapter,
-  serialPortPath: machineConfigDefaults.serialPortPath,
-  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(
-    machineConfigDefaults.lowerControllerUsbIdentity,
-  ),
-  scannerAdapter: machineConfigDefaults.scannerAdapter,
-  scannerSerialPortPath: machineConfigDefaults.scannerSerialPortPath,
-  scannerBaudRate: machineConfigDefaults.scannerBaudRate,
-  scannerFrameSuffix: machineConfigDefaults.scannerFrameSuffix,
-  visionEnabled: machineConfigDefaults.visionEnabled,
-  visionWsUrl: machineConfigDefaults.visionWsUrl,
-  visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
-  machineAudioVolumePercent: machineAudioVolumePercent(
-    machineConfigDefaults.machineAudioVolume,
-  ),
-  audioCueSettings: {
-    enabled: machineConfigDefaults.audioCueSettings.enabled,
-    categories: {
-      presence: machineConfigDefaults.audioCueSettings.categories.presence,
-      transaction:
-        machineConfigDefaults.audioCueSettings.categories.transaction,
-    },
-  },
-  kioskMode: machineConfigDefaults.kioskMode,
-  machineSecretInput: "",
-  mqttSigningSecretInput: "",
-  mqttPasswordInput: "",
+const audioPreferencesForm = reactive({
+  volumePercent: 70,
+  cuesEnabled: false,
+  presenceCuesEnabled: false,
+  transactionCuesEnabled: false,
+  saving: false,
+  message: null as string | null,
 });
 
 const tryOnPreviewDiagnostic = reactive({
@@ -438,38 +312,15 @@ let tryOnPreviewDiagnosticSession: VisionTryOnSession | null = null;
 let maintenanceViewMounted = false;
 let tryOnPreviewDiagnosticSequence = 0;
 
-function syncFormFromStore(): void {
-  form.machineCode = machineStore.config.machineCode;
-  form.machineLocationLabel = machineStore.config.machineLocationLabel;
-  form.apiBaseUrl = machineStore.config.apiBaseUrl;
-  form.mqttUrl = machineStore.config.mqttUrl;
-  form.mqttUsername = machineStore.config.mqttUsername;
-  form.hardwareAdapter = machineStore.config.hardwareAdapter;
-  form.serialPortPath = machineStore.config.serialPortPath;
-  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity(
-    machineStore.config.lowerControllerUsbIdentity,
+function syncAudioPreferencesForm(): void {
+  const preferences = machineStore.customerAudio;
+  audioPreferencesForm.volumePercent = machineAudioVolumePercent(
+    preferences.volume,
   );
-  form.scannerAdapter = machineStore.config.scannerAdapter;
-  form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
-  form.scannerBaudRate = machineStore.config.scannerBaudRate;
-  form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
-  form.visionEnabled = machineStore.config.visionEnabled;
-  form.visionWsUrl = machineStore.config.visionWsUrl;
-  form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
-  form.machineAudioVolumePercent = machineAudioVolumePercent(
-    machineStore.config.machineAudioVolume,
-  );
-  form.audioCueSettings = {
-    enabled: machineStore.config.audioCueSettings.enabled,
-    categories: {
-      presence: machineStore.config.audioCueSettings.categories.presence,
-      transaction: machineStore.config.audioCueSettings.categories.transaction,
-    },
-  };
-  form.kioskMode = machineStore.config.kioskMode;
-  machineAudioOutputMaintenance.selectedEndpointId =
-    machineStore.config.machineAudioOutputBinding?.endpointId ?? null;
-  machineAudioOutputMaintenance.heardConfirmation = false;
+  audioPreferencesForm.cuesEnabled = preferences.cuesEnabled;
+  audioPreferencesForm.presenceCuesEnabled = preferences.presenceCuesEnabled;
+  audioPreferencesForm.transactionCuesEnabled =
+    preferences.transactionCuesEnabled;
 }
 
 type DiagnosticSerializationState = {
@@ -619,34 +470,10 @@ onMounted(async () => {
         "守护进程连接已更新，维护会话已失效，请重新验证 PIN。";
     });
   try {
-    const connection = await daemonClient.initialize();
-    runtimeFlags.advancedMaintenanceConfig =
-      shouldShowAdvancedMaintenanceConfig({
-        flag: connection.runtimeFlags?.advancedMaintenanceConfig,
-      });
-  } catch {
-    runtimeFlags.advancedMaintenanceConfig =
-      shouldShowAdvancedMaintenanceConfig({
-        flag: import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG,
-      });
-  }
-
-  try {
     await machineStore.loadEffectiveRuntimeConfiguration();
+    syncAudioPreferencesForm();
   } catch {
     // Runtime diagnostics remain available when the configuration projection is unavailable.
-  }
-
-  if (runtimeFlags.advancedMaintenanceConfig) {
-    try {
-      if (!machineStore.configLoaded) {
-        await machineStore.loadConfig();
-      }
-      syncFormFromStore();
-      await refreshMachineAudioOutputs();
-    } catch {
-      // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
-    }
   }
   await Promise.allSettled([
     refreshStockMaintenanceView(),
@@ -923,106 +750,38 @@ const stockTaskCanSubmit = computed(() => {
   });
 });
 
-const adapters: HardwareAdapter[] = ["mock", "serial"];
-
-const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
-
-const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
-
 const machineAudioTestPlayback = reactive({
   loading: false,
   message: null as string | null,
   driver: "unknown",
   diagnostic: null as MachineAudioPlaybackDiagnostic | null,
-  volume: machineStore.config.machineAudioVolume,
+  volume: machineStore.customerAudio.volume,
 });
 const daemonAudioCalibrationSource = "daemon://audio-output-calibration";
 
-function clearMachineAudioTestEvidence(): void {
-  machineAudioOutputMaintenance.testEvidence = null;
-  machineAudioOutputMaintenance.heardConfirmation = false;
-}
-
-watch(
-  () => [
-    machineAudioOutputMaintenance.selectedEndpointId,
-    machineAudioOutputMaintenance.snapshot?.observationRevision ?? null,
-    form.machineAudioVolumePercent,
-    form.audioCueSettings.enabled,
-    form.audioCueSettings.categories.presence,
-    form.audioCueSettings.categories.transaction,
-  ],
-  () => clearMachineAudioTestEvidence(),
-);
-
-async function refreshMachineAudioOutputs(): Promise<void> {
-  machineAudioOutputMaintenance.loading = true;
-  machineAudioOutputMaintenance.message = null;
-  try {
-    const snapshot = await daemonClient.getAudioOutputBinding();
-    machineAudioOutputMaintenance.snapshot = snapshot;
-    if (
-      !machineAudioOutputMaintenance.selectedEndpointId &&
-      snapshot.binding?.endpointId
-    ) {
-      machineAudioOutputMaintenance.selectedEndpointId =
-        snapshot.binding.endpointId;
-    }
-  } catch (error) {
-    machineAudioOutputMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    machineAudioOutputMaintenance.loading = false;
-  }
-}
-
-async function saveMachineAudioSettings(): Promise<void> {
+async function saveAudioPreferences(): Promise<void> {
   if (!maintenanceSessionAuthorized.value) {
-    machineAudioOutputMaintenance.message = "请先验证维护 PIN。";
+    audioPreferencesForm.message = "请先验证维护 PIN。";
     return;
   }
-  const selected = selectedMachineAudioOutputCandidate.value;
-  if (!selected) {
-    machineAudioOutputMaintenance.message = "请先选择顾客扬声器端点。";
-    return;
-  }
-  if (!machineAudioOutputMaintenance.heardConfirmation) {
-    machineAudioOutputMaintenance.message = "请确认“我听到了”后再保存绑定。";
-    return;
-  }
-  const testEvidence = machineAudioOutputMaintenance.testEvidence;
-  if (!testEvidence) {
-    machineAudioOutputMaintenance.message =
-      "请先对当前端点和设置完成测试播放。";
-    return;
-  }
-  machineAudioOutputMaintenance.saving = true;
-  machineAudioOutputMaintenance.message = null;
+  audioPreferencesForm.saving = true;
+  audioPreferencesForm.message = null;
   try {
-    const summary = await daemonClient.confirmAudioOutput({
-      endpointId: selected.endpointId,
-      testEvidenceToken: testEvidence.testEvidenceToken,
-      heard: true,
-      audioCueSettings: {
-        enabled: form.audioCueSettings.enabled,
-        categories: {
-          presence: form.audioCueSettings.categories.presence,
-          transaction: form.audioCueSettings.categories.transaction,
-        },
-      },
-      machineAudioVolume: form.machineAudioVolumePercent / 100,
+    const configuration = await daemonClient.setAudioPreferences({
+      volume: audioPreferencesForm.volumePercent / 100,
+      cuesEnabled: audioPreferencesForm.cuesEnabled,
+      presenceCuesEnabled: audioPreferencesForm.presenceCuesEnabled,
+      transactionCuesEnabled: audioPreferencesForm.transactionCuesEnabled,
     });
-    machineStore.applyConfigSummary(summary);
-    syncFormFromStore();
-    await refreshMachineAudioOutputs();
-    machineAudioOutputMaintenance.message =
-      "顾客音频输出绑定与音频提示设置已保存。";
+    machineStore.applyEffectiveRuntimeConfiguration(configuration);
+    syncAudioPreferencesForm();
+    audioPreferencesForm.message = "顾客音频偏好已保存。";
   } catch (error) {
     clearMaintenanceSessionAfterAuthorizationFailure(error);
-    machineAudioOutputMaintenance.message =
+    audioPreferencesForm.message =
       error instanceof Error ? error.message : String(error);
   } finally {
-    machineAudioOutputMaintenance.saving = false;
+    audioPreferencesForm.saving = false;
   }
 }
 
@@ -1065,32 +824,14 @@ async function playMachineAudioTestPlayback(): Promise<void> {
     machineAudioTestPlayback.message = "请先验证维护 PIN。";
     return;
   }
-  const selected = selectedMachineAudioOutputCandidate.value;
-  if (!selected) {
-    machineAudioTestPlayback.message = "请先选择顾客扬声器端点。";
-    return;
-  }
   machineAudioTestPlayback.loading = true;
   machineAudioTestPlayback.message = null;
-  clearMachineAudioTestEvidence();
   try {
-    const volume = form.machineAudioVolumePercent / 100;
-    const testEvidence = await daemonClient.testAudioOutput({
-      endpointId: selected.endpointId,
-      audioCueSettings: {
-        enabled: form.audioCueSettings.enabled,
-        categories: {
-          presence: form.audioCueSettings.categories.presence,
-          transaction: form.audioCueSettings.categories.transaction,
-        },
-      },
-      machineAudioVolume: volume,
-    });
-    machineAudioOutputMaintenance.testEvidence = testEvidence;
+    const volume = audioPreferencesForm.volumePercent / 100;
     machineAudioTestPlayback.volume = volume;
     machineAudioTestPlayback.driver = "native";
     machineAudioTestPlayback.diagnostic = {
-      requestId: testEvidence.testEvidenceToken,
+      requestId: crypto.randomUUID(),
       status: "started",
       driver: "native",
       sourceUrl: daemonAudioCalibrationSource,
@@ -1098,47 +839,12 @@ async function playMachineAudioTestPlayback(): Promise<void> {
       recordedAt: new Date().toISOString(),
     };
     machineAudioTestPlayback.message =
-      "机器音频测试播放已启动，请确认实际听感。";
+      "音频测试会使用 Windows 默认输出设备。";
   } catch (error) {
-    clearMachineAudioTestEvidence();
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     machineAudioTestPlayback.loading = false;
-  }
-}
-
-async function startTryOnPreviewDiagnostic(): Promise<void> {
-  await stopTryOnPreviewDiagnostic();
-  const sequence = (tryOnPreviewDiagnosticSequence += 1);
-  tryOnPreviewDiagnostic.loading = true;
-  tryOnPreviewDiagnostic.message = null;
-  try {
-    const session = await openVisionTryOnSession(machineStore.config, {
-      catalogKey: "maintenance-diagnostic",
-      variantId: "maintenance-diagnostic",
-    });
-    if (
-      !maintenanceViewMounted ||
-      sequence !== tryOnPreviewDiagnosticSequence
-    ) {
-      await session.stop();
-      return;
-    }
-    tryOnPreviewDiagnosticSession = session;
-    tryOnPreviewDiagnostic.previewUrl = session.previewUrl;
-    tryOnPreviewDiagnostic.sessionId = session.sessionId;
-    tryOnPreviewDiagnostic.streamType = session.streamType;
-    tryOnPreviewDiagnostic.message = "试衣预览诊断已启动。";
-  } catch (error) {
-    if (maintenanceViewMounted && sequence === tryOnPreviewDiagnosticSequence) {
-      tryOnPreviewDiagnostic.message =
-        error instanceof Error ? error.message : String(error);
-    }
-  } finally {
-    if (sequence === tryOnPreviewDiagnosticSequence) {
-      tryOnPreviewDiagnostic.loading = false;
-    }
   }
 }
 
@@ -1179,10 +885,7 @@ async function runHardwareCheck(): Promise<void> {
       checkedAt: new Date().toISOString(),
     };
     if (result.configUpdated) {
-      await machineStore.loadConfig();
-      if (runtimeFlags.advancedMaintenanceConfig) {
-        syncFormFromStore();
-      }
+      await machineStore.loadEffectiveRuntimeConfiguration();
     }
     const details = [
       result.portPath ? `端口 ${result.portPath}` : null,
@@ -1470,26 +1173,6 @@ function runtimeStatusLabel(status: string): string {
     none: "无",
   };
   return labels[status] ?? status;
-}
-
-function adapterLabel(adapter: string): string {
-  const labels: Record<string, string> = {
-    mock: "模拟适配器",
-    serial: "串口适配器",
-    disabled: "停用",
-    serial_text: "串口文本",
-  };
-  return labels[adapter] ?? adapter;
-}
-
-function frameSuffixLabel(frameSuffix: string): string {
-  const labels: Record<string, string> = {
-    crlf: "回车换行",
-    lf: "换行",
-    cr: "回车",
-    none: "无结尾符",
-  };
-  return labels[frameSuffix] ?? frameSuffix;
 }
 
 function operatorMessageLabel(message: string): string {
@@ -2180,17 +1863,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
               回到 Windows 桌面
             </button>
             <button
-              v-if="showAdvancedDebugConfig"
-              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100 disabled:opacity-50"
-              type="button"
-              :disabled="!maintenanceSessionAuthorized"
-              @click="openProtectedBringUpConsole"
-            >
-              {{
-                maintenanceSessionAuthorized ? "首次部署控制台" : "先验证 PIN"
-              }}
-            </button>
-            <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
               :disabled="diagnostics.loading"
@@ -2470,24 +2142,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
           </dl>
         </section>
 
-        <section class="mt-5 border-t border-white/10 pt-4 text-left">
-          <h3 class="text-sm font-semibold text-slate-200">顾客扬声器绑定</h3>
-          <dl class="mt-3 grid gap-3 md:grid-cols-2">
-            <div
-              v-for="row in machineAudioOutputBindingRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
-            >
-              <dt class="text-xs font-semibold text-slate-400">
-                {{ row.label }}
-              </dt>
-              <dd class="mt-1 font-bold break-all text-white">
-                {{ row.label }} · {{ row.value }}
-              </dd>
-            </div>
-          </dl>
-        </section>
-
         <section
           class="mt-5 border-t border-white/10 pt-4 text-left"
           data-test="audio-cue-diagnostic"
@@ -2583,624 +2237,94 @@ async function submitStockMaintenanceTask(): Promise<void> {
         {{ mqttStore.outboxWarning }}
       </div>
 
-      <section v-if="showAdvancedDebugConfig" class="mt-8 grid gap-5">
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">机器编号</span>
-          <input
-            v-model="form.machineCode"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="例如 M001"
-          />
-        </label>
-
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">机器位置标签</span>
-          <input
-            v-model="form.machineLocationLabel"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="例如 一层大厅"
-          />
-        </label>
-
-        <div class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">机器密钥</span>
-          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
-            机器密钥状态：
-            <span class="font-semibold text-emerald-200">
-              {{
-                machineStore.config.machineSecretConfigured
-                  ? "已配置"
-                  : "未配置"
-              }}
-            </span>
+      <section class="mt-8 grid gap-5" data-test="audio-preferences">
+        <div class="grid gap-3 text-left">
+          <h3 class="text-lg font-bold text-slate-100">顾客音频偏好</h3>
+          <p class="text-sm text-slate-300">
+            顾客音频始终使用 Windows 当前默认输出设备。
           </p>
-          <input
-            v-model="form.machineSecretInput"
-            autocomplete="new-password"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="输入新机器密钥；留空保持现有密钥"
-            type="password"
-          />
-        </div>
-
-        <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
-          维护 PIN 验证器状态：
-          <span class="font-semibold text-emerald-200">
-            {{
-              machineStore.config.maintenancePinConfigured ? "已配置" : "未配置"
-            }}
-          </span>
-          <span class="ml-2 text-slate-400"
-            >仅显示是否已受保护预置，不显示 PIN。</span
-          >
-        </p>
-
-        <div class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >MQTT 签名密钥</span
-          >
-          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
-            MQTT 签名密钥状态：
-            <span class="font-semibold text-emerald-200">
-              {{
-                machineStore.config.mqttSigningSecretConfigured
-                  ? "已配置"
-                  : "未配置"
-              }}
-            </span>
-          </p>
-          <input
-            v-model="form.mqttSigningSecretInput"
-            autocomplete="new-password"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="输入新 MQTT 签名密钥；留空保持现有密钥"
-            type="password"
-          />
-        </div>
-
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">MQTT 用户名</span>
-          <input
-            v-model="form.mqttUsername"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="MQTT Broker 用户名"
-          />
-        </label>
-
-        <div class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">MQTT 密码</span>
-          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
-            MQTT 密码状态：
-            <span class="font-semibold text-emerald-200">
-              {{
-                machineStore.config.mqttPasswordConfigured ? "已配置" : "未配置"
-              }}
-            </span>
-          </p>
-          <input
-            v-model="form.mqttPasswordInput"
-            autocomplete="new-password"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="输入新 MQTT 密码；留空保持现有密码"
-            type="password"
-          />
-        </div>
-
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >后端 API 地址</span
-          >
-          <input
-            v-model="form.apiBaseUrl"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-          />
-        </label>
-
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">MQTT 地址</span>
-          <input
-            v-model="form.mqttUrl"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-          />
-        </label>
-
-        <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">硬件适配器</span>
-          <select
-            v-model="form.hardwareAdapter"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-          >
-            <option v-for="adapter in adapters" :key="adapter" :value="adapter">
-              {{ adapterLabel(adapter) }}
-            </option>
-          </select>
-        </label>
-
-        <div v-if="form.hardwareAdapter === 'serial'" class="grid gap-4">
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200"
-              >旧 COM 迁移提示（只读）</span
-            >
-            <input
-              v-model="form.serialPortPath"
-              disabled
-              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-              placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
-            />
-          </label>
-
-          <div
-            v-if="form.lowerControllerUsbIdentity"
-            class="grid gap-4 md:grid-cols-3"
-          >
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">USB VID</span>
+          <fieldset class="grid gap-3 text-left md:grid-cols-3">
+            <label class="flex items-center gap-3">
               <input
-                v-model="form.lowerControllerUsbIdentity.vendorId"
-                disabled
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-                maxlength="4"
-              />
-            </label>
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">USB PID</span>
-              <input
-                v-model="form.lowerControllerUsbIdentity.productId"
-                disabled
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-                maxlength="4"
-              />
-            </label>
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >绑定序列号</span
-              >
-              <input
-                v-model="form.lowerControllerUsbIdentity.serialNumber"
-                disabled
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-                placeholder="自检后自动绑定"
-              />
-            </label>
-          </div>
-        </div>
-
-        <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
-          <p
-            class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
-          >
-            扫码器适配器
-          </p>
-          <div class="mt-4 grid gap-4">
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >扫码器适配器</span
-              >
-              <select
-                v-model="form.scannerAdapter"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-              >
-                <option
-                  v-for="scannerAdapter in scannerAdapters"
-                  :key="scannerAdapter"
-                  :value="scannerAdapter"
-                >
-                  {{ adapterLabel(scannerAdapter) }}
-                </option>
-              </select>
-            </label>
-
-            <label
-              v-if="form.scannerAdapter === 'serial_text'"
-              class="grid gap-2 text-left"
-            >
-              <span class="text-sm font-semibold text-slate-200"
-                >旧扫码 COM 迁移提示（只读）</span
-              >
-              <input
-                v-model="form.scannerSerialPortPath"
-                disabled
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-                placeholder="Linux 如 /dev/ttyUSB1；Windows 如 COM4"
-              />
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >扫码波特率</span
-              >
-              <input
-                v-model.number="form.scannerBaudRate"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-                min="1200"
-                step="1"
-                type="number"
-              />
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >扫码结尾符</span
-              >
-              <select
-                v-model="form.scannerFrameSuffix"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-              >
-                <option
-                  v-for="frameSuffix in scannerFrameSuffixes"
-                  :key="frameSuffix"
-                  :value="frameSuffix"
-                >
-                  {{ frameSuffixLabel(frameSuffix) }}
-                </option>
-              </select>
-            </label>
-          </div>
-        </div>
-
-        <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
-          <p
-            class="text-sm font-semibold tracking-[0.28em] text-fuchsia-200 uppercase"
-          >
-            视觉模块
-          </p>
-
-          <div class="mt-4 grid gap-4">
-            <label class="flex items-center gap-3 text-left">
-              <input
-                v-model="form.visionEnabled"
+                v-model="audioPreferencesForm.cuesEnabled"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
               />
-              <span class="text-sm font-semibold text-slate-200"
-                >启用视觉推荐</span
-              >
+              <span class="text-sm font-semibold text-slate-200">启用机器音频提示</span>
             </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉 WebSocket 地址</span
-              >
+            <label class="flex items-center gap-3">
               <input
-                v-model="form.visionWsUrl"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                placeholder="ws://127.0.0.1:7892/ws"
+                v-model="audioPreferencesForm.presenceCuesEnabled"
+                class="size-5 accent-fuchsia-300"
+                type="checkbox"
               />
+              <span class="text-sm font-semibold text-slate-200">来人音频提示</span>
             </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉连接自检超时</span
-              >
+            <label class="flex items-center gap-3">
               <input
-                v-model.number="form.visionRequestTimeoutMs"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                max="30000"
-                min="1000"
-                step="500"
+                v-model="audioPreferencesForm.transactionCuesEnabled"
+                class="size-5 accent-fuchsia-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200">交易音频提示</span>
+            </label>
+          </fieldset>
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200">机器音频音量</span>
+            <div class="flex items-center gap-3">
+              <input
+                v-model.number="audioPreferencesForm.volumePercent"
+                class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                data-test="machine-audio-volume-percent"
+                max="100"
+                min="0"
+                step="1"
                 type="number"
               />
-            </label>
-
-            <div class="grid gap-4 rounded-2xl border border-white/10 p-4">
-              <div class="grid gap-1 text-left">
-                <span class="text-sm font-semibold text-slate-200">
-                  视觉试衣预览诊断
-                </span>
-                <span class="text-xs text-slate-300"
-                  >用于现场检查试衣预览通道</span
-                >
-              </div>
-
-              <div class="grid gap-3 md:grid-cols-2">
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                  type="button"
-                  :disabled="
-                    tryOnPreviewDiagnostic.loading ||
-                    Boolean(tryOnPreviewDiagnostic.previewUrl)
-                  "
-                  @click="startTryOnPreviewDiagnostic"
-                >
-                  启动试衣预览
-                </button>
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
-                  type="button"
-                  :disabled="!tryOnPreviewDiagnostic.previewUrl"
-                  @click="stopTryOnPreviewDiagnostic"
-                >
-                  释放试衣预览
-                </button>
-              </div>
-
-              <img
-                v-if="tryOnPreviewDiagnostic.previewUrl"
-                :src="tryOnPreviewDiagnostic.previewUrl"
-                class="aspect-video w-full rounded-2xl border border-white/10 bg-slate-950 object-cover"
-                data-test="try-on-camera-preview"
-                alt=""
-              />
-
-              <dl
-                v-if="tryOnPreviewDiagnostic.previewUrl"
-                class="grid gap-2 rounded-2xl bg-slate-950/50 p-4 text-left text-sm text-slate-100"
-              >
-                <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400">会话</dt>
-                  <dd class="break-all">
-                    {{ tryOnPreviewDiagnostic.sessionId }}
-                  </dd>
-                </div>
-                <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400">视频流</dt>
-                  <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
-                </div>
-                <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400">预览地址</dt>
-                  <dd class="break-all">
-                    {{ tryOnPreviewDiagnostic.previewUrl }}
-                  </dd>
-                </div>
-              </dl>
-
-              <p
-                v-if="tryOnPreviewDiagnostic.message"
-                class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
-              >
-                {{ tryOnPreviewDiagnostic.message }}
-              </p>
+              <span class="text-sm font-bold text-slate-200">%</span>
             </div>
-
-            <section
-              class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
+          </label>
+          <div class="flex flex-wrap gap-3">
+            <button
+              class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+              type="button"
+              :disabled="audioPreferencesForm.saving || !maintenanceSessionAuthorized"
+              @click="saveAudioPreferences"
             >
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="grid gap-1">
-                  <h3 class="text-base font-bold text-cyan-100">
-                    顾客扬声器绑定
-                  </h3>
-                  <p class="text-sm leading-6 text-cyan-50/85">
-                    选择稳定的 WASAPI
-                    输出端点，测试播放并在听到近场顾客扬声器后确认保存。
-                  </p>
-                </div>
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
-                  type="button"
-                  :disabled="machineAudioOutputMaintenance.loading"
-                  @click="refreshMachineAudioOutputs"
-                >
-                  刷新端点
-                </button>
-              </div>
-
-              <div
-                v-if="machineAudioOutputCandidates.length === 0"
-                class="rounded-2xl bg-slate-950/35 p-4 text-sm text-cyan-50"
-              >
-                {{
-                  machineAudioOutputMaintenance.loading
-                    ? "正在枚举音频端点…"
-                    : "尚未发现可用输出端点。"
-                }}
-              </div>
-
-              <div v-else class="grid gap-3">
-                <label
-                  v-for="candidate in machineAudioOutputCandidates"
-                  :key="candidate.endpointId"
-                  class="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/35 p-4"
-                >
-                  <input
-                    v-model="machineAudioOutputMaintenance.selectedEndpointId"
-                    :value="candidate.endpointId"
-                    class="mt-1 size-5 accent-cyan-300"
-                    type="radio"
-                  />
-                  <span class="grid gap-1">
-                    <span class="text-sm font-semibold text-white">
-                      {{ candidate.friendlyName }}
-                      <span v-if="candidate.isDefault" class="text-cyan-100/80">
-                        · 默认
-                      </span>
-                    </span>
-                    <span class="text-xs break-all text-cyan-50/80">
-                      {{ candidate.endpointId }}
-                    </span>
-                  </span>
-                </label>
-              </div>
-
-              <label class="flex items-center gap-3 text-left">
-                <input
-                  v-model="machineAudioOutputMaintenance.heardConfirmation"
-                  :disabled="!machineAudioOutputMaintenance.testEvidence"
-                  class="size-5 accent-cyan-300"
-                  type="checkbox"
-                />
-                <span class="text-sm font-semibold text-cyan-50">
-                  我已经在近场顾客扬声器上听到了测试音频
-                </span>
-              </label>
-
-              <button
-                class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-                type="button"
-                :disabled="
-                  machineAudioOutputMaintenance.saving ||
-                  !machineAudioOutputMaintenance.selectedEndpointId ||
-                  !machineAudioOutputMaintenance.testEvidence ||
-                  !machineAudioOutputMaintenance.heardConfirmation
-                "
-                @click="saveMachineAudioSettings"
-              >
-                保存顾客扬声器绑定与音频提示设置
-              </button>
-
-              <p
-                v-if="machineAudioOutputMaintenance.message"
-                class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
-              >
-                {{ machineAudioOutputMaintenance.message }}
-              </p>
-            </section>
-
-            <fieldset class="grid gap-3 text-left md:grid-cols-3">
-              <label class="flex items-center gap-3">
-                <input
-                  v-model="form.audioCueSettings.enabled"
-                  class="size-5 accent-fuchsia-300"
-                  type="checkbox"
-                />
-                <span class="text-sm font-semibold text-slate-200"
-                  >启用机器音频提示</span
-                >
-              </label>
-              <label class="flex items-center gap-3">
-                <input
-                  v-model="form.audioCueSettings.categories.presence"
-                  class="size-5 accent-fuchsia-300"
-                  type="checkbox"
-                />
-                <span class="text-sm font-semibold text-slate-200"
-                  >来人音频提示</span
-                >
-              </label>
-              <label class="flex items-center gap-3">
-                <input
-                  v-model="form.audioCueSettings.categories.transaction"
-                  class="size-5 accent-fuchsia-300"
-                  type="checkbox"
-                />
-                <span class="text-sm font-semibold text-slate-200"
-                  >交易音频提示</span
-                >
-              </label>
-            </fieldset>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >机器音频音量</span
-              >
-              <div class="flex items-center gap-3">
-                <input
-                  v-model.number="form.machineAudioVolumePercent"
-                  class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                  data-test="machine-audio-volume-percent"
-                  max="100"
-                  min="0"
-                  step="1"
-                  type="number"
-                />
-                <span class="text-sm font-bold text-slate-200">%</span>
-              </div>
-            </label>
-
-            <section
-              class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
-              data-test="machine-audio-test-playback"
+              保存音频偏好
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-cyan-200/30 px-4 py-3 font-bold text-cyan-100 disabled:opacity-50"
+              type="button"
+              :disabled="machineAudioTestPlayback.loading || !maintenanceSessionAuthorized"
+              @click="playMachineAudioTestPlayback"
             >
-              <div class="grid gap-1">
-                <h3 class="text-base font-bold text-cyan-100">
-                  机器音频测试播放
-                </h3>
-                <p class="text-sm leading-6 text-cyan-50/85">
-                  现场检查：通过近场顾客扬声器确认顾客音频区域清晰可听，并确认顾客区域外声音不扰人。
-                </p>
-              </div>
-
-              <div class="flex flex-wrap gap-3">
-                <button
-                  class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-                  type="button"
-                  :disabled="
-                    machineAudioTestPlayback.loading ||
-                    !maintenanceSessionAuthorized ||
-                    !machineAudioOutputMaintenance.selectedEndpointId
-                  "
-                  @click="playMachineAudioTestPlayback"
-                >
-                  播放测试音频
-                </button>
-              </div>
-
-              <dl class="grid gap-3 md:grid-cols-2">
-                <div class="rounded-xl bg-slate-950/35 p-3">
-                  <dt class="text-xs font-semibold text-cyan-100/70">
-                    当前播放驱动
-                  </dt>
-                  <dd class="mt-1 font-bold text-white">
-                    当前播放驱动 ·
-                    {{ machineAudioTestPlayback.driver }}
-                  </dd>
-                </div>
-                <div
-                  v-for="row in latestMachineAudioTestPlaybackRows"
-                  :key="row.label"
-                  class="rounded-xl bg-slate-950/35 p-3"
-                >
-                  <dt class="text-xs font-semibold text-cyan-100/70">
-                    {{ row.label }}
-                  </dt>
-                  <dd class="mt-1 font-bold break-all text-white">
-                    {{ row.label }} · {{ row.value }}
-                  </dd>
-                </div>
-              </dl>
-
-              <p
-                v-if="machineAudioTestPlayback.message"
-                class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
-              >
-                {{ machineAudioTestPlayback.message }}
-              </p>
-            </section>
-
-            <div class="grid gap-3 md:grid-cols-2">
-              <button
-                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                type="button"
-                :disabled="
-                  !maintenanceSessionAuthorized || hardwareMaintenance.loading
-                "
-                @click="runHardwareCheck"
-              >
-                硬件自检
-              </button>
-              <button
-                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                type="button"
-                :disabled="visionMaintenance.loading"
-                @click="refreshVisionStatus"
-              >
-                视觉状态
-              </button>
-            </div>
-
-            <p
-              v-if="hardwareMaintenance.message"
-              class="rounded-2xl bg-sky-500/15 p-4 text-sky-100"
-            >
-              {{ hardwareMaintenance.message }}
-            </p>
-            <p
-              v-if="visionMaintenance.message"
-              class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
-            >
-              {{ visionMaintenance.message }}
-            </p>
+              播放测试音频
+            </button>
           </div>
+          <p
+            v-if="audioPreferencesForm.message"
+            class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+          >
+            {{ audioPreferencesForm.message }}
+          </p>
+          <dl class="grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in latestMachineAudioTestPlaybackRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-cyan-100/70">{{ row.label }}</dt>
+              <dd class="mt-1 font-bold break-all text-white">{{ row.value }}</dd>
+            </div>
+          </dl>
+          <p
+            v-if="machineAudioTestPlayback.message"
+            class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+          >
+            {{ machineAudioTestPlayback.message }}
+          </p>
         </div>
-
-        <button
-          class="kiosk-touch-target rounded-2xl bg-slate-600 px-6 py-4 text-lg font-bold text-slate-200"
-          type="button"
-          disabled
-        >
-          直接配置编辑已禁用；请使用首次部署控制台
-        </button>
-
         <p
           v-if="machineStore.error"
           class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
@@ -3208,12 +2332,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
           {{ machineStore.error }}
         </p>
       </section>
-      <div
-        v-if="showAdvancedDebugConfig && form.hardwareAdapter === 'mock'"
-        class="mt-6"
-      >
-        <MockHardwareControls />
-      </div>
       <img
         :src="listSloganImage"
         alt=""
@@ -3225,220 +2343,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
 </template>
 
 <style scoped>
-:global(.kiosk-shell:has(.maintenance-page)) {
-  padding: 0;
-}
-
-:global(.kiosk-shell:has(.maintenance-page) > header) {
-  display: none;
-}
-
-:global(.kiosk-shell:has(.maintenance-page) > .kiosk-scroll) {
-  width: 100%;
-  height: 100%;
-  margin-top: 0;
-  padding-bottom: 0;
-}
-
-.maintenance-page {
-  position: relative;
-  min-height: 100%;
-  padding: var(--machine-page-header-top) var(--machine-page-inline) 2.5rem;
-  overflow-x: hidden;
-  color: #3f3b34;
-  background:
-    radial-gradient(
-      circle at 18% 6%,
-      rgba(255, 255, 255, 0.92),
-      rgba(255, 255, 255, 0) 28%
-    ),
-    linear-gradient(180deg, #faf8f1 0%, #f4efe2 54%, #efe8d8 100%);
-}
-
-.maintenance-header {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
-  align-items: center;
-  padding: 0.35rem 0 1rem;
-  background: linear-gradient(
-    180deg,
-    rgba(250, 248, 241, 0.96) 0%,
-    rgba(250, 248, 241, 0.86) 74%,
-    rgba(250, 248, 241, 0) 100%
-  );
-  backdrop-filter: blur(4px);
-}
-
-.maintenance-brand {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 1.1rem;
-}
-
-.maintenance-brand img:first-child {
-  width: clamp(9rem, 25cqw, 13.2rem);
-  height: auto;
-}
-
-.maintenance-brand img:last-child {
-  width: clamp(2.5rem, 8cqw, 4rem);
-  height: auto;
-  opacity: 0.82;
-}
-
-.maintenance-title-block {
-  text-align: right;
-}
-
-.maintenance-title-block p,
-.maintenance-page p[class*="uppercase"] {
-  margin: 0;
-  color: #6d7f5f;
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-}
-
-.maintenance-title-block h2 {
-  margin-top: 0.18rem;
-  color: #263326;
-  font-size: 1.45rem;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-.maintenance-page > div,
-.maintenance-page > form {
-  position: relative;
-  z-index: 1;
-}
-
-.maintenance-page > div[class*="rounded-3xl"],
-.maintenance-page > form {
-  border: 1px solid rgba(126, 112, 82, 0.28) !important;
-  border-radius: 0.65rem !important;
-  background: rgba(255, 253, 247, 0.84) !important;
-  padding: 1rem !important;
-  color: #403c34 !important;
-  box-shadow: 0 1rem 2.4rem rgba(98, 80, 50, 0.08) !important;
-}
-
-.maintenance-page > form {
-  display: grid;
-  gap: 0.9rem;
-}
-
-.maintenance-page :is(.rounded-4xl, .rounded-3xl, .rounded-2xl, .rounded-xl) {
-  border-radius: 0.42rem !important;
-}
-
-.maintenance-page
-  :is(
-    .bg-slate-950\/30,
-    .bg-slate-950\/35,
-    .bg-slate-950\/40,
-    .bg-slate-950\/45
-  ) {
-  background: rgba(248, 244, 234, 0.72) !important;
-}
-
-.maintenance-page
-  :is(
-    .text-white,
-    .text-slate-50,
-    .text-slate-100,
-    .text-slate-200,
-    .text-slate-300,
-    .text-slate-400
-  ) {
-  color: #463f34 !important;
-}
-
-.maintenance-page
-  :is(
-    .text-emerald-100,
-    .text-emerald-200,
-    .text-sky-100,
-    .text-sky-200,
-    .text-fuchsia-100,
-    .text-fuchsia-200
-  ) {
-  color: #5f7353 !important;
-}
-
-.maintenance-page [class*="text-rose-"] {
-  color: #7b3430 !important;
-}
-
-.maintenance-page
-  :is(
-    .border-white\/10,
-    .border-slate-200\/30,
-    .border-sky-200\/30,
-    .border-emerald-200\/30,
-    .border-fuchsia-200\/30
-  ) {
-  border-color: rgba(126, 112, 82, 0.24) !important;
-}
-
-.maintenance-page :is(input, select, textarea) {
-  border: 1px solid rgba(126, 112, 82, 0.3) !important;
-  border-radius: 0.38rem !important;
-  background: rgba(255, 255, 255, 0.76) !important;
-  color: #2f2a23 !important;
-}
-
-.maintenance-page :is(input, select) {
-  min-height: 2.85rem;
-}
-
-.maintenance-page label {
-  gap: 0.38rem;
-}
-
-.maintenance-page label > span,
-.maintenance-page label {
-  color: #4d463c !important;
-}
-
-.maintenance-page button {
-  border-radius: 0.42rem !important;
-  border-color: rgba(93, 112, 80, 0.38) !important;
-  background: rgba(255, 253, 247, 0.86) !important;
-  color: #49613f !important;
-  box-shadow: none !important;
-}
-
-.maintenance-page button[type="submit"],
-.maintenance-page button:last-child:not([type="button"]) {
-  background: #6f835f !important;
-  color: #fffdf7 !important;
-}
-
-.maintenance-page dl {
-  overflow: hidden;
-  border: 1px solid rgba(126, 112, 82, 0.22);
-  border-radius: 0.48rem;
-  background: rgba(255, 253, 247, 0.66);
-}
-
-.maintenance-page dl > div {
-  min-height: 4.05rem;
-  border-bottom: 1px solid rgba(126, 112, 82, 0.16);
-  border-radius: 0 !important;
-  background: transparent !important;
-  padding: 0.7rem 0.85rem !important;
-}
-
-.maintenance-page dl > div:nth-last-child(-n + 2) {
-  border-bottom: 0;
-}
-
 .maintenance-page dt {
   color: #7b7468 !important;
   font-size: 0.72rem;

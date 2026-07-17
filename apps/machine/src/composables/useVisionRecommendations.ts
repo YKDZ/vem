@@ -107,18 +107,9 @@ export function useVisionRecommendations(): {
     clearCurrentProfile();
   }
 
-  const config = machineStore.config;
-
-  // If vision is not enabled, skip subscription
-  if (!config.visionEnabled) {
-    visionStore.clearLatestDiagnosticPayload();
-    return {
-      currentProfile: readonly(currentProfile),
-      lastVisionResult,
-    };
-  }
-
-  const subscription = subscribeVisionProfiles(config, {
+  const subscription = subscribeVisionProfiles(
+    { machineCode: machineStore.machineCode },
+    {
     onPresenceStatus: handlePresence,
     onPersonDeparted: handlePersonDeparted,
     onProfile: handleProfile,
@@ -126,7 +117,8 @@ export function useVisionRecommendations(): {
       clearState();
       visionStore.clearLatestDiagnosticPayload();
     },
-  });
+    },
+  );
 
   // Clean up on unmount
   onUnmounted(() => {

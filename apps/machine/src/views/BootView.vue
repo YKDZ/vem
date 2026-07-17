@@ -150,7 +150,7 @@ async function runBootCheck(): Promise<void> {
 
       pushStep("同步配置");
       try {
-        await machineStore.loadConfig();
+        await machineStore.loadEffectiveRuntimeConfiguration();
         if (!ownsBoot(signal, generation)) return;
       } catch (error) {
         if (!ownsBoot(signal, generation)) return;
@@ -194,7 +194,6 @@ async function runBootCheck(): Promise<void> {
         target: routeForStartup({
           daemonAvailable: true,
           health,
-          config: machineStore.configSummary,
           bringUp,
           ready,
           restoredTransaction: startupTransaction,
@@ -226,7 +225,6 @@ onMounted(async () => {
         target: routeForStartup({
           daemonAvailable: true,
           health: null,
-          config: null,
           bringUp: null,
           ready: null,
           restoredTransaction: recoveredTransaction,

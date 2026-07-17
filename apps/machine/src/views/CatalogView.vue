@@ -691,7 +691,7 @@ onUnmounted(() => {
                   <ManagedMediaImage
                     :reference="product.item.coverImageUrl"
                     :diagnostic-key="`media:${product.item.slotId}:coverImageUrl`"
-                    :api-base-url="machineStore.config.apiBaseUrl"
+                    :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                     :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
                     :class="{

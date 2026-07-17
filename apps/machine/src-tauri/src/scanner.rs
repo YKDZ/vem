@@ -41,7 +41,7 @@ pub async fn self_check_serial(
             online: false,
             adapter: "serial_text".to_string(),
             port: None,
-            message: "scannerSerialPortPath is not configured".to_string(),
+            message: "scanner binding is not configured".to_string(),
             checked_at_ms,
         };
     };

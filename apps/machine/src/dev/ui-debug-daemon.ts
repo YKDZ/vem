@@ -14,7 +14,6 @@ import {
 import type {
   BringUpSnapshot,
   CatalogSnapshot,
-  ConfigSummary,
   HardwareSelfCheck,
   NaturalContextSnapshot,
   NetworkSettingsResponse,
@@ -815,16 +814,12 @@ export function installUiDebugDaemon(): void {
     };
   };
   client.applyNetworkSettings = async () => applyUiDebugNetworkSettings();
-  client.getConfig = async () => currentScenario().config;
-  client.saveConfig = async (body: unknown) => ({
-    ...currentScenario().config,
-    ...(body as Partial<ConfigSummary>),
-  });
+  client.getEffectiveRuntimeConfiguration = async () =>
+    currentScenario().runtimeConfiguration;
   client.claimMachine = async (): Promise<ProvisioningClaimResponse> => ({
     status: "provisioned",
-    machineCode: currentScenario().config.public.machineCode ?? "UI-DEBUG-001",
+    machineCode: currentScenario().runtimeConfiguration.machine?.code ?? "UI-DEBUG-001",
     restartRequested: false,
-    config: currentScenario().config,
   });
   client.getCatalog = async () => catalogFromSaleView(currentSaleView());
   client.refreshCatalog = async () => catalogFromSaleView(currentSaleView());

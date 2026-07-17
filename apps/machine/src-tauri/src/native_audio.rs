@@ -15,9 +15,8 @@ use serde::Serialize;
 #[cfg(windows)]
 use {
     rodio::{
-        cpal::traits::{DeviceTrait, HostTrait},
         source::EmptyCallback,
-        Decoder, DeviceSinkBuilder, MixerDeviceSink, Player,
+        Decoder, OutputStreamBuilder, OutputStream, Player,
     },
     std::fs::File,
     std::io::{BufReader, Cursor},
@@ -36,7 +35,7 @@ struct ActiveMachineAudio {
     #[cfg(windows)]
     player: Arc<Player>,
     #[cfg(windows)]
-    sink: MixerDeviceSink,
+    sink: OutputStream,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,8 +238,6 @@ pub struct PlayMachineAudioRequest {
     pub request_id: String,
     pub source_url: String,
     pub volume: f32,
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub output_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -346,7 +343,8 @@ impl MachineAudioState {
         {
             self.stop();
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
-            let sink = open_requested_output_sink(input.output_device_id.as_deref())?;
+            let sink = OutputStreamBuilder::open_default_stream()
+                .map_err(|error| format!("open Windows default audio output failed: {error}"))?;
             let player = Arc::new(Player::connect_new(&sink.mixer()));
             player.set_volume(normalize_volume(input.volume));
             player.pause();
@@ -414,7 +412,6 @@ pub fn play_machine_audio(
     source_url: String,
     request_id: String,
     volume: Option<f32>,
-    output_device_id: Option<String>,
 ) -> Result<(), String> {
     let resolver = app.asset_resolver();
     let request_id = normalize_request_id(request_id)?;
@@ -424,7 +421,6 @@ pub fn play_machine_audio(
             request_id,
             source_url,
             volume: volume.unwrap_or_else(default_volume),
-            output_device_id,
         },
         |asset_path| {
             Ok(resolver.get(asset_path.to_string()).and_then(|asset| {
@@ -462,41 +458,6 @@ fn normalize_volume(volume: f32) -> f32 {
     } else {
         1.0
     }
-}
-
-#[cfg(windows)]
-fn open_requested_output_sink(output_device_id: Option<&str>) -> Result<MixerDeviceSink, String> {
-    match output_device_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(device_id) => {
-            let device = find_output_device_by_id(device_id)?
-                .ok_or_else(|| "configured audio output binding not found".to_string())?;
-            DeviceSinkBuilder::from_device(device)
-                .and_then(|builder| builder.open_stream())
-                .map_err(|error| format!("open configured audio output failed: {error}"))
-        }
-        None => Err("configured audio output binding is required".to_string()),
-    }
-}
-
-#[cfg(windows)]
-fn find_output_device_by_id(output_device_id: &str) -> Result<Option<rodio::cpal::Device>, String> {
-    let host = rodio::cpal::default_host();
-    for device in host
-        .output_devices()
-        .map_err(|error| format!("enumerate audio outputs failed: {error}"))?
-    {
-        let device_id = device
-            .id()
-            .map_err(|error| format!("read audio output identity failed: {error}"))?
-            .1;
-        if device_id == output_device_id {
-            return Ok(Some(device));
-        }
-    }
-    Ok(None)
 }
 
 fn source_path_from_url(source_url: &str) -> Result<MachineAudioSourcePath, String> {

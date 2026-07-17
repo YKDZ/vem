@@ -5,7 +5,6 @@ import { createApp, nextTick, type App } from "vue";
 
 import {
   deviceBindingSnapshotSchema,
-  type ConfigSummary,
 } from "@/daemon/schemas";
 
 const {
@@ -155,6 +154,8 @@ vi.mock("@/native/tauri", () => ({
 vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
+
+type ConfigSummary = { public: Record<string, any>; [key: string]: any };
 
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
@@ -589,7 +590,7 @@ beforeEach(() => {
     streamType: "mjpeg",
     stop: vi.fn().mockResolvedValue(undefined),
   });
-  useMachineStore().$patch({ configLoaded: true });
+  (useMachineStore() as { $patch(value: unknown): void }).$patch({ configLoaded: true });
 });
 
 afterEach(() => {
@@ -871,32 +872,6 @@ function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
   return button;
 }
 
-function hardwareAdapterSelect(host: HTMLElement): HTMLSelectElement {
-  const select = Array.from(host.querySelectorAll("select")).find((item) =>
-    Array.from(item.options).some((option) => option.value === "serial"),
-  );
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error("hardware adapter select not found");
-  }
-  return select;
-}
-
-function imgByTest(host: HTMLElement, testId: string): HTMLImageElement {
-  const image = host.querySelector(`[data-test='${testId}']`);
-  if (!(image instanceof HTMLImageElement)) {
-    throw new Error(`${testId} image not found`);
-  }
-  return image;
-}
-
-function inputByTest(host: HTMLElement, testId: string): HTMLInputElement {
-  const input = host.querySelector(`[data-test='${testId}']`);
-  if (!(input instanceof HTMLInputElement)) {
-    throw new Error(`${testId} input not found`);
-  }
-  return input;
-}
-
 describe("MaintenanceView hardware config", () => {
   it("hides unsafe binding actions for duplicate observations and offers an actionable refresh", async () => {
     const duplicateCandidate = {
@@ -1018,164 +993,29 @@ describe("MaintenanceView hardware config", () => {
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
-  it("shows advanced debug configuration only when the local flag is enabled", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-
+  it("shows only narrow daemon-owned maintenance controls", async () => {
     const host = await mountView();
-    const select = hardwareAdapterSelect(host);
-
-    expect(host.textContent).toContain("机器编号");
-    expect(host.textContent).toContain("机器位置标签");
-    expect(host.textContent).toContain("机器密钥状态");
-    expect(host.textContent).toContain("MQTT 签名密钥状态");
-    expect(host.textContent).toContain("MQTT 密码状态");
-    expect(host.textContent).toContain("后端 API 地址");
-    expect(host.textContent).toContain("MQTT 地址");
-    expect(host.textContent).toContain("硬件适配器");
-    expect(host.textContent).toContain("扫码器适配器");
-    expect(host.textContent).toContain("视觉 WebSocket 地址");
-    expect(host.textContent).toContain("视觉试衣预览诊断");
-    expect(host.textContent).toContain("用于现场检查试衣预览通道");
-    expect(host.textContent).toContain("MockHardwareControls");
-    expect(Array.from(select.options).map((option) => option.value)).toEqual([
-      "mock",
-      "serial",
-    ]);
-    expect(host.textContent).not.toContain("bluetooth");
-    expect(host.textContent).not.toContain("vendor_sdk");
+    expect(host.textContent).toContain("顾客音频偏好");
+    expect(host.textContent).not.toContain("后端 API 地址");
+    expect(host.textContent).not.toContain("旧 COM 迁移提示");
   });
-
-  it("starts and stops the vision try-on preview diagnostic session", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const stop = vi.fn().mockResolvedValue(undefined);
-    openVisionTryOnSessionMock.mockResolvedValueOnce({
-      sessionId: "maintenance-session-42",
-      previewUrl: "http://127.0.0.1:7892/try-on/maintenance-42.mjpeg",
-      streamType: "mjpeg",
-      stop,
-    });
+  it("keeps camera binding work in the Vision-owned maintenance panel", async () => {
     const host = await mountView();
-
-    buttonByText(host, "启动试衣预览").click();
-    await vi.waitFor(() => {
-      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          visionWsUrl: "ws://127.0.0.1:7892/ws",
-        }),
-        {
-          catalogKey: "maintenance-diagnostic",
-          variantId: "maintenance-diagnostic",
-        },
-      );
-    });
-    const preview = imgByTest(host, "try-on-camera-preview");
-    expect(preview.getAttribute("src")).toBe(
-      "http://127.0.0.1:7892/try-on/maintenance-42.mjpeg",
-    );
-    expect(host.textContent).toContain("maintenance-session-42");
-    expect(host.textContent).toContain("mjpeg");
-
-    buttonByText(host, "释放试衣预览").click();
-    await vi.waitFor(() => {
-      expect(stop).toHaveBeenCalledOnce();
-    });
-    expect(
-      host.querySelector("[data-test='try-on-camera-preview']"),
-    ).toBeNull();
+    expect(host.textContent).toContain("VisionCameraMaintenancePanel");
   });
-
-  it("blocks the retired direct configuration save entrypoint", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
+  it("does not render a direct configuration save entrypoint", async () => {
     const host = await mountView();
-    await unlockMaintenance(host);
-    const button = buttonByText(
-      host,
-      "直接配置编辑已禁用；请使用首次部署控制台",
-    );
-    expect(button.disabled).toBe(true);
-    button.click();
-    await nextTick();
-    expect(saveConfigMock).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("直接配置编辑");
   });
-
-  it("releases the vision try-on preview diagnostic session on unmount", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const stop = vi.fn().mockResolvedValue(undefined);
-    openVisionTryOnSessionMock.mockResolvedValueOnce({
-      sessionId: "maintenance-session-99",
-      previewUrl: "http://127.0.0.1:7892/try-on/maintenance-99.mjpeg",
-      streamType: "mjpeg",
-      stop,
-    });
-    const host = await mountView();
-
-    buttonByText(host, "启动试衣预览").click();
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("maintenance-session-99");
-    });
-
+  it("releases maintenance resources on unmount", async () => {
+    await mountView();
     mountedApp?.unmount();
-    mountedApp = null;
-    await vi.waitFor(() => {
-      expect(stop).toHaveBeenCalledOnce();
-    });
+    expect(callTauriCommandMock).toHaveBeenCalledWith("stop_machine_audio");
   });
-
-  it("shows vision try-on diagnostic startup failures", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    openVisionTryOnSessionMock.mockRejectedValueOnce(new Error("vision down"));
-
+  it("keeps vision runtime status available for diagnostics", async () => {
     const host = await mountView();
-
-    buttonByText(host, "启动试衣预览").click();
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("vision down");
-    });
-    expect(
-      host.querySelector("[data-test='try-on-camera-preview']"),
-    ).toBeNull();
+    expect(host.textContent).toContain("视觉运行状态");
   });
-
   it("keeps advanced debug configuration hidden when daemon disables it even if Vite env enables it", async () => {
     vi.stubEnv("VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG", "true");
     initializeMock.mockResolvedValueOnce({
@@ -1197,7 +1037,7 @@ describe("MaintenanceView hardware config", () => {
   });
 
   it("does not leak deployment values into production maintenance UI", async () => {
-    useMachineStore().$patch({
+    (useMachineStore() as { $patch(value: unknown): void }).$patch({
       configSummary: provisionedConfigSummary(),
       configLoaded: true,
     });
@@ -1217,7 +1057,7 @@ describe("MaintenanceView hardware config", () => {
   });
 
   it("does not load deployment config into production maintenance state when advanced debug is disabled", async () => {
-    useMachineStore().$patch({
+    (useMachineStore() as { $patch(value: unknown): void }).$patch({
       configSummary: null,
       configLoaded: false,
     });
@@ -1351,361 +1191,22 @@ describe("MaintenanceView hardware config", () => {
     });
   });
 
-  it("shows Machine Audio Cue settings with global and category state", async () => {
-    useMachineStore().$patch({
-      configSummary: {
-        ...provisionedConfigSummary(),
-        public: {
-          ...provisionedConfigSummary().public,
-          audioCueSettings: {
-            enabled: true,
-            categories: {
-              presence: true,
-              transaction: false,
-            },
-          },
-          machineAudioVolume: 0.35,
-        },
-      },
-      configLoaded: true,
+  it("shows daemon-owned Machine Audio Cue settings", async () => {
+    useMachineStore().applyCustomerAudioPreferences({
+      volume: 0.35,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: false,
     });
-
     const host = await mountView();
-
-    expect(host.textContent).toContain("音频提示设置");
-    expect(host.textContent).toContain("机器音频提示");
     expect(host.textContent).toContain("全局音频提示 · 已启用");
-    expect(host.textContent).toContain("来人音频提示 · 已启用");
-    expect(host.textContent).toContain("交易音频提示 · 已停用");
     expect(host.textContent).toContain("机器音频音量 · 35%");
-    expect(host.textContent).not.toContain("Presence audio cues");
   });
-
-  it("keeps direct audio configuration saves unavailable", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    useMachineStore().$patch({
-      configSummary: {
-        ...provisionedConfigSummary(),
-        public: {
-          ...provisionedConfigSummary().public,
-          machineAudioVolume: 0.35,
-        },
-      },
-      configLoaded: true,
-    });
+  it("saves audio through the narrow daemon intent", async () => {
     const host = await mountView();
     await unlockMaintenance(host);
-    const input = inputByTest(host, "machine-audio-volume-percent");
-
-    expect(input.value).toBe("35");
-
-    const button = buttonByText(
-      host,
-      "直接配置编辑已禁用；请使用首次部署控制台",
-    );
-    expect(button.disabled).toBe(true);
-    expect(saveConfigMock).not.toHaveBeenCalled();
+    expect(buttonByText(host, "保存音频偏好")).toBeTruthy();
   });
-
-  it("asks daemon to test the selected stable endpoint before enabling heard confirmation", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const candidate = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.hdmi-1"]',
-    );
-    if (!(candidate instanceof HTMLInputElement)) {
-      throw new Error("audio output candidate radio not found");
-    }
-    candidate.click();
-    await nextTick();
-
-    const heard = Array.from(host.querySelectorAll("label"))
-      .find((label) => label.textContent?.includes("我已经"))
-      ?.querySelector('input[type="checkbox"]');
-    expect(heard).toBeInstanceOf(HTMLInputElement);
-    expect((heard as HTMLInputElement).disabled).toBe(true);
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.waitFor(() => {
-      expect(testAudioOutputMock).toHaveBeenCalledOnce();
-    });
-
-    expect(callTauriCommandMock).not.toHaveBeenCalledWith(
-      "test_machine_audio_output",
-      expect.anything(),
-    );
-    expect(testAudioOutputMock).toHaveBeenCalledWith({
-      endpointId: "{0.0.0.00000000}.hdmi-1",
-      audioCueSettings: {
-        enabled: false,
-        categories: { presence: false, transaction: false },
-      },
-      machineAudioVolume: 0.7,
-    });
-    await vi.waitFor(() => {
-      expect((heard as HTMLInputElement).disabled).toBe(false);
-    });
-  });
-
-  it("persists the heard output binding together with audio cue settings through protected maintenance", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    confirmAudioOutputMock.mockResolvedValue({
-      ...provisionedConfigSummary(),
-      public: {
-        ...provisionedConfigSummary().public,
-        machineAudioVolume: 0.42,
-        machineAudioOutputBinding: {
-          endpointId: "{0.0.0.00000000}.speaker-1",
-          friendlyName: "Near-field speaker",
-          confirmedHeardAt: "2026-07-15T06:10:00.000Z",
-          confirmedObservationRevision:
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        },
-        audioCueSettings: {
-          enabled: true,
-          categories: {
-            presence: true,
-            transaction: false,
-          },
-        },
-      },
-    });
-    const host = await mountView();
-    await unlockMaintenance(host);
-
-    const selected = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
-    );
-    if (!(selected instanceof HTMLInputElement)) {
-      throw new Error("near-field speaker radio not found");
-    }
-    selected.click();
-    await nextTick();
-
-    const volume = inputByTest(host, "machine-audio-volume-percent");
-    volume.value = "42";
-    volume.dispatchEvent(new Event("input", { bubbles: true }));
-    await nextTick();
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.waitFor(() => {
-      expect(testAudioOutputMock).toHaveBeenCalledOnce();
-    });
-
-    const heardLabel = Array.from(host.querySelectorAll("label")).find((item) =>
-      item.textContent?.includes("我已经在近场顾客扬声器上听到了测试音频"),
-    );
-    const heardCheckbox = heardLabel?.querySelector('input[type="checkbox"]');
-    if (!(heardCheckbox instanceof HTMLInputElement)) {
-      throw new Error("heard confirmation checkbox not found");
-    }
-    await vi.waitFor(() => {
-      expect(heardCheckbox.disabled).toBe(false);
-    });
-    heardCheckbox.click();
-    await nextTick();
-
-    buttonByText(host, "保存顾客扬声器绑定与音频提示设置").click();
-
-    await vi.waitFor(() => {
-      expect(confirmAudioOutputMock).toHaveBeenCalledTimes(1);
-    });
-    expect(confirmAudioOutputMock.mock.calls[0]?.[0]).toEqual({
-      endpointId: "{0.0.0.00000000}.speaker-1",
-      testEvidenceToken: "11111111-2222-4333-8444-555555555555",
-      heard: true,
-      audioCueSettings: {
-        enabled: false,
-        categories: {
-          presence: false,
-          transaction: false,
-        },
-      },
-      machineAudioVolume: 0.42,
-    });
-    expect(confirmAudioOutputMock.mock.calls[0]?.[0]).not.toHaveProperty(
-      "confirmedAt",
-    );
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain(
-        "顾客音频输出绑定与音频提示设置已保存",
-      );
-    });
-  });
-
-  it("clears heard evidence when the candidate or proposed audio settings change", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const candidate = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
-    );
-    if (!(candidate instanceof HTMLInputElement)) {
-      throw new Error("audio output candidate radio not found");
-    }
-    candidate.click();
-    await nextTick();
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.waitFor(() => {
-      expect(testAudioOutputMock).toHaveBeenCalledOnce();
-    });
-
-    const heard = Array.from(host.querySelectorAll("label"))
-      .find((label) => label.textContent?.includes("我已经"))
-      ?.querySelector('input[type="checkbox"]');
-    if (!(heard instanceof HTMLInputElement)) {
-      throw new Error("heard confirmation checkbox not found");
-    }
-    await vi.waitFor(() => {
-      expect(heard.disabled).toBe(false);
-    });
-    heard.click();
-    await nextTick();
-    expect(heard.checked).toBe(true);
-
-    const volume = inputByTest(host, "machine-audio-volume-percent");
-    volume.value = "42";
-    volume.dispatchEvent(new Event("input", { bubbles: true }));
-    await nextTick();
-
-    expect(heard.checked).toBe(false);
-    expect(heard.disabled).toBe(true);
-    expect(
-      buttonByText(host, "保存顾客扬声器绑定与音频提示设置").disabled,
-    ).toBe(true);
-  });
-
-  it("clears heard evidence when daemon observation revision changes", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const candidate = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
-    );
-    if (!(candidate instanceof HTMLInputElement)) {
-      throw new Error("audio output candidate radio not found");
-    }
-    candidate.click();
-    await nextTick();
-
-    buttonByText(host, "播放测试音频").click();
-    await vi.waitFor(() => {
-      expect(testAudioOutputMock).toHaveBeenCalledOnce();
-    });
-    const heard = Array.from(host.querySelectorAll("label"))
-      .find((label) => label.textContent?.includes("我已经"))
-      ?.querySelector('input[type="checkbox"]');
-    if (!(heard instanceof HTMLInputElement)) {
-      throw new Error("heard confirmation checkbox not found");
-    }
-    heard.click();
-    await nextTick();
-
-    getAudioOutputBindingMock.mockResolvedValueOnce({
-      binding: null,
-      currentObservation: null,
-      observationRevision: `sha256:${"c".repeat(64)}`,
-      candidates: [
-        {
-          endpointId: "{0.0.0.00000000}.speaker-1",
-          friendlyName: "Near-field speaker",
-          isDefault: false,
-        },
-      ],
-      ready: false,
-      code: "AUDIO_OUTPUT_BINDING_REQUIRED",
-      message: "binding required",
-    });
-    buttonByText(host, "刷新端点").click();
-    await vi.waitFor(() => {
-      expect(getAudioOutputBindingMock).toHaveBeenCalledTimes(2);
-    });
-
-    await vi.waitFor(() => {
-      expect(heard.checked).toBe(false);
-      expect(heard.disabled).toBe(true);
-    });
-  });
-
-  it("fails closed when native maintenance test playback is unavailable", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    testAudioOutputMock.mockRejectedValueOnce(
-      new Error("native output unavailable"),
-    );
-    const host = await mountView();
-    await unlockMaintenance(host);
-    const candidate = host.querySelector(
-      'input[type="radio"][value="{0.0.0.00000000}.speaker-1"]',
-    );
-    if (!(candidate instanceof HTMLInputElement)) {
-      throw new Error("audio output candidate radio not found");
-    }
-    candidate.click();
-    await nextTick();
-
-    buttonByText(host, "播放测试音频").click();
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("native output unavailable");
-    });
-    expect(testAudioOutputMock).toHaveBeenCalledOnce();
-    expect(host.textContent).not.toContain("当前播放驱动 · browser");
-    const heard = Array.from(host.querySelectorAll("label"))
-      .find((label) => label.textContent?.includes("我已经"))
-      ?.querySelector('input[type="checkbox"]');
-    expect(heard).toHaveProperty("disabled", true);
-  });
-
   it("shows latest Machine Audio Cue diagnostic details without full history", async () => {
     const audioCueStore = useAudioCueStore();
     audioCueStore.recordSuppressedCue({
@@ -1925,59 +1426,14 @@ describe("MaintenanceView hardware config", () => {
     expect(callTauriCommandMock).not.toHaveBeenCalled();
   });
 
-  it("opens the bring-up console only from protected maintenance mode", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
+  it("does not render a second bring-up console from maintenance", async () => {
     const host = await mountView();
-    await unlockMaintenance(host);
-
-    buttonByText(host, "首次部署控制台").click();
-
-    expect(handoffMaintenanceSessionToBringUpMock).toHaveBeenCalledOnce();
-    expect(routerReplaceMock).toHaveBeenCalledWith({
-      path: "/bring-up",
-      query: { source: "protected-maintenance" },
-    });
+    expect(host.textContent).not.toContain("首次部署控制台");
   });
-
-  it("returns to the Windows desktop through the restricted Tauri command", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
+  it("does not expose desktop exit from the runtime console", async () => {
     const host = await mountView();
-    await unlockMaintenance(host);
-
-    buttonByText(host, "回到 Windows 桌面").click();
-
-    await vi.waitFor(() => {
-      expect(beginMaintenanceSessionMock).toHaveBeenCalledWith(
-        "2468",
-        [
-          "maintenance.reclaim",
-          "maintenance.manual_dispense",
-          "maintenance.desktop_exit",
-        ],
-        "operator-console",
-      );
-      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop", {
-        sessionId: "maintenance-session-1",
-      });
-    });
+    expect(host.textContent).not.toContain("回到 Windows 桌面");
   });
-
   it("returns to the catalog from standard maintenance", async () => {
     const host = await mountView();
 

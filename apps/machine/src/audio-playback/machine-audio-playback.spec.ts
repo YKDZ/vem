@@ -228,11 +228,10 @@ describe("createMachineAudioPlayback", () => {
     ]);
   });
 
-  it("passes the requested bound output device id to the active driver", async () => {
+  it("uses the active driver without selecting an output endpoint", async () => {
     const driver = createMockMachineAudioPlaybackDriver();
     const playback = createMachineAudioPlayback({
       driver,
-      outputDeviceId: "{0.0.0.00000000}.bound-speaker",
     });
 
     await playback.playLocal("/assets/customer-greeting.wav");
@@ -241,7 +240,6 @@ describe("createMachineAudioPlayback", () => {
       {
         sourceUrl: "/assets/customer-greeting.wav",
         volume: 1,
-        outputDeviceId: "{0.0.0.00000000}.bound-speaker",
       },
     ]);
   });
@@ -338,7 +336,7 @@ describe("createMachineAudioPlayback", () => {
     expect(nativeStops).toEqual([]);
   });
 
-  it("does not fall back to browser playback when strict native output binding is required", async () => {
+  it("falls back to browser playback when the Windows default native output is unavailable", async () => {
     const nativeDriver = {
       name: "native" as const,
       playLocal: vi
@@ -359,25 +357,23 @@ describe("createMachineAudioPlayback", () => {
     const playback = createMachineAudioPlayback({
       nativeDriver,
       browserDriver,
-      outputDeviceId: "{0.0.0.00000000}.missing-speaker",
-      requireNativeOutputBinding: true,
     });
 
     const played = await playback.playLocal("/assets/payment-succeeded.wav");
 
-    expect(played).toBe(false);
+    expect(played).toBe(true);
     expect(nativeDriver.playLocal).toHaveBeenCalledTimes(1);
-    expect(created).toHaveLength(0);
-    expect(playback.currentDriver()).toBe("native");
+    expect(created).toHaveLength(1);
+    expect(playback.currentDriver()).toBe("browser");
     expect(playback.latestDiagnostic()).toMatchObject({
-      status: "failed",
-      driver: "native",
+      status: "started",
+      driver: "browser",
       sourceUrl: "/assets/payment-succeeded.wav",
-      message: "configured audio output binding not found",
+      message: "native playback degraded: configured audio output binding not found",
     });
   });
 
-  it("fails before playback when strict native output binding is required but no output device is confirmed", async () => {
+  it("plays native audio without a selected output endpoint", async () => {
     const nativeDriver = createMockMachineAudioPlaybackDriver("native");
     const created: MockBrowserAudio[] = [];
     const browserDriver = createBrowserMachineAudioPlaybackDriver({
@@ -390,23 +386,22 @@ describe("createMachineAudioPlayback", () => {
     const playback = createMachineAudioPlayback({
       nativeDriver,
       browserDriver,
-      requireNativeOutputBinding: true,
     });
 
     const played = await playback.playLocal("/assets/payment-succeeded.wav");
 
-    expect(played).toBe(false);
-    expect(nativeDriver.requests).toEqual([]);
+    expect(played).toBe(true);
+    expect(nativeDriver.requests).toHaveLength(1);
     expect(created).toHaveLength(0);
     expect(playback.latestDiagnostic()).toMatchObject({
-      status: "failed",
+      status: "started",
       driver: "native",
       sourceUrl: "/assets/payment-succeeded.wav",
-      message: "confirmed audio output binding is required",
+      message: null,
     });
   });
 
-  it("fails closed when native playback is unavailable for a confirmed output binding", async () => {
+  it("falls back when native playback is unavailable", async () => {
     const created: MockBrowserAudio[] = [];
     const browserDriver = createBrowserMachineAudioPlaybackDriver({
       audioFactory: (sourceUrl) => {
@@ -418,19 +413,17 @@ describe("createMachineAudioPlayback", () => {
     const playback = createMachineAudioPlayback({
       nativeDriver: null,
       browserDriver,
-      outputDeviceId: "{0.0.0.00000000}.speaker-1",
-      requireNativeOutputBinding: true,
     });
 
     const played = await playback.playLocal("/assets/payment-succeeded.wav");
 
-    expect(played).toBe(false);
-    expect(created).toHaveLength(0);
+    expect(played).toBe(true);
+    expect(created).toHaveLength(1);
     expect(playback.latestDiagnostic()).toMatchObject({
-      status: "failed",
-      driver: "native",
+      status: "started",
+      driver: "browser",
       sourceUrl: "/assets/payment-succeeded.wav",
-      message: "native playback unavailable for confirmed audio output binding",
+      message: "native playback degraded: native playback unavailable",
     });
   });
 

@@ -1,9 +1,9 @@
 import type { MachinePaymentOptionsResponse } from "@/types/checkout";
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import {
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
-  type ConfigSummary,
   type HealthSnapshot,
   type MachineSaleReadiness,
   type ReadySnapshot,
@@ -42,7 +42,7 @@ export type UiDebugScenario = {
   description: string;
   health: HealthSnapshot;
   ready: ReadySnapshot;
-  config: ConfigSummary;
+  runtimeConfiguration: EffectiveMachineRuntimeConfiguration;
   saleReadiness: MachineSaleReadiness;
   saleView: SaleViewSnapshot;
   paymentOptions: MachinePaymentOptionsResponse;
@@ -64,7 +64,6 @@ function localStorageOrNull(): Storage | null {
     return null;
   }
 }
-
 function component(componentName: string, ready: boolean, message: string) {
   return {
     component: componentName,
@@ -77,41 +76,20 @@ function component(componentName: string, ready: boolean, message: string) {
   };
 }
 
-const config: ConfigSummary = {
-  public: {
-    machineCode: "UI-DEBUG-001",
-    apiBaseUrl: "http://ui-debug.local/api",
-    mqttUrl: "mqtt://ui-debug.local:1883",
-    mqttUsername: null,
-    hardwareAdapter: "mock",
-    serialPortPath: null,
-    lowerControllerUsbIdentity: null,
-    scannerAdapter: "disabled",
-    scannerSerialPortPath: null,
-    scannerUsbIdentity: null,
-    scannerBaudRate: 9600,
-    scannerFrameSuffix: "crlf",
-    visionEnabled: true,
-    visionWsUrl: "ws://ui-debug.local/vision",
-    visionRequestTimeoutMs: 8000,
-    machineAudioVolume: 0.7,
-    machineAudioOutputBinding: null,
-    audioCueSettings: {
-      enabled: true,
-      categories: {
-        presence: true,
-        transaction: true,
-      },
-    },
-    kioskMode: false,
-    stockMovementRetentionDays: 30,
+const runtimeConfiguration: EffectiveMachineRuntimeConfiguration = {
+  schemaVersion: 1,
+  generation: 1,
+  sourceRevisions: { bootstrapSchemaVersion: 1, profile: null, localSettingsRevision: 0 },
+  sourceDocuments: {
+    bootstrap: { schemaVersion: 1, provisioningApiBaseUrl: "http://ui-debug.local", hardwareModel: "ui-debug", topology: { identity: "ui-debug", version: "1" } },
+    profileCache: null,
   },
-  machineSecretConfigured: true,
-  mqttSigningSecretConfigured: true,
-  mqttPasswordConfigured: false,
-  maintenancePinConfigured: false,
-  provisioned: true,
-  provisioningIssues: [],
+  machine: null,
+  platform: null,
+  hardware: { model: "ui-debug", topology: { identity: "ui-debug", version: "1" }, expectedProfile: null, lowerControllerBinding: null, scannerBinding: null, scannerProtocol: null },
+  experience: { audio: { volume: 0.7, cuesEnabled: true, presenceCuesEnabled: true, transactionCuesEnabled: true } },
+  secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
+  profileRefresh: { status: "unclaimed", lastError: null },
 };
 
 const readyHealth: HealthSnapshot = {
@@ -699,7 +677,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "健康机器、可售目录、多尺码样式商品。",
     health: readyHealth,
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -715,7 +693,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "模拟下位机故障，验证不可售卖和维护入口。",
     health: blockedHealth,
     ready: blockedReady,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(false),
     saleView: baseSaleView,
     paymentOptions,
@@ -731,7 +709,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "健康机器但全部商品暂时售罄，验证顾客可见下一步。",
     health: readyHealth,
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: soldOutSaleView,
     paymentOptions,
@@ -755,7 +733,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -779,7 +757,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -809,7 +787,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -831,7 +809,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "支付成功后进入出货进度页，尚未触发取货提醒。",
     health: readyHealth,
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -858,7 +836,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "商品已到取货口 15 秒，展示第一次取货提醒。",
     health: readyHealth,
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -891,7 +869,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     description: "商品已到取货口 25 秒，展示更强的取货提醒。",
     health: readyHealth,
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -932,7 +910,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: blockedReady,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(false),
     saleView: baseSaleView,
     paymentOptions,
@@ -969,7 +947,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: blockedReady,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(false),
     saleView: baseSaleView,
     paymentOptions,
@@ -1006,7 +984,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: blockedReady,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(false),
     saleView: baseSaleView,
     paymentOptions,
@@ -1043,7 +1021,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,
@@ -1080,7 +1058,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       },
     },
     ready: readySnapshot,
-    config,
+    runtimeConfiguration,
     saleReadiness: saleReadiness(true),
     saleView: baseSaleView,
     paymentOptions,

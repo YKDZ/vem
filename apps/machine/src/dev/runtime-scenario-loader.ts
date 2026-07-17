@@ -10,7 +10,6 @@ import {
   isUiDebugModeEnabled,
   type UiDebugScenario,
 } from "@/dev/ui-debug-fixtures";
-import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -23,8 +22,9 @@ import { useVisionStore } from "@/stores/vision";
 
 export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   const saleView = getSaleViewForScenario(scenario.id);
-  useMachineStore().configSummary = scenario.config;
-  useMachineStore().configLoaded = true;
+  useMachineStore().applyEffectiveRuntimeConfiguration(
+    scenario.runtimeConfiguration,
+  );
   useMachineStore().applyHealth(scenario.health);
   useConnectivityStore().applyHealth(scenario.health);
   useConnectivityStore().applyReady(scenario.ready);
@@ -34,7 +34,6 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   useScannerStore().applyStatus(scenario.scanner);
   useVisionStore().applyStatus(scenario.vision);
   useRemoteOpsStore().applyStatus(scenario.remoteOps);
-  useAudioCueStore().applySettings(scenario.config.public.audioCueSettings);
   void useNaturalContextStore()
     .refresh()
     .catch(() => undefined);

@@ -1,16 +1,8 @@
 import {
-  type DaemonIpcAudioOutputBindingSnapshot,
-  type DaemonIpcAudioOutputConfirmRequest,
-  type DaemonIpcAudioOutputTestRequest,
-  type DaemonIpcAudioOutputTestResponse,
   type ConfirmHardwareBindingRequest,
   type EffectiveMachineRuntimeConfiguration,
   type SetAudioPreferencesRequest,
   type SetScannerProtocolParametersRequest,
-  daemonIpcAudioOutputBindingSnapshotSchema,
-  daemonIpcAudioOutputConfirmRequestSchema,
-  daemonIpcAudioOutputTestRequestSchema,
-  daemonIpcAudioOutputTestResponseSchema,
   confirmHardwareBindingRequestSchema,
   effectiveMachineRuntimeConfigurationSchema,
   setAudioPreferencesRequestSchema,
@@ -35,7 +27,6 @@ import {
 import {
   catalogSnapshotSchema,
   bringUpSnapshotSchema,
-  configSummaryFromRuntimeConfigurationSummary,
   daemonEventSchema,
   hardwareSelfCheckSchema,
   manualDispenseDiagnosticResultSchema,
@@ -61,7 +52,6 @@ import {
   wifiScanResponseSchema,
   type CatalogSnapshot,
   type BringUpSnapshot,
-  type ConfigSummary,
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
@@ -504,51 +494,9 @@ export class DaemonApiClient {
     );
   }
 
-  async getConfig(): Promise<ConfigSummary> {
-    return configSummaryFromRuntimeConfigurationSummary(
-      await this.request("/v1/config/summary"),
-    );
-  }
-
   async getEffectiveRuntimeConfiguration(): Promise<EffectiveMachineRuntimeConfiguration> {
     return effectiveMachineRuntimeConfigurationSchema.parse(
       await this.request("/v1/runtime-configuration"),
-    );
-  }
-
-  async getAudioOutputBinding(): Promise<DaemonIpcAudioOutputBindingSnapshot> {
-    return daemonIpcAudioOutputBindingSnapshotSchema.parse(
-      await this.request("/v1/audio-output-binding"),
-    );
-  }
-
-  async testAudioOutput(
-    body: DaemonIpcAudioOutputTestRequest,
-  ): Promise<DaemonIpcAudioOutputTestResponse> {
-    const request = daemonIpcAudioOutputTestRequestSchema.parse(body);
-    return daemonIpcAudioOutputTestResponseSchema.parse(
-      await this.request("/v1/audio-output-binding/test", {
-        method: "POST",
-        body: request,
-      }),
-    );
-  }
-
-  async confirmAudioOutput(
-    body: DaemonIpcAudioOutputConfirmRequest,
-  ): Promise<ConfigSummary> {
-    const request = daemonIpcAudioOutputConfirmRequestSchema.parse(body);
-    return configSummaryFromRuntimeConfigurationSummary(
-      await this.request("/v1/audio-output-binding/confirm", {
-        method: "POST",
-        body: request,
-      }),
-    );
-  }
-
-  async saveConfig(_body: unknown): Promise<never> {
-    throw new DaemonUnavailableError(
-      "直接配置编辑已禁用；请通过守护进程 Bring-Up 流程完成部署。",
     );
   }
 

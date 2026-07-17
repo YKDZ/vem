@@ -5,8 +5,6 @@ import {
 } from "vision-mock";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { normalizeMachineConfig } from "@/config/machine-config";
-
 import {
   openVisionTryOnSession,
   subscribeVisionProfiles,
@@ -44,7 +42,7 @@ async function startVisionMock(
 async function waitForPushedProfile(
   url: string,
 ): Promise<VisionProfileResultPayload> {
-  const config = normalizeMachineConfig({ visionWsUrl: url });
+  const config = { url };
   return await new Promise((resolve, reject) => {
     let subscription: ReturnType<typeof subscribeVisionProfiles>;
     subscription = subscribeVisionProfiles(config, {
@@ -63,7 +61,7 @@ async function waitForPushedProfile(
 describe("vision native browser fallback - self-check", () => {
   it("performs self-check against the mock websocket server", async () => {
     const url = await startVisionMock();
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     const result = await visionSelfCheck(config);
 
@@ -76,7 +74,7 @@ describe("vision native browser fallback - self-check", () => {
   });
 
   it("returns enabled=false when vision is disabled in config", async () => {
-    const config = normalizeMachineConfig({ visionEnabled: false });
+    const config = { enabled: false };
 
     const result = await visionSelfCheck(config);
 
@@ -85,9 +83,7 @@ describe("vision native browser fallback - self-check", () => {
   });
 
   it("returns online=false when server is not reachable", async () => {
-    const config = normalizeMachineConfig({
-      visionWsUrl: "ws://127.0.0.1:19999/ws",
-    });
+    const config = { url: "ws://127.0.0.1:19999/ws" };
 
     await expect(visionSelfCheck(config)).rejects.toThrow();
   });
@@ -96,7 +92,7 @@ describe("vision native browser fallback - self-check", () => {
 describe("vision native browser fallback - pushed profiles", () => {
   it("receives a pushed presence event before profile details", async () => {
     const url = await startVisionMock("success");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     const result = await new Promise<VisionPresenceStatusPayload>(
       (resolve, reject) => {
@@ -137,7 +133,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 
   it("receives a pushed departure event from the mock websocket server", async () => {
     const url = await startVisionMock("departure_after_presence");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     const result = await new Promise<VisionPersonDepartedPayload>(
       (resolve, reject) => {
@@ -163,7 +159,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 
   it("keeps waiting silently when no person is detected", async () => {
     const url = await startVisionMock("no_person");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
     let pushed = false;
     let failed = false;
 
@@ -184,7 +180,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 
   it("reports pushed camera_unavailable errors", async () => {
     const url = await startVisionMock("camera_unavailable");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     await expect(
       new Promise((resolve, reject) => {
@@ -202,7 +198,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 
   it("reconnects after the websocket closes", async () => {
     const url = await startVisionMock("disconnect_once");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     const result = await new Promise<VisionProfileResultPayload>(
       (resolve, reject) => {
@@ -232,7 +228,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 describe("vision native browser fallback - try-on sessions", () => {
   it("opens a try-on session and returns an MJPEG preview URL", async () => {
     const url = await startVisionMock("presence_only");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
+    const config = { url };
 
     const session = await openVisionTryOnSession(config, {
       catalogKey: "catalog-001",
@@ -245,7 +241,7 @@ describe("vision native browser fallback - try-on sessions", () => {
   });
 
   it("rejects try-on sessions when vision is disabled", async () => {
-    const config = normalizeMachineConfig({ visionEnabled: false });
+    const config = { enabled: false };
 
     await expect(openVisionTryOnSession(config)).rejects.toThrow(
       "视觉模块未启用",
@@ -255,7 +251,7 @@ describe("vision native browser fallback - try-on sessions", () => {
 
 describe("vision native browser fallback - vision disabled", () => {
   it("does not open a subscription when vision is disabled", () => {
-    const config = normalizeMachineConfig({ visionEnabled: false });
+    const config = { enabled: false };
     let status: string | null = null;
 
     const subscription = subscribeVisionProfiles(config, {

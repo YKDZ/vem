@@ -13,8 +13,6 @@ import {
 } from "@vem/shared";
 import { z } from "zod";
 
-import type { MachineConfig } from "@/config/machine-config";
-
 import { callTauriCommand, isTauriRuntime } from "./tauri";
 
 export const visionRuntimeStatusSchema = z.object({
@@ -65,6 +63,13 @@ export interface VisionTryOnSessionInput {
   catalogKey?: string;
   variantId?: string;
 }
+
+export type VisionRuntimeConnection = {
+  machineCode?: string | null;
+  url?: string;
+  timeoutMs?: number;
+  enabled?: boolean;
+};
 
 export interface VisionTryOnSession {
   sessionId: string;
@@ -168,8 +173,13 @@ function serializeClientMessage(message: VisionClientMessage): string {
   return JSON.stringify(message);
 }
 
-function socketUrl(config: MachineConfig): string {
-  return config.visionWsUrl || DEFAULT_VISION_WS_URL;
+function connectionOptions(connection: VisionRuntimeConnection = {}): Required<VisionRuntimeConnection> {
+  return {
+    machineCode: connection.machineCode ?? null,
+    url: connection.url ?? DEFAULT_VISION_WS_URL,
+    timeoutMs: connection.timeoutMs ?? CONNECT_TIMEOUT_MS,
+    enabled: connection.enabled ?? true,
+  };
 }
 
 async function openVisionSocket(
@@ -265,9 +275,10 @@ function closeSocket(socket: WebSocket): void {
 }
 
 async function visionSelfCheckBrowser(
-  config: MachineConfig,
+  connection: VisionRuntimeConnection = {},
 ): Promise<VisionSelfCheckResult> {
-  if (!config.visionEnabled) {
+  const options = connectionOptions(connection);
+  if (!options.enabled) {
     return {
       enabled: false,
       online: false,
@@ -277,10 +288,10 @@ async function visionSelfCheckBrowser(
     };
   }
 
-  const socket = await openVisionSocket(socketUrl(config));
+  const socket = await openVisionSocket(options.url, options.timeoutMs);
   try {
-    socket.send(serializeClientMessage(createHelloMessage(config.machineCode)));
-    const message = await nextServerMessage(socket, CONNECT_TIMEOUT_MS);
+    socket.send(serializeClientMessage(createHelloMessage(options.machineCode)));
+    const message = await nextServerMessage(socket, options.timeoutMs);
     if (message.type === "vision.error") throw errorFromVisionMessage(message);
     if (message.type !== "vision.ready") {
       throw new Error(`unexpected vision self-check message: ${message.type}`);
@@ -334,24 +345,25 @@ export async function getVisionRuntimeStatus(): Promise<VisionRuntimeStatus> {
 }
 
 export async function visionSelfCheck(
-  config: MachineConfig,
+  connection: VisionRuntimeConnection = {},
 ): Promise<VisionSelfCheckResult> {
-  if (!isTauriRuntime()) return await visionSelfCheckBrowser(config);
+  if (!isTauriRuntime()) return await visionSelfCheckBrowser(connection);
   const result = await callTauriCommand<unknown>("vision_self_check");
   return visionSelfCheckResultSchema.parse(result);
 }
 
 export async function openVisionTryOnSession(
-  config: MachineConfig,
+  connection: VisionRuntimeConnection = {},
   input: VisionTryOnSessionInput = {},
 ): Promise<VisionTryOnSession> {
-  if (!config.visionEnabled) {
+  const options = connectionOptions(connection);
+  if (!options.enabled) {
     throw new Error("视觉模块未启用，无法启动虚拟试穿");
   }
 
   const socket = await openVisionSocket(
-    socketUrl(config),
-    config.visionRequestTimeoutMs,
+    options.url,
+    options.timeoutMs,
   );
   let closed = false;
 
@@ -361,10 +373,10 @@ export async function openVisionTryOnSession(
   };
 
   try {
-    socket.send(serializeClientMessage(createHelloMessage(config.machineCode)));
+    socket.send(serializeClientMessage(createHelloMessage(options.machineCode)));
     const readyMessage = await nextServerMessage(
       socket,
-      config.visionRequestTimeoutMs,
+      options.timeoutMs,
     );
     if (readyMessage.type === "vision.error") {
       throw errorFromVisionMessage(readyMessage);
@@ -386,7 +398,7 @@ export async function openVisionTryOnSession(
     const startedMessage = await waitForTryOnStarted(
       socket,
       startMessage.payload.sessionId,
-      config.visionRequestTimeoutMs,
+      options.timeoutMs,
     );
 
     return {
@@ -450,10 +462,11 @@ async function waitForTryOnStartedBefore(
 }
 
 export function subscribeVisionProfiles(
-  config: MachineConfig,
+  connection: VisionRuntimeConnection = {},
   handlers: VisionProfileSubscriptionHandlers,
 ): VisionProfileSubscription {
-  if (!config.visionEnabled) {
+  const options = connectionOptions(connection);
+  if (!options.enabled) {
     handlers.onStatus?.("视觉模块未启用");
     return { close: () => undefined };
   }
@@ -582,7 +595,7 @@ export function subscribeVisionProfiles(
 
   const connect = async (): Promise<void> => {
     try {
-      const connectedSocket = await openVisionSocket(socketUrl(config));
+      const connectedSocket = await openVisionSocket(options.url, options.timeoutMs);
       if (closed) {
         closeSocket(connectedSocket);
         return;
@@ -612,7 +625,7 @@ export function subscribeVisionProfiles(
         scheduleReconnect("视觉模块连接已断开");
       });
       socket.send(
-        serializeClientMessage(createHelloMessage(config.machineCode)),
+        serializeClientMessage(createHelloMessage(options.machineCode)),
       );
       schedulePing();
       handlers.onStatus?.("已连接机器视觉模块，等待识别结果推送");

@@ -27,41 +27,6 @@ describe("routeForStartup", () => {
     operatorReason: "",
     updatedAt: "2026-01-01T00:00:00Z",
   };
-  const configBase = {
-    public: {
-      machineCode: "M001",
-      apiBaseUrl: "http://localhost:3000/api",
-      mqttUrl: "mqtt://localhost:1883",
-      mqttUsername: null,
-      hardwareAdapter: "mock" as const,
-      serialPortPath: null,
-      lowerControllerUsbIdentity: null,
-      scannerAdapter: "disabled" as const,
-      scannerSerialPortPath: null,
-      scannerBaudRate: 9600,
-      scannerFrameSuffix: "crlf" as const,
-      visionEnabled: true,
-      visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionRequestTimeoutMs: 8000,
-      machineAudioVolume: 0.7,
-      machineAudioOutputBinding: null,
-      audioCueSettings: {
-        enabled: false,
-        categories: {
-          presence: false,
-          transaction: false,
-        },
-      },
-      kioskMode: false,
-      stockMovementRetentionDays: 30,
-    },
-    machineSecretConfigured: true,
-    mqttSigningSecretConfigured: true,
-    mqttPasswordConfigured: false,
-    maintenancePinConfigured: false,
-    provisioned: true,
-    provisioningIssues: [],
-  };
   it("routes offline when daemon unavailable", () => {
     expect(
       routeForStartup({
@@ -105,7 +70,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: { ...healthBase, configConfigured: false },
-        config: configBase,
         ready: null,
         restoredTransaction: null,
       }),
@@ -117,7 +81,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: null,
         ready: {
           ready: true,
           canSell: true,
@@ -138,7 +101,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         bringUp: {
           state: "claim_required",
           blockingReasons: [
@@ -192,7 +154,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         bringUp: {
           state: "runtime_ready",
           blockingReasons: [],
@@ -248,7 +209,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: { ...healthBase, configConfigured: false },
-        config: null,
         bringUp: {
           state: "sell_ready",
           blockingReasons: [],
@@ -291,7 +251,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         bringUp: null,
         ready: {
           ready: true,
@@ -313,7 +272,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         bringUp: {
           state: "sell_ready",
           blockingReasons: [],
@@ -368,7 +326,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         bringUp: {
           state: "claim_required",
           blockingReasons: [
@@ -449,7 +406,6 @@ describe("routeForStartup", () => {
         routeForStartup({
           daemonAvailable: true,
           health: healthBase,
-          config: configBase,
           bringUp: {
             state: "topology_mismatch",
             blockingReasons: [
@@ -518,7 +474,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         ready: null,
         restoredTransaction: {
           orderId: null,
@@ -551,7 +506,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         ready: {
           ready: true,
           canSell: true,
@@ -593,7 +547,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         ready: {
           ready: true,
           canSell: true,
@@ -640,7 +593,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: { ...healthBase },
-        config: configBase,
         ready: {
           ready: true,
           canSell: false,
@@ -661,7 +613,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: { ...healthBase },
-        config: configBase,
         ready: {
           ready: false,
           canSell: false,
@@ -688,7 +639,6 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         health: healthBase,
-        config: configBase,
         ready: {
           ready: true,
           canSell: true,

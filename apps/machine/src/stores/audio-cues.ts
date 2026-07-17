@@ -1,8 +1,10 @@
 import { defineStore } from "pinia";
 
-import type { AudioCueSettings } from "@/config/machine-config";
-
 export type AudioCueCategory = "presence" | "transaction";
+export type AudioCueSettings = {
+  enabled: boolean;
+  categories: Record<AudioCueCategory, boolean>;
+};
 export type AudioCuePlaybackStatus = "idle" | "pending" | "playing";
 export type AudioCuePlaybackOutcome =
   | "played"
