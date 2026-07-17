@@ -31,6 +31,10 @@ const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = [
   "/bring-up",
 ];
 const PAYMENT_BARRIER_ALLOWED_ROUTES = ["/payment", "/dispensing", "/result"];
+const PAYMENT_BARRIER_ARMING_ALLOWED_ROUTES = [
+  "/checkout",
+  ...PAYMENT_BARRIER_ALLOWED_ROUTES,
+];
 const PAYMENT_BARRIER_TERMINAL_ROUTES = ["/dispensing", "/result"];
 const PAYMENT_BARRIER_COMPLETED_ALLOWED_ROUTES = [
   ...PAYMENT_BARRIER_ALLOWED_ROUTES,
@@ -1465,7 +1469,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         if (step.activatesRouteBarrier) {
           activeAllowedRoutes = validateAllowedRoutes(
-            PAYMENT_BARRIER_ALLOWED_ROUTES,
+            PAYMENT_BARRIER_ARMING_ALLOWED_ROUTES,
           );
           paymentBarrierTerminalObserved = false;
           routePolicyEpoch += 1;
@@ -1507,6 +1511,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           assertHealthy,
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
+        if (step.activatesRouteBarrier) {
+          activeAllowedRoutes = validateAllowedRoutes(
+            PAYMENT_BARRIER_ALLOWED_ROUTES,
+          );
+          routePolicyEpoch += 1;
+        }
         record({
           type: "checkpoint",
           label: `${step.name}:after`,
