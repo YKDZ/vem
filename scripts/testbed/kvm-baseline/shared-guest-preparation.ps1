@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)] [string] $WebView2InstallerUri,
+  [Parameter(Mandatory = $true)] [string] $SpiceGuestToolsInstallerPath,
   [Parameter(Mandatory = $true)] [string] $AuthorizedKeysPath,
   [int] $DesktopWidth = 1080,
   [int] $DesktopHeight = 1920,
@@ -35,6 +36,90 @@ function Invoke-Native {
   if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
 }
 
+function Get-BootIdentity {
+  return (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString("o")
+}
+
+function Write-SpiceGuestToolsInstallationState {
+  param([object] $State)
+  $State | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $baselineRoot "spice-guest-tools-installation.json")
+}
+
+function Register-SpiceGuestToolsResume {
+  $scriptPath = Join-Path $baselineRoot "scripts\shared-guest-preparation.ps1"
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "shared guest preparation script is unavailable for SPICE reboot resume" }
+  $arguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $scriptPath + '"'),
+    "-WebView2InstallerUri", ('"' + $WebView2InstallerUri + '"'),
+    "-SpiceGuestToolsInstallerPath", ('"' + $SpiceGuestToolsInstallerPath + '"'),
+    "-AuthorizedKeysPath", ('"' + $AuthorizedKeysPath + '"'),
+    "-DesktopWidth", $DesktopWidth,
+    "-DesktopHeight", $DesktopHeight,
+    "-DesktopScalePercent", $DesktopScalePercent
+  ) -join " "
+  New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Force | Out-Null
+  Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "VemResumeSpiceGuestToolsPreparation" -Value ("powershell.exe " + $arguments)
+}
+
+function Invoke-SpiceGuestToolsInstallerAsSystem {
+  param([string] $InstallerPath)
+  if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "SPICE guest tools installer is unavailable: $InstallerPath" }
+  $taskName = "VemInstallSpiceGuestTools-$PID"
+  $startedAt = Get-Date
+  $action = New-ScheduledTaskAction -Execute $InstallerPath -Argument "/S"
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
+  try {
+    Start-ScheduledTask -TaskName $taskName
+    $deadline = (Get-Date).AddMinutes(10)
+    do {
+      Start-Sleep -Seconds 1
+      $task = Get-ScheduledTask -TaskName $taskName
+      $info = Get-ScheduledTaskInfo -TaskName $taskName
+      if ($task.State -ne "Running" -and $info.LastRunTime -ge $startedAt.AddSeconds(-2)) { return [int] $info.LastTaskResult }
+    } while ((Get-Date) -lt $deadline)
+    throw "SPICE guest tools installer timed out"
+  } finally {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+  }
+}
+
+function Install-SpiceGuestTools {
+  $statePath = Join-Path $baselineRoot "spice-guest-tools-installation.json"
+  $currentBootIdentity = Get-BootIdentity
+  if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    if ($state.schemaVersion -ne "win10-kvm-spice-guest-tools-installation/v1") { throw "SPICE guest tools installation state schema is invalid" }
+    if ($state.exitCode -eq 0 -and -not $state.rebootRequired -and -not $state.rebootApplied) { return }
+    if ($state.exitCode -eq 3010 -and $state.rebootRequired -and $state.installBootIdentity -ne $currentBootIdentity) {
+      $state.rebootApplied = $true
+      $state.resumeBootIdentity = $currentBootIdentity
+      Write-SpiceGuestToolsInstallationState -State $state
+      return
+    }
+    throw "SPICE guest tools installation state has invalid reboot semantics"
+  }
+  $exitCode = Invoke-SpiceGuestToolsInstallerAsSystem -InstallerPath $SpiceGuestToolsInstallerPath
+  if ($exitCode -eq 0) {
+    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 0; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
+    return
+  }
+  if ($exitCode -eq 3010) {
+    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 3010; rebootRequired = $true; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
+    Register-SpiceGuestToolsResume
+    Restart-Computer -Force
+    throw "SPICE guest tools requested a reboot but Windows did not restart"
+  }
+  if ($exitCode -eq 1641) { throw "SPICE guest tools initiated an unmanaged reboot" }
+  throw "SPICE guest tools installer failed with exit code $exitCode"
+}
+
+function Disable-RemainingAutomaticLogon {
+  $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+  Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "0"
+}
+
 function Set-ClientDisplayMode {
   param([int] $Width, [int] $Height)
   Add-Type -TypeDefinition @'
@@ -67,6 +152,8 @@ foreach ($feature in "MediaPlayback", "WindowsMediaPlayer") {
   }
 }
 
+Install-SpiceGuestTools
+
 $webView2Installer = Join-Path $env:TEMP "MicrosoftEdgeWebView2Setup.exe"
 Invoke-WebRequest -UseBasicParsing -Uri $WebView2InstallerUri -OutFile $webView2Installer
 $webView2 = Start-Process -FilePath $webView2Installer -ArgumentList "/silent", "/install" -Wait -PassThru
@@ -81,6 +168,7 @@ Invoke-Native -FilePath "icacls.exe" -ArgumentList @($administratorsKeys, "/inhe
 Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
 Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Win8DpiScaling -Type DWord -Value 1
 Set-ClientDisplayMode -Width $DesktopWidth -Height $DesktopHeight
+Disable-RemainingAutomaticLogon
 
 Add-Type -AssemblyName System.Windows.Forms
 $primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds

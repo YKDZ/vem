@@ -32,6 +32,7 @@ import {
 
 const execFile = promisify(execFileCallback);
 const BASELINE_ROOT = new URL(".", import.meta.url);
+export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
 
 function parseArgs(argv) {
   const options = { execute: false };
@@ -153,8 +154,11 @@ async function collectHostObservation(config) {
     },
     installationMedia: {
       windowsIso: await readable(config.media.windowsIsoPath),
+      spiceGuestToolsInstaller: await readable(
+        config.media.spiceGuestToolsInstallerPath,
+      ),
     },
-    networkActive: !network.failed && /^Active:\s+yes$/mi.test(network.stdout),
+    networkActive: !network.failed && /^Active:\s+yes$/im.test(network.stdout),
     profile,
   };
 }
@@ -182,7 +186,7 @@ export function renderUnattendedXml(config) {
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE><HideEULAPage>true</HideEULAPage><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>${user}</Name><Group>Administrators</Group><Password><Value>${password}</Value><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
-      <AutoLogon><Username>${user}</Username><Password><Value>${password}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount></AutoLogon>
+      <AutoLogon><Username>${user}</Username><Password><Value>${password}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>2</LogonCount></AutoLogon>
       <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); &amp; (Join-Path $drive 'bootstrap.ps1')"</CommandLine><Description>Prepare runtime baseline</Description></SynchronousCommand></FirstLogonCommands>
     </component>
   </settings>
@@ -190,7 +194,7 @@ export function renderUnattendedXml(config) {
 `;
 }
 
-function bootstrapScript() {
+export function bootstrapScript() {
   return `$ErrorActionPreference = "Stop"
 $drive = Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive "baseline-config.json") } | Select-Object -First 1 -ExpandProperty Drive
 if ([string]::IsNullOrWhiteSpace($drive)) { throw "baseline configuration media is unavailable" }
@@ -198,11 +202,27 @@ $config = Get-Content -Raw (Join-Path $drive "baseline-config.json") | ConvertFr
 ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $drive "*.ps1") ${"$scriptRoot"}
-& (Join-Path $drive "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $drive "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $drive "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -SpiceGuestToolsInstallerPath (Join-Path $drive $config.spiceGuestToolsInstallerFile) -AuthorizedKeysPath (Join-Path $drive "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
-async function createConfigurationMedia(config, stagingDirectory) {
+export function guestConfigurationFor(config) {
+  return {
+    webView2InstallerUri: config.media.webView2InstallerUri,
+    spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
+    display: {
+      width: 1080,
+      height: 1920,
+      scalePercent: config.guest.desktopScalePercent,
+    },
+  };
+}
+
+export async function createConfigurationMedia(
+  config,
+  stagingDirectory,
+  { runCommand = run } = {},
+) {
   const mediaRoot = join(stagingDirectory, "configuration-media");
   await mkdir(mediaRoot, { recursive: true, mode: 0o700 });
   for (const name of [
@@ -212,20 +232,18 @@ async function createConfigurationMedia(config, stagingDirectory) {
   ]) {
     await copyFile(new URL(name, BASELINE_ROOT), join(mediaRoot, name));
   }
-  const secrets = { administratorPassword: (await readFile(config.guest.administratorPasswordFile, "utf8")).trim() };
-  if (!secrets.administratorPassword) throw new Error("administrator password file must not be empty");
+  const secrets = {
+    administratorPassword: (
+      await readFile(config.guest.administratorPasswordFile, "utf8")
+    ).trim(),
+  };
+  if (!secrets.administratorPassword)
+    throw new Error("administrator password file must not be empty");
   const protectedConfig = {
     ...config,
     __secrets: secrets,
   };
-  const guestConfig = {
-    webView2InstallerUri: config.media.webView2InstallerUri,
-    display: {
-      width: 1080,
-      height: 1920,
-      scalePercent: config.guest.desktopScalePercent,
-    },
-  };
+  const guestConfig = guestConfigurationFor(config);
   await writeFile(
     join(mediaRoot, "autounattend.xml"),
     renderUnattendedXml(protectedConfig),
@@ -243,8 +261,12 @@ async function createConfigurationMedia(config, stagingDirectory) {
     config.guest.authorizedKeysFile,
     join(mediaRoot, "administrators_authorized_keys"),
   );
+  await copyFile(
+    config.media.spiceGuestToolsInstallerPath,
+    join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE),
+  );
   const isoPath = join(stagingDirectory, "baseline-configuration.iso");
-  await run("xorriso", [
+  await runCommand("xorriso", [
     "-as",
     "mkisofs",
     "-iso-level",
@@ -259,21 +281,46 @@ async function createConfigurationMedia(config, stagingDirectory) {
 }
 
 async function discoverGuestAddress(config, domainName) {
-  const command = ["--connect", config.host.libvirtUri, "domifaddr", domainName, "--source", "lease"];
+  const command = [
+    "--connect",
+    config.host.libvirtUri,
+    "domifaddr",
+    domainName,
+    "--source",
+    "lease",
+  ];
   const result = await run("virsh", command, { allowFailure: true });
-  const fromDomainLease = result.failed ? null : parseGuestAddress(result.stdout, config.vm.macAddress);
+  const fromDomainLease = result.failed
+    ? null
+    : parseGuestAddress(result.stdout, config.vm.macAddress);
   if (fromDomainLease) return fromDomainLease;
-  const lease = await run("virsh", ["--connect", config.host.libvirtUri, "net-dhcp-leases", config.vm.networkName], { allowFailure: true });
-  return lease.failed ? null : parseGuestAddress(lease.stdout, config.vm.macAddress);
+  const lease = await run(
+    "virsh",
+    [
+      "--connect",
+      config.host.libvirtUri,
+      "net-dhcp-leases",
+      config.vm.networkName,
+    ],
+    { allowFailure: true },
+  );
+  return lease.failed
+    ? null
+    : parseGuestAddress(lease.stdout, config.vm.macAddress);
 }
 
 function guestSshOptions(config, knownHostsPath) {
   return [
-    "-i", config.guest.sshPrivateKeyFile,
-    "-o", `UserKnownHostsFile=${knownHostsPath}`,
-    "-o", "GlobalKnownHostsFile=/dev/null",
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "ConnectTimeout=10",
+    "-i",
+    config.guest.sshPrivateKeyFile,
+    "-o",
+    `UserKnownHostsFile=${knownHostsPath}`,
+    "-o",
+    "GlobalKnownHostsFile=/dev/null",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ConnectTimeout=10",
   ];
 }
 
@@ -282,7 +329,8 @@ function powershellLiteral(value) {
 }
 
 async function waitForGuestVerification(config, domainName, stagingDirectory) {
-  const verificationPath = "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
+  const verificationPath =
+    "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
   const localReport = join(stagingDirectory, "verification.json");
   const knownHostsPath = join(stagingDirectory, "known_hosts");
   const deadline = Date.now() + 60 * 60 * 1000;
@@ -291,32 +339,61 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
     if (address) {
       const target = `${config.guest.sshUser}@${address}`;
       const sshOptions = guestSshOptions(config, knownHostsPath);
-      const result = await run("ssh", [...sshOptions, target, "exit"], { allowFailure: true });
+      const result = await run("ssh", [...sshOptions, target, "exit"], {
+        allowFailure: true,
+      });
       if (!result.failed) {
-        const preparationScript = join(stagingDirectory, "prepare-toolchain.ps1");
+        const preparationScript = join(
+          stagingDirectory,
+          "prepare-toolchain.ps1",
+        );
         await writeFile(
           preparationScript,
           `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain\n`,
           { mode: 0o600 },
         );
-        await run("scp", [...sshOptions, preparationScript, `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`]);
-        await run("ssh", [...sshOptions, target, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1"]);
+        await run("scp", [
+          ...sshOptions,
+          preparationScript,
+          `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`,
+        ]);
+        await run("ssh", [
+          ...sshOptions,
+          target,
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1",
+        ]);
         const token = await acquireRunnerRegistrationToken(config);
         const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
         const runnerScript = join(stagingDirectory, "register-runner.ps1");
-        await writeFile(runnerScript, `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`, { mode: 0o600 });
-        await run("scp", [...sshOptions, runnerScript, `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`]);
-        await run("ssh", [...sshOptions, target, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1"]);
-        await run("ssh", [...sshOptions, target, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -OutputPath ${verificationPath}`]);
-      await run("scp", [
-        ...sshOptions,
-        `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
-        localReport,
-      ]);
+        await writeFile(
+          runnerScript,
+          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
+          { mode: 0o600 },
+        );
+        await run("scp", [
+          ...sshOptions,
+          runnerScript,
+          `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`,
+        ]);
+        await run("ssh", [
+          ...sshOptions,
+          target,
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1",
+        ]);
+        await run("ssh", [
+          ...sshOptions,
+          target,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1 -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -OutputPath ${verificationPath}`,
+        ]);
+        await run("scp", [
+          ...sshOptions,
+          `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
+          localReport,
+        ]);
         const report = readJsonWithBom(await readFile(localReport, "utf8"));
-      if (report.ok !== true)
-        throw new Error("guest prerequisite verification reported failure");
-      return report;
+        if (report.ok !== true)
+          throw new Error("guest prerequisite verification reported failure");
+        return report;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 10_000));
@@ -331,7 +408,9 @@ async function acquireRunnerRegistrationToken(config) {
   const result = await run(provider.command, provider.arguments ?? []);
   const token = result.stdout.trim();
   if (!token || /\s/.test(token)) {
-    throw new Error("runner registration token provider returned an invalid token");
+    throw new Error(
+      "runner registration token provider returned an invalid token",
+    );
   }
   return token;
 }
@@ -401,10 +480,20 @@ async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
   const address = await discoverGuestAddress(config, domainName);
   if (!address) throw new Error("guest DHCP lease disappeared before shutdown");
   const target = `${config.guest.sshUser}@${address}`;
-  await run("ssh", [...guestSshOptions(config, join(stagingDirectory, "known_hosts")), target, "shutdown.exe /s /t 0 /f"]);
+  await run("ssh", [
+    ...guestSshOptions(config, join(stagingDirectory, "known_hosts")),
+    target,
+    "shutdown.exe /s /t 0 /f",
+  ]);
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
-    if ((await domainState({ ...config, vm: { ...config.vm, name: domainName } })) === "shut off") return;
+    if (
+      (await domainState({
+        ...config,
+        vm: { ...config.vm, name: domainName },
+      })) === "shut off"
+    )
+      return;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   throw new Error("guest did not shut down cleanly within five minutes");
@@ -413,7 +502,13 @@ async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
 async function captureInactiveDomainXml(config) {
   const result = await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "dumpxml", "--inactive", config.vm.name],
+    [
+      "--connect",
+      config.host.libvirtUri,
+      "dumpxml",
+      "--inactive",
+      config.vm.name,
+    ],
     { allowFailure: true },
   );
   return result.failed ? null : result.stdout;
@@ -428,7 +523,10 @@ async function restoreInactiveDomain(config, previousXml, stagingDirectory) {
     );
     return;
   }
-  const previousXmlPath = join(stagingDirectory, "previous-inactive-domain.xml");
+  const previousXmlPath = join(
+    stagingDirectory,
+    "previous-inactive-domain.xml",
+  );
   await writeFile(previousXmlPath, previousXml, { mode: 0o600 });
   await run("virsh", [
     "--connect",
@@ -478,6 +576,10 @@ export async function buildWin10Baseline(
   await assertReadableRegularFile(
     config.guest.sshPrivateKeyFile,
     "guest.sshPrivateKeyFile",
+  );
+  await assertReadableRegularFile(
+    config.media.spiceGuestToolsInstallerPath,
+    "media.spiceGuestToolsInstallerPath",
   );
   const publishedBaselineExists = await pathExists(config.storage.baselinePath);
   const persistentCacheExists = await pathExists(config.storage.cacheDiskPath);
@@ -558,11 +660,20 @@ export async function buildWin10Baseline(
       "start",
       constructionDomain,
     ]);
-    const verification = await waitForGuestVerification(config, constructionDomain, stagingDirectory);
+    const verification = await waitForGuestVerification(
+      config,
+      constructionDomain,
+      stagingDirectory,
+    );
     await shutdownGuestAndWait(config, constructionDomain, stagingDirectory);
     await run("qemu-img", ["check", stagedPath]);
     await run("qemu-img", ["check", stagedCachePath]);
-    await run("virsh", ["--connect", config.host.libvirtUri, "undefine", constructionDomain]);
+    await run("virsh", [
+      "--connect",
+      config.host.libvirtUri,
+      "undefine",
+      constructionDomain,
+    ]);
     const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
     await writeFile(finalXmlPath, renderLibvirtDomainXml(profile), {
       mode: 0o600,
@@ -585,10 +696,20 @@ export async function buildWin10Baseline(
     await copyFile(finalXmlPath, stagedStableXmlPath);
     const publication = [
       { stagedPath, destinationPath: config.storage.baselinePath },
-      { stagedPath: stagedDiagnosticPath, destinationPath: `${config.storage.baselinePath}.diagnostic.json` },
-      { stagedPath: stagedStableXmlPath, destinationPath: `${config.storage.baselinePath}.domain.xml` },
+      {
+        stagedPath: stagedDiagnosticPath,
+        destinationPath: `${config.storage.baselinePath}.diagnostic.json`,
+      },
+      {
+        stagedPath: stagedStableXmlPath,
+        destinationPath: `${config.storage.baselinePath}.domain.xml`,
+      },
     ];
-    if (!persistentCacheExists) publication.splice(1, 0, { stagedPath: stagedCachePath, destinationPath: config.storage.cacheDiskPath });
+    if (!persistentCacheExists)
+      publication.splice(1, 0, {
+        stagedPath: stagedCachePath,
+        destinationPath: config.storage.cacheDiskPath,
+      });
     let stableDomainPublicationStarted = false;
     try {
       await replaceFilesTransaction(publication, async (_entry, count) => {
@@ -605,7 +726,11 @@ export async function buildWin10Baseline(
       });
     } catch (error) {
       if (stableDomainPublicationStarted) {
-        await restoreInactiveDomain(config, previousInactiveXml, stagingDirectory);
+        await restoreInactiveDomain(
+          config,
+          previousInactiveXml,
+          stagingDirectory,
+        );
       }
       throw error;
     }

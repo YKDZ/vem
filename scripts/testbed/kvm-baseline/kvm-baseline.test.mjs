@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -9,13 +10,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
 import {
   buildWin10Baseline,
+  bootstrapScript,
+  createConfigurationMedia,
+  guestConfigurationFor,
   recoverStaleConstructionDomains,
   renderUnattendedXml,
+  SPICE_GUEST_TOOLS_INSTALLER_FILE,
 } from "./build-win10-baseline.mjs";
 import {
   createRuntimeProfile,
@@ -54,6 +58,11 @@ function buildConfig(root) {
     media: {
       windowsIsoPath: join(root, "media", "windows-10.iso"),
       windowsImageIndex: 1,
+      spiceGuestToolsInstallerPath: join(
+        root,
+        "media",
+        "spice-guest-tools-0.141.exe",
+      ),
       webView2InstallerUri: "https://downloads.example.test/webview2.exe",
       runnerArchiveUri: "https://downloads.example.test/actions-runner.zip",
     },
@@ -158,6 +167,13 @@ describe("Linux KVM Windows baseline", () => {
         () => validateBaselineBuildConfig(config),
         /runner\.registrationTokenProvider/,
       );
+
+      const missingSpiceInstaller = buildConfig(root);
+      delete missingSpiceInstaller.media.spiceGuestToolsInstallerPath;
+      assert.throws(
+        () => validateBaselineBuildConfig(missingSpiceInstaller),
+        /media\.spiceGuestToolsInstallerPath/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -184,7 +200,10 @@ describe("Linux KVM Windows baseline", () => {
             cpuCount: 32,
             availableMemoryMiB: 64 * 1024,
             availableStorageBytes: 200 * 1024 ** 3,
-            installationMedia: { windowsIso: true },
+            installationMedia: {
+              windowsIso: true,
+              spiceGuestToolsInstaller: true,
+            },
             networkActive: true,
             storageAvailableBytes: {
               baseline: 200 * 1024 ** 3,
@@ -210,7 +229,10 @@ describe("Linux KVM Windows baseline", () => {
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
             availableStorageBytes: 79 * 1024 ** 3,
-            installationMedia: { windowsIso: true },
+            installationMedia: {
+              windowsIso: true,
+              spiceGuestToolsInstaller: true,
+            },
             networkActive: true,
             storageAvailableBytes: {
               baseline: 79 * 1024 ** 3,
@@ -235,12 +257,15 @@ describe("Linux KVM Windows baseline", () => {
           cpuCount: 8,
           availableMemoryMiB: 16 * 1024,
           availableStorageBytes: 80 * 1024 ** 3,
-            installationMedia: { windowsIso: true },
-            networkActive: true,
-            storageAvailableBytes: {
-              baseline: 80 * 1024 ** 3,
-              cache: 80 * 1024 ** 3,
-            },
+          installationMedia: {
+            windowsIso: true,
+            spiceGuestToolsInstaller: true,
+          },
+          networkActive: true,
+          storageAvailableBytes: {
+            baseline: 80 * 1024 ** 3,
+            cache: 80 * 1024 ** 3,
+          },
         }),
         { ok: true },
       );
@@ -324,14 +349,61 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /<SystemLocale>zh-CN<\/SystemLocale>/);
     assert.match(xml, /<UILanguage>zh-CN<\/UILanguage>/);
     assert.match(xml, /<UserLocale>zh-CN<\/UserLocale>/);
-    assert.match(xml, /<HideOnlineAccountScreens>true<\/HideOnlineAccountScreens>/);
-    assert.match(xml, /<HideWirelessSetupInOOBE>true<\/HideWirelessSetupInOOBE>/);
+    assert.match(
+      xml,
+      /<HideOnlineAccountScreens>true<\/HideOnlineAccountScreens>/,
+    );
+    assert.match(
+      xml,
+      /<HideWirelessSetupInOOBE>true<\/HideWirelessSetupInOOBE>/,
+    );
+    assert.match(xml, /<LogonCount>2<\/LogonCount>/);
     assert.doesNotMatch(xml, /SkipMachineOOBE/i);
     const parsed = spawnSync("xmllint", ["--noout", "-"], {
       input: xml,
       encoding: "utf8",
     });
     assert.equal(parsed.status, 0, parsed.stderr);
+  });
+
+  it("copies the caller-provided pinned SPICE installer into configuration media", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-media-"));
+    try {
+      const config = buildConfig(root);
+      mkdirSync(dirname(config.guest.administratorPasswordFile), {
+        recursive: true,
+      });
+      mkdirSync(dirname(config.media.spiceGuestToolsInstallerPath), {
+        recursive: true,
+      });
+      writeFileSync(config.guest.administratorPasswordFile, "test-password\n");
+      writeFileSync(config.guest.authorizedKeysFile, "ssh-ed25519 test\n");
+      writeFileSync(config.media.spiceGuestToolsInstallerPath, "spice-tools");
+      const commands = [];
+      const stagingDirectory = join(root, "staging");
+      await createConfigurationMedia(config, stagingDirectory, {
+        runCommand: async (...command) => commands.push(command),
+      });
+
+      const mediaRoot = join(stagingDirectory, "configuration-media");
+      assert.deepEqual(guestConfigurationFor(config), {
+        webView2InstallerUri: config.media.webView2InstallerUri,
+        spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
+        display: { width: 1080, height: 1920, scalePercent: 100 },
+      });
+      assert.equal(
+        readFileSync(join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE), "utf8"),
+        "spice-tools",
+      );
+      assert.match(
+        bootstrapScript(),
+        /-SpiceGuestToolsInstallerPath \(Join-Path \$drive \$config\.spiceGuestToolsInstallerFile\)/,
+      );
+      assert.deepEqual(commands[0][0], "xorriso");
+      assert.ok(commands[0][1].includes(mediaRoot));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps guest preparation separate from VM-only runner and toolchain setup", () => {
@@ -354,6 +426,15 @@ describe("Linux KVM Windows baseline", () => {
     );
 
     assert.match(shared, /WebView2/);
+    assert.match(shared, /SpiceGuestToolsInstallerPath/);
+    assert.match(shared, /New-ScheduledTaskPrincipal -UserId "SYSTEM"/);
+    assert.match(shared, /-Argument "\/S"/);
+    assert.match(shared, /exitCode -eq 3010/);
+    assert.match(shared, /exitCode -eq 1641/);
+    assert.ok(
+      shared.indexOf("Install-SpiceGuestTools") <
+        shared.indexOf("Set-ClientDisplayMode -Width"),
+    );
     assert.match(shared, /PlugPlay/);
     assert.match(shared, /W32Time/);
     assert.match(shared, /Stop-Service/);
@@ -379,6 +460,9 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /MFStartup/);
     assert.match(runtime, /FilterGraph/);
     assert.match(verify, /interactive-display-report\.json/);
+    assert.match(verify, /SPICEGuestTools/);
+    assert.match(verify, /QXL/);
+    assert.match(verify, /rebootSemanticsValid/);
     assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(builder, /UserKnownHostsFile=/);
     assert.match(builder, /<Group>Administrators<\/Group>/);
@@ -434,14 +518,17 @@ describe("Linux KVM Windows baseline", () => {
       "192.0.2.44",
     );
     assert.equal(
-      parseGuestAddress("vnet0 52:54:00:aa:bb:cc ipv4 192.0.2.45/24", "52:54:00:12:34:56"),
+      parseGuestAddress(
+        "vnet0 52:54:00:aa:bb:cc ipv4 192.0.2.45/24",
+        "52:54:00:12:34:56",
+      ),
       null,
     );
   });
 
   it("parses a copied guest verification report with a UTF-8 BOM", () => {
     assert.deepEqual(
-      readJsonWithBom("\ufeff{\"ok\":true,\"checks\":{\"SSH\":true}}"),
+      readJsonWithBom('\ufeff{"ok":true,"checks":{"SSH":true}}'),
       { ok: true, checks: { SSH: true } },
     );
   });

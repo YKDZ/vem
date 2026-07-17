@@ -77,8 +77,14 @@ export function validateBaselineBuildConfig(input) {
     throw new Error("vm.name must be a portable libvirt domain name");
   }
   string(vm.networkName, "vm.networkName");
-  if (!/^52:54:00(?::[0-9a-f]{2}){3}$/i.test(string(vm.macAddress, "vm.macAddress"))) {
-    throw new Error("vm.macAddress must be a stable libvirt locally administered MAC");
+  if (
+    !/^52:54:00(?::[0-9a-f]{2}){3}$/i.test(
+      string(vm.macAddress, "vm.macAddress"),
+    )
+  ) {
+    throw new Error(
+      "vm.macAddress must be a stable libvirt locally administered MAC",
+    );
   }
 
   const storage = object(config.storage, "storage");
@@ -93,16 +99,35 @@ export function validateBaselineBuildConfig(input) {
   if (baselinePath === cacheDiskPath) {
     throw new Error("storage baseline and persistent cache disks must differ");
   }
-  if (!pathInside(baselinePath, largeFileRoot) || !pathInside(cacheDiskPath, largeFileRoot)) {
-    throw new Error("storage baseline and persistent cache disks must stay under host.largeFileRoot");
+  if (
+    !pathInside(baselinePath, largeFileRoot) ||
+    !pathInside(cacheDiskPath, largeFileRoot)
+  ) {
+    throw new Error(
+      "storage baseline and persistent cache disks must stay under host.largeFileRoot",
+    );
   }
   for (const key of ["systemDiskGiB", "cacheDiskGiB", "minimumFreeGiB"]) {
     integer(storage[key], `storage.${key}`);
   }
   const media = object(config.media, "media");
-  const windowsIsoPath = absolutePath(media.windowsIsoPath, "media.windowsIsoPath");
+  const windowsIsoPath = absolutePath(
+    media.windowsIsoPath,
+    "media.windowsIsoPath",
+  );
   if (!pathInside(windowsIsoPath, largeFileRoot)) {
     throw new Error("media.windowsIsoPath must stay under host.largeFileRoot");
+  }
+  // Seed this caller-owned local file from the pinned 0.141 release:
+  // https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-0.141/spice-guest-tools-0.141.exe
+  const spiceGuestToolsInstallerPath = absolutePath(
+    media.spiceGuestToolsInstallerPath,
+    "media.spiceGuestToolsInstallerPath",
+  );
+  if (!pathInside(spiceGuestToolsInstallerPath, largeFileRoot)) {
+    throw new Error(
+      "media.spiceGuestToolsInstallerPath must stay under host.largeFileRoot",
+    );
   }
   integer(media.windowsImageIndex, "media.windowsImageIndex");
   for (const key of ["webView2InstallerUri", "runnerArchiveUri"]) {
@@ -139,7 +164,9 @@ export function validateBaselineBuildConfig(input) {
         (argument) => typeof argument !== "string",
       ))
   ) {
-    throw new Error("runner.registrationTokenProvider.arguments must be an array of strings");
+    throw new Error(
+      "runner.registrationTokenProvider.arguments must be an array of strings",
+    );
   }
   string(runner.name, "runner.name");
   return config;
@@ -185,8 +212,10 @@ export function evaluateHostPreflight(config, observed) {
   const requiredStorageBytes = config.storage.minimumFreeGiB * GiB;
   const storage = observed.storageAvailableBytes ?? {};
   if (
-    !Number.isFinite(storage.baseline) || !Number.isFinite(storage.cache) ||
-    storage.baseline < requiredStorageBytes || storage.cache < requiredStorageBytes
+    !Number.isFinite(storage.baseline) ||
+    !Number.isFinite(storage.cache) ||
+    storage.baseline < requiredStorageBytes ||
+    storage.cache < requiredStorageBytes
   ) {
     throw new Error(
       `both baseline and cache storage must provide ${config.storage.minimumFreeGiB} GiB free`,
@@ -195,6 +224,11 @@ export function evaluateHostPreflight(config, observed) {
   if (observed.installationMedia?.windowsIso !== true) {
     throw new Error(
       "Windows installation media must be a readable regular file",
+    );
+  }
+  if (observed.installationMedia?.spiceGuestToolsInstaller !== true) {
+    throw new Error(
+      "SPICE guest tools installer must be a readable regular file",
     );
   }
   if (observed.networkActive !== true) {
@@ -208,7 +242,9 @@ export function parseGuestAddress(domifaddrOutput, macAddress) {
   for (const line of String(domifaddrOutput).split(/\r?\n/)) {
     const fields = line.trim().split(/\s+/);
     if (!fields.some((field) => field.toLowerCase() === wanted)) continue;
-    const cidr = fields.find((field) => /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(field));
+    const cidr = fields.find((field) =>
+      /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(field),
+    );
     if (cidr) return cidr.split("/", 1)[0];
   }
   return null;
@@ -219,15 +255,27 @@ export function readJsonWithBom(value) {
 }
 
 // Reverts every destination when a later replacement or callback fails.
-export async function replaceFilesTransaction(entries, afterReplace = async () => {}) {
+export async function replaceFilesTransaction(
+  entries,
+  afterReplace = async () => {},
+) {
   const changes = [];
   try {
     for (const entry of entries) {
       const stagedPath = absolutePath(entry.stagedPath, "stagedPath");
-      const destinationPath = absolutePath(entry.destinationPath, "destinationPath");
-      if (!(await stat(stagedPath)).isFile()) throw new Error("staged transaction file must be regular");
-      if ((await stat(dirname(stagedPath))).dev !== (await stat(dirname(destinationPath))).dev) {
-        throw new Error("transaction staging and destination must share a filesystem");
+      const destinationPath = absolutePath(
+        entry.destinationPath,
+        "destinationPath",
+      );
+      if (!(await stat(stagedPath)).isFile())
+        throw new Error("staged transaction file must be regular");
+      if (
+        (await stat(dirname(stagedPath))).dev !==
+        (await stat(dirname(destinationPath))).dev
+      ) {
+        throw new Error(
+          "transaction staging and destination must share a filesystem",
+        );
       }
       const backupPath = `${destinationPath}.rollback-${process.pid}-${changes.length}`;
       let hadDestination = false;
@@ -246,11 +294,16 @@ export async function replaceFilesTransaction(entries, afterReplace = async () =
       changes.push({ destinationPath, backupPath, hadDestination });
       await afterReplace(entry, changes.length);
     }
-    await Promise.all(changes.filter((change) => change.hadDestination).map((change) => rm(change.backupPath, { force: true })));
+    await Promise.all(
+      changes
+        .filter((change) => change.hadDestination)
+        .map((change) => rm(change.backupPath, { force: true })),
+    );
   } catch (error) {
     for (const change of changes.reverse()) {
       await rm(change.destinationPath, { force: true });
-      if (change.hadDestination) await rename(change.backupPath, change.destinationPath);
+      if (change.hadDestination)
+        await rename(change.backupPath, change.destinationPath);
     }
     throw error;
   }
