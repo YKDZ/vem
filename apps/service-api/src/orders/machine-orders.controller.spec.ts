@@ -15,8 +15,6 @@ describe("MachineOrdersController", () => {
     const controller = new MachineOrdersController(
       ordersService as never,
       {} as never,
-      {} as never,
-      {} as never,
     );
 
     await expect(
@@ -38,18 +36,12 @@ describe("MachineOrdersController", () => {
       getMachineOrderStatus: vi.fn(),
       cancelMachineOrder: vi.fn(),
     };
-    const paymentsService = {
-      markMockSucceeded: vi.fn(),
-      markMockFailed: vi.fn(),
-    };
     const paymentCodeOrchestrator = {
       submit: vi.fn().mockResolvedValue({ status: "user_confirming" }),
     };
     const controller = new MachineOrdersController(
       ordersService as never,
-      paymentsService as never,
       paymentCodeOrchestrator as never,
-      { paymentMockEnabled: true } as never,
     );
 
     await controller.submitPaymentCode(
@@ -95,13 +87,8 @@ describe("MachineOrdersController", () => {
         cancelMachineOrder: vi.fn(),
       } as never,
       {
-        markMockSucceeded: vi.fn(),
-        markMockFailed: vi.fn(),
-      } as never,
-      {
         submit: vi.fn().mockResolvedValue({ status: "failed" }),
       } as never,
-      { paymentMockEnabled: true } as never,
     );
 
     await controller.submitPaymentCode(
@@ -140,13 +127,8 @@ describe("MachineOrdersController", () => {
     const controller = new MachineOrdersController(
       ordersService as never,
       {
-        markMockSucceeded: vi.fn(),
-        markMockFailed: vi.fn(),
-      } as never,
-      {
         submit: vi.fn(),
       } as never,
-      { paymentMockEnabled: true } as never,
     );
 
     await controller.cancelMachineOrder({ code: "M001" } as never, "ORD001", {

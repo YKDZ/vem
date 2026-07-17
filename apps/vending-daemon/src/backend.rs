@@ -667,17 +667,6 @@ impl BackendClient {
         self.request_json_typed(reqwest::Method::GET, &url, None, true)
             .await
     }
-
-    pub async fn mark_mock_payment(
-        &self,
-        order_no: &str,
-        succeed: bool,
-    ) -> Result<serde_json::Value, String> {
-        let suffix = if succeed { "succeed" } else { "fail" };
-        let url = format!("/machine-orders/{order_no}/mock-payment/{suffix}");
-        self.request_json(reqwest::Method::POST, &url, None, true)
-            .await
-    }
 }
 
 enum BackendRequestError {
@@ -1207,34 +1196,6 @@ mod tests {
 
         assert_eq!(response.movement_id, "MOVE-1");
         assert_eq!(auth_calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn backend_mark_mock_payment_uses_bearer_auth() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/machine-auth/token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "accessToken": "token-123",
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/machine-orders/ORDER-1/mock-payment/succeed"))
-            .and(header("authorization", "Bearer token-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "ok": true,
-            })))
-            .mount(&server)
-            .await;
-
-        let client = BackendClient::new(server.uri());
-        client.authenticate("M-1", "S-1").await.expect("auth");
-        let response = client
-            .mark_mock_payment("ORDER-1", true)
-            .await
-            .expect("mark mock");
-        assert_eq!(response["ok"], true);
     }
 
     #[tokio::test]

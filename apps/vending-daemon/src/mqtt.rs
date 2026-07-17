@@ -155,10 +155,14 @@ impl MqttSyncRuntime {
         });
     }
 
-    async fn invalidate_sale_start_capability(&self) {
-        if let Some(context) = self.readiness_context.as_ref() {
-            crate::ipc::invalidate_sale_start_capability(context).await;
-        }
+    fn invalidate_sale_start_capability(&self, reason: &str) {
+        let _ = self
+            .events
+            .send(DaemonEvent::SaleStartCapabilityInvalidated {
+                event_id: Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: reason.to_string(),
+            });
     }
 
     fn parse_and_verify_envelope(
@@ -211,7 +215,7 @@ impl MqttSyncRuntime {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                    self.invalidate_sale_start_capability().await;
+                    self.invalidate_sale_start_capability("dispense_failure");
                 }
                 return Ok(CommandHandlingResult::DuplicateFinal {
                     command_no: command.command_no,
@@ -319,7 +323,7 @@ impl MqttSyncRuntime {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            self.invalidate_sale_start_capability().await;
+            self.invalidate_sale_start_capability("dispense_failure");
         }
 
         Ok(CommandHandlingResult::Processed {
@@ -446,7 +450,7 @@ impl MqttSyncRuntime {
                 .block_slot_for_dispense_result_unknown(&record.command_payload)
                 .await
                 .map_err(|error| error.to_string())?;
-            self.invalidate_sale_start_capability().await;
+            self.invalidate_sale_start_capability("dispense_result_unknown");
             let _ = self.events.send(DaemonEvent::TransactionChanged {
                 event_id: Uuid::new_v4().simple().to_string(),
                 updated_at: crate::state::store::now_iso(),
@@ -627,7 +631,7 @@ impl MqttSyncRuntime {
                 changed
             };
             if changed {
-                self.invalidate_sale_start_capability().await;
+                self.invalidate_sale_start_capability("hardware_status_changed");
             }
         }
         let whole_machine_lock = self
@@ -1060,5 +1064,133 @@ fn map_mqtt_error(error: ClientError) -> String {
         ClientError::Request(request) | ClientError::TryRequest(request) => {
             format!("mqtt request failed to enqueue: {request:?}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        hardware::HardwareSupervisor,
+        state::{
+            store::{MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput},
+            OrderSessionUpsert,
+        },
+    };
+    use vending_core::hardware::SlotPayload;
+
+    #[tokio::test]
+    async fn successful_last_unit_dispense_emits_transaction_change_without_waiting_for_polling() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-LAST-UNIT".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 1,
+                    par_level: 1,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        state
+            .record_stock_movement(StockMovementInput {
+                movement_id: "COUNT-LAST-UNIT".to_string(),
+                planogram_version: "PLAN-LAST-UNIT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "test".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("stock");
+        let command = DispenseCommandPayload {
+            command_no: "CMD-LAST-UNIT".to_string(),
+            order_no: "ORDER-LAST-UNIT".to_string(),
+            slot: SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 2,
+        };
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("mock"),
+                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": command.command_no,
+                        "status": "dispensing"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let (events, mut received) = broadcast::channel(8);
+        let runtime = MqttSyncRuntime::new(
+            "MACHINE-LAST-UNIT".to_string(),
+            "mqtt-signing-secret-for-last-unit-test".to_string(),
+            state.clone(),
+            HardwareSupervisor::from_adapter(Arc::new(vending_core::hardware::MockHardwareAdapter)),
+            events,
+            CancellationToken::new(),
+        );
+        let envelope = sign_envelope(
+            "MACHINE-LAST-UNIT",
+            "mqtt-signing-secret-for-last-unit-test",
+            "MESSAGE-LAST-UNIT",
+            serde_json::to_value(command).expect("command payload"),
+        );
+
+        runtime
+            .handle_dispense_command(&serde_json::to_string(&envelope).expect("envelope"))
+            .await
+            .expect("successful dispense");
+
+        assert!(matches!(
+            received.recv().await.expect("immediate transaction event"),
+            DaemonEvent::TransactionChanged { order_no, status, .. }
+                if order_no == "ORDER-LAST-UNIT" && status == "success"
+        ));
+        let sale_view = state.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sold_out");
     }
 }

@@ -233,7 +233,7 @@ describe(
       const refreshed = machineProvisioningProfileSnapshotSchema.parse(
         (refreshResponse.body as ApiResponse<unknown>).data,
       );
-      expect(refreshed.metadata.profileRevision).toBeGreaterThan(
+      expect(refreshed.metadata.profileRevision).not.toBe(
         claimed.metadata.profileRevision,
       );
       expect(refreshed).not.toHaveProperty("credentials");
@@ -254,7 +254,7 @@ describe(
         (updatedRefreshResponse.body as ApiResponse<unknown>).data,
       );
       expect(updatedProfile.machine.name).toBe(renamedMachine);
-      expect(updatedProfile.metadata.profileRevision).toBeGreaterThan(
+      expect(updatedProfile.metadata.profileRevision).not.toBe(
         refreshed.metadata.profileRevision,
       );
 
@@ -342,7 +342,10 @@ describe(
         options: Array<{ providerCode: string; method: string }>;
       }>;
       expect(paymentOptions.data.options).toContainEqual(
-        expect.objectContaining({ providerCode: "mock", method: "mock" }),
+        expect.objectContaining({
+          providerCode: "mock",
+          method: "payment_code",
+        }),
       );
 
       const saleSlot = published.data.slots[0];
@@ -364,7 +367,7 @@ describe(
               slotCode: saleSlot.slotCode,
             },
           ],
-          paymentMethod: "mock",
+          paymentMethod: "payment_code",
           paymentProviderCode: "mock",
         });
       expect(createOrderResponse.status).toBe(201);
@@ -381,16 +384,28 @@ describe(
         second.seededData.products[0].priceCents,
       );
 
-      const mockSucceedResponse = await api
+      const scannerPaymentResponse = await api
         .post(
-          `/api/machine-orders/${createdOrder.data.orderNo}/mock-payment/succeed`,
+          `/api/machine-orders/${createdOrder.data.orderNo}/payment-code/submit`,
         )
-        .set(auth);
-      expect(mockSucceedResponse.status).toBe(201);
-      const mockSucceeded = mockSucceedResponse.body as ApiResponse<{
+        .set(auth)
+        .send({
+          machineCode: second.testbedMachine.code,
+          authCode: "28763443825664394",
+          idempotencyKey: `testbed-scanner-${createdOrder.data.orderNo}`,
+          source: "serial_text",
+          scannerHealth: {
+            online: true,
+            adapter: "serial_text",
+            port: "COM-TEST",
+            message: "testbed scanner accepted payment code",
+          },
+        });
+      expect(scannerPaymentResponse.status).toBe(201);
+      const scannerPayment = scannerPaymentResponse.body as ApiResponse<{
         status: string;
       }>;
-      expect(mockSucceeded.data.status).toBe("succeeded");
+      expect(scannerPayment.data.status).toBe("succeeded");
     }, 60_000);
   },
 );

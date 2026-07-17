@@ -468,7 +468,7 @@ async fn replacement_journal_without_durable_backups_preserves_current_claim_and
 }
 
 #[tokio::test]
-async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile() {
+async fn profile_refresh_accepts_a_changed_content_revision_regardless_of_numeric_order() {
     let temp = tempfile::tempdir().expect("temp");
     let data_dir = temp.path().join("VEM").join("vending-daemon");
     let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
@@ -487,7 +487,44 @@ async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile
     newest.metadata.profile_revision = std::num::NonZeroU64::new(2).expect("revision");
     store.accept_profile(&newest).await.expect("newest profile");
 
-    assert!(store.accept_profile(&valid_profile()).await.is_err());
+    let mut refreshed = serde_json::to_value(valid_profile()).expect("profile json");
+    let credentials = refreshed
+        .as_object_mut()
+        .expect("profile object")
+        .remove("credentials")
+        .expect("credentials");
+    refreshed.as_object_mut().expect("profile object").insert(
+        "mqttConnection".to_string(),
+        serde_json::json!({
+            "url": credentials["mqttConnection"]["url"],
+            "clientId": credentials["mqttConnection"]["clientId"],
+            "username": credentials["mqttConnection"]["username"],
+        }),
+    );
+    refreshed["machine"]["name"] = serde_json::json!("Reconfigured machine");
+    refreshed["metadata"]["profileRevision"] = serde_json::json!(1);
+    let refreshed: daemon_ipc_contracts::MachineProvisioningProfileSnapshot =
+        serde_json::from_value(refreshed).expect("refresh snapshot");
+
+    let applied = store
+        .accept_refreshed_profile(&refreshed)
+        .await
+        .expect("changed profile accepted")
+        .expect("new cache");
+    assert_eq!(
+        applied.profile.machine.name.to_string(),
+        "Reconfigured machine"
+    );
+    let mut stale_facts = serde_json::to_value(&refreshed).expect("refresh snapshot json");
+    stale_facts["apiBaseUrl"] = serde_json::json!("https://platform-next.example/api");
+    stale_facts["hardwareSlotTopology"]["version"] = serde_json::json!("v2");
+    let stale_facts: daemon_ipc_contracts::MachineProvisioningProfileSnapshot =
+        serde_json::from_value(stale_facts).expect("changed snapshot");
+    let error = store
+        .accept_refreshed_profile(&stale_facts)
+        .await
+        .expect_err("changed endpoint and hardware require a new revision");
+    assert!(error.contains("changed without a newer revision"));
     assert_eq!(
         store
             .load_profile_cache()
@@ -497,7 +534,7 @@ async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile
             .profile
             .metadata
             .profile_revision,
-        std::num::NonZeroU64::new(2).expect("revision")
+        std::num::NonZeroU64::new(1).expect("revision")
     );
 }
 

@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use tokio::{fs, sync::Mutex};
 
 use crate::device_binding::{LocalDeviceRole, LocalSerialRoleBinding};
+use crate::runtime_configuration::{remove_optional_file, write_atomic_bytes};
 
 /// Daemon-owned settings that may survive a Windows re-enumeration. Device
 /// addresses are observations and intentionally have no field in this file.
@@ -143,11 +144,9 @@ impl LocalRuntimeSettingsStore {
 
     pub async fn clear(&self) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        match fs::remove_file(&self.path).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("clear local runtime settings failed: {error}")),
-        }
+        remove_optional_file(&self.path)
+            .await
+            .map_err(|error| format!("clear local runtime settings failed: {error}"))
     }
 
     async fn load_unlocked(&self) -> Result<LocalRuntimeSettings, String> {
@@ -170,22 +169,11 @@ impl LocalRuntimeSettingsStore {
     }
 
     async fn write_unlocked(&self, settings: &LocalRuntimeSettings) -> Result<(), String> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| "local settings path has no parent".to_string())?;
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("create local settings directory failed: {error}"))?;
-        let staged = self.path.with_extension("json.tmp");
         let payload = serde_json::to_vec_pretty(settings)
             .map_err(|error| format!("serialize local settings failed: {error}"))?;
-        fs::write(&staged, payload)
+        write_atomic_bytes(&self.path, &payload)
             .await
-            .map_err(|error| format!("stage local settings failed: {error}"))?;
-        fs::rename(&staged, &self.path)
-            .await
-            .map_err(|error| format!("commit local settings failed: {error}"))
+            .map_err(|error| format!("persist local settings failed: {error}"))
     }
 }
 
@@ -312,5 +300,25 @@ mod tests {
             .expect("settings file");
         assert!(!persisted.contains("endpointId"));
         assert!(!persisted.contains("COM"));
+    }
+
+    #[tokio::test]
+    async fn cleared_settings_do_not_reappear_after_a_restart() {
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let store = LocalRuntimeSettingsStore::new(data_dir.clone());
+        store
+            .save_binding(LocalDeviceRole::Scanner, binding("container:scanner-01"))
+            .await
+            .expect("save scanner binding");
+
+        store.clear().await.expect("clear settings");
+
+        let restarted = LocalRuntimeSettingsStore::new(data_dir);
+        let settings = restarted.load().await.expect("restart load");
+        assert!(settings.scanner_binding.is_none());
+        assert!(!fs::try_exists(restarted.path())
+            .await
+            .expect("settings path state"));
     }
 }

@@ -18,6 +18,14 @@ pub enum DaemonEvent {
         generation: String,
         revision: u64,
     },
+    /// A durable state transition changed one of the inputs to sale-start
+    /// capability. The cache worker is the sole coordinator that recomputes
+    /// and publishes the resulting snapshot.
+    SaleStartCapabilityInvalidated {
+        event_id: String,
+        updated_at: String,
+        reason: String,
+    },
     ScannerHealthChanged {
         event_id: String,
         updated_at: String,

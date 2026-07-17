@@ -62,12 +62,6 @@ struct ErrorMessage {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ClaimMachineRequest {
-    claim_code: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateOrder {
     inventory_id: String,
     quantity: u32,
@@ -84,21 +78,6 @@ struct CreateOrder {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CancelOrder {
     order_no: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MockPayment {
-    order_no: String,
-    succeed: bool,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SubmitPayment {
-    order_no: String,
-    auth_code: String,
-    source: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -484,11 +463,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order))
         .route("/v1/intents/cancel-order", post(cancel_order))
-        .route("/v1/intents/mock-payment", post(mock_payment))
-        .route(
-            "/v1/intents/dev-submit-payment-code",
-            post(submit_payment_code),
-        )
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(current_transaction))
         .route("/v1/stock/planogram", post(apply_planogram))
@@ -739,7 +713,7 @@ async fn reset_runtime_configuration(
 async fn claim_machine(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
-    Json(input): Json<ClaimMachineRequest>,
+    Json(input): Json<daemon_ipc_contracts::MachineClaimRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
@@ -1473,82 +1447,6 @@ async fn cancel_order(
         Ok(value) => transaction_response(value),
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "cancel_order_failed", error),
     }
-}
-
-async fn mock_payment(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(input): Json<MockPayment>,
-) -> impl IntoResponse {
-    if let Err(error) = require_token(&headers, &ctx.token).await {
-        return error.into_response();
-    }
-    match ctx
-        .ui
-        .transaction
-        .mark_mock_payment(input.order_no.trim(), input.succeed)
-        .await
-    {
-        Ok(value) => transaction_response(value),
-        Err(error) => error_response(StatusCode::BAD_GATEWAY, "mock_payment_failed", error),
-    }
-}
-
-async fn submit_payment_code(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(input): Json<SubmitPayment>,
-) -> impl IntoResponse {
-    if let Err(error) = require_token(&headers, &ctx.token).await {
-        return error.into_response();
-    }
-    if !matches!(input.source.as_str(), "manual_dev" | "browser_test") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_source",
-            "source must be manual_dev or browser_test",
-        );
-    }
-    match ctx.ui.transaction.restore_current().await {
-        Ok(Some(snapshot)) if snapshot.order_no.as_deref() == Some(input.order_no.as_str()) => {}
-        Ok(Some(_)) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "transaction_mismatch",
-                "input order does not match current transaction",
-            )
-        }
-        Ok(None) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "transaction_missing",
-                "no active transaction",
-            )
-        }
-        Err(error) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "transaction_read_failed",
-                error,
-            )
-        }
-    }
-    let raw = vending_core::scanner::RawPaymentCode {
-        auth_code: input.auth_code,
-        masked_code: "manual".to_string(),
-        scanned_at_ms: crate::state::store::now_millis(),
-    };
-    if let Err(error) = ctx
-        .ui
-        .transaction
-        .submit_payment_code(raw, &input.source, None)
-        .await
-    {
-        return error_response(StatusCode::BAD_REQUEST, "submit_payment_code_failed", error);
-    }
-    current_transaction(State(ctx), headers)
-        .await
-        .into_response()
 }
 
 async fn current_transaction(
@@ -3084,7 +2982,7 @@ mod tests {
                     .uri("/v1/provisioning/claim")
                     .header("authorization", "Bearer test-token")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"claimCode":"clai-0001"}"#))
+                    .body(Body::from(r#"{"claimCode":"CLAI-0001"}"#))
                     .expect("request"),
             )
             .await

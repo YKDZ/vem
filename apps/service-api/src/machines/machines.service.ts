@@ -29,9 +29,6 @@ import {
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
-  paymentChannelPolicies,
-  paymentProviderConfigs,
-  paymentProviders,
   machineCommands,
   machineEvents,
   machineHeartbeats,
@@ -72,6 +69,7 @@ import {
   type GenerateMachineClaimCodeResponse,
   type PublishMachinePlanogramVersion,
 } from "@vem/shared";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { AuditService } from "../audit/audit.service";
@@ -221,7 +219,6 @@ type MachineClaimCandidate = {
 type ProvisioningProfilePaymentProjection = {
   qrCodeEnabled: boolean;
   paymentCodeEnabled: boolean;
-  sourceUpdatedAt: Date[];
 };
 
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
@@ -246,6 +243,20 @@ const SECURE_DECOMMISSION_ACK_TOPIC_SUFFIX =
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * The profile revision is a content address for facts adopted by the daemon.
+ * Telemetry and source-row timestamps deliberately do not participate: they
+ * are neither runtime configuration nor a reason to restart the daemon.
+ */
+function provisioningProfileFactRevision(facts: unknown): number {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(facts))
+    .digest()
+    .readBigUInt64BE(0);
+  const revision = Number(digest & ((1n << 53n) - 1n));
+  return revision === 0 ? 1 : revision;
 }
 
 function resolveMachineClaimCodeState(
@@ -2135,70 +2146,100 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const buildProfile = (
       claimCodeId: string,
       secretVersion: number,
-    ): MachineProvisioningProfile => ({
-      machine: {
-        id: claimCode.machineId,
-        code: claimCode.machineCode,
-        name: claimCode.machineName,
-        status: claimCode.machineStatus,
-        locationLabel: claimCode.machineLocationLabel,
-      },
-      credentials: {
-        machineSecret: bundle.machineSecret,
-        machineSecretVersion: secretVersion,
-        mqttSigningSecret: bundle.mqttSigningSecret,
+    ): MachineProvisioningProfile => {
+      const claimedAt = toIso(now);
+      const profile = {
+        machine: {
+          id: claimCode.machineId,
+          code: claimCode.machineCode,
+          name: claimCode.machineName,
+          status: claimCode.machineStatus,
+          locationLabel: claimCode.machineLocationLabel,
+        },
+        credentials: {
+          machineSecret: bundle.machineSecret,
+          machineSecretVersion: secretVersion,
+          mqttSigningSecret: bundle.mqttSigningSecret,
+          mqttConnection: {
+            url: this.config.machineMqttUrl,
+            clientId: mqttClientId,
+            ...(this.config.mqttUsername
+              ? { username: this.config.mqttUsername }
+              : {}),
+            ...(this.config.mqttPassword
+              ? { password: this.config.mqttPassword }
+              : {}),
+          },
+        },
+        apiBaseUrl: this.config.machineApiBaseUrl,
+        runtimeEndpoints: {
+          apiBasePath: "/api",
+          machineAuthTokenPath: "/api/machine-auth/token",
+          machineApiBasePath: `/api/machines/${claimCode.machineCode}`,
+          mqttTopicPrefix: `vem/machines/${claimCode.machineCode}`,
+        },
+        hardwareProfile: {
+          profile: "production",
+          controller: {
+            required: true,
+            protocol: "vem-vending-controller",
+          },
+          paymentScanner: {
+            required: true,
+            supportsPaymentCode: true,
+          },
+          vision: {
+            required: false,
+            supportsRecommendations: true,
+          },
+        },
+        hardwareModel: "vem-prod-24",
+        hardwareSlotTopology: {
+          identity: "vem-prod-24",
+          version: "2026-06-adr0026",
+        },
+        paymentCapability: {
+          profile: "production",
+          qrCodeEnabled: true,
+          paymentCodeEnabled: true,
+          serverTime: claimedAt,
+        },
+        metadata: {
+          profileVersion: 1,
+          profileRevision: 1,
+          claimCodeId,
+          claimedAt,
+          serverTime: claimedAt,
+        },
+      } satisfies MachineProvisioningProfile;
+      const profileFacts = {
+        machine: profile.machine,
+        apiBaseUrl: profile.apiBaseUrl,
+        runtimeEndpoints: profile.runtimeEndpoints,
         mqttConnection: {
-          url: this.config.machineMqttUrl,
-          clientId: mqttClientId,
-          ...(this.config.mqttUsername
-            ? { username: this.config.mqttUsername }
-            : {}),
-          ...(this.config.mqttPassword
-            ? { password: this.config.mqttPassword }
-            : {}),
+          url: profile.credentials.mqttConnection.url,
+          clientId: profile.credentials.mqttConnection.clientId,
+          username: this.config.mqttUsername ?? null,
         },
-      },
-      apiBaseUrl: this.config.machineApiBaseUrl,
-      runtimeEndpoints: {
-        apiBasePath: "/api",
-        machineAuthTokenPath: "/api/machine-auth/token",
-        machineApiBasePath: `/api/machines/${claimCode.machineCode}`,
-        mqttTopicPrefix: `vem/machines/${claimCode.machineCode}`,
-      },
-      hardwareProfile: {
-        profile: "production",
-        controller: {
-          required: true,
-          protocol: "vem-vending-controller",
+        hardwareProfile: profile.hardwareProfile,
+        hardwareModel: profile.hardwareModel,
+        hardwareSlotTopology: profile.hardwareSlotTopology,
+        paymentCapability: profile.paymentCapability,
+        metadata: {
+          profileVersion: profile.metadata.profileVersion,
+          claimCodeId: profile.metadata.claimCodeId,
+          claimedAt: profile.metadata.claimedAt,
+          serverTime: profile.metadata.serverTime,
         },
-        paymentScanner: {
-          required: true,
-          supportsPaymentCode: true,
+      };
+      return {
+        ...profile,
+        metadata: {
+          ...profile.metadata,
+          profileRevision: provisioningProfileFactRevision(profileFacts),
         },
-        vision: {
-          required: false,
-          supportsRecommendations: true,
-        },
-      },
-      hardwareModel: "vem-prod-24",
-      hardwareSlotTopology: {
-        identity: "vem-prod-24",
-        version: "2026-06-adr0026",
-      },
-      paymentCapability: {
-        profile: "production",
-        qrCodeEnabled: true,
-        paymentCodeEnabled: true,
-        serverTime: toIso(now),
-      },
-      metadata: {
-        profileVersion: 1,
-        profileRevision: secretVersion,
-        claimCodeId,
-        claimedAt: toIso(now),
-        serverTime: toIso(now),
-      },
-    });
+      };
+    };
 
     const claimResult = await this.db.transaction(async (tx) => {
       const [consumedClaimCode] = await tx
@@ -2319,7 +2360,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         machineStatus: machines.status,
         machineLocationLabel: machines.locationLabel,
         machineMqttClientId: machines.mqttClientId,
-        machineUpdatedAt: machines.updatedAt,
       })
       .from(machineClaimCodes)
       .innerJoin(machines, eq(machines.id, machineClaimCodes.machineId))
@@ -2354,27 +2394,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private async provisioningProfilePaymentProjection(
     machineId: string,
   ): Promise<ProvisioningProfilePaymentProjection> {
-    const [paymentOptions, policyRows, configRows, providerRows] =
-      await Promise.all([
-        this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
-          machineId,
-        ),
-        this.db
-          .select({ updatedAt: paymentChannelPolicies.updatedAt })
-          .from(paymentChannelPolicies),
-        this.db
-          .select({ updatedAt: paymentProviderConfigs.updatedAt })
-          .from(paymentProviderConfigs)
-          .where(
-            or(
-              eq(paymentProviderConfigs.machineId, machineId),
-              isNull(paymentProviderConfigs.machineId),
-            ),
-          ),
-        this.db
-          .select({ updatedAt: paymentProviders.updatedAt })
-          .from(paymentProviders),
-      ]);
+    const paymentOptions =
+      await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
+        machineId,
+      );
     const availableOptions = paymentOptions.options.filter(
       (option) => !option.disabled,
     );
@@ -2385,11 +2408,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       paymentCodeEnabled: availableOptions.some(
         (option) => option.method === "payment_code",
       ),
-      sourceUpdatedAt: [
-        ...policyRows.map((row) => row.updatedAt),
-        ...configRows.map((row) => row.updatedAt),
-        ...providerRows.map((row) => row.updatedAt),
-      ],
     };
   }
 
@@ -2403,32 +2421,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       machineStatus: MachineProvisioningProfile["machine"]["status"];
       machineLocationLabel: string | null;
       machineMqttClientId: string | null;
-      machineUpdatedAt: Date;
     };
     payment: ProvisioningProfilePaymentProjection;
   }): MachineProvisioningProfileSnapshot {
-    const sourceUpdatedAt = [
-      input.machine.claimedAt,
-      input.machine.machineUpdatedAt,
-      ...input.payment.sourceUpdatedAt,
-    ].reduce(
-      (latest, value) => (value.getTime() > latest.getTime() ? value : latest),
-      input.machine.claimedAt,
-    );
-    // Every projected fact has its own database update timestamp. Summing the
-    // source revisions preserves a stable snapshot revision while allowing a
-    // machine change to advance it even when another current source is newer.
-    const profileRevision = Math.max(
-      1,
-      [
-        input.machine.claimedAt,
-        input.machine.machineUpdatedAt,
-        ...input.payment.sourceUpdatedAt,
-      ].reduce((revision, value) => revision + value.getTime(), 0),
-    );
-    const serverTime = toIso(sourceUpdatedAt);
-
-    return machineProvisioningProfileSnapshotSchema.parse({
+    const claimedAt = toIso(input.machine.claimedAt);
+    const profileFacts = {
       machine: {
         id: input.machine.machineId,
         code: input.machine.machineCode,
@@ -2474,14 +2471,21 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         profile: "production",
         qrCodeEnabled: input.payment.qrCodeEnabled,
         paymentCodeEnabled: input.payment.paymentCodeEnabled,
-        serverTime,
+        serverTime: claimedAt,
       },
       metadata: {
         profileVersion: 1,
-        profileRevision,
         claimCodeId: input.machine.claimCodeId,
-        claimedAt: toIso(input.machine.claimedAt),
-        serverTime,
+        claimedAt,
+        serverTime: claimedAt,
+      },
+    };
+
+    return machineProvisioningProfileSnapshotSchema.parse({
+      ...profileFacts,
+      metadata: {
+        ...profileFacts.metadata,
+        profileRevision: provisioningProfileFactRevision(profileFacts),
       },
     });
   }

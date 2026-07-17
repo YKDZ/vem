@@ -175,7 +175,7 @@ describe("public production pilot SOP", () => {
       "`POST /api/orders/:id/recovery-actions`",
       "`POST /v1/stock/attestation`",
       "`POST /v1/stock/movements`",
-      "`GET /v1/sale-readiness`",
+      "`GET /v1/sale-start-capability`",
       "`POST /v1/maintenance/whole-machine-lock/clear`",
       "/machines/:id",
       "库存异常复核案例",

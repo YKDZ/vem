@@ -210,7 +210,8 @@ async fn run_console_cycle(
     let ready_file = config
         .print_ready_file
         .unwrap_or_else(|| default_ready_file_path(&data_dir));
-    write_ready_file(&ready_file, ipc_handle.addr, &ipc_token).await?;
+    let ready_generation = uuid::Uuid::new_v4().simple().to_string();
+    write_ready_file(&ready_file, ipc_handle.addr, &ipc_token, &ready_generation).await?;
 
     let stop_token = runtime.shutdown_token();
     let cache_updates = tokio::spawn(cache_daemon_events(
@@ -262,6 +263,7 @@ async fn run_console_cycle(
             ipc_ctx.ui.backend.clone(),
             stop_token.clone(),
         )
+        .with_events(events_tx.clone())
         .run(),
     );
     let stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
@@ -922,12 +924,7 @@ async fn cache_daemon_events(
     sale_start_context: Option<IpcContext>,
 ) -> Result<(), String> {
     while let Ok(event) = events.recv().await {
-        let capability_input_changed = matches!(
-            &event,
-            DaemonEvent::MqttChanged { .. }
-                | DaemonEvent::ScannerHealthChanged { .. }
-                | DaemonEvent::RuntimeReconfigureRequested { .. }
-        );
+        let capability_input_changed = sale_start_capability_input_changed(&event);
         match event {
             DaemonEvent::MqttChanged {
                 connected,
@@ -974,7 +971,23 @@ async fn cache_daemon_events(
     Ok(())
 }
 
-async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<(), String> {
+fn sale_start_capability_input_changed(event: &DaemonEvent) -> bool {
+    matches!(
+        event,
+        DaemonEvent::MqttChanged { .. }
+            | DaemonEvent::ScannerHealthChanged { .. }
+            | DaemonEvent::TransactionChanged { .. }
+            | DaemonEvent::SaleStartCapabilityInvalidated { .. }
+            | DaemonEvent::RuntimeReconfigureRequested { .. }
+    )
+}
+
+async fn write_ready_file(
+    path: &Path,
+    bind: SocketAddr,
+    token: &str,
+    generation: &str,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -984,6 +997,7 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
         "healthzUrl": format!("http://{bind}/healthz"),
         "readyzUrl": format!("http://{bind}/readyz"),
         "ipcToken": token,
+        "generation": generation,
     });
     tokio::fs::write(
         path,
@@ -1017,13 +1031,33 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    use super::refresh_provisioning_profile_once;
+    use super::{refresh_provisioning_profile_once, sale_start_capability_input_changed};
     use crate::{
-        backend::BackendClient, runtime_configuration::RuntimeSources, secret::InMemorySecretStore,
+        backend::BackendClient, events::DaemonEvent, runtime_configuration::RuntimeSources,
+        secret::InMemorySecretStore,
     };
 
+    #[test]
+    fn sale_capability_reacts_to_transaction_and_durable_stock_signals() {
+        let transaction = DaemonEvent::TransactionChanged {
+            event_id: "event".to_string(),
+            updated_at: "2026-07-17T00:00:00Z".to_string(),
+            order_no: "ORDER-1".to_string(),
+            status: "success".to_string(),
+        };
+        let stock_upload = DaemonEvent::SaleStartCapabilityInvalidated {
+            event_id: "event".to_string(),
+            updated_at: "2026-07-17T00:00:00Z".to_string(),
+            reason: "stock_movement_upload_applied".to_string(),
+        };
+
+        assert!(sale_start_capability_input_changed(&transaction));
+        assert!(sale_start_capability_input_changed(&stock_upload));
+    }
+
     #[tokio::test]
-    async fn production_refresh_accepts_newer_profile_and_retains_it_when_refresh_degrades() {
+    async fn production_refresh_changes_only_for_new_profile_content_and_retains_it_when_refresh_degrades(
+    ) {
         let temp = tempfile::tempdir().expect("temp");
         let data_dir = temp.path().join("VEM").join("vending-daemon");
         tokio::fs::create_dir_all(temp.path().join("VEM"))
@@ -1054,7 +1088,7 @@ mod tests {
             .and(path("/machines/VEM-REFRESH-01/provisioning-profile"))
             .and(header("authorization", "Bearer refresh-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&refreshed))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
         let backend = BackendClient::new(server.uri());
@@ -1074,6 +1108,11 @@ mod tests {
                 .metadata
                 .profile_revision,
             NonZeroU64::new(2).expect("revision")
+        );
+        assert!(
+            !refresh_provisioning_profile_once(&sources, &backend, "VEM-REFRESH-01")
+                .await
+                .expect("identical refresh")
         );
 
         let unavailable = BackendClient::new(MockServer::start().await.uri());

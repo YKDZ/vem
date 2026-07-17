@@ -161,6 +161,7 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
     let mut daemon = DaemonHarness::start(fixture, &[], &[])
         .await
         .expect("start clean daemon");
+    let previous_ready_generation = daemon.ready.generation.clone();
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
     let client = reqwest::Client::new();
     let smuggled_secret = client
@@ -178,7 +179,7 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
     let response = client
         .post(format!("{base}/v1/provisioning/claim"))
         .header("Authorization", daemon.bearer())
-        .json(&serde_json::json!({ "claimCode": "clai-0001" }))
+        .json(&serde_json::json!({ "claimCode": "CLAI-0001" }))
         .send()
         .await
         .expect("claim response");
@@ -186,6 +187,15 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
     let claim: serde_json::Value = response.json().await.expect("claim payload");
     assert_eq!(claim["machineCode"], "MACHINE-CLAIM-IPC");
     assert_eq!(claim["restartRequested"], true);
+
+    daemon
+        .wait_for_reconfigure(&previous_ready_generation)
+        .await
+        .expect("daemon reconfigures after claim");
+    assert_ne!(daemon.ready.generation, previous_ready_generation);
+    let reconfigured_runtime = daemon.get_json("/v1/runtime-configuration").await;
+    assert_eq!(reconfigured_runtime["machine"]["code"], "MACHINE-CLAIM-IPC");
+    assert_eq!(reconfigured_runtime["platform"]["apiBaseUrl"], api_base_url);
 
     let profile_cache =
         tokio::fs::read_to_string(daemon.data_dir.join("config/profile-cache.json"))

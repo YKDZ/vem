@@ -422,16 +422,6 @@ impl CleanRuntimeConfigurationStore {
                 );
             }
         }
-        if accepted_cache.is_some_and(|accepted| {
-            profile.metadata.profile_revision.get()
-                < accepted.profile.metadata.profile_revision.get()
-        }) {
-            self.record_refresh_error("profile revision is older than the accepted profile")
-                .await;
-            return Err(
-                "provisioning profile revision is older than the accepted profile".to_string(),
-            );
-        }
         let previous = match credential_snapshot(self.secrets.as_ref()).await {
             Ok(previous) => previous,
             Err(error) => {
@@ -553,13 +543,6 @@ impl CleanRuntimeConfigurationStore {
         }
         let accepted_revision = accepted.profile.metadata.profile_revision.get();
         let refresh_revision = profile.metadata.profile_revision.get();
-        if refresh_revision < accepted_revision {
-            self.record_refresh_error("profile revision is older than the accepted profile")
-                .await;
-            return Err(
-                "provisioning profile revision is older than the accepted profile".to_string(),
-            );
-        }
         if refresh_revision == accepted_revision {
             if serde_json::to_value(&accepted.profile).ok() == serde_json::to_value(profile).ok() {
                 self.clear_refresh_error().await;
@@ -637,11 +620,7 @@ impl CleanRuntimeConfigurationStore {
             },
         )
         .await?;
-        match fs::remove_file(self.profile_cache_path()).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove provisioning profile cache failed: {error}")),
-        }
+        remove_optional_file(&self.profile_cache_path()).await?;
         for account in [
             MACHINE_SECRET_ACCOUNT,
             MQTT_SIGNING_SECRET_ACCOUNT,
@@ -865,21 +844,21 @@ async fn read_optional_json(
     }
 }
 
-async fn remove_optional_file(path: &Path) -> Result<(), String> {
+pub(crate) async fn remove_optional_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path).await {
-        Ok(()) => Ok(()),
+        Ok(()) => sync_runtime_configuration_parent(path).await,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("remove {} failed: {error}", path.display())),
     }
 }
 
-async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<(), String> {
+pub(crate) async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| "profile cache path has no parent".to_string())?;
+        .ok_or_else(|| "runtime configuration path has no parent".to_string())?;
     fs::create_dir_all(parent)
         .await
-        .map_err(|error| format!("create profile cache dir failed: {error}"))?;
+        .map_err(|error| format!("create runtime configuration dir failed: {error}"))?;
     let staged = path.with_extension("json.tmp");
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -887,17 +866,24 @@ async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<(), String> {
         .write(true)
         .open(&staged)
         .await
-        .map_err(|error| format!("stage provisioning profile cache failed: {error}"))?;
+        .map_err(|error| format!("stage runtime configuration failed: {error}"))?;
     file.write_all(&payload)
         .await
-        .map_err(|error| format!("stage provisioning profile cache failed: {error}"))?;
+        .map_err(|error| format!("stage runtime configuration failed: {error}"))?;
     file.sync_all()
         .await
-        .map_err(|error| format!("sync provisioning profile cache failed: {error}"))?;
+        .map_err(|error| format!("sync runtime configuration failed: {error}"))?;
     drop(file);
     fs::rename(&staged, path)
         .await
-        .map_err(|error| format!("accept provisioning profile cache failed: {error}"))?;
+        .map_err(|error| format!("commit runtime configuration failed: {error}"))?;
+    sync_runtime_configuration_directory(parent).await
+}
+
+async fn sync_runtime_configuration_parent(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "runtime configuration path has no parent".to_string())?;
     sync_runtime_configuration_directory(parent).await
 }
 

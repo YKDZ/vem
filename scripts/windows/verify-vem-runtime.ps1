@@ -9,7 +9,6 @@ param(
   [switch]$VisionOnly,
   [switch]$RequireBackendOnline,
   [switch]$RequireMqttConnected,
-  [switch]$RequireCanSell,
   [string]$VisionTaskName = "VEM\StartVisionServer",
   [string]$VisionDirectory = "C:\VEM\vision",
   [string]$VisionAppDirectory = "C:\VEM\vision\app",
@@ -339,7 +338,6 @@ if (-not $VisionOnly -and (Test-Path $ReadyFile)) {
 
   $healthz = Invoke-IpcJson "GET" "$base/healthz" $headers
   $readyz = Invoke-IpcJson "GET" "$base/readyz" $headers
-  $readiness = Invoke-IpcJson "GET" "$base/v1/sale-readiness" $headers
   $scanner = Invoke-IpcJson "GET" "$base/v1/scanner/status" $headers
   $hardware = Invoke-IpcJson "POST" "$base/v1/hardware/self-check" $headers
   $sync = Invoke-IpcJson "GET" "$base/v1/sync/status" $headers
@@ -348,7 +346,6 @@ if (-not $VisionOnly -and (Test-Path $ReadyFile)) {
     baseUrl = $base
     healthz = $healthz
     readyz = $readyz
-    saleReadiness = $readiness
     scanner = $scanner
     hardware = $hardware
     sync = $sync
@@ -365,10 +362,6 @@ if (-not $VisionOnly -and (Test-Path $ReadyFile)) {
   }
   if ($RequireHardwareOnline -and -not [bool]$hardware.online) {
     Add-Failure $failures "lower controller is not online: $($hardware.message)"
-  }
-  if ($RequireCanSell -and -not [bool]$readyz.canSell) {
-    $blocking = @($readyz.blockingCodes) -join ","
-    Add-Failure $failures "machine cannot sell: mode=$($readyz.mode) route=$($readyz.suggestedRoute) blockers=$blocking"
   }
 } elseif (-not $VisionOnly) {
   Add-Failure $failures "daemon ready file not found: $ReadyFile"

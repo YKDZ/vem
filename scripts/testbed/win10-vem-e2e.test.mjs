@@ -4282,23 +4282,27 @@ try {
       script,
       /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/attestation"/,
     );
-    assert.match(script, /function Wait-PlatformAcceptedStockAttestation/);
+    assert.match(script, /function Wait-SaleCapabilityAfterStockAttestation/);
     assert.match(
       script,
-      /\$stockAcceptance = Wait-PlatformAcceptedStockAttestation/,
+      /\$stockAcceptance = Wait-SaleCapabilityAfterStockAttestation/,
     );
     assert.match(
       script,
-      /PHYSICAL_STOCK_ATTESTATION_PENDING.*must block network-authorized sale/s,
-    );
-    assert.match(script, /\$physicalStockAttestation\.status -eq "ready"/);
-    assert.match(
-      script,
-      /if \(-not \[bool\]\$readiness\.canStartNetworkAuthorizedSale\) \{\s*Start-Sleep -Milliseconds 500\s*continue/s,
+      /Invoke-IpcJson "GET" "\$BaseUrl\/v1\/sale-start-capability" \$Headers/,
     );
     assert.match(
       script,
-      /timed out waiting for network-authorized simulated sale readiness: \$lastReadiness/,
+      /if \(\$saleableSlots\.Count -gt 0 -and \[bool\]\$saleCapability\.canStartSale\)/,
+    );
+    assert.match(
+      script,
+      /timed out waiting for sale-start capability after stock attestation: \$lastCapability/,
+    );
+    assert.doesNotMatch(script, /\/v1\/sale-readiness/);
+    assert.doesNotMatch(
+      script,
+      /readyz\.canSell|readyz\.mode|readyz\.suggestedRoute/,
     );
     assert.match(fixtureFlow, /\$salePhase -eq "fixture"/);
     assert.match(fixtureFlow, /kind = "simulated_hardware_sale_fixture"/);
@@ -4411,7 +4415,10 @@ if ($errors.Count -gt 0) {
     assert.match(script, /apiBaseUrl = \$ProvisioningEndpoint/);
     assert.match(script, /mqttUrl = \$MqttUrl/);
     assert.match(script, /hardwareAdapter = "serial"/);
-    assert.match(script, /lowerControllerPath = \$LowerControllerSerialPortPath/);
+    assert.match(
+      script,
+      /lowerControllerPath = \$LowerControllerSerialPortPath/,
+    );
     assert.match(script, /scannerAdapter = "serial_text"/);
     assert.match(script, /scannerPath = \$ScannerSerialPortPath/);
     assert.match(script, /visionEnabled = \$true/);
@@ -6756,7 +6763,10 @@ if ($errors.Count -gt 0) {
     const versionDiagnostic = runtimeAcceptanceFacts();
     versionDiagnostic.visionRuntime.healthVersion = "0.0.0-diagnostic";
     versionDiagnostic.visionRuntime.readyServerVersion = "unrelated-version";
-    assert.deepEqual(buildRuntimeAcceptanceReport(versionDiagnostic).diagnostics, []);
+    assert.deepEqual(
+      buildRuntimeAcceptanceReport(versionDiagnostic).diagnostics,
+      [],
+    );
   });
 
   it("generates a bounded fixed-app Vision readiness probe", () => {
@@ -6773,10 +6783,16 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(script, /ExpectedProcessId|selected active process/);
     assert.match(script, /C:\\VEM\\vision\\app\\vending-vision\.exe/);
     assert.match(script, /C:\\ProgramData\\VEM\\vision\\installed\.json/);
-    assert.doesNotMatch(script, /current\.json|process-state|releaseVersion|selectionRevision/);
+    assert.doesNotMatch(
+      script,
+      /current\.json|process-state|releaseVersion|selectionRevision/,
+    );
     assert.match(script, /\$health\.mockScenario -isnot \[string\]/);
     assert.match(script, /\$health\.mockScenario -cne "off"/);
-    assert.doesNotMatch(script, /version -cne|releaseVersion|selectedReleaseVersion/);
+    assert.doesNotMatch(
+      script,
+      /version -cne|releaseVersion|selectedReleaseVersion/,
+    );
     assert.match(script, /while \(\(Get-Date\) -lt \$deadline\)/);
     assert.match(script, /\$maxMessageBytes = 65536/);
     assert.match(script, /\$messageStream\.Length \+ \$received\.Count/);
@@ -6993,9 +7009,10 @@ if ($errors.Count -gt 0) {
       runAsUser: "VEMKiosk",
       command: "C:\\VEM\\bringup\\machine.exe",
     };
-    facts.startupBringup.startupCommands = facts.startupBringup.startupCommands.filter(
-      (command) => command.name === "\\VEM\\StartVisionServer",
-    );
+    facts.startupBringup.startupCommands =
+      facts.startupBringup.startupCommands.filter(
+        (command) => command.name === "\\VEM\\StartVisionServer",
+      );
 
     const report = buildRuntimeAcceptanceReport(facts);
 

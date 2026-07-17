@@ -3508,39 +3508,29 @@ describe("MachinesService claim code lifecycle", () => {
   it("projects a current non-secret profile snapshot for daemon refresh", async () => {
     const profile = replayProfile();
     const paymentUpdatedAt = new Date("2026-06-08T16:35:00.000Z");
-    mockDb.select
-      .mockReturnValueOnce({
-        from: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              orderBy: () => ({
-                limit: async () => [
-                  {
-                    claimCodeId: profile.metadata.claimCodeId,
-                    claimedAt: claimCodeNow,
-                    machineId: profile.machine.id,
-                    machineCode: profile.machine.code,
-                    machineName: "Lobby refreshed",
-                    machineStatus: profile.machine.status,
-                    machineLocationLabel: profile.machine.locationLabel,
-                    machineMqttClientId: "current-machine-client",
-                    machineUpdatedAt: paymentUpdatedAt,
-                  },
-                ],
-              }),
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  claimCodeId: profile.metadata.claimCodeId,
+                  claimedAt: claimCodeNow,
+                  machineId: profile.machine.id,
+                  machineCode: profile.machine.code,
+                  machineName: "Lobby refreshed",
+                  machineStatus: profile.machine.status,
+                  machineLocationLabel: profile.machine.locationLabel,
+                  machineMqttClientId: "current-machine-client",
+                  machineUpdatedAt: paymentUpdatedAt,
+                },
+              ],
             }),
           }),
         }),
-      })
-      .mockReturnValueOnce({
-        from: async () => [{ updatedAt: paymentUpdatedAt }],
-      })
-      .mockReturnValueOnce({
-        from: () => ({ where: async () => [{ updatedAt: paymentUpdatedAt }] }),
-      })
-      .mockReturnValueOnce({
-        from: async () => [{ updatedAt: paymentUpdatedAt }],
-      });
+      }),
+    });
     listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
       options: [
         { method: "qr_code", disabled: false },
@@ -3560,17 +3550,102 @@ describe("MachinesService claim code lifecycle", () => {
     });
     expect(snapshot.machine.name).toBe("Lobby refreshed");
     expect(snapshot.metadata).toMatchObject({
-      ...profile.metadata,
-      profileRevision: claimCodeNow.getTime() + paymentUpdatedAt.getTime() * 4,
-      serverTime: paymentUpdatedAt.toISOString(),
+      profileVersion: 1,
+      claimCodeId: profile.metadata.claimCodeId,
+      claimedAt: claimCodeNow.toISOString(),
+      serverTime: claimCodeNow.toISOString(),
     });
+    expect(snapshot.metadata.profileRevision).toBeGreaterThan(0);
     expect(snapshot.paymentCapability).toEqual({
       profile: "production",
       qrCodeEnabled: true,
       paymentCodeEnabled: true,
-      serverTime: paymentUpdatedAt.toISOString(),
+      serverTime: claimCodeNow.toISOString(),
     });
     expect(decryptClaimResponse).not.toHaveBeenCalled();
+  });
+
+  it("keeps heartbeat-only refreshes on the same provisioning profile revision", async () => {
+    const profile = replayProfile();
+    const paymentUpdatedAt = new Date("2026-06-08T16:35:00.000Z");
+    const queueSnapshot = (machineUpdatedAt: Date, machineName = "Lobby") => {
+      mockDb.select.mockReturnValueOnce({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              orderBy: () => ({
+                limit: async () => [
+                  {
+                    claimCodeId: profile.metadata.claimCodeId,
+                    claimedAt: claimCodeNow,
+                    machineId: profile.machine.id,
+                    machineCode: profile.machine.code,
+                    machineName,
+                    machineStatus: profile.machine.status,
+                    machineLocationLabel: profile.machine.locationLabel,
+                    machineMqttClientId: "vem-machine-M001",
+                    machineUpdatedAt,
+                  },
+                ],
+              }),
+            }),
+          }),
+        }),
+      });
+    };
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        { method: "qr_code", disabled: false },
+        { method: "payment_code", disabled: false },
+      ],
+    });
+
+    queueSnapshot(new Date("2026-06-08T16:36:00.000Z"));
+    const beforeHeartbeat = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+    queueSnapshot(new Date("2026-06-08T16:37:00.000Z"));
+    const afterHeartbeat = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+
+    expect(afterHeartbeat).toEqual(beforeHeartbeat);
+
+    queueSnapshot(new Date("2026-06-08T16:38:00.000Z"), "Lobby renamed");
+    const afterConfigurationChange = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+
+    expect(afterConfigurationChange.machine.name).toBe("Lobby renamed");
+    expect(afterConfigurationChange.metadata.profileRevision).not.toBe(
+      beforeHeartbeat.metadata.profileRevision,
+    );
+
+    const config = (
+      service as unknown as {
+        config: { machineApiBaseUrl: string; machineMqttUrl: string };
+      }
+    ).config;
+    config.machineApiBaseUrl = "https://platform-next.example/api";
+    config.machineMqttUrl = "mqtt://platform-next.example:18884";
+    queueSnapshot(new Date("2026-06-08T16:39:00.000Z"), "Lobby renamed");
+    const afterEndpointChange = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+
+    expect(afterEndpointChange.apiBaseUrl).toBe(
+      "https://platform-next.example/api",
+    );
+    expect(afterEndpointChange.mqttConnection.url).toBe(
+      "mqtt://platform-next.example:18884",
+    );
+    expect(afterEndpointChange.hardwareSlotTopology).toEqual({
+      identity: "vem-prod-24",
+      version: "2026-06-adr0026",
+    });
+    expect(afterEndpointChange.metadata.profileRevision).not.toBe(
+      afterConfigurationChange.metadata.profileRevision,
+    );
   });
 
   it("replays the atomically persisted response after an interrupted claim without allocating another identity", async () => {

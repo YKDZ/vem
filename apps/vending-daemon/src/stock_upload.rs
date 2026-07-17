@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{backend::BackendClient, state::LocalStateStore};
+use crate::{backend::BackendClient, events::DaemonEvent, state::LocalStateStore};
 
 #[derive(Debug, Clone, Default)]
 pub struct StockMovementUploadFlushResult {
@@ -15,6 +15,7 @@ pub struct StockMovementUploadRuntime {
     state: LocalStateStore,
     backend: Arc<BackendClient>,
     shutdown: CancellationToken,
+    events: Option<tokio::sync::broadcast::Sender<DaemonEvent>>,
 }
 
 impl StockMovementUploadRuntime {
@@ -27,6 +28,22 @@ impl StockMovementUploadRuntime {
             state,
             backend,
             shutdown,
+            events: None,
+        }
+    }
+
+    pub fn with_events(mut self, events: tokio::sync::broadcast::Sender<DaemonEvent>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    fn invalidate_sale_start_capability(&self, reason: &str) {
+        if let Some(events) = self.events.as_ref() {
+            let _ = events.send(DaemonEvent::SaleStartCapabilityInvalidated {
+                event_id: uuid::Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: reason.to_string(),
+            });
         }
     }
 
@@ -76,6 +93,7 @@ impl StockMovementUploadRuntime {
                         .record_stock_movement_upload_response(&event, &response)
                         .await
                         .map_err(|error| error.to_string())?;
+                    self.invalidate_sale_start_capability("stock_movement_upload_applied");
                     result.accepted += 1;
                 }
                 Err(error) => {
@@ -113,12 +131,12 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::backend::BackendClient;
     use crate::state::store::{
         MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
         PhysicalStockAttestationSlotInput, StockMovementInput,
     };
     use crate::state::LocalStateStore;
+    use crate::{backend::BackendClient, events::DaemonEvent};
 
     use super::*;
 
@@ -418,11 +436,13 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        let (events, mut received) = tokio::sync::broadcast::channel(8);
         let runtime = StockMovementUploadRuntime::new(
             store.clone(),
             test_backend_client(&server).await,
             CancellationToken::new(),
-        );
+        )
+        .with_events(events);
 
         let result = runtime.flush_due_once().await.expect("flush");
 
@@ -440,5 +460,10 @@ mod tests {
             .expect("sync")
             .expect("sync exists");
         assert_eq!(sync.status, "reconciliation");
+        assert!(matches!(
+            received.recv().await.expect("sale capability invalidation"),
+            DaemonEvent::SaleStartCapabilityInvalidated { reason, .. }
+                if reason == "stock_movement_upload_applied"
+        ));
     }
 }

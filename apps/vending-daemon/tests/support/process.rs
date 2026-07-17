@@ -21,11 +21,13 @@ pub struct ReadyFile {
     pub healthz_url: String,
     pub readyz_url: String,
     pub ipc_token: String,
+    pub generation: String,
 }
 
 pub struct DaemonHarness {
     pub data_dir: PathBuf,
     pub ready: ReadyFile,
+    ready_file: PathBuf,
     _temp_dir: Option<TempDir>,
     child: Child,
     client: Client,
@@ -100,6 +102,7 @@ impl DaemonHarness {
         Ok(Self {
             data_dir,
             ready,
+            ready_file,
             _temp_dir: None,
             child,
             client,
@@ -125,6 +128,13 @@ impl DaemonHarness {
             .json()
             .await
             .expect("json")
+    }
+
+    pub async fn wait_for_reconfigure(&mut self, previous_generation: &str) -> Result<(), String> {
+        let ready = wait_reconfigured_ready_file(&self.ready_file, previous_generation).await?;
+        wait_http_ok(&self.client, &ready.healthz_url).await?;
+        self.ready = ready;
+        Ok(())
     }
 
     pub async fn terminate(&mut self) {
@@ -306,6 +316,26 @@ async fn wait_ready_file(path: &Path) -> Result<ReadyFile, String> {
         sleep(Duration::from_millis(50)).await;
     }
     Err(format!("ready file was not written at {}", path.display()))
+}
+
+async fn wait_reconfigured_ready_file(
+    path: &Path,
+    previous_generation: &str,
+) -> Result<ReadyFile, String> {
+    for _ in 0..200 {
+        if let Ok(bytes) = tokio::fs::read(path).await {
+            let ready: ReadyFile =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            if ready.generation != previous_generation {
+                return Ok(ready);
+            }
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!(
+        "ready file did not publish a new generation at {}",
+        path.display()
+    ))
 }
 
 async fn wait_http_ok(client: &Client, url: &str) -> Result<(), String> {

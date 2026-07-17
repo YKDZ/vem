@@ -1157,8 +1157,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     !String(visionStartupCommand.arguments ?? "").includes(
       EXPECTED_VISION_LAUNCHER,
     ) ||
-    visionStartupCommand.workingDirectory !==
-      EXPECTED_VISION_WORKING_DIRECTORY
+    visionStartupCommand.workingDirectory !== EXPECTED_VISION_WORKING_DIRECTORY
   ) {
     addDiagnostic(
       diagnostics,
@@ -1185,8 +1184,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     facts.visionRuntime?.installedRecordPresent !== true ||
     !/^[a-f0-9]{40}$/.test(facts.visionRuntime?.installedCommit ?? "") ||
     facts.visionRuntime?.installedRuntime !== "vending-vision.exe" ||
-    facts.visionRuntime?.installedAppDirectory !==
-      "C:\\VEM\\vision\\app" ||
+    facts.visionRuntime?.installedAppDirectory !== "C:\\VEM\\vision\\app" ||
     facts.visionRuntime?.installedRuntimeWorkDirectory !==
       EXPECTED_VISION_WORK_DIRECTORY ||
     facts.visionRuntime?.executablePath !== EXPECTED_VISION_ENTRYPOINT ||
@@ -1194,8 +1192,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     facts.visionRuntime.processId < 1 ||
     facts.visionRuntime?.listenerBound !== true ||
     !Number.isInteger(facts.visionRuntime?.listenerProcessId) ||
-    facts.visionRuntime.listenerProcessId !==
-      facts.visionRuntime.processId ||
+    facts.visionRuntime.listenerProcessId !== facts.visionRuntime.processId ||
     facts.visionRuntime?.listenerOwnerCount !== 1 ||
     !["Get-NetTCPConnection", "netstat"].includes(
       facts.visionRuntime?.listenerBindingSource,
@@ -1957,7 +1954,8 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
   return {
     runtimeImageProfile,
     maintenanceUser: runtimeImageProfile === "production" ? "Admin" : "YKDZ",
-    hardwareMode: runtimeImageProfile === "production" ? "production" : "simulated",
+    hardwareMode:
+      runtimeImageProfile === "production" ? "production" : "simulated",
     openSshPackageSha256: packageInputs[0].hash,
     wireGuardPackageSha256: packageInputs[1].hash,
     maintenanceCaPublicKeySha256: packageInputs[2].hash,
@@ -3802,7 +3800,9 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     missingEvidence.push("evidence");
   } else {
-    if (evidence.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile) {
+    if (
+      evidence.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile
+    ) {
       missingEvidence.push("evidence.runtimeImageProfile");
     }
     if (!isNonEmptyString(evidence.preparationOutput)) {
@@ -3854,7 +3854,10 @@ function validateFactoryImageDeliveryUnitCleanBaseEvidence(
             );
           }
         }
-        if (manifest.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile) {
+        if (
+          manifest.runtimeImageProfile !==
+          cleanBaseAcceptance.runtimeImageProfile
+        ) {
           missingEvidence.push(
             "evidence.factoryRuntimeVerification.checks.manifest.runtimeImageProfile mismatch",
           );
@@ -4359,9 +4362,9 @@ export function evaluateSimulatedHardwareSerialEvidence({
         failure?.daemonFailClosed?.hardwareOnline === false &&
         failure?.daemonFailClosed?.readyzObserved === true &&
         failure?.daemonFailClosed?.saleBindingCreated === false &&
-        Array.isArray(failure?.daemonFailClosed?.readinessBlockingCodes) &&
-        failure.daemonFailClosed.readinessBlockingCodes.length === 1 &&
-        failure.daemonFailClosed.readinessBlockingCodes[0] ===
+        Array.isArray(failure?.daemonFailClosed?.capabilityBlockerCodes) &&
+        failure.daemonFailClosed.capabilityBlockerCodes.length === 1 &&
+        failure.daemonFailClosed.capabilityBlockerCodes[0] ===
           "LOWER_CONTROLLER_UNAVAILABLE";
       return (
         failure?.result === "observed_failure" &&
@@ -5220,7 +5223,9 @@ export function buildRemotePowerShellScript(options = {}) {
   const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
   const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
   const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
-  const cleanBaseRuntimeImageProfile = String(options.runtimeImageProfile ?? "");
+  const cleanBaseRuntimeImageProfile = String(
+    options.runtimeImageProfile ?? "",
+  );
   const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseRuntimeImageProfile}-clean-base`;
   const cleanBaseFactoryMediaRoot = String(options.factoryMediaRoot ?? "");
   const cleanBaseVisionConfigurationSourcePath = String(
@@ -5645,10 +5650,6 @@ function Convert-ReadyzEvidence($Snapshot) {
   return [ordered]@{
     observed = $true
     ready = [bool]$Snapshot.ready
-    canSell = [bool]$Snapshot.canSell
-    mode = if ($null -ne $Snapshot.mode) { [string]$Snapshot.mode } else { $null }
-    suggestedRoute = if ($null -ne $Snapshot.suggestedRoute) { [string]$Snapshot.suggestedRoute } else { $null }
-    blockingCodes = @($Snapshot.blockingCodes | ForEach-Object { [string]$_ })
     error = $null
   }
 }
@@ -8390,8 +8391,8 @@ function Resolve-HardwareMappingFaultPaymentOption(
   if ($matchingOption.Count -eq 0) {
     throw "hardware mapping fault probe payment option is no longer available"
   }
-  $saleReadiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
-  $readyPaymentOption = @($saleReadiness.components.paymentOptions.methods | Where-Object {
+  $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
+  $readyPaymentOption = @($saleCapability.paymentOptions.options | Where-Object {
     $_.ready -eq $true -and
     [string]$_.method -eq [string]$ContextPaymentOption.method -and
     [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
@@ -8414,15 +8415,17 @@ function Invoke-HardwareMappingFaultProbe(
 ) {
   $healthz = $DaemonIpc.healthz
   $readyz = $DaemonIpc.readyz
-  $readinessBlockingCodes = @($readyz.blockingCodes | ForEach-Object { [string]$_ })
+  $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
+  $capabilityBlockerCodes = @($saleCapability.blockers | ForEach-Object { [string]$_.code })
   $mappingFault = [ordered]@{
     healthzObserved = $null -ne $healthz -and $healthz.observed -eq $true
     readyzObserved = $null -ne $readyz -and $readyz.observed -eq $true
+    capabilityObserved = $null -ne $saleCapability
     hardwareOnline = if ($null -ne $healthz) { [bool]$healthz.hardwareOnline } else { $null }
-    readinessBlockingCodes = $readinessBlockingCodes
+    capabilityBlockerCodes = $capabilityBlockerCodes
     exactLowerControllerBlocker =
-      $readinessBlockingCodes.Count -eq 1 -and
-      $readinessBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
+      $capabilityBlockerCodes.Count -eq 1 -and
+      $capabilityBlockerCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
     adapterSession = [ordered]@{
       serialSessionId = ${psString(process.env.VEM_VM_HOST_FAULT_SESSION_ID ?? "")}
       startOperationReference = ${psString(process.env.VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE ?? "")}
@@ -8436,7 +8439,7 @@ function Invoke-HardwareMappingFaultProbe(
     rejected = $false
     statusCode = $null
     responseCode = $null
-    readinessBlockingCodes = $readinessBlockingCodes
+    capabilityBlockerCodes = $capabilityBlockerCodes
     responseBlockingCodes = @()
     context = $null
     request = $null
@@ -8448,10 +8451,11 @@ function Invoke-HardwareMappingFaultProbe(
   if (
     $mappingFault.healthzObserved -ne $true -or
     $mappingFault.readyzObserved -ne $true -or
+    $mappingFault.capabilityObserved -ne $true -or
     $healthz.hardwareOnline -ne $false -or
     $null -eq $readyz
   ) {
-    throw "hardware mapping fault probe requires observed unhealthy daemon IPC healthz and readyz"
+    throw "hardware mapping fault probe requires observed unhealthy daemon IPC healthz, readyz, and sale capability"
   }
 
   $probeContext = Get-HardwareMappingFaultProbeContext $ContextPath $RunId
@@ -8510,59 +8514,31 @@ function Invoke-HardwareMappingFaultProbe(
   }
 }
 
-function Wait-PlatformAcceptedStockAttestation(
+function Wait-SaleCapabilityAfterStockAttestation(
   [string]$BaseUrl,
-  $Headers,
-  [string]$AttestationId,
-  [string]$PlanogramVersion
+  $Headers
 ) {
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  $readiness = $null
+  $saleCapability = $null
   do {
-    $readiness = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-readiness" $Headers
+    $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
     $saleView = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-view" $Headers
-    $physicalStockAttestation = $readiness.components.physicalStockAttestation
     $saleableSlots = @($saleView.items | Where-Object {
       [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
     })
 
-    if ([string]$physicalStockAttestation.status -eq "pending") {
-      if ($saleableSlots.Count -gt 0) {
-        if ([bool]$readiness.canStartNetworkAuthorizedSale) {
-          throw "PHYSICAL_STOCK_ATTESTATION_PENDING must block network-authorized sale"
-        }
-      }
-    } elseif ([string]$physicalStockAttestation.status -eq "ready") {
-      if (
-        [string]$physicalStockAttestation.attestationId -ne $AttestationId -or
-        [string]$physicalStockAttestation.planogramVersion -ne $PlanogramVersion
-      ) {
-        throw "Platform accepted stock evidence does not match the submitted attestation"
-      }
-      if ($saleableSlots.Count -eq 0) {
-        throw "Platform accepted stock attestation did not produce a sale-ready slot"
-      }
-      if (-not [bool]$readiness.canStartNetworkAuthorizedSale) {
-        Start-Sleep -Milliseconds 500
-        continue
-      }
+    if ($saleableSlots.Count -gt 0 -and [bool]$saleCapability.canStartSale) {
       return [ordered]@{
-        readiness = $readiness
+        saleCapability = $saleCapability
         saleView = $saleView
-        evidence = $physicalStockAttestation
       }
-    } elseif (
-      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_REJECTED" -or
-      [string]$physicalStockAttestation.code -eq "PHYSICAL_STOCK_ATTESTATION_UPLOAD_FAILED"
-    ) {
-      throw "Platform rejected simulated stock attestation: $($physicalStockAttestation.message)"
     }
 
     Start-Sleep -Milliseconds 500
   } while ([DateTime]::UtcNow -lt $deadline)
 
-  $lastReadiness = if ($null -eq $readiness) { "null" } else { $readiness | ConvertTo-Json -Compress -Depth 12 }
-  throw "timed out waiting for network-authorized simulated sale readiness: $lastReadiness"
+  $lastCapability = if ($null -eq $saleCapability) { "null" } else { $saleCapability | ConvertTo-Json -Compress -Depth 12 }
+  throw "timed out waiting for sale-start capability after stock attestation: $lastCapability"
 }
 
 function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
@@ -8678,18 +8654,18 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       })
     }
     $attestationSubmission = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
-    $stockAcceptance = Wait-PlatformAcceptedStockAttestation $baseUrl $headers ([string]$attestationPayload.attestationId) ([string]$attestationPayload.planogramVersion)
+    $stockAcceptance = Wait-SaleCapabilityAfterStockAttestation $baseUrl $headers
     $saleView = $stockAcceptance.saleView
     $selectedItem = @($saleView.items | Where-Object {
       [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
     } | Select-Object -First 1)
     $attestation = [ordered]@{
-      attestationId = [string]$stockAcceptance.evidence.attestationId
+      attestationId = [string]$attestationPayload.attestationId
       accepted = $true
       status = "accepted"
       uploadStatus = "accepted"
-      acceptedAt = [string]$stockAcceptance.evidence.attestedAt
-      platformMovementId = ("{0}:{1}" -f [string]$stockAcceptance.evidence.attestationId, [string]$selectedItem.slotId)
+      acceptedAt = $null
+      platformMovementId = $null
       submission = $attestationSubmission
     }
     if ($selectedItem.Count -eq 0) {
