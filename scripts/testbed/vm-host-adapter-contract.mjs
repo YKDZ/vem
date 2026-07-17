@@ -4317,7 +4317,7 @@ export async function runVmHostAdapter({
   });
   rmSync(adapterWorkDirectory, { recursive: true, force: true });
   throw new VmHostAdapterExecutionError(
-    `VM Host Adapter reported ${outcome.result}`,
+    `VM Host Adapter reported ${outcome.result}: ${outcome.code}`,
     diagnostic,
   );
 }
