@@ -2021,6 +2021,17 @@ where
                 continue;
             }
             LowerFrame::PickupTimeout => {
+                if pickup_timeout_warnings >= 2 {
+                    adapter
+                        .log_message(
+                            base_entry.clone(),
+                            "event",
+                            Some("pickup_timeout_warning_ignored"),
+                            Some("duplicate pickup timeout warning ignored".to_string()),
+                        )
+                        .await;
+                    continue;
+                }
                 pickup_timeout_warnings = pickup_timeout_warnings.saturating_add(1);
                 let message = if pickup_timeout_warnings >= 2 {
                     "请立即取走商品，设备即将自动关闭取货口"

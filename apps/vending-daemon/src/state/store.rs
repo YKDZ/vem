@@ -6906,6 +6906,19 @@ fn patch_backend_status_for_dispense_progress(
     if incoming_rank < current_rank {
         return;
     }
+    if incoming_rank == current_rank && current_rank != 0 {
+        if !matches!(event.stage, DispenseProgressStage::PickupTimeoutWarning) {
+            return;
+        }
+        let current_warning_no = backend_status
+            .pointer("/vending/pickupReminder/warningNo")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let incoming_warning_no = u64::from(event.warning_no.unwrap_or(1));
+        if incoming_warning_no <= current_warning_no {
+            return;
+        }
+    }
     if !backend_status.is_object() {
         *backend_status = serde_json::json!({});
     }
@@ -9546,6 +9559,158 @@ mod tests {
         let persisted = store.sale_view(None).await.expect("sale view");
         assert_eq!(persisted.items[0].physical_stock, 3);
         assert_eq!(persisted.items[0].saleable_stock, 3);
+    }
+
+    #[tokio::test]
+    async fn lower_controller_sequence_decrements_stock_only_after_f2_success() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-BEFORE-F2-SEQUENCE".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+
+        let mut command = dispense_command_for_slot("CMD-F2-SEQUENCE");
+        command.order_no = "ORDER-F2-SEQUENCE".to_string();
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": command.command_no,
+                        "status": "dispensing"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed order");
+
+        for (stage, warning_no, message, reported_at) in [
+            (
+                DispenseProgressStage::OutletOpened,
+                None,
+                "取货口已打开，请取走商品",
+                "2026-06-13T09:00:00.000Z",
+            ),
+            (
+                DispenseProgressStage::PickupTimeoutWarning,
+                Some(1),
+                "请尽快取走商品",
+                "2026-06-13T09:00:15.000Z",
+            ),
+            (
+                DispenseProgressStage::PickupTimeoutWarning,
+                Some(2),
+                "请立即取走商品，设备即将自动关闭取货口",
+                "2026-06-13T09:00:25.000Z",
+            ),
+            (
+                DispenseProgressStage::PickupCompleted,
+                None,
+                "用户已完成取货，设备正在复位",
+                "2026-06-13T09:00:30.000Z",
+            ),
+        ] {
+            store
+                .record_dispense_progress(&DispenseProgressEvent {
+                    command_no: command.command_no.clone(),
+                    order_no: command.order_no.clone(),
+                    stage,
+                    warning_no,
+                    message: message.to_string(),
+                    reported_at: reported_at.to_string(),
+                })
+                .await
+                .expect("record progress");
+        }
+
+        let before_f2 = store.sale_view(None).await.expect("sale view before F2");
+        assert_eq!(before_f2.items[0].physical_stock, 4);
+        assert_eq!(
+            before_f2.items[0].saleable_stock, 3,
+            "paid dispensing orders may reserve stock before F2"
+        );
+        let movement_count_before_f2: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_movements WHERE movement_id = 'dispense:CMD-F2-SEQUENCE'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("movement count before F2");
+        assert_eq!(movement_count_before_f2.0, 0);
+        let snapshot_before_f2 = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        assert_eq!(
+            snapshot_before_f2.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+        assert_eq!(
+            snapshot_before_f2
+                .vending
+                .as_ref()
+                .and_then(|vending| vending.pickup_reminder.as_ref())
+                .and_then(|reminder| reminder.stage.as_deref()),
+            Some("pickup_completed")
+        );
+
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "serial: F2 reset completed".to_string(),
+            reported_at: "2026-06-13T09:00:31.000Z".to_string(),
+        };
+        let event = OutboxInput::dispense_result("MACHINE-1", &result);
+        assert!(store
+            .record_command_result_journal(&command, &result)
+            .await
+            .expect("journal F2 result"));
+        assert!(store
+            .commit_journaled_dispense_side_effects(&command, &result, &event)
+            .await
+            .expect("commit F2 side effects"));
+
+        let after_f2 = store.sale_view(None).await.expect("sale view after F2");
+        assert_eq!(after_f2.items[0].physical_stock, 3);
+        assert_eq!(after_f2.items[0].saleable_stock, 3);
+        assert!(!store
+            .commit_journaled_dispense_side_effects(&command, &result, &event)
+            .await
+            .expect("duplicate F2 side effects"));
+        let persisted = store.sale_view(None).await.expect("persisted sale view");
+        assert_eq!(persisted.items[0].physical_stock, 3);
+
+        let movement_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_movements WHERE movement_id = 'dispense:CMD-F2-SEQUENCE'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("movement count");
+        assert_eq!(movement_count.0, 1);
     }
 
     #[tokio::test]
@@ -13182,6 +13347,73 @@ mod tests {
                 .as_deref(),
             Some("pickup_completed")
         );
+    }
+
+    #[tokio::test]
+    async fn delayed_first_e5_cannot_downgrade_urgent_pickup_warning() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-E5-ORDINAL",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-E5-ORDINAL",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-E5-ORDINAL",
+                        "status": "dispensing"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let urgent_applied = store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-E5-ORDINAL".to_string(),
+                order_no: "ORDER-E5-ORDINAL".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "urgent warning".to_string(),
+                reported_at: "2026-06-13T09:00:02.000Z".to_string(),
+            })
+            .await
+            .expect("record urgent warning");
+        assert!(urgent_applied);
+
+        let delayed_applied = store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-E5-ORDINAL".to_string(),
+                order_no: "ORDER-E5-ORDINAL".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(1),
+                message: "delayed ordinary warning".to_string(),
+                reported_at: "2026-06-13T09:00:01.000Z".to_string(),
+            })
+            .await
+            .expect("ignore delayed first warning");
+        assert!(!delayed_applied, "ordinary E5 must not downgrade urgent E5");
+
+        let snapshot = store.current_transaction_snapshot().await.unwrap().unwrap();
+        let reminder = snapshot
+            .vending
+            .unwrap()
+            .pickup_reminder
+            .expect("pickup reminder");
+        assert_eq!(reminder.level, "urgent");
+        assert_eq!(reminder.warning_no, Some(2));
+        assert_eq!(reminder.message, "urgent warning");
     }
 
     #[tokio::test]

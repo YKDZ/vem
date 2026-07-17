@@ -120,6 +120,56 @@ async fn serial_adapter_treats_pickup_timeout_as_warning_until_final_result() {
 }
 
 #[tokio::test]
+async fn serial_adapter_ignores_pickup_timeout_frames_after_second_warning() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let _frame = support::read_single_dispense_frame(&mut pty.master).await;
+        support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF0).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF2).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_for_progress = events.clone();
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense_with_progress(
+            command("CMD-PTY-PICKUP-WARNING-CAP"),
+            Some(Arc::new(move |event| {
+                events_for_progress.lock().expect("events").push(event);
+            })),
+        ),
+    )
+    .await
+    .expect("test timeout");
+
+    assert!(result.success, "{result:?}");
+    let warning_numbers = events
+        .lock()
+        .expect("events")
+        .iter()
+        .filter(|event| event.stage == DispenseProgressStage::PickupTimeoutWarning)
+        .map(|event| event.warning_no)
+        .collect::<Vec<_>>();
+    assert_eq!(warning_numbers, vec![Some(1), Some(2)]);
+}
+
+#[tokio::test]
 async fn serial_adapter_dispenses_once_on_ack_and_completed() {
     let _pty_guard = PTY_TEST_LOCK.lock().await;
     let mut pty = support::open_pty();
