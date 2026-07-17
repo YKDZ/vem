@@ -403,4 +403,24 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.ok(workflow.indexOf(runtime) < workflow.indexOf(removeScanner));
     assert.ok(workflow.indexOf(runtime) < workflow.indexOf(display));
   });
+
+  it("deploys the daemon and kiosk UI from one Windows runtime artifact set", () => {
+    const workflow = readWorkflow();
+    const deploy = stepBlock(
+      workflow,
+      "Deploy Current Windows Runtime To Overlay",
+    );
+
+    for (const artifact of [
+      "vending-daemon.exe",
+      "machine.exe",
+      "WebView2Loader.dll",
+    ]) {
+      assert.match(deploy, requiredTextPattern(artifact));
+    }
+    assert.match(deploy, /Stop-ScheduledTask -TaskName "VEMMachineUI"/);
+    assert.match(deploy, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
+    assert.match(deploy, /component = "daemon"/);
+    assert.match(deploy, /component = "ui"/);
+  });
 });
