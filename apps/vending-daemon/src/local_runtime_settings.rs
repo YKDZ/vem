@@ -141,6 +141,15 @@ impl LocalRuntimeSettingsStore {
         Ok(settings.revision)
     }
 
+    pub async fn clear(&self) -> Result<(), String> {
+        let _guard = self.lock.lock().await;
+        match fs::remove_file(&self.path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("clear local runtime settings failed: {error}")),
+        }
+    }
+
     async fn load_unlocked(&self) -> Result<LocalRuntimeSettings, String> {
         let content = match fs::read_to_string(&self.path).await {
             Ok(content) => content,

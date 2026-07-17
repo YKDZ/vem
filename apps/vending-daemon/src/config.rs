@@ -239,7 +239,7 @@ pub struct MachineAudioOutputBinding {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
-pub struct MachinePublicConfig {
+pub struct EffectiveRuntimeConfig {
     pub machine_code: Option<String>,
     #[serde(default)]
     pub machine_id: Option<String>,
@@ -255,9 +255,11 @@ pub struct MachinePublicConfig {
     #[serde(default)]
     pub mqtt_client_id: Option<String>,
     pub hardware_adapter: HardwareAdapterKind,
+    #[serde(rename = "localPortObservation")]
     pub serial_port_path: Option<String>,
     pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
     pub scanner_adapter: ScannerAdapterKind,
+    #[serde(rename = "scannerPortObservation")]
     pub scanner_serial_port_path: Option<String>,
     #[serde(default)]
     pub scanner_usb_identity: Option<SerialPortUsbIdentity>,
@@ -302,8 +304,8 @@ pub struct MachineConfigSecretsUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MachineConfigUpdateRequest {
-    pub public: MachinePublicConfig,
+pub struct RuntimeConfigurationMutationRequest {
+    pub public: EffectiveRuntimeConfig,
     pub secrets: Option<MachineConfigSecretsUpdate>,
 }
 
@@ -507,12 +509,12 @@ pub struct HardwareSlotTopologyIdentity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum FactoryProfile {
+pub enum RuntimePaymentPolicy {
     Production,
     Testbed,
 }
 
-impl FactoryProfile {
+impl RuntimePaymentPolicy {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Production => "production",
@@ -526,7 +528,7 @@ impl FactoryProfile {
 #[serde(rename_all = "camelCase")]
 pub struct FactoryRuntimeManifest {
     pub layout_version: u32,
-    pub environment: FactoryProfile,
+    pub environment: RuntimePaymentPolicy,
     pub provisioning_endpoint: String,
     pub hardware_mode: RuntimeHardwareMode,
     pub hardware_model: String,
@@ -543,6 +545,7 @@ pub struct LocalBringUpSettings {
     pub network_profile: Option<String>,
     #[serde(default)]
     pub hardware_adapter: Option<HardwareAdapterKind>,
+    #[serde(rename = "localPortObservation")]
     #[serde(default)]
     pub serial_port_path: Option<String>,
     #[serde(
@@ -555,6 +558,7 @@ pub struct LocalBringUpSettings {
     pub lower_controller_binding: Option<crate::device_binding::LocalSerialRoleBinding>,
     #[serde(default)]
     pub scanner_adapter: Option<ScannerAdapterKind>,
+    #[serde(rename = "scannerPortObservation")]
     #[serde(default)]
     pub scanner_serial_port_path: Option<String>,
     #[serde(
@@ -654,13 +658,13 @@ pub struct RuntimeConfigurationSummary {
     pub factory_manifest: Option<FactoryRuntimeManifest>,
     pub local_bring_up_settings: Option<LocalBringUpSettings>,
     pub provisioning_profile_cache: Option<ProvisioningProfileCacheSummary>,
-    pub effective_public: MachinePublicConfig,
+    pub effective_public: EffectiveRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineRuntimeConfig {
-    pub public: MachinePublicConfig,
+    pub public: EffectiveRuntimeConfig,
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
@@ -687,7 +691,7 @@ pub struct MachineReportedAudioCueConfiguration {
 }
 
 pub fn project_reported_runtime_configuration(
-    public: &MachinePublicConfig,
+    public: &EffectiveRuntimeConfig,
 ) -> MachineReportedRuntimeConfiguration {
     MachineReportedRuntimeConfiguration {
         audio_cues: MachineReportedAudioCueConfiguration {
@@ -708,7 +712,7 @@ pub struct MachineRuntimeSecrets {
 }
 
 impl MachineRuntimeConfig {
-    pub fn to_public(&self) -> MachinePublicRuntimeConfig {
+    pub fn to_public(&self) -> EffectiveRuntimeConfigSummary {
         let provisioning_issues = provisioning_issues(
             &self.public,
             self.machine_secret_configured,
@@ -716,7 +720,7 @@ impl MachineRuntimeConfig {
             self.mqtt_password_configured,
             self.maintenance_pin_configured,
         );
-        MachinePublicRuntimeConfig {
+        EffectiveRuntimeConfigSummary {
             public: self.public.clone(),
             machine_secret_configured: self.machine_secret_configured,
             mqtt_signing_secret_configured: self.mqtt_signing_secret_configured,
@@ -730,8 +734,8 @@ impl MachineRuntimeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct MachinePublicRuntimeConfig {
-    pub public: MachinePublicConfig,
+pub struct EffectiveRuntimeConfigSummary {
+    pub public: EffectiveRuntimeConfig,
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
@@ -740,7 +744,7 @@ pub struct MachinePublicRuntimeConfig {
     pub provisioning_issues: Vec<String>,
 }
 
-impl MachinePublicRuntimeConfig {
+impl EffectiveRuntimeConfigSummary {
     fn with_provisioning_state(mut self) -> Self {
         self.provisioning_issues = provisioning_issues(
             &self.public,
@@ -766,7 +770,7 @@ pub fn default_machine_audio_volume() -> f64 {
 }
 
 fn provisioning_issues(
-    public: &MachinePublicConfig,
+    public: &EffectiveRuntimeConfig,
     machine_secret_configured: bool,
     mqtt_signing_secret_configured: bool,
     mqtt_password_configured: bool,
@@ -818,8 +822,8 @@ fn provisioning_issues(
     issues
 }
 
-pub fn default_public_config() -> MachinePublicConfig {
-    MachinePublicConfig {
+pub fn default_public_config() -> EffectiveRuntimeConfig {
+    EffectiveRuntimeConfig {
         machine_code: None,
         machine_id: None,
         machine_name: None,
@@ -997,7 +1001,7 @@ fn normalize_local_bring_up_settings(
 }
 
 fn apply_local_bring_up_settings_to_public(
-    public: &mut MachinePublicConfig,
+    public: &mut EffectiveRuntimeConfig,
     settings: &LocalBringUpSettings,
 ) {
     if let Some(endpoint) = settings.provisioning_endpoint_override.as_ref() {
@@ -1250,8 +1254,8 @@ fn valid_wireguard_endpoint(value: &str) -> bool {
 }
 
 pub fn normalize_public_config(
-    mut config: MachinePublicConfig,
-) -> Result<MachinePublicConfig, String> {
+    mut config: EffectiveRuntimeConfig,
+) -> Result<EffectiveRuntimeConfig, String> {
     let machine_code = config.machine_code.take().and_then(|value| {
         let value = value.trim().to_string();
         if value.is_empty() {
@@ -1383,7 +1387,7 @@ pub fn normalize_public_config(
         && config.lower_controller_usb_identity.is_none()
     {
         return Err(
-            "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial"
+            "lowerControllerUsbIdentity or localPortObservation is required when hardwareAdapter=serial"
                 .to_string(),
         );
     }
@@ -1392,7 +1396,7 @@ pub fn normalize_public_config(
         && config.scanner_usb_identity.is_none()
     {
         return Err(
-            "scannerSerialPortPath or scannerUsbIdentity is required when scannerAdapter=serial_text".to_string(),
+            "scannerPortObservation or scannerUsbIdentity is required when scannerAdapter=serial_text".to_string(),
         );
     }
     if !(1000..=30000).contains(&config.vision_request_timeout_ms) {
@@ -1478,7 +1482,7 @@ async fn replace_file_atomically(staging_path: &Path, path: &Path) -> Result<(),
 }
 
 fn daemon_config_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("machine-config.json")
+    data_dir.join("runtime-input.json")
 }
 
 fn runtime_root_dir(data_dir: &Path) -> PathBuf {
@@ -1559,7 +1563,9 @@ impl ConfigStore {
         )
     }
 
-    fn validate_provisioning_profile(profile: &MachineProvisioningProfile) -> Result<(), String> {
+    pub(crate) fn validate_provisioning_profile(
+        profile: &MachineProvisioningProfile,
+    ) -> Result<(), String> {
         if profile.metadata.profile_version != 1 {
             return Err("unsupported provisioning profile version".to_string());
         }
@@ -2046,7 +2052,7 @@ impl ConfigStore {
         let Some(factory) = self.load_factory_manifest().await? else {
             return Ok(None);
         };
-        if factory.environment != FactoryProfile::Production {
+        if factory.environment != RuntimePaymentPolicy::Production {
             return Ok(None);
         }
         let profile = self.load_provisioning_profile_cache_summary().await?;
@@ -2339,6 +2345,71 @@ impl ConfigStore {
     pub async fn load_provisioning_profile_cache_summary(
         &self,
     ) -> Result<Option<ProvisioningProfileCacheSummary>, String> {
+        if let Some(cache) = self
+            .clean_runtime_configuration
+            .load_profile_cache()
+            .await?
+        {
+            let profile = cache.profile;
+            macro_rules! decode {
+                ($value:expr) => {
+                    serde_json::from_value(serde_json::to_value($value).map_err(|error| {
+                        format!("serialize accepted provisioning profile failed: {error}")
+                    })?)
+                    .map_err(|error| {
+                        format!("decode accepted provisioning profile failed: {error}")
+                    })?
+                };
+            }
+            return Ok(Some(ProvisioningProfileCacheSummary {
+                profile_version: profile.metadata.profile_version as i64,
+                machine_id: profile.machine.id.to_string(),
+                machine_code: profile.machine.code.to_string(),
+                machine_name: profile.machine.name.to_string(),
+                machine_status: profile.machine.status.to_string(),
+                machine_location_label: profile
+                    .machine
+                    .location_label
+                    .map(|value| value.to_string()),
+                claimed_at: profile
+                    .metadata
+                    .claimed_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                api_base_url: profile.api_base_url,
+                mqtt_url: profile.mqtt_connection.url,
+                mqtt_client_id: profile.mqtt_connection.client_id.to_string(),
+                mqtt_username: profile
+                    .mqtt_connection
+                    .username
+                    .map(|value| value.to_string()),
+                runtime_endpoints: decode!(profile.runtime_endpoints),
+                hardware_profile: decode!(profile.hardware_profile),
+                hardware_slot_topology: Some(HardwareSlotTopologyIdentity {
+                    identity: profile.hardware_model.to_string(),
+                    version: profile.hardware_slot_topology.version.to_string(),
+                }),
+                payment_capability: decode!(profile.payment_capability),
+                provisioning_metadata: ProvisioningMetadata {
+                    profile_version: profile.metadata.profile_version as i64,
+                    profile_revision: profile.metadata.profile_revision.get() as i64,
+                    claim_code_id: profile.metadata.claim_code_id.to_string(),
+                    claimed_at: profile
+                        .metadata
+                        .claimed_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    server_time: profile
+                        .metadata
+                        .server_time
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                },
+                provisioning_profile: Some("production".to_string()),
+                maintenance: self
+                    .state
+                    .get_metadata("machine_provisioning_maintenance_identity")
+                    .await
+                    .map_err(|error| error.to_string())?,
+            }));
+        }
         Self::read_optional_json(
             self.provisioning_profile_cache_summary_path(),
             "provisioning profile cache summary",
@@ -2348,12 +2419,49 @@ impl ConfigStore {
         .transpose()
     }
 
+    /// Persist only the small durable facts that couple an accepted Platform
+    /// profile to maintenance lifecycle recovery. The profile itself remains
+    /// owned by `CleanRuntimeConfigurationStore`.
+    pub async fn record_accepted_profile_metadata(
+        &self,
+        profile: &MachineProvisioningProfile,
+    ) -> Result<(), String> {
+        self.state
+            .put_metadata(
+                "machine_provisioning_claim_code_id",
+                &profile.metadata.claim_code_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.state
+            .put_metadata(
+                "machine_provisioning_profile_version",
+                &profile.metadata.profile_version.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.state
+            .put_metadata(
+                "machine_provisioning_claimed_at",
+                &profile.metadata.claimed_at,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.state
+            .put_metadata(
+                "machine_provisioning_maintenance_identity",
+                &profile.maintenance,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     fn apply_layered_public_config(
-        mut public: MachinePublicConfig,
+        mut public: EffectiveRuntimeConfig,
         factory_manifest: Option<&FactoryRuntimeManifest>,
         local_bring_up_settings: Option<&LocalBringUpSettings>,
         provisioning_profile_cache: Option<&ProvisioningProfileCacheSummary>,
-    ) -> Result<MachinePublicConfig, String> {
+    ) -> Result<EffectiveRuntimeConfig, String> {
         if let Some(manifest) = factory_manifest {
             public.api_base_url = manifest.provisioning_endpoint.clone();
         }
@@ -2382,7 +2490,7 @@ impl ConfigStore {
         &self,
     ) -> Result<
         (
-            MachinePublicConfig,
+            EffectiveRuntimeConfig,
             Option<FactoryRuntimeManifest>,
             Option<LocalBringUpSettings>,
             Option<ProvisioningProfileCacheSummary>,
@@ -2406,14 +2514,14 @@ impl ConfigStore {
         ))
     }
 
-    pub async fn load_effective_public_config(&self) -> Result<MachinePublicConfig, String> {
+    pub async fn load_effective_public_config(&self) -> Result<EffectiveRuntimeConfig, String> {
         let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
         Ok(public)
     }
 
     pub async fn load_effective_public_config_snapshot(
         &self,
-    ) -> Result<(MachinePublicConfig, u64), String> {
+    ) -> Result<(EffectiveRuntimeConfig, u64), String> {
         let _mutation = self.local_settings_mutation_lock.lock().await;
         let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
         Ok((
@@ -2422,7 +2530,7 @@ impl ConfigStore {
         ))
     }
 
-    async fn persist_snapshot(&self, public: &MachinePublicConfig) -> Result<(), String> {
+    async fn persist_snapshot(&self, public: &EffectiveRuntimeConfig) -> Result<(), String> {
         let secret_status = self.secrets.status().await?;
 
         let value = serde_json::to_value(public)
@@ -2459,7 +2567,7 @@ impl ConfigStore {
         })
     }
 
-    pub async fn load_public_config(&self) -> Result<MachinePublicConfig, String> {
+    pub async fn load_public_config(&self) -> Result<EffectiveRuntimeConfig, String> {
         let path = daemon_config_path(&self.data_dir);
         if !path.exists() {
             let default = default_public_config();
@@ -2482,8 +2590,8 @@ impl ConfigStore {
 
     pub async fn save_public_config(
         &self,
-        config: MachinePublicConfig,
-    ) -> Result<MachinePublicRuntimeConfig, String> {
+        config: EffectiveRuntimeConfig,
+    ) -> Result<EffectiveRuntimeConfigSummary, String> {
         let normalized = normalize_public_config(config)?;
         let mutation = self.local_settings_mutation_lock.lock().await;
         self.write_local_runtime_settings_from_public_config_unlocked(&normalized)
@@ -2496,7 +2604,7 @@ impl ConfigStore {
 
     async fn write_local_runtime_settings_from_public_config_unlocked(
         &self,
-        public: &MachinePublicConfig,
+        public: &EffectiveRuntimeConfig,
     ) -> Result<(), String> {
         let mut settings = self
             .load_local_bring_up_settings()
@@ -2524,7 +2632,10 @@ impl ConfigStore {
         self.write_local_bring_up_settings_unlocked(&settings).await
     }
 
-    async fn write_public_config_file(&self, public: &MachinePublicConfig) -> Result<(), String> {
+    async fn write_public_config_file(
+        &self,
+        public: &EffectiveRuntimeConfig,
+    ) -> Result<(), String> {
         fs::create_dir_all(&self.data_dir)
             .await
             .map_err(|error| format!("create daemon data dir failed: {error}"))?;
@@ -2671,9 +2782,9 @@ impl ConfigStore {
 
     async fn public_runtime_config(
         &self,
-        public: MachinePublicConfig,
-    ) -> Result<MachinePublicRuntimeConfig, String> {
-        Ok(MachinePublicRuntimeConfig {
+        public: EffectiveRuntimeConfig,
+    ) -> Result<EffectiveRuntimeConfigSummary, String> {
+        Ok(EffectiveRuntimeConfigSummary {
             public,
             machine_secret_configured: self
                 .secrets
@@ -2697,10 +2808,10 @@ impl ConfigStore {
         .with_provisioning_state())
     }
 
-    pub async fn save_config_update(
+    pub async fn apply_runtime_mutation(
         &self,
-        request: MachineConfigUpdateRequest,
-    ) -> Result<MachinePublicRuntimeConfig, String> {
+        request: RuntimeConfigurationMutationRequest,
+    ) -> Result<EffectiveRuntimeConfigSummary, String> {
         if let Some(secrets) = request.secrets {
             if let Some(value) = secrets
                 .machine_secret
@@ -2783,7 +2894,7 @@ impl ConfigStore {
     pub async fn apply_provisioning_profile(
         &self,
         profile: MachineProvisioningProfile,
-    ) -> Result<MachinePublicRuntimeConfig, String> {
+    ) -> Result<EffectiveRuntimeConfigSummary, String> {
         Self::validate_provisioning_profile(&profile)?;
         let factory_manifest = self.load_factory_manifest().await?;
         let local_bring_up_settings = self.load_local_bring_up_settings().await?;
@@ -3027,7 +3138,7 @@ impl ConfigStore {
     }
 }
 
-fn parse_persisted_public_config(content: &str) -> Result<(MachinePublicConfig, bool), String> {
+fn parse_persisted_public_config(content: &str) -> Result<(EffectiveRuntimeConfig, bool), String> {
     let mut value: serde_json::Value = serde_json::from_str(content)
         .map_err(|error| format!("parse daemon config failed: {error}"))?;
     let mut migrated = false;
@@ -3349,7 +3460,7 @@ mod tests {
 
     #[tokio::test]
     async fn normalize_public_config_validates_required_fields() {
-        let serial_missing = MachinePublicConfig {
+        let serial_missing = EffectiveRuntimeConfig {
             serial_port_path: None,
             lower_controller_usb_identity: None,
             hardware_adapter: HardwareAdapterKind::Serial,
@@ -3358,10 +3469,10 @@ mod tests {
         let err = normalize_public_config(serial_missing).unwrap_err();
         assert_eq!(
             err,
-            "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial"
+            "lowerControllerUsbIdentity or localPortObservation is required when hardwareAdapter=serial"
         );
 
-        let unsupported_hardware = MachinePublicConfig {
+        let unsupported_hardware = EffectiveRuntimeConfig {
             hardware_adapter: HardwareAdapterKind::Bluetooth,
             ..default_public_config()
         };
@@ -3371,7 +3482,7 @@ mod tests {
             "hardwareAdapter must be mock or serial; bluetooth/vendor_sdk are not planned or implemented"
         );
 
-        let scanner_missing = MachinePublicConfig {
+        let scanner_missing = EffectiveRuntimeConfig {
             scanner_adapter: ScannerAdapterKind::SerialText,
             scanner_serial_port_path: None,
             scanner_usb_identity: None,
@@ -3380,13 +3491,13 @@ mod tests {
         let err = normalize_public_config(scanner_missing).unwrap_err();
         assert_eq!(
             err,
-            "scannerSerialPortPath or scannerUsbIdentity is required when scannerAdapter=serial_text"
+            "scannerPortObservation or scannerUsbIdentity is required when scannerAdapter=serial_text"
         );
     }
 
     #[tokio::test]
     async fn normalize_public_config_clamps_stock_movement_retention_to_at_least_one_day() {
-        let config = MachinePublicConfig {
+        let config = EffectiveRuntimeConfig {
             stock_movement_retention_days: 0,
             ..default_public_config()
         };
@@ -3396,7 +3507,7 @@ mod tests {
 
     #[tokio::test]
     async fn normalize_public_config_clamps_stock_movement_retention_to_safe_upper_bound() {
-        let config = MachinePublicConfig {
+        let config = EffectiveRuntimeConfig {
             stock_movement_retention_days: i64::MAX,
             ..default_public_config()
         };
@@ -3415,10 +3526,10 @@ mod tests {
             "mqttUrl": "mqtt://127.0.0.1:1883",
             "mqttUsername": null,
             "hardwareAdapter": "mock",
-            "serialPortPath": null,
+            "localPortObservation": null,
             "lowerControllerUsbIdentity": null,
             "scannerAdapter": "disabled",
-            "scannerSerialPortPath": null,
+            "scannerPortObservation": null,
             "scannerBaudRate": 9600,
             "scannerFrameSuffix": "crlf",
             "visionEnabled": false,
@@ -3426,7 +3537,7 @@ mod tests {
             "visionRequestTimeoutMs": 8000,
             "kioskMode": false
         });
-        let config: MachinePublicConfig = serde_json::from_value(json).expect("parse");
+        let config: EffectiveRuntimeConfig = serde_json::from_value(json).expect("parse");
         assert!(!config.vision_enabled);
     }
 
@@ -3438,10 +3549,10 @@ mod tests {
             "mqttUrl": "mqtt://127.0.0.1:1883",
             "mqttUsername": null,
             "hardwareAdapter": "mock",
-            "serialPortPath": null,
+            "localPortObservation": null,
             "lowerControllerUsbIdentity": null,
             "scannerAdapter": "disabled",
-            "scannerSerialPortPath": null,
+            "scannerPortObservation": null,
             "scannerBaudRate": 9600,
             "scannerFrameSuffix": "crlf",
             "visionEnabled": false,
@@ -3451,7 +3562,7 @@ mod tests {
             "kioskMode": false
         });
 
-        let config: MachinePublicConfig = serde_json::from_value(json).expect("parse");
+        let config: EffectiveRuntimeConfig = serde_json::from_value(json).expect("parse");
         let normalized = normalize_public_config(config).expect("normalize");
 
         assert_eq!(
@@ -3487,7 +3598,7 @@ mod tests {
 
     #[tokio::test]
     async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
-        let config = MachinePublicConfig {
+        let config = EffectiveRuntimeConfig {
             stock_movement_retention_days: 90,
             ..default_public_config()
         };
@@ -3496,7 +3607,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_config_update_accepts_but_drops_legacy_try_on_camera_device_id() {
+    async fn apply_runtime_mutation_accepts_but_drops_legacy_try_on_camera_device_id() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -3507,8 +3618,8 @@ mod tests {
             state,
             std::sync::Arc::new(InMemorySecretStore::default()),
         );
-        let request = MachineConfigUpdateRequest {
-            public: MachinePublicConfig {
+        let request = RuntimeConfigurationMutationRequest {
+            public: EffectiveRuntimeConfig {
                 try_on_camera_device_id: Some(" try-on-camera-1 ".to_string()),
                 ..default_public_config()
             },
@@ -3516,7 +3627,7 @@ mod tests {
         };
 
         let runtime = store
-            .save_config_update(request)
+            .apply_runtime_mutation(request)
             .await
             .expect("save config update");
         let reloaded = store.load_runtime_config().await.expect("reload config");
@@ -3642,7 +3753,7 @@ mod tests {
             state,
             std::sync::Arc::new(InMemorySecretStore::default()),
         );
-        let saved = MachinePublicConfig {
+        let saved = EffectiveRuntimeConfig {
             api_base_url: " https://production-api.example.com/api/ ".to_string(),
             ..default_public_config()
         };
@@ -3671,10 +3782,10 @@ mod tests {
             local_bring_up_settings_path(&data_dir),
             serde_json::json!({
                 "hardwareAdapter": "serial",
-                "serialPortPath": "COM1",
+                "localPortObservation": "COM1",
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "serial_text",
-                "scannerSerialPortPath": "COM2",
+                "scannerPortObservation": "COM2",
                 "scannerUsbIdentity": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf"
@@ -3747,7 +3858,7 @@ mod tests {
             }
         }))
         .expect("strict production factory manifest");
-        assert_eq!(manifest.environment, FactoryProfile::Production);
+        assert_eq!(manifest.environment, RuntimePaymentPolicy::Production);
 
         let label_error = serde_json::from_value::<FactoryRuntimeManifest>(serde_json::json!({
             "layoutVersion": 1,
@@ -3784,9 +3895,9 @@ mod tests {
         };
         let projection: serde_json::Value =
             serde_json::from_str(&raw).expect("PowerShell boundary projection JSON");
-        let expected_profile = projection["factoryProfile"]
+        let expected_profile = projection["runtimePaymentPolicy"]
             .as_str()
-            .expect("projection FactoryProfile");
+            .expect("projection RuntimePaymentPolicy");
         let daemon_manifest = projection["daemonFactoryManifest"].clone();
         let daemon_object = daemon_manifest
             .as_object()
@@ -3916,10 +4027,10 @@ mod tests {
                 "mqttUrl": "mqtt://legacy-broker.example:1883",
                 "mqttUsername": null,
                 "hardwareAdapter": "mock",
-                "serialPortPath": null,
+                "localPortObservation": null,
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "disabled",
-                "scannerSerialPortPath": null,
+                "scannerPortObservation": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf",
                 "visionEnabled": false,
@@ -4168,10 +4279,10 @@ mod tests {
                 "mqttUrl": "mqtt://legacy-broker.example:1883",
                 "mqttUsername": null,
                 "hardwareAdapter": "mock",
-                "serialPortPath": null,
+                "localPortObservation": null,
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "disabled",
-                "scannerSerialPortPath": null,
+                "scannerPortObservation": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf",
                 "visionEnabled": false,
@@ -4201,7 +4312,7 @@ mod tests {
 
     #[test]
     fn reported_runtime_configuration_projects_only_safe_machine_owned_facts() {
-        let public = MachinePublicConfig {
+        let public = EffectiveRuntimeConfig {
             machine_audio_volume: 0.72,
             vision_enabled: false,
             vision_ws_url: "ws://127.0.0.1:7892/ws".to_string(),
@@ -4225,7 +4336,7 @@ mod tests {
         assert!(!summary.vision_recommendations_enabled);
         let serialized = serde_json::to_string(&summary).expect("serialize");
         assert!(!serialized.contains("visionWsUrl"));
-        assert!(!serialized.contains("serialPortPath"));
+        assert!(!serialized.contains("localPortObservation"));
         assert!(!serialized.contains("apiBaseUrl"));
         assert!(!serialized.contains("mqtt"));
     }
@@ -4281,7 +4392,7 @@ mod tests {
             .expect("daemon dir");
         tokio::fs::write(
             daemon_config_path(&data_dir),
-            serde_json::to_string(&MachinePublicConfig {
+            serde_json::to_string(&EffectiveRuntimeConfig {
                 api_base_url: "https://factory.example.com/api".to_string(),
                 ..default_public_config()
             })
@@ -4410,7 +4521,7 @@ mod tests {
         let secrets = Arc::new(ProtectedLocalSecretStore::new(data_dir.clone()));
         let store = ConfigStore::new(data_dir.clone(), state, secrets.clone());
         store
-            .save_public_config(MachinePublicConfig {
+            .save_public_config(EffectiveRuntimeConfig {
                 api_base_url: "https://factory.example.com/api".to_string(),
                 ..default_public_config()
             })
@@ -4764,7 +4875,7 @@ mod tests {
         old_profile.metadata.server_time = "2026-06-07T16:30:00.000Z".to_string();
         let old_claim_code_id = old_profile.metadata.claim_code_id.clone();
         store
-            .save_public_config(MachinePublicConfig {
+            .save_public_config(EffectiveRuntimeConfig {
                 machine_id: Some(old_profile.machine.id.clone()),
                 machine_code: Some(old_profile.machine.code.clone()),
                 machine_name: Some(old_profile.machine.name.clone()),
@@ -4884,10 +4995,10 @@ mod tests {
                 "mqttUrl": "mqtt://127.0.0.1:1883",
                 "mqttUsername": null,
                 "hardwareAdapter": "mock",
-                "serialPortPath": null,
+                "localPortObservation": null,
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "disabled",
-                "scannerSerialPortPath": null,
+                "scannerPortObservation": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf",
                 "visionEnabled": false,
@@ -4937,10 +5048,10 @@ mod tests {
                 "mqttUrl": "mqtt://127.0.0.1:1883",
                 "mqttUsername": null,
                 "hardwareAdapter": "mock",
-                "serialPortPath": null,
+                "localPortObservation": null,
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "disabled",
-                "scannerSerialPortPath": null,
+                "scannerPortObservation": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf",
                 "visionEnabled": false,
@@ -4995,10 +5106,10 @@ mod tests {
                 "mqttUrl": "mqtt://127.0.0.1:1883",
                 "mqttUsername": null,
                 "hardwareAdapter": "mock",
-                "serialPortPath": null,
+                "localPortObservation": null,
                 "lowerControllerUsbIdentity": null,
                 "scannerAdapter": "disabled",
-                "scannerSerialPortPath": null,
+                "scannerPortObservation": null,
                 "scannerBaudRate": 9600,
                 "scannerFrameSuffix": "crlf",
                 "visionEnabled": false,
@@ -5039,7 +5150,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_config_update_saves_secrets_flags_and_redacts_runtime_response() {
+    async fn apply_runtime_mutation_saves_secrets_flags_and_redacts_runtime_response() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -5051,7 +5162,7 @@ mod tests {
             state.clone(),
             std::sync::Arc::new(secrets),
         );
-        let request = MachineConfigUpdateRequest {
+        let request = RuntimeConfigurationMutationRequest {
             public: default_public_config(),
             secrets: Some(MachineConfigSecretsUpdate {
                 machine_secret: Some("machine-secret".to_string()),
@@ -5060,7 +5171,7 @@ mod tests {
             }),
         };
         let runtime = store
-            .save_config_update(request)
+            .apply_runtime_mutation(request)
             .await
             .expect("save config update");
         assert!(runtime.machine_secret_configured);
@@ -5086,7 +5197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_config_update_round_trips_audio_cue_settings() {
+    async fn apply_runtime_mutation_round_trips_audio_cue_settings() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -5097,8 +5208,8 @@ mod tests {
             state,
             std::sync::Arc::new(InMemorySecretStore::default()),
         );
-        let request = MachineConfigUpdateRequest {
-            public: MachinePublicConfig {
+        let request = RuntimeConfigurationMutationRequest {
+            public: EffectiveRuntimeConfig {
                 audio_cue_settings: AudioCueSettings {
                     enabled: true,
                     categories: AudioCueCategorySettings {
@@ -5112,7 +5223,7 @@ mod tests {
         };
 
         let runtime = store
-            .save_config_update(request)
+            .apply_runtime_mutation(request)
             .await
             .expect("save config update");
         let reloaded = store.load_runtime_config().await.expect("reload config");
@@ -5143,7 +5254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_config_update_round_trips_machine_audio_volume() {
+    async fn apply_runtime_mutation_round_trips_machine_audio_volume() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -5154,8 +5265,8 @@ mod tests {
             state,
             std::sync::Arc::new(InMemorySecretStore::default()),
         );
-        let request = MachineConfigUpdateRequest {
-            public: MachinePublicConfig {
+        let request = RuntimeConfigurationMutationRequest {
+            public: EffectiveRuntimeConfig {
                 machine_audio_volume: 0.35,
                 ..default_public_config()
             },
@@ -5163,7 +5274,7 @@ mod tests {
         };
 
         let runtime = store
-            .save_config_update(request)
+            .apply_runtime_mutation(request)
             .await
             .expect("save config update");
         let reloaded = store.load_runtime_config().await.expect("reload config");
@@ -5436,15 +5547,16 @@ mod tests {
 
     #[test]
     fn config_update_accepts_snake_case_secret_aliases() {
-        let request: MachineConfigUpdateRequest = serde_json::from_value(serde_json::json!({
-            "public": default_public_config(),
-            "secrets": {
-                "machine_secret": "machine-secret",
-                "mqtt_signing_secret": "signing-secret",
-                "mqtt_password": "password"
-            }
-        }))
-        .expect("request");
+        let request: RuntimeConfigurationMutationRequest =
+            serde_json::from_value(serde_json::json!({
+                "public": default_public_config(),
+                "secrets": {
+                    "machine_secret": "machine-secret",
+                    "mqtt_signing_secret": "signing-secret",
+                    "mqtt_password": "password"
+                }
+            }))
+            .expect("request");
 
         let secrets = request.secrets.expect("secrets");
         assert_eq!(secrets.machine_secret.as_deref(), Some("machine-secret"));

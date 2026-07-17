@@ -138,8 +138,8 @@ impl Default for SerialDeviceRoleProbeConfig {
     }
 }
 
-impl From<&crate::config::MachinePublicConfig> for SerialDeviceRoleProbeConfig {
-    fn from(config: &crate::config::MachinePublicConfig) -> Self {
+impl From<&crate::config::EffectiveRuntimeConfig> for SerialDeviceRoleProbeConfig {
+    fn from(config: &crate::config::EffectiveRuntimeConfig) -> Self {
         Self {
             scanner_baud_rate: config.scanner_baud_rate,
             scanner_frame_suffix: config.scanner_frame_suffix,
@@ -672,7 +672,7 @@ pub fn project_role_binding(
 }
 
 pub fn apply_resolved_binding_to_runtime_config(
-    config: &mut crate::config::MachinePublicConfig,
+    config: &mut crate::config::EffectiveRuntimeConfig,
     role: LocalDeviceRole,
     binding: &LocalSerialRoleBinding,
     observed: &[ObservedSerialDevice],

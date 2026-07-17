@@ -107,7 +107,26 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
         "degraded"
     );
 
-    store.clear_claim().await.expect("local reset");
+    tokio::fs::create_dir_all(
+        store
+            .profile_cache_path()
+            .parent()
+            .expect("settings parent"),
+    )
+    .await
+    .expect("settings parent");
+    tokio::fs::write(
+        store
+            .profile_cache_path()
+            .parent()
+            .expect("settings parent")
+            .join("local-settings.json"),
+        r#"{"schemaVersion":1,"revision":1,"lowerControllerBinding":null,"scannerBinding":null,"scannerProtocol":null,"audio":{"volume":0.7,"cuesEnabled":false,"presenceCuesEnabled":false,"transactionCuesEnabled":false}}"#,
+    )
+    .await
+    .expect("local settings");
+
+    store.reset_local_runtime().await.expect("local reset");
     assert!(store
         .load_profile_cache()
         .await
@@ -116,6 +135,15 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
     assert!(tokio::fs::try_exists(bootstrap_path)
         .await
         .expect("bootstrap exists"));
+    assert!(!tokio::fs::try_exists(
+        store
+            .profile_cache_path()
+            .parent()
+            .expect("settings parent")
+            .join("local-settings.json"),
+    )
+    .await
+    .expect("local settings removed"));
     assert!(vending_daemon::secret::SecretStore::read_secret(
         secrets.as_ref(),
         vending_daemon::secret::MACHINE_SECRET_ACCOUNT,

@@ -236,6 +236,18 @@ impl CleanRuntimeConfigurationStore {
         Ok(())
     }
 
+    /// A local reset removes every daemon-owned configuration document and
+    /// claim credential. The deployment-owned Runtime Bootstrap is never a
+    /// reset target.
+    pub async fn reset_local_runtime(&self) -> Result<(), String> {
+        self.clear_claim().await?;
+        self.local_settings.clear().await?;
+        remove_optional_file(&self.profile_refresh_state_path()).await?;
+        self.clear_refresh_error().await;
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     pub async fn effective_projection(
         &self,
     ) -> Result<EffectiveMachineRuntimeConfiguration, String> {

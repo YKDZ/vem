@@ -1,4 +1,4 @@
-use crate::config::MachinePublicConfig;
+use crate::config::EffectiveRuntimeConfig;
 
 #[derive(Debug, Clone)]
 pub struct VisionRuntimeSnapshot {
@@ -69,11 +69,11 @@ impl VisionRuntimeSnapshot {
 }
 
 pub struct VisionSupervisor {
-    config: MachinePublicConfig,
+    config: EffectiveRuntimeConfig,
 }
 
 impl VisionSupervisor {
-    pub fn new(config: MachinePublicConfig) -> Self {
+    pub fn new(config: EffectiveRuntimeConfig) -> Self {
         Self { config }
     }
 
@@ -106,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn vision_disabled_does_not_block_ready() {
-        let config = crate::config::MachinePublicConfig {
+        let config = crate::config::EffectiveRuntimeConfig {
             vision_enabled: false,
             ..crate::config::default_public_config()
         };
@@ -119,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn vision_connect_fails_when_no_server_is_running() {
-        let config = crate::config::MachinePublicConfig {
+        let config = crate::config::EffectiveRuntimeConfig {
             vision_enabled: true,
             vision_ws_url: "ws://127.0.0.1:0/ws".to_string(),
             ..crate::config::default_public_config()

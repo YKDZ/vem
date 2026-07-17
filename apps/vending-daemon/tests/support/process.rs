@@ -64,7 +64,7 @@ impl DaemonHarness {
 
         let ready_file = data_dir.join("daemon-ready.json");
         tokio::fs::write(
-            data_dir.join("machine-config.json"),
+            data_dir.join("runtime-input.json"),
             serde_json::to_vec_pretty(&public_config).map_err(|error| error.to_string())?,
         )
         .await
@@ -241,10 +241,10 @@ async fn write_layered_runtime_test_config(
         "provisioningEndpointOverride",
     );
     copy_value(public_config, &mut local, "hardwareAdapter");
-    copy_value(public_config, &mut local, "serialPortPath");
+    copy_value(public_config, &mut local, "localPortObservation");
     copy_value(public_config, &mut local, "lowerControllerUsbIdentity");
     copy_value(public_config, &mut local, "scannerAdapter");
-    copy_value(public_config, &mut local, "scannerSerialPortPath");
+    copy_value(public_config, &mut local, "scannerPortObservation");
     copy_value(public_config, &mut local, "scannerUsbIdentity");
     copy_value(public_config, &mut local, "scannerBaudRate");
     copy_value(public_config, &mut local, "scannerFrameSuffix");
@@ -291,6 +291,7 @@ async fn write_layered_runtime_test_config(
             .unwrap_or(Value::Null);
         let profile = json!({
             "profileVersion": 1,
+            "profileRevision": 1,
             "machineId": "550e8400-e29b-41d4-a716-446655440000",
             "machineCode": machine_code,
             "machineName": public_config.get("machineName").and_then(Value::as_str).unwrap_or("Test Machine"),
@@ -325,6 +326,7 @@ async fn write_layered_runtime_test_config(
             })),
             "provisioningMetadata": {
                 "profileVersion": 1,
+                "profileRevision": 1,
                 "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                 "claimedAt": "2026-07-08T00:00:00.000Z",
                 "serverTime": "2026-07-08T00:00:00.000Z"

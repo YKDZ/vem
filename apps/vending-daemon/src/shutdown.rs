@@ -225,13 +225,6 @@ async fn run_console_cycle(
         runtime_tx: tx_raw.clone(),
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
-        audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
-        audio_output_playback: Arc::new(crate::audio_output::WindowsAudioOutputPlayback::default()),
-        audio_output_calibration_lock: Arc::new(tokio::sync::Mutex::new(())),
-        audio_output_observation_generation: Arc::new(
-            crate::ipc::AudioOutputObservationGenerationTracker::default(),
-        ),
-        audio_output_test_evidence: Arc::new(ipc::AudioOutputTestEvidenceStore::default()),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
@@ -406,9 +399,8 @@ async fn run_device_binding_watch(
             _ = shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {}
         }
-        let settings = match config_store.load_local_bring_up_settings().await {
-            Ok(Some(settings)) => settings,
-            Ok(None) => continue,
+        let settings = match config_store.load_local_runtime_settings().await {
+            Ok(settings) => settings,
             Err(error) => {
                 record_binding_watch_retry(
                     &status_cache,
@@ -631,7 +623,7 @@ async fn record_binding_watch_retry(
 }
 
 fn maybe_spawn_mqtt_task(
-    runtime_config: &crate::config::MachinePublicConfig,
+    runtime_config: &crate::config::EffectiveRuntimeConfig,
     runtime_secrets: &crate::config::MachineRuntimeSecrets,
     hardware: &HardwareSupervisor,
     events: broadcast::Sender<DaemonEvent>,

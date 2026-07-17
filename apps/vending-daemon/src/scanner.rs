@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use vending_core::serial::SerialPortUsbIdentity;
 
-use crate::config::{MachinePublicConfig, ScannerAdapterKind};
+use crate::config::{EffectiveRuntimeConfig, ScannerAdapterKind};
 use crate::events::DaemonEvent;
 
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ pub struct ScannerRuntimeController {
 }
 
 struct RunningScannerRuntime {
-    config: MachinePublicConfig,
+    config: EffectiveRuntimeConfig,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<Result<(), String>>,
 }
@@ -51,7 +51,7 @@ impl ScannerRuntimeController {
 
     pub async fn reconfigure_from_config(
         &self,
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
     ) -> Result<(), String> {
         let mut state = self.state.lock().await;
         let previous_config = state.as_ref().map(|running| running.config.clone());
@@ -87,7 +87,7 @@ impl ScannerRuntimeController {
     /// Starts the scanner as an independently degraded runtime. Unlike a
     /// maintenance binding activation, daemon startup must not fail merely
     /// because the optional scanner is unplugged or temporarily unavailable.
-    pub async fn start_from_config(&self, config: &MachinePublicConfig) -> Result<(), String> {
+    pub async fn start_from_config(&self, config: &EffectiveRuntimeConfig) -> Result<(), String> {
         let mut state = self.state.lock().await;
         if let Some(running) = state.take() {
             running.shutdown.cancel();
@@ -114,7 +114,7 @@ impl ScannerRuntimeController {
 
     async fn start_runtime(
         &self,
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
     ) -> Result<RunningScannerRuntime, String> {
         let shutdown = CancellationToken::new();
         let mut health_events = self.tx_events.subscribe();
@@ -178,7 +178,7 @@ impl ScannerRuntimeController {
 
 impl ScannerRuntime {
     pub fn from_config(
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
         tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
         tx_events: broadcast::Sender<DaemonEvent>,
         shutdown: CancellationToken,
@@ -420,7 +420,7 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let shutdown = CancellationToken::new();
 
-        let config = crate::config::MachinePublicConfig {
+        let config = crate::config::EffectiveRuntimeConfig {
             scanner_adapter: ScannerAdapterKind::Disabled,
             ..default_public_config()
         };
@@ -445,7 +445,7 @@ mod tests {
         let (raw_tx, mut raw_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let shutdown = CancellationToken::new();
-        let config = crate::config::MachinePublicConfig {
+        let config = crate::config::EffectiveRuntimeConfig {
             scanner_adapter: ScannerAdapterKind::SerialText,
             scanner_serial_port_path: Some("/dev/vem-missing-scanner".to_string()),
             ..default_public_config()
@@ -477,7 +477,7 @@ mod tests {
         let (raw_tx, _raw_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(16);
         let controller = ScannerRuntimeController::new(raw_tx, event_tx);
-        let disabled = crate::config::MachinePublicConfig {
+        let disabled = crate::config::EffectiveRuntimeConfig {
             scanner_adapter: ScannerAdapterKind::Disabled,
             ..default_public_config()
         };
@@ -487,7 +487,7 @@ mod tests {
             .expect("start previous disabled runtime");
         let _ = event_rx.recv().await.expect("initial disabled event");
 
-        let missing = crate::config::MachinePublicConfig {
+        let missing = crate::config::EffectiveRuntimeConfig {
             scanner_adapter: ScannerAdapterKind::SerialText,
             scanner_serial_port_path: Some("/dev/vem-missing-scanner".to_string()),
             ..default_public_config()

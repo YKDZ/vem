@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::{MachinePublicRuntimeConfig, RuntimeHardwareMode};
+use crate::config::{EffectiveRuntimeConfigSummary, RuntimeHardwareMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -186,7 +186,7 @@ pub struct BringUpSnapshot {
 
 #[derive(Debug, Clone, Default)]
 pub struct BringUpEvaluationInput {
-    pub config: Option<MachinePublicRuntimeConfig>,
+    pub config: Option<EffectiveRuntimeConfigSummary>,
     pub config_error: Option<String>,
     pub hardware_mode: BringUpHardwareMode,
     pub platform_reachable: bool,
@@ -627,13 +627,13 @@ fn safe_diagnostic(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        default_public_config, MachinePublicRuntimeConfig, ProductionControllerProfile,
+        default_public_config, EffectiveRuntimeConfigSummary, ProductionControllerProfile,
         ProductionMachineHardwareProfile, ProductionPaymentScannerProfile, ProductionVisionProfile,
         ProvisioningRuntimeEndpoints,
     };
 
-    fn public_config() -> MachinePublicRuntimeConfig {
-        MachinePublicRuntimeConfig {
+    fn public_config() -> EffectiveRuntimeConfigSummary {
+        EffectiveRuntimeConfigSummary {
             public: default_public_config(),
             machine_secret_configured: false,
             mqtt_signing_secret_configured: false,
@@ -644,7 +644,7 @@ mod tests {
         }
     }
 
-    fn provisioned_config() -> MachinePublicRuntimeConfig {
+    fn provisioned_config() -> EffectiveRuntimeConfigSummary {
         let mut config = public_config();
         config.public.machine_code = Some("MACHINE-1".to_string());
         config.public.machine_id = Some("550e8400-e29b-41d4-a716-446655440000".to_string());
@@ -664,7 +664,7 @@ mod tests {
         config
     }
 
-    fn production_config() -> MachinePublicRuntimeConfig {
+    fn production_config() -> EffectiveRuntimeConfigSummary {
         let mut config = provisioned_config();
         config.public.hardware_profile = Some(ProductionMachineHardwareProfile {
             profile: "production".to_string(),

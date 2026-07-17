@@ -100,7 +100,7 @@ mod tests {
             state.clone(),
             Arc::new(InMemorySecretStore::default()),
         ));
-        let public = crate::config::MachinePublicConfig {
+        let public = crate::config::EffectiveRuntimeConfig {
             stock_movement_retention_days: i64::MAX,
             ..default_public_config()
         };
@@ -147,7 +147,7 @@ mod tests {
             state.clone(),
             Arc::new(InMemorySecretStore::default()),
         ));
-        let public = crate::config::MachinePublicConfig {
+        let public = crate::config::EffectiveRuntimeConfig {
             stock_movement_retention_days: 1,
             ..default_public_config()
         };

@@ -7,7 +7,6 @@ pub mod events;
 pub mod hardware;
 pub mod health;
 pub mod ipc;
-pub mod local_runtime_reset;
 pub mod local_runtime_settings;
 pub mod logs;
 pub mod maintenance;

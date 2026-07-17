@@ -8,7 +8,7 @@ use vending_core::{
     hardware::HardwareAdapter, serial::EnvironmentSample,
 };
 
-use crate::config::{HardwareAdapterKind, MachinePublicConfig};
+use crate::config::{EffectiveRuntimeConfig, HardwareAdapterKind};
 
 #[derive(Clone)]
 pub struct HardwareSupervisor {
@@ -22,12 +22,12 @@ impl HardwareSupervisor {
         }
     }
 
-    pub fn from_config(config: &MachinePublicConfig) -> Result<Self, String> {
+    pub fn from_config(config: &EffectiveRuntimeConfig) -> Result<Self, String> {
         Self::from_config_with_protocol_log(config, None)
     }
 
     pub fn from_config_with_protocol_log(
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
         protocol_log_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let adapter = Self::build_adapter(config, protocol_log_path)?;
@@ -36,7 +36,7 @@ impl HardwareSupervisor {
     }
 
     fn build_adapter(
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
         protocol_log_path: Option<PathBuf>,
     ) -> Result<Arc<dyn HardwareAdapter>, String> {
         let adapter: Arc<dyn HardwareAdapter> = match config.hardware_adapter {
@@ -61,7 +61,7 @@ impl HardwareSupervisor {
 
     pub async fn reconfigure_from_config(
         &self,
-        config: &MachinePublicConfig,
+        config: &EffectiveRuntimeConfig,
         protocol_log_path: Option<PathBuf>,
     ) -> Result<vending_core::hardware::HardwareStatus, String> {
         let replacement = Self::build_adapter(config, protocol_log_path)?;

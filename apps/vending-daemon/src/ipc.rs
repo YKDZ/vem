@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::{
     backend::BackendClient,
-    config::{ConfigStore, MachinePublicConfig, ProductionMachinePaymentCapability},
+    config::{ConfigStore, EffectiveRuntimeConfig, ProductionMachinePaymentCapability},
     events::{scanner_runtime_status_contract, DaemonEvent},
     hardware::HardwareSupervisor,
     logs,
@@ -93,223 +93,10 @@ struct DeviceBindingTestResponse {
     config_revision: String,
 }
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AudioOutputBindingSnapshot {
-    binding: Option<crate::config::MachineAudioOutputBinding>,
-    current_observation: Option<crate::audio_output::AudioOutputObservation>,
-    observation_revision: String,
-    candidates: Vec<crate::audio_output::AudioOutputObservation>,
-    ready: bool,
-    code: &'static str,
-    message: String,
-}
-
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VisionCameraMaintenanceCandidateRequest {
     candidate_id: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestAudioOutputRequest {
-    endpoint_id: String,
-    audio_cue_settings: crate::config::AudioCueSettings,
-    machine_audio_volume: f64,
-    challenge: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ConfirmAudioOutputRequest {
-    endpoint_id: String,
-    test_evidence_token: String,
-    heard: bool,
-    audio_cue_settings: crate::config::AudioCueSettings,
-    machine_audio_volume: f64,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AudioOutputTestResponse {
-    endpoint_id: String,
-    test_evidence_token: String,
-    test_evidence_expires_at: String,
-    observation_revision: String,
-    observation_generation: u64,
-    config_revision: String,
-    config_generation: u64,
-    proposed_settings_digest: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    challenge: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct AudioOutputTestEvidence {
-    session_generation: String,
-    endpoint_id: String,
-    observation_revision: String,
-    observation_generation: u64,
-    effective_config_revision: String,
-    effective_config_generation: u64,
-    proposed_settings_digest: String,
-    expires_at: Instant,
-}
-
-#[derive(Debug)]
-pub(crate) struct AudioOutputTestEvidenceStore {
-    entries: Mutex<HashMap<String, AudioOutputTestEvidence>>,
-    ttl: Duration,
-}
-
-impl Default for AudioOutputTestEvidenceStore {
-    fn default() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-            ttl: Duration::from_secs(60),
-        }
-    }
-}
-
-impl AudioOutputTestEvidenceStore {
-    #[cfg(test)]
-    fn with_ttl(ttl: Duration) -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-            ttl,
-        }
-    }
-
-    async fn issue(
-        &self,
-        session_generation: String,
-        endpoint_id: String,
-        observation_revision: String,
-        observation_generation: u64,
-        effective_config_revision: String,
-        effective_config_generation: u64,
-        proposed_settings_digest: String,
-    ) -> (String, String) {
-        let token = uuid::Uuid::new_v4().to_string();
-        let expires_at = Instant::now() + self.ttl;
-        self.entries.lock().await.insert(
-            token.clone(),
-            AudioOutputTestEvidence {
-                session_generation,
-                endpoint_id,
-                observation_revision,
-                observation_generation,
-                effective_config_revision,
-                effective_config_generation,
-                proposed_settings_digest,
-                expires_at,
-            },
-        );
-        let expires_at_wall = chrono::Utc::now()
-            + chrono::Duration::from_std(self.ttl)
-                .unwrap_or_else(|_| chrono::Duration::seconds(60));
-        (token, expires_at_wall.to_rfc3339())
-    }
-
-    async fn consume(
-        &self,
-        token: &str,
-        session_generation: &str,
-        endpoint_id: &str,
-        observation_revision: &str,
-        observation_generation: u64,
-        effective_config_revision: &str,
-        effective_config_generation: u64,
-        proposed_settings_digest: &str,
-    ) -> Result<AudioOutputTestEvidence, (&'static str, String)> {
-        let mut entries = self.entries.lock().await;
-        entries.retain(|_, evidence| evidence.expires_at > Instant::now());
-        let Some(evidence) = entries.remove(token) else {
-            return Err((
-                "audio_output_test_evidence_invalid",
-                "audio output test evidence is missing, expired, or already consumed".to_string(),
-            ));
-        };
-        if evidence.session_generation != session_generation {
-            return Err((
-                "audio_output_test_evidence_session_changed",
-                "audio output test evidence belongs to a different maintenance session".to_string(),
-            ));
-        }
-        if evidence.endpoint_id != endpoint_id {
-            return Err((
-                "audio_output_test_evidence_target_changed",
-                "selected audio output changed after test playback".to_string(),
-            ));
-        }
-        if evidence.observation_revision != observation_revision {
-            return Err((
-                "audio_output_test_evidence_observation_changed",
-                "audio output observation changed after test playback; test again".to_string(),
-            ));
-        }
-        if evidence.observation_generation != observation_generation {
-            return Err((
-                "audio_output_test_evidence_observation_changed",
-                "audio output observation generation changed after test playback; test again"
-                    .to_string(),
-            ));
-        }
-        if evidence.effective_config_revision != effective_config_revision {
-            return Err((
-                "audio_output_test_evidence_effective_config_changed",
-                "effective daemon configuration changed after test playback; test again"
-                    .to_string(),
-            ));
-        }
-        if evidence.effective_config_generation != effective_config_generation {
-            return Err((
-                "audio_output_test_evidence_effective_config_changed",
-                "effective daemon configuration generation changed after test playback; test again"
-                    .to_string(),
-            ));
-        }
-        if evidence.proposed_settings_digest != proposed_settings_digest {
-            return Err((
-                "audio_output_test_evidence_config_changed",
-                "audio settings changed after test playback; test again".to_string(),
-            ));
-        }
-        Ok(evidence)
-    }
-
-    async fn restore(&self, token: String, evidence: AudioOutputTestEvidence) {
-        if evidence.expires_at <= Instant::now() {
-            return;
-        }
-        self.entries.lock().await.entry(token).or_insert(evidence);
-    }
-}
-
-#[derive(Debug, Default)]
-struct AudioOutputObservationGenerationState {
-    revision: Option<String>,
-    generation: u64,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct AudioOutputObservationGenerationTracker {
-    state: std::sync::Mutex<AudioOutputObservationGenerationState>,
-}
-
-impl AudioOutputObservationGenerationTracker {
-    fn observe(&self, revision: &str) -> Result<u64, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "audio output observation generation is unavailable".to_string())?;
-        if state.revision.as_deref() != Some(revision) {
-            state.generation = state.generation.saturating_add(1);
-            state.revision = Some(revision.to_string());
-        }
-        Ok(state.generation)
-    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1034,7 +821,7 @@ pub struct RuntimeStatusCache {
 }
 
 impl RuntimeStatusCache {
-    pub async fn new(public: &MachinePublicConfig, state: LocalStateStore) -> Self {
+    pub async fn new(public: &EffectiveRuntimeConfig, state: LocalStateStore) -> Self {
         let outbox_size = state.outbox_size().await.unwrap_or_default() as usize;
         Self {
             sync: Arc::new(tokio::sync::RwLock::new(
@@ -1128,11 +915,6 @@ pub struct IpcContext {
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     pub scanner_runtime: crate::scanner::ScannerRuntimeController,
     pub serial_device_platform: crate::device_binding::SharedSerialDevicePlatform,
-    pub audio_output_platform: crate::audio_output::SharedAudioOutputPlatform,
-    pub audio_output_playback: crate::audio_output::SharedAudioOutputPlayback,
-    pub(crate) audio_output_calibration_lock: Arc<Mutex<()>>,
-    pub(crate) audio_output_observation_generation: Arc<AudioOutputObservationGenerationTracker>,
-    pub(crate) audio_output_test_evidence: Arc<AudioOutputTestEvidenceStore>,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
     pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
@@ -1237,15 +1019,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route(
             "/v1/runtime-configuration",
             get(get_effective_runtime_configuration),
-        )
-        .route(
-            "/v1/audio-output-binding",
-            get(audio_output_binding_snapshot),
-        )
-        .route("/v1/audio-output-binding/test", post(test_audio_output))
-        .route(
-            "/v1/audio-output-binding/confirm",
-            post(confirm_audio_output),
         )
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/maintenance/status", get(maintenance_status))
@@ -1717,7 +1490,7 @@ struct ClaimMachineResponse {
     status: &'static str,
     machine_code: String,
     restart_requested: bool,
-    config: crate::config::MachinePublicRuntimeConfig,
+    config: crate::config::EffectiveRuntimeConfigSummary,
 }
 
 fn backend_error_json(error: &str) -> Option<serde_json::Value> {
@@ -2004,10 +1777,12 @@ impl PaymentEnvironmentGate {
 async fn payment_environment_gate(ctx: &IpcContext) -> PaymentEnvironmentGate {
     let policy = match ctx.config_store.load_factory_manifest().await {
         Ok(Some(manifest)) => match manifest.environment {
-            crate::config::FactoryProfile::Production => {
+            crate::config::RuntimePaymentPolicy::Production => {
                 FactoryPaymentEnvironmentPolicy::Production
             }
-            crate::config::FactoryProfile::Testbed => FactoryPaymentEnvironmentPolicy::Testbed,
+            crate::config::RuntimePaymentPolicy::Testbed => {
+                FactoryPaymentEnvironmentPolicy::Testbed
+            }
         },
         Ok(None) | Err(_) => FactoryPaymentEnvironmentPolicy::Unavailable,
     };
@@ -2376,573 +2151,6 @@ async fn get_effective_runtime_configuration(
             }),
         )
             .into_response(),
-    }
-}
-
-async fn audio_output_binding_snapshot(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
-        return (status, error).into_response();
-    }
-    let binding = match ctx.config_store.load_effective_public_config().await {
-        Ok(config) => config.machine_audio_output_binding,
-        Err(message) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "audio_output_config_unavailable",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let candidates = match ctx.audio_output_platform.enumerate() {
-        Ok(candidates) => crate::audio_output::normalized_audio_output_observations(candidates),
-        Err(message) => {
-            let unavailable_revision = crate::audio_output::audio_output_observation_revision(&[])
-                .unwrap_or_else(|_| "sha256:unavailable".to_string());
-            let _ = ctx
-                .audio_output_observation_generation
-                .observe(&unavailable_revision);
-            return Json(AudioOutputBindingSnapshot {
-                binding,
-                current_observation: None,
-                observation_revision: unavailable_revision,
-                candidates: Vec::new(),
-                ready: false,
-                code: "AUDIO_OUTPUT_ENUMERATION_UNAVAILABLE",
-                message,
-            })
-            .into_response();
-        }
-    };
-    let observation_revision =
-        match crate::audio_output::audio_output_observation_revision(&candidates) {
-            Ok(revision) => revision,
-            Err(message) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage {
-                        code: "audio_output_observation_invalid",
-                        message,
-                    }),
-                )
-                    .into_response();
-            }
-        };
-    if let Err(message) = ctx
-        .audio_output_observation_generation
-        .observe(&observation_revision)
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorMessage {
-                code: "audio_output_observation_invalid",
-                message,
-            }),
-        )
-            .into_response();
-    }
-    let current_observation = binding.as_ref().and_then(|binding| {
-        candidates
-            .iter()
-            .find(|candidate| candidate.endpoint_id == binding.endpoint_id)
-            .cloned()
-    });
-    let (ready, code, message) = match (&binding, &current_observation) {
-        (Some(_), Some(_)) => (
-            true,
-            "AUDIO_OUTPUT_BINDING_READY",
-            "confirmed customer audio output is currently observed".to_string(),
-        ),
-        (Some(_), None) => (
-            false,
-            "AUDIO_OUTPUT_BINDING_REMOVED",
-            "confirmed customer audio output is not currently observed".to_string(),
-        ),
-        (None, _) => (
-            false,
-            "AUDIO_OUTPUT_BINDING_REQUIRED",
-            "customer audio output has not been audibly confirmed".to_string(),
-        ),
-    };
-    Json(AudioOutputBindingSnapshot {
-        binding,
-        current_observation,
-        observation_revision,
-        candidates,
-        ready,
-        code,
-        message,
-    })
-    .into_response()
-}
-
-fn audio_output_proposed_settings_digest(
-    endpoint_id: &str,
-    audio_cue_settings: &crate::config::AudioCueSettings,
-    machine_audio_volume: f64,
-) -> Result<String, String> {
-    if !machine_audio_volume.is_finite() || !(0.0..=1.0).contains(&machine_audio_volume) {
-        return Err("machineAudioVolume must be between 0 and 1".to_string());
-    }
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "endpointId": endpoint_id,
-        "audioCueSettings": audio_cue_settings,
-        "machineAudioVolume": machine_audio_volume,
-    }))
-    .map_err(|error| format!("serialize audio output config revision failed: {error}"))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
-}
-
-fn audio_output_effective_config_revision(
-    config: &crate::config::MachinePublicConfig,
-) -> Result<String, String> {
-    let payload = serde_json::to_vec(config)
-        .map_err(|error| format!("serialize effective audio config revision failed: {error}"))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
-}
-
-fn current_audio_output_candidate(
-    ctx: &IpcContext,
-    endpoint_id: &str,
-) -> Result<(crate::audio_output::AudioOutputObservation, String, u64), (&'static str, String)> {
-    let candidates = ctx.audio_output_platform.enumerate().map_err(|message| {
-        (
-            "audio_output_enumeration_unavailable",
-            format!("cannot observe native audio outputs: {message}"),
-        )
-    })?;
-    let candidates = crate::audio_output::normalized_audio_output_observations(candidates);
-    let revision = crate::audio_output::audio_output_observation_revision(&candidates)
-        .map_err(|message| ("audio_output_observation_invalid", message))?;
-    let generation = ctx
-        .audio_output_observation_generation
-        .observe(&revision)
-        .map_err(|message| ("audio_output_observation_invalid", message))?;
-    let candidate = candidates
-        .into_iter()
-        .find(|candidate| candidate.endpoint_id == endpoint_id)
-        .ok_or_else(|| {
-            (
-                "audio_output_candidate_unavailable",
-                "selected native audio output is not currently observed".to_string(),
-            )
-        })?;
-    Ok((candidate, revision, generation))
-}
-
-async fn test_audio_output(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(request): Json<TestAudioOutputRequest>,
-) -> impl IntoResponse {
-    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
-        return (status, error).into_response();
-    }
-    if let Err(response) =
-        require_non_bring_up_maintenance_authorization(&ctx, &headers, "test_audio_output_binding")
-            .await
-    {
-        return response;
-    }
-    let _calibration = match ctx.audio_output_calibration_lock.try_lock() {
-        Ok(lease) => lease,
-        Err(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorMessage {
-                    code: "audio_output_calibration_in_progress",
-                    message: "another audio output calibration is already in progress".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-    let endpoint_id = request.endpoint_id.trim();
-    let challenge_valid = request.challenge.as_deref().is_none_or(|challenge| {
-        (32..=128).contains(&challenge.len())
-            && challenge
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    });
-    if endpoint_id.is_empty() || request.machine_audio_volume <= 0.0 || !challenge_valid {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorMessage {
-                code: "audio_output_native_test_invalid",
-                message: "a selected endpoint, audible calibration volume, and optional lowercase hexadecimal challenge are required".to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let (effective_config_revision, effective_config_generation) = match ctx
-        .config_store
-        .load_effective_public_config_snapshot()
-        .await
-    {
-        Ok((config, generation)) => match audio_output_effective_config_revision(&config) {
-            Ok(revision) => (revision, generation),
-            Err(message) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage {
-                        code: "audio_output_effective_config_revision_failed",
-                        message,
-                    }),
-                )
-                    .into_response();
-            }
-        },
-        Err(message) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "audio_output_config_unavailable",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let (_, observation_revision, observation_generation) =
-        match current_audio_output_candidate(&ctx, endpoint_id) {
-            Ok(value) => value,
-            Err((code, message)) => {
-                return (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(ErrorMessage { code, message }),
-                )
-                    .into_response();
-            }
-        };
-    let proposed_settings_digest = match audio_output_proposed_settings_digest(
-        endpoint_id,
-        &request.audio_cue_settings,
-        request.machine_audio_volume,
-    ) {
-        Ok(revision) => revision,
-        Err(message) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorMessage {
-                    code: "audio_output_config_invalid",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let playback = ctx.audio_output_playback.play_calibration(
-        endpoint_id,
-        request.machine_audio_volume as f32,
-        ctx.background_shutdown.clone(),
-    );
-    tokio::pin!(playback);
-    let mut observation_poll = tokio::time::interval(Duration::from_millis(25));
-    observation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut observation_changed_during_playback = false;
-    let playback_result = loop {
-        tokio::select! {
-            result = &mut playback => break result,
-            _ = observation_poll.tick() => {
-                match current_audio_output_candidate(&ctx, endpoint_id) {
-                    Ok((_, _, generation)) if generation != observation_generation => {
-                        observation_changed_during_playback = true;
-                    }
-                    Err(_) => observation_changed_during_playback = true,
-                    _ => {}
-                }
-            }
-        }
-    };
-    let playback_evidence = match playback_result {
-        Ok(evidence) if evidence.endpoint_id == endpoint_id && evidence.source_non_silent => {
-            evidence
-        }
-        Ok(_) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorMessage {
-                    code: "audio_output_native_test_invalid",
-                    message: "daemon native calibration playback returned invalid evidence"
-                        .to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(message) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorMessage {
-                    code: "audio_output_native_playback_failed",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let (current_effective_config_revision, current_effective_config_generation) = match ctx
-        .config_store
-        .load_effective_public_config_snapshot()
-        .await
-        .and_then(|(config, generation)| {
-            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
-        }) {
-        Ok(revision) => revision,
-        Err(message) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "audio_output_effective_config_revision_failed",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    if current_effective_config_revision != effective_config_revision
-        || current_effective_config_generation != effective_config_generation
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorMessage {
-                code: "audio_output_effective_config_changed",
-                message: "effective daemon configuration changed during calibration playback"
-                    .to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let (_, current_observation_revision, current_observation_generation) =
-        match current_audio_output_candidate(&ctx, &playback_evidence.endpoint_id) {
-            Ok(value) => value,
-            Err((code, message)) => {
-                return (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(ErrorMessage { code, message }),
-                )
-                    .into_response();
-            }
-        };
-    if observation_changed_during_playback
-        || current_observation_revision != observation_revision
-        || current_observation_generation != observation_generation
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorMessage {
-                code: "audio_output_observation_changed",
-                message: "audio output observations changed during calibration playback"
-                    .to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let (test_evidence_token, test_evidence_expires_at) = ctx
-        .audio_output_test_evidence
-        .issue(
-            maintenance_session_generation(&headers).to_string(),
-            endpoint_id.to_string(),
-            observation_revision.clone(),
-            observation_generation,
-            effective_config_revision.clone(),
-            effective_config_generation,
-            proposed_settings_digest.clone(),
-        )
-        .await;
-    Json(AudioOutputTestResponse {
-        endpoint_id: endpoint_id.to_string(),
-        test_evidence_token,
-        test_evidence_expires_at,
-        observation_revision,
-        observation_generation,
-        config_revision: effective_config_revision,
-        config_generation: effective_config_generation,
-        proposed_settings_digest,
-        challenge: request.challenge,
-    })
-    .into_response()
-}
-
-async fn confirm_audio_output(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(request): Json<ConfirmAudioOutputRequest>,
-) -> impl IntoResponse {
-    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
-        return (status, error).into_response();
-    }
-    if let Err(response) = require_non_bring_up_maintenance_authorization(
-        &ctx,
-        &headers,
-        "confirm_audio_output_binding",
-    )
-    .await
-    {
-        return response;
-    }
-    if !request.heard {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorMessage {
-                code: "audio_output_human_confirmation_required",
-                message: "the operator must explicitly confirm hearing the intended speaker"
-                    .to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let _binding_lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
-        Ok(lease) => lease,
-        Err(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorMessage {
-                    code: "audio_output_sale_start_in_progress",
-                    message: "a sale is starting; audio output binding remains unchanged"
-                        .to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-    match ctx.state.current_transaction_snapshot().await {
-        Ok(Some(snapshot)) if crate::transaction::is_active_transaction(&snapshot) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorMessage {
-                    code: "audio_output_active_sale",
-                    message: "audio output binding cannot change during an active sale".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Ok(_) => {}
-        Err(error) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorMessage {
-                    code: "audio_output_sale_state_unavailable",
-                    message: format!(
-                        "cannot prove that no sale is active; audio output binding remains unchanged: {error}"
-                    ),
-                }),
-            )
-                .into_response();
-        }
-    }
-    let endpoint_id = request.endpoint_id.trim();
-    let (candidate, observation_revision, observation_generation) =
-        match current_audio_output_candidate(&ctx, endpoint_id) {
-            Ok(value) => value,
-            Err((code, message)) => {
-                return (StatusCode::CONFLICT, Json(ErrorMessage { code, message }))
-                    .into_response();
-            }
-        };
-    let proposed_settings_digest = match audio_output_proposed_settings_digest(
-        endpoint_id,
-        &request.audio_cue_settings,
-        request.machine_audio_volume,
-    ) {
-        Ok(revision) => revision,
-        Err(message) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorMessage {
-                    code: "audio_output_config_invalid",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let (effective_config_revision, effective_config_generation) = match ctx
-        .config_store
-        .load_effective_public_config_snapshot()
-        .await
-        .and_then(|(config, generation)| {
-            audio_output_effective_config_revision(&config).map(|revision| (revision, generation))
-        }) {
-        Ok(revision) => revision,
-        Err(message) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "audio_output_effective_config_revision_failed",
-                    message,
-                }),
-            )
-                .into_response();
-        }
-    };
-    let consumed_evidence = match ctx
-        .audio_output_test_evidence
-        .consume(
-            request.test_evidence_token.trim(),
-            maintenance_session_generation(&headers),
-            endpoint_id,
-            &observation_revision,
-            observation_generation,
-            &effective_config_revision,
-            effective_config_generation,
-            &proposed_settings_digest,
-        )
-        .await
-    {
-        Ok(evidence) => evidence,
-        Err((code, message)) => {
-            return (StatusCode::CONFLICT, Json(ErrorMessage { code, message })).into_response();
-        }
-    };
-    let payload = crate::config::MachineAudioSettingsUpdateRequest {
-        machine_audio_output_binding: crate::config::MachineAudioOutputBinding {
-            endpoint_id: endpoint_id.to_string(),
-            friendly_name: Some(candidate.friendly_name),
-            confirmed_heard_at: crate::state::store::now_iso(),
-            confirmed_observation_revision: observation_revision,
-        },
-        audio_cue_settings: request.audio_cue_settings,
-        machine_audio_volume: request.machine_audio_volume,
-    };
-    match ctx
-        .config_store
-        .save_machine_audio_settings_update_if_generation(payload, effective_config_generation)
-        .await
-    {
-        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
-        Err(message) => {
-            let generation_changed =
-                message.starts_with("effective configuration generation changed:");
-            if !generation_changed {
-                ctx.audio_output_test_evidence
-                    .restore(
-                        request.test_evidence_token.trim().to_string(),
-                        consumed_evidence,
-                    )
-                    .await;
-            }
-            (
-                if generation_changed {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                },
-                Json(ErrorMessage {
-                    code: if generation_changed {
-                        "audio_output_effective_config_changed"
-                    } else {
-                        "audio_output_binding_persist_failed"
-                    },
-                    message,
-                }),
-            )
-                .into_response()
-        }
     }
 }
 
@@ -3600,7 +2808,7 @@ fn invalid_network_settings_response(
 
 fn bring_up_runtime_config_from_summary(
     summary: crate::config::RuntimeConfigurationSummary,
-) -> crate::config::MachinePublicRuntimeConfig {
+) -> crate::config::EffectiveRuntimeConfigSummary {
     let provisioned = summary.provisioning_profile_cache.is_some()
         && summary.effective_public.machine_code.is_some()
         && summary.configured_state.maintenance_pin_configured;
@@ -3613,7 +2821,7 @@ fn bring_up_runtime_config_from_summary(
     if !summary.configured_state.maintenance_pin_configured {
         provisioning_issues.push("maintenance_pin_not_configured".to_string());
     }
-    crate::config::MachinePublicRuntimeConfig {
+    crate::config::EffectiveRuntimeConfigSummary {
         public: summary.effective_public,
         machine_secret_configured: summary.configured_state.machine_secret_configured,
         mqtt_signing_secret_configured: summary.configured_state.mqtt_signing_secret_configured,
@@ -3859,6 +3067,16 @@ async fn claim_machine_mutation(
     }
     let machine_code = profile.machine.code.clone();
     let maintenance_identity = profile.maintenance.clone();
+    if let Err(message) = crate::config::ConfigStore::validate_provisioning_profile(&profile) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_profile_invalid",
+                message,
+            }),
+        )
+            .into_response();
+    }
     let response_config = crate::config::MachineRuntimeConfig {
         public: crate::config::default_public_config(),
         machine_secret_configured: true,
@@ -3877,6 +3095,22 @@ async fn claim_machine_mutation(
         .await
     {
         Ok(_) => {
+            if ctx
+                .config_store
+                .record_accepted_profile_metadata(&profile)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "machine_profile_persistence_failed",
+                        message: "machine profile persistence failed; retry provisioning"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             // The Platform claim and its credentials are already durable at
             // this point. A transient Windows tunnel failure must not turn a
             // consumed claim code back into a failed claim; Bring-Up keeps a
@@ -5043,7 +4277,7 @@ struct ProductionDispensePathReadiness {
 }
 
 fn production_dispense_path_readiness(
-    public: Option<&crate::config::MachinePublicConfig>,
+    public: Option<&crate::config::EffectiveRuntimeConfig>,
 ) -> ProductionDispensePathReadiness {
     let Some(public) = public else {
         return ProductionDispensePathReadiness {
@@ -6449,7 +5683,7 @@ fn device_binding_observation_revision(
 }
 
 fn device_binding_config_revision(
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
 ) -> Result<String, String> {
     let payload = serde_json::to_vec(&serde_json::json!({
         "public": public,
@@ -7821,7 +7055,7 @@ fn parse_vision_camera_role(
 
 async fn load_vision_camera_maintenance_config(
     ctx: &IpcContext,
-) -> Result<MachinePublicConfig, axum::response::Response> {
+) -> Result<EffectiveRuntimeConfig, axum::response::Response> {
     ctx.config_store
         .load_effective_public_config()
         .await
@@ -8392,8 +7626,8 @@ mod tests {
     }
     use crate::{
         config::{
-            default_public_config, FactoryProfile, FactoryRuntimeManifest,
-            HardwareSlotTopologyIdentity, RuntimeHardwareMode,
+            default_public_config, FactoryRuntimeManifest, HardwareSlotTopologyIdentity,
+            RuntimeHardwareMode, RuntimePaymentPolicy,
         },
         secret::{InMemorySecretStore, SecretStore, SecretStoreStatus},
         state::{
@@ -8928,7 +8162,7 @@ mod tests {
         {
             let factory_manifest = FactoryRuntimeManifest {
                 layout_version: 1,
-                environment: FactoryProfile::Production,
+                environment: RuntimePaymentPolicy::Production,
                 provisioning_endpoint: backend_base_url.to_string(),
                 hardware_mode: RuntimeHardwareMode::Simulated,
                 hardware_model: "VEM-PROD-24".to_string(),
@@ -9050,15 +8284,6 @@ mod tests {
             runtime_tx: runtime_tx.clone(),
             scanner_runtime: crate::scanner::ScannerRuntimeController::new(runtime_tx, events_tx),
             serial_device_platform: Arc::new(crate::device_binding::WindowsSerialDevicePlatform),
-            audio_output_platform: Arc::new(crate::audio_output::WindowsAudioOutputPlatform),
-            audio_output_playback: Arc::new(
-                crate::audio_output::WindowsAudioOutputPlayback::default(),
-            ),
-            audio_output_calibration_lock: Arc::new(Mutex::new(())),
-            audio_output_observation_generation: Arc::new(
-                AudioOutputObservationGenerationTracker::default(),
-            ),
-            audio_output_test_evidence: Arc::new(AudioOutputTestEvidenceStore::default()),
             device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
             sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
             disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
@@ -9624,7 +8849,7 @@ mod tests {
             .await
             .expect("load factory manifest")
             .expect("factory manifest");
-        manifest.environment = FactoryProfile::Testbed;
+        manifest.environment = RuntimePaymentPolicy::Testbed;
         manifest.hardware_mode = RuntimeHardwareMode::Simulated;
         tokio::fs::write(
             ctx.config_store.factory_manifest_path(),
@@ -9723,6 +8948,7 @@ mod tests {
             },
             "provisioningMetadata": {
                 "profileVersion": 1,
+                "profileRevision": 1,
                 "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                 "claimedAt": "2026-06-08T16:30:00.000Z",
                 "serverTime": "2026-06-08T16:30:00.000Z"
@@ -10368,10 +9594,9 @@ mod tests {
             String::from_utf8_lossy(&response_body)
         );
         let settings = config_store
-            .load_local_bring_up_settings()
+            .load_local_runtime_settings()
             .await
-            .expect("settings")
-            .expect("persisted");
+            .expect("settings");
         assert_eq!(
             settings
                 .scanner_binding
@@ -10379,10 +9604,6 @@ mod tests {
                 .identity
                 .identity_key,
             "container:22222222-3333-4444-5555-666666666666"
-        );
-        assert_eq!(
-            settings.scanner_adapter,
-            Some(crate::config::ScannerAdapterKind::Disabled)
         );
         assert_eq!(hardware_name_before, "mock");
         assert_eq!(hardware.adapter_name(), "mock");
@@ -10514,10 +9735,11 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if config_store
-                    .load_local_bring_up_settings()
+                    .load_local_runtime_settings()
                     .await
                     .expect("settings while activation waits")
-                    .is_some_and(|settings| settings.lower_controller_binding.is_some())
+                    .lower_controller_binding
+                    .is_some()
                 {
                     break;
                 }
@@ -10534,19 +9756,10 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let settings = config_store
-            .load_local_bring_up_settings()
+            .load_local_runtime_settings()
             .await
-            .expect("settings")
-            .expect("existing settings");
+            .expect("settings");
         assert!(settings.lower_controller_binding.is_none());
-        assert_eq!(
-            settings.network_profile.as_deref(),
-            Some("field-network-updated")
-        );
-        assert_eq!(
-            settings.hardware_adapter,
-            Some(crate::config::HardwareAdapterKind::Mock)
-        );
         assert_eq!(hardware.adapter_name(), "mock");
     }
 
@@ -11009,6 +10222,7 @@ mod tests {
                 "paymentScanner": { "required": true, "supportsPaymentCode": true },
                 "vision": { "required": false, "supportsRecommendations": true }
             },
+            "hardwareModel": "vem-prod-24",
             "hardwareSlotTopology": {
                 "identity": "vem-prod-24",
                 "version": "2026-06-adr0026"
@@ -11038,6 +10252,7 @@ mod tests {
             },
             "metadata": {
                 "profileVersion": 1,
+                "profileRevision": 1,
                 "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                 "claimedAt": "2026-06-08T16:30:00.000Z",
                 "serverTime": "2026-06-08T16:30:00.000Z"
@@ -11349,1329 +10564,6 @@ mod tests {
             summary["effectivePublic"]["provisioningMetadata"]["claimCodeId"],
             "550e8400-e29b-41d4-a716-446655440111"
         );
-    }
-
-    #[tokio::test]
-    async fn ordinary_config_endpoint_is_disabled_even_for_a_typed_maintenance_session() {
-        let temp_dir = tempdir().expect("tmp");
-        let app = build_router(
-            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
-        );
-
-        let response = put_json(&app, "/v1/config", "token-1", json!({})).await;
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let payload: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(payload["code"], "ordinary_config_endpoint_disabled");
-    }
-
-    #[tokio::test]
-    async fn audio_output_snapshot_keeps_identical_names_distinct_and_revisions_observations() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-b".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: false,
-            },
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-a".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: true,
-            },
-        ]));
-        ctx.audio_output_platform = platform.clone();
-        let app = build_router(ctx);
-
-        let get_snapshot = || async {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/v1/audio-output-binding")
-                        .header(AUTHORIZATION, "Bearer token-1")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let body = body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("response body");
-            serde_json::from_slice::<serde_json::Value>(&body).expect("response json")
-        };
-
-        let first = get_snapshot().await;
-        assert_eq!(first["candidates"][0]["endpointId"], "endpoint-a");
-        assert_eq!(first["candidates"][1]["endpointId"], "endpoint-b");
-        assert_eq!(first["candidates"][0]["friendlyName"], "Speakers");
-        assert_eq!(first["candidates"][1]["friendlyName"], "Speakers");
-        assert_eq!(first["currentObservation"], serde_json::Value::Null);
-        let first_revision = first["observationRevision"]
-            .as_str()
-            .expect("first revision")
-            .to_string();
-
-        platform.replace(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-a".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: false,
-            },
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-b".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: true,
-            },
-        ]);
-        let default_changed = get_snapshot().await;
-        assert_ne!(
-            default_changed["observationRevision"].as_str(),
-            Some(first_revision.as_str())
-        );
-        let changed_revision = default_changed["observationRevision"]
-            .as_str()
-            .expect("changed revision")
-            .to_string();
-
-        platform.replace(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-b".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: true,
-            },
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-a".to_string(),
-                friendly_name: "Speakers".to_string(),
-                is_default: false,
-            },
-        ]);
-        let reordered = get_snapshot().await;
-        assert_eq!(
-            reordered["observationRevision"].as_str(),
-            Some(changed_revision.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_and_confirmation_require_protected_maintenance_session() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.maintenance_authorization = Arc::new(TestMaintenanceAuthorization { allow: false });
-        let app = build_router(ctx);
-        let requests = [
-            (
-                "/v1/audio-output-binding/test",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            ),
-            (
-                "/v1/audio-output-binding/confirm",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "testEvidenceToken": "11111111-2222-4333-8444-555555555555",
-                    "heard": true,
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            ),
-        ];
-
-        for (uri, payload) in requests {
-            let response = post_json_with_maintenance(&app, uri, "token-1", payload).await;
-            assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            let body = body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("response body");
-            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-            assert_eq!(body["code"], "protected_maintenance_authorization_denied");
-        }
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_does_not_play_or_sign_when_endpoint_is_missing() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(Vec::new()));
-        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-        ctx.audio_output_playback = playback.clone();
-        let app = build_router(ctx);
-
-        let response = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": { "presence": true, "transaction": true }
-                },
-                "machineAudioVolume": 0.42
-            }),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_candidate_unavailable");
-        assert!(body.get("testEvidenceToken").is_none());
-        assert!(playback.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_rejects_an_invalid_evidence_challenge_before_playback() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: true,
-            },
-        ]));
-        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-        ctx.audio_output_playback = playback.clone();
-        let app = build_router(ctx);
-
-        let response = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": { "presence": true, "transaction": true }
-                },
-                "machineAudioVolume": 0.42,
-                "challenge": "not-a-trusted-runner-challenge"
-            }),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_native_test_invalid");
-        assert!(body.get("testEvidenceToken").is_none());
-        assert!(playback.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_does_not_sign_playback_errors_or_silent_results() {
-        for (result, expected_code) in [
-            (
-                Err("native endpoint open failed".to_string()),
-                "audio_output_native_playback_failed",
-            ),
-            (
-                Ok(crate::audio_output::NativeAudioPlaybackEvidence {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    source_non_silent: false,
-                }),
-                "audio_output_native_test_invalid",
-            ),
-        ] {
-            let temp_dir = tempdir().expect("tmp");
-            let mut ctx = test_ipc_context(
-                temp_dir.path(),
-                "token-1",
-                Some("MACHINE-1".to_string()),
-                "http://127.0.0.1:0",
-            )
-            .await;
-            ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-                crate::audio_output::AudioOutputObservation {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    friendly_name: "Near-field speaker".to_string(),
-                    is_default: true,
-                },
-            ]));
-            let playback = Arc::new(FixedAudioOutputPlayback::with_result(result));
-            ctx.audio_output_playback = playback.clone();
-            let app = build_router(ctx);
-
-            let response = post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            )
-            .await;
-
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-            let body = body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("response body");
-            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-            assert_eq!(body["code"], expected_code);
-            assert!(body.get("testEvidenceToken").is_none());
-            assert_eq!(playback.calls(), vec!["endpoint-speaker"]);
-        }
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_does_not_sign_when_observations_change_during_playback() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        let initial = crate::audio_output::AudioOutputObservation {
-            endpoint_id: "endpoint-speaker".to_string(),
-            friendly_name: "Near-field speaker".to_string(),
-            is_default: true,
-        };
-        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![initial.clone()]));
-        ctx.audio_output_platform = platform.clone();
-        ctx.audio_output_playback = Arc::new(MutatingAudioOutputPlayback {
-            platform,
-            replacement: vec![crate::audio_output::AudioOutputObservation {
-                is_default: false,
-                ..initial
-            }],
-        });
-        let app = build_router(ctx);
-
-        let response = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": { "presence": true, "transaction": true }
-                },
-                "machineAudioVolume": 0.42
-            }),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_observation_changed");
-        assert!(body.get("testEvidenceToken").is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn audio_output_calibration_is_single_flight_across_different_endpoints() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-a".to_string(),
-                friendly_name: "Speaker A".to_string(),
-                is_default: true,
-            },
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-b".to_string(),
-                friendly_name: "Speaker B".to_string(),
-                is_default: false,
-            },
-        ]));
-        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
-        ctx.audio_output_playback = playback.clone();
-        let app = build_router(ctx);
-        let request = |endpoint_id: &str| {
-            json!({
-                "endpointId": endpoint_id,
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": { "presence": true, "transaction": true }
-                },
-                "machineAudioVolume": 0.42
-            })
-        };
-        let first_app = app.clone();
-        let first = tokio::spawn(async move {
-            post_json_with_maintenance(
-                &first_app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                request("endpoint-a"),
-            )
-            .await
-        });
-        while playback.call_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-
-        let competing = tokio::time::timeout(
-            Duration::from_secs(1),
-            post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                request("endpoint-b"),
-            ),
-        )
-        .await
-        .expect("competing calibration response");
-        playback.release();
-        let first = first.await.expect("first calibration task");
-
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(competing.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(competing.into_body(), usize::MAX)
-            .await
-            .expect("competing response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_calibration_in_progress");
-        assert!(body.get("testEvidenceToken").is_none());
-        assert_eq!(playback.call_count(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn audio_output_test_does_not_sign_when_effective_config_changes_during_playback() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: true,
-            },
-        ]));
-        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
-        ctx.audio_output_playback = playback.clone();
-        let config_store = ctx.config_store.clone();
-        let app = build_router(ctx);
-        let request_app = app.clone();
-        let request = tokio::spawn(async move {
-            post_json_with_maintenance(
-                &request_app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            )
-            .await
-        });
-        while playback.call_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-
-        let mut config = config_store
-            .load_effective_public_config()
-            .await
-            .expect("load effective config");
-        config.machine_audio_volume = 0.55;
-        config_store
-            .save_public_config(config)
-            .await
-            .expect("change effective config during playback");
-        playback.release();
-        let response = request.await.expect("calibration request");
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_effective_config_changed");
-        assert!(body.get("testEvidenceToken").is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn audio_output_test_does_not_sign_when_endpoint_observation_changes_before_completion() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        let initial_observation = crate::audio_output::AudioOutputObservation {
-            endpoint_id: "endpoint-speaker".to_string(),
-            friendly_name: "Near-field speaker".to_string(),
-            is_default: true,
-        };
-        let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            initial_observation.clone()
-        ]));
-        ctx.audio_output_platform = platform.clone();
-        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
-        ctx.audio_output_playback = playback.clone();
-        let app = build_router(ctx);
-        let request_app = app.clone();
-        let request = tokio::spawn(async move {
-            post_json_with_maintenance(
-                &request_app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            )
-            .await
-        });
-        while playback.call_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-        platform.replace(vec![crate::audio_output::AudioOutputObservation {
-            endpoint_id: "endpoint-speaker".to_string(),
-            friendly_name: "Near-field speaker re-enumerated".to_string(),
-            is_default: false,
-        }]);
-        let observed_intermediate = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/audio-output-binding")
-                    .header(AUTHORIZATION, "Bearer token-1")
-                    .body(axum::body::Body::empty())
-                    .expect("observation request"),
-            )
-            .await
-            .expect("observe intermediate endpoint generation");
-        assert_eq!(observed_intermediate.status(), StatusCode::OK);
-        platform.replace(vec![initial_observation]);
-        playback.release();
-
-        let response = request.await.expect("calibration request");
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_observation_changed");
-        assert!(body.get("testEvidenceToken").is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn audio_output_test_cancels_inflight_playback_on_daemon_shutdown_without_signing() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: true,
-            },
-        ]));
-        let playback = Arc::new(BlockingFirstAudioOutputPlayback::default());
-        ctx.audio_output_playback = playback.clone();
-        let shutdown = ctx.background_shutdown.clone();
-        let app = build_router(ctx);
-        let request = tokio::spawn(async move {
-            post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": {
-                        "enabled": true,
-                        "categories": { "presence": true, "transaction": true }
-                    },
-                    "machineAudioVolume": 0.42
-                }),
-            )
-            .await
-        });
-        while playback.call_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-        shutdown.cancel();
-
-        let response = request.await.expect("calibration request");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_native_playback_failed");
-        assert!(body.get("testEvidenceToken").is_none());
-    }
-
-    #[tokio::test]
-    async fn audio_output_confirmation_requires_one_native_test_and_explicit_human_hearing() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: false,
-            },
-        ]));
-        let playback = Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-        ctx.audio_output_playback = playback.clone();
-        let mut restarted = ctx.clone();
-        let app = build_router(ctx);
-        let settings = json!({
-            "audioCueSettings": {
-                "enabled": true,
-                "categories": { "presence": false, "transaction": true }
-            },
-            "machineAudioVolume": 0.42
-        });
-        for (driver, source_non_silent) in [("browser", true), ("native", false)] {
-            let invalid = post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": settings["audioCueSettings"].clone(),
-                    "machineAudioVolume": settings["machineAudioVolume"].clone(),
-                    "nativePlaybackEvidence": {
-                        "driver": driver,
-                        "endpointId": "endpoint-speaker",
-                        "sourceNonSilent": source_non_silent
-                    }
-                }),
-            )
-            .await;
-            assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        assert!(playback.calls().is_empty());
-        let test_response = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "audioCueSettings": settings["audioCueSettings"].clone(),
-                "machineAudioVolume": settings["machineAudioVolume"].clone()
-            }),
-        )
-        .await;
-        assert_eq!(test_response.status(), StatusCode::OK);
-        assert_eq!(playback.calls(), vec!["endpoint-speaker"]);
-        let body = body::to_bytes(test_response.into_body(), usize::MAX)
-            .await
-            .expect("test response body");
-        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
-        let evidence_token = tested["testEvidenceToken"]
-            .as_str()
-            .expect("evidence token");
-        assert!(tested["observationRevision"]
-            .as_str()
-            .is_some_and(|revision| revision.starts_with("sha256:")));
-
-        let confirmation = |heard: bool| {
-            json!({
-                "endpointId": "endpoint-speaker",
-                "testEvidenceToken": evidence_token,
-                "heard": heard,
-                "audioCueSettings": settings["audioCueSettings"].clone(),
-                "machineAudioVolume": settings["machineAudioVolume"].clone()
-            })
-        };
-        let not_heard = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/confirm",
-            "token-1",
-            confirmation(false),
-        )
-        .await;
-        assert_eq!(not_heard.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-        let (first_confirmation, second_confirmation) = tokio::join!(
-            post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/confirm",
-                "token-1",
-                confirmation(true),
-            ),
-            post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/confirm",
-                "token-1",
-                confirmation(true),
-            ),
-        );
-        let statuses = [first_confirmation.status(), second_confirmation.status()];
-        assert!(statuses.contains(&StatusCode::OK));
-        assert!(statuses.contains(&StatusCode::CONFLICT));
-        let confirmed = [first_confirmation, second_confirmation]
-            .into_iter()
-            .find(|response| response.status() == StatusCode::OK)
-            .expect("exactly one concurrent confirmation succeeds");
-        let body = body::to_bytes(confirmed.into_body(), usize::MAX)
-            .await
-            .expect("confirm response body");
-        let confirmed: serde_json::Value =
-            serde_json::from_slice(&body).expect("confirm response json");
-        let binding = &confirmed["effectivePublic"]["machineAudioOutputBinding"];
-        assert_eq!(binding["endpointId"], "endpoint-speaker");
-        assert_eq!(binding["friendlyName"], "Near-field speaker");
-        assert!(binding["confirmedHeardAt"].as_str().is_some());
-        assert_eq!(
-            binding["confirmedObservationRevision"],
-            tested["observationRevision"]
-        );
-
-        let replay = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/confirm",
-            "token-1",
-            confirmation(true),
-        )
-        .await;
-        assert_eq!(replay.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(replay.into_body(), usize::MAX)
-            .await
-            .expect("replay response body");
-        let replay: serde_json::Value = serde_json::from_slice(&body).expect("replay json");
-        assert_eq!(replay["code"], "audio_output_test_evidence_invalid");
-
-        drop(app);
-        let restarted_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker after reboot".to_string(),
-                is_default: true,
-            },
-        ]));
-        restarted.audio_output_platform = restarted_platform.clone();
-        restarted.audio_output_test_evidence = Arc::new(AudioOutputTestEvidenceStore::default());
-        let restarted_app = build_router(restarted);
-        let response = restarted_app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/audio-output-binding")
-                    .header(AUTHORIZATION, "Bearer token-1")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("restarted snapshot body");
-        let restarted_snapshot: serde_json::Value =
-            serde_json::from_slice(&body).expect("restarted snapshot json");
-        assert_eq!(restarted_snapshot["ready"], true);
-        assert_eq!(
-            restarted_snapshot["currentObservation"]["endpointId"],
-            "endpoint-speaker"
-        );
-
-        restarted_platform.replace(Vec::new());
-        let removed = restarted_app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/audio-output-binding")
-                    .header(AUTHORIZATION, "Bearer token-1")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = body::to_bytes(removed.into_body(), usize::MAX)
-            .await
-            .expect("removed snapshot body");
-        let removed: serde_json::Value =
-            serde_json::from_slice(&body).expect("removed snapshot json");
-        assert_eq!(removed["ready"], false);
-        assert_eq!(removed["code"], "AUDIO_OUTPUT_BINDING_REMOVED");
-
-        let readiness = restarted_app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/sale-readiness")
-                    .header(AUTHORIZATION, "Bearer token-1")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = body::to_bytes(readiness.into_body(), usize::MAX)
-            .await
-            .expect("readiness body");
-        let readiness: serde_json::Value = serde_json::from_slice(&body).expect("readiness json");
-        assert!(!readiness["blockingCodes"]
-            .as_array()
-            .expect("blocking codes")
-            .iter()
-            .any(|code| code.as_str().is_some_and(|code| code.contains("AUDIO"))));
-    }
-
-    #[tokio::test]
-    async fn audio_output_confirmation_rejects_observation_and_config_changes_after_test() {
-        for changed in [
-            "observation",
-            "observation_aba",
-            "proposed_config",
-            "effective_config",
-            "effective_config_aba",
-            "device_writer",
-        ] {
-            let temp_dir = tempdir().expect("tmp");
-            let mut ctx = test_ipc_context(
-                temp_dir.path(),
-                "token-1",
-                Some("MACHINE-1".to_string()),
-                "http://127.0.0.1:0",
-            )
-            .await;
-            let platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-                crate::audio_output::AudioOutputObservation {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    friendly_name: "Near-field speaker".to_string(),
-                    is_default: true,
-                },
-            ]));
-            ctx.audio_output_platform = platform.clone();
-            ctx.audio_output_playback =
-                Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-            let config_store = ctx.config_store.clone();
-            if changed == "effective_config_aba" {
-                config_store
-                    .save_local_bring_up_network_profile("network-r1")
-                    .await
-                    .expect("seed network profile");
-            }
-            let app = build_router(ctx);
-            let settings = json!({
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": { "presence": true, "transaction": false }
-                },
-                "machineAudioVolume": 0.42
-            });
-            let tested = post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/test",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "audioCueSettings": settings["audioCueSettings"].clone(),
-                    "machineAudioVolume": settings["machineAudioVolume"].clone()
-                }),
-            )
-            .await;
-            assert_eq!(tested.status(), StatusCode::OK);
-            let body = body::to_bytes(tested.into_body(), usize::MAX)
-                .await
-                .expect("test response body");
-            let tested: serde_json::Value =
-                serde_json::from_slice(&body).expect("test response json");
-            if changed == "observation" {
-                platform.replace(vec![crate::audio_output::AudioOutputObservation {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    friendly_name: "Near-field speaker".to_string(),
-                    is_default: false,
-                }]);
-            }
-            if changed == "observation_aba" {
-                platform.replace(vec![crate::audio_output::AudioOutputObservation {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    friendly_name: "Intermediate speaker observation".to_string(),
-                    is_default: false,
-                }]);
-                let observed = app
-                    .clone()
-                    .oneshot(
-                        Request::builder()
-                            .uri("/v1/audio-output-binding")
-                            .header(AUTHORIZATION, "Bearer token-1")
-                            .body(axum::body::Body::empty())
-                            .expect("observation request"),
-                    )
-                    .await
-                    .expect("observe intermediate generation");
-                assert_eq!(observed.status(), StatusCode::OK);
-                platform.replace(vec![crate::audio_output::AudioOutputObservation {
-                    endpoint_id: "endpoint-speaker".to_string(),
-                    friendly_name: "Near-field speaker".to_string(),
-                    is_default: true,
-                }]);
-            }
-            if changed == "effective_config" {
-                let mut current = config_store
-                    .load_effective_public_config()
-                    .await
-                    .expect("load effective config");
-                current.machine_audio_volume = 0.55;
-                config_store
-                    .save_public_config(current)
-                    .await
-                    .expect("change effective config");
-            }
-            if changed == "effective_config_aba" {
-                config_store
-                    .save_local_bring_up_network_profile("network-r2")
-                    .await
-                    .expect("write network r2");
-                config_store
-                    .save_local_bring_up_network_profile("network-r1")
-                    .await
-                    .expect("restore network r1");
-            }
-            if changed == "device_writer" {
-                config_store
-                    .save_local_device_binding(
-                        crate::device_binding::LocalDeviceRole::Scanner,
-                        crate::device_binding::LocalSerialRoleBinding {
-                            identity: crate::device_binding::StableSerialDeviceIdentity {
-                                identity_key: "container:11111111-2222-3333-4444-555555555555"
-                                    .to_string(),
-                                instance_id: Some("USB\\SCANNER-1".to_string()),
-                                container_id: Some(
-                                    "11111111-2222-3333-4444-555555555555".to_string(),
-                                ),
-                                hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
-                                serial_number: Some("SCANNER-1".to_string()),
-                            },
-                            confirmed_at: "2026-07-15T10:00:00.000Z".to_string(),
-                            confirmed_by: "operator-console".to_string(),
-                            test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
-                        },
-                    )
-                    .await
-                    .expect("save scanner binding");
-            }
-            let confirmed = post_json_with_maintenance(
-                &app,
-                "/v1/audio-output-binding/confirm",
-                "token-1",
-                json!({
-                    "endpointId": "endpoint-speaker",
-                    "testEvidenceToken": tested["testEvidenceToken"].clone(),
-                    "heard": true,
-                    "audioCueSettings": settings["audioCueSettings"].clone(),
-                    "machineAudioVolume": if changed == "proposed_config" { 0.43 } else { 0.42 }
-                }),
-            )
-            .await;
-
-            assert_eq!(confirmed.status(), StatusCode::CONFLICT);
-            let body = body::to_bytes(confirmed.into_body(), usize::MAX)
-                .await
-                .expect("confirm response body");
-            let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-            assert_eq!(
-                body["code"],
-                match changed {
-                    "observation" | "observation_aba" => {
-                        "audio_output_test_evidence_observation_changed"
-                    }
-                    "proposed_config" => "audio_output_test_evidence_config_changed",
-                    "effective_config" | "effective_config_aba" | "device_writer" => {
-                        "audio_output_test_evidence_effective_config_changed"
-                    }
-                    _ => unreachable!(),
-                }
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn audio_output_confirmation_does_not_change_binding_during_an_active_sale() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: true,
-            },
-        ]));
-        ctx.audio_output_playback =
-            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-        let state = ctx.state.clone();
-        let config_store = ctx.config_store.clone();
-        let app = build_router(ctx);
-        let settings = json!({
-            "audioCueSettings": {
-                "enabled": true,
-                "categories": { "presence": true, "transaction": false }
-            },
-            "machineAudioVolume": 0.42
-        });
-        let tested = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "audioCueSettings": settings["audioCueSettings"].clone(),
-                "machineAudioVolume": settings["machineAudioVolume"].clone()
-            }),
-        )
-        .await;
-        assert_eq!(tested.status(), StatusCode::OK);
-        let body = body::to_bytes(tested.into_body(), usize::MAX)
-            .await
-            .expect("test response body");
-        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
-        state
-            .upsert_order_session(OrderSessionUpsert {
-                order_no: "ORDER-ACTIVE-AUDIO",
-                payment_method: "qr_code",
-                payment_provider: Some("alipay"),
-                items_json: json!([]),
-                status: "paid",
-                next_action: "dispensing",
-                payment_attempt_json: None,
-                recovery_strategy: "local",
-                last_backend_status_json: None,
-                last_error: None,
-            })
-            .await
-            .expect("seed active sale");
-
-        let confirmed = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/confirm",
-            "token-1",
-            json!({
-                "endpointId": "endpoint-speaker",
-                "testEvidenceToken": tested["testEvidenceToken"].clone(),
-                "heard": true,
-                "audioCueSettings": settings["audioCueSettings"].clone(),
-                "machineAudioVolume": settings["machineAudioVolume"].clone()
-            }),
-        )
-        .await;
-
-        assert_eq!(confirmed.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(confirmed.into_body(), usize::MAX)
-            .await
-            .expect("confirm response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_active_sale");
-        let config = config_store
-            .load_effective_public_config()
-            .await
-            .expect("effective config");
-        assert!(config.machine_audio_output_binding.is_none());
-    }
-
-    #[tokio::test]
-    async fn audio_output_confirmation_loses_a_race_to_sale_start_without_consuming_evidence() {
-        let temp_dir = tempdir().expect("tmp");
-        let mut ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        ctx.audio_output_platform = Arc::new(FixedAudioOutputPlatform::new(vec![
-            crate::audio_output::AudioOutputObservation {
-                endpoint_id: "endpoint-speaker".to_string(),
-                friendly_name: "Near-field speaker".to_string(),
-                is_default: true,
-            },
-        ]));
-        ctx.audio_output_playback =
-            Arc::new(FixedAudioOutputPlayback::successful("endpoint-speaker"));
-        let sale_binding_gate = ctx.sale_binding_gate.clone();
-        let config_store = ctx.config_store.clone();
-        let app = build_router(ctx);
-        let request = json!({
-            "endpointId": "endpoint-speaker",
-            "audioCueSettings": {
-                "enabled": true,
-                "categories": { "presence": true, "transaction": false }
-            },
-            "machineAudioVolume": 0.42
-        });
-        let tested = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/test",
-            "token-1",
-            request.clone(),
-        )
-        .await;
-        let body = body::to_bytes(tested.into_body(), usize::MAX)
-            .await
-            .expect("test response body");
-        let tested: serde_json::Value = serde_json::from_slice(&body).expect("test response json");
-        let sale_start = sale_binding_gate
-            .try_acquire_sale_start()
-            .expect("sale start lease");
-        let confirmation = json!({
-            "endpointId": request["endpointId"].clone(),
-            "testEvidenceToken": tested["testEvidenceToken"].clone(),
-            "heard": true,
-            "audioCueSettings": request["audioCueSettings"].clone(),
-            "machineAudioVolume": request["machineAudioVolume"].clone()
-        });
-
-        let blocked = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/confirm",
-            "token-1",
-            confirmation.clone(),
-        )
-        .await;
-        assert_eq!(blocked.status(), StatusCode::CONFLICT);
-        let body = body::to_bytes(blocked.into_body(), usize::MAX)
-            .await
-            .expect("blocked response body");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("response json");
-        assert_eq!(body["code"], "audio_output_sale_start_in_progress");
-        assert!(config_store
-            .load_effective_public_config()
-            .await
-            .expect("effective config")
-            .machine_audio_output_binding
-            .is_none());
-
-        drop(sale_start);
-        let retried = post_json_with_maintenance(
-            &app,
-            "/v1/audio-output-binding/confirm",
-            "token-1",
-            confirmation,
-        )
-        .await;
-        assert_eq!(retried.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn audio_output_test_evidence_expires_and_rejects_cross_context_confirmation() {
-        for (changed, expected_code) in [
-            ("session", "audio_output_test_evidence_session_changed"),
-            ("endpoint", "audio_output_test_evidence_target_changed"),
-            (
-                "observation",
-                "audio_output_test_evidence_observation_changed",
-            ),
-            (
-                "observation_generation",
-                "audio_output_test_evidence_observation_changed",
-            ),
-            (
-                "effective_config",
-                "audio_output_test_evidence_effective_config_changed",
-            ),
-            (
-                "effective_config_generation",
-                "audio_output_test_evidence_effective_config_changed",
-            ),
-            (
-                "proposed_config",
-                "audio_output_test_evidence_config_changed",
-            ),
-        ] {
-            let store = AudioOutputTestEvidenceStore::default();
-            let (token, _) = store
-                .issue(
-                    "session-a".to_string(),
-                    "endpoint-a".to_string(),
-                    "observation-a".to_string(),
-                    7,
-                    "effective-config-a".to_string(),
-                    11,
-                    "proposed-config-a".to_string(),
-                )
-                .await;
-            let result = store
-                .consume(
-                    &token,
-                    if changed == "session" {
-                        "session-b"
-                    } else {
-                        "session-a"
-                    },
-                    if changed == "endpoint" {
-                        "endpoint-b"
-                    } else {
-                        "endpoint-a"
-                    },
-                    if changed == "observation" {
-                        "observation-b"
-                    } else {
-                        "observation-a"
-                    },
-                    if changed == "observation_generation" {
-                        8
-                    } else {
-                        7
-                    },
-                    if changed == "effective_config" {
-                        "effective-config-b"
-                    } else {
-                        "effective-config-a"
-                    },
-                    if changed == "effective_config_generation" {
-                        12
-                    } else {
-                        11
-                    },
-                    if changed == "proposed_config" {
-                        "proposed-config-b"
-                    } else {
-                        "proposed-config-a"
-                    },
-                )
-                .await
-                .expect_err("cross-context evidence must fail closed");
-            assert_eq!(result.0, expected_code, "{changed}");
-        }
-
-        let expiring = AudioOutputTestEvidenceStore::with_ttl(Duration::from_millis(1));
-        let (token, _) = expiring
-            .issue(
-                "session-a".to_string(),
-                "endpoint-a".to_string(),
-                "observation-a".to_string(),
-                7,
-                "effective-config-a".to_string(),
-                11,
-                "proposed-config-a".to_string(),
-            )
-            .await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        let expired = expiring
-            .consume(
-                &token,
-                "session-a",
-                "endpoint-a",
-                "observation-a",
-                7,
-                "effective-config-a",
-                11,
-                "proposed-config-a",
-            )
-            .await
-            .expect_err("expired evidence must fail closed");
-        assert_eq!(expired.0, "audio_output_test_evidence_invalid");
-    }
-
-    #[tokio::test]
-    async fn legacy_audio_settings_endpoint_cannot_bypass_test_and_heard_confirmation() {
-        let temp_dir = tempdir().expect("tmp");
-        let ctx = test_ipc_context(
-            temp_dir.path(),
-            "token-1",
-            Some("MACHINE-1".to_string()),
-            "http://127.0.0.1:0",
-        )
-        .await;
-        let app = build_router(ctx);
-        let response = put_json(
-            &app,
-            "/v1/config/audio-settings",
-            "token-1",
-            json!({
-                "machineAudioOutputBinding": {
-                        "endpointId": "{0.0.0.00000000}.{field-speaker-1}",
-                        "friendlyName": "现场喇叭",
-                        "confirmedHeardAt": "2026-07-15T10:00:00.000Z",
-                        "confirmedObservationRevision": "ui-forged"
-                },
-                "audioCueSettings": {
-                    "enabled": true,
-                    "categories": {
-                        "presence": false,
-                        "transaction": true
-                    }
-                },
-                "machineAudioVolume": 0.42
-            }),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -13510,7 +11402,10 @@ mod tests {
             .await;
         let temp_dir = tempdir().expect("tmp");
         let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
-        let profile_path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let profile_path = ctx
+            .config_store
+            .clean_runtime_configuration()
+            .profile_cache_path();
         let app = build_router(ctx);
         let claim = post_json_with_maintenance(
             &app,
@@ -13662,7 +11557,10 @@ mod tests {
         )
         .await;
         let state = ctx.state.clone();
-        let profile_path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let profile_path = ctx
+            .config_store
+            .clean_runtime_configuration()
+            .profile_cache_path();
         let app = build_router(ctx);
         assert_eq!(
             post_json_with_maintenance(
@@ -13675,9 +11573,9 @@ mod tests {
             .status(),
             StatusCode::OK
         );
-        let original_profile = tokio::fs::read(&profile_path)
+        assert!(tokio::fs::try_exists(&profile_path)
             .await
-            .expect("read claimed profile");
+            .expect("read accepted profile cache"));
 
         state
             .delete_metadata("machine_provisioning_claim_code_id")
@@ -13692,26 +11590,26 @@ mod tests {
             .await
             .expect("restore claim credential");
 
-        let mut missing_identity: serde_json::Value =
-            serde_json::from_slice(&original_profile).expect("profile json");
-        missing_identity["maintenance"] = serde_json::Value::Null;
-        tokio::fs::write(
-            &profile_path,
-            serde_json::to_vec_pretty(&missing_identity).expect("serialize missing identity"),
-        )
-        .await
-        .expect("write missing identity profile");
+        let identity = state
+            .get_metadata::<crate::config::ProvisioningMaintenanceIdentity>(
+                "machine_provisioning_maintenance_identity",
+            )
+            .await
+            .expect("read maintenance identity")
+            .expect("maintenance identity");
+        state
+            .delete_metadata("machine_provisioning_maintenance_identity")
+            .await
+            .expect("remove maintenance identity");
         assert_production_credentials_fail_closed(&app).await;
+        state
+            .put_metadata("machine_provisioning_maintenance_identity", &identity)
+            .await
+            .expect("restore maintenance identity");
 
-        let mut wrong_marker: serde_json::Value =
-            serde_json::from_slice(&original_profile).expect("profile json");
-        wrong_marker["provisioningProfile"] = json!("testbed");
-        tokio::fs::write(
-            &profile_path,
-            serde_json::to_vec_pretty(&wrong_marker).expect("serialize wrong marker"),
-        )
-        .await
-        .expect("write wrong marker profile");
+        tokio::fs::remove_file(&profile_path)
+            .await
+            .expect("remove accepted profile cache");
         assert_production_credentials_fail_closed(&app).await;
     }
 
@@ -13980,7 +11878,7 @@ mod tests {
     #[tokio::test]
     async fn provisioning_profile_rejects_local_discovery_fields() {
         let mut profile = valid_provisioning_profile();
-        profile["hardwareProfile"]["controller"]["serialPortPath"] = json!("/dev/ttyUSB0");
+        profile["hardwareProfile"]["controller"]["localPortObservation"] = json!("/dev/ttyUSB0");
         profile["hardwareProfile"]["controller"]["usbVendorId"] = json!("1A86");
 
         let (status, payload) = claim_with_profile(profile).await;
@@ -14015,8 +11913,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provisioning_persistence_failure_is_not_reported_as_invalid_profile_or_partial_secrets(
-    ) {
+    async fn corrupt_clean_configuration_blocks_claim_without_persisting_secrets() {
         let server = MockServer::start().await;
         mount_default_payment_environment(&server).await;
         Mock::given(method("POST"))
@@ -14027,14 +11924,11 @@ mod tests {
 
         let temp_dir = tempdir().expect("tmp");
         let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
-        let logs_path = ctx.data_dir.join("logs");
+        let config_path = ctx.data_dir.join("config");
         let app = build_router(ctx);
-        tokio::fs::remove_dir_all(&logs_path)
+        tokio::fs::write(&config_path, b"not-a-directory")
             .await
-            .expect("remove logs dir");
-        tokio::fs::write(&logs_path, b"not-a-directory")
-            .await
-            .expect("replace logs dir with file");
+            .expect("replace config dir with file");
 
         let response = post_json_with_maintenance(
             &app,
@@ -14043,12 +11937,12 @@ mod tests {
             json!({ "claimCode": "ABCD-2345" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["code"], "machine_profile_persistence_failed");
+        assert_eq!(payload["code"], "bring_up_task_stale");
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("vms_local-machine"));
         assert!(!text.contains("vms_local-mqtt"));
@@ -14065,17 +11959,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(config_response.status(), StatusCode::OK);
+        assert_eq!(config_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body::to_bytes(config_response.into_body(), usize::MAX)
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(config["configuredState"]["machineSecretConfigured"], false);
-        assert_eq!(
-            config["configuredState"]["mqttSigningSecretConfigured"],
-            false
-        );
-        assert_eq!(config["configuredState"]["mqttPasswordConfigured"], false);
         let config_text = serde_json::to_string(&config).unwrap();
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
@@ -15866,7 +13754,7 @@ mod tests {
             .await
             .expect("load manifest")
             .expect("factory manifest");
-        manifest.environment = FactoryProfile::Testbed;
+        manifest.environment = RuntimePaymentPolicy::Testbed;
         manifest.hardware_mode = RuntimeHardwareMode::Simulated;
         tokio::fs::write(
             testbed.config_store.factory_manifest_path(),
@@ -17938,7 +15826,7 @@ mod tests {
         .await;
         let public = ctx.config_store.load_public_config().await.expect("config");
         ctx.config_store
-            .save_config_update(crate::config::MachineConfigUpdateRequest {
+            .apply_runtime_mutation(crate::config::RuntimeConfigurationMutationRequest {
                 public,
                 secrets: Some(crate::config::MachineConfigSecretsUpdate {
                     machine_secret: Some("SENTINEL_MACHINE_SECRET_DO_NOT_LEAK_174".to_string()),

@@ -340,7 +340,7 @@ fn vision_http_base_url(ws_url: &str) -> Result<Url, VisionCameraMaintenanceErro
 }
 
 fn maintenance_url(
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     segments: &[&str],
 ) -> Result<Url, VisionCameraMaintenanceError> {
     let mut url = vision_http_base_url(&public.vision_ws_url)?;
@@ -443,7 +443,7 @@ fn validate_contract(
 pub async fn get_contract(
     http_client: &reqwest::Client,
     data_dir: &Path,
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     session_id: &str,
 ) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
     let machine_code = public
@@ -478,7 +478,7 @@ pub async fn get_contract(
 pub async fn refresh_contract(
     http_client: &reqwest::Client,
     data_dir: &Path,
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     session_id: &str,
 ) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
     let machine_code = public
@@ -513,7 +513,7 @@ pub async fn refresh_contract(
 pub async fn preview_candidate(
     http_client: &reqwest::Client,
     data_dir: &Path,
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     session_id: &str,
     candidate_id: &str,
 ) -> Result<Vec<u8>, VisionCameraMaintenanceError> {
@@ -545,7 +545,7 @@ pub async fn preview_candidate(
 pub async fn test_role(
     http_client: &reqwest::Client,
     data_dir: &Path,
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     session_id: &str,
     role: VisionCameraRole,
     candidate_id: &str,
@@ -581,7 +581,7 @@ pub async fn test_role(
 pub async fn confirm_role(
     http_client: &reqwest::Client,
     data_dir: &Path,
-    public: &crate::config::MachinePublicConfig,
+    public: &crate::config::EffectiveRuntimeConfig,
     session_id: &str,
     role: VisionCameraRole,
     request: &VisionCameraMaintenanceConfirmRequest,

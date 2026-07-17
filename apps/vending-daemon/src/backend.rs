@@ -909,6 +909,7 @@ mod tests {
                         "paymentScanner": { "required": true, "supportsPaymentCode": true },
                         "vision": { "required": false, "supportsRecommendations": true }
                     },
+                    "hardwareModel": "vem-prod-24",
                     "hardwareSlotTopology": {
                         "identity": "vem-prod-24",
                         "version": "2026-06-adr0026"
@@ -938,6 +939,7 @@ mod tests {
                     },
                     "metadata": {
                         "profileVersion": 1,
+                        "profileRevision": 1,
                         "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
                         "claimedAt": "2026-07-05T02:06:21.966Z",
                         "serverTime": "2026-07-05T02:06:21.966Z"

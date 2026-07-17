@@ -32,9 +32,9 @@ fn scanner_config(scanner_path: String) -> serde_json::Value {
         "mqttUrl": "mqtt://127.0.0.1:1883",
         "mqttUsername": null,
         "hardwareAdapter": "mock",
-        "serialPortPath": null,
+        "localPortObservation": null,
         "scannerAdapter": "serial_text",
-        "scannerSerialPortPath": scanner_path,
+        "scannerPortObservation": scanner_path,
         "scannerBaudRate": 9600,
         "scannerFrameSuffix": "crlf",
         "visionEnabled": false,
@@ -50,7 +50,7 @@ fn production_scanner_config(
 ) -> serde_json::Value {
     let mut config = scanner_config(scanner_path);
     config["hardwareAdapter"] = json!("serial");
-    config["serialPortPath"] = json!(lower_controller_path);
+    config["localPortObservation"] = json!(lower_controller_path);
     config["hardwareProfile"] = json!({
         "profile": "production",
         "controller": { "required": true, "protocol": "vem-vending-controller" },
@@ -527,7 +527,7 @@ async fn vision_disabled_reports_disabled_status() {
     let pty = PtyHarness::open();
     let mut config = scanner_config(pty.slave_path.to_string_lossy().to_string());
     config["scannerAdapter"] = serde_json::json!("disabled");
-    config["scannerSerialPortPath"] = serde_json::Value::Null;
+    config["scannerPortObservation"] = serde_json::Value::Null;
     config["visionEnabled"] = serde_json::json!(false);
     let mut daemon = DaemonHarness::start(config, &[], &[]).await.expect("start");
     let vision = wait_for_vision_message(&daemon, "disabled").await;
@@ -545,7 +545,7 @@ async fn vision_mock_process_updates_ready_status() {
     let pty = PtyHarness::open();
     let mut config = scanner_config(pty.slave_path.to_string_lossy().to_string());
     config["scannerAdapter"] = serde_json::json!("disabled");
-    config["scannerSerialPortPath"] = serde_json::Value::Null;
+    config["scannerPortObservation"] = serde_json::Value::Null;
     config["visionEnabled"] = serde_json::json!(true);
     config["visionWsUrl"] = serde_json::json!(format!("ws://127.0.0.1:{port}/ws"));
 
