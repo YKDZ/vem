@@ -283,7 +283,7 @@ jobs:
               docker logs "$postgres_name"
               exit 1
             fi
-            if wait_for_tcp 127.0.0.1 55432; then
+            if docker exec "$postgres_name" pg_isready -U vem -d vem_runtime >/dev/null 2>&1; then
               postgres_ready=true
               break
             fi

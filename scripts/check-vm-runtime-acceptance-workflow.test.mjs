@@ -135,9 +135,11 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(postgresAndMqtt, /docker rm -f "\$\{stale_services\[@\]\}"/);
     assert.match(postgresAndMqtt, /-p 55432:5432/);
     assert.match(postgresAndMqtt, /-p 18883:1883/);
-    assert.match(postgresAndMqtt, /wait_for_tcp 127\.0\.0\.1 55432/);
+    assert.match(
+      postgresAndMqtt,
+      /docker exec "\$postgres_name" pg_isready -U vem -d vem_runtime/,
+    );
     assert.match(postgresAndMqtt, /wait_for_tcp 127\.0\.0\.1 18883/);
-    assert.doesNotMatch(postgresAndMqtt, /docker exec/);
 
     assert.match(serviceApi, /SERVICE_HOST:\s+"0\.0\.0\.0"/);
     assert.match(serviceApi, /SERVICE_PORT:\s+"26849"/);
