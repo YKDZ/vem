@@ -14,6 +14,7 @@ import {
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcScannerStatusSchema,
   daemonIpcPickupReminderSchema,
+  daemonIpcReadySnapshotSchema,
   daemonIpcTransactionSnapshotSchema,
   exportDaemonIpcScannerStatusJsonSchema,
   exportDaemonIpcJsonSchemaDefinitions,
@@ -36,6 +37,28 @@ import {
 describe("Daemon IPC Contract Area", () => {
   const awaitingPaymentTransaction =
     validCurrentDaemonIpcTransactionSnapshots.awaitingPayment;
+
+  it("keeps operational readiness separate from sale capability and navigation", () => {
+    expect(
+      daemonIpcReadySnapshotSchema.parse({
+        ready: true,
+        blockingCodes: [],
+        blockingReasons: [],
+        degradedReasons: [],
+        updatedAt: "2026-07-17T00:00:00.000Z",
+      }),
+    ).toMatchObject({ ready: true });
+    expect(() =>
+      daemonIpcReadySnapshotSchema.parse({
+        ready: true,
+        blockingCodes: [],
+        blockingReasons: [],
+        degradedReasons: [],
+        updatedAt: "2026-07-17T00:00:00.000Z",
+        canSell: true,
+      }),
+    ).toThrow();
+  });
 
   it("keeps stable serial identity separate from the observed COM address", () => {
     const snapshot = daemonIpcDeviceBindingSnapshotSchema.parse({
@@ -588,16 +611,6 @@ describe("Daemon IPC Contract Area", () => {
       operatorReason: "ok",
       updatedAt: eventEnvelope.updatedAt,
     };
-    const readySnapshot = {
-      ready: true,
-      canSell: true,
-      mode: "sale",
-      blockingCodes: [],
-      blockingReasons: [],
-      degradedReasons: [],
-      suggestedRoute: "catalog",
-      updatedAt: eventEnvelope.updatedAt,
-    };
     const scannerSnapshot = {
       online: true,
       adapter: "serial_text",
@@ -610,7 +623,6 @@ describe("Daemon IPC Contract Area", () => {
 
     const currentRustEvents = [
       { ...eventEnvelope, type: "health_changed", snapshot: healthSnapshot },
-      { ...eventEnvelope, type: "ready_changed", snapshot: readySnapshot },
       {
         ...eventEnvelope,
         type: "scanner_health_changed",
@@ -663,7 +675,6 @@ describe("Daemon IPC Contract Area", () => {
       ),
     ).toEqual([
       "health_changed",
-      "ready_changed",
       "scanner_health_changed",
       "scanner_code",
       "transaction_changed",

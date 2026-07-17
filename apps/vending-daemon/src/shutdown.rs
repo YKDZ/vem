@@ -253,6 +253,7 @@ async fn run_console_cycle(
         ipc_ctx.ui.status_cache.clone(),
         ipc_ctx.sale_binding_gate.clone(),
         data_dir.clone(),
+        ipc_ctx.clone(),
         stop_token.clone(),
     ));
     let stock_upload = tokio::spawn(
@@ -448,6 +449,7 @@ async fn run_device_binding_watch(
     status_cache: ipc::RuntimeStatusCache,
     sale_gate: Arc<ipc::SaleBindingOperationGate>,
     data_dir: PathBuf,
+    sale_start_context: IpcContext,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     let mut interval = time::interval(std::time::Duration::from_secs(2));
@@ -457,10 +459,21 @@ async fn run_device_binding_watch(
             _ = shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {}
         }
+        let previous_hardware = status_cache.hardware.read().await.clone();
+        let previous_scanner = status_cache.scanner.read().await.clone();
         let mut settings = match runtime_sources.load_local_runtime_settings().await {
             Ok(settings) => settings,
             Err(error) => {
                 set_binding_retry(&status_cache, &error).await;
+                if sale_capability_inputs_changed(
+                    &status_cache,
+                    &previous_hardware,
+                    &previous_scanner,
+                )
+                .await
+                {
+                    ipc::invalidate_sale_start_capability(&sale_start_context).await;
+                }
                 continue;
             }
         };
@@ -468,9 +481,19 @@ async fn run_device_binding_watch(
             Ok(observed) => observed,
             Err(error) => {
                 set_binding_retry(&status_cache, &error).await;
+                if sale_capability_inputs_changed(
+                    &status_cache,
+                    &previous_hardware,
+                    &previous_scanner,
+                )
+                .await
+                {
+                    ipc::invalidate_sale_start_capability(&sale_start_context).await;
+                }
                 continue;
             }
         };
+        let mut binding_changed = false;
         let active_sale = state
             .current_transaction_snapshot()
             .await
@@ -514,6 +537,7 @@ async fn run_device_binding_watch(
                     .is_ok()
                 {
                     set_binding_for_role(&mut settings, role, Some(binding));
+                    binding_changed = true;
                 }
             }
         }
@@ -583,7 +607,30 @@ async fn run_device_binding_watch(
             }
         }
         drop(lease);
+        if binding_changed
+            || sale_capability_inputs_changed(&status_cache, &previous_hardware, &previous_scanner)
+                .await
+        {
+            ipc::invalidate_sale_start_capability(&sale_start_context).await;
+        }
     }
+}
+
+async fn sale_capability_inputs_changed(
+    cache: &ipc::RuntimeStatusCache,
+    previous_hardware: &vending_core::hardware::HardwareStatus,
+    previous_scanner: &vending_core::scanner::ScannerHealthSnapshot,
+) -> bool {
+    let hardware = cache.hardware.read().await;
+    let scanner = cache.scanner.read().await;
+    hardware.online != previous_hardware.online
+        || hardware.port_path != previous_hardware.port_path
+        || hardware.adapter != previous_hardware.adapter
+        || hardware.message != previous_hardware.message
+        || scanner.online != previous_scanner.online
+        || scanner.port != previous_scanner.port
+        || scanner.adapter != previous_scanner.adapter
+        || scanner.code != previous_scanner.code
 }
 
 fn binding_for_role(
@@ -847,7 +894,8 @@ async fn run_hardware_health_watcher(
             changed
         };
         if (changed || lock_changed) && sale_start_context.is_some() {
-            ipc::refresh_sale_start_capability(sale_start_context.as_ref().expect("context")).await;
+            ipc::invalidate_sale_start_capability(sale_start_context.as_ref().expect("context"))
+                .await;
         }
         tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = time::sleep(std::time::Duration::from_secs(10)) => {} }
     }
@@ -919,7 +967,7 @@ async fn cache_daemon_events(
         }
         if capability_input_changed {
             if let Some(context) = sale_start_context.as_ref() {
-                ipc::refresh_sale_start_capability(context).await;
+                ipc::invalidate_sale_start_capability(context).await;
             }
         }
     }

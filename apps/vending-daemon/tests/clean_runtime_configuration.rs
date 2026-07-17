@@ -1,8 +1,40 @@
-use std::sync::Arc;
-
-use vending_daemon::{
-    runtime_configuration::CleanRuntimeConfigurationStore, secret::InMemorySecretStore,
+use std::{
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
+
+use async_trait::async_trait;
+use vending_daemon::{
+    runtime_configuration::{CleanRuntimeConfigurationStore, RuntimeConfigurationFileWriter},
+    secret::InMemorySecretStore,
+};
+
+struct FailOnWrite {
+    failing_write: usize,
+    writes: AtomicUsize,
+}
+
+#[async_trait]
+impl RuntimeConfigurationFileWriter for FailOnWrite {
+    async fn write(&self, path: &Path, payload: &[u8]) -> Result<(), String> {
+        let write = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
+        if write == self.failing_write {
+            return Err("injected profile cache disk write failure".to_string());
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| "profile cache path has no parent".to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("create profile cache dir failed: {error}"))?;
+        tokio::fs::write(path, payload)
+            .await
+            .map_err(|error| format!("write profile cache failed: {error}"))
+    }
+}
 
 #[tokio::test]
 async fn clean_runtime_bootstrap_rejects_any_legacy_or_environment_field() {
@@ -26,7 +58,8 @@ async fn clean_runtime_bootstrap_rejects_any_legacy_or_environment_field() {
 }
 
 #[tokio::test]
-async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_bootstrap() {
+async fn rejected_profile_acceptance_retains_the_last_accepted_profile_and_reset_preserves_bootstrap(
+) {
     let temp = tempfile::tempdir().expect("temp");
     let data_dir = temp.path().join("VEM").join("vending-daemon");
     let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
@@ -76,15 +109,11 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
             .to_string(),
         "VEM-TEST-01"
     );
+    let projection = store.effective_projection().await.expect("projection");
+    assert_eq!(projection.profile_refresh.status.to_string(), "degraded");
     assert_eq!(
-        store
-            .effective_projection()
-            .await
-            .expect("projection")
-            .profile_refresh
-            .status
-            .to_string(),
-        "degraded"
+        projection.profile_refresh.last_error.as_deref(),
+        Some("profile contract was rejected")
     );
 
     let restarted = CleanRuntimeConfigurationStore::new(
@@ -152,6 +181,68 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
     .await
     .expect("machine secret cleared")
     .is_none());
+}
+
+#[tokio::test]
+async fn profile_cache_write_failure_retains_last_known_good_and_records_degraded_refresh() {
+    let temp = tempfile::tempdir().expect("temp");
+    let data_dir = temp.path().join("VEM").join("vending-daemon");
+    let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
+    tokio::fs::create_dir_all(bootstrap_path.parent().expect("parent"))
+        .await
+        .expect("bootstrap directory");
+    tokio::fs::write(
+        &bootstrap_path,
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("bootstrap");
+
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let store = CleanRuntimeConfigurationStore::with_file_writer(
+        data_dir,
+        secrets.clone(),
+        Arc::new(FailOnWrite {
+            failing_write: 4,
+            writes: AtomicUsize::new(0),
+        }),
+    );
+    let accepted = valid_profile();
+    store
+        .accept_profile(&accepted)
+        .await
+        .expect("initial accepted profile");
+
+    let mut replacement = accepted.clone();
+    replacement.metadata.profile_revision = std::num::NonZeroU64::new(2).expect("revision");
+    assert!(store.accept_profile(&replacement).await.is_err());
+
+    assert_eq!(
+        store
+            .load_profile_cache()
+            .await
+            .expect("profile cache")
+            .expect("last known good cache")
+            .profile
+            .metadata
+            .profile_revision,
+        std::num::NonZeroU64::new(1).expect("revision")
+    );
+    assert_eq!(
+        vending_daemon::secret::SecretStore::read_secret(
+            secrets.as_ref(),
+            vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        )
+        .await
+        .expect("machine secret"),
+        Some(accepted.credentials.machine_secret.to_string())
+    );
+    let projection = store.effective_projection().await.expect("projection");
+    assert_eq!(projection.profile_refresh.status.to_string(), "degraded");
+    assert_eq!(
+        projection.profile_refresh.last_error.as_deref(),
+        Some("profile cache was not accepted")
+    );
 }
 
 #[tokio::test]

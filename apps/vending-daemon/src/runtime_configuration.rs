@@ -6,11 +6,12 @@ use std::{
     },
 };
 
+use async_trait::async_trait;
 use daemon_ipc_contracts::{
     EffectiveMachineRuntimeConfiguration, ProvisioningProfileCache, RuntimeBootstrap,
 };
 use serde_json::json;
-use tokio::{fs, sync::Mutex};
+use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 
 use crate::{
     device_binding::{LocalDeviceRole, LocalSerialRoleBinding},
@@ -43,6 +44,20 @@ struct ProfileRefreshState {
     last_error: String,
 }
 
+#[async_trait]
+pub trait RuntimeConfigurationFileWriter: Send + Sync {
+    async fn write(&self, path: &Path, payload: &[u8]) -> Result<(), String>;
+}
+
+struct DurableRuntimeConfigurationFileWriter;
+
+#[async_trait]
+impl RuntimeConfigurationFileWriter for DurableRuntimeConfigurationFileWriter {
+    async fn write(&self, path: &Path, payload: &[u8]) -> Result<(), String> {
+        write_atomic_bytes(path, payload).await
+    }
+}
+
 /// The clean configuration boundary. Deployment owns Runtime Bootstrap while
 /// the daemon owns the accepted profile cache and credential extraction.
 pub struct CleanRuntimeConfigurationStore {
@@ -52,6 +67,7 @@ pub struct CleanRuntimeConfigurationStore {
     mutation_lock: Mutex<()>,
     generation: AtomicU64,
     refresh_error: Mutex<Option<String>>,
+    file_writer: Arc<dyn RuntimeConfigurationFileWriter>,
 }
 
 /// The daemon's only mutable runtime sources. Runtime Bootstrap remains
@@ -218,6 +234,18 @@ impl RuntimeSources {
 
 impl CleanRuntimeConfigurationStore {
     pub fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        Self::with_file_writer(
+            data_dir,
+            secrets,
+            Arc::new(DurableRuntimeConfigurationFileWriter),
+        )
+    }
+
+    pub fn with_file_writer(
+        data_dir: PathBuf,
+        secrets: Arc<dyn SecretStore>,
+        file_writer: Arc<dyn RuntimeConfigurationFileWriter>,
+    ) -> Self {
         let local_settings = LocalRuntimeSettingsStore::new(data_dir.clone());
         Self {
             data_dir,
@@ -226,6 +254,7 @@ impl CleanRuntimeConfigurationStore {
             mutation_lock: Mutex::new(()),
             generation: AtomicU64::new(0),
             refresh_error: Mutex::new(None),
+            file_writer,
         }
     }
 
@@ -335,8 +364,19 @@ impl CleanRuntimeConfigurationStore {
         profile: &MachineProvisioningProfile,
     ) -> Result<ProvisioningProfileCache, String> {
         let _mutation = self.mutation_lock.lock().await;
-        self.recover_claim_transaction_locked().await?;
-        let accepted_cache = self.load_profile_cache().await?;
+        if let Err(error) = self.recover_claim_transaction_locked().await {
+            self.record_refresh_error("profile acceptance recovery failed")
+                .await;
+            return Err(error);
+        }
+        let accepted_cache = match self.load_profile_cache().await {
+            Ok(cache) => cache,
+            Err(error) => {
+                self.record_refresh_error("accepted profile cache is unreadable")
+                    .await;
+                return Err(error);
+            }
+        };
         let generation = self
             .generation
             .load(Ordering::Acquire)
@@ -361,7 +401,14 @@ impl CleanRuntimeConfigurationStore {
             }
         };
         if self.runtime_bootstrap_path().exists() {
-            let bootstrap = self.load_bootstrap().await?;
+            let bootstrap = match self.load_bootstrap().await {
+                Ok(bootstrap) => bootstrap,
+                Err(error) => {
+                    self.record_refresh_error("runtime bootstrap is unreadable")
+                        .await;
+                    return Err(error);
+                }
+            };
             if bootstrap.hardware_model.to_string() != profile.hardware_model.as_str()
                 || bootstrap.topology.identity.to_string()
                     != profile.hardware_slot_topology.identity.as_str()
@@ -385,7 +432,14 @@ impl CleanRuntimeConfigurationStore {
                 "provisioning profile revision is older than the accepted profile".to_string(),
             );
         }
-        let previous = credential_snapshot(self.secrets.as_ref()).await?;
+        let previous = match credential_snapshot(self.secrets.as_ref()).await {
+            Ok(previous) => previous,
+            Err(error) => {
+                self.record_refresh_error("profile credential snapshot failed")
+                    .await;
+                return Err(error);
+            }
+        };
         if let Err(error) = write_credential_backups(self.secrets.as_ref(), &previous).await {
             let _ = clear_credential_backups(self.secrets.as_ref()).await;
             self.record_refresh_error("profile credential rollback preparation failed")
@@ -399,8 +453,13 @@ impl CleanRuntimeConfigurationStore {
             profile_generation: generation,
             phase: "credentials_replacing".to_string(),
         };
-        if let Err(error) = write_atomic_json(&self.claim_journal_path(), &journal).await {
-            clear_credential_backups(self.secrets.as_ref()).await?;
+        if let Err(error) = self
+            .write_atomic_json(&self.claim_journal_path(), &journal)
+            .await
+        {
+            self.record_refresh_error("profile acceptance journal was not persisted")
+                .await;
+            let _ = clear_credential_backups(self.secrets.as_ref()).await;
             return Err(error);
         }
         let replacements = [
@@ -426,26 +485,37 @@ impl CleanRuntimeConfigurationStore {
 
         for (account, value) in replacements {
             if let Err(error) = self.secrets.write_secret(account, value).await {
-                restore_credentials(self.secrets.as_ref(), &previous).await?;
-                clear_credential_backups(self.secrets.as_ref()).await?;
-                remove_optional_file(&self.claim_journal_path()).await?;
+                let _ = restore_credentials(self.secrets.as_ref(), &previous).await;
+                let _ = clear_credential_backups(self.secrets.as_ref()).await;
+                let _ = remove_optional_file(&self.claim_journal_path()).await;
                 self.record_refresh_error("profile credentials were not accepted")
                     .await;
                 return Err(format!("persist profile credentials failed: {error}"));
             }
         }
 
-        if let Err(error) = write_atomic_json(&self.profile_cache_path(), &cache).await {
-            restore_credentials(self.secrets.as_ref(), &previous).await?;
-            clear_credential_backups(self.secrets.as_ref()).await?;
-            remove_optional_file(&self.claim_journal_path()).await?;
+        if let Err(error) = self
+            .write_atomic_json(&self.profile_cache_path(), &cache)
+            .await
+        {
             self.record_refresh_error("profile cache was not accepted")
                 .await;
+            let _ = restore_credentials(self.secrets.as_ref(), &previous).await;
+            let _ = clear_credential_backups(self.secrets.as_ref()).await;
+            let _ = remove_optional_file(&self.claim_journal_path()).await;
             return Err(error);
         }
 
-        clear_credential_backups(self.secrets.as_ref()).await?;
-        remove_optional_file(&self.claim_journal_path()).await?;
+        if let Err(error) = clear_credential_backups(self.secrets.as_ref()).await {
+            self.record_refresh_error("profile credential rollback cleanup failed")
+                .await;
+            return Err(error);
+        }
+        if let Err(error) = remove_optional_file(&self.claim_journal_path()).await {
+            self.record_refresh_error("profile acceptance journal cleanup failed")
+                .await;
+            return Err(error);
+        }
         self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
         Ok(cache)
@@ -456,8 +526,20 @@ impl CleanRuntimeConfigurationStore {
         profile: &daemon_ipc_contracts::MachineProvisioningProfileSnapshot,
     ) -> Result<Option<ProvisioningProfileCache>, String> {
         let _mutation = self.mutation_lock.lock().await;
-        self.recover_claim_transaction_locked().await?;
-        let Some(accepted) = self.load_profile_cache().await? else {
+        if let Err(error) = self.recover_claim_transaction_locked().await {
+            self.record_refresh_error("profile refresh recovery failed")
+                .await;
+            return Err(error);
+        }
+        let accepted_cache = match self.load_profile_cache().await {
+            Ok(cache) => cache,
+            Err(error) => {
+                self.record_refresh_error("accepted profile cache is unreadable")
+                    .await;
+                return Err(error);
+            }
+        };
+        let Some(accepted) = accepted_cache else {
             self.record_refresh_error("profile refresh requires an accepted claim")
                 .await;
             return Err("profile refresh requires an accepted claim".to_string());
@@ -488,7 +570,14 @@ impl CleanRuntimeConfigurationStore {
             return Err("provisioning profile changed without a newer revision".to_string());
         }
 
-        let bootstrap = self.load_bootstrap().await?;
+        let bootstrap = match self.load_bootstrap().await {
+            Ok(bootstrap) => bootstrap,
+            Err(error) => {
+                self.record_refresh_error("runtime bootstrap is unreadable")
+                    .await;
+                return Err(error);
+            }
+        };
         if bootstrap.hardware_model.as_str() != profile.hardware_model.as_str()
             || bootstrap.topology.identity.as_str()
                 != profile.hardware_slot_topology.identity.as_str()
@@ -507,8 +596,22 @@ impl CleanRuntimeConfigurationStore {
             .load(Ordering::Acquire)
             .max(accepted.generation.get())
             .saturating_add(1);
-        let cache = profile_cache_from_snapshot(profile, generation)?;
-        write_atomic_json(&self.profile_cache_path(), &cache).await?;
+        let cache = match profile_cache_from_snapshot(profile, generation) {
+            Ok(cache) => cache,
+            Err(error) => {
+                self.record_refresh_error("profile refresh contract was rejected")
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .write_atomic_json(&self.profile_cache_path(), &cache)
+            .await
+        {
+            self.record_refresh_error("profile refresh cache was not accepted")
+                .await;
+            return Err(error);
+        }
         self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
         Ok(Some(cache))
@@ -523,7 +626,7 @@ impl CleanRuntimeConfigurationStore {
     pub async fn clear_claim(&self) -> Result<(), String> {
         let _mutation = self.mutation_lock.lock().await;
         let generation = self.generation.load(Ordering::Acquire).saturating_add(1);
-        write_atomic_json(
+        self.write_atomic_json(
             &self.claim_journal_path(),
             &ClaimTransactionJournal {
                 schema_version: 1,
@@ -624,14 +727,15 @@ impl CleanRuntimeConfigurationStore {
 
     async fn record_refresh_error(&self, error: &str) {
         *self.refresh_error.lock().await = Some(error.to_string());
-        let _ = write_atomic_json(
-            &self.profile_refresh_state_path(),
-            &ProfileRefreshState {
-                schema_version: 1,
-                last_error: error.to_string(),
-            },
-        )
-        .await;
+        let _ = self
+            .write_atomic_json(
+                &self.profile_refresh_state_path(),
+                &ProfileRefreshState {
+                    schema_version: 1,
+                    last_error: error.to_string(),
+                },
+            )
+            .await;
     }
 
     async fn load_refresh_error(&self) -> Result<Option<String>, String> {
@@ -658,6 +762,16 @@ impl CleanRuntimeConfigurationStore {
     async fn clear_refresh_error(&self) {
         *self.refresh_error.lock().await = None;
         let _ = remove_optional_file(&self.profile_refresh_state_path()).await;
+    }
+
+    async fn write_atomic_json<T: serde::Serialize>(
+        &self,
+        path: &Path,
+        value: &T,
+    ) -> Result<(), String> {
+        let payload = serde_json::to_vec_pretty(value)
+            .map_err(|error| format!("serialize provisioning profile cache failed: {error}"))?;
+        self.file_writer.write(path, &payload).await
     }
 
     async fn recover_claim_transaction_locked(&self) -> Result<(), String> {
@@ -759,22 +873,40 @@ async fn remove_optional_file(path: &Path) -> Result<(), String> {
     }
 }
 
-async fn write_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "profile cache path has no parent".to_string())?;
     fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("create profile cache dir failed: {error}"))?;
-    let payload = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("serialize provisioning profile cache failed: {error}"))?;
     let staged = path.with_extension("json.tmp");
-    fs::write(&staged, payload)
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&staged)
         .await
         .map_err(|error| format!("stage provisioning profile cache failed: {error}"))?;
+    file.write_all(&payload)
+        .await
+        .map_err(|error| format!("stage provisioning profile cache failed: {error}"))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("sync provisioning profile cache failed: {error}"))?;
+    drop(file);
     fs::rename(&staged, path)
         .await
-        .map_err(|error| format!("accept provisioning profile cache failed: {error}"))
+        .map_err(|error| format!("accept provisioning profile cache failed: {error}"))?;
+    sync_runtime_configuration_directory(parent).await
+}
+
+async fn sync_runtime_configuration_directory(path: &Path) -> Result<(), String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || std::fs::File::open(path)?.sync_all())
+        .await
+        .map_err(|error| format!("join runtime configuration directory sync failed: {error}"))?
+        .map_err(|error| format!("sync runtime configuration directory failed: {error}"))
 }
 
 async fn credential_snapshot(

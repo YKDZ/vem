@@ -29,6 +29,9 @@ import {
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
+  paymentChannelPolicies,
+  paymentProviderConfigs,
+  paymentProviders,
   machineCommands,
   machineEvents,
   machineHeartbeats,
@@ -213,6 +216,12 @@ type MachineClaimCandidate = {
   machineStatus: MachineProvisioningProfile["machine"]["status"];
   machineMqttClientId: string | null;
   machineSecretVersion: number;
+};
+
+type ProvisioningProfilePaymentProjection = {
+  qrCodeEnabled: boolean;
+  paymentCodeEnabled: boolean;
+  sourceUpdatedAt: Date[];
 };
 
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
@@ -2302,44 +2311,178 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   ): Promise<MachineProvisioningProfileSnapshot> {
     const [claim] = await this.db
       .select({
-        encryptedProfile: machineClaimCodes.claimResponseEncryptedJson,
+        claimCodeId: machineClaimCodes.id,
+        claimedAt: machineClaimCodes.consumedAt,
+        machineId: machines.id,
+        machineCode: machines.code,
+        machineName: machines.name,
+        machineStatus: machines.status,
+        machineLocationLabel: machines.locationLabel,
+        machineMqttClientId: machines.mqttClientId,
+        machineUpdatedAt: machines.updatedAt,
       })
       .from(machineClaimCodes)
+      .innerJoin(machines, eq(machines.id, machineClaimCodes.machineId))
       .where(
         and(
           eq(machineClaimCodes.machineId, machineId),
           eq(machineClaimCodes.state, "consumed"),
-          isNotNull(machineClaimCodes.claimResponseEncryptedJson),
+          isNull(machines.deletedAt),
         ),
       )
       .orderBy(desc(machineClaimCodes.consumedAt))
       .limit(1);
-    if (!claim?.encryptedProfile) {
+    const claimedAt = claim?.claimedAt;
+    if (!claim || !claimedAt) {
       throw new NotFoundException(
         "Accepted machine provisioning profile not found",
       );
     }
 
-    const accepted = machineProvisioningProfileSchema.parse(
-      this.machineCredentialService.decryptClaimResponse(
-        claim.encryptedProfile,
-      ),
-    );
-    if (accepted.machine.id !== machineId) {
+    if (claim.machineId !== machineId) {
       throw new ConflictException(
         "Provisioning profile machine identity mismatch",
       );
     }
-    const { credentials, ...profile } = accepted;
+    const payment = await this.provisioningProfilePaymentProjection(machineId);
+    return this.projectProvisioningProfileSnapshot({
+      machine: { ...claim, claimedAt },
+      payment,
+    });
+  }
+
+  private async provisioningProfilePaymentProjection(
+    machineId: string,
+  ): Promise<ProvisioningProfilePaymentProjection> {
+    const [paymentOptions, policyRows, configRows, providerRows] =
+      await Promise.all([
+        this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
+          machineId,
+        ),
+        this.db
+          .select({ updatedAt: paymentChannelPolicies.updatedAt })
+          .from(paymentChannelPolicies),
+        this.db
+          .select({ updatedAt: paymentProviderConfigs.updatedAt })
+          .from(paymentProviderConfigs)
+          .where(
+            or(
+              eq(paymentProviderConfigs.machineId, machineId),
+              isNull(paymentProviderConfigs.machineId),
+            ),
+          ),
+        this.db
+          .select({ updatedAt: paymentProviders.updatedAt })
+          .from(paymentProviders),
+      ]);
+    const availableOptions = paymentOptions.options.filter(
+      (option) => !option.disabled,
+    );
+    return {
+      qrCodeEnabled: availableOptions.some(
+        (option) => option.method === "qr_code",
+      ),
+      paymentCodeEnabled: availableOptions.some(
+        (option) => option.method === "payment_code",
+      ),
+      sourceUpdatedAt: [
+        ...policyRows.map((row) => row.updatedAt),
+        ...configRows.map((row) => row.updatedAt),
+        ...providerRows.map((row) => row.updatedAt),
+      ],
+    };
+  }
+
+  private projectProvisioningProfileSnapshot(input: {
+    machine: {
+      claimCodeId: string;
+      claimedAt: Date;
+      machineId: string;
+      machineCode: string;
+      machineName: string;
+      machineStatus: MachineProvisioningProfile["machine"]["status"];
+      machineLocationLabel: string | null;
+      machineMqttClientId: string | null;
+      machineUpdatedAt: Date;
+    };
+    payment: ProvisioningProfilePaymentProjection;
+  }): MachineProvisioningProfileSnapshot {
+    const sourceUpdatedAt = [
+      input.machine.claimedAt,
+      input.machine.machineUpdatedAt,
+      ...input.payment.sourceUpdatedAt,
+    ].reduce(
+      (latest, value) => (value.getTime() > latest.getTime() ? value : latest),
+      input.machine.claimedAt,
+    );
+    // Every projected fact has its own database update timestamp. Summing the
+    // source revisions preserves a stable snapshot revision while allowing a
+    // machine change to advance it even when another current source is newer.
+    const profileRevision = Math.max(
+      1,
+      [
+        input.machine.claimedAt,
+        input.machine.machineUpdatedAt,
+        ...input.payment.sourceUpdatedAt,
+      ].reduce((revision, value) => revision + value.getTime(), 0),
+    );
+    const serverTime = toIso(sourceUpdatedAt);
+
     return machineProvisioningProfileSnapshotSchema.parse({
-      ...profile,
-      mqttConnection: {
-        url: credentials.mqttConnection.url,
-        clientId: credentials.mqttConnection.clientId,
-        username: credentials.mqttConnection.username ?? null,
+      machine: {
+        id: input.machine.machineId,
+        code: input.machine.machineCode,
+        name: input.machine.machineName,
+        status: input.machine.machineStatus,
+        locationLabel: input.machine.machineLocationLabel,
       },
-      paymentCapability: profile.paymentCapability,
-      metadata: profile.metadata,
+      apiBaseUrl: this.config.machineApiBaseUrl,
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: `/api/machines/${input.machine.machineCode}`,
+        mqttTopicPrefix: `vem/machines/${input.machine.machineCode}`,
+      },
+      mqttConnection: {
+        url: this.config.machineMqttUrl,
+        clientId:
+          input.machine.machineMqttClientId ??
+          `vem-machine-${input.machine.machineCode}`,
+        username: this.config.mqttUsername ?? null,
+      },
+      hardwareProfile: {
+        profile: "production",
+        controller: {
+          required: true,
+          protocol: "vem-vending-controller",
+        },
+        paymentScanner: {
+          required: true,
+          supportsPaymentCode: true,
+        },
+        vision: {
+          required: false,
+          supportsRecommendations: true,
+        },
+      },
+      hardwareModel: "vem-prod-24",
+      hardwareSlotTopology: {
+        identity: "vem-prod-24",
+        version: "2026-06-adr0026",
+      },
+      paymentCapability: {
+        profile: "production",
+        qrCodeEnabled: input.payment.qrCodeEnabled,
+        paymentCodeEnabled: input.payment.paymentCodeEnabled,
+        serverTime,
+      },
+      metadata: {
+        profileVersion: 1,
+        profileRevision,
+        claimCodeId: input.machine.claimCodeId,
+        claimedAt: toIso(input.machine.claimedAt),
+        serverTime,
+      },
     });
   }
 

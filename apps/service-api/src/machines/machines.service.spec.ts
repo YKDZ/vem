@@ -3505,18 +3505,47 @@ describe("MachinesService claim code lifecycle", () => {
     };
   }
 
-  it("returns the stable non-secret accepted profile snapshot for daemon refresh", async () => {
-    const encrypted = { v: 1, ciphertext: "encrypted-refresh-profile" };
+  it("projects a current non-secret profile snapshot for daemon refresh", async () => {
     const profile = replayProfile();
-    decryptClaimResponse.mockReturnValueOnce(profile);
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: async () => [{ encryptedProfile: encrypted }],
+    const paymentUpdatedAt = new Date("2026-06-08T16:35:00.000Z");
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              orderBy: () => ({
+                limit: async () => [
+                  {
+                    claimCodeId: profile.metadata.claimCodeId,
+                    claimedAt: claimCodeNow,
+                    machineId: profile.machine.id,
+                    machineCode: profile.machine.code,
+                    machineName: "Lobby refreshed",
+                    machineStatus: profile.machine.status,
+                    machineLocationLabel: profile.machine.locationLabel,
+                    machineMqttClientId: "current-machine-client",
+                    machineUpdatedAt: paymentUpdatedAt,
+                  },
+                ],
+              }),
+            }),
           }),
         }),
-      }),
+      })
+      .mockReturnValueOnce({
+        from: async () => [{ updatedAt: paymentUpdatedAt }],
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: async () => [{ updatedAt: paymentUpdatedAt }] }),
+      })
+      .mockReturnValueOnce({
+        from: async () => [{ updatedAt: paymentUpdatedAt }],
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [
+        { method: "qr_code", disabled: false },
+        { method: "payment_code", disabled: false },
+      ],
     });
 
     const snapshot = await service.getOwnProvisioningProfile(
@@ -3525,13 +3554,23 @@ describe("MachinesService claim code lifecycle", () => {
 
     expect(snapshot).not.toHaveProperty("credentials");
     expect(snapshot.mqttConnection).toEqual({
-      url: profile.credentials.mqttConnection.url,
-      clientId: profile.credentials.mqttConnection.clientId,
-      username: null,
+      url: "mqtt://platform.example.com:18884",
+      clientId: "current-machine-client",
+      username: "machine-client",
     });
-    expect(snapshot.metadata).toEqual(profile.metadata);
-    expect(snapshot.paymentCapability).toEqual(profile.paymentCapability);
-    expect(decryptClaimResponse).toHaveBeenCalledWith(encrypted);
+    expect(snapshot.machine.name).toBe("Lobby refreshed");
+    expect(snapshot.metadata).toMatchObject({
+      ...profile.metadata,
+      profileRevision: claimCodeNow.getTime() + paymentUpdatedAt.getTime() * 4,
+      serverTime: paymentUpdatedAt.toISOString(),
+    });
+    expect(snapshot.paymentCapability).toEqual({
+      profile: "production",
+      qrCodeEnabled: true,
+      paymentCodeEnabled: true,
+      serverTime: paymentUpdatedAt.toISOString(),
+    });
+    expect(decryptClaimResponse).not.toHaveBeenCalled();
   });
 
   it("replays the atomically persisted response after an interrupted claim without allocating another identity", async () => {

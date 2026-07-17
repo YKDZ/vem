@@ -155,6 +155,12 @@ impl MqttSyncRuntime {
         });
     }
 
+    async fn invalidate_sale_start_capability(&self) {
+        if let Some(context) = self.readiness_context.as_ref() {
+            crate::ipc::invalidate_sale_start_capability(context).await;
+        }
+    }
+
     fn parse_and_verify_envelope(
         &self,
         payload_text: &str,
@@ -205,6 +211,7 @@ impl MqttSyncRuntime {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
+                    self.invalidate_sale_start_capability().await;
                 }
                 return Ok(CommandHandlingResult::DuplicateFinal {
                     command_no: command.command_no,
@@ -312,6 +319,7 @@ impl MqttSyncRuntime {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
+            self.invalidate_sale_start_capability().await;
         }
 
         Ok(CommandHandlingResult::Processed {
@@ -438,6 +446,7 @@ impl MqttSyncRuntime {
                 .block_slot_for_dispense_result_unknown(&record.command_payload)
                 .await
                 .map_err(|error| error.to_string())?;
+            self.invalidate_sale_start_capability().await;
             let _ = self.events.send(DaemonEvent::TransactionChanged {
                 event_id: Uuid::new_v4().simple().to_string(),
                 updated_at: crate::state::store::now_iso(),
@@ -608,7 +617,18 @@ impl MqttSyncRuntime {
             "faulted"
         };
         if let Some(context) = self.readiness_context.as_ref() {
-            *context.ui.status_cache.hardware.write().await = hardware_status.clone();
+            let changed = {
+                let mut cached = context.ui.status_cache.hardware.write().await;
+                let changed = cached.online != hardware_status.online
+                    || cached.port_path != hardware_status.port_path
+                    || cached.adapter != hardware_status.adapter
+                    || cached.message != hardware_status.message;
+                *cached = hardware_status.clone();
+                changed
+            };
+            if changed {
+                self.invalidate_sale_start_capability().await;
+            }
         }
         let whole_machine_lock = self
             .state

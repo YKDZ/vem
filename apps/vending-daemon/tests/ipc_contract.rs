@@ -70,6 +70,18 @@ async fn ipc_exposes_runtime_boundaries_without_legacy_summary_or_maintenance_ga
         .expect("maintenance response");
     assert_eq!(maintenance.status(), StatusCode::NOT_FOUND);
 
+    let legacy_binding_confirm = client
+        .post(format!("{base}/v1/hardware-bindings/scanner/confirm"))
+        .header("Authorization", daemon.bearer())
+        .json(&serde_json::json!({
+            "identityKey": "container:22222222-3333-4444-5555-666666666666",
+            "testEvidenceToken": "11111111-2222-4333-8444-555555555555"
+        }))
+        .send()
+        .await
+        .expect("legacy binding confirmation response");
+    assert_eq!(legacy_binding_confirm.status(), StatusCode::NOT_FOUND);
+
     let scanner = client
         .get(format!("{base}/v1/scanner/status"))
         .header("Authorization", daemon.bearer())

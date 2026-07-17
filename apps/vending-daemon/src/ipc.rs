@@ -103,9 +103,8 @@ struct SubmitPayment {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DeviceBindingCandidateRequest {
+struct DeviceBindingTestRequest {
     identity_key: String,
-    test_evidence_token: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -517,7 +516,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/hardware/self-check", post(hardware_self_check))
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route("/v1/hardware-bindings/:role/test", post(test_binding))
-        .route("/v1/hardware-bindings/:role/confirm", post(confirm_binding))
         .route("/v1/environment/control", post(control_environment))
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
@@ -905,7 +903,7 @@ async fn sale_start_capability(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    match sale_start_capability_snapshot(&ctx).await {
+    match sale_start_capability_snapshot(&ctx, false).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1160,6 +1158,7 @@ fn capability_fingerprint(snapshot: &daemon_ipc_contracts::SaleStartCapabilitySn
 
 async fn sale_start_capability_snapshot(
     ctx: &IpcContext,
+    invalidate: bool,
 ) -> Result<daemon_ipc_contracts::SaleStartCapabilitySnapshot, String> {
     let mut state = ctx.ui.status_cache.sale_start_state.lock().await;
     let observation = observe_sale_start_capability(ctx).await;
@@ -1186,13 +1185,18 @@ async fn sale_start_capability_snapshot(
         }
     };
     let fingerprint = capability_fingerprint(&provisional);
-    let changed = state
+    let fingerprint_changed = state
         .fingerprint
         .as_ref()
         .is_some_and(|current| current != &fingerprint);
     if state.fingerprint.as_ref() != Some(&fingerprint) {
-        state.revision = state.revision.saturating_add(1).max(1);
         state.fingerprint = Some(fingerprint);
+    }
+    let changed = fingerprint_changed || invalidate;
+    if changed {
+        state.revision = state.revision.saturating_add(1).max(1);
+    } else if state.revision == 0 {
+        state.revision = 1;
     }
     let mut snapshot = provisional;
     snapshot.revision = std::num::NonZeroU64::new(state.revision).expect("revision");
@@ -1215,7 +1219,11 @@ async fn sale_start_capability_snapshot(
 }
 
 pub(crate) async fn refresh_sale_start_capability(ctx: &IpcContext) {
-    let _ = sale_start_capability_snapshot(ctx).await;
+    let _ = sale_start_capability_snapshot(ctx, false).await;
+}
+
+pub(crate) async fn invalidate_sale_start_capability(ctx: &IpcContext) {
+    let _ = sale_start_capability_snapshot(ctx, true).await;
 }
 
 fn scanner_payment_readiness(
@@ -1288,7 +1296,7 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    match sale_start_capability_snapshot(&ctx).await {
+    match sale_start_capability_snapshot(&ctx, false).await {
         Ok(capability) => Json(serde_json::json!({
             "options": capability.payment_options.options.into_iter().map(|option| serde_json::json!({
                 "optionKey": option.option_key,
@@ -1342,7 +1350,7 @@ async fn create_order(
             "quantity must be exactly 1 for lower controller protocol v1",
         );
     }
-    let capability = match sale_start_capability_snapshot(&ctx).await {
+    let capability = match sale_start_capability_snapshot(&ctx, false).await {
         Ok(value) => value,
         Err(error) => {
             return error_response(
@@ -1641,7 +1649,7 @@ async fn apply_planogram(
     }
     match ctx.state.apply_planogram(input).await {
         Ok(value) => {
-            refresh_sale_start_capability(&ctx).await;
+            invalidate_sale_start_capability(&ctx).await;
             Json(value).into_response()
         }
         Err(error) => error_response(
@@ -1692,7 +1700,7 @@ async fn submit_stock_maintenance_batch(
         .await
     {
         Ok(value) => {
-            refresh_sale_start_capability(&ctx).await;
+            invalidate_sale_start_capability(&ctx).await;
             (StatusCode::CREATED, Json(value)).into_response()
         }
         Err(error) => error_response(
@@ -1725,7 +1733,7 @@ async fn record_physical_stock_attestation(
         .await
     {
         Ok(value) => {
-            refresh_sale_start_capability(&ctx).await;
+            invalidate_sale_start_capability(&ctx).await;
             (StatusCode::CREATED, Json(value)).into_response()
         }
         Err(error) => error_response(
@@ -1758,7 +1766,7 @@ async fn record_stock_movement(
         .await
     {
         Ok(value) => {
-            refresh_sale_start_capability(&ctx).await;
+            invalidate_sale_start_capability(&ctx).await;
             Json(value).into_response()
         }
         Err(error) => error_response(
@@ -1778,7 +1786,7 @@ async fn hardware_self_check(
     }
     let status = ctx.hardware.self_check().await;
     *ctx.ui.status_cache.hardware.write().await = status.clone();
-    refresh_sale_start_capability(&ctx).await;
+    invalidate_sale_start_capability(&ctx).await;
     Json(status).into_response()
 }
 
@@ -1861,7 +1869,7 @@ async fn clear_whole_machine_maintenance_lock(
             error.to_string(),
         );
     }
-    refresh_sale_start_capability(&ctx).await;
+    invalidate_sale_start_capability(&ctx).await;
     Json(serde_json::json!({ "cleared": true, "previous": previous_lock })).into_response()
 }
 
@@ -2204,7 +2212,7 @@ async fn test_binding(
     State(ctx): State<IpcContext>,
     AxumPath(role): AxumPath<String>,
     headers: HeaderMap,
-    Json(input): Json<DeviceBindingCandidateRequest>,
+    Json(input): Json<DeviceBindingTestRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
@@ -2297,11 +2305,11 @@ async fn test_binding(
     .into_response()
 }
 
-async fn confirm_binding(
+async fn confirm_runtime_binding(
     State(ctx): State<IpcContext>,
     AxumPath(role): AxumPath<String>,
     headers: HeaderMap,
-    Json(input): Json<DeviceBindingCandidateRequest>,
+    Json(input): Json<daemon_ipc_contracts::ConfirmHardwareBindingRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
@@ -2353,7 +2361,7 @@ async fn confirm_binding(
         device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
             .ok()
             .as_ref()
-            .is_some_and(|identity| identity.identity_key == input.identity_key)
+            .is_some_and(|identity| identity.identity_key == input.identity_key.to_string())
     }) else {
         return error_response(
             StatusCode::NOT_FOUND,
@@ -2375,19 +2383,13 @@ async fn confirm_binding(
             )
         }
     };
-    let Some(token) = input.test_evidence_token.as_deref() else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "device_binding_test_required",
-            "test the stable device before confirming it",
-        );
-    };
+    let token = input.test_evidence_token.to_string();
     if let Err(error) = ctx
         .device_binding_test_evidence
         .consume(
-            token,
+            &token,
             role,
-            &input.identity_key,
+            &input.identity_key.to_string(),
             &observation_revision,
             &revision,
         )
@@ -2438,26 +2440,8 @@ async fn confirm_binding(
             error,
         );
     }
+    invalidate_sale_start_capability(&ctx).await;
     Json(serde_json::json!({ "binding": binding, "currentPort": candidate.current_port, "ready": true, "code": "DEVICE_BINDING_ACTIVATED" })).into_response()
-}
-
-async fn confirm_runtime_binding(
-    State(ctx): State<IpcContext>,
-    AxumPath(role): AxumPath<String>,
-    headers: HeaderMap,
-    Json(input): Json<daemon_ipc_contracts::ConfirmHardwareBindingRequest>,
-) -> impl IntoResponse {
-    confirm_binding(
-        State(ctx),
-        AxumPath(role),
-        headers,
-        Json(DeviceBindingCandidateRequest {
-            identity_key: input.identity_key.to_string(),
-            test_evidence_token: Some(input.test_evidence_token.to_string()),
-        }),
-    )
-    .await
-    .into_response()
 }
 
 async fn activate_binding(
@@ -2566,6 +2550,7 @@ async fn clear_runtime_binding(
             let _ = ctx.scanner_runtime.stop().await;
         }
     }
+    invalidate_sale_start_capability(&ctx).await;
     runtime_configuration(State(ctx), headers)
         .await
         .into_response()
@@ -2663,6 +2648,7 @@ async fn set_scanner_protocol(
             }
         }
     }
+    invalidate_sale_start_capability(&ctx).await;
     runtime_configuration(State(ctx), headers)
         .await
         .into_response()
@@ -2685,6 +2671,7 @@ async fn set_audio_preferences(
     if let Err(error) = ctx.runtime_sources.set_local_audio_preferences(value).await {
         return error_response(StatusCode::BAD_REQUEST, "audio_preferences_invalid", error);
     }
+    invalidate_sale_start_capability(&ctx).await;
     runtime_configuration(State(ctx), headers)
         .await
         .into_response()
@@ -3294,13 +3281,24 @@ mod tests {
             String::from_utf8_lossy(&rejected_qr_body)
         );
 
-        let ready = sale_start_capability_snapshot(&ctx)
+        let ready = sale_start_capability_snapshot(&ctx, false)
             .await
             .expect("ready capability");
         assert!(ready.can_start_sale);
         assert_eq!(ready.payment_options.options.len(), 1);
         let initial_revision = ready.revision.get();
         let generation = ready.generation.to_string();
+
+        invalidate_sale_start_capability(&ctx).await;
+        let invalidated = sale_start_capability_snapshot(&ctx, false)
+            .await
+            .expect("invalidated capability");
+        assert_eq!(invalidated.can_start_sale, ready.can_start_sale);
+        assert!(invalidated.revision.get() > initial_revision);
+        assert!(matches!(
+            events.recv().await.expect("capability invalidation event"),
+            DaemonEvent::SaleStartCapabilityChanged { revision, .. } if revision == invalidated.revision.get()
+        ));
 
         ctx.ui.status_cache.scanner.write().await.online = false;
         let blocked_response = build_router(ctx.clone())
@@ -3321,7 +3319,7 @@ mod tests {
         )
         .expect("generated capability");
         assert!(!blocked.can_start_sale);
-        assert!(blocked.revision.get() > initial_revision);
+        assert!(blocked.revision.get() > invalidated.revision.get());
         assert_eq!(blocked.generation.to_string(), generation);
         assert!(matches!(
             events.recv().await.expect("capability change event"),
@@ -3334,7 +3332,7 @@ mod tests {
             .with_priority(1)
             .mount(&server)
             .await;
-        let stale = sale_start_capability_snapshot(&ctx)
+        let stale = sale_start_capability_snapshot(&ctx, false)
             .await
             .expect("last accepted stale capability");
         assert_eq!(stale.generation.to_string(), generation);

@@ -71,19 +71,9 @@ export const daemonIpcHealthSnapshotSchema = z
 export const daemonIpcReadySnapshotSchema = z
   .object({
     ready: z.boolean(),
-    canSell: z.boolean(),
-    mode: z.string(),
     blockingCodes: z.array(z.string()),
     blockingReasons: z.array(daemonIpcReadyReasonSchema),
     degradedReasons: z.array(daemonIpcReadyReasonSchema),
-    suggestedRoute: z.enum([
-      "maintenance",
-      "offline",
-      "catalog",
-      "payment",
-      "dispensing",
-      "result",
-    ]),
     updatedAt: z.string(),
   })
   .strict();
@@ -403,7 +393,6 @@ const daemonIpcKnownEventEnvelopeSchema = daemonIpcEventEnvelopeSchema.strict();
 
 export const daemonIpcKnownEventNotificationTypeSchema = z.enum([
   "health_changed",
-  "ready_changed",
   "sale_start_capability_changed",
   "scanner_health_changed",
   "scanner_code",
@@ -423,14 +412,6 @@ export const daemonIpcHealthChangedEventSchema =
     .extend({
       type: z.literal("health_changed"),
       snapshot: daemonIpcHealthSnapshotSchema,
-    })
-    .strict();
-
-export const daemonIpcReadyChangedEventSchema =
-  daemonIpcKnownEventEnvelopeSchema
-    .extend({
-      type: z.literal("ready_changed"),
-      snapshot: daemonIpcReadySnapshotSchema,
     })
     .strict();
 
@@ -510,7 +491,6 @@ export const daemonIpcKnownEventNotificationSchema = z.discriminatedUnion(
   "type",
   [
     daemonIpcHealthChangedEventSchema,
-    daemonIpcReadyChangedEventSchema,
     daemonIpcSaleStartCapabilityChangedEventSchema,
     daemonIpcScannerHealthChangedEventSchema,
     daemonIpcScannerCodeEventSchema,

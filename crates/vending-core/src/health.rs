@@ -27,17 +27,6 @@ pub struct ReadyReason {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SuggestedRoute {
-    Maintenance,
-    Offline,
-    Catalog,
-    Payment,
-    Dispensing,
-    Result,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentHealth {
@@ -73,12 +62,9 @@ pub struct HealthSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ReadySnapshot {
     pub ready: bool,
-    pub can_sell: bool,
-    pub mode: String,
     pub blocking_codes: Vec<String>,
     pub blocking_reasons: Vec<ReadyReason>,
     pub degraded_reasons: Vec<ReadyReason>,
-    pub suggested_route: SuggestedRoute,
     pub updated_at: String,
 }
 
@@ -120,16 +106,14 @@ mod tests {
         assert!(!value.contains("authCode"));
         let ready = super::ReadySnapshot {
             ready: true,
-            can_sell: true,
-            mode: "sale".to_string(),
             blocking_codes: vec![],
             blocking_reasons: vec![],
             degraded_reasons: vec![],
-            suggested_route: super::SuggestedRoute::Catalog,
             updated_at: "2025-01-01T00:00:00.000Z".to_string(),
         };
         let ready_json = serde_json::to_string(&ready).expect("ready");
-        assert!(ready_json.contains("\"canSell\""));
-        assert!(ready_json.contains("\"suggestedRoute\""));
+        assert!(ready_json.contains("\"blockingCodes\""));
+        assert!(!ready_json.contains("\"canSell\""));
+        assert!(!ready_json.contains("\"suggestedRoute\""));
     }
 }

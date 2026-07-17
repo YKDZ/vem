@@ -219,20 +219,9 @@ impl HealthAggregator {
             .collect::<Vec<_>>();
         vending_core::health::ReadySnapshot {
             ready: blocking_codes.is_empty(),
-            can_sell: blocking_codes.is_empty(),
-            mode: if blocking_codes.is_empty() {
-                "sale".to_string()
-            } else {
-                "maintenance".to_string()
-            },
             blocking_codes: blocking_codes.clone(),
             blocking_reasons: vec![],
             degraded_reasons: vec![],
-            suggested_route: if blocking_codes.is_empty() {
-                vending_core::health::SuggestedRoute::Catalog
-            } else {
-                vending_core::health::SuggestedRoute::Maintenance
-            },
             updated_at: crate::state::store::now_iso(),
         }
     }
@@ -262,6 +251,5 @@ mod tests {
         let ready = health.ready_snapshot().await;
         assert!(!ready.ready);
         assert_eq!(ready.blocking_codes, vec!["CONFIG_INCOMPLETE"]);
-        assert_eq!(ready.mode, "maintenance");
     }
 }

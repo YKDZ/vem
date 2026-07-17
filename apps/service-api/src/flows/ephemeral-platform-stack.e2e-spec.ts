@@ -16,6 +16,7 @@ import {
   DrizzleEphemeralPlatformStackRepository,
   prepareEphemeralPlatformStack,
 } from "../testbed/prepare-ephemeral-platform-stack.cli";
+import { loginAndGetToken } from "./flow-test-helpers";
 
 describe(
   "ephemeral platform stack acceptance setup",
@@ -232,10 +233,30 @@ describe(
       const refreshed = machineProvisioningProfileSnapshotSchema.parse(
         (refreshResponse.body as ApiResponse<unknown>).data,
       );
-      expect(refreshed.metadata.profileRevision).toBe(
+      expect(refreshed.metadata.profileRevision).toBeGreaterThan(
         claimed.metadata.profileRevision,
       );
       expect(refreshed).not.toHaveProperty("credentials");
+
+      const adminToken = await loginAndGetToken(api, appConfig);
+      const renamedMachine = `${second.testbedMachine.code} refreshed`;
+      const updateResponse = await api
+        .patch(`/api/machines/${second.testbedMachine.id}`)
+        .set({ Authorization: `Bearer ${adminToken}` })
+        .send({ name: renamedMachine });
+      expect(updateResponse.status).toBe(200);
+
+      const updatedRefreshResponse = await api
+        .get(`/api/machines/${second.testbedMachine.code}/provisioning-profile`)
+        .set(auth);
+      expect(updatedRefreshResponse.status).toBe(200);
+      const updatedProfile = machineProvisioningProfileSnapshotSchema.parse(
+        (updatedRefreshResponse.body as ApiResponse<unknown>).data,
+      );
+      expect(updatedProfile.machine.name).toBe(renamedMachine);
+      expect(updatedProfile.metadata.profileRevision).toBeGreaterThan(
+        refreshed.metadata.profileRevision,
+      );
 
       const publishedResponse = await api
         .get(
