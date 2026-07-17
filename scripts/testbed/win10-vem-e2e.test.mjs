@@ -3067,10 +3067,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
     assert.match(script, /\$machineConfig\.apiBaseUrl = /);
     assert.match(script, /\$machineConfig\.mqttUrl = /);
-    assert.match(
-      script,
-      /C:\\ProgramData\\VEM\\bringup\\local-settings\.json/,
-    );
+    assert.match(script, /C:\\ProgramData\\VEM\\bringup\\local-settings\.json/);
     assert.match(script, /\$localSettings\.provisioningEndpointOverride = /);
     assert.match(script, /VEM_NETWORK_ADAPTER=fake/);
     assert.match(script, /VEM_FAKE_NETWORK_OUTCOME=success/);
@@ -3086,10 +3083,7 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop/,
     );
-    assert.match(
-      script,
-      /Restart-Service -Name "VemVendingDaemon" -Force/,
-    );
+    assert.match(script, /Restart-Service -Name "VemVendingDaemon" -Force/);
     assert.match(script, /preClaimFactoryConfigVerified = \$true/);
     assert.match(
       script,
@@ -6111,8 +6105,7 @@ if ($errors.Count -gt 0) {
               const out = command[command.indexOf("--out") + 1];
               const runtime =
                 command.includes("--mode") &&
-                command[command.indexOf("--mode") + 1] ===
-                  "runtime-acceptance";
+                command[command.indexOf("--mode") + 1] === "runtime-acceptance";
               const output = runtime
                 ? {
                     ok: true,

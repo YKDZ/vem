@@ -520,8 +520,8 @@ export const useCheckoutStore = defineStore("checkout", {
       } catch (error) {
         this.error =
           selected && selectedPaymentCodeLocalGateError(error, selected)
-          ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
-          : errorString(error);
+            ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
+            : errorString(error);
         await catalogStore.refresh().catch(() => {
           // Preserve the original order error; catalog refresh is best-effort after a rejected checkout.
         });

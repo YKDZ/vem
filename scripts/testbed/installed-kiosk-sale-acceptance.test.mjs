@@ -25,14 +25,8 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
 describe("installed kiosk sale preflight", () => {
   it("selects a physically available catalog category", () => {
     const steps = buildInstalledKioskSaleScenarioSteps("vm-normal");
-    assert.match(
-      JSON.stringify(steps),
-      /catalog-category.*:not\(:disabled\)/,
-    );
-    assert.match(
-      JSON.stringify(steps),
-      /payment-option.*:not\(:disabled\)/,
-    );
+    assert.match(JSON.stringify(steps), /catalog-category.*:not\(:disabled\)/);
+    assert.match(JSON.stringify(steps), /payment-option.*:not\(:disabled\)/);
     assert.equal(
       steps.find((step) => step.name === "payment submit")?.timeoutMs,
       30_000,

@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -401,14 +402,19 @@ function prepareScannerCode(options, root) {
 }
 
 function restoreConsumedSerialInputs(scanner, trust) {
-  writeFileSync(scanner.path, scanner.code, {
-    mode: 0o600,
-    flag: "wx",
-  });
-  writeFileSync(trust.signingKeyFile, trust.signingKeyPem, {
-    mode: 0o600,
-    flag: "wx",
-  });
+  restoreConsumedSerialInput(scanner.path, scanner.code);
+  restoreConsumedSerialInput(trust.signingKeyFile, trust.signingKeyPem);
+}
+
+function restoreConsumedSerialInput(path, expected) {
+  if (existsSync(path)) {
+    if (readFileSync(path, "utf8") !== expected) {
+      throw new Error(`serial input changed before reissue: ${path}`);
+    }
+    chmodSync(path, 0o600);
+    return;
+  }
+  writeFileSync(path, expected, { mode: 0o600, flag: "wx" });
 }
 
 async function runCommand(command, label, { env = process.env } = {}) {
