@@ -1770,6 +1770,15 @@ function runtimeAcceptanceFacts(overrides = {}) {
           arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
           workingDirectory: "C:\\VEM\\bringup",
         },
+        {
+          name: "\\VEM\\StartVisionServer",
+          exists: true,
+          enabled: true,
+          runAsUser: "VEMKiosk",
+          command: "C:\\Windows\\System32\\cmd.exe",
+          arguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
+          workingDirectory: "C:\\VEM\\vision\\app",
+        },
       ],
     },
     readyFile: {
@@ -1801,12 +1810,17 @@ function runtimeAcceptanceFacts(overrides = {}) {
       healthProtocol: "vem.vision.v1",
       healthModule: "vision",
       healthMockScenario: "off",
-      version: "0.2.1-rc.8",
+      healthVersion: "0.2.1-rc.8",
       cameraReady: false,
       modelReady: true,
       installedProcessBound: true,
-      selectedReleaseVersion: "0.2.1-rc.8",
-      activeProcessId: 789,
+      installedRecordPresent: true,
+      installedCommit: "a".repeat(40),
+      installedRuntime: "vending-vision.exe",
+      installedAppDirectory: "C:\\VEM\\vision\\app",
+      installedRuntimeWorkDirectory: "C:\\ProgramData\\VEM\\vision\\runtime",
+      processId: 789,
+      executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
       listenerBound: true,
       listenerProcessId: 789,
       listenerOwnerCount: 1,
@@ -2567,6 +2581,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(plan.arguments.KioskUser, "VEMKiosk");
     assert.equal(plan.arguments.MaintenanceUser, "YKDZ");
     assert.equal(plan.arguments.RunAsUser, "YKDZ");
+    assert.equal(plan.arguments.VisionWorkingDirectory, "C:\\VEM\\vision\\app");
     assert.equal(plan.arguments.KioskPassword, "$env:VEM_KIOSK_PASSWORD");
     assert.equal(
       plan.arguments.MaintenancePassword,
@@ -6658,7 +6673,7 @@ if ($errors.Count -gt 0) {
     }
   });
 
-  it("rejects Vision evidence that is mocked, stale, or incomplete", () => {
+  it("rejects Vision evidence that is mocked or incomplete without version gates", () => {
     for (const [mutate, expectedCode] of [
       [
         (facts) => {
@@ -6671,12 +6686,6 @@ if ($errors.Count -gt 0) {
           facts.visionRuntime.installedProcessBound = false;
         },
         "vision_installed_process_not_bound",
-      ],
-      [
-        (facts) => {
-          facts.visionRuntime.readyServerVersion = "stale-version";
-        },
-        "vision_protocol_not_ready",
       ],
       [
         (facts) => {
@@ -6743,9 +6752,14 @@ if ($errors.Count -gt 0) {
         ),
       );
     }
+
+    const versionDiagnostic = runtimeAcceptanceFacts();
+    versionDiagnostic.visionRuntime.healthVersion = "0.0.0-diagnostic";
+    versionDiagnostic.visionRuntime.readyServerVersion = "unrelated-version";
+    assert.deepEqual(buildRuntimeAcceptanceReport(versionDiagnostic).diagnostics, []);
   });
 
-  it("generates a bounded, release-bound Vision readiness probe", () => {
+  it("generates a bounded fixed-app Vision readiness probe", () => {
     const script = buildRemotePowerShellScript({
       mode: "runtime-acceptance",
       machineCode: "VEM-TESTBED-WINVM-01",
@@ -6756,38 +6770,26 @@ if ($errors.Count -gt 0) {
     assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 7892/);
     assert.match(script, /System32\\netstat\.exe/);
     assert.match(script, /\$listeners\.Count -ne 1/);
-    assert.match(script, /\$listenerProcessId -ne \$ExpectedProcessId/);
-    assert.match(script, /C:\\ProgramData\\VEM\\vision\\current\.json/);
-    assert.match(
-      script,
-      /C:\\ProgramData\\VEM\\vision\\process-state\\active-process\.json/,
-    );
-    assert.match(
-      script,
-      /\$active\.selectionRevision -cne \$selection\.revision/,
-    );
-    assert.match(
-      script,
-      /\$process\.StartTime\.ToUniversalTime\(\)\.Ticks -ne \$active\.creationTimeUtcTicks/,
-    );
+    assert.doesNotMatch(script, /ExpectedProcessId|selected active process/);
+    assert.match(script, /C:\\VEM\\vision\\app\\vending-vision\.exe/);
+    assert.match(script, /C:\\ProgramData\\VEM\\vision\\installed\.json/);
+    assert.doesNotMatch(script, /current\.json|process-state|releaseVersion|selectionRevision/);
     assert.match(script, /\$health\.mockScenario -isnot \[string\]/);
     assert.match(script, /\$health\.mockScenario -cne "off"/);
-    assert.match(
-      script,
-      /\$health\.version -cne \$runtimeBinding\.releaseVersion/,
-    );
+    assert.doesNotMatch(script, /version -cne|releaseVersion|selectedReleaseVersion/);
     assert.match(script, /while \(\(Get-Date\) -lt \$deadline\)/);
     assert.match(script, /\$maxMessageBytes = 65536/);
     assert.match(script, /\$messageStream\.Length \+ \$received\.Count/);
     assert.match(script, /while \(-not \$received\.EndOfMessage\)/);
-    assert.match(
-      script,
-      /\$ready\.payload\.serverVersion -cne \$health\.version/,
-    );
+    assert.doesNotMatch(script, /serverVersion -cne/);
     assert.match(script, /\$ready\.messageId -isnot \[string\]/);
     assert.match(script, /Test-VisionProtocolTimestamp \$ready\.timestamp/);
     assert.match(script, /\$ready\.payload\.serverName -isnot \[string\]/);
     assert.match(script, /\$ready\.payload\.capabilities -isnot \[array\]/);
+    assert.match(
+      script,
+      /@\("profile_push", "presence_status", "person_departed", "try_on_session"\)/,
+    );
   });
 
   it("PowerShell-parses the generated runtime acceptance script", () => {
@@ -6959,6 +6961,24 @@ if ($errors.Count -gt 0) {
     }
   });
 
+  it("requires the effective fixed-app cwd for the Vision task", () => {
+    const facts = runtimeAcceptanceFacts();
+    const visionTask = facts.startupBringup.startupCommands.find(
+      (command) => command.name === "\\VEM\\StartVisionServer",
+    );
+    visionTask.workingDirectory = "C:\\VEM\\vision";
+
+    const report = buildRuntimeAcceptanceReport(facts);
+
+    assert.equal(report.result.runtimeReady.status, "failed");
+    assert.ok(
+      report.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "vision_task_working_directory_mismatch",
+      ),
+    );
+  });
+
   it("preserves shell launcher allowance in the script classifier", () => {
     const facts = runtimeAcceptanceFacts();
     facts.serviceState.machineUiTask = {
@@ -6973,7 +6993,9 @@ if ($errors.Count -gt 0) {
       runAsUser: "VEMKiosk",
       command: "C:\\VEM\\bringup\\machine.exe",
     };
-    facts.startupBringup.startupCommands = [];
+    facts.startupBringup.startupCommands = facts.startupBringup.startupCommands.filter(
+      (command) => command.name === "\\VEM\\StartVisionServer",
+    );
 
     const report = buildRuntimeAcceptanceReport(facts);
 

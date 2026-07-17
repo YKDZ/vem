@@ -187,12 +187,10 @@ jobs:
       - name: Run protected secret store DPAPI round-trip
         run: cargo test -p vending-daemon secret::tests::protected_local_secret_store_round_trips_status_and_clear_without_exposing_values -- --exact
 
-  windows-vision-release-installer:
-    name: Windows Vision Release Installer
+  windows-vision-main-consumer:
+    name: Windows Vision Main Consumer
     needs: [changes, static]
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-    # This compatibility harness uses Windows certificate-store cmdlets. Keep it
-    # on the known-good image instead of the moving windows-latest label.
     runs-on: windows-2022
     timeout-minutes: 15
     defaults:
@@ -214,17 +212,13 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Vision installer behavioral checks
-        run: pnpm check:vision-release-installer
+      - name: Run Vision main consumer contract checks
+        run: pnpm check:vision-main-consumer
 
-      - name: Run Vision installer harness behavior checks
-        timeout-minutes: 3
-        run: ./scripts/windows/vision-release-install-harness.behavior.ps1
-
-      - name: Run Vision Candidate entrypoint harness with Windows PowerShell
+      - name: Run Vision main consumer harness
         run: >-
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File
-          ./scripts/windows/test-vision-candidate.windows-harness.ps1
+          ./scripts/windows/vision-main-consumer.windows-harness.ps1
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E
@@ -538,7 +532,7 @@ jobs:
       - static
       - unit-tests
       - windows-dpapi-tests
-      - windows-vision-release-installer
+      - windows-vision-main-consumer
       - machine-e2e-tests
       - machine-runtime-screenshots
       - e2e-tests

@@ -58,7 +58,7 @@ param(
   [string]$MachineUiShortcutName = "VEM Machine UI.lnk",
   [string]$MachineUiDebugShortcutName = "VEM Machine UI Debug.lnk",
   [string]$VisionLauncher = "C:\VEM\bringup\start_vision.bat",
-  [string]$VisionWorkingDirectory = "C:\VEM\vision",
+  [string]$VisionWorkingDirectory = "C:\VEM\vision\app",
 
   [switch]$ConfigureKioskAccounts,
   [switch]$ConfigureLocalMaintenanceAccess,
@@ -1463,11 +1463,7 @@ if (Test-Path -LiteralPath $VisionLauncher) {
     -RestartOnFailureCount 999 `
     -RestartOnFailureIntervalISO "PT1M"
 } else {
-  Write-Warning "vision launcher not found; skipping VEM\StartVisionServer task: $VisionLauncher"
-  $visionTask = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-  if ($null -ne $visionTask) {
-    schtasks /Delete /TN "VEM\StartVisionServer" /F | Out-Null
-  }
+  Write-Warning "vision launcher not found; the direct Vision installer will create VEM\StartVisionServer: $VisionLauncher"
 }
 
 Write-Host "[8/9] Remove Edge auto-launch entries" -ForegroundColor Yellow

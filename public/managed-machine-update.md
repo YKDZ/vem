@@ -9,6 +9,16 @@ and Runtime Bootstrap over certificate-only SSH on a clean prepared Windows
 host. The deployment path must use the same runtime artifact set that the VM
 runtime acceptance workflow verifies.
 
+For Vision, resolve one successful `hbhjt/vending-vision` main commit with
+`get-vision-main-artifacts.ps1`, cache its runtime and recorded-video fixture
+archives by that commit SHA, then use `install-vision-main-artifact.ps1` to
+replace `C:\VEM\vision\app`, write `C:\ProgramData\VEM\vision\site.json`,
+restart `VEM\StartVisionServer` through `C:\VEM\bringup\start_vision.bat`, and
+probe the machine protocol. Recorded-video
+fixtures are supplied only to an explicit recorded-video site configuration;
+they never belong in the production app archive.
+Use `verify-vem-runtime.ps1 -RequireVisionOnline` after the restart.
+
 Required operator evidence:
 
 - source commit and artifact SHA-256 values;

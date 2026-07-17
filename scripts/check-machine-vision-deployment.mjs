@@ -11,52 +11,46 @@ function readText(path) {
 }
 
 const setupPath = "scripts/windows/setup-scheduled-tasks.ps1";
-const installerPath = "scripts/windows/install-vision-release.ps1";
+const installerPath = "scripts/windows/install-vision-main-artifact.ps1";
+const visionModulePath = "scripts/windows/vision-main-artifacts.psm1";
 const verifyPath = "scripts/windows/verify-vem-runtime.ps1";
 const runbookPath = "public/managed-machine-update.md";
 
 const setup = readText(setupPath);
 const installer = readText(installerPath);
+const visionModule = readText(visionModulePath);
 const verify = readText(verifyPath);
 const runbook = readText(runbookPath);
 
 addCheck(
   "setup-defaults-to-managed-vision-paths",
   setup.includes('$VisionLauncher = "C:\\VEM\\bringup\\start_vision.bat"') &&
-    setup.includes('$VisionWorkingDirectory = "C:\\VEM\\vision"') &&
+    setup.includes('$VisionWorkingDirectory = "C:\\VEM\\vision\\app"') &&
     setup.includes("VEM\\StartVisionServer"),
   `${setupPath} should register the vision task against the managed artifact path`,
 );
 
 addCheck(
-  "vision-installer-requires-immutable-release-contract",
-  installer.includes("DescriptorPath") &&
-    installer.includes("AttestationPath") &&
-    installer.includes("SbomPath") &&
-    installer.includes("ConformanceEvidencePath") &&
-    installer.includes("TrustPolicyPath") &&
-    installer.includes("EvidenceVerifierPath") &&
-    installer.includes("ApprovalPath") &&
-    installer.includes("FactoryManifestPath") &&
-    installer.includes("Invoke-ReleaseEvidenceVerifier") &&
-    installer.includes("approved identity") &&
-    installer.includes("C:\\VEM\\vision") &&
-    installer.includes("C:\\ProgramData\\VEM\\vision"),
-  `${installerPath} should select only a fully approved immutable Vision release`,
+  "vision-installer-consumes-main-artifact-directly",
+  installer.includes("RuntimeArchive") &&
+    installer.includes("SiteConfigurationPath") &&
+    installer.includes("C:\\VEM\\vision\\app") &&
+    installer.includes("C:\\ProgramData\\VEM\\vision\\site.json") &&
+    !installer.match(/DescriptorPath|AttestationPath|SbomPath|ApprovalPath|FactoryManifestPath|rollback/i),
+  `${installerPath} should replace the fixed app from one main artifact without release governance`,
 );
 
 addCheck(
-  "vision-installer-uses-interactive-task-health-rollback-and-redaction",
-  installer.includes("StartVisionServer") &&
-    installer.includes("Test-VisionProtocol") &&
-    installer.includes("ClientWebSocket") &&
-    installer.includes("Stop-RecordedVision") &&
-    installer.includes("Sanitize") &&
-    !installer.match(/PyInstaller|\bpython(?:\.exe)?\b/i) &&
+  "vision-installer-uses-interactive-task-health-and-protocol-probe",
+  installer.includes("Install-VisionMainArtifact") &&
+    visionModule.includes("Start-VisionMainTask") &&
+    visionModule.includes("Invoke-VisionMainProbe") &&
+    visionModule.includes("ClientWebSocket") &&
+    !visionModule.match(/PyInstaller|\bpython(?:\.exe)?\b/i) &&
     !verify.match(/python(?:\.exe)?|pythonw(?:\.exe)?/i) &&
-    verify.includes("VisionActiveProcessFile") &&
-    verify.includes("activeProcessDigest"),
-  `${installerPath} should stay implementation-independent and use the existing interactive task`,
+    verify.includes("VisionInstallRecord") &&
+    verify.includes("Invoke-VisionMainProbe"),
+  `${installerPath} should use the existing interactive task and probe the direct install`,
 );
 
 addCheck(
@@ -83,13 +77,13 @@ addCheck(
 );
 
 addCheck(
-  "runbook-documents-approved-vision-release",
-  runbook.includes("Vision Release Bundle") &&
+  "runbook-documents-direct-vision-main-install",
+  runbook.includes("get-vision-main-artifacts.ps1") &&
     runbook.includes("C:\\VEM\\vision") &&
     runbook.includes("C:\\VEM\\bringup\\start_vision.bat") &&
-    runbook.includes("install-vision-release.ps1") &&
+    runbook.includes("install-vision-main-artifact.ps1") &&
     runbook.includes("-RequireVisionOnline"),
-  `${runbookPath} should document vision deployment and verification`,
+  `${runbookPath} should document direct Vision main artifact deployment and verification`,
 );
 
 const failures = checks.filter((check) => !check.passed);

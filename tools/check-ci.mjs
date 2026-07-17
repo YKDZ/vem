@@ -441,7 +441,7 @@ async function runStaticJob() {
   printStep("Static checks");
   await run("pnpm", ["check:boundaries"]);
   await run("pnpm", ["check:script-inventory"]);
-  await run("pnpm", ["check:vision-release-installer"]);
+  await run("pnpm", ["check:vision-main-consumer"]);
   await run("pnpm", ["check:vm-host-adapter"]);
   await run("pnpm", ["check:admin-api-contracts"]);
   await run("pnpm", ["check:machine-e2e-ci"]);

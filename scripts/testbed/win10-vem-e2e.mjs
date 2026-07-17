@@ -274,6 +274,12 @@ const EXPECTED_MACHINE_UI_TASK_NAME = "VEMMachineUI";
 const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
 const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
+const EXPECTED_VISION_TASK_NAME = "VEM\\StartVisionServer";
+const EXPECTED_VISION_COMMAND = "C:\\Windows\\System32\\cmd.exe";
+const EXPECTED_VISION_LAUNCHER = "C:\\VEM\\bringup\\start_vision.bat";
+const EXPECTED_VISION_WORKING_DIRECTORY = "C:\\VEM\\vision\\app";
+const EXPECTED_VISION_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
+const EXPECTED_VISION_ENTRYPOINT = "C:\\VEM\\vision\\app\\vending-vision.exe";
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
 const DEFAULT_CONTROLLED_MAINTENANCE_USER = "YKDZ";
@@ -322,7 +328,7 @@ export function buildBringUpPlan(options = {}) {
       MachineUiLauncher: "C:\\VEM\\bringup\\launch-machine-ui.vbs",
       MachineUiDebugLauncher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
       VisionLauncher: "C:\\VEM\\bringup\\start_vision.bat",
-      VisionWorkingDirectory: "C:\\VEM\\vision",
+      VisionWorkingDirectory: EXPECTED_VISION_WORKING_DIRECTORY,
       KioskPassword: "$env:VEM_KIOSK_PASSWORD",
       MaintenancePassword: "$env:VEM_MAINTENANCE_PASSWORD",
       AutoLogonPassword: "$env:VEM_AUTOLOGON_PASSWORD",
@@ -1133,13 +1139,39 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "The installed Vision runtime task must exist and be enabled.",
     );
   }
+  const visionStartupCommand = facts.startupBringup?.startupCommands?.find(
+    (command) =>
+      command?.name === EXPECTED_VISION_TASK_NAME ||
+      command?.name === `\\${EXPECTED_VISION_TASK_NAME}`,
+  );
+  if (visionStartupCommand?.exists !== true) {
+    addDiagnostic(
+      diagnostics,
+      "vision_task_startup_command_missing",
+      "Production bring-up must provide live Vision task startup command evidence.",
+    );
+  } else if (
+    visionStartupCommand.enabled !== true ||
+    visionStartupCommand.runAsUser !== EXPECTED_KIOSK_USER ||
+    visionStartupCommand.command !== EXPECTED_VISION_COMMAND ||
+    !String(visionStartupCommand.arguments ?? "").includes(
+      EXPECTED_VISION_LAUNCHER,
+    ) ||
+    visionStartupCommand.workingDirectory !==
+      EXPECTED_VISION_WORKING_DIRECTORY
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "vision_task_working_directory_mismatch",
+      "Vision startup must run the fixed app launcher from C:\\VEM\\vision\\app.",
+    );
+  }
   if (
     facts.visionRuntime?.healthReachable !== true ||
     !["ok", "degraded"].includes(facts.visionRuntime?.healthStatus) ||
     facts.visionRuntime?.healthProtocol !== "vem.vision.v1" ||
     facts.visionRuntime?.healthModule !== "vision" ||
     facts.visionRuntime?.healthMockScenario !== "off" ||
-    !present(facts.visionRuntime?.version) ||
     facts.visionRuntime?.modelReady !== true
   ) {
     addDiagnostic(
@@ -1150,15 +1182,20 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   }
   if (
     facts.visionRuntime?.installedProcessBound !== true ||
-    !present(facts.visionRuntime?.selectedReleaseVersion) ||
-    facts.visionRuntime?.version !==
-      facts.visionRuntime?.selectedReleaseVersion ||
-    !Number.isInteger(facts.visionRuntime?.activeProcessId) ||
-    facts.visionRuntime.activeProcessId < 1 ||
+    facts.visionRuntime?.installedRecordPresent !== true ||
+    !/^[a-f0-9]{40}$/.test(facts.visionRuntime?.installedCommit ?? "") ||
+    facts.visionRuntime?.installedRuntime !== "vending-vision.exe" ||
+    facts.visionRuntime?.installedAppDirectory !==
+      "C:\\VEM\\vision\\app" ||
+    facts.visionRuntime?.installedRuntimeWorkDirectory !==
+      EXPECTED_VISION_WORK_DIRECTORY ||
+    facts.visionRuntime?.executablePath !== EXPECTED_VISION_ENTRYPOINT ||
+    !Number.isInteger(facts.visionRuntime?.processId) ||
+    facts.visionRuntime.processId < 1 ||
     facts.visionRuntime?.listenerBound !== true ||
     !Number.isInteger(facts.visionRuntime?.listenerProcessId) ||
     facts.visionRuntime.listenerProcessId !==
-      facts.visionRuntime.activeProcessId ||
+      facts.visionRuntime.processId ||
     facts.visionRuntime?.listenerOwnerCount !== 1 ||
     !["Get-NetTCPConnection", "netstat"].includes(
       facts.visionRuntime?.listenerBindingSource,
@@ -1167,7 +1204,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     addDiagnostic(
       diagnostics,
       "vision_installed_process_not_bound",
-      "Vision acceptance must bind the listener to the selected installed release and its recorded active process.",
+      "Vision acceptance must bind the listener to the fixed installed app and installed.json record.",
     );
   }
   if (
@@ -1181,10 +1218,6 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     typeof facts.visionRuntime?.readyServerName !== "string" ||
     facts.visionRuntime.readyServerName.trim().length === 0 ||
     facts.visionRuntime.readyServerName.length > 128 ||
-    typeof facts.visionRuntime?.readyServerVersion !== "string" ||
-    facts.visionRuntime.readyServerVersion.trim().length === 0 ||
-    facts.visionRuntime.readyServerVersion.length > 64 ||
-    facts.visionRuntime?.readyServerVersion !== facts.visionRuntime?.version ||
     typeof facts.visionRuntime?.readyCameraReady !== "boolean" ||
     facts.visionRuntime?.readyCameraReady !==
       facts.visionRuntime?.cameraReady ||
@@ -1201,7 +1234,6 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "profile_push",
       "presence_status",
       "person_departed",
-      "ambient_light",
       "try_on_session",
     ].every((capability) =>
       facts.visionRuntime.readyCapabilities.includes(capability),
@@ -7477,7 +7509,7 @@ function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
   }) | Out-Null
 }
 
-function Get-VisionLoopbackListenerBinding([int]$ExpectedProcessId) {
+function Get-VisionLoopbackListenerBinding {
   $listeners = $null
   $source = $null
   if ($null -ne (Get-Command -Name Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
@@ -7511,9 +7543,6 @@ function Get-VisionLoopbackListenerBinding([int]$ExpectedProcessId) {
   ) {
     throw "Vision 127.0.0.1:7892 LISTEN owner has an invalid process identity"
   }
-  if ($listenerProcessId -ne $ExpectedProcessId) {
-    throw "Vision selected active process $ExpectedProcessId does not own 127.0.0.1:7892 LISTEN (owner $listenerProcessId)"
-  }
   return [ordered]@{
     processId = $listenerProcessId
     ownerCount = $listeners.Count
@@ -7522,6 +7551,9 @@ function Get-VisionLoopbackListenerBinding([int]$ExpectedProcessId) {
 }
 
 function Test-VisionProtocolTimestamp($Value) {
+  if ($Value -is [DateTime]) {
+    return $Value.Kind -eq [DateTimeKind]::Utc
+  }
   if ($Value -isnot [string] -or $Value -notmatch '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$') {
     return $false
   }
@@ -7537,80 +7569,45 @@ function Test-VisionProtocolTimestamp($Value) {
 }
 
 function Get-VisionInstalledRuntimeBinding {
-  $selectionPath = "C:\\ProgramData\\VEM\\vision\\current.json"
-  $activeProcessPath = "C:\\ProgramData\\VEM\\vision\\process-state\\active-process.json"
-  if (-not (Test-Path -LiteralPath $selectionPath -PathType Leaf)) {
-    throw "Vision current selection is missing"
+  $appDirectory = "C:\\VEM\\vision\\app"
+  $entrypoint = "C:\\VEM\\vision\\app\\vending-vision.exe"
+  $installedPath = "C:\\ProgramData\\VEM\\vision\\installed.json"
+  if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+    throw "Vision installed record is missing"
   }
-  if (-not (Test-Path -LiteralPath $activeProcessPath -PathType Leaf)) {
-    throw "Vision active process record is missing"
-  }
-  $selection = Get-Content -LiteralPath $selectionPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-  foreach ($name in @("revision", "bundleDigest", "installDirectory", "entrypoint", "metadataPath")) {
-    if ($null -eq $selection.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$selection.$name)) {
-      throw "Vision current selection is missing $name"
-    }
-  }
-  $metadata = Get-Content -LiteralPath ([string]$selection.metadataPath) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-  foreach ($name in @("bundleDigest", "installDirectory", "entrypoint", "entrypointDigest", "descriptor")) {
-    if ($null -eq $metadata.PSObject.Properties[$name]) {
-      throw "Vision release metadata is missing $name"
-    }
-  }
-  if (
-    $metadata.bundleDigest -cne $selection.bundleDigest -or
-    $metadata.installDirectory -cne $selection.installDirectory -or
-    $metadata.entrypoint -cne $selection.entrypoint -or
-    $null -eq $metadata.descriptor.PSObject.Properties["releaseVersion"] -or
-    [string]::IsNullOrWhiteSpace([string]$metadata.descriptor.releaseVersion)
-  ) {
-    throw "Vision release metadata does not bind the current selection"
-  }
-  $entrypoint = [IO.Path]::GetFullPath((Join-Path ([string]$selection.installDirectory) ([string]$selection.entrypoint)))
   if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
-    throw "Vision selected entrypoint is missing"
+    throw "Vision fixed app entrypoint is missing"
   }
-  $active = Get-Content -LiteralPath $activeProcessPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-  $activeKeys = @($active.PSObject.Properties.Name | Sort-Object)
-  $expectedActiveKeys = @("bundleDigest", "creationTimeUtcTicks", "executableDigest", "executablePath", "processId", "selectionRevision" | Sort-Object)
+  $installed = Get-Content -LiteralPath $installedPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
   if (
-    ($activeKeys -join "|") -cne ($expectedActiveKeys -join "|") -or
-    $active.bundleDigest -cne $selection.bundleDigest -or
-    $active.selectionRevision -cne $selection.revision -or
-    $active.executablePath -cne $entrypoint -or
-    $active.executableDigest -cne $metadata.entrypointDigest
+    [string]$installed.schemaVersion -cne "vem-vision-installed/v1" -or
+    [string]$installed.commit -notmatch '^[a-f0-9]{40}$' -or
+    [string]::IsNullOrWhiteSpace([string]$installed.installedAt) -or
+    [string]$installed.appDirectory -cne $appDirectory -or
+    [string]$installed.runtime -cne "vending-vision.exe" -or
+    [string]$installed.runtimeWorkDirectory -cne "C:\\ProgramData\\VEM\\vision\\runtime"
   ) {
-    throw "Vision active process record does not bind the current selection"
+    throw "Vision installed record does not bind the fixed app"
   }
-  [int]$processId = 0
-  if (
-    -not [int]::TryParse([string]$active.processId, [ref]$processId) -or
-    $processId -lt 1 -or
-    $active.creationTimeUtcTicks -isnot [Int64] -or
-    $active.creationTimeUtcTicks -lt 1
-  ) {
-    throw "Vision active process record has an invalid process identity"
-  }
-  $process = Get-Process -Id $processId -ErrorAction Stop
+  $listenerBinding = Get-VisionLoopbackListenerBinding
+  $process = Get-Process -Id $listenerBinding.processId -ErrorAction Stop
   try {
     if (
       $process.HasExited -or
-      $process.StartTime.ToUniversalTime().Ticks -ne $active.creationTimeUtcTicks -or
-      $process.Path -cne $entrypoint -or
-      ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest
+      $process.Path -cne $entrypoint
     ) {
-      throw "Vision active process does not bind the selected executable"
+      throw "Vision listener does not bind the fixed app entrypoint"
     }
   } finally {
     $process.Dispose()
   }
-  $listenerBinding = Get-VisionLoopbackListenerBinding -ExpectedProcessId $processId
   return [ordered]@{
     bound = $true
-    releaseVersion = [string]$metadata.descriptor.releaseVersion
-    bundleDigest = [string]$selection.bundleDigest
-    selectionRevision = [string]$selection.revision
-    processId = $processId
+    installedCommit = [string]$installed.commit
+    installedRuntime = [string]$installed.runtime
+    installedAppDirectory = [string]$installed.appDirectory
+    installedRuntimeWorkDirectory = [string]$installed.runtimeWorkDirectory
+    processId = $listenerBinding.processId
     executablePath = $entrypoint
     listenerProcessId = $listenerBinding.processId
     listenerOwnerCount = $listenerBinding.ownerCount
@@ -7625,12 +7622,17 @@ function Get-VisionRuntimeEvidence {
     healthProtocol = $null
     healthModule = $null
     healthMockScenario = $null
-    version = $null
+    healthVersion = $null
     cameraReady = $null
     modelReady = $null
     installedProcessBound = $false
-    selectedReleaseVersion = $null
-    activeProcessId = $null
+    installedRecordPresent = $false
+    installedCommit = $null
+    installedRuntime = $null
+    installedAppDirectory = $null
+    installedRuntimeWorkDirectory = $null
+    processId = $null
+    executablePath = $null
     listenerBound = $false
     listenerProcessId = $null
     listenerOwnerCount = $null
@@ -7655,8 +7657,13 @@ function Get-VisionRuntimeEvidence {
     try {
       $runtimeBinding = Get-VisionInstalledRuntimeBinding
       $evidence.installedProcessBound = [bool]$runtimeBinding.bound
-      $evidence.selectedReleaseVersion = [string]$runtimeBinding.releaseVersion
-      $evidence.activeProcessId = $runtimeBinding.processId
+      $evidence.installedRecordPresent = $true
+      $evidence.installedCommit = [string]$runtimeBinding.installedCommit
+      $evidence.installedRuntime = [string]$runtimeBinding.installedRuntime
+      $evidence.installedAppDirectory = [string]$runtimeBinding.installedAppDirectory
+      $evidence.installedRuntimeWorkDirectory = [string]$runtimeBinding.installedRuntimeWorkDirectory
+      $evidence.processId = $runtimeBinding.processId
+      $evidence.executablePath = [string]$runtimeBinding.executablePath
       $evidence.listenerBound = $true
       $evidence.listenerProcessId = $runtimeBinding.listenerProcessId
       $evidence.listenerOwnerCount = $runtimeBinding.listenerOwnerCount
@@ -7671,23 +7678,22 @@ function Get-VisionRuntimeEvidence {
         $health.module -cne "vision" -or
         $health.protocol -isnot [string] -or
         $health.protocol -cne "vem.vision.v1" -or
-        $health.version -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($health.version) -or
-        $health.version -cne $runtimeBinding.releaseVersion -or
         $health.mockScenario -isnot [string] -or
         $health.mockScenario -cne "off" -or
         $health.cameraReady -isnot [bool] -or
         $health.modelReady -isnot [bool] -or
         $health.modelReady -ne $true
       ) {
-        throw "Vision health does not satisfy the selected installed runtime contract"
+        throw "Vision health does not satisfy the fixed installed app contract"
       }
       $evidence.healthReachable = $true
       $evidence.healthStatus = [string]$health.status
       $evidence.healthProtocol = [string]$health.protocol
       $evidence.healthModule = [string]$health.module
       $evidence.healthMockScenario = $health.mockScenario
-      $evidence.version = [string]$health.version
+      if ($null -ne $health.PSObject.Properties["version"]) {
+        $evidence.healthVersion = [string]$health.version
+      }
       $evidence.cameraReady = $health.cameraReady
       $evidence.modelReady = $health.modelReady
 
@@ -7703,7 +7709,7 @@ function Get-VisionRuntimeEvidence {
         timestamp = (Get-Date).ToUniversalTime().ToString("o")
         payload = [ordered]@{
           protocolVersion = 1
-          capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
+          capabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
           clientRole = "machine"
           machineCode = "VEM-TESTBED-RUNTIME-ACCEPTANCE"
         }
@@ -7731,7 +7737,7 @@ function Get-VisionRuntimeEvidence {
       } finally {
         $messageStream.Dispose()
       }
-      $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session")
+      $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
       if (
         $null -eq $ready -or
         $ready.protocol -isnot [string] -or
@@ -7747,10 +7753,6 @@ function Get-VisionRuntimeEvidence {
         $ready.payload.serverName -isnot [string] -or
         [string]::IsNullOrWhiteSpace($ready.payload.serverName) -or
         $ready.payload.serverName.Length -gt 128 -or
-        $ready.payload.serverVersion -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($ready.payload.serverVersion) -or
-        $ready.payload.serverVersion.Length -gt 64 -or
-        $ready.payload.serverVersion -cne $health.version -or
         $ready.payload.cameraReady -isnot [bool] -or
         $ready.payload.cameraReady -ne $health.cameraReady -or
         $ready.payload.modelReady -isnot [bool] -or
@@ -7760,15 +7762,21 @@ function Get-VisionRuntimeEvidence {
         (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
         (@($requiredCapabilities | Where-Object { $ready.payload.capabilities -cnotcontains $_ }).Count -ne 0)
       ) {
-        throw "Vision WebSocket ready does not satisfy the selected installed runtime contract"
+        throw "Vision WebSocket ready does not satisfy the fixed installed app contract"
       }
       $evidence.webSocketConnected = $true
       $evidence.readyProtocol = [string]$ready.protocol
       $evidence.readyType = [string]$ready.type
       $evidence.readyMessageId = [string]$ready.messageId
-      $evidence.readyTimestamp = [string]$ready.timestamp
+      $evidence.readyTimestamp = if ($ready.timestamp -is [DateTime]) {
+        $ready.timestamp.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffff'Z'")
+      } else {
+        [string]$ready.timestamp
+      }
       $evidence.readyServerName = [string]$ready.payload.serverName
-      $evidence.readyServerVersion = [string]$ready.payload.serverVersion
+      if ($null -ne $ready.payload.PSObject.Properties["serverVersion"]) {
+        $evidence.readyServerVersion = [string]$ready.payload.serverVersion
+      }
       $evidence.readyCameraReady = $ready.payload.cameraReady
       $evidence.readyModelReady = $ready.payload.modelReady
       $evidence.readyCapabilities = @($ready.payload.capabilities)
@@ -7907,30 +7915,50 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (-not [bool]$Facts.serviceState.visionTask.exists -or -not [bool]$Facts.serviceState.visionTask.enabled) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_not_ready" "The installed Vision runtime task must exist and be enabled."
   }
+  $visionStartupCommand = @($Facts.startupBringup.startupCommands | Where-Object {
+    [string]$_.name -eq "VEM\\StartVisionServer" -or [string]$_.name -eq "\\VEM\\StartVisionServer"
+  } | Select-Object -First 1)
+  if ($visionStartupCommand.Count -eq 0 -or -not [bool]$visionStartupCommand[0].exists) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_startup_command_missing" "Production bring-up must provide live Vision task startup command evidence."
+  } else {
+    $visionCommandEvidence = $visionStartupCommand[0]
+    if (
+      -not [bool]$visionCommandEvidence.enabled -or
+      [string]$visionCommandEvidence.runAsUser -ne "VEMKiosk" -or
+      [string]$visionCommandEvidence.command -ne "C:\\Windows\\System32\\cmd.exe" -or
+      -not ([string]$visionCommandEvidence.arguments).Contains("C:\\VEM\\bringup\\start_vision.bat") -or
+      [string]$visionCommandEvidence.workingDirectory -ne "C:\\VEM\\vision\\app"
+    ) {
+      Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_working_directory_mismatch" "Vision startup must run the fixed app launcher from C:\\VEM\\vision\\app."
+    }
+  }
   if (
     -not [bool]$Facts.visionRuntime.healthReachable -or
     [string]$Facts.visionRuntime.healthStatus -notin @("ok", "degraded") -or
     [string]$Facts.visionRuntime.healthProtocol -ne "vem.vision.v1" -or
     [string]$Facts.visionRuntime.healthModule -ne "vision" -or
     [string]$Facts.visionRuntime.healthMockScenario -cne "off" -or
-    [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.version) -or
     -not [bool]$Facts.visionRuntime.modelReady
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_health_not_ready" "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models."
   }
   if (
     -not [bool]$Facts.visionRuntime.installedProcessBound -or
-    [string]::IsNullOrWhiteSpace([string]$Facts.visionRuntime.selectedReleaseVersion) -or
-    [string]$Facts.visionRuntime.version -ne [string]$Facts.visionRuntime.selectedReleaseVersion -or
-    $Facts.visionRuntime.activeProcessId -isnot [int] -or
-    $Facts.visionRuntime.activeProcessId -lt 1 -or
+    -not [bool]$Facts.visionRuntime.installedRecordPresent -or
+    [string]$Facts.visionRuntime.installedCommit -notmatch '^[a-f0-9]{40}$' -or
+    [string]$Facts.visionRuntime.installedRuntime -ne "vending-vision.exe" -or
+    [string]$Facts.visionRuntime.installedAppDirectory -ne "C:\\VEM\\vision\\app" -or
+    [string]$Facts.visionRuntime.installedRuntimeWorkDirectory -ne "C:\\ProgramData\\VEM\\vision\\runtime" -or
+    [string]$Facts.visionRuntime.executablePath -ne "C:\\VEM\\vision\\app\\vending-vision.exe" -or
+    $Facts.visionRuntime.processId -isnot [int] -or
+    $Facts.visionRuntime.processId -lt 1 -or
     -not [bool]$Facts.visionRuntime.listenerBound -or
     $Facts.visionRuntime.listenerProcessId -isnot [int] -or
-    $Facts.visionRuntime.listenerProcessId -ne $Facts.visionRuntime.activeProcessId -or
+    $Facts.visionRuntime.listenerProcessId -ne $Facts.visionRuntime.processId -or
     $Facts.visionRuntime.listenerOwnerCount -ne 1 -or
     [string]$Facts.visionRuntime.listenerBindingSource -notin @("Get-NetTCPConnection", "netstat")
   ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_installed_process_not_bound" "Vision acceptance must bind the listener to the selected installed release and its recorded active process."
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_installed_process_not_bound" "Vision acceptance must bind the listener to the fixed installed app and installed.json record."
   }
   if (
     -not [bool]$Facts.visionRuntime.webSocketConnected -or
@@ -7943,10 +7971,6 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     $Facts.visionRuntime.readyServerName -isnot [string] -or
     [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyServerName) -or
     $Facts.visionRuntime.readyServerName.Length -gt 128 -or
-    $Facts.visionRuntime.readyServerVersion -isnot [string] -or
-    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyServerVersion) -or
-    $Facts.visionRuntime.readyServerVersion.Length -gt 64 -or
-    [string]$Facts.visionRuntime.readyServerVersion -ne [string]$Facts.visionRuntime.version -or
     $Facts.visionRuntime.readyCameraReady -isnot [bool] -or
     $Facts.visionRuntime.readyCameraReady -ne $Facts.visionRuntime.cameraReady -or
     $Facts.visionRuntime.readyModelReady -isnot [bool] -or
@@ -7954,7 +7978,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     $Facts.visionRuntime.readyModelReady -ne $Facts.visionRuntime.modelReady -or
     $Facts.visionRuntime.readyCapabilities -isnot [array] -or
     (@($Facts.visionRuntime.readyCapabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
-    (@(@("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_session") | Where-Object { $Facts.visionRuntime.readyCapabilities -cnotcontains $_ }).Count -ne 0)
+    (@(@("profile_push", "presence_status", "person_departed", "try_on_session") | Where-Object { $Facts.visionRuntime.readyCapabilities -cnotcontains $_ }).Count -ne 0)
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_protocol_not_ready" "The installed Vision runtime must complete the vem.vision.v1 hello handshake."
   }

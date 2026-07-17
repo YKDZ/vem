@@ -32,8 +32,8 @@ const runtimeEntrypoints = [
   "scripts/testbed/kvm-baseline/linux-kvm-baseline.mjs",
   "scripts/testbed/kvm-baseline/libvirt-runtime-profile.mjs",
   "scripts/windows/runtime-artifact-descriptor.mjs",
-  "scripts/windows/test-vision-candidate.ps1",
-  "scripts/windows/test-vision-candidate.windows-harness.ps1",
+  "scripts/windows/get-vision-main-artifacts.ps1",
+  "scripts/windows/install-vision-main-artifact.ps1",
   "scripts/windows/verify-vem-runtime.ps1",
   "scripts/testbed/windows-native-audio-evidence.mjs",
   ...directScriptEntrypoints(".github/workflows/ci.yml"),
@@ -273,6 +273,10 @@ describe("active Windows runtime Factory retirement guard", () => {
       ".github/workflows/factory-image-acceptance.yml",
       "scripts/windows/prepare-unified-field-delivery.mjs",
       "scripts/windows/prepare-unified-field-delivery.test.mjs",
+      "scripts/windows/install-vision-release.ps1",
+      "scripts/windows/provision-vision-factory-release.ps1",
+      "scripts/windows/test-vision-candidate.ps1",
+      "scripts/windows/vision-release-materialization.psm1",
     ]) {
       assert.equal(existsSync(path), false, `${path} must remain disabled`);
     }

@@ -124,26 +124,6 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation"],
-    deliveryAssemblyAction: "javascript-stage",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
-      producer: "scripts/factory/build-factory-media.mjs",
-      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
-      executionTest:
-        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
   },
   {
     path: "scripts/factory/build-factory-media.test.mjs",
@@ -226,40 +206,9 @@ const DEFAULT_INVENTORY = [
   {
     path: "scripts/factory/experimental-vision-candidate.mjs",
     owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["runtime acceptance", "managed update"],
-    deliveryAssemblyAction: "javascript-stage",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "VEM/VISION-FACTORY-PROVISIONING.JSON",
-      producer: "scripts/factory/experimental-vision-candidate.mjs",
-      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
-      executionTest:
-        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
-    preapprovalDeliveryAssembly: {
-      artifact: "VEM-VISION-PREAPPROVAL/preapproval-manifest.json",
-      producer: "scripts/factory/experimental-vision-candidate.mjs",
-      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
-      executionTest:
-        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-      members: [
-        "scripts/windows/test-vision-candidate.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
+    category: "explicitly maintained legacy operation",
+    workflows: ["factory preparation"],
+    verifier: "scripts/windows/vision-main-consumer.test.mjs",
   },
   {
     path: "scripts/factory/experimental-vision-candidate.test.mjs",
@@ -663,88 +612,34 @@ const DEFAULT_INVENTORY = [
     workflows: ["managed update"],
   },
   {
-    path: "scripts/windows/install-vision-release.ps1",
+    path: "scripts/windows/vision-main-artifacts.psm1",
     owner: "field-operations",
     category: "public runbook operation",
-    workflows: ["factory preparation", "managed update"],
-    deliveryClosure: [
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryClosureEvidence: {
-      verifier: "scripts/windows/vision-release-install.test.mjs",
-      members: [
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/vision-release-materialization.psm1",
+    path: "scripts/windows/get-vision-main-artifacts.ps1",
     owner: "field-operations",
     category: "public runbook operation",
-    workflows: ["factory preparation", "managed update", "runtime acceptance"],
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/test-vision-candidate.ps1",
+    path: "scripts/windows/install-vision-main-artifact.ps1",
     owner: "field-operations",
     category: "public runbook operation",
-    workflows: ["runtime acceptance", "managed update"],
-    deliveryClosure: [
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryClosureEvidence: {
-      verifier: "scripts/windows/vision-release-install.test.mjs",
-      members: [
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/test-vision-candidate.fixtures.ps1",
+    path: "scripts/windows/vision-main-consumer.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: ["runtime acceptance", "managed update"],
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/test-vision-candidate.windows-harness.ps1",
+    path: "scripts/windows/vision-main-consumer.windows-harness.ps1",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: ["runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/windows/vision-diagnostic-redaction.psm1",
-    owner: "field-operations",
-    category: "test support operation",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/windows/provision-vision-factory-release.ps1",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-    deliveryAssemblyAction: "powershell-copy",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "stdout:vem-factory-vision-provisioning-evidence/v1",
-      producer: "scripts/windows/provision-vision-factory-release.ps1",
-      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
-      executionTest:
-        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/payment-secret-guard.test.mjs",
@@ -765,30 +660,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation", "runtime acceptance", "managed update"],
   },
   {
-    path: "scripts/windows/vision-release-install.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/windows/vision-release-install.fixtures.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/windows/vision-release-install.windows-harness.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/windows/vision-release-install-harness.behavior.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
     path: "scripts/windows/runtime-bootstrap.example.json",
     owner: "machine-runtime",
     category: "public runbook operation",
@@ -799,26 +670,6 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "canonical entrypoint",
     workflows: ["factory preparation"],
-    deliveryAssemblyAction: "powershell-copy",
-    deliveryAssembly: [
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/provision-vision-factory-release.ps1",
-      "scripts/windows/vision-release-materialization.psm1",
-      "scripts/windows/vision-diagnostic-redaction.psm1",
-    ],
-    deliveryAssemblyEvidence: {
-      artifact: "stdout:vem-factory-runtime-delivery-assembly/v1",
-      producer: "scripts/windows/prepare-factory-runtime.ps1",
-      verifier: "scripts/factory/verify-vision-delivery-assembly.mjs",
-      executionTest:
-        "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-      members: [
-        "scripts/windows/install-vision-release.ps1",
-        "scripts/windows/provision-vision-factory-release.ps1",
-        "scripts/windows/vision-release-materialization.psm1",
-        "scripts/windows/vision-diagnostic-redaction.psm1",
-      ],
-    },
   },
   {
     path: "scripts/windows/factory-maintenance-fixtures/clean-state-evidence.json",
