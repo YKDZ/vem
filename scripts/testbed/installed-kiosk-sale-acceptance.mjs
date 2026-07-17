@@ -285,6 +285,7 @@ Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction Silen
 Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
   Stop-Process -Id ([int]$_.OwningProcess) -Force -ErrorAction SilentlyContinue
 }
+
 Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
   $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) -and
   (Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue).SessionId -eq $sessionId
@@ -315,6 +316,38 @@ $owner = Invoke-CimMethod -InputObject $machines[0] -MethodName GetOwner -ErrorA
 $principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 if ($principal -notmatch '(?i)\\VEMKiosk$' -or $normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup restored the wrong kiosk ownership or session' }
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask; cdpListenerCount = $listeners.Count; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $principal; sessionId = [int]$normalProcess.SessionId; machineCount = $machines.Count } } | ConvertTo-Json -Compress))
+`.trim();
+}
+
+export function buildInstalledKioskSerialActivationScript() {
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+$ports = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object { [int]($_ -replace '^COM', '') })
+if ($ports.Count -lt 2) { throw "installed kiosk serial activation requires two COM ports, found $($ports.Count)" }
+$lowerPort = if ($ports -contains 'COM1') { 'COM1' } else { $ports[0] }
+$scannerPort = if ($ports -contains 'COM2') { 'COM2' } else { @($ports | Where-Object { $_ -ne $lowerPort })[0] }
+foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:\VEM\bringup\machine-config.json')) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+  $config = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
+    if ($config.PSObject.Properties.Name -contains $entry.Key) { $config.($entry.Key) = $entry.Value }
+    else { $config | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
+  }
+  [System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
+}
+Restart-Service -Name 'VemVendingDaemon' -Force
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+  Start-Sleep -Milliseconds 500
+  try {
+    $ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3
+    if ([bool]$health.hardwareOnline -and [bool]$health.scannerOnline) { break }
+  } catch {}
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) { throw 'serial-backed daemon did not become hardware/scanner ready' }
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; lowerControllerPort = $lowerPort; scannerPort = $scannerPort; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
 `.trim();
 }
 
@@ -766,6 +799,7 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
   const scenarioReport = join(outputRoot, "machine-ui-cdp-sale-scenario.json");
   const bindingReport = join(outputRoot, "rendered-payment-binding.json");
   const serialReport = join(outputRoot, "serial-conformance.json");
+  const serialPrestartReport = join(outputRoot, "serial-prestart.json");
   const platformRawRecordsReport = join(
     outputRoot,
     "platform-raw-records.json",
@@ -801,6 +835,7 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
       scenarioReport,
       bindingReport,
       serialReport,
+      serialPrestartReport,
       platformRawRecordsReport,
       platformRawBaselineReport,
     },
@@ -835,11 +870,57 @@ export async function runInstalledKioskSaleAcceptanceCli(
     ...nonQueryEnvironment,
     [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: queryDatabaseUrl,
   };
+  const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
+  const serialEndpointArgs = [];
+  if (options.maintenance_relay_session_json) {
+    serialEndpointArgs.push(
+      "--maintenance-relay-session-json",
+      options.maintenance_relay_session_json,
+    );
+  }
+  if (options.maintenance_endpoint_policy_json) {
+    serialEndpointArgs.push(
+      "--maintenance-endpoint-policy-json",
+      options.maintenance_endpoint_policy_json,
+    );
+  }
   let launch;
   let cleanup;
   let primaryError;
   let report;
   try {
+    await run(
+      [
+        process.execPath,
+        "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
+        "--adapter",
+        options.adapter,
+        "--scanner-code-file",
+        scanner.path,
+        "--runner-signing-key-file",
+        trust.signingKeyFile,
+        "--expected-runner-public-key",
+        trust.publicKey,
+        "--run-id",
+        options.run_id,
+        "--target-identity",
+        options.target_identity,
+        "--approved-runtime-base",
+        options.approved_runtime_base,
+        "--lifecycle-reference",
+        options.lifecycle_reference ??
+          `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
+        "--sale-correlation-id",
+        saleCorrelationId,
+        ...serialEndpointArgs,
+        "--start-only",
+        "--out",
+        plan.artifacts.serialPrestartReport,
+      ],
+      "serial conformance prestart",
+      { env: nonQueryEnvironment },
+    );
+    runRemote(remote, buildInstalledKioskSerialActivationScript());
     await run(plan.fixtureCommand, "simulated hardware fixture", {
       env: nonQueryEnvironment,
     });
@@ -916,7 +997,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
             .digest("hex"),
         };
         writeJson(plan.artifacts.bindingReport, binding, 0o600);
-        const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
         const completionCommand = buildAcceptanceScriptCommand(
           "simulated-hardware-sale-flow",
           remote,
@@ -959,6 +1039,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
           options.ephemeral_platform_evidence,
           "--customer-ui-sale-binding-file",
           plan.artifacts.bindingReport,
+          "--prestarted-report",
+          plan.artifacts.serialPrestartReport,
           "--sale-complete-command-json",
           JSON.stringify(completionCommand),
           "--out",
@@ -972,22 +1054,11 @@ export async function runInstalledKioskSaleAcceptanceCli(
             "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
           );
         }
-        if (options.maintenance_relay_session_json) {
-          serialCommand.splice(
-            serialCommand.indexOf("--out"),
-            0,
-            "--maintenance-relay-session-json",
-            options.maintenance_relay_session_json,
-          );
-        }
-        if (options.maintenance_endpoint_policy_json) {
-          serialCommand.splice(
-            serialCommand.indexOf("--out"),
-            0,
-            "--maintenance-endpoint-policy-json",
-            options.maintenance_endpoint_policy_json,
-          );
-        }
+        serialCommand.splice(
+          serialCommand.indexOf("--out"),
+          0,
+          ...serialEndpointArgs,
+        );
         await run(serialCommand, "serial conformance", {
           env: nonQueryEnvironment,
         });
@@ -1014,7 +1085,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
       },
     });
     writeJson(plan.artifacts.scenarioReport, scenario);
-    const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
     const projectedMovementId =
       completion?.simulatedHardwareSaleFlow?.platformState
         ?.postSaleDispenseMovement?.movementId;
