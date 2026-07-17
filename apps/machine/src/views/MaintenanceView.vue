@@ -169,6 +169,29 @@ const audioCueSettingsRows = computed(() => [
   },
 ]);
 
+const effectiveRuntimeConfigurationRows = computed(() => {
+  const configuration = machineStore.effectiveRuntimeConfiguration;
+  if (!configuration) return [];
+  return [
+    {
+      label: "认领状态",
+      value: configuration.profileRefresh.status,
+    },
+    {
+      label: "平台机器",
+      value: configuration.machine?.code ?? "未认领",
+    },
+    {
+      label: "硬件型号",
+      value: configuration.hardware.model,
+    },
+    {
+      label: "本地设置版本",
+      value: String(configuration.sourceRevisions.localSettingsRevision),
+    },
+  ];
+});
+
 const machineAudioOutputMaintenance = reactive({
   loading: false,
   saving: false,
@@ -606,6 +629,12 @@ onMounted(async () => {
       shouldShowAdvancedMaintenanceConfig({
         flag: import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG,
       });
+  }
+
+  try {
+    await machineStore.loadEffectiveRuntimeConfiguration();
+  } catch {
+    // Runtime diagnostics remain available when the configuration projection is unavailable.
   }
 
   if (runtimeFlags.advancedMaintenanceConfig) {
@@ -2484,6 +2513,24 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <dd class="mt-1 font-bold text-white">
                 {{ row.label }} · {{ row.value }}
               </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          v-if="effectiveRuntimeConfigurationRows.length > 0"
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+          data-test="effective-runtime-configuration"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">运行时配置</h3>
+          <dl class="mt-3 grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in effectiveRuntimeConfigurationRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">{{ row.label }}</dt>
+              <dd class="mt-1 font-bold text-white">{{ row.value }}</dd>
             </div>
           </dl>
         </section>

@@ -21,9 +21,9 @@ pub type ScannerRuntimeStatus = generated::scanner_status::ScannerRuntimeStatus;
 pub type EffectiveMachineRuntimeConfiguration =
     generated::runtime_configuration::EffectiveMachineRuntimeConfiguration;
 pub type ProvisioningProfileCache =
-    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationProfileCache;
+    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache;
 pub type RuntimeBootstrap =
-    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationBootstrap;
+    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

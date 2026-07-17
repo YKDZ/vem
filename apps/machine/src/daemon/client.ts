@@ -3,12 +3,18 @@ import {
   type DaemonIpcAudioOutputConfirmRequest,
   type DaemonIpcAudioOutputTestRequest,
   type DaemonIpcAudioOutputTestResponse,
+  type ConfirmHardwareBindingRequest,
   type EffectiveMachineRuntimeConfiguration,
+  type SetAudioPreferencesRequest,
+  type SetScannerProtocolParametersRequest,
   daemonIpcAudioOutputBindingSnapshotSchema,
   daemonIpcAudioOutputConfirmRequestSchema,
   daemonIpcAudioOutputTestRequestSchema,
   daemonIpcAudioOutputTestResponseSchema,
+  confirmHardwareBindingRequestSchema,
   effectiveMachineRuntimeConfigurationSchema,
+  setAudioPreferencesRequestSchema,
+  setScannerProtocolParametersRequestSchema,
   isManagedMediaReference,
   stockMaintenanceBatchResponseSchema,
   stockMaintenanceTaskSchema,
@@ -895,10 +901,42 @@ export class DaemonApiClient {
     identityKey: string,
     testEvidenceToken: string,
   ): Promise<DeviceBindingActivation> {
+    const request: ConfirmHardwareBindingRequest =
+      confirmHardwareBindingRequestSchema.parse({
+        identityKey,
+        testEvidenceToken,
+      });
     return deviceBindingActivationSchema.parse(
-      await this.request(`/v1/hardware-bindings/${role}/confirm`, {
+      await this.request(
+        `/v1/runtime-configuration/intents/hardware-bindings/${role}/confirm`,
+        {
         method: "POST",
-        body: { identityKey, testEvidenceToken },
+          body: request,
+        },
+      ),
+    );
+  }
+
+  async setScannerProtocolParameters(
+    body: SetScannerProtocolParametersRequest,
+  ): Promise<EffectiveMachineRuntimeConfiguration> {
+    const request = setScannerProtocolParametersRequestSchema.parse(body);
+    return effectiveMachineRuntimeConfigurationSchema.parse(
+      await this.request(
+        "/v1/runtime-configuration/intents/scanner-protocol-parameters",
+        { method: "POST", body: request },
+      ),
+    );
+  }
+
+  async setAudioPreferences(
+    body: SetAudioPreferencesRequest,
+  ): Promise<EffectiveMachineRuntimeConfiguration> {
+    const request = setAudioPreferencesRequestSchema.parse(body);
+    return effectiveMachineRuntimeConfigurationSchema.parse(
+      await this.request("/v1/runtime-configuration/intents/audio-preferences", {
+        method: "POST",
+        body: request,
       }),
     );
   }

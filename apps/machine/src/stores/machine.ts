@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
 
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import type { HealthSnapshot, ConfigSummary } from "@/daemon/schemas";
 
 import {
@@ -11,6 +13,7 @@ import { useAudioCueStore } from "@/stores/audio-cues";
 
 type MachineState = {
   configSummary: ConfigSummary | null;
+  effectiveRuntimeConfiguration: EffectiveMachineRuntimeConfiguration | null;
   configLoaded: boolean;
   health: HealthSnapshot | null;
   loading: boolean;
@@ -20,6 +23,7 @@ type MachineState = {
 export const useMachineStore = defineStore("machine", {
   state: (): MachineState => ({
     configSummary: null,
+    effectiveRuntimeConfiguration: null,
     configLoaded: false,
     health: null,
     loading: false,
@@ -77,11 +81,30 @@ export const useMachineStore = defineStore("machine", {
       applyRuntimeAudioCueSettings(summary);
       this.configLoaded = true;
     },
+    applyEffectiveRuntimeConfiguration(
+      configuration: EffectiveMachineRuntimeConfiguration,
+    ): void {
+      this.effectiveRuntimeConfiguration = configuration;
+    },
     async loadConfig(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
         this.applyConfigSummary(await daemonClient.getConfig());
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async loadEffectiveRuntimeConfiguration(): Promise<void> {
+      this.loading = true;
+      this.error = null;
+      try {
+        this.applyEffectiveRuntimeConfiguration(
+          await daemonClient.getEffectiveRuntimeConfiguration(),
+        );
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         throw error;

@@ -66,6 +66,22 @@ struct DeviceBindingCandidateRequest {
     test_evidence_token: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetScannerProtocolParametersRequest {
+    baud_rate: u32,
+    frame_suffix: vending_core::scanner::ScannerFrameSuffix,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetAudioPreferencesRequest {
+    volume: f64,
+    cues_enabled: bool,
+    presence_cues_enabled: bool,
+    transaction_cues_enabled: bool,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceBindingTestResponse {
@@ -1297,6 +1313,18 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route(
             "/v1/hardware-bindings/:role/confirm",
             post(confirm_device_binding_candidate),
+        )
+        .route(
+            "/v1/runtime-configuration/intents/hardware-bindings/:role/confirm",
+            post(confirm_device_binding_candidate),
+        )
+        .route(
+            "/v1/runtime-configuration/intents/scanner-protocol-parameters",
+            post(set_scanner_protocol_parameters),
+        )
+        .route(
+            "/v1/runtime-configuration/intents/audio-preferences",
+            post(set_audio_preferences),
         )
         .route("/v1/environment/control", post(control_environment))
         .route(
@@ -6941,6 +6969,96 @@ async fn confirm_device_binding_candidate(
         })),
     )
         .into_response()
+}
+
+async fn set_scanner_protocol_parameters(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<SetScannerProtocolParametersRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let parameters = crate::local_runtime_settings::ScannerProtocolParameters {
+        baud_rate: request.baud_rate,
+        frame_suffix: request.frame_suffix,
+    };
+    if let Err(message) = ctx
+        .config_store
+        .set_local_scanner_protocol(Some(parameters))
+        .await
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorMessage {
+                code: "scanner_protocol_parameters_invalid",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    match ctx
+        .config_store
+        .clean_runtime_configuration()
+        .effective_projection()
+        .await
+    {
+        Ok(projection) => (StatusCode::OK, Json(projection)).into_response(),
+        Err(message) => (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "runtime_configuration_unavailable",
+                message,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn set_audio_preferences(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<SetAudioPreferencesRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    let preferences = crate::local_runtime_settings::AudioPreferences {
+        volume: request.volume,
+        cues_enabled: request.cues_enabled,
+        presence_cues_enabled: request.presence_cues_enabled,
+        transaction_cues_enabled: request.transaction_cues_enabled,
+    };
+    if let Err(message) = ctx
+        .config_store
+        .set_local_audio_preferences(preferences)
+        .await
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorMessage {
+                code: "audio_preferences_invalid",
+                message,
+            }),
+        )
+            .into_response();
+    }
+    match ctx
+        .config_store
+        .clean_runtime_configuration()
+        .effective_projection()
+        .await
+    {
+        Ok(projection) => (StatusCode::OK, Json(projection)).into_response(),
+        Err(message) => (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "runtime_configuration_unavailable",
+                message,
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn hardware_self_check(

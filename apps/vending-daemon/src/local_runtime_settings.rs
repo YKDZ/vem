@@ -293,9 +293,14 @@ mod tests {
             .expect("save audio preferences");
 
         let settings = store.load().await.expect("load settings");
-        assert_eq!(settings.scanner_protocol.expect("protocol").baud_rate, 115_200);
+        assert_eq!(
+            settings.scanner_protocol.expect("protocol").baud_rate,
+            115_200
+        );
         assert_eq!(settings.audio.volume, 0.45);
-        let persisted = fs::read_to_string(store.path()).await.expect("settings file");
+        let persisted = fs::read_to_string(store.path())
+            .await
+            .expect("settings file");
         assert!(!persisted.contains("endpointId"));
         assert!(!persisted.contains("COM"));
     }

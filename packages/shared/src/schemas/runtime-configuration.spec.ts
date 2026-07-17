@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  effectiveMachineRuntimeConfigurationSchema,
   provisioningProfileCacheSchema,
   runtimeBootstrapSchema,
 } from "./runtime-configuration";
@@ -56,5 +57,26 @@ describe("Provisioning Profile Cache contract", () => {
         },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("Effective Machine Runtime Configuration contract", () => {
+  it("projects adopted configuration by domain without device observations", () => {
+    const schema = JSON.stringify(
+      effectiveMachineRuntimeConfigurationSchema.toJSONSchema(),
+    );
+
+    for (const group of [
+      "sourceRevisions",
+      "machine",
+      "platform",
+      "hardware",
+      "experience",
+      "secretStatus",
+    ]) {
+      expect(schema).toContain(group);
+    }
+    expect(schema).not.toContain("currentPort");
+    expect(schema).not.toContain("connectivity");
   });
 });

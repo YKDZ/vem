@@ -1780,6 +1780,32 @@ impl ConfigStore {
         self.local_runtime_settings.load().await
     }
 
+    pub async fn set_local_scanner_protocol(
+        &self,
+        protocol: Option<crate::local_runtime_settings::ScannerProtocolParameters>,
+    ) -> Result<u64, String> {
+        let revision = self
+            .local_runtime_settings
+            .set_scanner_protocol(protocol)
+            .await?;
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(revision)
+    }
+
+    pub async fn set_local_audio_preferences(
+        &self,
+        preferences: crate::local_runtime_settings::AudioPreferences,
+    ) -> Result<u64, String> {
+        let revision = self
+            .local_runtime_settings
+            .set_audio_preferences(preferences)
+            .await?;
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(revision)
+    }
+
     pub fn provisioning_profile_cache_summary_path(&self) -> PathBuf {
         provisioning_profile_cache_summary_path(&self.data_dir)
     }

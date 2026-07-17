@@ -87,7 +87,13 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
     );
 
     let restarted = CleanRuntimeConfigurationStore::new(
-        store.profile_cache_path().parent().expect("config dir").parent().expect("data dir").to_path_buf(),
+        store
+            .profile_cache_path()
+            .parent()
+            .expect("config dir")
+            .parent()
+            .expect("data dir")
+            .to_path_buf(),
         secrets.clone(),
     );
     assert_eq!(

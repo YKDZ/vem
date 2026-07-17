@@ -14,6 +14,7 @@ use tokio::{fs, sync::Mutex};
 
 use crate::{
     config::MachineProvisioningProfile,
+    local_runtime_settings::LocalRuntimeSettingsStore,
     secret::{
         SecretStore, MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
     },
@@ -42,6 +43,7 @@ struct ProfileRefreshState {
 pub struct CleanRuntimeConfigurationStore {
     data_dir: PathBuf,
     secrets: Arc<dyn SecretStore>,
+    local_settings: Arc<LocalRuntimeSettingsStore>,
     mutation_lock: Mutex<()>,
     generation: AtomicU64,
     refresh_error: Mutex<Option<String>>,
@@ -49,9 +51,11 @@ pub struct CleanRuntimeConfigurationStore {
 
 impl CleanRuntimeConfigurationStore {
     pub fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        let local_settings = LocalRuntimeSettingsStore::new(data_dir.clone());
         Self {
             data_dir,
             secrets,
+            local_settings,
             mutation_lock: Mutex::new(()),
             generation: AtomicU64::new(0),
             refresh_error: Mutex::new(None),
@@ -237,6 +241,7 @@ impl CleanRuntimeConfigurationStore {
     ) -> Result<EffectiveMachineRuntimeConfiguration, String> {
         let bootstrap = self.load_bootstrap().await?;
         let cache = self.load_profile_cache().await?;
+        let settings = self.local_settings.load().await?;
         let secrets = self.secrets.status().await?;
         let refresh_error = self.load_refresh_error().await?;
         let status = if cache.is_none() {
@@ -249,10 +254,37 @@ impl CleanRuntimeConfigurationStore {
         serde_json::from_value(json!({
             "schemaVersion": 1,
             "generation": self.generation.load(Ordering::Acquire),
-            "bootstrap": bootstrap,
-            "profileCache": cache,
+            "sourceRevisions": {
+                "bootstrapSchemaVersion": bootstrap.schema_version,
+                "profile": cache.as_ref().map(|cache| json!({
+                    "generation": cache.generation,
+                    "profileRevision": cache.profile.metadata.profile_revision,
+                    "acceptedAt": cache.accepted_at,
+                })),
+                "localSettingsRevision": settings.revision,
+            },
+            "sourceDocuments": {
+                "bootstrap": bootstrap,
+                "profileCache": cache,
+            },
+            "machine": cache.as_ref().map(|cache| &cache.profile.machine),
+            "platform": cache.as_ref().map(|cache| json!({
+                "apiBaseUrl": cache.profile.api_base_url,
+                "runtimeEndpoints": cache.profile.runtime_endpoints,
+                "mqttConnection": cache.profile.mqtt_connection,
+                "paymentCapability": cache.profile.payment_capability,
+            })),
+            "hardware": {
+                "model": bootstrap.hardware_model,
+                "topology": bootstrap.topology,
+                "expectedProfile": cache.as_ref().map(|cache| &cache.profile.hardware_profile),
+                "lowerControllerBinding": settings.lower_controller_binding,
+                "scannerBinding": settings.scanner_binding,
+                "scannerProtocol": settings.scanner_protocol,
+            },
+            "experience": { "audio": settings.audio },
             "profileRefresh": { "status": status, "lastError": refresh_error },
-            "configuredSecrets": {
+            "secretStatus": {
                 "machineSecretConfigured": secrets.machine_secret_configured,
                 "mqttSigningSecretConfigured": secrets.mqtt_signing_secret_configured,
                 "mqttPasswordConfigured": secrets.mqtt_password_configured,
