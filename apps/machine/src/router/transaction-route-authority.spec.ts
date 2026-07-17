@@ -85,8 +85,28 @@ describe("transaction route authority", () => {
     expect(router.currentRoute.value.fullPath).toBe("/result/success");
 
     checkoutStore.dismissCurrentTerminalTransaction();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await router.push("/catalog");
     expect(router.currentRoute.value.name).toBe("catalog");
+  });
+
+  it("does not claim product navigation while order creation has no transaction", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/products/:id", name: "product-detail", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+      ],
+    });
+    installTransactionRouteAuthority(router, pinia);
+    await router.push("/products/product-1");
+
+    useCheckoutStore(pinia).loading = true;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(router.currentRoute.value.name).toBe("product-detail");
   });
 
   it("actively follows daemon transaction progress without waiting for page navigation", async () => {
