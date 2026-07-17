@@ -2178,6 +2178,7 @@ describe("shared API contract", () => {
         paymentScanner: { required: true, supportsPaymentCode: true },
         vision: { required: false, supportsRecommendations: true },
       },
+      hardwareModel: "vem-prod-24",
       hardwareSlotTopology: {
         identity: "vem-prod-24",
         version: "2026-06-adr0026",
@@ -2207,6 +2208,7 @@ describe("shared API contract", () => {
       },
       metadata: {
         profileVersion: 1,
+        profileRevision: 2,
         claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
         claimedAt: "2026-06-08T16:30:00.000Z",
         serverTime: "2026-06-08T16:30:00.000Z",

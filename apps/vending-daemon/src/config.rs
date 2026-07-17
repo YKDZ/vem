@@ -324,6 +324,7 @@ pub struct MachineProvisioningProfile {
     pub api_base_url: String,
     pub runtime_endpoints: ProvisioningRuntimeEndpoints,
     pub hardware_profile: ProductionMachineHardwareProfile,
+    pub hardware_model: String,
     pub hardware_slot_topology: HardwareSlotTopologyIdentity,
     pub payment_capability: ProductionMachinePaymentCapability,
     pub provisioning_profile: String,
@@ -409,6 +410,7 @@ pub struct ProvisioningMaintenanceIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningMetadata {
     pub profile_version: i64,
+    pub profile_revision: i64,
     pub claim_code_id: String,
     pub claimed_at: String,
     pub server_time: String,

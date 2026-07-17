@@ -126,6 +126,7 @@ pub mod error {
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"required\": ["]
 #[doc = "            \"acceptedAt\","]
+#[doc = "            \"generation\","]
 #[doc = "            \"profile\","]
 #[doc = "            \"schemaVersion\""]
 #[doc = "          ],"]
@@ -135,10 +136,16 @@ pub mod error {
 #[doc = "              \"format\": \"date-time\","]
 #[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
 #[doc = "            },"]
+#[doc = "            \"generation\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
+#[doc = "            },"]
 #[doc = "            \"profile\": {"]
 #[doc = "              \"type\": \"object\","]
 #[doc = "              \"required\": ["]
 #[doc = "                \"apiBaseUrl\","]
+#[doc = "                \"hardwareModel\","]
 #[doc = "                \"hardwareProfile\","]
 #[doc = "                \"hardwareSlotTopology\","]
 #[doc = "                \"machine\","]
@@ -151,6 +158,11 @@ pub mod error {
 #[doc = "                \"apiBaseUrl\": {"]
 #[doc = "                  \"type\": \"string\","]
 #[doc = "                  \"format\": \"uri\""]
+#[doc = "                },"]
+#[doc = "                \"hardwareModel\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
 #[doc = "                },"]
 #[doc = "                \"hardwareProfile\": {"]
 #[doc = "                  \"type\": \"object\","]
@@ -289,6 +301,7 @@ pub mod error {
 #[doc = "                  \"required\": ["]
 #[doc = "                    \"claimCodeId\","]
 #[doc = "                    \"claimedAt\","]
+#[doc = "                    \"profileRevision\","]
 #[doc = "                    \"profileVersion\","]
 #[doc = "                    \"serverTime\""]
 #[doc = "                  ],"]
@@ -302,6 +315,11 @@ pub mod error {
 #[doc = "                      \"type\": \"string\","]
 #[doc = "                      \"format\": \"date-time\","]
 #[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    },"]
+#[doc = "                    \"profileRevision\": {"]
+#[doc = "                      \"type\": \"integer\","]
+#[doc = "                      \"maximum\": 9007199254740991.0,"]
+#[doc = "                      \"exclusiveMinimum\": 0.0"]
 #[doc = "                    },"]
 #[doc = "                    \"profileVersion\": {"]
 #[doc = "                      \"type\": \"number\","]
@@ -852,6 +870,7 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"acceptedAt\","]
+#[doc = "    \"generation\","]
 #[doc = "    \"profile\","]
 #[doc = "    \"schemaVersion\""]
 #[doc = "  ],"]
@@ -861,10 +880,16 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 #[doc = "      \"format\": \"date-time\","]
 #[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
 #[doc = "    },"]
+#[doc = "    \"generation\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
 #[doc = "    \"profile\": {"]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"apiBaseUrl\","]
+#[doc = "        \"hardwareModel\","]
 #[doc = "        \"hardwareProfile\","]
 #[doc = "        \"hardwareSlotTopology\","]
 #[doc = "        \"machine\","]
@@ -877,6 +902,11 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 #[doc = "        \"apiBaseUrl\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"uri\""]
+#[doc = "        },"]
+#[doc = "        \"hardwareModel\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
 #[doc = "        },"]
 #[doc = "        \"hardwareProfile\": {"]
 #[doc = "          \"type\": \"object\","]
@@ -1015,6 +1045,7 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 #[doc = "          \"required\": ["]
 #[doc = "            \"claimCodeId\","]
 #[doc = "            \"claimedAt\","]
+#[doc = "            \"profileRevision\","]
 #[doc = "            \"profileVersion\","]
 #[doc = "            \"serverTime\""]
 #[doc = "          ],"]
@@ -1028,6 +1059,11 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 #[doc = "              \"type\": \"string\","]
 #[doc = "              \"format\": \"date-time\","]
 #[doc = "              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "            },"]
+#[doc = "            \"profileRevision\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
 #[doc = "            },"]
 #[doc = "            \"profileVersion\": {"]
 #[doc = "              \"type\": \"number\","]
@@ -1145,6 +1181,7 @@ pub struct EffectiveMachineRuntimeConfigurationConfiguredSecrets {
 pub struct EffectiveMachineRuntimeConfigurationProfileCache {
     #[serde(rename = "acceptedAt")]
     pub accepted_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    pub generation: ::std::num::NonZeroU64,
     pub profile: EffectiveMachineRuntimeConfigurationProfileCacheProfile,
     #[serde(rename = "schemaVersion")]
     pub schema_version: f64,
@@ -1158,6 +1195,7 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCache {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"apiBaseUrl\","]
+#[doc = "    \"hardwareModel\","]
 #[doc = "    \"hardwareProfile\","]
 #[doc = "    \"hardwareSlotTopology\","]
 #[doc = "    \"machine\","]
@@ -1170,6 +1208,11 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCache {
 #[doc = "    \"apiBaseUrl\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"hardwareModel\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
 #[doc = "    },"]
 #[doc = "    \"hardwareProfile\": {"]
 #[doc = "      \"type\": \"object\","]
@@ -1308,6 +1351,7 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCache {
 #[doc = "      \"required\": ["]
 #[doc = "        \"claimCodeId\","]
 #[doc = "        \"claimedAt\","]
+#[doc = "        \"profileRevision\","]
 #[doc = "        \"profileVersion\","]
 #[doc = "        \"serverTime\""]
 #[doc = "      ],"]
@@ -1321,6 +1365,11 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCache {
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"format\": \"date-time\","]
 #[doc = "          \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "        },"]
+#[doc = "        \"profileRevision\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
 #[doc = "        },"]
 #[doc = "        \"profileVersion\": {"]
 #[doc = "          \"type\": \"number\","]
@@ -1431,6 +1480,8 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCache {
 pub struct EffectiveMachineRuntimeConfigurationProfileCacheProfile {
     #[serde(rename = "apiBaseUrl")]
     pub api_base_url: ::std::string::String,
+    #[serde(rename = "hardwareModel")]
+    pub hardware_model: EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel,
     #[serde(rename = "hardwareProfile")]
     pub hardware_profile: EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareProfile,
     #[serde(rename = "hardwareSlotTopology")]
@@ -1445,6 +1496,90 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCacheProfile {
         EffectiveMachineRuntimeConfigurationProfileCacheProfilePaymentCapability,
     #[serde(rename = "runtimeEndpoints")]
     pub runtime_endpoints: EffectiveMachineRuntimeConfigurationProfileCacheProfileRuntimeEndpoints,
+}
+#[doc = "`EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel>
+    for ::std::string::String
+{
+    fn from(value: EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareModel
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
 }
 #[doc = "`EffectiveMachineRuntimeConfigurationProfileCacheProfileHardwareProfile`"]
 #[doc = r""]
@@ -2259,6 +2394,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "  \"required\": ["]
 #[doc = "    \"claimCodeId\","]
 #[doc = "    \"claimedAt\","]
+#[doc = "    \"profileRevision\","]
 #[doc = "    \"profileVersion\","]
 #[doc = "    \"serverTime\""]
 #[doc = "  ],"]
@@ -2272,6 +2408,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"date-time\","]
 #[doc = "      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "    },"]
+#[doc = "    \"profileRevision\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
 #[doc = "    },"]
 #[doc = "    \"profileVersion\": {"]
 #[doc = "      \"type\": \"number\","]
@@ -2294,6 +2435,8 @@ pub struct EffectiveMachineRuntimeConfigurationProfileCacheProfileMetadata {
     pub claim_code_id: ::uuid::Uuid,
     #[serde(rename = "claimedAt")]
     pub claimed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    #[serde(rename = "profileRevision")]
+    pub profile_revision: ::std::num::NonZeroU64,
     #[serde(rename = "profileVersion")]
     pub profile_version: f64,
     #[serde(rename = "serverTime")]

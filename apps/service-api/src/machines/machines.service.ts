@@ -2198,6 +2198,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           supportsRecommendations: true,
         },
       },
+      hardwareModel: "vem-prod-24",
       hardwareSlotTopology: {
         identity: "vem-prod-24",
         version: "2026-06-adr0026",
@@ -2230,6 +2231,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       metadata: {
         profileVersion: 1,
+        profileRevision: secretVersion,
         claimCodeId,
         claimedAt: toIso(now),
         serverTime: toIso(now),

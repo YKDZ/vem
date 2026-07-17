@@ -67,6 +67,7 @@ describe("Machine Claim maintenance identity contract", () => {
         paymentScanner: { required: true, supportsPaymentCode: true },
         vision: { required: false, supportsRecommendations: true },
       },
+      hardwareModel: "vem-prod-24",
       hardwareSlotTopology: { identity: "vem-prod-24", version: "v1" },
       paymentCapability: {
         profile: "production",
@@ -93,6 +94,7 @@ describe("Machine Claim maintenance identity contract", () => {
       },
       metadata: {
         profileVersion: 1,
+        profileRevision: 2,
         claimCodeId: "550e8400-e29b-41d4-a716-446655440002",
         claimedAt: "2026-07-10T00:00:00.000Z",
         serverTime: "2026-07-10T00:00:00.000Z",

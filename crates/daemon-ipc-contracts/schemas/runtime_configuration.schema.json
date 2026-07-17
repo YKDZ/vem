@@ -62,6 +62,11 @@
               "type": "number",
               "const": 1
             },
+            "generation": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
             "acceptedAt": {
               "type": "string",
               "format": "date-time",
@@ -227,6 +232,11 @@
                   ],
                   "additionalProperties": false
                 },
+                "hardwareModel": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
                 "hardwareSlotTopology": {
                   "type": "object",
                   "properties": {
@@ -278,6 +288,11 @@
                       "type": "number",
                       "const": 1
                     },
+                    "profileRevision": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "claimCodeId": {
                       "type": "string",
                       "format": "uuid",
@@ -296,6 +311,7 @@
                   },
                   "required": [
                     "profileVersion",
+                    "profileRevision",
                     "claimCodeId",
                     "claimedAt",
                     "serverTime"
@@ -309,6 +325,7 @@
                 "runtimeEndpoints",
                 "mqttConnection",
                 "hardwareProfile",
+                "hardwareModel",
                 "hardwareSlotTopology",
                 "paymentCapability",
                 "metadata"
@@ -316,7 +333,7 @@
               "additionalProperties": false
             }
           },
-          "required": ["schemaVersion", "acceptedAt", "profile"],
+          "required": ["schemaVersion", "generation", "acceptedAt", "profile"],
           "additionalProperties": false
         },
         {

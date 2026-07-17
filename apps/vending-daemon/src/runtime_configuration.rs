@@ -21,6 +21,15 @@ use crate::{
 
 const SCHEMA_VERSION: f64 = 1.0;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimTransactionJournal {
+    schema_version: u8,
+    operation: String,
+    generation: u64,
+    profile_generation: u64,
+}
+
 /// The clean configuration boundary. Deployment owns Runtime Bootstrap while
 /// the daemon owns the accepted profile cache and credential extraction.
 pub struct CleanRuntimeConfigurationStore {
@@ -48,6 +57,18 @@ impl CleanRuntimeConfigurationStore {
 
     pub fn profile_cache_path(&self) -> PathBuf {
         self.data_dir.join("config").join("profile-cache.json")
+    }
+
+    pub fn claim_journal_path(&self) -> PathBuf {
+        self.data_dir.join("config").join("claim-transaction.json")
+    }
+
+    /// Finishes a committed transaction or removes every claim artifact from
+    /// an interrupted one. This prevents a restarted daemon from consuming a
+    /// profile cache and credentials that came from different claims.
+    pub async fn recover_claim_transaction(&self) -> Result<(), String> {
+        let _mutation = self.mutation_lock.lock().await;
+        self.recover_claim_transaction_locked().await
     }
 
     pub async fn load_bootstrap(&self) -> Result<RuntimeBootstrap, String> {
@@ -81,7 +102,9 @@ impl CleanRuntimeConfigurationStore {
         profile: &MachineProvisioningProfile,
     ) -> Result<ProvisioningProfileCache, String> {
         let _mutation = self.mutation_lock.lock().await;
-        let cache = match profile_cache_from_claim(profile) {
+        self.recover_claim_transaction_locked().await?;
+        let generation = self.generation.load(Ordering::Acquire).saturating_add(1);
+        let cache = match profile_cache_from_claim(profile, generation) {
             Ok(cache) => cache,
             Err(error) => {
                 self.record_refresh_error("profile contract was rejected")
@@ -91,16 +114,35 @@ impl CleanRuntimeConfigurationStore {
         };
         if self.runtime_bootstrap_path().exists() {
             let bootstrap = self.load_bootstrap().await?;
-            if bootstrap.topology.identity.to_string() != profile.hardware_slot_topology.identity
+            if bootstrap.hardware_model.to_string() != profile.hardware_model
+                || bootstrap.topology.identity.to_string()
+                    != profile.hardware_slot_topology.identity
                 || bootstrap.topology.version.to_string() != profile.hardware_slot_topology.version
             {
-                self.record_refresh_error("profile topology does not match Runtime Bootstrap")
+                self.record_refresh_error("profile hardware does not match Runtime Bootstrap")
                     .await;
                 return Err(
-                    "provisioning profile topology does not match Runtime Bootstrap".to_string(),
+                    "provisioning profile hardware does not match Runtime Bootstrap".to_string(),
                 );
             }
         }
+        if self.load_profile_cache().await?.is_some_and(|accepted| {
+            u64::try_from(profile.metadata.profile_revision)
+                .is_ok_and(|revision| revision < accepted.profile.metadata.profile_revision.get())
+        }) {
+            self.record_refresh_error("profile revision is older than the accepted profile")
+                .await;
+            return Err(
+                "provisioning profile revision is older than the accepted profile".to_string(),
+            );
+        }
+        let journal = ClaimTransactionJournal {
+            schema_version: 1,
+            operation: "accept".to_string(),
+            generation,
+            profile_generation: generation,
+        };
+        write_atomic_json(&self.claim_journal_path(), &journal).await?;
         let previous = credential_snapshot(self.secrets.as_ref()).await?;
         let replacements = [
             (
@@ -125,6 +167,7 @@ impl CleanRuntimeConfigurationStore {
         for (account, value) in replacements {
             if let Err(error) = self.secrets.write_secret(account, value).await {
                 restore_credentials(self.secrets.as_ref(), &previous).await?;
+                remove_optional_file(&self.claim_journal_path()).await?;
                 self.record_refresh_error("profile credentials were not accepted")
                     .await;
                 return Err(format!("persist profile credentials failed: {error}"));
@@ -133,13 +176,15 @@ impl CleanRuntimeConfigurationStore {
 
         if let Err(error) = write_atomic_json(&self.profile_cache_path(), &cache).await {
             restore_credentials(self.secrets.as_ref(), &previous).await?;
+            remove_optional_file(&self.claim_journal_path()).await?;
             self.record_refresh_error("profile cache was not accepted")
                 .await;
             return Err(error);
         }
 
+        remove_optional_file(&self.claim_journal_path()).await?;
         *self.refresh_error.lock().await = None;
-        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.generation.store(generation, Ordering::Release);
         Ok(cache)
     }
 
@@ -147,6 +192,17 @@ impl CleanRuntimeConfigurationStore {
     /// deployment-owned bootstrap remains at the runtime root.
     pub async fn clear_claim(&self) -> Result<(), String> {
         let _mutation = self.mutation_lock.lock().await;
+        let generation = self.generation.load(Ordering::Acquire).saturating_add(1);
+        write_atomic_json(
+            &self.claim_journal_path(),
+            &ClaimTransactionJournal {
+                schema_version: 1,
+                operation: "clear".to_string(),
+                generation,
+                profile_generation: generation,
+            },
+        )
+        .await?;
         match fs::remove_file(self.profile_cache_path()).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -159,8 +215,9 @@ impl CleanRuntimeConfigurationStore {
         ] {
             self.secrets.write_secret(account, "").await?;
         }
+        remove_optional_file(&self.claim_journal_path()).await?;
         *self.refresh_error.lock().await = None;
-        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.generation.store(generation, Ordering::Release);
         Ok(())
     }
 
@@ -196,6 +253,46 @@ impl CleanRuntimeConfigurationStore {
     async fn record_refresh_error(&self, error: &str) {
         *self.refresh_error.lock().await = Some(error.to_string());
     }
+
+    async fn recover_claim_transaction_locked(&self) -> Result<(), String> {
+        let Some(value) =
+            read_optional_json(self.claim_journal_path(), "claim transaction").await?
+        else {
+            return Ok(());
+        };
+        let journal: ClaimTransactionJournal = serde_json::from_value(value)
+            .map_err(|error| format!("claim transaction journal invalid: {error}"))?;
+        if journal.schema_version != 1 || !matches!(journal.operation.as_str(), "accept" | "clear")
+        {
+            return Err("claim transaction journal invalid".to_string());
+        }
+        if journal.operation == "accept" {
+            let complete = self
+                .load_profile_cache()
+                .await?
+                .is_some_and(|cache| cache.generation.get() == journal.profile_generation)
+                && self.secrets.status().await?.machine_secret_configured
+                && self.secrets.status().await?.mqtt_signing_secret_configured;
+            if complete {
+                remove_optional_file(&self.claim_journal_path()).await?;
+                self.generation.store(journal.generation, Ordering::Release);
+                return Ok(());
+            }
+        }
+        remove_optional_file(&self.profile_cache_path()).await?;
+        for account in [
+            MACHINE_SECRET_ACCOUNT,
+            MQTT_SIGNING_SECRET_ACCOUNT,
+            MQTT_PASSWORD_ACCOUNT,
+        ] {
+            self.secrets.write_secret(account, "").await?;
+        }
+        remove_optional_file(&self.claim_journal_path()).await?;
+        *self.refresh_error.lock().await =
+            Some("claim transaction recovered after interruption".to_string());
+        self.generation.store(journal.generation, Ordering::Release);
+        Ok(())
+    }
 }
 
 fn runtime_root(data_dir: &Path) -> PathBuf {
@@ -225,6 +322,14 @@ async fn read_optional_json(
             "read {label} failed at {}: {error}",
             path.display()
         )),
+    }
+}
+
+async fn remove_optional_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove {} failed: {error}", path.display())),
     }
 }
 
@@ -274,8 +379,10 @@ async fn restore_credentials(
 
 fn profile_cache_from_claim(
     profile: &MachineProvisioningProfile,
+    generation: u64,
 ) -> Result<ProvisioningProfileCache, String> {
     if profile.metadata.profile_version != 1
+        || profile.metadata.profile_revision < 1
         || profile.hardware_profile.profile != "production"
         || !profile.hardware_profile.controller.required
         || profile.hardware_profile.controller.protocol != "vem-vending-controller"
@@ -286,6 +393,7 @@ fn profile_cache_from_claim(
     }
     let cache = json!({
         "schemaVersion": 1,
+        "generation": generation,
         "acceptedAt": chrono::Utc::now().to_rfc3339(),
         "profile": {
             "machine": {
@@ -303,6 +411,7 @@ fn profile_cache_from_claim(
                 "username": profile.credentials.mqtt_connection.username,
             },
             "hardwareProfile": profile.hardware_profile,
+            "hardwareModel": profile.hardware_model,
             "hardwareSlotTopology": profile.hardware_slot_topology,
             "paymentCapability": {
                 "profile": profile.payment_capability.profile,

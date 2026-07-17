@@ -104,6 +104,99 @@ async fn invalid_refresh_retains_the_last_accepted_profile_and_reset_preserves_b
     .is_none());
 }
 
+#[tokio::test]
+async fn profile_acceptance_recovers_an_interrupted_generation_without_mixing_credentials() {
+    let temp = tempfile::tempdir().expect("temp");
+    let data_dir = temp.path().join("VEM").join("vending-daemon");
+    let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
+    tokio::fs::create_dir_all(bootstrap_path.parent().expect("parent"))
+        .await
+        .expect("bootstrap directory");
+    tokio::fs::write(
+        &bootstrap_path,
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("bootstrap");
+
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let store = CleanRuntimeConfigurationStore::new(data_dir.clone(), secrets.clone());
+    store
+        .accept_profile(&valid_profile())
+        .await
+        .expect("accepted");
+
+    tokio::fs::write(
+        store.claim_journal_path(),
+        r#"{"schemaVersion":1,"operation":"accept","generation":2,"profileGeneration":2}"#,
+    )
+    .await
+    .expect("interrupted journal");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        "new-secret-without-a-matching-profile",
+    )
+    .await
+    .expect("interrupted credential");
+
+    let restarted = CleanRuntimeConfigurationStore::new(data_dir, secrets.clone());
+    restarted
+        .recover_claim_transaction()
+        .await
+        .expect("recover");
+
+    assert!(restarted
+        .load_profile_cache()
+        .await
+        .expect("cache")
+        .is_none());
+    assert!(vending_daemon::secret::SecretStore::read_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+    )
+    .await
+    .expect("secret")
+    .is_none());
+    assert!(!tokio::fs::try_exists(restarted.claim_journal_path())
+        .await
+        .expect("journal exists"));
+}
+
+#[tokio::test]
+async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile() {
+    let temp = tempfile::tempdir().expect("temp");
+    let data_dir = temp.path().join("VEM").join("vending-daemon");
+    let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
+    tokio::fs::create_dir_all(bootstrap_path.parent().expect("parent"))
+        .await
+        .expect("bootstrap directory");
+    tokio::fs::write(
+        &bootstrap_path,
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("bootstrap");
+    let store =
+        CleanRuntimeConfigurationStore::new(data_dir, Arc::new(InMemorySecretStore::default()));
+    let mut newest = valid_profile();
+    newest.metadata.profile_revision = 2;
+    store.accept_profile(&newest).await.expect("newest profile");
+
+    assert!(store.accept_profile(&valid_profile()).await.is_err());
+    assert_eq!(
+        store
+            .load_profile_cache()
+            .await
+            .expect("cache")
+            .expect("accepted cache")
+            .profile
+            .metadata
+            .profile_revision,
+        std::num::NonZeroU64::new(2).expect("revision")
+    );
+}
+
 fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
     serde_json::from_value(serde_json::json!({
         "machine": {
@@ -137,6 +230,7 @@ fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
             "paymentScanner": { "required": true, "supportsPaymentCode": true },
             "vision": { "required": false, "supportsRecommendations": true }
         },
+        "hardwareModel": "vem-prod-24",
         "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "v1" },
         "paymentCapability": {
             "profile": "production",
@@ -155,6 +249,7 @@ fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
         },
         "metadata": {
             "profileVersion": 1,
+            "profileRevision": 1,
             "claimCodeId": "550e8400-e29b-41d4-a716-446655440002",
             "claimedAt": "2026-07-17T00:00:00.000Z",
             "serverTime": "2026-07-17T00:00:00.000Z"

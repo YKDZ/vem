@@ -3831,26 +3831,24 @@ async fn claim_machine_mutation(
     }
     let machine_code = profile.machine.code.clone();
     let maintenance_identity = profile.maintenance.clone();
-    let clean_profile = profile.clone();
-    match ctx.config_store.apply_provisioning_profile(profile).await {
-        Ok(config) => {
-            if ctx
-                .config_store
-                .clean_runtime_configuration()
-                .accept_profile(&clean_profile)
-                .await
-                .is_err()
-            {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage {
-                        code: "machine_profile_persistence_failed",
-                        message: "machine profile persistence failed; retry provisioning"
-                            .to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+    let response_config = crate::config::MachineRuntimeConfig {
+        public: crate::config::default_public_config(),
+        machine_secret_configured: true,
+        mqtt_signing_secret_configured: true,
+        mqtt_password_configured: profile.credentials.mqtt_connection.password.is_some(),
+        maintenance_pin_configured: false,
+        machine_secret: None,
+        mqtt_signing_secret: None,
+        mqtt_password: None,
+    }
+    .to_public();
+    match ctx
+        .config_store
+        .clean_runtime_configuration()
+        .accept_profile(&profile)
+        .await
+    {
+        Ok(_) => {
             // The Platform claim and its credentials are already durable at
             // this point. A transient Windows tunnel failure must not turn a
             // consumed claim code back into a failed claim; Bring-Up keeps a
@@ -3885,24 +3883,16 @@ async fn claim_machine_mutation(
                     status: "provisioned",
                     machine_code,
                     restart_requested: true,
-                    config,
+                    config: response_config,
                 }),
             )
                 .into_response()
         }
-        Err(error) if error.starts_with("provisioning persistence failed:") => (
+        Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
                 code: "machine_profile_persistence_failed",
                 message: "machine profile persistence failed; retry provisioning".to_string(),
-            }),
-        )
-            .into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorMessage {
-                code: "machine_profile_invalid",
-                message: error,
             }),
         )
             .into_response(),

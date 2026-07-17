@@ -29,6 +29,16 @@ describe("Runtime Bootstrap contract", () => {
 });
 
 describe("Provisioning Profile Cache contract", () => {
+  it("requires a generation so crash recovery can never join unrelated credentials", () => {
+    expect(
+      provisioningProfileCacheSchema.safeParse({
+        schemaVersion: 1,
+        acceptedAt: "2026-07-17T00:00:00.000Z",
+        profile: {},
+      }).success,
+    ).toBe(false);
+  });
+
   it("cannot retain claim credentials", () => {
     expect(
       provisioningProfileCacheSchema.safeParse({

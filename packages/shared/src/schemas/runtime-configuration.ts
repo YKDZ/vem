@@ -44,6 +44,7 @@ const cachedProvisioningProfileSchema = z.strictObject({
       supportsRecommendations: z.boolean(),
     }),
   }),
+  hardwareModel: z.string().trim().min(1).max(128),
   hardwareSlotTopology: hardwareSlotTopologyIdentitySchema,
   paymentCapability: z.strictObject({
     profile: z.literal("production"),
@@ -53,6 +54,7 @@ const cachedProvisioningProfileSchema = z.strictObject({
   }),
   metadata: z.strictObject({
     profileVersion: z.literal(1),
+    profileRevision: z.number().int().positive(),
     claimCodeId: z.uuid(),
     claimedAt: z.iso.datetime({ offset: true }),
     serverTime: z.iso.datetime({ offset: true }),
@@ -61,6 +63,7 @@ const cachedProvisioningProfileSchema = z.strictObject({
 
 export const provisioningProfileCacheSchema = z.strictObject({
   schemaVersion: z.literal(1),
+  generation: z.number().int().positive(),
   acceptedAt: z.iso.datetime({ offset: true }),
   profile: cachedProvisioningProfileSchema,
 });
