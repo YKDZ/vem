@@ -181,7 +181,7 @@ export function renderUnattendedXml(config) {
   </settings>
   <settings pass="specialize">
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); if ([string]::IsNullOrWhiteSpace($drive)) { throw 'baseline configuration media is unavailable during specialize' }; $dest = 'C:\\ProgramData\\WindowsRuntimeBaseline\\media'; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Copy-Item -Path (Join-Path $drive '*') -Destination $dest -Recurse -Force"</Path><Description>Stage runtime baseline media</Description></RunSynchronousCommand></RunSynchronous>
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>cmd.exe /d /c "for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\baseline-config.json xcopy %d:\\* C:\\ProgramData\\WindowsRuntimeBaseline\\media\\ /E /I /Y"</Path><Description>Stage runtime baseline media</Description></RunSynchronousCommand></RunSynchronous>
     </component>
   </settings>
   <settings pass="oobeSystem">

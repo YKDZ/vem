@@ -364,6 +364,16 @@ describe("Linux KVM Windows baseline", () => {
       xml,
       /C:\\ProgramData\\WindowsRuntimeBaseline\\media/,
     );
+    const specializeCommand = /<settings pass="specialize">[\s\S]*?<Path>([^<]+)<\/Path>/.exec(
+      xml,
+    )?.[1];
+    assert.ok(specializeCommand);
+    assert.ok(
+      specializeCommand.length < 260,
+      "specialize RunSynchronous Path must fit the Win10 WCM scalar limit",
+    );
+    assert.match(specializeCommand, /if exist %d:\\baseline-config\.json xcopy/);
+    assert.doesNotMatch(specializeCommand, /Win32_CDROMDrive|Get-Volume/);
     assert.match(
       xml,
       /-File &quot;C:\\ProgramData\\WindowsRuntimeBaseline\\media\\bootstrap\.ps1&quot;/,
