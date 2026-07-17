@@ -4936,11 +4936,14 @@ fn production_dispense_path_readiness(
             message: "生产出货路径不能使用 mock hardwareAdapter",
         };
     }
-    if public
-        .serial_port_path
-        .as_deref()
-        .map(|path| path.trim_start().starts_with("tcp://"))
-        .unwrap_or(false)
+    let allow_tcp_simulator =
+        std::env::var("VEM_ALLOW_TCP_SIMULATOR_FOR_SALE").is_ok_and(|value| value == "1");
+    if !allow_tcp_simulator
+        && public
+            .serial_port_path
+            .as_deref()
+            .map(|path| path.trim_start().starts_with("tcp://"))
+            .unwrap_or(false)
     {
         return ProductionDispensePathReadiness {
             ready: false,
