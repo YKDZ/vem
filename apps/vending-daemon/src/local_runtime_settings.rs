@@ -216,4 +216,28 @@ mod tests {
             .expect("settings file");
         assert!(!persisted_json.contains("COM"));
     }
+
+    #[tokio::test]
+    async fn replugged_scanner_keeps_its_stable_binding_without_a_com_path() {
+        let temp = tempfile::tempdir().expect("temp");
+        let store = LocalRuntimeSettingsStore::new(temp.path().join("vending-daemon"));
+        store
+            .save_binding(LocalDeviceRole::Scanner, binding("container:scanner-01"))
+            .await
+            .expect("save scanner binding");
+
+        let restarted = LocalRuntimeSettingsStore::new(temp.path().join("vending-daemon"));
+        let (persisted, _) = restarted
+            .binding_snapshot(LocalDeviceRole::Scanner)
+            .await
+            .expect("load scanner binding after replug");
+        assert_eq!(
+            persisted.expect("binding").identity.identity_key,
+            "container:scanner-01"
+        );
+        let persisted_json = fs::read_to_string(restarted.path())
+            .await
+            .expect("settings file");
+        assert!(!persisted_json.contains("COM"));
+    }
 }
