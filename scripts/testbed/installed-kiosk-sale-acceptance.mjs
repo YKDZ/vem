@@ -346,7 +346,17 @@ do {
     if ([bool]$health.hardwareOnline -and [bool]$health.scannerOnline) { break }
   } catch {}
 } while ([DateTime]::UtcNow -lt $deadline)
-if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) { throw 'serial-backed daemon did not become hardware/scanner ready' }
+if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
+  $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+  $diagnostic = [ordered]@{
+    ports = $ports
+    lowerControllerPort = $lowerPort
+    scannerPort = $scannerPort
+    serviceStatus = if ($service) { [string]$service.Status } else { 'missing' }
+    health = $health
+  }
+  throw "serial-backed daemon did not become hardware/scanner ready: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
+}
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; lowerControllerPort = $lowerPort; scannerPort = $scannerPort; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
 `.trim();
 }
