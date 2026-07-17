@@ -85,7 +85,42 @@ describe("transaction route authority", () => {
     expect(router.currentRoute.value.fullPath).toBe("/result/success");
 
     checkoutStore.dismissCurrentTerminalTransaction();
-    await router.push("/catalog");
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(router.currentRoute.value.name).toBe("catalog");
+  });
+
+  it("actively follows daemon transaction progress without waiting for page navigation", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+        { path: "/result/:kind", name: "result", component: {} },
+      ],
+    });
+    installTransactionRouteAuthority(router, pinia);
+    const checkoutStore = useCheckoutStore(pinia);
+    await router.push("/catalog");
+    checkoutStore.applyTransaction(activePaymentTransaction());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(router.currentRoute.value.name).toBe("payment");
+
+    checkoutStore.applyTransaction({
+      ...activePaymentTransaction(),
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-ROUTE-AUTO-SUCCESS",
+        status: "succeeded",
+        lastError: null,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(router.currentRoute.value.fullPath).toBe("/result/success");
   });
 });
