@@ -559,6 +559,7 @@ describe("Linux KVM Windows baseline", () => {
           },
         },
       );
+      if (parsed.error?.code === "ENOENT") continue;
       assert.equal(parsed.status, 0, `${script}: ${parsed.stderr}`);
     }
   });
