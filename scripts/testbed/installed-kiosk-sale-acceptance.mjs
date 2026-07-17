@@ -326,6 +326,7 @@ $ports = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { $_.To
 if ($ports.Count -lt 2) { throw "installed kiosk serial activation requires two COM ports, found $($ports.Count)" }
 $lowerPort = if ($ports -contains 'COM1') { 'COM1' } else { $ports[0] }
 $scannerPort = if ($ports -contains 'COM2') { 'COM2' } else { @($ports | Where-Object { $_ -ne $lowerPort })[0] }
+Stop-Service -Name 'VemVendingDaemon' -Force
 foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:\VEM\bringup\machine-config.json')) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
   $config = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -336,7 +337,7 @@ foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:
   }
   [System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 }
-Restart-Service -Name 'VemVendingDaemon' -Force
+Start-Service -Name 'VemVendingDaemon'
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
   Start-Sleep -Milliseconds 500
