@@ -423,4 +423,20 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(deploy, /component = "daemon"/);
     assert.match(deploy, /component = "ui"/);
   });
+
+  it("uses a portable runner-local runtime artifact cache by default", () => {
+    const workflow = readWorkflow();
+    const restore = stepBlock(
+      workflow,
+      "Restore Host Windows Runtime Artifact Cache",
+    );
+    const persist = stepBlock(
+      workflow,
+      "Persist Host Windows Runtime Artifact Cache",
+    );
+
+    assert.match(restore, /\$\{RUNNER_TEMP%\/_temp\}\/_runtime-artifact-cache/);
+    assert.match(persist, /\$\{RUNNER_TEMP%\/_temp\}\/_runtime-artifact-cache/);
+    assert.doesNotMatch(`${restore}\n${persist}`, /\/opt\//);
+  });
 });
