@@ -441,6 +441,47 @@ impl BackendClient {
             .map_err(|error| format!("backend response parse failed: {error}"))
     }
 
+    pub async fn claim_machine_from_bootstrap(
+        &self,
+        claim_code: &str,
+        maintenance_public_key: &str,
+        rotate_maintenance_identity: bool,
+    ) -> Result<MachineProvisioningProfile, String> {
+        let mut body = serde_json::json!({
+            "claimCode": claim_code,
+            "maintenancePublicKey": maintenance_public_key,
+        });
+        if rotate_maintenance_identity {
+            body["maintenanceRotation"] = serde_json::json!("rotate");
+        }
+        let response = self
+            .client
+            .post(self.endpoint("/machines/claim"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| format!("backend request failed: {error}"))?;
+        let status = response.status();
+        let payload = response
+            .text()
+            .await
+            .map_err(|error| format!("backend read response failed: {error}"))?;
+        if !status.is_success() {
+            if let Some(message) = Self::api_error_from_payload(&payload) {
+                return Err(message);
+            }
+            return Err(match status.as_u16() {
+                502..=504 => "BACKEND_OFFLINE".to_string(),
+                _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
+            });
+        }
+        let value = serde_json::from_str(&payload)
+            .map_err(|error| format!("backend json parse failed: {error}"))?;
+        let value = Self::unwrap_api_response(value)?;
+        serde_json::from_value(value)
+            .map_err(|error| format!("backend response parse failed: {error}"))
+    }
+
     pub async fn get_maintenance_identity_status(
         &self,
         machine_code: &str,

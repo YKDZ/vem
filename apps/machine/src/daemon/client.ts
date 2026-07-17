@@ -3,10 +3,12 @@ import {
   type DaemonIpcAudioOutputConfirmRequest,
   type DaemonIpcAudioOutputTestRequest,
   type DaemonIpcAudioOutputTestResponse,
+  type EffectiveMachineRuntimeConfiguration,
   daemonIpcAudioOutputBindingSnapshotSchema,
   daemonIpcAudioOutputConfirmRequestSchema,
   daemonIpcAudioOutputTestRequestSchema,
   daemonIpcAudioOutputTestResponseSchema,
+  effectiveMachineRuntimeConfigurationSchema,
   isManagedMediaReference,
   stockMaintenanceBatchResponseSchema,
   stockMaintenanceTaskSchema,
@@ -499,6 +501,12 @@ export class DaemonApiClient {
   async getConfig(): Promise<ConfigSummary> {
     return configSummaryFromRuntimeConfigurationSummary(
       await this.request("/v1/config/summary"),
+    );
+  }
+
+  async getEffectiveRuntimeConfiguration(): Promise<EffectiveMachineRuntimeConfiguration> {
+    return effectiveMachineRuntimeConfigurationSchema.parse(
+      await this.request("/v1/runtime-configuration"),
     );
   }
 

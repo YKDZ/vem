@@ -933,7 +933,7 @@ export const machineClaimRequestSchema = z.strictObject({
     .transform((value) => value.toUpperCase())
     .pipe(z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)),
   maintenancePublicKey: maintenanceWireGuardPublicKeySchema,
-  provisioningProfile: z.enum(["production", "testbed"]),
+  provisioningProfile: z.enum(["production", "testbed"]).optional(),
   maintenanceRotation: z.literal("rotate").optional(),
 });
 

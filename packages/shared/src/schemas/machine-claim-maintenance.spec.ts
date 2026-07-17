@@ -130,6 +130,15 @@ describe("Machine Claim maintenance identity contract", () => {
     ).not.toHaveProperty("maintenanceRotation");
   });
 
+  it("allows a clean Runtime Bootstrap claim to defer the profile selection to Service API", () => {
+    expect(
+      machineClaimRequestSchema.parse({
+        claimCode: "abcd-2345",
+        maintenancePublicKey: PUBLIC_KEY,
+      }),
+    ).not.toHaveProperty("provisioningProfile");
+  });
+
   it("binds machine and relay /32 addresses to their tunnel addresses", () => {
     expect(
       machineProvisioningMaintenanceIdentitySchema.safeParse({

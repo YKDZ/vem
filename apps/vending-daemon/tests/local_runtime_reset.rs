@@ -123,6 +123,12 @@ async fn explicit_reset_clears_local_runtime_state_and_keeps_factory_manifest() 
     )
     .await
     .expect("manifest");
+    tokio::fs::write(
+        runtime_root.join("runtime-bootstrap.json"),
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("runtime bootstrap");
 
     let evidence = prepare_factory_runtime(&data_dir, FactoryPreparationMode::ResetLocalRuntime)
         .await
@@ -166,6 +172,15 @@ async fn explicit_reset_clears_local_runtime_state_and_keeps_factory_manifest() 
             .await
             .is_ok_and(|exists| exists)
     );
+    assert!(
+        tokio::fs::try_exists(runtime_root.join("runtime-bootstrap.json"))
+            .await
+            .is_ok_and(|exists| exists)
+    );
+    assert!(evidence
+        .preserved
+        .iter()
+        .any(|item| item.category == "runtime_bootstrap"));
 }
 
 #[tokio::test]

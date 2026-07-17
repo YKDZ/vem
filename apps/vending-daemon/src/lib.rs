@@ -14,6 +14,7 @@ pub mod mqtt;
 pub mod natural_context;
 pub mod network;
 pub mod runtime;
+pub mod runtime_configuration;
 pub mod scanner;
 pub mod secret;
 pub mod shutdown;

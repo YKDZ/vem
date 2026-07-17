@@ -1549,6 +1549,7 @@ pub struct ConfigStore {
     maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
     local_settings_mutation_lock: tokio::sync::Mutex<()>,
     effective_config_generation: AtomicU64,
+    clean_runtime_configuration: Arc<crate::runtime_configuration::CleanRuntimeConfigurationStore>,
 }
 
 impl ConfigStore {
@@ -1746,6 +1747,12 @@ impl ConfigStore {
             tunnel,
         ));
         Self {
+            clean_runtime_configuration: Arc::new(
+                crate::runtime_configuration::CleanRuntimeConfigurationStore::new(
+                    data_dir.clone(),
+                    secrets.clone(),
+                ),
+            ),
             data_dir,
             state,
             secrets,
@@ -1757,6 +1764,12 @@ impl ConfigStore {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    pub fn clean_runtime_configuration(
+        &self,
+    ) -> Arc<crate::runtime_configuration::CleanRuntimeConfigurationStore> {
+        self.clean_runtime_configuration.clone()
     }
 
     pub fn token_path(&self) -> PathBuf {
@@ -2235,6 +2248,7 @@ impl ConfigStore {
                 Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
             }
         }
+        self.clean_runtime_configuration.clear_claim().await?;
         self.save_public_config(default_public_config()).await?;
         self.state
             .clear_secure_decommission_finalization_markers_tx(marker)

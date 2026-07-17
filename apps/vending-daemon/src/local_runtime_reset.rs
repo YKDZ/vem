@@ -61,6 +61,7 @@ struct RuntimeLayout {
     runtime_secrets_dir: PathBuf,
     file_secrets_dir: PathBuf,
     evidence_dir: PathBuf,
+    runtime_bootstrap_path: PathBuf,
 }
 
 impl RuntimeLayout {
@@ -77,6 +78,7 @@ impl RuntimeLayout {
             runtime_secrets_dir: runtime_root.join("secrets"),
             file_secrets_dir: data_dir.join("secrets"),
             evidence_dir: runtime_root.join("evidence"),
+            runtime_bootstrap_path: runtime_root.join("runtime-bootstrap.json"),
             runtime_root,
             data_dir,
         }
@@ -111,6 +113,13 @@ async fn inspect_local_runtime(
         &layout.provisioning_dir.join("profile-cache-summary.json"),
         "provisioning_profile_cache",
         "provisioning profile cache exists",
+        &mut found,
+    )
+    .await?;
+    detect_file(
+        &layout.data_dir.join("config").join("profile-cache.json"),
+        "provisioning_profile_cache",
+        "accepted provisioning profile cache exists",
         &mut found,
     )
     .await?;
@@ -155,7 +164,13 @@ async fn inspect_local_runtime(
         runtime_root: path_string(&layout.runtime_root),
         found,
         cleared: Vec::new(),
-        preserved: vec![item(
+        preserved: vec![
+        item(
+            "runtime_bootstrap",
+            &layout.runtime_bootstrap_path,
+            "deployment-written Runtime Bootstrap is preserved across local runtime reset",
+        ),
+        item(
             "factory_manifest",
             &layout.factory_dir,
             "factory manifest directory is not local machine state",

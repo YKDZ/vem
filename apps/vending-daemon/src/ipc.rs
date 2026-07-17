@@ -1219,6 +1219,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         )
         .route("/v1/config/summary", get(get_config_summary))
         .route(
+            "/v1/runtime-configuration",
+            get(get_effective_runtime_configuration),
+        )
+        .route(
             "/v1/audio-output-binding",
             get(audio_output_binding_snapshot),
         )
@@ -2315,6 +2319,31 @@ async fn get_config_summary(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
                 code: "config_load_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_effective_runtime_configuration(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+    match ctx
+        .config_store
+        .clean_runtime_configuration()
+        .effective_projection()
+        .await
+    {
+        Ok(projection) => (StatusCode::OK, Json(projection)).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "runtime_configuration_unavailable",
                 message: error,
             }),
         )
@@ -3606,33 +3635,68 @@ async fn claim_machine(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    if let Err(response) =
-        require_non_bring_up_maintenance_authorization(&ctx, &headers, "bring_up.claim_machine")
-            .await
-    {
-        return response;
+    let clean_runtime = ctx.config_store.clean_runtime_configuration();
+    let clean_bootstrap = clean_runtime.runtime_bootstrap_path().exists();
+    if !clean_bootstrap {
+        if let Err(response) =
+            require_non_bring_up_maintenance_authorization(&ctx, &headers, "bring_up.claim_machine")
+                .await
+        {
+            return response;
+        }
     }
     let _execution_guard = ctx.bring_up_execution_lock.lock().await;
-    let execution = match bring_up_snapshot_for(&ctx).await.current_task {
-        Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ClaimMachine => {
-            ClaimMachineExecution::FirstClaim
-        }
-        Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine => {
-            if let Err(response) = require_reclaim_maintenance_authorization(&ctx, &headers).await {
-                return response;
+    let execution = if clean_bootstrap {
+        match clean_runtime.load_profile_cache().await {
+            Ok(Some(_)) => {
+                if let Err(error) = clean_runtime.clear_claim().await {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorMessage {
+                            code: "machine_reclaim_reset_failed",
+                            message: error,
+                        }),
+                    )
+                        .into_response();
+                }
+                ClaimMachineExecution::Reclaim
             }
-            ClaimMachineExecution::Reclaim
+            Ok(None) => ClaimMachineExecution::FirstClaim,
+            Err(error) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "runtime_configuration_unavailable",
+                        message: error,
+                    }),
+                )
+                    .into_response();
+            }
         }
-        _ => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorMessage {
-                    code: "bring_up_task_stale",
-                    message: "machine claim must use the daemon's current bring-up task"
-                        .to_string(),
-                }),
-            )
-                .into_response();
+    } else {
+        match bring_up_snapshot_for(&ctx).await.current_task {
+            Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ClaimMachine => {
+                ClaimMachineExecution::FirstClaim
+            }
+            Some(task) if task.kind == crate::bring_up::BringUpTaskKind::ReclaimMachine => {
+                if let Err(response) =
+                    require_reclaim_maintenance_authorization(&ctx, &headers).await
+                {
+                    return response;
+                }
+                ClaimMachineExecution::Reclaim
+            }
+            _ => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "bring_up_task_stale",
+                        message: "machine claim must use the daemon's current bring-up task"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
     };
     claim_machine_mutation(State(ctx.clone()), headers, Json(_payload), execution)
@@ -3673,48 +3737,88 @@ async fn claim_machine_mutation(
                 .into_response();
         }
     };
-    let provisioning_profile = match ctx.config_store.provisioning_profile_name().await {
-        Ok(profile) => profile,
-        Err(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorMessage {
-                    code: "provisioning_profile_invalid",
-                    message: "machine provisioning profile is invalid".to_string(),
-                }),
-            )
-                .into_response();
+    let clean_runtime = ctx.config_store.clean_runtime_configuration();
+    let bootstrap = if clean_runtime.runtime_bootstrap_path().exists() {
+        match clean_runtime.load_bootstrap().await {
+            Ok(bootstrap) => Some(bootstrap),
+            Err(error) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "runtime_bootstrap_invalid",
+                        message: error,
+                    }),
+                )
+                    .into_response();
+            }
         }
+    } else {
+        None
     };
-    let public = match ctx.config_store.load_effective_public_config().await {
-        Ok(public) => public,
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "config_load_failed",
-                    message: error,
-                }),
-            )
-                .into_response();
+    let provisioning_profile = if bootstrap.is_none() {
+        match ctx.config_store.provisioning_profile_name().await {
+            Ok(profile) => Some(profile),
+            Err(_) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "provisioning_profile_invalid",
+                        message: "machine provisioning profile is invalid".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
+    } else {
+        None
     };
-    let client = BackendClient::new(public.api_base_url);
-    let profile = match client
-        .claim_machine(
-            &claim_code,
-            &maintenance_public_key,
-            &provisioning_profile,
-            rotate_maintenance_identity,
-        )
-        .await
-    {
+    let api_base_url = match bootstrap {
+        Some(bootstrap) => bootstrap.provisioning_api_base_url,
+        None => match ctx.config_store.load_effective_public_config().await {
+            Ok(public) => public.api_base_url,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "config_load_failed",
+                        message: error,
+                    }),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let client = BackendClient::new(api_base_url);
+    let profile = match match provisioning_profile.as_deref() {
+        Some(provisioning_profile) => {
+            client
+                .claim_machine(
+                    &claim_code,
+                    &maintenance_public_key,
+                    provisioning_profile,
+                    rotate_maintenance_identity,
+                )
+                .await
+        }
+        None => {
+            client
+                .claim_machine_from_bootstrap(
+                    &claim_code,
+                    &maintenance_public_key,
+                    rotate_maintenance_identity,
+                )
+                .await
+        }
+    } {
         Ok(profile) => profile,
         Err(error) => {
             return machine_claim_error_response(&error).into_response();
         }
     };
-    if profile.provisioning_profile != provisioning_profile {
+    if provisioning_profile
+        .as_deref()
+        .is_some_and(|expected| profile.provisioning_profile != expected)
+    {
         return (
             StatusCode::CONFLICT,
             Json(ErrorMessage {
@@ -3727,8 +3831,26 @@ async fn claim_machine_mutation(
     }
     let machine_code = profile.machine.code.clone();
     let maintenance_identity = profile.maintenance.clone();
+    let clean_profile = profile.clone();
     match ctx.config_store.apply_provisioning_profile(profile).await {
         Ok(config) => {
+            if ctx
+                .config_store
+                .clean_runtime_configuration()
+                .accept_profile(&clean_profile)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorMessage {
+                        code: "machine_profile_persistence_failed",
+                        message: "machine profile persistence failed; retry provisioning"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             // The Platform claim and its credentials are already durable at
             // this point. A transient Windows tunnel failure must not turn a
             // consumed claim code back into a failed claim; Bring-Up keeps a

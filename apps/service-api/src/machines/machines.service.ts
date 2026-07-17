@@ -2049,7 +2049,12 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     if (!parsed.success) {
       throw new BadRequestException("Invalid machine claim request");
     }
-    const claimRequest = parsed.data;
+    const claimRequest = {
+      ...parsed.data,
+      provisioningProfile:
+        parsed.data.provisioningProfile ??
+        this.config.machineProvisioningProfile,
+    };
     if (
       claimRequest.provisioningProfile !==
       this.config.machineProvisioningProfile
