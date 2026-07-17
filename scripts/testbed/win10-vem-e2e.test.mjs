@@ -4747,7 +4747,10 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
-    assert.match(cleanup, /CDP listener remained after debug UI cleanup/);
+    assert.match(
+      cleanup,
+      /live kiosk did not retain exactly one CDP listener after sale/,
+    );
     assert.match(cleanup, /launch-machine-ui-debug\.vbs/);
     assert.match(
       cleanup,
@@ -4780,7 +4783,7 @@ if ($errors.Count -gt 0) {
       /live ResultView did not automatically return to the post-sale route before cleanup/,
     );
     assert.match(cleanup, /settledRoute/);
-    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.doesNotMatch(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
     assert.match(cleanup, /\[Console\]::Out\.WriteLine/);
     assert.match(
       cleanup,
