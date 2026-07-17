@@ -185,10 +185,20 @@ export type RuntimeConfigurationJsonSchemaDocument = {
 } & Record<string, unknown>;
 
 export function exportRuntimeConfigurationJsonSchema(): RuntimeConfigurationJsonSchemaDocument {
-  const schema = z.toJSONSchema(effectiveMachineRuntimeConfigurationSchema);
+  // The daemon generator needs every HTTP boundary from this source, while
+  // each route still validates one member of this strict union.
+  const schema = z.toJSONSchema(
+    z.union([
+      effectiveMachineRuntimeConfigurationSchema,
+      confirmHardwareBindingRequestSchema,
+      clearHardwareBindingRequestSchema,
+      setScannerProtocolParametersRequestSchema,
+      setAudioPreferencesRequestSchema,
+    ]),
+  );
   return {
     ...schema,
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    title: "EffectiveMachineRuntimeConfiguration",
+    title: "RuntimeConfigurationContract",
   };
 }

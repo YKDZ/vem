@@ -75,7 +75,7 @@ fn run_service_inner() -> Result<(), String> {
             .map_err(|error| format!("set service running failed: {error}"))?;
 
         runtime.block_on(async {
-            let data_dir = crate::config::resolve_data_dir(None)
+            let data_dir = crate::provisioning::resolve_data_dir(None)
                 .map_err(|error| format!("resolve data dir failed: {error}"))?;
             let ready_file = resolve_ready_file(&data_dir);
             let config = crate::shutdown::ConsoleRunConfig {

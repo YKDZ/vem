@@ -1,16 +1,12 @@
+use crate::events::DaemonEvent;
 use tokio::sync::{broadcast, mpsc};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use vending_core::serial::SerialPortUsbIdentity;
-
-use crate::config::{EffectiveRuntimeConfig, ScannerAdapterKind};
-use crate::events::DaemonEvent;
 
 #[derive(Debug, Clone)]
 pub struct ScannerRuntimeConfig {
     pub port_path: Option<String>,
-    pub usb_identity: Option<SerialPortUsbIdentity>,
     pub baud_rate: u32,
     pub source: String,
     pub frame_suffix: vending_core::scanner::ScannerFrameSuffix,
@@ -32,7 +28,7 @@ pub struct ScannerRuntimeController {
 }
 
 struct RunningScannerRuntime {
-    config: EffectiveRuntimeConfig,
+    config: ScannerRuntimeConfig,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<Result<(), String>>,
 }
@@ -49,10 +45,7 @@ impl ScannerRuntimeController {
         }
     }
 
-    pub async fn reconfigure_from_config(
-        &self,
-        config: &EffectiveRuntimeConfig,
-    ) -> Result<(), String> {
+    pub async fn reconfigure(&self, config: ScannerRuntimeConfig) -> Result<(), String> {
         let mut state = self.state.lock().await;
         let previous_config = state.as_ref().map(|running| running.config.clone());
         if let Some(running) = state.take() {
@@ -63,7 +56,7 @@ impl ScannerRuntimeController {
                 Err(error) => return Err(format!("join scanner runtime failed: {error}")),
             }
         }
-        match self.start_runtime(config).await {
+        match self.start_runtime(&config).await {
             Ok(running) => {
                 *state = Some(running);
                 Ok(())
@@ -85,9 +78,9 @@ impl ScannerRuntimeController {
     }
 
     /// Starts the scanner as an independently degraded runtime. Unlike a
-    /// maintenance binding activation, daemon startup must not fail merely
+    /// local binding activation, daemon startup must not fail merely
     /// because the optional scanner is unplugged or temporarily unavailable.
-    pub async fn start_from_config(&self, config: &EffectiveRuntimeConfig) -> Result<(), String> {
+    pub async fn start(&self, config: ScannerRuntimeConfig) -> Result<(), String> {
         let mut state = self.state.lock().await;
         if let Some(running) = state.take() {
             running.shutdown.cancel();
@@ -98,14 +91,14 @@ impl ScannerRuntimeController {
             }
         }
         let shutdown = CancellationToken::new();
-        let runtime = ScannerRuntime::from_config(
-            config,
+        let runtime = ScannerRuntime::new(
+            config.clone(),
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
         );
         *state = Some(RunningScannerRuntime {
-            config: config.clone(),
+            config,
             shutdown,
             task: tokio::spawn(runtime.run()),
         });
@@ -114,12 +107,12 @@ impl ScannerRuntimeController {
 
     async fn start_runtime(
         &self,
-        config: &EffectiveRuntimeConfig,
+        config: &ScannerRuntimeConfig,
     ) -> Result<RunningScannerRuntime, String> {
         let shutdown = CancellationToken::new();
         let mut health_events = self.tx_events.subscribe();
-        let runtime = ScannerRuntime::from_config(
-            config,
+        let runtime = ScannerRuntime::new(
+            config.clone(),
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
@@ -177,37 +170,14 @@ impl ScannerRuntimeController {
 }
 
 impl ScannerRuntime {
-    pub fn from_config(
-        config: &EffectiveRuntimeConfig,
+    pub fn new(
+        config: ScannerRuntimeConfig,
         tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
         tx_events: broadcast::Sender<DaemonEvent>,
         shutdown: CancellationToken,
     ) -> Self {
-        let source = match config.scanner_adapter {
-            ScannerAdapterKind::SerialText => {
-                vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string()
-            }
-            ScannerAdapterKind::Disabled => "disabled".to_string(),
-        };
-
-        let port_path = match config.scanner_adapter {
-            ScannerAdapterKind::SerialText => config.scanner_serial_port_path.clone(),
-            ScannerAdapterKind::Disabled => None,
-        };
-
-        let usb_identity = match config.scanner_adapter {
-            ScannerAdapterKind::SerialText => config.scanner_usb_identity.clone(),
-            ScannerAdapterKind::Disabled => None,
-        };
-
         Self {
-            config: ScannerRuntimeConfig {
-                port_path,
-                usb_identity,
-                baud_rate: config.scanner_baud_rate,
-                source,
-                frame_suffix: config.scanner_frame_suffix,
-            },
+            config,
             shutdown,
             tx_raw,
             tx_events,
@@ -215,7 +185,7 @@ impl ScannerRuntime {
     }
 
     pub async fn run(self) -> Result<(), String> {
-        if self.config.source == "disabled" {
+        if self.config.port_path.is_none() {
             self.emit_health(self.health_snapshot(
                 false,
                 vending_core::health::HealthLevel::Offline,
@@ -228,32 +198,7 @@ impl ScannerRuntime {
 
         let mut backoff_ms = 500_u64;
         loop {
-            // 优先通过 USB identity 动态解析当前 COM 口，避免重启后端口号变化
-            let resolved_port = if let Some(identity) = &self.config.usb_identity {
-                match vending_core::serial::find_port_path_by_usb_identity(identity) {
-                    Some(p) => Some(p),
-                    None => {
-                        self.emit_health(self.health_snapshot(
-                            false,
-                            vending_core::health::HealthLevel::Offline,
-                            "SCANNER_USB_NOT_FOUND",
-                            format!(
-                                "scanner USB device not found (VID={} PID={}), will retry",
-                                identity.vendor_id, identity.product_id
-                            ),
-                        ));
-                        tokio::select! {
-                            _ = self.shutdown.cancelled() => return Ok(()),
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {
-                                backoff_ms = (backoff_ms * 2).min(10_000);
-                            }
-                        }
-                        continue;
-                    }
-                }
-            } else {
-                self.config.port_path.clone()
-            };
+            let resolved_port = self.config.port_path.clone();
 
             let Some(port_path) = resolved_port else {
                 self.emit_health(self.health_snapshot(
@@ -411,7 +356,6 @@ impl ScannerRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::default_public_config;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -420,11 +364,17 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let shutdown = CancellationToken::new();
 
-        let config = crate::config::EffectiveRuntimeConfig {
-            scanner_adapter: ScannerAdapterKind::Disabled,
-            ..default_public_config()
-        };
-        let runtime = ScannerRuntime::from_config(&config, raw_tx, event_tx, shutdown.clone());
+        let runtime = ScannerRuntime::new(
+            ScannerRuntimeConfig {
+                port_path: None,
+                baud_rate: 9_600,
+                source: "disabled".to_string(),
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            },
+            raw_tx,
+            event_tx,
+            shutdown.clone(),
+        );
         let handle = tokio::spawn(runtime.run());
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
@@ -445,12 +395,17 @@ mod tests {
         let (raw_tx, mut raw_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let shutdown = CancellationToken::new();
-        let config = crate::config::EffectiveRuntimeConfig {
-            scanner_adapter: ScannerAdapterKind::SerialText,
-            scanner_serial_port_path: Some("/dev/vem-missing-scanner".to_string()),
-            ..default_public_config()
-        };
-        let runtime = ScannerRuntime::from_config(&config, raw_tx, event_tx, shutdown.clone());
+        let runtime = ScannerRuntime::new(
+            ScannerRuntimeConfig {
+                port_path: Some("/dev/vem-missing-scanner".to_string()),
+                baud_rate: 9_600,
+                source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            },
+            raw_tx,
+            event_tx,
+            shutdown.clone(),
+        );
 
         let handle = tokio::spawn(runtime.run());
         loop {
@@ -477,23 +432,26 @@ mod tests {
         let (raw_tx, _raw_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(16);
         let controller = ScannerRuntimeController::new(raw_tx, event_tx);
-        let disabled = crate::config::EffectiveRuntimeConfig {
-            scanner_adapter: ScannerAdapterKind::Disabled,
-            ..default_public_config()
+        let disabled = ScannerRuntimeConfig {
+            port_path: None,
+            baud_rate: 9_600,
+            source: "disabled".to_string(),
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
         };
         controller
-            .reconfigure_from_config(&disabled)
+            .reconfigure(disabled)
             .await
             .expect("start previous disabled runtime");
         let _ = event_rx.recv().await.expect("initial disabled event");
 
-        let missing = crate::config::EffectiveRuntimeConfig {
-            scanner_adapter: ScannerAdapterKind::SerialText,
-            scanner_serial_port_path: Some("/dev/vem-missing-scanner".to_string()),
-            ..default_public_config()
+        let missing = ScannerRuntimeConfig {
+            port_path: Some("/dev/vem-missing-scanner".to_string()),
+            baud_rate: 9_600,
+            source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
         };
         let error = controller
-            .reconfigure_from_config(&missing)
+            .reconfigure(missing)
             .await
             .expect_err("missing replacement must fail");
         assert!(error.contains("open scanner serial failed"));

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::MachineProvisioningProfile;
+use crate::provisioning::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -49,24 +49,6 @@ pub struct LogExportResultPayload {
     pub content_type: String,
     pub base64: String,
     pub size_bytes: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MaintenanceIdentityPlatformStatus {
-    pub machine_id: String,
-    pub identities: Vec<MaintenanceIdentityPlatformPeerStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MaintenanceIdentityPlatformPeerStatus {
-    pub public_key: String,
-    pub status: String,
-    pub reclaim_expires_at: Option<String>,
-    pub handshake_verified_at: Option<String>,
-    pub reclaim_failed_at: Option<String>,
-    pub reclaim_failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,66 +376,11 @@ impl BackendClient {
         Ok(())
     }
 
-    pub async fn claim_machine(
-        &self,
-        claim_code: &str,
-        maintenance_public_key: &str,
-        provisioning_profile: &str,
-        rotate_maintenance_identity: bool,
-    ) -> Result<MachineProvisioningProfile, String> {
-        let mut body = serde_json::json!({
-            "claimCode": claim_code,
-            "maintenancePublicKey": maintenance_public_key,
-            "provisioningProfile": provisioning_profile,
-        });
-        if rotate_maintenance_identity {
-            body["maintenanceRotation"] = serde_json::json!("rotate");
-        }
-        let response = self
-            .client
-            .post(self.endpoint("/machines/claim"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| format!("backend request failed: {error}"))?;
-        let status = response.status();
-        let payload = response
-            .text()
-            .await
-            .map_err(|error| format!("backend read response failed: {error}"))?;
-
-        if !status.is_success() {
-            if let Some(message) = Self::api_error_from_payload(&payload) {
-                return Err(message);
-            }
-            return Err(match status.as_u16() {
-                502..=504 => "BACKEND_OFFLINE".to_string(),
-                _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
-            });
-        }
-        if payload.is_empty() {
-            return Err("backend response parse failed: empty claim profile".to_string());
-        }
-        let value = serde_json::from_str(&payload)
-            .map_err(|error| format!("backend json parse failed: {error}"))?;
-        let value = Self::unwrap_api_response(value)?;
-        serde_json::from_value(value)
-            .map_err(|error| format!("backend response parse failed: {error}"))
-    }
-
     pub async fn claim_machine_from_bootstrap(
         &self,
         claim_code: &str,
-        maintenance_public_key: &str,
-        rotate_maintenance_identity: bool,
     ) -> Result<MachineProvisioningProfile, String> {
-        let mut body = serde_json::json!({
-            "claimCode": claim_code,
-            "maintenancePublicKey": maintenance_public_key,
-        });
-        if rotate_maintenance_identity {
-            body["maintenanceRotation"] = serde_json::json!("rotate");
-        }
+        let body = serde_json::json!({ "claimCode": claim_code });
         let response = self
             .client
             .post(self.endpoint("/machines/claim"))
@@ -480,19 +407,6 @@ impl BackendClient {
         let value = Self::unwrap_api_response(value)?;
         serde_json::from_value(value)
             .map_err(|error| format!("backend response parse failed: {error}"))
-    }
-
-    pub async fn get_maintenance_identity_status(
-        &self,
-        machine_code: &str,
-    ) -> Result<MaintenanceIdentityPlatformStatus, String> {
-        self.request_json_typed(
-            reqwest::Method::GET,
-            &format!("/machines/{machine_code}/maintenance-identity"),
-            None,
-            true,
-        )
-        .await
     }
 
     pub async fn create_order(
@@ -872,9 +786,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .and(body_partial_json(serde_json::json!({
-                "claimCode": "ABCD-2345",
-                "maintenancePublicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-                "provisioningProfile": "testbed",
+                "claimCode": "ABCD-2345"
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0,
@@ -920,23 +832,6 @@ mod tests {
                         "paymentCodeEnabled": true,
                         "serverTime": "2026-07-05T02:06:21.966Z"
                     },
-                    "provisioningProfile": "testbed",
-                    "maintenance": {
-                        "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-                        "tunnelAddress": "10.91.16.10",
-                        "address": "10.91.16.10/32",
-                        "endpoint": "relay.example:51820",
-                        "relay": {
-                            "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-                            "tunnelAddress": "10.91.0.1",
-                            "address": "10.91.0.1/32"
-                        },
-                        "roleRoutes": {
-                            "relay": "10.91.0.1/32",
-                            "runner": "10.91.1.0/24",
-                            "maintainer": "10.91.3.0/24"
-                        }
-                    },
                     "metadata": {
                         "profileVersion": 1,
                         "profileRevision": 1,
@@ -951,12 +846,7 @@ mod tests {
 
         let client = BackendClient::new(server.uri());
         let profile = client
-            .claim_machine(
-                "ABCD-2345",
-                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-                "testbed",
-                false,
-            )
+            .claim_machine_from_bootstrap("ABCD-2345")
             .await
             .expect("profile");
 

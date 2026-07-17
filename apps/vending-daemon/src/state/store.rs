@@ -3273,7 +3273,7 @@ impl LocalStateStore {
     ) -> Result<StockMaintenanceBatchResponse, StoreError> {
         if operator_id.trim().is_empty() || input.slots.is_empty() {
             return Err(StoreError::InvalidStockInput(
-                "maintenance session operator and stock task slots are required".to_string(),
+                "local operator and stock task slots are required".to_string(),
             ));
         }
         let task = self.stock_maintenance_task().await?;
@@ -3377,8 +3377,8 @@ impl LocalStateStore {
                     && pending.input.planogram_version == requested_attestation.planogram_version
                     && pending.input.slots == requested_attestation.slots
             });
-            // A maintenance session may expire between the original response and
-            // a retry. Keep the original operator attribution while replaying the
+            // Operator context may change between the original response and a
+            // retry. Keep the original operator attribution while replaying the
             // daemon-owned task payload idempotently.
             let attestation = pending
                 .filter(|_| duplicate)
@@ -5408,10 +5408,7 @@ impl LocalStateStore {
         &self,
         retention_days: i64,
     ) -> Result<u64, StoreError> {
-        let retention_days = retention_days.clamp(
-            crate::config::STOCK_MOVEMENT_RETENTION_MIN_DAYS,
-            crate::config::STOCK_MOVEMENT_RETENTION_MAX_DAYS,
-        );
+        let retention_days = retention_days.clamp(1, 366);
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         let mut tx = self.begin_immediate_write_transaction().await?;
@@ -7968,7 +7965,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_refill_retry_survives_maintenance_session_renewal() {
+    async fn completed_refill_retry_survives_operator_context_renewal() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await

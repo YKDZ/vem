@@ -2,34 +2,27 @@ mod support;
 
 use support::{process::DaemonHarness, sqlite};
 
-fn minimal_config() -> serde_json::Value {
+fn unclaimed_bootstrap_fixture() -> serde_json::Value {
     serde_json::json!({
         "machineCode": null,
         "apiBaseUrl": "http://127.0.0.1:9/api",
-        "mqttUrl": "mqtt://127.0.0.1:1883",
-        "mqttUsername": null,
-        "hardwareAdapter": "mock",
-        "localPortObservation": null,
-        "scannerAdapter": "disabled",
-        "scannerPortObservation": null,
-        "scannerBaudRate": 9600,
-        "scannerFrameSuffix": "crlf",
-        "visionEnabled": false,
-        "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionRequestTimeoutMs": 8000,
-        "kioskMode": false
+        "hardwareModel": "vem-test-24",
+        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
     })
 }
 
 #[tokio::test]
-async fn console_startup_writes_ready_file_and_sqlite_schema() {
-    let mut daemon = DaemonHarness::start(minimal_config(), &[], &[])
+async fn console_startup_writes_ready_file_and_starts_an_unclaimed_runtime() {
+    let mut daemon = DaemonHarness::start(unclaimed_bootstrap_fixture(), &[], &[])
         .await
         .expect("start daemon");
     assert!(daemon.ready.healthz_url.starts_with("http://127.0.0.1:"));
     assert!(daemon.ready.readyz_url.starts_with("http://127.0.0.1:"));
     assert!(!daemon.ready.ipc_token.is_empty());
-    assert!(!daemon.ready.runtime_flags.advanced_maintenance_config);
+
+    let runtime = daemon.get_json("/v1/runtime-configuration").await;
+    assert_eq!(runtime["profileRefresh"]["status"], "unclaimed");
+    assert!(runtime["sourceDocuments"]["profileCache"].is_null());
 
     let pool = sqlite::open_readonly(&daemon.state_db_path()).await;
     let tables = sqlite::scalar_i64(
@@ -39,21 +32,6 @@ async fn console_startup_writes_ready_file_and_sqlite_schema() {
     )
     .await;
     assert_eq!(tables, 6);
-
-    daemon.terminate().await;
-}
-
-#[tokio::test]
-async fn console_startup_writes_local_runtime_flags_to_ready_file() {
-    let mut daemon = DaemonHarness::start(
-        minimal_config(),
-        &[],
-        &[("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG", "true")],
-    )
-    .await
-    .expect("start daemon");
-
-    assert!(daemon.ready.runtime_flags.advanced_maintenance_config);
 
     daemon.terminate().await;
 }

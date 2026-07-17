@@ -33,13 +33,1182 @@ pub mod error {
         }
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfiguration`"]
+#[doc = "`RuntimeConfigurationContract`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"title\": \"EffectiveMachineRuntimeConfiguration\","]
+#[doc = "  \"title\": \"RuntimeConfigurationContract\","]
+#[doc = "  \"anyOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"experience\","]
+#[doc = "        \"generation\","]
+#[doc = "        \"hardware\","]
+#[doc = "        \"machine\","]
+#[doc = "        \"platform\","]
+#[doc = "        \"profileRefresh\","]
+#[doc = "        \"schemaVersion\","]
+#[doc = "        \"secretStatus\","]
+#[doc = "        \"sourceDocuments\","]
+#[doc = "        \"sourceRevisions\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"experience\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"audio\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"audio\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"cuesEnabled\","]
+#[doc = "                \"presenceCuesEnabled\","]
+#[doc = "                \"transactionCuesEnabled\","]
+#[doc = "                \"volume\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"cuesEnabled\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                },"]
+#[doc = "                \"presenceCuesEnabled\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                },"]
+#[doc = "                \"transactionCuesEnabled\": {"]
+#[doc = "                  \"type\": \"boolean\""]
+#[doc = "                },"]
+#[doc = "                \"volume\": {"]
+#[doc = "                  \"type\": \"number\","]
+#[doc = "                  \"maximum\": 1.0,"]
+#[doc = "                  \"minimum\": 0.0"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"generation\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"minimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"hardware\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"expectedProfile\","]
+#[doc = "            \"lowerControllerBinding\","]
+#[doc = "            \"model\","]
+#[doc = "            \"scannerBinding\","]
+#[doc = "            \"scannerProtocol\","]
+#[doc = "            \"topology\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"expectedProfile\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"controller\","]
+#[doc = "                    \"paymentScanner\","]
+#[doc = "                    \"profile\","]
+#[doc = "                    \"vision\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"controller\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"protocol\","]
+#[doc = "                        \"required\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"protocol\": {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"const\": \"vem-vending-controller\""]
+#[doc = "                        },"]
+#[doc = "                        \"required\": {"]
+#[doc = "                          \"type\": \"boolean\","]
+#[doc = "                          \"const\": true"]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    },"]
+#[doc = "                    \"paymentScanner\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"required\","]
+#[doc = "                        \"supportsPaymentCode\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"required\": {"]
+#[doc = "                          \"type\": \"boolean\","]
+#[doc = "                          \"const\": true"]
+#[doc = "                        },"]
+#[doc = "                        \"supportsPaymentCode\": {"]
+#[doc = "                          \"type\": \"boolean\""]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    },"]
+#[doc = "                    \"profile\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"const\": \"production\""]
+#[doc = "                    },"]
+#[doc = "                    \"vision\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"required\","]
+#[doc = "                        \"supportsRecommendations\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"required\": {"]
+#[doc = "                          \"type\": \"boolean\""]
+#[doc = "                        },"]
+#[doc = "                        \"supportsRecommendations\": {"]
+#[doc = "                          \"type\": \"boolean\""]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"lowerControllerBinding\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"confirmedAt\","]
+#[doc = "                    \"confirmedBy\","]
+#[doc = "                    \"identity\","]
+#[doc = "                    \"testEvidenceCode\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"confirmedAt\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"date-time\","]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    },"]
+#[doc = "                    \"confirmedBy\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    },"]
+#[doc = "                    \"identity\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"containerId\","]
+#[doc = "                        \"hardwareIds\","]
+#[doc = "                        \"identityKey\","]
+#[doc = "                        \"instanceId\","]
+#[doc = "                        \"serialNumber\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"containerId\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"uuid\","]
+#[doc = "                              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        },"]
+#[doc = "                        \"hardwareIds\": {"]
+#[doc = "                          \"type\": \"array\","]
+#[doc = "                          \"items\": {"]
+#[doc = "                            \"type\": \"string\","]
+#[doc = "                            \"maxLength\": 256,"]
+#[doc = "                            \"minLength\": 1"]
+#[doc = "                          },"]
+#[doc = "                          \"maxItems\": 16"]
+#[doc = "                        },"]
+#[doc = "                        \"identityKey\": {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"maxLength\": 256,"]
+#[doc = "                          \"minLength\": 1"]
+#[doc = "                        },"]
+#[doc = "                        \"instanceId\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 512,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        },"]
+#[doc = "                        \"serialNumber\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    },"]
+#[doc = "                    \"testEvidenceCode\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"model\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"scannerBinding\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"confirmedAt\","]
+#[doc = "                    \"confirmedBy\","]
+#[doc = "                    \"identity\","]
+#[doc = "                    \"testEvidenceCode\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"confirmedAt\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"date-time\","]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    },"]
+#[doc = "                    \"confirmedBy\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    },"]
+#[doc = "                    \"identity\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"containerId\","]
+#[doc = "                        \"hardwareIds\","]
+#[doc = "                        \"identityKey\","]
+#[doc = "                        \"instanceId\","]
+#[doc = "                        \"serialNumber\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"containerId\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"uuid\","]
+#[doc = "                              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        },"]
+#[doc = "                        \"hardwareIds\": {"]
+#[doc = "                          \"type\": \"array\","]
+#[doc = "                          \"items\": {"]
+#[doc = "                            \"type\": \"string\","]
+#[doc = "                            \"maxLength\": 256,"]
+#[doc = "                            \"minLength\": 1"]
+#[doc = "                          },"]
+#[doc = "                          \"maxItems\": 16"]
+#[doc = "                        },"]
+#[doc = "                        \"identityKey\": {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"maxLength\": 256,"]
+#[doc = "                          \"minLength\": 1"]
+#[doc = "                        },"]
+#[doc = "                        \"instanceId\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 512,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        },"]
+#[doc = "                        \"serialNumber\": {"]
+#[doc = "                          \"anyOf\": ["]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            {"]
+#[doc = "                              \"type\": \"null\""]
+#[doc = "                            }"]
+#[doc = "                          ]"]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    },"]
+#[doc = "                    \"testEvidenceCode\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"scannerProtocol\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"baudRate\","]
+#[doc = "                    \"frameSuffix\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"baudRate\": {"]
+#[doc = "                      \"type\": \"integer\","]
+#[doc = "                      \"maximum\": 230400.0,"]
+#[doc = "                      \"minimum\": 1200.0"]
+#[doc = "                    },"]
+#[doc = "                    \"frameSuffix\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"enum\": ["]
+#[doc = "                        \"crlf\","]
+#[doc = "                        \"lf\","]
+#[doc = "                        \"cr\","]
+#[doc = "                        \"none\""]
+#[doc = "                      ]"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"topology\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"identity\","]
+#[doc = "                \"version\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"identity\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"version\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"machine\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"code\","]
+#[doc = "                \"id\","]
+#[doc = "                \"locationLabel\","]
+#[doc = "                \"name\","]
+#[doc = "                \"status\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"code\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 64,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"id\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"format\": \"uuid\","]
+#[doc = "                  \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                },"]
+#[doc = "                \"locationLabel\": {"]
+#[doc = "                  \"anyOf\": ["]
+#[doc = "                    {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 256,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    },"]
+#[doc = "                    {"]
+#[doc = "                      \"type\": \"null\""]
+#[doc = "                    }"]
+#[doc = "                  ]"]
+#[doc = "                },"]
+#[doc = "                \"name\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"status\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 64,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"platform\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"apiBaseUrl\","]
+#[doc = "                \"mqttConnection\","]
+#[doc = "                \"paymentCapability\","]
+#[doc = "                \"runtimeEndpoints\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"apiBaseUrl\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"format\": \"uri\""]
+#[doc = "                },"]
+#[doc = "                \"mqttConnection\": {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"clientId\","]
+#[doc = "                    \"url\","]
+#[doc = "                    \"username\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"clientId\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    },"]
+#[doc = "                    \"url\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"uri\""]
+#[doc = "                    },"]
+#[doc = "                    \"username\": {"]
+#[doc = "                      \"anyOf\": ["]
+#[doc = "                        {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"maxLength\": 128,"]
+#[doc = "                          \"minLength\": 1"]
+#[doc = "                        },"]
+#[doc = "                        {"]
+#[doc = "                          \"type\": \"null\""]
+#[doc = "                        }"]
+#[doc = "                      ]"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                \"paymentCapability\": {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"paymentCodeEnabled\","]
+#[doc = "                    \"profile\","]
+#[doc = "                    \"qrCodeEnabled\","]
+#[doc = "                    \"serverTime\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"paymentCodeEnabled\": {"]
+#[doc = "                      \"type\": \"boolean\""]
+#[doc = "                    },"]
+#[doc = "                    \"profile\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"const\": \"production\""]
+#[doc = "                    },"]
+#[doc = "                    \"qrCodeEnabled\": {"]
+#[doc = "                      \"type\": \"boolean\""]
+#[doc = "                    },"]
+#[doc = "                    \"serverTime\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"date-time\","]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                \"runtimeEndpoints\": {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"apiBasePath\","]
+#[doc = "                    \"machineApiBasePath\","]
+#[doc = "                    \"machineAuthTokenPath\","]
+#[doc = "                    \"mqttTopicPrefix\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"apiBasePath\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"const\": \"/api\""]
+#[doc = "                    },"]
+#[doc = "                    \"machineApiBasePath\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "                    },"]
+#[doc = "                    \"machineAuthTokenPath\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"const\": \"/api/machine-auth/token\""]
+#[doc = "                    },"]
+#[doc = "                    \"mqttTopicPrefix\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"profileRefresh\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"lastError\","]
+#[doc = "            \"status\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"lastError\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"status\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"unclaimed\","]
+#[doc = "                \"accepted\","]
+#[doc = "                \"degraded\""]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"schemaVersion\": {"]
+#[doc = "          \"type\": \"number\","]
+#[doc = "          \"const\": 1"]
+#[doc = "        },"]
+#[doc = "        \"secretStatus\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"machineSecretConfigured\","]
+#[doc = "            \"mqttPasswordConfigured\","]
+#[doc = "            \"mqttSigningSecretConfigured\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"machineSecretConfigured\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"mqttPasswordConfigured\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"mqttSigningSecretConfigured\": {"]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"sourceDocuments\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"bootstrap\","]
+#[doc = "            \"profileCache\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"bootstrap\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"hardwareModel\","]
+#[doc = "                \"provisioningApiBaseUrl\","]
+#[doc = "                \"schemaVersion\","]
+#[doc = "                \"topology\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"hardwareModel\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"provisioningApiBaseUrl\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"format\": \"uri\""]
+#[doc = "                },"]
+#[doc = "                \"schemaVersion\": {"]
+#[doc = "                  \"type\": \"number\","]
+#[doc = "                  \"const\": 1"]
+#[doc = "                },"]
+#[doc = "                \"topology\": {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"identity\","]
+#[doc = "                    \"version\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"identity\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    },"]
+#[doc = "                    \"version\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"maxLength\": 128,"]
+#[doc = "                      \"minLength\": 1"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            },"]
+#[doc = "            \"profileCache\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"acceptedAt\","]
+#[doc = "                    \"generation\","]
+#[doc = "                    \"profile\","]
+#[doc = "                    \"schemaVersion\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"acceptedAt\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"date-time\","]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    },"]
+#[doc = "                    \"generation\": {"]
+#[doc = "                      \"type\": \"integer\","]
+#[doc = "                      \"maximum\": 9007199254740991.0,"]
+#[doc = "                      \"exclusiveMinimum\": 0.0"]
+#[doc = "                    },"]
+#[doc = "                    \"profile\": {"]
+#[doc = "                      \"type\": \"object\","]
+#[doc = "                      \"required\": ["]
+#[doc = "                        \"apiBaseUrl\","]
+#[doc = "                        \"hardwareModel\","]
+#[doc = "                        \"hardwareProfile\","]
+#[doc = "                        \"hardwareSlotTopology\","]
+#[doc = "                        \"machine\","]
+#[doc = "                        \"metadata\","]
+#[doc = "                        \"mqttConnection\","]
+#[doc = "                        \"paymentCapability\","]
+#[doc = "                        \"runtimeEndpoints\""]
+#[doc = "                      ],"]
+#[doc = "                      \"properties\": {"]
+#[doc = "                        \"apiBaseUrl\": {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"format\": \"uri\""]
+#[doc = "                        },"]
+#[doc = "                        \"hardwareModel\": {"]
+#[doc = "                          \"type\": \"string\","]
+#[doc = "                          \"maxLength\": 128,"]
+#[doc = "                          \"minLength\": 1"]
+#[doc = "                        },"]
+#[doc = "                        \"hardwareProfile\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"controller\","]
+#[doc = "                            \"paymentScanner\","]
+#[doc = "                            \"profile\","]
+#[doc = "                            \"vision\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"controller\": {"]
+#[doc = "                              \"type\": \"object\","]
+#[doc = "                              \"required\": ["]
+#[doc = "                                \"protocol\","]
+#[doc = "                                \"required\""]
+#[doc = "                              ],"]
+#[doc = "                              \"properties\": {"]
+#[doc = "                                \"protocol\": {"]
+#[doc = "                                  \"type\": \"string\","]
+#[doc = "                                  \"const\": \"vem-vending-controller\""]
+#[doc = "                                },"]
+#[doc = "                                \"required\": {"]
+#[doc = "                                  \"type\": \"boolean\","]
+#[doc = "                                  \"const\": true"]
+#[doc = "                                }"]
+#[doc = "                              },"]
+#[doc = "                              \"additionalProperties\": false"]
+#[doc = "                            },"]
+#[doc = "                            \"paymentScanner\": {"]
+#[doc = "                              \"type\": \"object\","]
+#[doc = "                              \"required\": ["]
+#[doc = "                                \"required\","]
+#[doc = "                                \"supportsPaymentCode\""]
+#[doc = "                              ],"]
+#[doc = "                              \"properties\": {"]
+#[doc = "                                \"required\": {"]
+#[doc = "                                  \"type\": \"boolean\","]
+#[doc = "                                  \"const\": true"]
+#[doc = "                                },"]
+#[doc = "                                \"supportsPaymentCode\": {"]
+#[doc = "                                  \"type\": \"boolean\""]
+#[doc = "                                }"]
+#[doc = "                              },"]
+#[doc = "                              \"additionalProperties\": false"]
+#[doc = "                            },"]
+#[doc = "                            \"profile\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"const\": \"production\""]
+#[doc = "                            },"]
+#[doc = "                            \"vision\": {"]
+#[doc = "                              \"type\": \"object\","]
+#[doc = "                              \"required\": ["]
+#[doc = "                                \"required\","]
+#[doc = "                                \"supportsRecommendations\""]
+#[doc = "                              ],"]
+#[doc = "                              \"properties\": {"]
+#[doc = "                                \"required\": {"]
+#[doc = "                                  \"type\": \"boolean\""]
+#[doc = "                                },"]
+#[doc = "                                \"supportsRecommendations\": {"]
+#[doc = "                                  \"type\": \"boolean\""]
+#[doc = "                                }"]
+#[doc = "                              },"]
+#[doc = "                              \"additionalProperties\": false"]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"hardwareSlotTopology\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"identity\","]
+#[doc = "                            \"version\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"identity\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            \"version\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"machine\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"code\","]
+#[doc = "                            \"id\","]
+#[doc = "                            \"locationLabel\","]
+#[doc = "                            \"name\","]
+#[doc = "                            \"status\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"code\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 64,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            \"id\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"uuid\","]
+#[doc = "                              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                            },"]
+#[doc = "                            \"locationLabel\": {"]
+#[doc = "                              \"anyOf\": ["]
+#[doc = "                                {"]
+#[doc = "                                  \"type\": \"string\","]
+#[doc = "                                  \"maxLength\": 256,"]
+#[doc = "                                  \"minLength\": 1"]
+#[doc = "                                },"]
+#[doc = "                                {"]
+#[doc = "                                  \"type\": \"null\""]
+#[doc = "                                }"]
+#[doc = "                              ]"]
+#[doc = "                            },"]
+#[doc = "                            \"name\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            \"status\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 64,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"metadata\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"claimCodeId\","]
+#[doc = "                            \"claimedAt\","]
+#[doc = "                            \"profileRevision\","]
+#[doc = "                            \"profileVersion\","]
+#[doc = "                            \"serverTime\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"claimCodeId\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"uuid\","]
+#[doc = "                              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                            },"]
+#[doc = "                            \"claimedAt\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"date-time\","]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                            },"]
+#[doc = "                            \"profileRevision\": {"]
+#[doc = "                              \"type\": \"integer\","]
+#[doc = "                              \"maximum\": 9007199254740991.0,"]
+#[doc = "                              \"exclusiveMinimum\": 0.0"]
+#[doc = "                            },"]
+#[doc = "                            \"profileVersion\": {"]
+#[doc = "                              \"type\": \"number\","]
+#[doc = "                              \"const\": 1"]
+#[doc = "                            },"]
+#[doc = "                            \"serverTime\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"date-time\","]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"mqttConnection\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"clientId\","]
+#[doc = "                            \"url\","]
+#[doc = "                            \"username\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"clientId\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"maxLength\": 128,"]
+#[doc = "                              \"minLength\": 1"]
+#[doc = "                            },"]
+#[doc = "                            \"url\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"uri\""]
+#[doc = "                            },"]
+#[doc = "                            \"username\": {"]
+#[doc = "                              \"anyOf\": ["]
+#[doc = "                                {"]
+#[doc = "                                  \"type\": \"string\","]
+#[doc = "                                  \"maxLength\": 128,"]
+#[doc = "                                  \"minLength\": 1"]
+#[doc = "                                },"]
+#[doc = "                                {"]
+#[doc = "                                  \"type\": \"null\""]
+#[doc = "                                }"]
+#[doc = "                              ]"]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"paymentCapability\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"paymentCodeEnabled\","]
+#[doc = "                            \"profile\","]
+#[doc = "                            \"qrCodeEnabled\","]
+#[doc = "                            \"serverTime\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"paymentCodeEnabled\": {"]
+#[doc = "                              \"type\": \"boolean\""]
+#[doc = "                            },"]
+#[doc = "                            \"profile\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"const\": \"production\""]
+#[doc = "                            },"]
+#[doc = "                            \"qrCodeEnabled\": {"]
+#[doc = "                              \"type\": \"boolean\""]
+#[doc = "                            },"]
+#[doc = "                            \"serverTime\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"format\": \"date-time\","]
+#[doc = "                              \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        },"]
+#[doc = "                        \"runtimeEndpoints\": {"]
+#[doc = "                          \"type\": \"object\","]
+#[doc = "                          \"required\": ["]
+#[doc = "                            \"apiBasePath\","]
+#[doc = "                            \"machineApiBasePath\","]
+#[doc = "                            \"machineAuthTokenPath\","]
+#[doc = "                            \"mqttTopicPrefix\""]
+#[doc = "                          ],"]
+#[doc = "                          \"properties\": {"]
+#[doc = "                            \"apiBasePath\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"const\": \"/api\""]
+#[doc = "                            },"]
+#[doc = "                            \"machineApiBasePath\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"pattern\": \"^\\\\/api\\\\/machines\\\\/[^/]+$\""]
+#[doc = "                            },"]
+#[doc = "                            \"machineAuthTokenPath\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"const\": \"/api/machine-auth/token\""]
+#[doc = "                            },"]
+#[doc = "                            \"mqttTopicPrefix\": {"]
+#[doc = "                              \"type\": \"string\","]
+#[doc = "                              \"pattern\": \"^vem\\\\/machines\\\\/[^/]+$\""]
+#[doc = "                            }"]
+#[doc = "                          },"]
+#[doc = "                          \"additionalProperties\": false"]
+#[doc = "                        }"]
+#[doc = "                      },"]
+#[doc = "                      \"additionalProperties\": false"]
+#[doc = "                    },"]
+#[doc = "                    \"schemaVersion\": {"]
+#[doc = "                      \"type\": \"number\","]
+#[doc = "                      \"const\": 1"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"sourceRevisions\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"bootstrapSchemaVersion\","]
+#[doc = "            \"localSettingsRevision\","]
+#[doc = "            \"profile\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"bootstrapSchemaVersion\": {"]
+#[doc = "              \"type\": \"number\","]
+#[doc = "              \"const\": 1"]
+#[doc = "            },"]
+#[doc = "            \"localSettingsRevision\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"minimum\": 0.0"]
+#[doc = "            },"]
+#[doc = "            \"profile\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"acceptedAt\","]
+#[doc = "                    \"generation\","]
+#[doc = "                    \"profileRevision\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"acceptedAt\": {"]
+#[doc = "                      \"type\": \"string\","]
+#[doc = "                      \"format\": \"date-time\","]
+#[doc = "                      \"pattern\": \"^(?:(?:\\\\d\\\\d[2468][048]|\\\\d\\\\d[13579][26]|\\\\d\\\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\\\d|30)|(?:02)-(?:0[1-9]|1\\\\d|2[0-8])))T(?:(?:[01]\\\\d|2[0-3]):[0-5]\\\\d(?::[0-5]\\\\d(?:\\\\.\\\\d+)?)?(?:Z|([+-](?:[01]\\\\d|2[0-3]):[0-5]\\\\d)))$\""]
+#[doc = "                    },"]
+#[doc = "                    \"generation\": {"]
+#[doc = "                      \"type\": \"integer\","]
+#[doc = "                      \"maximum\": 9007199254740991.0,"]
+#[doc = "                      \"exclusiveMinimum\": 0.0"]
+#[doc = "                    },"]
+#[doc = "                    \"profileRevision\": {"]
+#[doc = "                      \"type\": \"integer\","]
+#[doc = "                      \"maximum\": 9007199254740991.0,"]
+#[doc = "                      \"exclusiveMinimum\": 0.0"]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"additionalProperties\": false"]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"identityKey\","]
+#[doc = "        \"testEvidenceToken\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"identityKey\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 256,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"testEvidenceToken\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"baudRate\","]
+#[doc = "            \"frameSuffix\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"baudRate\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 230400.0,"]
+#[doc = "              \"minimum\": 1200.0"]
+#[doc = "            },"]
+#[doc = "            \"frameSuffix\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"crlf\","]
+#[doc = "                \"lf\","]
+#[doc = "                \"cr\","]
+#[doc = "                \"none\""]
+#[doc = "              ]"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"cuesEnabled\","]
+#[doc = "        \"presenceCuesEnabled\","]
+#[doc = "        \"transactionCuesEnabled\","]
+#[doc = "        \"volume\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"cuesEnabled\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"presenceCuesEnabled\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"transactionCuesEnabled\": {"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"volume\": {"]
+#[doc = "          \"type\": \"number\","]
+#[doc = "          \"maximum\": 1.0,"]
+#[doc = "          \"minimum\": 0.0"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct RuntimeConfigurationContract {
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_0: ::std::option::Option<RuntimeConfigurationContractSubtype0>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_1: ::std::option::Option<RuntimeConfigurationContractSubtype1>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_2: ::std::option::Option<RuntimeConfigurationContractSubtype2>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_3: ::std::option::Option<RuntimeConfigurationContractSubtype3>,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub subtype_4: ::std::option::Option<RuntimeConfigurationContractSubtype4>,
+}
+impl ::std::default::Default for RuntimeConfigurationContract {
+    fn default() -> Self {
+        Self {
+            subtype_0: Default::default(),
+            subtype_1: Default::default(),
+            subtype_2: Default::default(),
+            subtype_3: Default::default(),
+            subtype_4: Default::default(),
+        }
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype0`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"experience\","]
@@ -1076,24 +2245,24 @@ pub mod error {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfiguration {
-    pub experience: EffectiveMachineRuntimeConfigurationExperience,
+pub struct RuntimeConfigurationContractSubtype0 {
+    pub experience: RuntimeConfigurationContractSubtype0Experience,
     pub generation: i64,
-    pub hardware: EffectiveMachineRuntimeConfigurationHardware,
-    pub machine: ::std::option::Option<EffectiveMachineRuntimeConfigurationMachine>,
-    pub platform: ::std::option::Option<EffectiveMachineRuntimeConfigurationPlatform>,
+    pub hardware: RuntimeConfigurationContractSubtype0Hardware,
+    pub machine: ::std::option::Option<RuntimeConfigurationContractSubtype0Machine>,
+    pub platform: ::std::option::Option<RuntimeConfigurationContractSubtype0Platform>,
     #[serde(rename = "profileRefresh")]
-    pub profile_refresh: EffectiveMachineRuntimeConfigurationProfileRefresh,
+    pub profile_refresh: RuntimeConfigurationContractSubtype0ProfileRefresh,
     #[serde(rename = "schemaVersion")]
     pub schema_version: f64,
     #[serde(rename = "secretStatus")]
-    pub secret_status: EffectiveMachineRuntimeConfigurationSecretStatus,
+    pub secret_status: RuntimeConfigurationContractSubtype0SecretStatus,
     #[serde(rename = "sourceDocuments")]
-    pub source_documents: EffectiveMachineRuntimeConfigurationSourceDocuments,
+    pub source_documents: RuntimeConfigurationContractSubtype0SourceDocuments,
     #[serde(rename = "sourceRevisions")]
-    pub source_revisions: EffectiveMachineRuntimeConfigurationSourceRevisions,
+    pub source_revisions: RuntimeConfigurationContractSubtype0SourceRevisions,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationExperience`"]
+#[doc = "`RuntimeConfigurationContractSubtype0Experience`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1137,10 +2306,10 @@ pub struct EffectiveMachineRuntimeConfiguration {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationExperience {
-    pub audio: EffectiveMachineRuntimeConfigurationExperienceAudio,
+pub struct RuntimeConfigurationContractSubtype0Experience {
+    pub audio: RuntimeConfigurationContractSubtype0ExperienceAudio,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationExperienceAudio`"]
+#[doc = "`RuntimeConfigurationContractSubtype0ExperienceAudio`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1175,7 +2344,7 @@ pub struct EffectiveMachineRuntimeConfigurationExperience {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationExperienceAudio {
+pub struct RuntimeConfigurationContractSubtype0ExperienceAudio {
     #[serde(rename = "cuesEnabled")]
     pub cues_enabled: bool,
     #[serde(rename = "presenceCuesEnabled")]
@@ -1184,7 +2353,7 @@ pub struct EffectiveMachineRuntimeConfigurationExperienceAudio {
     pub transaction_cues_enabled: bool,
     pub volume: f64,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardware`"]
+#[doc = "`RuntimeConfigurationContractSubtype0Hardware`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1531,23 +2700,23 @@ pub struct EffectiveMachineRuntimeConfigurationExperienceAudio {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardware {
+pub struct RuntimeConfigurationContractSubtype0Hardware {
     #[serde(rename = "expectedProfile")]
     pub expected_profile:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationHardwareExpectedProfile>,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0HardwareExpectedProfile>,
     #[serde(rename = "lowerControllerBinding")]
     pub lower_controller_binding:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationHardwareLowerControllerBinding>,
-    pub model: EffectiveMachineRuntimeConfigurationHardwareModel,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0HardwareLowerControllerBinding>,
+    pub model: RuntimeConfigurationContractSubtype0HardwareModel,
     #[serde(rename = "scannerBinding")]
     pub scanner_binding:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationHardwareScannerBinding>,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0HardwareScannerBinding>,
     #[serde(rename = "scannerProtocol")]
     pub scanner_protocol:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationHardwareScannerProtocol>,
-    pub topology: EffectiveMachineRuntimeConfigurationHardwareTopology,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0HardwareScannerProtocol>,
+    pub topology: RuntimeConfigurationContractSubtype0HardwareTopology,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareExpectedProfile`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareExpectedProfile`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1623,14 +2792,14 @@ pub struct EffectiveMachineRuntimeConfigurationHardware {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfile {
-    pub controller: EffectiveMachineRuntimeConfigurationHardwareExpectedProfileController,
+pub struct RuntimeConfigurationContractSubtype0HardwareExpectedProfile {
+    pub controller: RuntimeConfigurationContractSubtype0HardwareExpectedProfileController,
     #[serde(rename = "paymentScanner")]
-    pub payment_scanner: EffectiveMachineRuntimeConfigurationHardwareExpectedProfilePaymentScanner,
+    pub payment_scanner: RuntimeConfigurationContractSubtype0HardwareExpectedProfilePaymentScanner,
     pub profile: ::std::string::String,
-    pub vision: EffectiveMachineRuntimeConfigurationHardwareExpectedProfileVision,
+    pub vision: RuntimeConfigurationContractSubtype0HardwareExpectedProfileVision,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareExpectedProfileController`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareExpectedProfileController`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1657,11 +2826,11 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfile {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfileController {
+pub struct RuntimeConfigurationContractSubtype0HardwareExpectedProfileController {
     pub protocol: ::std::string::String,
     pub required: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareExpectedProfilePaymentScanner`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareExpectedProfilePaymentScanner`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1687,12 +2856,12 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfileController
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfilePaymentScanner {
+pub struct RuntimeConfigurationContractSubtype0HardwareExpectedProfilePaymentScanner {
     pub required: bool,
     #[serde(rename = "supportsPaymentCode")]
     pub supports_payment_code: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareExpectedProfileVision`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareExpectedProfileVision`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1717,12 +2886,12 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfilePaymentSca
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfileVision {
+pub struct RuntimeConfigurationContractSubtype0HardwareExpectedProfileVision {
     pub required: bool,
     #[serde(rename = "supportsRecommendations")]
     pub supports_recommendations: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBinding`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBinding`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1821,17 +2990,17 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareExpectedProfileVision {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBinding {
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBinding {
     #[serde(rename = "confirmedAt")]
     pub confirmed_at: ::chrono::DateTime<::chrono::offset::Utc>,
     #[serde(rename = "confirmedBy")]
-    pub confirmed_by: EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy,
-    pub identity: EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentity,
+    pub confirmed_by: RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy,
+    pub identity: RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentity,
     #[serde(rename = "testEvidenceCode")]
     pub test_evidence_code:
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1845,11 +3014,11 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBinding {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -1858,17 +3027,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy,
+        value: RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -1882,7 +3051,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -1890,7 +3059,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -1900,7 +3069,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -1910,7 +3079,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingConfirmedBy
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -1923,7 +3092,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentity`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentity`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1995,26 +3164,26 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentity {
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentity {
     #[serde(rename = "containerId")]
     pub container_id: ::std::option::Option<::uuid::Uuid>,
     #[serde(rename = "hardwareIds")]
     pub hardware_ids: ::std::vec::Vec<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem,
     >,
     #[serde(rename = "identityKey")]
     pub identity_key:
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey,
     #[serde(rename = "instanceId")]
     pub instance_id: ::std::option::Option<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId,
     >,
     #[serde(rename = "serialNumber")]
     pub serial_number: ::std::option::Option<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber,
     >,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2028,11 +3197,11 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIde
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2041,17 +3210,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem,
     > for ::std::string::String
 {
     fn from(
-        value : EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem,
+        value : RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2065,7 +3234,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2073,7 +3242,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2083,7 +3252,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2093,7 +3262,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityHardwareIdsItem
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2106,7 +3275,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2120,11 +3289,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2133,17 +3302,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey,
     > for ::std::string::String
 {
     fn from(
-        value : EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey,
+        value : RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2157,7 +3326,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2165,7 +3334,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2175,7 +3344,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2185,7 +3354,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityIdentityKey
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2198,7 +3367,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2212,11 +3381,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2225,17 +3394,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId,
+        value: RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2249,7 +3418,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2257,7 +3426,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2267,7 +3436,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2277,7 +3446,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentityInstanceId
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2290,7 +3459,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2304,11 +3473,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2317,17 +3486,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber,
     > for ::std::string::String
 {
     fn from(
-        value : EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber,
+        value : RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2341,7 +3510,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2349,7 +3518,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2359,7 +3528,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2369,7 +3538,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingIdentitySerialNumber
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2382,7 +3551,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2396,11 +3565,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode(
+pub struct RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2409,17 +3578,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode,
+        RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode,
+        value: RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2433,7 +3602,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2441,7 +3610,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2451,7 +3620,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2461,7 +3630,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareLowerControllerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareLowerControllerBindingTestEvidenceCode
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2474,7 +3643,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareModel`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareModel`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2488,21 +3657,21 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareModel(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationHardwareModel {
+pub struct RuntimeConfigurationContractSubtype0HardwareModel(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0HardwareModel {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationHardwareModel>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0HardwareModel>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationHardwareModel) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0HardwareModel) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareModel {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0HardwareModel {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -2514,14 +3683,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareModel {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationHardwareModel {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0HardwareModel {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareModel
+    for RuntimeConfigurationContractSubtype0HardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2531,7 +3700,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareModel
+    for RuntimeConfigurationContractSubtype0HardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2540,7 +3709,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationHardwareModel {
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0HardwareModel {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -2552,7 +3721,7 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationHard
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBinding`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBinding`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2651,17 +3820,17 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationHard
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBinding {
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBinding {
     #[serde(rename = "confirmedAt")]
     pub confirmed_at: ::chrono::DateTime<::chrono::offset::Utc>,
     #[serde(rename = "confirmedBy")]
-    pub confirmed_by: EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy,
-    pub identity: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentity,
+    pub confirmed_by: RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy,
+    pub identity: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentity,
     #[serde(rename = "testEvidenceCode")]
     pub test_evidence_code:
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2675,23 +3844,23 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBinding {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy(
     ::std::string::String,
 );
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy {
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -2704,7 +3873,7 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareScanner
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2712,7 +3881,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2722,7 +3891,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2732,7 +3901,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingConfirmedBy
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingConfirmedBy
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2745,7 +3914,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentity`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentity`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2817,25 +3986,25 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentity {
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentity {
     #[serde(rename = "containerId")]
     pub container_id: ::std::option::Option<::uuid::Uuid>,
     #[serde(rename = "hardwareIds")]
     pub hardware_ids: ::std::vec::Vec<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem,
     >,
     #[serde(rename = "identityKey")]
-    pub identity_key: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey,
+    pub identity_key: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey,
     #[serde(rename = "instanceId")]
     pub instance_id: ::std::option::Option<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId,
     >,
     #[serde(rename = "serialNumber")]
     pub serial_number: ::std::option::Option<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber,
     >,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2849,11 +4018,11 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentity {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2862,17 +4031,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem,
+        value: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2886,7 +4055,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2894,7 +4063,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2904,7 +4073,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2914,7 +4083,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityHardwareIdsItem
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityHardwareIdsItem
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -2927,7 +4096,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2941,11 +4110,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -2954,17 +4123,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey,
+        value: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2978,7 +4147,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -2986,7 +4155,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -2996,7 +4165,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3006,7 +4175,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityIdentityKey
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityIdentityKey
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3019,7 +4188,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3033,11 +4202,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -3046,17 +4215,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId,
+        value: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3070,7 +4239,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3078,7 +4247,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3088,7 +4257,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3098,7 +4267,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentityInstanceId
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentityInstanceId
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3111,7 +4280,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3125,11 +4294,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -3138,17 +4307,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber,
+        RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber,
+        value: RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3162,7 +4331,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3170,7 +4339,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3180,7 +4349,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3190,7 +4359,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingIdentitySerialNumber
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingIdentitySerialNumber
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3203,7 +4372,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3217,11 +4386,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode(
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -3229,17 +4398,17 @@ impl ::std::ops::Deref
     }
 }
 impl
-    ::std::convert::From<EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode>
+    ::std::convert::From<RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode>
     for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode,
+        value: RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3253,7 +4422,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3261,7 +4430,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3271,7 +4440,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3281,7 +4450,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerBindingTestEvidenceCode
+    for RuntimeConfigurationContractSubtype0HardwareScannerBindingTestEvidenceCode
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3294,7 +4463,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerProtocol`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerProtocol`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3327,13 +4496,13 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareScannerProtocol {
+pub struct RuntimeConfigurationContractSubtype0HardwareScannerProtocol {
     #[serde(rename = "baudRate")]
     pub baud_rate: i64,
     #[serde(rename = "frameSuffix")]
-    pub frame_suffix: EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix,
+    pub frame_suffix: RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3361,7 +4530,7 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareScannerProtocol {
     PartialEq,
     PartialOrd,
 )]
-pub enum EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix {
+pub enum RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix {
     #[serde(rename = "crlf")]
     Crlf,
     #[serde(rename = "lf")]
@@ -3372,7 +4541,7 @@ pub enum EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix 
     None,
 }
 impl ::std::fmt::Display
-    for EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix
+    for RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix
 {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
@@ -3384,7 +4553,7 @@ impl ::std::fmt::Display
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix
+    for RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3398,7 +4567,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix
+    for RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3406,7 +4575,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix
+    for RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3416,7 +4585,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareScannerProtocolFrameSuffix
+    for RuntimeConfigurationContractSubtype0HardwareScannerProtocolFrameSuffix
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3425,7 +4594,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareTopology`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareTopology`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3454,11 +4623,11 @@ impl ::std::convert::TryFrom<::std::string::String>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareTopology {
-    pub identity: EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity,
-    pub version: EffectiveMachineRuntimeConfigurationHardwareTopologyVersion,
+pub struct RuntimeConfigurationContractSubtype0HardwareTopology {
+    pub identity: RuntimeConfigurationContractSubtype0HardwareTopologyIdentity,
+    pub version: RuntimeConfigurationContractSubtype0HardwareTopologyVersion,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareTopologyIdentity`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3472,21 +4641,21 @@ pub struct EffectiveMachineRuntimeConfigurationHardwareTopology {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity {
+pub struct RuntimeConfigurationContractSubtype0HardwareTopologyIdentity(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0HardwareTopologyIdentity>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0HardwareTopologyIdentity) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -3499,7 +4668,7 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareTopolog
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity
+    for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -3507,7 +4676,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity
+    for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3517,7 +4686,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity
+    for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3527,7 +4696,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyIdentity
+    for RuntimeConfigurationContractSubtype0HardwareTopologyIdentity
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3540,7 +4709,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationHardwareTopologyVersion`"]
+#[doc = "`RuntimeConfigurationContractSubtype0HardwareTopologyVersion`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3554,21 +4723,21 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationHardwareTopologyVersion(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion {
+pub struct RuntimeConfigurationContractSubtype0HardwareTopologyVersion(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0HardwareTopologyVersion {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationHardwareTopologyVersion>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0HardwareTopologyVersion>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationHardwareTopologyVersion) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0HardwareTopologyVersion) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0HardwareTopologyVersion {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -3580,14 +4749,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationHardwareTopolog
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0HardwareTopologyVersion {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion
+    for RuntimeConfigurationContractSubtype0HardwareTopologyVersion
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3597,7 +4766,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion
+    for RuntimeConfigurationContractSubtype0HardwareTopologyVersion
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3607,7 +4776,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationHardwareTopologyVersion
+    for RuntimeConfigurationContractSubtype0HardwareTopologyVersion
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -3620,7 +4789,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationMachine`"]
+#[doc = "`RuntimeConfigurationContractSubtype0Machine`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3674,16 +4843,16 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationMachine {
-    pub code: EffectiveMachineRuntimeConfigurationMachineCode,
+pub struct RuntimeConfigurationContractSubtype0Machine {
+    pub code: RuntimeConfigurationContractSubtype0MachineCode,
     pub id: ::uuid::Uuid,
     #[serde(rename = "locationLabel")]
     pub location_label:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationMachineLocationLabel>,
-    pub name: EffectiveMachineRuntimeConfigurationMachineName,
-    pub status: EffectiveMachineRuntimeConfigurationMachineStatus,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0MachineLocationLabel>,
+    pub name: RuntimeConfigurationContractSubtype0MachineName,
+    pub status: RuntimeConfigurationContractSubtype0MachineStatus,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationMachineCode`"]
+#[doc = "`RuntimeConfigurationContractSubtype0MachineCode`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3697,21 +4866,21 @@ pub struct EffectiveMachineRuntimeConfigurationMachine {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationMachineCode(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationMachineCode {
+pub struct RuntimeConfigurationContractSubtype0MachineCode(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineCode {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationMachineCode>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineCode>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationMachineCode) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0MachineCode) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineCode {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineCode {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 64usize {
@@ -3723,14 +4892,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineCode {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationMachineCode {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineCode {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineCode
+    for RuntimeConfigurationContractSubtype0MachineCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3740,7 +4909,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineCode
+    for RuntimeConfigurationContractSubtype0MachineCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3749,7 +4918,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMachineCode {
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineCode {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -3761,7 +4930,7 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationMachineLocationLabel`"]
+#[doc = "`RuntimeConfigurationContractSubtype0MachineLocationLabel`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3775,21 +4944,21 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationMachineLocationLabel(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationMachineLocationLabel {
+pub struct RuntimeConfigurationContractSubtype0MachineLocationLabel(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineLocationLabel {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationMachineLocationLabel>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineLocationLabel>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationMachineLocationLabel) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0MachineLocationLabel) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineLocationLabel {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineLocationLabel {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 256usize {
@@ -3801,14 +4970,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineLocation
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationMachineLocationLabel {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineLocationLabel {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0MachineLocationLabel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3818,7 +4987,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0MachineLocationLabel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3827,7 +4996,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMachineLocationLabel {
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineLocationLabel {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -3839,7 +5008,7 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationMachineName`"]
+#[doc = "`RuntimeConfigurationContractSubtype0MachineName`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3853,21 +5022,21 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationMachineName(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationMachineName {
+pub struct RuntimeConfigurationContractSubtype0MachineName(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineName {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationMachineName>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineName>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationMachineName) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0MachineName) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineName {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineName {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -3879,14 +5048,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineName {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationMachineName {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineName {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineName
+    for RuntimeConfigurationContractSubtype0MachineName
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3896,7 +5065,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineName
+    for RuntimeConfigurationContractSubtype0MachineName
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3905,7 +5074,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMachineName {
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineName {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -3917,7 +5086,7 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationMachineStatus`"]
+#[doc = "`RuntimeConfigurationContractSubtype0MachineStatus`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3931,21 +5100,21 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationMachineStatus(::std::string::String);
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationMachineStatus {
+pub struct RuntimeConfigurationContractSubtype0MachineStatus(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0MachineStatus {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationMachineStatus>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0MachineStatus>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationMachineStatus) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0MachineStatus) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineStatus {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0MachineStatus {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 64usize {
@@ -3957,14 +5126,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationMachineStatus {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationMachineStatus {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0MachineStatus {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineStatus
+    for RuntimeConfigurationContractSubtype0MachineStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3974,7 +5143,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationMachineStatus
+    for RuntimeConfigurationContractSubtype0MachineStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -3983,7 +5152,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMachineStatus {
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype0MachineStatus {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -3995,7 +5164,7 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatform`"]
+#[doc = "`RuntimeConfigurationContractSubtype0Platform`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4107,17 +5276,17 @@ impl<'de> ::serde::Deserialize<'de> for EffectiveMachineRuntimeConfigurationMach
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationPlatform {
+pub struct RuntimeConfigurationContractSubtype0Platform {
     #[serde(rename = "apiBaseUrl")]
     pub api_base_url: ::std::string::String,
     #[serde(rename = "mqttConnection")]
-    pub mqtt_connection: EffectiveMachineRuntimeConfigurationPlatformMqttConnection,
+    pub mqtt_connection: RuntimeConfigurationContractSubtype0PlatformMqttConnection,
     #[serde(rename = "paymentCapability")]
-    pub payment_capability: EffectiveMachineRuntimeConfigurationPlatformPaymentCapability,
+    pub payment_capability: RuntimeConfigurationContractSubtype0PlatformPaymentCapability,
     #[serde(rename = "runtimeEndpoints")]
-    pub runtime_endpoints: EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpoints,
+    pub runtime_endpoints: RuntimeConfigurationContractSubtype0PlatformRuntimeEndpoints,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformMqttConnection`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformMqttConnection`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4158,14 +5327,14 @@ pub struct EffectiveMachineRuntimeConfigurationPlatform {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformMqttConnection {
+pub struct RuntimeConfigurationContractSubtype0PlatformMqttConnection {
     #[serde(rename = "clientId")]
-    pub client_id: EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId,
+    pub client_id: RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId,
     pub url: ::std::string::String,
     pub username:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername>,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4179,23 +5348,23 @@ pub struct EffectiveMachineRuntimeConfigurationPlatformMqttConnection {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId(
+pub struct RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId(
     ::std::string::String,
 );
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId {
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -4208,7 +5377,7 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationPlatformMqttCon
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4216,7 +5385,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4226,7 +5395,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4236,7 +5405,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionClientId
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -4249,7 +5418,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4263,23 +5432,23 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername(
+pub struct RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername(
     ::std::string::String,
 );
-impl ::std::ops::Deref for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername {
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername>
     for ::std::string::String
 {
-    fn from(value: EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername) -> Self {
+    fn from(value: RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -4292,7 +5461,7 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationPlatformMqttCon
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4300,7 +5469,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4310,7 +5479,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4320,7 +5489,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationPlatformMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0PlatformMqttConnectionUsername
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -4333,7 +5502,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformPaymentCapability`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformPaymentCapability`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4369,7 +5538,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformPaymentCapability {
+pub struct RuntimeConfigurationContractSubtype0PlatformPaymentCapability {
     #[serde(rename = "paymentCodeEnabled")]
     pub payment_code_enabled: bool,
     pub profile: ::std::string::String,
@@ -4378,7 +5547,7 @@ pub struct EffectiveMachineRuntimeConfigurationPlatformPaymentCapability {
     #[serde(rename = "serverTime")]
     pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpoints`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformRuntimeEndpoints`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4415,19 +5584,19 @@ pub struct EffectiveMachineRuntimeConfigurationPlatformPaymentCapability {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpoints {
+pub struct RuntimeConfigurationContractSubtype0PlatformRuntimeEndpoints {
     #[serde(rename = "apiBasePath")]
     pub api_base_path: ::std::string::String,
     #[serde(rename = "machineApiBasePath")]
     pub machine_api_base_path:
-        EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath,
+        RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath,
     #[serde(rename = "machineAuthTokenPath")]
     pub machine_auth_token_path: ::std::string::String,
     #[serde(rename = "mqttTopicPrefix")]
     pub mqtt_topic_prefix:
-        EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix,
+        RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4440,11 +5609,11 @@ pub struct EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpoints {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath(
+pub struct RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -4453,17 +5622,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath,
+        RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath,
+        value: RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4478,7 +5647,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4486,7 +5655,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4496,7 +5665,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4506,7 +5675,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMachineApiBasePath
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMachineApiBasePath
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -4519,7 +5688,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix`"]
+#[doc = "`RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4532,11 +5701,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix(
+pub struct RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -4545,17 +5714,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix,
+        RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix,
+        value: RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4570,7 +5739,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -4578,7 +5747,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4588,7 +5757,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4598,7 +5767,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationPlatformRuntimeEndpointsMqttTopicPrefix
+    for RuntimeConfigurationContractSubtype0PlatformRuntimeEndpointsMqttTopicPrefix
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -4611,7 +5780,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationProfileRefresh`"]
+#[doc = "`RuntimeConfigurationContractSubtype0ProfileRefresh`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4648,12 +5817,12 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationProfileRefresh {
+pub struct RuntimeConfigurationContractSubtype0ProfileRefresh {
     #[serde(rename = "lastError")]
     pub last_error: ::std::option::Option<::std::string::String>,
-    pub status: EffectiveMachineRuntimeConfigurationProfileRefreshStatus,
+    pub status: RuntimeConfigurationContractSubtype0ProfileRefreshStatus,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationProfileRefreshStatus`"]
+#[doc = "`RuntimeConfigurationContractSubtype0ProfileRefreshStatus`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4680,7 +5849,7 @@ pub struct EffectiveMachineRuntimeConfigurationProfileRefresh {
     PartialEq,
     PartialOrd,
 )]
-pub enum EffectiveMachineRuntimeConfigurationProfileRefreshStatus {
+pub enum RuntimeConfigurationContractSubtype0ProfileRefreshStatus {
     #[serde(rename = "unclaimed")]
     Unclaimed,
     #[serde(rename = "accepted")]
@@ -4688,7 +5857,7 @@ pub enum EffectiveMachineRuntimeConfigurationProfileRefreshStatus {
     #[serde(rename = "degraded")]
     Degraded,
 }
-impl ::std::fmt::Display for EffectiveMachineRuntimeConfigurationProfileRefreshStatus {
+impl ::std::fmt::Display for RuntimeConfigurationContractSubtype0ProfileRefreshStatus {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
             Self::Unclaimed => f.write_str("unclaimed"),
@@ -4697,7 +5866,7 @@ impl ::std::fmt::Display for EffectiveMachineRuntimeConfigurationProfileRefreshS
         }
     }
 }
-impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationProfileRefreshStatus {
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype0ProfileRefreshStatus {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
@@ -4708,14 +5877,14 @@ impl ::std::str::FromStr for EffectiveMachineRuntimeConfigurationProfileRefreshS
         }
     }
 }
-impl ::std::convert::TryFrom<&str> for EffectiveMachineRuntimeConfigurationProfileRefreshStatus {
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype0ProfileRefreshStatus {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationProfileRefreshStatus
+    for RuntimeConfigurationContractSubtype0ProfileRefreshStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4725,7 +5894,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationProfileRefreshStatus
+    for RuntimeConfigurationContractSubtype0ProfileRefreshStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -4734,7 +5903,7 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSecretStatus`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SecretStatus`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4763,7 +5932,7 @@ impl ::std::convert::TryFrom<::std::string::String>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSecretStatus {
+pub struct RuntimeConfigurationContractSubtype0SecretStatus {
     #[serde(rename = "machineSecretConfigured")]
     pub machine_secret_configured: bool,
     #[serde(rename = "mqttPasswordConfigured")]
@@ -4771,7 +5940,7 @@ pub struct EffectiveMachineRuntimeConfigurationSecretStatus {
     #[serde(rename = "mqttSigningSecretConfigured")]
     pub mqtt_signing_secret_configured: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocuments`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocuments`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5150,13 +6319,13 @@ pub struct EffectiveMachineRuntimeConfigurationSecretStatus {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocuments {
-    pub bootstrap: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap,
+pub struct RuntimeConfigurationContractSubtype0SourceDocuments {
+    pub bootstrap: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrap,
     #[serde(rename = "profileCache")]
     pub profile_cache:
-        ::std::option::Option<EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache>,
+        ::std::option::Option<RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsBootstrap`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5210,16 +6379,16 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocuments {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap {
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsBootstrap {
     #[serde(rename = "hardwareModel")]
-    pub hardware_model: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel,
+    pub hardware_model: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel,
     #[serde(rename = "provisioningApiBaseUrl")]
     pub provisioning_api_base_url: ::std::string::String,
     #[serde(rename = "schemaVersion")]
     pub schema_version: f64,
-    pub topology: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopology,
+    pub topology: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopology,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5233,28 +6402,28 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel>
+impl ::std::convert::From<RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel>
     for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5268,7 +6437,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5276,7 +6445,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5286,7 +6455,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5296,7 +6465,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapHardwareModel
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -5309,7 +6478,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopology`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopology`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5338,11 +6507,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopology {
-    pub identity: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity,
-    pub version: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion,
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopology {
+    pub identity: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity,
+    pub version: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5356,11 +6525,11 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopology 
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -5369,17 +6538,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity,
+        RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5393,7 +6562,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5401,7 +6570,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5411,7 +6580,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5421,7 +6590,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyIdentity
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyIdentity
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -5434,7 +6603,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5448,11 +6617,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -5461,17 +6630,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion,
+        RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5485,7 +6654,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -5493,7 +6662,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5503,7 +6672,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -5513,7 +6682,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrapTopologyVersion
+    for RuntimeConfigurationContractSubtype0SourceDocumentsBootstrapTopologyVersion
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -5526,7 +6695,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5843,15 +7012,15 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache {
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache {
     #[serde(rename = "acceptedAt")]
     pub accepted_at: ::chrono::DateTime<::chrono::offset::Utc>,
     pub generation: ::std::num::NonZeroU64,
-    pub profile: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfile,
+    pub profile: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfile,
     #[serde(rename = "schemaVersion")]
     pub schema_version: f64,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfile`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfile`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6142,31 +7311,31 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfile {
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfile {
     #[serde(rename = "apiBaseUrl")]
     pub api_base_url: ::std::string::String,
     #[serde(rename = "hardwareModel")]
     pub hardware_model:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel,
     #[serde(rename = "hardwareProfile")]
     pub hardware_profile:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfile,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfile,
     #[serde(rename = "hardwareSlotTopology")]
     pub hardware_slot_topology:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopology,
-    pub machine: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachine,
-    pub metadata: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMetadata,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopology,
+    pub machine: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachine,
+    pub metadata: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMetadata,
     #[serde(rename = "mqttConnection")]
     pub mqtt_connection:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnection,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnection,
     #[serde(rename = "paymentCapability")]
     pub payment_capability:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfilePaymentCapability,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfilePaymentCapability,
     #[serde(rename = "runtimeEndpoints")]
     pub runtime_endpoints:
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpoints,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpoints,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6180,11 +7349,11 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -6193,17 +7362,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6217,7 +7386,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6225,7 +7394,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6235,7 +7404,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6245,7 +7414,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareModel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareModel
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -6258,7 +7427,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfile`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfile`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6334,8 +7503,8 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfile { pub controller : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileController , # [serde (rename = "paymentScanner")] pub payment_scanner : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner , pub profile : :: std :: string :: String , pub vision : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileVision , }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileController`"]
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfile { pub controller : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileController , # [serde (rename = "paymentScanner")] pub payment_scanner : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner , pub profile : :: std :: string :: String , pub vision : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileVision , }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileController`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6362,12 +7531,12 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileController
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileController
 {
     pub protocol: ::std::string::String,
     pub required: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6393,13 +7562,13 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfilePaymentScanner
 {
     pub required: bool,
     #[serde(rename = "supportsPaymentCode")]
     pub supports_payment_code: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileVision`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileVision`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6424,13 +7593,13 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareProfileVision
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareProfileVision
 {
     pub required: bool,
     #[serde(rename = "supportsRecommendations")]
     pub supports_recommendations: bool,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopology`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopology`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6459,8 +7628,8 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopology { pub identity : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity , pub version : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion , }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity`"]
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopology { pub identity : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity , pub version : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion , }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6474,17 +7643,17 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity(
     ::std::string::String,
 );
-impl :: std :: ops :: Deref for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity) -> Self { value . 0 } }
-impl :: std :: str :: FromStr for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { if value . chars () . count () > 128usize { return Err ("longer than 128 characters" . into ()) ; } if value . chars () . count () < 1usize { return Err ("shorter than 1 characters" . into ()) ; } Ok (Self (value . to_string ())) } }
-impl :: std :: convert :: TryFrom < & str > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < & :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion`"]
+impl :: std :: ops :: Deref for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity) -> Self { value . 0 } }
+impl :: std :: str :: FromStr for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { if value . chars () . count () > 128usize { return Err ("longer than 128 characters" . into ()) ; } if value . chars () . count () < 1usize { return Err ("shorter than 1 characters" . into ()) ; } Ok (Self (value . to_string ())) } }
+impl :: std :: convert :: TryFrom < & str > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < & :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyIdentity { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6498,17 +7667,17 @@ impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigur
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion(
     ::std::string::String,
 );
-impl :: std :: ops :: Deref for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion) -> Self { value . 0 } }
-impl :: std :: str :: FromStr for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { if value . chars () . count () > 128usize { return Err ("longer than 128 characters" . into ()) ; } if value . chars () . count () < 1usize { return Err ("shorter than 1 characters" . into ()) ; } Ok (Self (value . to_string ())) } }
-impl :: std :: convert :: TryFrom < & str > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < & :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachine`"]
+impl :: std :: ops :: Deref for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion) -> Self { value . 0 } }
+impl :: std :: str :: FromStr for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { if value . chars () . count () > 128usize { return Err ("longer than 128 characters" . into ()) ; } if value . chars () . count () < 1usize { return Err ("shorter than 1 characters" . into ()) ; } Ok (Self (value . to_string ())) } }
+impl :: std :: convert :: TryFrom < & str > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < & :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileHardwareSlotTopologyVersion { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachine`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6562,17 +7731,17 @@ impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigur
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachine {
-    pub code: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode,
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachine {
+    pub code: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode,
     pub id: ::uuid::Uuid,
     #[serde(rename = "locationLabel")]
     pub location_label: ::std::option::Option<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
     >,
-    pub name: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName,
-    pub status: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus,
+    pub name: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName,
+    pub status: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6586,11 +7755,11 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -6599,17 +7768,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6623,7 +7792,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6631,7 +7800,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6641,7 +7810,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6651,7 +7820,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineCode
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineCode
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -6664,7 +7833,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6678,11 +7847,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -6691,17 +7860,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
     > for ::std::string::String
 {
     fn from(
-        value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel,
+        value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6715,7 +7884,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6723,7 +7892,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6733,7 +7902,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6743,7 +7912,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineLocationLabel
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineLocationLabel
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -6756,7 +7925,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6770,11 +7939,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -6783,17 +7952,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6807,7 +7976,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6815,7 +7984,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6825,7 +7994,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6835,7 +8004,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineName
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineName
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -6848,7 +8017,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6862,11 +8031,11 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
@@ -6875,17 +8044,17 @@ impl ::std::ops::Deref
 }
 impl
     ::std::convert::From<
-        EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus,
+        RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
     > for ::std::string::String
 {
     fn from(
-        value: EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus,
+        value: RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus,
     ) -> Self {
         value.0
     }
 }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6899,7 +8068,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -6907,7 +8076,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6917,7 +8086,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -6927,7 +8096,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMachineStatus
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMachineStatus
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -6940,7 +8109,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMetadata`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMetadata`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -6986,7 +8155,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMetadata {
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMetadata {
     #[serde(rename = "claimCodeId")]
     pub claim_code_id: ::uuid::Uuid,
     #[serde(rename = "claimedAt")]
@@ -6998,7 +8167,7 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
     #[serde(rename = "serverTime")]
     pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnection`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnection`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7039,8 +8208,8 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnection { # [serde (rename = "clientId")] pub client_id : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId , pub url : :: std :: string :: String , pub username : :: std :: option :: Option < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername > , }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId`"]
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnection { # [serde (rename = "clientId")] pub client_id : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId , pub url : :: std :: string :: String , pub username : :: std :: option :: Option < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername > , }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7054,20 +8223,20 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId) -> Self { value . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId) -> Self { value . 0 } }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -7081,7 +8250,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -7089,7 +8258,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -7099,7 +8268,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -7109,7 +8278,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionClientId
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionClientId
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -7122,7 +8291,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7136,20 +8305,20 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername(
     ::std::string::String,
 );
 impl ::std::ops::Deref
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername) -> Self { value . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername) -> Self { value . 0 } }
 impl ::std::str::FromStr
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -7163,7 +8332,7 @@ impl ::std::str::FromStr
     }
 }
 impl ::std::convert::TryFrom<&str>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
@@ -7171,7 +8340,7 @@ impl ::std::convert::TryFrom<&str>
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -7181,7 +8350,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -7191,7 +8360,7 @@ impl ::std::convert::TryFrom<::std::string::String>
     }
 }
 impl<'de> ::serde::Deserialize<'de>
-    for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileMqttConnectionUsername
+    for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileMqttConnectionUsername
 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
@@ -7204,7 +8373,7 @@ impl<'de> ::serde::Deserialize<'de>
             })
     }
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfilePaymentCapability`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfilePaymentCapability`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7240,7 +8409,7 @@ impl<'de> ::serde::Deserialize<'de>
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfilePaymentCapability {
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfilePaymentCapability {
     #[serde(rename = "paymentCodeEnabled")]
     pub payment_code_enabled: bool,
     pub profile: ::std::string::String,
@@ -7249,7 +8418,7 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
     #[serde(rename = "serverTime")]
     pub server_time: ::chrono::DateTime<::chrono::offset::Utc>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpoints`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpoints`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7286,8 +8455,8 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpoints { # [serde (rename = "apiBasePath")] pub api_base_path : :: std :: string :: String , # [serde (rename = "machineApiBasePath")] pub machine_api_base_path : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath , # [serde (rename = "machineAuthTokenPath")] pub machine_auth_token_path : :: std :: string :: String , # [serde (rename = "mqttTopicPrefix")] pub mqtt_topic_prefix : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix , }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath`"]
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpoints { # [serde (rename = "apiBasePath")] pub api_base_path : :: std :: string :: String , # [serde (rename = "machineApiBasePath")] pub machine_api_base_path : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath , # [serde (rename = "machineAuthTokenPath")] pub machine_auth_token_path : :: std :: string :: String , # [serde (rename = "mqttTopicPrefix")] pub mqtt_topic_prefix : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix , }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7300,17 +8469,17 @@ pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfil
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath(
     ::std::string::String,
 );
-impl :: std :: ops :: Deref for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath) -> Self { value . 0 } }
-impl :: std :: str :: FromStr for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { static PATTERN : :: std :: sync :: LazyLock < :: regress :: Regex > = :: std :: sync :: LazyLock :: new (|| { :: regress :: Regex :: new ("^\\/api\\/machines\\/[^/]+$") . unwrap () }) ; if PATTERN . find (value) . is_none () { return Err ("doesn't match pattern \"^\\/api\\/machines\\/[^/]+$\"" . into ()) ; } Ok (Self (value . to_string ())) } }
-impl :: std :: convert :: TryFrom < & str > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < & :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix`"]
+impl :: std :: ops :: Deref for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath) -> Self { value . 0 } }
+impl :: std :: str :: FromStr for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { static PATTERN : :: std :: sync :: LazyLock < :: regress :: Regex > = :: std :: sync :: LazyLock :: new (|| { :: regress :: Regex :: new ("^\\/api\\/machines\\/[^/]+$") . unwrap () }) ; if PATTERN . find (value) . is_none () { return Err ("doesn't match pattern \"^\\/api\\/machines\\/[^/]+$\"" . into ()) ; } Ok (Self (value . to_string ())) } }
+impl :: std :: convert :: TryFrom < & str > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < & :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMachineApiBasePath { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7323,17 +8492,17 @@ impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigur
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix(
+pub struct RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix(
     ::std::string::String,
 );
-impl :: std :: ops :: Deref for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
-impl :: std :: convert :: From < EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix > for :: std :: string :: String { fn from (value : EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix) -> Self { value . 0 } }
-impl :: std :: str :: FromStr for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { static PATTERN : :: std :: sync :: LazyLock < :: regress :: Regex > = :: std :: sync :: LazyLock :: new (|| { :: regress :: Regex :: new ("^vem\\/machines\\/[^/]+$") . unwrap () }) ; if PATTERN . find (value) . is_none () { return Err ("doesn't match pattern \"^vem\\/machines\\/[^/]+$\"" . into ()) ; } Ok (Self (value . to_string ())) } }
-impl :: std :: convert :: TryFrom < & str > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < & :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl :: std :: convert :: TryFrom < :: std :: string :: String > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
-impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceRevisions`"]
+impl :: std :: ops :: Deref for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Target = :: std :: string :: String ; fn deref (& self) -> & :: std :: string :: String { & self . 0 } }
+impl :: std :: convert :: From < RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix > for :: std :: string :: String { fn from (value : RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix) -> Self { value . 0 } }
+impl :: std :: str :: FromStr for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Err = self :: error :: ConversionError ; fn from_str (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { static PATTERN : :: std :: sync :: LazyLock < :: regress :: Regex > = :: std :: sync :: LazyLock :: new (|| { :: regress :: Regex :: new ("^vem\\/machines\\/[^/]+$") . unwrap () }) ; if PATTERN . find (value) . is_none () { return Err ("doesn't match pattern \"^vem\\/machines\\/[^/]+$\"" . into ()) ; } Ok (Self (value . to_string ())) } }
+impl :: std :: convert :: TryFrom < & str > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : & str) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < & :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : & :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl :: std :: convert :: TryFrom < :: std :: string :: String > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { type Error = self :: error :: ConversionError ; fn try_from (value : :: std :: string :: String) -> :: std :: result :: Result < Self , self :: error :: ConversionError > { value . parse () } }
+impl < 'de > :: serde :: Deserialize < 'de > for RuntimeConfigurationContractSubtype0SourceDocumentsProfileCacheProfileRuntimeEndpointsMqttTopicPrefix { fn deserialize < D > (deserializer : D ,) -> :: std :: result :: Result < Self , D :: Error > where D : :: serde :: Deserializer < 'de > , { :: std :: string :: String :: deserialize (deserializer) ? . parse () . map_err (| e : self :: error :: ConversionError | { < D :: Error as :: serde :: de :: Error > :: custom (e . to_string () ,) }) } }
+#[doc = "`RuntimeConfigurationContractSubtype0SourceRevisions`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7395,14 +8564,14 @@ impl < 'de > :: serde :: Deserialize < 'de > for EffectiveMachineRuntimeConfigur
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceRevisions {
+pub struct RuntimeConfigurationContractSubtype0SourceRevisions {
     #[serde(rename = "bootstrapSchemaVersion")]
     pub bootstrap_schema_version: f64,
     #[serde(rename = "localSettingsRevision")]
     pub local_settings_revision: i64,
-    pub profile: ::std::option::Option<EffectiveMachineRuntimeConfigurationSourceRevisionsProfile>,
+    pub profile: ::std::option::Option<RuntimeConfigurationContractSubtype0SourceRevisionsProfile>,
 }
-#[doc = "`EffectiveMachineRuntimeConfigurationSourceRevisionsProfile`"]
+#[doc = "`RuntimeConfigurationContractSubtype0SourceRevisionsProfile`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -7437,10 +8606,311 @@ pub struct EffectiveMachineRuntimeConfigurationSourceRevisions {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveMachineRuntimeConfigurationSourceRevisionsProfile {
+pub struct RuntimeConfigurationContractSubtype0SourceRevisionsProfile {
     #[serde(rename = "acceptedAt")]
     pub accepted_at: ::chrono::DateTime<::chrono::offset::Utc>,
     pub generation: ::std::num::NonZeroU64,
     #[serde(rename = "profileRevision")]
     pub profile_revision: ::std::num::NonZeroU64,
+}
+#[doc = "`RuntimeConfigurationContractSubtype1`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"identityKey\","]
+#[doc = "    \"testEvidenceToken\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"identityKey\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 256,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"testEvidenceToken\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype1 {
+    #[serde(rename = "identityKey")]
+    pub identity_key: RuntimeConfigurationContractSubtype1IdentityKey,
+    #[serde(rename = "testEvidenceToken")]
+    pub test_evidence_token: ::uuid::Uuid,
+}
+#[doc = "`RuntimeConfigurationContractSubtype1IdentityKey`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct RuntimeConfigurationContractSubtype1IdentityKey(::std::string::String);
+impl ::std::ops::Deref for RuntimeConfigurationContractSubtype1IdentityKey {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<RuntimeConfigurationContractSubtype1IdentityKey>
+    for ::std::string::String
+{
+    fn from(value: RuntimeConfigurationContractSubtype1IdentityKey) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype1IdentityKey {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype1IdentityKey {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype1IdentityKey
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype1IdentityKey
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for RuntimeConfigurationContractSubtype1IdentityKey {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype2`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype2 {}
+impl ::std::default::Default for RuntimeConfigurationContractSubtype2 {
+    fn default() -> Self {
+        Self {}
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype3`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"baudRate\","]
+#[doc = "    \"frameSuffix\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"baudRate\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 230400.0,"]
+#[doc = "      \"minimum\": 1200.0"]
+#[doc = "    },"]
+#[doc = "    \"frameSuffix\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"crlf\","]
+#[doc = "        \"lf\","]
+#[doc = "        \"cr\","]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype3 {
+    #[serde(rename = "baudRate")]
+    pub baud_rate: i64,
+    #[serde(rename = "frameSuffix")]
+    pub frame_suffix: RuntimeConfigurationContractSubtype3FrameSuffix,
+}
+#[doc = "`RuntimeConfigurationContractSubtype3FrameSuffix`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"crlf\","]
+#[doc = "    \"lf\","]
+#[doc = "    \"cr\","]
+#[doc = "    \"none\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum RuntimeConfigurationContractSubtype3FrameSuffix {
+    #[serde(rename = "crlf")]
+    Crlf,
+    #[serde(rename = "lf")]
+    Lf,
+    #[serde(rename = "cr")]
+    Cr,
+    #[serde(rename = "none")]
+    None,
+}
+impl ::std::fmt::Display for RuntimeConfigurationContractSubtype3FrameSuffix {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Crlf => f.write_str("crlf"),
+            Self::Lf => f.write_str("lf"),
+            Self::Cr => f.write_str("cr"),
+            Self::None => f.write_str("none"),
+        }
+    }
+}
+impl ::std::str::FromStr for RuntimeConfigurationContractSubtype3FrameSuffix {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "crlf" => Ok(Self::Crlf),
+            "lf" => Ok(Self::Lf),
+            "cr" => Ok(Self::Cr),
+            "none" => Ok(Self::None),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for RuntimeConfigurationContractSubtype3FrameSuffix {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for RuntimeConfigurationContractSubtype3FrameSuffix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for RuntimeConfigurationContractSubtype3FrameSuffix
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`RuntimeConfigurationContractSubtype4`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"cuesEnabled\","]
+#[doc = "    \"presenceCuesEnabled\","]
+#[doc = "    \"transactionCuesEnabled\","]
+#[doc = "    \"volume\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"cuesEnabled\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"presenceCuesEnabled\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"transactionCuesEnabled\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"volume\": {"]
+#[doc = "      \"type\": \"number\","]
+#[doc = "      \"maximum\": 1.0,"]
+#[doc = "      \"minimum\": 0.0"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigurationContractSubtype4 {
+    #[serde(rename = "cuesEnabled")]
+    pub cues_enabled: bool,
+    #[serde(rename = "presenceCuesEnabled")]
+    pub presence_cues_enabled: bool,
+    #[serde(rename = "transactionCuesEnabled")]
+    pub transaction_cues_enabled: bool,
+    pub volume: f64,
 }

@@ -1,8 +1,9 @@
-use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tokio::{
     sync::{broadcast, mpsc},
@@ -12,16 +13,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     backend::BackendClient,
-    config::{self, ConfigStore},
+    device_binding::{self, LocalDeviceRole, LocalSerialRoleBinding, SerialDeviceRoleProbeConfig},
     events::DaemonEvent,
     hardware::HardwareSupervisor,
     ipc::{self, IpcContext},
+    local_runtime_settings::{LocalRuntimeSettings, ScannerProtocolParameters},
     mqtt::MqttSyncRuntime,
+    provisioning,
     runtime::{DaemonRuntime, RuntimeStartInput},
-    scanner::ScannerRuntimeController,
+    runtime_configuration::{ClaimedMachineCredentials, RuntimeSources},
+    scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     secret,
-    state::store::{MachinePlanogramInput, MachinePlanogramSlotInput},
-    state::LocalStateStore,
+    state::{
+        store::{MachinePlanogramInput, MachinePlanogramSlotInput},
+        LocalStateStore,
+    },
     stock_upload::StockMovementUploadRuntime,
     transaction::{is_active_transaction, TransactionStateMachine},
     vision::VisionSupervisor,
@@ -91,7 +97,7 @@ async fn run_console_cycle(
     config: ConsoleRunConfig,
     external_shutdown: CancellationToken,
 ) -> Result<ConsoleCycleExit, String> {
-    let data_dir = config::resolve_data_dir(config.data_dir)?;
+    let data_dir = provisioning::resolve_data_dir(config.data_dir)?;
     tokio::fs::create_dir_all(&data_dir)
         .await
         .map_err(|error| format!("create data dir failed: {error}"))?;
@@ -100,129 +106,95 @@ async fn run_console_cycle(
         .await
         .map_err(|error| error.to_string())?;
     let secret_store = secret::default_secret_store(data_dir.clone());
-    let config_store = std::sync::Arc::new(ConfigStore::new(
-        data_dir.clone(),
-        state.clone(),
-        secret_store,
-    ));
-    config_store
-        .import_factory_maintenance_pin_verifier()
-        .await
-        .map_err(|error| format!("factory maintenance PIN verifier import failed: {error}"))?;
-    config_store
-        .import_factory_bootstrap_capability_verifier()
-        .await
-        .map_err(|error| format!("factory bootstrap capability verifier import failed: {error}"))?;
-    config_store
-        .migrate_legacy_raw_maintenance_pin()
-        .await
-        .map_err(|error| format!("legacy maintenance PIN migration failed: {error}"))?;
-    config_store
-        .recover_maintenance_from_cache()
-        .await
-        .map_err(|error| format!("secure decommission startup recovery failed: {error}"))?;
+    let runtime_sources = Arc::new(RuntimeSources::new(data_dir.clone(), secret_store));
+    let clean = runtime_sources.clean_runtime_configuration();
+    clean.recover_claim_transaction().await?;
+    // Bootstrap is deployment input and must exist even before the first claim.
+    let bootstrap = clean.load_bootstrap().await?;
+    let profile = clean.load_profile_cache().await?;
+    let credentials = match profile.as_ref() {
+        Some(_) => Some(runtime_sources.claimed_credentials().await?),
+        None => None,
+    };
 
     let runtime = DaemonRuntime::start(RuntimeStartInput {
         state: state.clone(),
-        config_store: config_store.clone(),
+        runtime_sources: runtime_sources.clone(),
         data_dir: data_dir.clone(),
     })
     .await
     .map_err(|error| format!("runtime start failed: {error}"))?;
-    let mut runtime_config = runtime.config.clone();
-    let serial_device_platform: crate::device_binding::SharedSerialDevicePlatform =
-        Arc::new(crate::device_binding::WindowsSerialDevicePlatform);
-    {
-        let settings = config_store
-            .load_local_bring_up_settings()
-            .await?
-            .unwrap_or_default();
-        if settings.lower_controller_binding.is_some() || settings.scanner_binding.is_some() {
-            let observed = serial_device_platform.discover().await.unwrap_or_default();
-            if let Some(binding) = settings.lower_controller_binding.as_ref() {
-                if crate::device_binding::apply_resolved_binding_to_runtime_config(
-                    &mut runtime_config.public,
-                    crate::device_binding::LocalDeviceRole::LowerController,
-                    binding,
-                    &observed,
-                )
-                .is_err()
-                {
-                    runtime_config.public.serial_port_path = None;
-                    runtime_config.public.lower_controller_usb_identity = None;
-                }
-            }
-            if let Some(binding) = settings.scanner_binding.as_ref() {
-                if crate::device_binding::apply_resolved_binding_to_runtime_config(
-                    &mut runtime_config.public,
-                    crate::device_binding::LocalDeviceRole::Scanner,
-                    binding,
-                    &observed,
-                )
-                .is_err()
-                {
-                    runtime_config.public.scanner_serial_port_path = None;
-                    runtime_config.public.scanner_usb_identity = None;
-                }
-            }
-        }
-    }
-    let runtime_secrets = config_store
-        .runtime_secrets()
-        .await
-        .map_err(|error| format!("runtime secrets load failed: {error}"))?;
 
-    let hardware = HardwareSupervisor::from_config_with_protocol_log(
-        &runtime_config.public,
+    let serial_device_platform: device_binding::SharedSerialDevicePlatform =
+        Arc::new(device_binding::WindowsSerialDevicePlatform);
+    let settings = runtime_sources.load_local_runtime_settings().await?;
+    let observed = serial_device_platform.discover().await.unwrap_or_default();
+    let lower_port = resolve_bound_port(
+        LocalDeviceRole::LowerController,
+        settings.lower_controller_binding.as_ref(),
+        &observed,
+    );
+    let scanner_port = resolve_bound_port(
+        LocalDeviceRole::Scanner,
+        settings.scanner_binding.as_ref(),
+        &observed,
+    );
+    let hardware = HardwareSupervisor::from_serial_port(
+        lower_port,
         Some(data_dir.join("logs").join("serial-protocol.jsonl")),
-    )
-    .map_err(|error| format!("hardware config invalid: {error}"))?;
+    )?;
 
     let (tx_raw, rx_raw) = mpsc::channel(16);
     let (events_tx, _) = broadcast::channel(64);
     let scanner_runtime = ScannerRuntimeController::new(tx_raw.clone(), events_tx.clone());
-    let backend = Arc::new(BackendClient::new(
-        runtime_config.public.api_base_url.clone(),
-    ));
-    if let (Some(machine_code), Some(secret)) = (
-        runtime_config.public.machine_code.as_deref(),
-        runtime_secrets.machine_secret.as_deref(),
-    ) {
-        let _ = backend.authenticate(machine_code, secret).await;
+    scanner_runtime
+        .start(scanner_runtime_config(&settings, scanner_port))
+        .await?;
+
+    let backend_url = profile
+        .as_ref()
+        .map(|value| value.profile.api_base_url.to_string())
+        .unwrap_or_else(|| bootstrap.provisioning_api_base_url.to_string());
+    let backend = Arc::new(BackendClient::new(backend_url));
+    if let (Some(profile), Some(credentials)) = (profile.as_ref(), credentials.as_ref()) {
+        // Accepted profile and credentials are the local runtime boundary. A
+        // network outage must not prevent the last-known-good runtime from
+        // continuing to serve local sales.
+        let _ = backend
+            .authenticate(
+                &profile.profile.machine.code.to_string(),
+                &credentials.machine_secret,
+            )
+            .await;
     }
-    let ui_status_cache = ipc::RuntimeStatusCache::new(&runtime_config.public, state.clone()).await;
-    let payment_code_submit_guard =
-        ipc::local_payment_code_submit_guard(ui_status_cache.clone(), state.clone());
+
+    let status_cache = ipc::RuntimeStatusCache::new(profile.as_ref(), state.clone()).await;
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
-        runtime_config.public.machine_code.clone(),
+        profile
+            .as_ref()
+            .map(|value| value.profile.machine.code.to_string()),
         events_tx.clone(),
     )
-    .with_payment_code_submit_guard(payment_code_submit_guard);
+    .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
+        status_cache.clone(),
+        state.clone(),
+    ));
     let ui = ipc::UiRuntimeServices {
         backend: backend.clone(),
         transaction,
-        status_cache: ui_status_cache,
+        status_cache,
     };
-    let ipc_token = ipc::load_or_create_ipc_token(&data_dir)
-        .await
-        .map_err(|error| format!("ipc token init failed: {error}"))?;
-
-    let print_ready_file = config
-        .print_ready_file
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| default_ready_file_path(&data_dir));
-
+    let ipc_token = ipc::load_or_create_ipc_token(&data_dir).await?;
     let ipc_ctx = IpcContext {
         data_dir: data_dir.clone(),
         token: ipc_token.clone(),
-        config_store: config_store.clone(),
+        runtime_sources: runtime_sources.clone(),
         state: state.clone(),
         hardware: hardware.clone(),
         events: events_tx.clone(),
-        runtime_tx: tx_raw.clone(),
+        runtime_tx: tx_raw,
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
@@ -231,16 +203,12 @@ async fn run_console_cycle(
         network_adapter: crate::network::adapter_from_env(),
         ui,
         background_shutdown: CancellationToken::new(),
-        bring_up_execution_lock: Arc::new(tokio::sync::Mutex::new(())),
-        maintenance_authorization: Arc::new(ipc::DaemonMaintenanceAuthorization::new(
-            config_store.clone(),
-        )),
     };
-    let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
-        .await
-        .map_err(|error| format!("ipc failed: {error}"))?;
-
-    write_ready_file(&print_ready_file, ipc_handle.addr, &ipc_token).await?;
+    let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone()).await?;
+    let ready_file = config
+        .print_ready_file
+        .unwrap_or_else(|| default_ready_file_path(&data_dir));
+    write_ready_file(&ready_file, ipc_handle.addr, &ipc_token).await?;
 
     let stop_token = runtime.shutdown_token();
     let cache_updates = tokio::spawn(cache_daemon_events(
@@ -248,28 +216,29 @@ async fn run_console_cycle(
         ipc_ctx.ui.status_cache.clone(),
         Some(stop_token.clone()),
     ));
-    scanner_runtime
-        .start_from_config(&runtime_config.public)
-        .await?;
-    let payment_watcher = tokio::spawn(run_payment_code_watcher(PaymentCodeWatcherInput {
+    let payment_watcher = tokio::spawn(run_payment_code_watcher(
         rx_raw,
-        state: state.clone(),
-        events: events_tx.clone(),
-        status_cache: ipc_ctx.ui.status_cache.clone(),
-        machine_code: runtime_config.public.machine_code.clone(),
-        api_base_url: runtime_config.public.api_base_url.clone(),
-        machine_secret: runtime_secrets.machine_secret.clone(),
-        shutdown: stop_token.clone(),
-    }));
+        state.clone(),
+        events_tx.clone(),
+        ipc_ctx.ui.status_cache.clone(),
+        profile
+            .as_ref()
+            .map(|value| value.profile.machine.code.to_string()),
+        credentials
+            .as_ref()
+            .map(|value| value.machine_secret.clone()),
+        backend,
+        stop_token.clone(),
+    ));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
         hardware.clone(),
         state.clone(),
         ipc_ctx.ui.status_cache.clone(),
         stop_token.clone(),
     ));
-    let device_binding_watch = tokio::spawn(run_device_binding_watch(
-        serial_device_platform.clone(),
-        config_store.clone(),
+    let binding_watch = tokio::spawn(run_device_binding_watch(
+        serial_device_platform,
+        runtime_sources.clone(),
         state.clone(),
         hardware.clone(),
         scanner_runtime.clone(),
@@ -279,116 +248,128 @@ async fn run_console_cycle(
         stop_token.clone(),
     ));
     let stock_upload = tokio::spawn(
-        StockMovementUploadRuntime::new(state.clone(), backend.clone(), stop_token.clone()).run(),
+        StockMovementUploadRuntime::new(
+            state.clone(),
+            ipc_ctx.ui.backend.clone(),
+            stop_token.clone(),
+        )
+        .run(),
     );
-    let platform_stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
-        config_store.clone(),
+    let stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
+        runtime_sources.clone(),
         state.clone(),
-        backend.clone(),
-        runtime_config.public.machine_code.clone(),
+        ipc_ctx.ui.backend.clone(),
+        profile
+            .as_ref()
+            .map(|value| value.profile.machine.code.to_string()),
         stop_token.clone(),
     ));
-
-    let vision = VisionSupervisor::new(runtime_config.public.clone());
-    let vision_events = events_tx.clone();
-    let vision_stop = stop_token.clone();
-    tokio::spawn(async move {
-        // 视觉服务由任务计划程序在用户登录后才启动，daemon 作为系统服务先行启动，
-        // 所以需要带退避重试，直到视觉服务就绪或 daemon 停止。
-        let mut backoff_ms = 2_000_u64;
-        loop {
-            let snapshot = match vision.start().await {
-                Ok(snapshot) if snapshot.online || !snapshot.enabled => {
-                    // 成功或已禁用，发布状态后退出循环
-                    let _ = vision_events.send(DaemonEvent::VisionChanged {
-                        event_id: uuid::Uuid::new_v4().simple().to_string(),
-                        updated_at: crate::state::store::now_iso(),
-                        enabled: snapshot.enabled,
-                        online: snapshot.online,
-                        message: snapshot.message,
-                        latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
-                    });
-                    return;
-                }
-                Ok(snapshot) => snapshot,
-                Err(error) => crate::vision::VisionRuntimeSnapshot::failed(error),
-            };
-            // 发布当前（离线）状态
-            let _ = vision_events.send(DaemonEvent::VisionChanged {
-                event_id: uuid::Uuid::new_v4().simple().to_string(),
-                updated_at: crate::state::store::now_iso(),
-                enabled: snapshot.enabled,
-                online: snapshot.online,
-                message: snapshot.message,
-                latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
-            });
-            // 退避等待，最长 30 秒
-            tokio::select! {
-                _ = vision_stop.cancelled() => return,
-                _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {
-                    backoff_ms = (backoff_ms * 2).min(30_000);
-                }
-            }
-        }
-    });
+    let vision_task = if profile
+        .as_ref()
+        .is_some_and(|value| value.profile.hardware_profile.vision.required)
+    {
+        let vision = VisionSupervisor::new(
+            profile
+                .as_ref()
+                .map(|value| value.profile.machine.code.to_string()),
+        );
+        tokio::spawn(run_vision_watch(
+            vision,
+            events_tx.clone(),
+            stop_token.clone(),
+        ))
+    } else {
+        *ipc_ctx.ui.status_cache.vision.write().await = ipc::VisionStatusSnapshot {
+            enabled: false,
+            online: false,
+            message: "disabled".to_string(),
+            updated_at: crate::state::store::now_iso(),
+            latest_diagnostic_payload: Some(serde_json::json!({
+                "type": "vision.disabled",
+                "payload": { "message": "disabled" },
+            })),
+        };
+        tokio::spawn(async { Ok(()) })
+    };
 
     let mut tasks = vec![
         cache_updates,
         payment_watcher,
         hardware_health,
-        device_binding_watch,
+        binding_watch,
         stock_upload,
-        platform_stock_sync,
+        stock_sync,
+        vision_task,
         ipc_task,
     ];
-    if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(
-        &runtime_config.public,
-        &runtime_secrets,
+    if let Some(task) = maybe_spawn_mqtt_task(
+        profile.as_ref(),
+        credentials.as_ref(),
         &hardware,
-        events_tx.clone(),
-        state.clone(),
+        events_tx,
+        state,
         stop_token.clone(),
-        ipc_ctx.clone(),
+        ipc_ctx,
     )? {
-        tasks.push(runtime_mqtt);
+        tasks.push(task);
     }
 
-    let cycle_exit = tokio::select! {
-        signal = wait_for_local_signal() => {
-            signal?;
-            ConsoleCycleExit::Stop
-        },
+    let exit = tokio::select! {
+        signal = wait_for_local_signal() => { signal?; ConsoleCycleExit::Stop }
         _ = external_shutdown.cancelled() => ConsoleCycleExit::Stop,
         _ = stop_token.cancelled() => {
-            if external_shutdown.is_cancelled() {
-                ConsoleCycleExit::Stop
-            } else {
-                ConsoleCycleExit::Reconfigure
-            }
-        },
+            if external_shutdown.is_cancelled() { ConsoleCycleExit::Stop } else { ConsoleCycleExit::Reconfigure }
+        }
     };
-
-    runtime
-        .stop()
-        .await
-        .map_err(|error| format!("runtime shutdown failed: {error}"))?;
+    runtime.stop().await?;
     scanner_runtime.stop().await?;
+    ipc_handle.shutdown.cancel();
     for task in tasks {
         task.abort();
         let _ = task.await;
     }
-    ipc_handle.shutdown();
-    Ok(cycle_exit)
+    Ok(exit)
+}
+
+fn resolve_bound_port(
+    role: LocalDeviceRole,
+    binding: Option<&LocalSerialRoleBinding>,
+    observed: &[device_binding::ObservedSerialDevice],
+) -> Option<String> {
+    binding.and_then(|binding| device_binding::resolve_runtime_port(role, binding, observed).ok())
+}
+
+fn scanner_protocol(settings: &LocalRuntimeSettings) -> ScannerProtocolParameters {
+    settings
+        .scanner_protocol
+        .clone()
+        .unwrap_or(ScannerProtocolParameters {
+            baud_rate: 9_600,
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+        })
+}
+
+fn scanner_runtime_config(
+    settings: &LocalRuntimeSettings,
+    port_path: Option<String>,
+) -> ScannerRuntimeConfig {
+    let protocol = scanner_protocol(settings);
+    ScannerRuntimeConfig {
+        port_path,
+        baud_rate: protocol.baud_rate,
+        frame_suffix: protocol.frame_suffix,
+        source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+    }
 }
 
 async fn run_device_binding_watch(
-    platform: crate::device_binding::SharedSerialDevicePlatform,
-    config_store: Arc<ConfigStore>,
+    platform: device_binding::SharedSerialDevicePlatform,
+    runtime_sources: Arc<RuntimeSources>,
     state: LocalStateStore,
     hardware: HardwareSupervisor,
     scanner_runtime: ScannerRuntimeController,
     status_cache: ipc::RuntimeStatusCache,
-    sale_binding_gate: Arc<ipc::SaleBindingOperationGate>,
+    sale_gate: Arc<ipc::SaleBindingOperationGate>,
     data_dir: PathBuf,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
@@ -399,262 +380,251 @@ async fn run_device_binding_watch(
             _ = shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {}
         }
-        let settings = match config_store.load_local_runtime_settings().await {
+        let mut settings = match runtime_sources.load_local_runtime_settings().await {
             Ok(settings) => settings,
             Err(error) => {
-                record_binding_watch_retry(
-                    &status_cache,
-                    "DEVICE_BINDING_CONFIG_RETRY",
-                    format!("read local device bindings failed; retrying: {error}"),
-                    true,
-                    true,
-                )
-                .await;
+                set_binding_retry(&status_cache, &error).await;
                 continue;
             }
         };
-        if settings.lower_controller_binding.is_none() && settings.scanner_binding.is_none() {
-            continue;
-        }
-        // Keep discovery, stable-identity resolution, runtime replacement and
-        // the replacement self-check under one lease.  Otherwise a sale could
-        // start after discovery and an unrelated device later occupying the
-        // same COM address could be mistaken for the bound controller.
-        let _binding_lease =
-            match acquire_binding_reconfiguration_lease(&sale_binding_gate, &state).await {
-                Ok(lease) => lease,
-                Err(error) => {
-                    record_binding_watch_retry(
-                        &status_cache,
-                        "DEVICE_BINDING_SALE_GATE_RETRY",
-                        error,
-                        settings.lower_controller_binding.is_some(),
-                        settings.scanner_binding.is_some(),
-                    )
-                    .await;
-                    continue;
-                }
-            };
         let observed = match platform.discover().await {
             Ok(observed) => observed,
             Err(error) => {
-                record_binding_watch_retry(
-                    &status_cache,
-                    "SCANNER_DISCOVERY_RETRY",
-                    format!(
-                        "serial device discovery failed; retrying on bounded interval: {error}"
-                    ),
-                    settings.lower_controller_binding.is_some(),
-                    settings.scanner_binding.is_some(),
-                )
-                .await;
+                set_binding_retry(&status_cache, &error).await;
                 continue;
             }
         };
-        let public = match config_store.load_effective_public_config().await {
-            Ok(public) => public,
-            Err(error) => {
-                record_binding_watch_retry(
-                    &status_cache,
-                    "DEVICE_BINDING_CONFIG_RETRY",
-                    format!("load effective hardware config failed; retrying: {error}"),
-                    settings.lower_controller_binding.is_some(),
-                    settings.scanner_binding.is_some(),
-                )
-                .await;
-                continue;
+        let active_sale = state
+            .current_transaction_snapshot()
+            .await
+            .map(|snapshot| snapshot.as_ref().is_some_and(is_active_transaction))
+            .unwrap_or(true);
+        if !active_sale {
+            let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol(&settings));
+            for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
+                if binding_for_role(&settings, role).is_some() {
+                    continue;
+                }
+                let mut ready = Vec::new();
+                for candidate in &observed {
+                    let result = platform.test_candidate(role, candidate, &probe).await;
+                    if result.success {
+                        ready.push((candidate, result));
+                    }
+                }
+                if ready.len() != 1 {
+                    continue;
+                }
+                let (candidate, result) = ready.pop().expect("one verified serial candidate");
+                let Ok(identity) =
+                    device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
+                else {
+                    continue;
+                };
+                let binding = LocalSerialRoleBinding {
+                    identity,
+                    confirmed_at: crate::state::store::now_iso(),
+                    confirmed_by: "daemon_auto_bind".to_string(),
+                    test_evidence_code: result.code,
+                };
+                let Ok((_, revision)) = runtime_sources.local_device_binding_snapshot(role).await
+                else {
+                    continue;
+                };
+                if runtime_sources
+                    .save_local_device_binding_if_revision(role, binding.clone(), &revision)
+                    .await
+                    .is_ok()
+                {
+                    set_binding_for_role(&mut settings, role, Some(binding));
+                }
             }
+        }
+        let lease = match sale_gate.try_acquire_reconfigure() {
+            Ok(lease) => lease,
+            Err(_) => continue,
         };
-        let active_sale = match state.current_transaction_snapshot().await {
-            Ok(snapshot) => snapshot.as_ref().is_some_and(is_active_transaction),
-            Err(error) => {
-                record_binding_watch_retry(
-                    &status_cache,
-                    "DEVICE_BINDING_SALE_STATE_RETRY",
-                    format!(
-                        "cannot prove sale state; binding reconfiguration deferred and will retry: {error}"
-                    ),
-                    settings.lower_controller_binding.is_some(),
-                    settings.scanner_binding.is_some(),
-                )
-                .await;
-                continue;
-            }
-        };
-
+        if state
+            .current_transaction_snapshot()
+            .await
+            .map(|snapshot| snapshot.as_ref().is_some_and(is_active_transaction))
+            .unwrap_or(true)
+        {
+            drop(lease);
+            continue;
+        }
         if let Some(binding) = settings.lower_controller_binding.as_ref() {
-            let current_port = status_cache.hardware.read().await.port_path.clone();
-            let mut resolved = public.clone();
-            match crate::device_binding::apply_resolved_binding_to_runtime_config(
-                &mut resolved,
-                crate::device_binding::LocalDeviceRole::LowerController,
+            match device_binding::resolve_runtime_port(
+                LocalDeviceRole::LowerController,
                 binding,
                 &observed,
             ) {
-                Ok(port) => {
-                    if current_port.as_deref() != Some(port.as_str()) && !active_sale {
-                        match hardware
-                            .reconfigure_from_config(
-                                &resolved,
-                                Some(data_dir.join("logs").join("serial-protocol.jsonl")),
-                            )
-                            .await
-                        {
-                            Ok(status) => *status_cache.hardware.write().await = status,
-                            Err(error) => {
-                                let mut status = status_cache.hardware.read().await.clone();
-                                status.online = false;
-                                status.port_path = None;
-                                status.message = format!(
-                                    "lower controller reconfiguration failed; retrying on bounded interval: {error}"
-                                );
-                                *status_cache.hardware.write().await = status;
-                            }
-                        }
+                Ok(port)
+                    if status_cache.hardware.read().await.port_path.as_deref()
+                        != Some(port.as_str()) =>
+                {
+                    match hardware
+                        .reconfigure_from_serial_port(
+                            Some(port),
+                            Some(data_dir.join("logs").join("serial-protocol.jsonl")),
+                        )
+                        .await
+                    {
+                        Ok(status) => *status_cache.hardware.write().await = status,
+                        Err(error) => set_lower_unavailable(&status_cache, error).await,
                     }
                 }
-                Err(code) => {
-                    let message =
-                        format!("lower controller stable binding requires maintenance: {code}");
-                    hardware.deactivate_bound_adapter(message.clone())?;
+                Err(error) => {
+                    hardware.deactivate_bound_adapter(format!(
+                        "lower controller stable binding unresolved: {error}"
+                    ))?;
                     *status_cache.hardware.write().await = hardware.self_check().await;
                 }
+                _ => {}
             }
         }
-
         if let Some(binding) = settings.scanner_binding.as_ref() {
-            let current_port = status_cache.scanner.read().await.port.clone();
-            let mut resolved = public.clone();
-            match crate::device_binding::apply_resolved_binding_to_runtime_config(
-                &mut resolved,
-                crate::device_binding::LocalDeviceRole::Scanner,
-                binding,
-                &observed,
-            ) {
-                Ok(port) => {
-                    if current_port.as_deref() != Some(port.as_str()) && !active_sale {
-                        if let Err(error) = scanner_runtime.reconfigure_from_config(&resolved).await
-                        {
-                            *status_cache.scanner.write().await =
-                                vending_core::scanner::ScannerHealthSnapshot {
-                                    online: false,
-                                    adapter:
-                                        vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
-                                            .to_string(),
-                                    port: None,
-                                    level: vending_core::health::HealthLevel::Degraded,
-                                    code: "SCANNER_RECONFIGURE_RETRY".to_string(),
-                                    message: format!(
-                                        "scanner reconfiguration failed; previous runtime restored; retrying on bounded interval: {error}"
-                                    ),
-                                    updated_at: crate::state::store::now_iso(),
-                                };
-                        }
+            match device_binding::resolve_runtime_port(LocalDeviceRole::Scanner, binding, &observed)
+            {
+                Ok(port)
+                    if status_cache.scanner.read().await.port.as_deref() != Some(port.as_str()) =>
+                {
+                    if let Err(error) = scanner_runtime
+                        .reconfigure(scanner_runtime_config(&settings, Some(port)))
+                        .await
+                    {
+                        *status_cache.scanner.write().await =
+                            scanner_unavailable("SCANNER_RECONFIGURE_RETRY", error);
                     }
                 }
-                Err(code) => {
-                    let stop_error = scanner_runtime.stop().await.err();
+                Err(error) => {
+                    let _ = scanner_runtime.stop().await;
                     *status_cache.scanner.write().await =
-                        vending_core::scanner::ScannerHealthSnapshot {
-                            online: false,
-                            adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
-                                .to_string(),
-                            port: None,
-                            level: vending_core::health::HealthLevel::Offline,
-                            code: "SCANNER_BINDING_UNAVAILABLE".to_string(),
-                            message: format!(
-                                "scanner stable binding requires maintenance: {code}{}",
-                                stop_error
-                                    .map(|error| format!("; stop failed and will retry: {error}"))
-                                    .unwrap_or_default()
-                            ),
-                            updated_at: crate::state::store::now_iso(),
-                        };
+                        scanner_unavailable("SCANNER_BINDING_UNAVAILABLE", error);
+                }
+                _ => {}
+            }
+        }
+        drop(lease);
+    }
+}
+
+fn binding_for_role(
+    settings: &LocalRuntimeSettings,
+    role: LocalDeviceRole,
+) -> Option<&LocalSerialRoleBinding> {
+    match role {
+        LocalDeviceRole::LowerController => settings.lower_controller_binding.as_ref(),
+        LocalDeviceRole::Scanner => settings.scanner_binding.as_ref(),
+    }
+}
+
+fn set_binding_for_role(
+    settings: &mut LocalRuntimeSettings,
+    role: LocalDeviceRole,
+    binding: Option<LocalSerialRoleBinding>,
+) {
+    match role {
+        LocalDeviceRole::LowerController => settings.lower_controller_binding = binding,
+        LocalDeviceRole::Scanner => settings.scanner_binding = binding,
+    }
+}
+
+async fn set_binding_retry(cache: &ipc::RuntimeStatusCache, error: &str) {
+    set_lower_unavailable(cache, format!("serial device discovery retry: {error}")).await;
+    *cache.scanner.write().await =
+        scanner_unavailable("SCANNER_DISCOVERY_RETRY", error.to_string());
+}
+
+async fn set_lower_unavailable(cache: &ipc::RuntimeStatusCache, message: impl Into<String>) {
+    let mut status = cache.hardware.read().await.clone();
+    status.online = false;
+    status.port_path = None;
+    status.message = message.into();
+    *cache.hardware.write().await = status;
+}
+
+fn scanner_unavailable(
+    code: &str,
+    message: impl Into<String>,
+) -> vending_core::scanner::ScannerHealthSnapshot {
+    vending_core::scanner::ScannerHealthSnapshot {
+        online: false,
+        adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+        port: None,
+        level: vending_core::health::HealthLevel::Offline,
+        code: code.to_string(),
+        message: message.into(),
+        updated_at: crate::state::store::now_iso(),
+    }
+}
+
+async fn run_payment_code_watcher(
+    mut rx: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
+    state: LocalStateStore,
+    events: broadcast::Sender<DaemonEvent>,
+    status_cache: ipc::RuntimeStatusCache,
+    machine_code: Option<String>,
+    machine_secret: Option<String>,
+    backend: Arc<BackendClient>,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let Some(machine_code) = machine_code else {
+        return Ok(());
+    };
+    if machine_secret.is_none() {
+        return Ok(());
+    }
+    let machine = TransactionStateMachine::new(state.clone(), backend, Some(machine_code), events)
+        .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
+            status_cache.clone(),
+            state,
+        ));
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            code = rx.recv() => {
+                let Some(code) = code else { return Ok(()); };
+                let Ok(Some(snapshot)) = machine.restore_current().await else { continue; };
+                if snapshot.order_no.is_none() { continue; }
+                let health = status_cache.scanner.read().await.clone();
+                if health.online && health.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT {
+                    let _ = machine.submit_payment_code(code, vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT, Some(health)).await;
                 }
             }
         }
-    }
-}
-
-async fn acquire_binding_reconfiguration_lease(
-    gate: &Arc<ipc::SaleBindingOperationGate>,
-    state: &LocalStateStore,
-) -> Result<ipc::SaleBindingOperationLease, String> {
-    let lease = gate.try_acquire_reconfigure().map_err(|_| {
-        "sale start is in progress; device binding reconfiguration deferred".to_string()
-    })?;
-    match state.current_transaction_snapshot().await {
-        Ok(Some(snapshot)) if is_active_transaction(&snapshot) => {
-            Err("active sale detected; device binding reconfiguration deferred".to_string())
-        }
-        Ok(_) => Ok(lease),
-        Err(error) => Err(format!(
-            "cannot prove sale state; device binding reconfiguration deferred: {error}"
-        )),
-    }
-}
-
-async fn record_binding_watch_retry(
-    status_cache: &ipc::RuntimeStatusCache,
-    scanner_code: &str,
-    message: String,
-    lower_controller_affected: bool,
-    scanner_affected: bool,
-) {
-    if lower_controller_affected {
-        let mut status = status_cache.hardware.read().await.clone();
-        status.online = false;
-        status.port_path = None;
-        status.message = message.clone();
-        *status_cache.hardware.write().await = status;
-    }
-    if scanner_affected {
-        let adapter = status_cache.scanner.read().await.adapter.clone();
-        *status_cache.scanner.write().await = vending_core::scanner::ScannerHealthSnapshot {
-            online: false,
-            adapter,
-            port: None,
-            level: vending_core::health::HealthLevel::Degraded,
-            code: scanner_code.to_string(),
-            message,
-            updated_at: crate::state::store::now_iso(),
-        };
     }
 }
 
 fn maybe_spawn_mqtt_task(
-    runtime_config: &crate::config::EffectiveRuntimeConfig,
-    runtime_secrets: &crate::config::MachineRuntimeSecrets,
+    profile: Option<&daemon_ipc_contracts::ProvisioningProfileCache>,
+    credentials: Option<&ClaimedMachineCredentials>,
     hardware: &HardwareSupervisor,
     events: broadcast::Sender<DaemonEvent>,
     state: LocalStateStore,
     shutdown: CancellationToken,
     ipc_context: ipc::IpcContext,
 ) -> Result<Option<tokio::task::JoinHandle<Result<(), String>>>, String> {
-    let machine_code = match &runtime_config.machine_code {
-        Some(code) => code.clone(),
-        None => return Ok(None),
+    let (Some(profile), Some(credentials)) = (profile, credentials) else {
+        return Ok(None);
     };
-    let signing_secret = match &runtime_secrets.mqtt_signing_secret {
-        Some(secret) => secret.clone(),
-        None => return Ok(None),
-    };
-
+    let machine_code = profile.profile.machine.code.to_string();
+    let mqtt = &profile.profile.mqtt_connection;
     let mut options = MqttSyncRuntime::mqtt_options_from_config(
         &machine_code,
-        &runtime_config.mqtt_url,
-        runtime_config.mqtt_client_id.as_deref(),
+        &mqtt.url.to_string(),
+        Some(&mqtt.client_id.to_string()),
     )?;
-    if let Some(username) = &runtime_config.mqtt_username {
+    if let Some(username) = mqtt.username.as_ref() {
         options.set_credentials(
-            username,
-            runtime_secrets.mqtt_password.as_deref().unwrap_or(""),
+            username.to_string(),
+            credentials.mqtt_password.as_deref().unwrap_or(""),
         );
     }
     let (client, event_loop) = rumqttc::AsyncClient::new(options, 16);
-    let mqtt = MqttSyncRuntime::new(
+    let runtime = MqttSyncRuntime::new(
         machine_code,
-        signing_secret,
+        credentials.mqtt_signing_secret.clone(),
         state,
         hardware.clone(),
         events,
@@ -662,86 +632,11 @@ fn maybe_spawn_mqtt_task(
     )
     .with_readiness_context(ipc_context)
     .with_client(client);
-    Ok(Some(tokio::spawn(Arc::new(mqtt).run(event_loop))))
-}
-
-struct PaymentCodeWatcherInput {
-    rx_raw: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
-    state: LocalStateStore,
-    events: broadcast::Sender<DaemonEvent>,
-    status_cache: ipc::RuntimeStatusCache,
-    machine_code: Option<String>,
-    api_base_url: String,
-    machine_secret: Option<String>,
-    shutdown: CancellationToken,
-}
-
-async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), String> {
-    let PaymentCodeWatcherInput {
-        mut rx_raw,
-        state,
-        events,
-        status_cache,
-        machine_code,
-        api_base_url,
-        machine_secret,
-        shutdown,
-    } = input;
-    let Some(machine_code) = machine_code else {
-        return Ok(());
-    };
-
-    let backend = BackendClient::new(api_base_url);
-    if let Some(secret) = machine_secret.as_deref() {
-        let _ = backend.authenticate(&machine_code, secret).await;
-    }
-    let machine_state = TransactionStateMachine::new(
-        state.clone(),
-        std::sync::Arc::new(backend),
-        Some(machine_code.clone()),
-        events,
-    )
-    .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
-        status_cache.clone(),
-        state,
-    ));
-
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return Ok(()),
-            code = rx_raw.recv() => {
-                let code = match code {
-                    Some(code) => code,
-                    None => return Ok(()),
-                };
-                let snapshot = match machine_state.restore_current().await {
-                    Ok(Some(snapshot)) => snapshot,
-                    _ => continue,
-                };
-                let Some(_order_no) = snapshot.order_no else {
-                    continue;
-                };
-                let scanner_health = status_cache.scanner.read().await.clone();
-                if !scanner_health.online
-                    || scanner_health.adapter
-                        != vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
-                {
-                    continue;
-                }
-                let _ = machine_state
-                    .submit_payment_code(
-                        code,
-                        vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
-                        Some(scanner_health),
-                    )
-                    .await;
-            }
-        }
-    }
+    Ok(Some(tokio::spawn(Arc::new(runtime).run(event_loop))))
 }
 
 async fn run_platform_stock_sync_watcher(
-    config_store: Arc<crate::config::ConfigStore>,
+    runtime_sources: Arc<RuntimeSources>,
     state: LocalStateStore,
     backend: Arc<BackendClient>,
     machine_code: Option<String>,
@@ -750,14 +645,12 @@ async fn run_platform_stock_sync_watcher(
     let Some(machine_code) = machine_code else {
         return Ok(());
     };
-
     loop {
-        match sync_platform_planogram_and_stock(&config_store, &state, &backend, &machine_code)
-            .await
+        if let Err(error) =
+            sync_platform_planogram_and_stock(&runtime_sources, &state, &backend, &machine_code)
+                .await
         {
-            Ok(()) => {}
-            Err(error) if error.contains("stock snapshot deferred") => {}
-            Err(error) => eprintln!("platform stock sync failed: {error}"),
+            eprintln!("platform stock sync failed: {error}");
         }
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
@@ -767,43 +660,38 @@ async fn run_platform_stock_sync_watcher(
 }
 
 async fn sync_platform_planogram_and_stock(
-    config_store: &crate::config::ConfigStore,
+    runtime_sources: &RuntimeSources,
     state: &LocalStateStore,
     backend: &BackendClient,
     machine_code: &str,
 ) -> Result<(), String> {
-    if let Some(current) = state
+    if state
         .current_transaction_snapshot()
         .await
         .map_err(|error| error.to_string())?
+        .as_ref()
+        .is_some_and(is_active_transaction)
     {
-        if is_active_transaction(&current) {
-            return Ok(());
-        }
+        return Ok(());
     }
-
     let published = backend.get_published_planogram(machine_code).await?;
     if !published.is_null() {
+        let topology = runtime_sources.hardware_topology_readiness().await?;
+        if !topology.ready {
+            return Err(topology.message);
+        }
         let planogram_version = published
             .get("planogramVersion")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "published planogram response missing planogramVersion".to_string())?
             .to_string();
-        let slots = published
-            .get("slots")
-            .cloned()
-            .ok_or_else(|| "published planogram response missing slots".to_string())
-            .and_then(|value| {
-                serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(value)
-                    .map_err(|error| error.to_string())
-            })?;
-        let topology = config_store.hardware_slot_topology_readiness().await?;
-        if !topology.ready {
-            return Err(format!(
-                "hardware slot topology blocks planogram activation: {}",
-                topology.code
-            ));
-        }
+        let slots = serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(
+            published
+                .get("slots")
+                .cloned()
+                .ok_or_else(|| "published planogram response missing slots".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
         state
             .apply_planogram(MachinePlanogramInput {
                 planogram_version: planogram_version.clone(),
@@ -817,85 +705,38 @@ async fn sync_platform_planogram_and_stock(
             .acknowledge_planogram(machine_code, &planogram_version)
             .await?;
     }
-
-    let snapshot = backend.get_stock_snapshot(machine_code).await?;
+    let stock = backend.get_stock_snapshot(machine_code).await?;
     state
-        .apply_platform_stock_snapshot(&snapshot)
+        .apply_platform_stock_snapshot(&stock)
         .await
         .map_err(|error| error.to_string())?;
     Ok(())
 }
 
-async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<(), String> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|error| format!("create ready file parent failed: {error}"))?;
-    let advanced_maintenance_config = std::env::var("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG")
-        .map(|value| value == "true")
-        .unwrap_or(false);
-    let payload = serde_json::json!({
-        "healthzUrl": format!("http://{}/healthz", bind),
-        "readyzUrl": format!("http://{}/readyz", bind),
-        "ipcToken": token,
-        "runtimeFlags": {
-            "advancedMaintenanceConfig": advanced_maintenance_config,
-        },
-    });
-    tokio::fs::write(
-        path,
-        serde_json::to_vec_pretty(&payload)
-            .map_err(|error| format!("serialize ready file failed: {error}"))?,
-    )
-    .await
-    .map_err(|error| format!("write ready file failed: {error}"))?;
-    harden_sensitive_file_permissions(path).await?;
-    Ok(())
-}
-
-async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let permissions = std::fs::Permissions::from_mode(0o600);
-        tokio::fs::set_permissions(path, permissions)
+async fn run_vision_watch(
+    vision: VisionSupervisor,
+    events: broadcast::Sender<DaemonEvent>,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let mut backoff = 2_000_u64;
+    loop {
+        let snapshot = vision
+            .start()
             .await
-            .map_err(|error| format!("harden ready file permissions failed: {error}"))?;
-    }
-
-    #[cfg(windows)]
-    {
-        use crate::secret::WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS;
-
-        let mut command = tokio::process::Command::new("icacls");
-        command
-            .arg(path)
-            .args(WINDOWS_MACHINE_PROTECTED_FILE_ACL_ARGS);
-        for principal in ready_file_reader_principals() {
-            command.arg(format!("{principal}:R"));
-        }
-        let status = command
-            .status()
-            .await
-            .map_err(|error| format!("run icacls for ready file failed: {error}"))?;
-        if !status.success() {
-            return Err(format!("icacls for ready file failed with status {status}"));
+            .unwrap_or_else(crate::vision::VisionRuntimeSnapshot::failed);
+        let _ = events.send(DaemonEvent::VisionChanged {
+            event_id: uuid::Uuid::new_v4().simple().to_string(),
+            updated_at: crate::state::store::now_iso(),
+            enabled: snapshot.enabled,
+            online: snapshot.online,
+            message: snapshot.message,
+            latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
+        });
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = time::sleep(std::time::Duration::from_millis(backoff)) => { backoff = (backoff * 2).min(30_000); }
         }
     }
-
-    Ok(())
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn ready_file_reader_principals() -> Vec<String> {
-    std::env::var("VEM_DAEMON_READY_FILE_READERS")
-        .unwrap_or_default()
-        .split([',', ';'])
-        .map(str::trim)
-        .filter(|principal| !principal.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 async fn run_hardware_health_watcher(
@@ -906,27 +747,20 @@ async fn run_hardware_health_watcher(
 ) -> Result<(), String> {
     loop {
         let status = hardware.self_check().await;
-        if let Some(error_code) =
+        if let Some(code) =
             crate::state::store::classify_whole_machine_hardware_status_fault(&status)
         {
-            if let Err(error) = state
+            let _ = state
                 .record_whole_machine_hardware_fault_lock(
                     "hardware_health_watcher",
                     &status.message,
-                    Some(error_code),
+                    Some(code),
                 )
-                .await
-            {
-                eprintln!("record whole-machine hardware fault lock failed: {error}");
-            }
+                .await;
         }
         *status_cache.hardware.write().await = status;
-        tokio::select! {
-            _ = time::sleep(std::time::Duration::from_secs(10)) => {}
-            _ = shutdown.cancelled() => break,
-        }
+        tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = time::sleep(std::time::Duration::from_secs(10)) => {} }
     }
-    Ok(())
 }
 
 async fn cache_daemon_events(
@@ -934,15 +768,7 @@ async fn cache_daemon_events(
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
 ) -> Result<(), String> {
-    loop {
-        let event = match events.recv().await {
-            Ok(event) => event,
-            Err(broadcast::error::RecvError::Lagged(_missed)) => {
-                continue;
-            }
-            Err(broadcast::error::RecvError::Closed) => break,
-        };
-        let updated_at = crate::state::store::now_iso();
+    while let Ok(event) = events.recv().await {
         match event {
             DaemonEvent::MqttChanged {
                 connected,
@@ -952,7 +778,7 @@ async fn cache_daemon_events(
                 let mut cache = status_cache.sync.write().await;
                 cache.mqtt_connected = connected;
                 cache.last_error = last_error;
-                cache.last_heartbeat_at = Some(updated_at);
+                cache.last_heartbeat_at = Some(crate::state::store::now_iso());
             }
             DaemonEvent::VisionChanged {
                 enabled,
@@ -961,32 +787,52 @@ async fn cache_daemon_events(
                 latest_diagnostic_payload,
                 ..
             } => {
-                let mut cache = status_cache.vision.write().await;
-                cache.enabled = enabled;
-                cache.online = online;
-                cache.message = message;
-                cache.latest_diagnostic_payload = latest_diagnostic_payload;
-                cache.updated_at = updated_at;
+                *status_cache.vision.write().await = ipc::VisionStatusSnapshot {
+                    enabled,
+                    online,
+                    message,
+                    updated_at: crate::state::store::now_iso(),
+                    latest_diagnostic_payload,
+                };
             }
             DaemonEvent::ScannerHealthChanged { snapshot, .. } => {
-                let mut cache = status_cache.scanner.write().await;
-                *cache = crate::events::scanner_health_snapshot_from_contract(snapshot);
+                *status_cache.scanner.write().await =
+                    crate::events::scanner_health_snapshot_from_contract(snapshot)
             }
-            DaemonEvent::ScannerCode { masked_code, .. } => {
-                let mut cache = status_cache.scanner.write().await;
-                cache.message = format!("last code {masked_code}");
-                cache.updated_at = updated_at;
-            }
-            DaemonEvent::TransactionChanged { .. } => {}
             DaemonEvent::RuntimeReconfigureRequested { .. } => {
-                if let Some(shutdown) = &runtime_shutdown {
+                if let Some(shutdown) = runtime_shutdown.as_ref() {
                     shutdown.cancel();
                 }
             }
-            DaemonEvent::ReadyChanged { .. }
-            | DaemonEvent::HealthChanged { .. }
-            | DaemonEvent::RemoteOpResult { .. } => {}
+            _ => {}
         }
+    }
+    Ok(())
+}
+
+async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let payload = serde_json::json!({
+        "healthzUrl": format!("http://{bind}/healthz"),
+        "readyzUrl": format!("http://{bind}/readyz"),
+        "ipcToken": token,
+    });
+    tokio::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?,
+    )
+    .await
+    .map_err(|error| format!("write ready file failed: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -994,426 +840,13 @@ async fn cache_daemon_events(
 #[cfg(unix)]
 async fn wait_for_local_signal() -> Result<(), String> {
     use tokio::signal::unix::{self, SignalKind};
-
-    let mut terminate = unix::signal(SignalKind::terminate())
-        .map_err(|error| format!("register SIGTERM failed: {error}"))?;
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => Ok(()),
-        _ = terminate.recv() => Ok(()),
-    }
+    let mut terminate = unix::signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
+    tokio::select! { _ = tokio::signal::ctrl_c() => Ok(()), _ = terminate.recv() => Ok(()) }
 }
 
 #[cfg(not(unix))]
 async fn wait_for_local_signal() -> Result<(), String> {
     tokio::signal::ctrl_c()
         .await
-        .map_err(|error| format!("wait for ctrl-c failed: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::default_public_config;
-    use async_trait::async_trait;
-    use std::{
-        net::{IpAddr, Ipv4Addr},
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-
-    #[derive(Debug)]
-    struct FaultySelfCheckAdapter;
-
-    #[cfg(unix)]
-    struct TransientThenDevicePlatform {
-        calls: AtomicUsize,
-        device: crate::device_binding::ObservedSerialDevice,
-    }
-
-    #[async_trait]
-    #[cfg(unix)]
-    impl crate::device_binding::SerialDevicePlatform for TransientThenDevicePlatform {
-        async fn discover(
-            &self,
-        ) -> Result<Vec<crate::device_binding::ObservedSerialDevice>, String> {
-            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err("transient Windows device discovery failure".to_string())
-            } else {
-                Ok(vec![self.device.clone()])
-            }
-        }
-
-        async fn test_candidate(
-            &self,
-            role: crate::device_binding::LocalDeviceRole,
-            candidate: &crate::device_binding::ObservedSerialDevice,
-            _probe_config: &crate::device_binding::SerialDeviceRoleProbeConfig,
-        ) -> crate::device_binding::DeviceBindingTestResult {
-            crate::device_binding::DeviceBindingTestResult {
-                role,
-                identity_key:
-                    crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
-                        candidate,
-                    )
-                    .expect("fixture identity")
-                    .identity_key,
-                current_port: candidate.current_port.clone(),
-                success: true,
-                code: "SCANNER_PORT_OPEN_READY".to_string(),
-                message: "fixture ready".to_string(),
-                tested_at: crate::state::store::now_iso(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl vending_core::hardware::HardwareAdapter for FaultySelfCheckAdapter {
-        fn adapter_name(&self) -> &str {
-            "faulty-self-check"
-        }
-
-        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
-            vending_core::hardware::HardwareStatus {
-                adapter: "serial".to_string(),
-                online: false,
-                message: "lower controller responded with fault on COM3 (mechanical fault)"
-                    .to_string(),
-                port_path: Some("COM3".to_string()),
-                resolution_source: Some("configured".to_string()),
-                bound_usb_identity: None,
-                candidates: vec![],
-            }
-        }
-
-        async fn dispense(
-            &self,
-            command: vending_core::hardware::DispenseCommandPayload,
-        ) -> vending_core::hardware::DispenseResultPayload {
-            vending_core::hardware::DispenseResultPayload {
-                command_no: command.command_no,
-                success: false,
-                error_code: Some("JAMMED".to_string()),
-                message: "faulty self-check adapter does not dispense".to_string(),
-                reported_at: crate::state::store::now_iso(),
-            }
-        }
-    }
-
-    #[test]
-    fn default_console_config_uses_loopback_and_port() {
-        assert_eq!(
-            ConsoleRunConfig::default().bind,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7891)
-        );
-    }
-
-    #[test]
-    fn default_ready_file_path_is_within_data_dir() {
-        let data_dir = std::path::Path::new("/tmp/vem-daemon-data");
-        let path = default_ready_file_path(data_dir);
-        assert_eq!(path, data_dir.join("daemon-ready.json"));
-    }
-
-    #[test]
-    fn ready_file_reader_principals_parse_env_list() {
-        std::env::set_var(
-            "VEM_DAEMON_READY_FILE_READERS",
-            "VEMKiosk; DESKTOP-2IDRN2K\\VEMKiosk,  ",
-        );
-
-        assert_eq!(
-            ready_file_reader_principals(),
-            vec!["VEMKiosk", "DESKTOP-2IDRN2K\\VEMKiosk"]
-        );
-
-        std::env::remove_var("VEM_DAEMON_READY_FILE_READERS");
-    }
-
-    #[tokio::test]
-    async fn runtime_reconfigure_event_cancels_runtime_shutdown_token() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let status_cache = ipc::RuntimeStatusCache::new(&default_public_config(), state).await;
-        let (events_tx, _) = broadcast::channel(8);
-        let runtime_shutdown = CancellationToken::new();
-        let task = tokio::spawn(cache_daemon_events(
-            events_tx.subscribe(),
-            status_cache,
-            Some(runtime_shutdown.clone()),
-        ));
-
-        events_tx
-            .send(DaemonEvent::RuntimeReconfigureRequested {
-                event_id: "evt-reconfigure".to_string(),
-                updated_at: crate::state::store::now_iso(),
-                reason: "machine_provisioned".to_string(),
-                machine_code: Some("M001".to_string()),
-            })
-            .expect("send event");
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            runtime_shutdown.cancelled(),
-        )
-        .await
-        .expect("runtime shutdown requested");
-
-        task.abort();
-        let _ = task.await;
-    }
-
-    #[tokio::test]
-    async fn runtime_supervisor_restarts_an_internal_reconfigure_without_stopping_process() {
-        let external_shutdown = CancellationToken::new();
-        let cycles = Arc::new(AtomicUsize::new(0));
-        let cycles_for_run = cycles.clone();
-        let external_for_run = external_shutdown.clone();
-
-        supervise_runtime_cycles(&external_shutdown, move || {
-            let cycle = cycles_for_run.fetch_add(1, Ordering::SeqCst);
-            let external_for_cycle = external_for_run.clone();
-            async move {
-                if cycle == 0 {
-                    Ok(ConsoleCycleExit::Reconfigure)
-                } else {
-                    external_for_cycle.cancel();
-                    Ok(ConsoleCycleExit::Stop)
-                }
-            }
-        })
-        .await
-        .expect("supervise runtime");
-
-        assert_eq!(cycles.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn cache_daemon_events_survives_lagged_broadcast_events() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let status_cache = ipc::RuntimeStatusCache::new(&default_public_config(), state).await;
-        let (events_tx, events_rx) = broadcast::channel(1);
-
-        events_tx
-            .send(DaemonEvent::MqttChanged {
-                event_id: "evt-missed".to_string(),
-                updated_at: crate::state::store::now_iso(),
-                connected: true,
-                last_error: None,
-            })
-            .expect("send missed event");
-        events_tx
-            .send(DaemonEvent::ScannerHealthChanged {
-                event_id: "evt-scanner-ready".to_string(),
-                updated_at: crate::state::store::now_iso(),
-                snapshot: crate::events::scanner_runtime_status_contract(
-                    &vending_core::scanner::ScannerHealthSnapshot {
-                        online: true,
-                        adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-                        port: Some("COM3".to_string()),
-                        level: vending_core::health::HealthLevel::Ok,
-                        code: "SCANNER_READY".to_string(),
-                        message: "scanner ready".to_string(),
-                        updated_at: crate::state::store::now_iso(),
-                    },
-                ),
-            })
-            .expect("send scanner event");
-
-        let task = tokio::spawn(cache_daemon_events(events_rx, status_cache.clone(), None));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                let scanner = status_cache.scanner.read().await.clone();
-                if scanner.code == "SCANNER_READY" {
-                    assert!(scanner.online);
-                    assert_eq!(scanner.port.as_deref(), Some("COM3"));
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("scanner cache updated after lag");
-
-        task.abort();
-        let _ = task.await;
-    }
-
-    #[tokio::test]
-    async fn binding_watcher_rejects_reconfiguration_when_sale_starts_during_discovery() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let gate = Arc::new(ipc::SaleBindingOperationGate::default());
-        let discovery_started = Arc::new(tokio::sync::Notify::new());
-        let discovery_release = Arc::new(tokio::sync::Notify::new());
-        let watcher_gate = gate.clone();
-        let watcher_state = state.clone();
-        let watcher_started = discovery_started.clone();
-        let watcher_release = discovery_release.clone();
-        let watcher = tokio::spawn(async move {
-            watcher_started.notify_one();
-            watcher_release.notified().await;
-            acquire_binding_reconfiguration_lease(&watcher_gate, &watcher_state).await
-        });
-        discovery_started.notified().await;
-        let sale_start = gate
-            .try_acquire_sale_start()
-            .expect("sale starts while discovery waits");
-        discovery_release.notify_one();
-
-        let error = match watcher.await.expect("watcher join") {
-            Ok(_) => panic!("watcher must defer to sale start"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("sale start is in progress"));
-        drop(sale_start);
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn device_binding_watch_reports_transient_failure_then_converges_after_retry() {
-        use crate::secret::InMemorySecretStore;
-        use nix::fcntl::OFlag;
-        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
-
-        let temp = tempfile::tempdir().expect("temp");
-        let data_dir = temp.path().join("vending-daemon");
-        let state = LocalStateStore::open(&data_dir.join("state.db"))
-            .await
-            .expect("state");
-        let config_store = Arc::new(ConfigStore::new(
-            data_dir.clone(),
-            state.clone(),
-            Arc::new(InMemorySecretStore::default()),
-        ));
-        let public = default_public_config();
-        config_store
-            .save_public_config(public.clone())
-            .await
-            .expect("save config");
-        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
-        grantpt(&master).expect("grant pty");
-        unlockpt(&master).expect("unlock pty");
-        let scanner_port = ptsname_r(&master).expect("slave path");
-        let device = crate::device_binding::ObservedSerialDevice {
-            current_port: scanner_port,
-            instance_id: Some("USB\\VID_1234&PID_5678\\SCAN-RETRY".to_string()),
-            container_id: Some("{77777777-8888-9999-aaaa-bbbbbbbbbbbb}".to_string()),
-            hardware_ids: vec!["USB\\VID_1234&PID_5678".to_string()],
-            serial_number: Some("SCAN-RETRY".to_string()),
-            friendly_name: Some("scanner".to_string()),
-        };
-        let identity =
-            crate::device_binding::StableSerialDeviceIdentity::try_from_observation(&device)
-                .expect("stable identity");
-        config_store
-            .save_local_device_binding(
-                crate::device_binding::LocalDeviceRole::Scanner,
-                crate::device_binding::LocalSerialRoleBinding {
-                    identity,
-                    confirmed_at: crate::state::store::now_iso(),
-                    confirmed_by: "operator-1".to_string(),
-                    test_evidence_code: "SCANNER_PORT_OPEN_READY".to_string(),
-                },
-            )
-            .await
-            .expect("save binding");
-        let status_cache = ipc::RuntimeStatusCache::new(&public, state.clone()).await;
-        let (events_tx, _) = broadcast::channel(16);
-        let (raw_tx, _raw_rx) = mpsc::channel(4);
-        let scanner_runtime = ScannerRuntimeController::new(raw_tx, events_tx.clone());
-        let cache_task = tokio::spawn(cache_daemon_events(
-            events_tx.subscribe(),
-            status_cache.clone(),
-            None,
-        ));
-        let shutdown = CancellationToken::new();
-        let watch_task = tokio::spawn(run_device_binding_watch(
-            Arc::new(TransientThenDevicePlatform {
-                calls: AtomicUsize::new(0),
-                device,
-            }),
-            config_store,
-            state,
-            HardwareSupervisor::from_config(&public).expect("hardware"),
-            scanner_runtime.clone(),
-            status_cache.clone(),
-            Arc::new(ipc::SaleBindingOperationGate::default()),
-            data_dir,
-            shutdown.clone(),
-        ));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if status_cache.scanner.read().await.code == "SCANNER_DISCOVERY_RETRY" {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("transient discovery evidence");
-        tokio::time::timeout(std::time::Duration::from_secs(4), async {
-            loop {
-                if status_cache.scanner.read().await.code == "SCANNER_READY" {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("watcher converges after bounded retry");
-
-        shutdown.cancel();
-        watch_task.await.expect("watch join").expect("watch result");
-        scanner_runtime.stop().await.expect("stop scanner");
-        cache_task.abort();
-        let _ = cache_task.await;
-    }
-
-    #[tokio::test]
-    async fn hardware_health_watcher_records_whole_machine_lock_for_controller_fault() {
-        let temp = tempfile::tempdir().expect("temp");
-        let state = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("state");
-        let status_cache =
-            ipc::RuntimeStatusCache::new(&default_public_config(), state.clone()).await;
-        let shutdown = CancellationToken::new();
-        let task = tokio::spawn(run_hardware_health_watcher(
-            HardwareSupervisor::from_adapter(Arc::new(FaultySelfCheckAdapter)),
-            state.clone(),
-            status_cache,
-            shutdown.clone(),
-        ));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if let Some(lock) = state
-                    .whole_machine_maintenance_lock()
-                    .await
-                    .expect("read lock")
-                {
-                    assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
-                    assert_eq!(lock.source, "hardware_health_watcher");
-                    assert_eq!(lock.error_code.as_deref(), Some("JAMMED"));
-                    assert!(lock.message.contains("mechanical fault"));
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("whole-machine lock recorded");
-
-        shutdown.cancel();
-        task.await.expect("watcher task").expect("watcher result");
-    }
+        .map_err(|error| error.to_string())
 }

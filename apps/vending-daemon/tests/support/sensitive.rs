@@ -1,8 +1,8 @@
 use std::path::Path;
 
 pub const TEST_AUTH_CODE: &str = "621234567890123456";
-pub const TEST_MACHINE_SECRET: &str = "MACHINE-SECRET-PLAINTEXT";
-pub const TEST_MQTT_SIGNING_SECRET: &str = "MQTT-SIGNING-SECRET-PLAINTEXT";
+pub const TEST_MACHINE_SECRET: &str = "MACHINE-SECRET-PLAINTEXT-0123456789";
+pub const TEST_MQTT_SIGNING_SECRET: &str = "MQTT-SIGNING-SECRET-PLAINTEXT-0123456789";
 pub const TEST_MQTT_PASSWORD: &str = "MQTT-PASSWORD-PLAINTEXT";
 
 pub fn assert_absent(label: &str, haystack: &str, needles: &[&str]) {

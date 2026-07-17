@@ -213,6 +213,95 @@ async fn profile_acceptance_recovers_an_interrupted_generation_without_mixing_cr
 }
 
 #[tokio::test]
+async fn interrupted_profile_replacement_restores_the_last_known_good_claim() {
+    let temp = tempfile::tempdir().expect("temp");
+    let data_dir = temp.path().join("VEM").join("vending-daemon");
+    let bootstrap_path = temp.path().join("VEM").join("runtime-bootstrap.json");
+    tokio::fs::create_dir_all(bootstrap_path.parent().expect("parent"))
+        .await
+        .expect("bootstrap directory");
+    tokio::fs::write(
+        &bootstrap_path,
+        r#"{"schemaVersion":1,"provisioningApiBaseUrl":"https://service.example/api","hardwareModel":"vem-prod-24","topology":{"identity":"vem-prod-24","version":"v1"}}"#,
+    )
+    .await
+    .expect("bootstrap");
+
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let store = CleanRuntimeConfigurationStore::new(data_dir.clone(), secrets.clone());
+    let accepted = valid_profile();
+    store.accept_profile(&accepted).await.expect("accepted");
+
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MACHINE_SECRET_ROLLBACK_ACCOUNT,
+        &accepted.credentials.machine_secret,
+    )
+    .await
+    .expect("rollback machine secret");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
+        &accepted.credentials.mqtt_signing_secret,
+    )
+    .await
+    .expect("rollback signing secret");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MQTT_PASSWORD_ROLLBACK_ACCOUNT,
+        accepted
+            .credentials
+            .mqtt_connection
+            .password
+            .as_deref()
+            .expect("mqtt password"),
+    )
+    .await
+    .expect("rollback mqtt password");
+    vending_daemon::secret::SecretStore::write_secret(
+        secrets.as_ref(),
+        vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        "replacement-secret-without-new-cache",
+    )
+    .await
+    .expect("replacement machine secret");
+    tokio::fs::write(
+        store.claim_journal_path(),
+        r#"{"schemaVersion":1,"operation":"accept","generation":2,"profileGeneration":2,"phase":"credentials_replacing"}"#,
+    )
+    .await
+    .expect("interrupted journal");
+
+    let restarted = CleanRuntimeConfigurationStore::new(data_dir, secrets.clone());
+    restarted
+        .recover_claim_transaction()
+        .await
+        .expect("recover replacement");
+
+    assert_eq!(
+        restarted
+            .load_profile_cache()
+            .await
+            .expect("profile cache")
+            .expect("last known good cache")
+            .profile
+            .machine
+            .code
+            .to_string(),
+        "VEM-TEST-01"
+    );
+    assert_eq!(
+        vending_daemon::secret::SecretStore::read_secret(
+            secrets.as_ref(),
+            vending_daemon::secret::MACHINE_SECRET_ACCOUNT,
+        )
+        .await
+        .expect("machine secret"),
+        Some(accepted.credentials.machine_secret)
+    );
+}
+
+#[tokio::test]
 async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile() {
     let temp = tempfile::tempdir().expect("temp");
     let data_dir = temp.path().join("VEM").join("vending-daemon");
@@ -246,7 +335,7 @@ async fn profile_refresh_rejects_a_revision_older_than_the_last_accepted_profile
     );
 }
 
-fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
+fn valid_profile() -> vending_daemon::provisioning::MachineProvisioningProfile {
     serde_json::from_value(serde_json::json!({
         "machine": {
             "id": "550e8400-e29b-41d4-a716-446655440001",
@@ -257,7 +346,6 @@ fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
         },
         "credentials": {
             "machineSecret": "m".repeat(32),
-            "machineSecretVersion": 1,
             "mqttSigningSecret": "s".repeat(32),
             "mqttConnection": {
                 "url": "mqtt://service.example:1883",
@@ -286,15 +374,6 @@ fn valid_profile() -> vending_daemon::config::MachineProvisioningProfile {
             "qrCodeEnabled": true,
             "paymentCodeEnabled": true,
             "serverTime": "2026-07-17T00:00:00.000Z"
-        },
-        "provisioningProfile": "testbed",
-        "maintenance": {
-            "publicKey": "key",
-            "tunnelAddress": "10.91.16.10",
-            "address": "10.91.16.10/32",
-            "endpoint": "relay.example:51820",
-            "relay": { "publicKey": "relay", "tunnelAddress": "10.91.0.1", "address": "10.91.0.1/32" },
-            "roleRoutes": { "relay": "10.91.0.1/32", "runner": "10.91.1.0/24", "maintainer": "10.91.3.0/24" }
         },
         "metadata": {
             "profileVersion": 1,

@@ -19,11 +19,21 @@ pub type PickupReminder =
     generated::transaction_checkout::CurrentTransactionSnapshotVendingPickupReminder;
 pub type ScannerRuntimeStatus = generated::scanner_status::ScannerRuntimeStatus;
 pub type EffectiveMachineRuntimeConfiguration =
-    generated::runtime_configuration::EffectiveMachineRuntimeConfiguration;
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype0;
 pub type ProvisioningProfileCache =
-    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationSourceDocumentsProfileCache;
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype0SourceDocumentsProfileCache;
 pub type RuntimeBootstrap =
-    generated::runtime_configuration::EffectiveMachineRuntimeConfigurationSourceDocumentsBootstrap;
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype0SourceDocumentsBootstrap;
+pub type ConfirmHardwareBindingRequest =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype1;
+pub type ClearHardwareBindingRequest =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype2;
+pub type SetScannerProtocolParametersRequest =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype3;
+pub type ScannerProtocolFrameSuffix =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype3FrameSuffix;
+pub type SetAudioPreferencesRequest =
+    generated::runtime_configuration::RuntimeConfigurationContractSubtype4;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

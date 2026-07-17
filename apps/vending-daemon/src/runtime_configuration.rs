@@ -13,10 +13,13 @@ use serde_json::json;
 use tokio::{fs, sync::Mutex};
 
 use crate::{
-    config::MachineProvisioningProfile,
+    device_binding::{LocalDeviceRole, LocalSerialRoleBinding},
     local_runtime_settings::LocalRuntimeSettingsStore,
+    provisioning::{validate_machine_provisioning_profile, MachineProvisioningProfile},
     secret::{
-        SecretStore, MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        SecretStore, MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT,
+        MQTT_PASSWORD_ACCOUNT, MQTT_PASSWORD_ROLLBACK_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
     },
 };
 
@@ -29,6 +32,8 @@ struct ClaimTransactionJournal {
     operation: String,
     generation: u64,
     profile_generation: u64,
+    #[serde(default)]
+    phase: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -47,6 +52,168 @@ pub struct CleanRuntimeConfigurationStore {
     mutation_lock: Mutex<()>,
     generation: AtomicU64,
     refresh_error: Mutex<Option<String>>,
+}
+
+/// The daemon's only mutable runtime sources. Runtime Bootstrap remains
+/// deployment-owned; profile cache, extracted credentials and local settings
+/// have independent ownership and are never materialized as a legacy document.
+pub struct RuntimeSources {
+    data_dir: PathBuf,
+    clean: Arc<CleanRuntimeConfigurationStore>,
+    secrets: Arc<dyn SecretStore>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedMachineCredentials {
+    pub machine_secret: String,
+    pub mqtt_signing_secret: String,
+    pub mqtt_password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareTopologyReadiness {
+    pub ready: bool,
+    pub code: String,
+    pub message: String,
+}
+
+impl RuntimeSources {
+    pub fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        Self {
+            clean: Arc::new(CleanRuntimeConfigurationStore::new(
+                data_dir.clone(),
+                secrets.clone(),
+            )),
+            data_dir,
+            secrets,
+        }
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn token_path(&self) -> PathBuf {
+        self.data_dir.join("ipc-token")
+    }
+
+    pub fn logs_path(&self) -> PathBuf {
+        self.data_dir.join("logs").join("machine-events.jsonl")
+    }
+
+    pub fn clean_runtime_configuration(&self) -> Arc<CleanRuntimeConfigurationStore> {
+        self.clean.clone()
+    }
+
+    pub async fn load_local_runtime_settings(
+        &self,
+    ) -> Result<crate::local_runtime_settings::LocalRuntimeSettings, String> {
+        self.clean.load_local_runtime_settings().await
+    }
+
+    pub async fn set_local_scanner_protocol(
+        &self,
+        protocol: Option<crate::local_runtime_settings::ScannerProtocolParameters>,
+    ) -> Result<u64, String> {
+        self.clean.set_local_scanner_protocol(protocol).await
+    }
+
+    pub async fn set_local_audio_preferences(
+        &self,
+        preferences: crate::local_runtime_settings::AudioPreferences,
+    ) -> Result<u64, String> {
+        self.clean.set_local_audio_preferences(preferences).await
+    }
+
+    pub async fn local_device_binding_snapshot(
+        &self,
+        role: LocalDeviceRole,
+    ) -> Result<(Option<LocalSerialRoleBinding>, String), String> {
+        self.clean.local_device_binding_snapshot(role).await
+    }
+
+    pub async fn save_local_device_binding_if_revision(
+        &self,
+        role: LocalDeviceRole,
+        binding: LocalSerialRoleBinding,
+        revision: &str,
+    ) -> Result<String, String> {
+        self.clean
+            .save_local_device_binding_if_revision(role, binding, revision)
+            .await
+    }
+
+    pub async fn restore_local_device_binding_if_revision(
+        &self,
+        role: LocalDeviceRole,
+        binding: Option<LocalSerialRoleBinding>,
+        revision: &str,
+    ) -> Result<String, String> {
+        self.clean
+            .restore_local_device_binding_if_revision(role, binding, revision)
+            .await
+    }
+
+    pub async fn require_profile(&self) -> Result<ProvisioningProfileCache, String> {
+        self.clean
+            .load_profile_cache()
+            .await?
+            .ok_or_else(|| "machine provisioning profile has not been claimed".to_string())
+    }
+
+    /// Topology is deliberately checked from the two documents that own it:
+    /// deployment bootstrap and the accepted profile cache. No reconstructed
+    /// runtime configuration is involved in this safety decision.
+    pub async fn hardware_topology_readiness(&self) -> Result<HardwareTopologyReadiness, String> {
+        let bootstrap = self.clean.load_bootstrap().await?;
+        let Some(profile) = self.clean.load_profile_cache().await? else {
+            return Ok(HardwareTopologyReadiness {
+                ready: false,
+                code: "MACHINE_NOT_CLAIMED".to_string(),
+                message: "machine provisioning profile has not been claimed".to_string(),
+            });
+        };
+        let model_matches =
+            profile.profile.hardware_model.to_string() == bootstrap.hardware_model.to_string();
+        let topology_matches = profile.profile.hardware_slot_topology.identity.to_string()
+            == bootstrap.topology.identity.to_string()
+            && profile.profile.hardware_slot_topology.version.to_string()
+                == bootstrap.topology.version.to_string();
+        if model_matches && topology_matches {
+            Ok(HardwareTopologyReadiness {
+                ready: true,
+                code: "HARDWARE_SLOT_TOPOLOGY_READY".to_string(),
+                message: "accepted provisioning profile matches the deployment topology"
+                    .to_string(),
+            })
+        } else {
+            Ok(HardwareTopologyReadiness {
+                ready: false,
+                code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH".to_string(),
+                message: "accepted provisioning profile does not match the deployment topology"
+                    .to_string(),
+            })
+        }
+    }
+
+    pub async fn claimed_credentials(&self) -> Result<ClaimedMachineCredentials, String> {
+        let machine_secret = self
+            .secrets
+            .read_secret(MACHINE_SECRET_ACCOUNT)
+            .await?
+            .ok_or_else(|| "machine credential is unavailable".to_string())?;
+        let mqtt_signing_secret = self
+            .secrets
+            .read_secret(MQTT_SIGNING_SECRET_ACCOUNT)
+            .await?
+            .ok_or_else(|| "mqtt signing credential is unavailable".to_string())?;
+        let mqtt_password = self.secrets.read_secret(MQTT_PASSWORD_ACCOUNT).await?;
+        Ok(ClaimedMachineCredentials {
+            machine_secret,
+            mqtt_signing_secret,
+            mqtt_password,
+        })
+    }
 }
 
 impl CleanRuntimeConfigurationStore {
@@ -110,15 +277,81 @@ impl CleanRuntimeConfigurationStore {
         Ok(Some(cache))
     }
 
-    /// Accepting a profile is intentionally ordered: validate first, make all
-    /// machine credentials durable, then atomically publish the new cache.
+    pub async fn load_local_runtime_settings(
+        &self,
+    ) -> Result<crate::local_runtime_settings::LocalRuntimeSettings, String> {
+        self.local_settings.load().await
+    }
+
+    pub async fn set_local_scanner_protocol(
+        &self,
+        protocol: Option<crate::local_runtime_settings::ScannerProtocolParameters>,
+    ) -> Result<u64, String> {
+        self.local_settings.set_scanner_protocol(protocol).await
+    }
+
+    pub async fn set_local_audio_preferences(
+        &self,
+        preferences: crate::local_runtime_settings::AudioPreferences,
+    ) -> Result<u64, String> {
+        self.local_settings.set_audio_preferences(preferences).await
+    }
+
+    pub async fn local_device_binding_snapshot(
+        &self,
+        role: LocalDeviceRole,
+    ) -> Result<(Option<LocalSerialRoleBinding>, String), String> {
+        self.local_settings.binding_snapshot(role).await
+    }
+
+    pub async fn save_local_device_binding_if_revision(
+        &self,
+        role: LocalDeviceRole,
+        binding: LocalSerialRoleBinding,
+        revision: &str,
+    ) -> Result<String, String> {
+        self.local_settings
+            .replace_binding_if_revision(role, Some(binding), revision)
+            .await
+    }
+
+    pub async fn restore_local_device_binding_if_revision(
+        &self,
+        role: LocalDeviceRole,
+        binding: Option<LocalSerialRoleBinding>,
+        revision: &str,
+    ) -> Result<String, String> {
+        self.local_settings
+            .replace_binding_if_revision(role, binding, revision)
+            .await
+    }
+
+    /// Accepting a profile never removes the accepted profile first. The
+    /// previous credentials are held in protected rollback slots until the
+    /// replacement cache is atomically published, so an interruption can
+    /// restore the last known-good pair instead of leaving an unclaimed box.
     pub async fn accept_profile(
         &self,
         profile: &MachineProvisioningProfile,
     ) -> Result<ProvisioningProfileCache, String> {
         let _mutation = self.mutation_lock.lock().await;
         self.recover_claim_transaction_locked().await?;
-        let generation = self.generation.load(Ordering::Acquire).saturating_add(1);
+        let accepted_cache = self.load_profile_cache().await?;
+        let generation = self
+            .generation
+            .load(Ordering::Acquire)
+            .max(
+                accepted_cache
+                    .as_ref()
+                    .map(|cache| cache.generation.get())
+                    .unwrap_or_default(),
+            )
+            .saturating_add(1);
+        if let Err(error) = validate_machine_provisioning_profile(profile) {
+            self.record_refresh_error("profile contract was rejected")
+                .await;
+            return Err(error);
+        }
         let cache = match profile_cache_from_claim(profile, generation) {
             Ok(cache) => cache,
             Err(error) => {
@@ -141,7 +374,7 @@ impl CleanRuntimeConfigurationStore {
                 );
             }
         }
-        if self.load_profile_cache().await?.is_some_and(|accepted| {
+        if accepted_cache.is_some_and(|accepted| {
             u64::try_from(profile.metadata.profile_revision)
                 .is_ok_and(|revision| revision < accepted.profile.metadata.profile_revision.get())
         }) {
@@ -156,9 +389,16 @@ impl CleanRuntimeConfigurationStore {
             operation: "accept".to_string(),
             generation,
             profile_generation: generation,
+            phase: "credentials_replacing".to_string(),
         };
         write_atomic_json(&self.claim_journal_path(), &journal).await?;
         let previous = credential_snapshot(self.secrets.as_ref()).await?;
+        if let Err(error) = write_credential_backups(self.secrets.as_ref(), &previous).await {
+            remove_optional_file(&self.claim_journal_path()).await?;
+            self.record_refresh_error("profile credential rollback preparation failed")
+                .await;
+            return Err(error);
+        }
         let replacements = [
             (
                 MACHINE_SECRET_ACCOUNT,
@@ -182,6 +422,7 @@ impl CleanRuntimeConfigurationStore {
         for (account, value) in replacements {
             if let Err(error) = self.secrets.write_secret(account, value).await {
                 restore_credentials(self.secrets.as_ref(), &previous).await?;
+                clear_credential_backups(self.secrets.as_ref()).await?;
                 remove_optional_file(&self.claim_journal_path()).await?;
                 self.record_refresh_error("profile credentials were not accepted")
                     .await;
@@ -191,12 +432,14 @@ impl CleanRuntimeConfigurationStore {
 
         if let Err(error) = write_atomic_json(&self.profile_cache_path(), &cache).await {
             restore_credentials(self.secrets.as_ref(), &previous).await?;
+            clear_credential_backups(self.secrets.as_ref()).await?;
             remove_optional_file(&self.claim_journal_path()).await?;
             self.record_refresh_error("profile cache was not accepted")
                 .await;
             return Err(error);
         }
 
+        clear_credential_backups(self.secrets.as_ref()).await?;
         remove_optional_file(&self.claim_journal_path()).await?;
         self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
@@ -215,6 +458,7 @@ impl CleanRuntimeConfigurationStore {
                 operation: "clear".to_string(),
                 generation,
                 profile_generation: generation,
+                phase: "clearing".to_string(),
             },
         )
         .await?;
@@ -230,6 +474,7 @@ impl CleanRuntimeConfigurationStore {
         ] {
             self.secrets.write_secret(account, "").await?;
         }
+        clear_credential_backups(self.secrets.as_ref()).await?;
         remove_optional_file(&self.claim_journal_path()).await?;
         self.clear_refresh_error().await;
         self.generation.store(generation, Ordering::Release);
@@ -363,7 +608,17 @@ impl CleanRuntimeConfigurationStore {
                 && self.secrets.status().await?.machine_secret_configured
                 && self.secrets.status().await?.mqtt_signing_secret_configured;
             if complete {
+                clear_credential_backups(self.secrets.as_ref()).await?;
                 remove_optional_file(&self.claim_journal_path()).await?;
+                self.generation.store(journal.generation, Ordering::Release);
+                return Ok(());
+            }
+            if journal.phase == "credentials_replacing" {
+                restore_credentials_from_backups(self.secrets.as_ref()).await?;
+                clear_credential_backups(self.secrets.as_ref()).await?;
+                remove_optional_file(&self.claim_journal_path()).await?;
+                self.record_refresh_error("profile replacement recovered after interruption")
+                    .await;
                 self.generation.store(journal.generation, Ordering::Release);
                 return Ok(());
             }
@@ -376,6 +631,7 @@ impl CleanRuntimeConfigurationStore {
         ] {
             self.secrets.write_secret(account, "").await?;
         }
+        clear_credential_backups(self.secrets.as_ref()).await?;
         remove_optional_file(&self.claim_journal_path()).await?;
         self.record_refresh_error("claim transaction recovered after interruption")
             .await;
@@ -462,6 +718,57 @@ async fn restore_credentials(
         store
             .write_secret(account, value.as_deref().unwrap_or(""))
             .await?;
+    }
+    Ok(())
+}
+
+const CREDENTIAL_ROLLBACK_ACCOUNTS: [(&str, &str); 3] = [
+    (MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT),
+    (
+        MQTT_SIGNING_SECRET_ACCOUNT,
+        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
+    ),
+    (MQTT_PASSWORD_ACCOUNT, MQTT_PASSWORD_ROLLBACK_ACCOUNT),
+];
+
+async fn write_credential_backups(
+    store: &dyn SecretStore,
+    values: &[(&str, Option<String>)],
+) -> Result<(), String> {
+    for (account, backup) in CREDENTIAL_ROLLBACK_ACCOUNTS {
+        let value = values
+            .iter()
+            .find(|(name, _)| *name == account)
+            .map(|(_, value)| value)
+            .ok_or_else(|| "credential rollback source missing".to_string())?;
+        store
+            .write_secret(backup, value.as_deref().unwrap_or(""))
+            .await
+            .map_err(|error| format!("persist credential rollback copy failed: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn restore_credentials_from_backups(store: &dyn SecretStore) -> Result<(), String> {
+    for (account, backup) in CREDENTIAL_ROLLBACK_ACCOUNTS {
+        let value = store
+            .read_secret(backup)
+            .await
+            .map_err(|error| format!("read credential rollback copy failed: {error}"))?;
+        store
+            .write_secret(account, value.as_deref().unwrap_or(""))
+            .await
+            .map_err(|error| format!("restore credential rollback copy failed: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn clear_credential_backups(store: &dyn SecretStore) -> Result<(), String> {
+    for (_, backup) in CREDENTIAL_ROLLBACK_ACCOUNTS {
+        store
+            .write_secret(backup, "")
+            .await
+            .map_err(|error| format!("clear credential rollback copy failed: {error}"))?;
     }
     Ok(())
 }

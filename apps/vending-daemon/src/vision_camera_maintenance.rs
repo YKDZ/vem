@@ -1,11 +1,5 @@
-use std::path::{Path, PathBuf};
-
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{Duration, Utc};
-use ed25519_dalek::{Signer as _, SigningKey};
 use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const CONTRACT_VERSION: &str = "vem.vision.camera-maintenance/v2";
 
@@ -105,41 +99,6 @@ pub struct VisionCameraMaintenanceConfirmRequest {
     pub expected_generation: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MaintenancePrivateKeyRecord {
-    version: u8,
-    key_id: String,
-    seed: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MaintenanceKeyring {
-    version: u8,
-    issuer: String,
-    keys: Vec<MaintenanceKeyringEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MaintenanceKeyringEntry {
-    id: String,
-    public_key: String,
-    not_before: i64,
-    not_after: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MaintenanceSessionRecord {
-    version: u8,
-    machine_code: String,
-    session_id: String,
-    key_id: String,
-    expires_at: i64,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum VisionCameraMaintenanceError {
     #[error("{0}")]
@@ -148,211 +107,43 @@ pub enum VisionCameraMaintenanceError {
     Http(String),
     #[error("{0}")]
     Contract(String),
-    #[error("{0}")]
-    Io(String),
 }
 
-fn issuer_root(data_dir: &Path) -> PathBuf {
-    data_dir.join("vision")
-}
-
-fn private_key_path(data_dir: &Path) -> PathBuf {
-    issuer_root(data_dir).join("daemon-maintenance-private-key.json")
-}
-
-fn keyring_path(data_dir: &Path) -> PathBuf {
-    issuer_root(data_dir).join("daemon-maintenance-keys.json")
-}
-
-fn session_path(data_dir: &Path) -> PathBuf {
-    issuer_root(data_dir).join("daemon-maintenance-session.json")
-}
-
-async fn load_or_create_signing_key(
-    data_dir: &Path,
-) -> Result<(String, SigningKey), VisionCameraMaintenanceError> {
-    let private_path = private_key_path(data_dir);
-    if let Ok(existing) = tokio::fs::read_to_string(&private_path).await {
-        let record: MaintenancePrivateKeyRecord =
-            serde_json::from_str(&existing).map_err(|error| {
-                VisionCameraMaintenanceError::Io(format!(
-                    "parse maintenance signing key failed: {error}"
-                ))
-            })?;
-        let seed = URL_SAFE_NO_PAD
-            .decode(record.seed.as_bytes())
-            .map_err(|error| {
-                VisionCameraMaintenanceError::Io(format!(
-                    "decode maintenance signing key failed: {error}"
-                ))
-            })?;
-        let signing_key = SigningKey::from_bytes(seed.as_slice().try_into().map_err(|_| {
-            VisionCameraMaintenanceError::Io("maintenance signing key seed invalid".to_string())
-        })?);
-        return Ok((record.key_id, signing_key));
+/// The Vision sidecar is a local loopback service. The daemon proxies its v2
+/// camera-maintenance contract unchanged; this transport deliberately has no
+/// maintenance session, capability token, or request signing layer.
+fn maintenance_base_url() -> Result<Url, VisionCameraMaintenanceError> {
+    let mut url = Url::parse(vending_core::vision::DEFAULT_VISION_WS_URL).map_err(|error| {
+        VisionCameraMaintenanceError::InvalidConfig(format!("vision loopback URL invalid: {error}"))
+    })?;
+    url.set_scheme("http").map_err(|_| {
+        VisionCameraMaintenanceError::InvalidConfig("vision loopback scheme invalid".to_string())
+    })?;
+    if !matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    ) {
+        return Err(VisionCameraMaintenanceError::InvalidConfig(
+            "vision camera maintenance must use a loopback endpoint".to_string(),
+        ));
     }
-
-    tokio::fs::create_dir_all(issuer_root(data_dir))
-        .await
-        .map_err(|error| {
-            VisionCameraMaintenanceError::Io(format!("create vision issuer dir failed: {error}"))
-        })?;
-    let mut seed = [0_u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|_| {
-        VisionCameraMaintenanceError::Io("generate maintenance signing key failed".to_string())
-    })?;
-    let key_id = format!("daemon-ed25519-{}", Utc::now().format("%Y%m%d%H%M%S"));
-    let record = MaintenancePrivateKeyRecord {
-        version: 1,
-        key_id: key_id.clone(),
-        seed: URL_SAFE_NO_PAD.encode(seed),
-    };
-    let payload = serde_json::to_vec_pretty(&record).map_err(|error| {
-        VisionCameraMaintenanceError::Io(format!(
-            "serialize maintenance signing key failed: {error}"
-        ))
-    })?;
-    tokio::fs::write(&private_path, payload)
-        .await
-        .map_err(|error| {
-            VisionCameraMaintenanceError::Io(format!(
-                "write maintenance signing key failed: {error}"
-            ))
-        })?;
-    Ok((key_id, SigningKey::from_bytes(&seed)))
-}
-
-async fn ensure_vision_verifier_files(
-    data_dir: &Path,
-    machine_code: &str,
-    session_id: &str,
-) -> Result<(String, SigningKey), VisionCameraMaintenanceError> {
-    let (key_id, signing_key) = load_or_create_signing_key(data_dir).await?;
-    let now = Utc::now().timestamp();
-    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
-    let keyring = MaintenanceKeyring {
-        version: 1,
-        issuer: "vem.vending-daemon".to_string(),
-        keys: vec![MaintenanceKeyringEntry {
-            id: key_id.clone(),
-            public_key,
-            not_before: now - 60,
-            not_after: now + 365 * 24 * 60 * 60,
-        }],
-    };
-    let session = MaintenanceSessionRecord {
-        version: 1,
-        machine_code: machine_code.to_string(),
-        session_id: session_id.to_string(),
-        key_id: key_id.clone(),
-        expires_at: (Utc::now() + Duration::minutes(15)).timestamp(),
-    };
-    tokio::fs::write(
-        keyring_path(data_dir),
-        serde_json::to_vec_pretty(&keyring).map_err(|error| {
-            VisionCameraMaintenanceError::Io(format!("serialize vision keyring failed: {error}"))
-        })?,
-    )
-    .await
-    .map_err(|error| {
-        VisionCameraMaintenanceError::Io(format!("write vision keyring failed: {error}"))
-    })?;
-    tokio::fs::write(
-        session_path(data_dir),
-        serde_json::to_vec_pretty(&session).map_err(|error| {
-            VisionCameraMaintenanceError::Io(format!(
-                "serialize vision maintenance session failed: {error}"
-            ))
-        })?,
-    )
-    .await
-    .map_err(|error| {
-        VisionCameraMaintenanceError::Io(format!(
-            "write vision maintenance session failed: {error}"
-        ))
-    })?;
-    Ok((key_id, signing_key))
-}
-
-fn capability_token(
-    signing_key: &SigningKey,
-    key_id: &str,
-    machine_code: &str,
-    session_id: &str,
-    scope: &str,
-) -> Result<String, VisionCameraMaintenanceError> {
-    let now = Utc::now().timestamp();
-    let header = serde_json::json!({
-        "alg": "EdDSA",
-        "kid": key_id,
-        "typ": "JWT",
-    });
-    let claims = serde_json::json!({
-        "iss": "vem.vending-daemon",
-        "aud": "vem.vision.camera-maintenance",
-        "machine": machine_code,
-        "session": session_id,
-        "purpose": "vision.camera-maintenance",
-        "scope": scope,
-        "iat": now,
-        "exp": now + 300,
-        "jti": uuid::Uuid::new_v4().to_string(),
-    });
-    let encoded_header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).map_err(|error| {
-        VisionCameraMaintenanceError::Io(format!(
-            "serialize vision capability header failed: {error}"
-        ))
-    })?);
-    let encoded_claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).map_err(|error| {
-        VisionCameraMaintenanceError::Io(format!(
-            "serialize vision capability claims failed: {error}"
-        ))
-    })?);
-    let signing_input = format!("{encoded_header}.{encoded_claims}");
-    let signature = signing_key.sign(signing_input.as_bytes());
-    Ok(format!(
-        "{signing_input}.{}",
-        URL_SAFE_NO_PAD.encode(signature.to_bytes())
-    ))
-}
-
-fn vision_http_base_url(ws_url: &str) -> Result<Url, VisionCameraMaintenanceError> {
-    let mut url = Url::parse(ws_url).map_err(|error| {
-        VisionCameraMaintenanceError::InvalidConfig(format!("visionWsUrl invalid: {error}"))
-    })?;
-    let scheme = match url.scheme() {
-        "ws" => "http",
-        "wss" => "https",
-        value => {
-            return Err(VisionCameraMaintenanceError::InvalidConfig(format!(
-                "visionWsUrl must use ws or wss, got {value}"
-            )))
-        }
-    };
-    url.set_scheme(scheme).map_err(|_| {
-        VisionCameraMaintenanceError::InvalidConfig(
-            "visionWsUrl scheme conversion failed".to_string(),
-        )
-    })?;
     url.set_path("/");
     url.set_query(None);
     Ok(url)
 }
 
-fn maintenance_url(
-    public: &crate::config::EffectiveRuntimeConfig,
+fn maintenance_url_at(
+    mut url: Url,
     segments: &[&str],
 ) -> Result<Url, VisionCameraMaintenanceError> {
-    let mut url = vision_http_base_url(&public.vision_ws_url)?;
-    {
-        let mut path = url.path_segments_mut().map_err(|_| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "vision camera maintenance base URL cannot accept path segments".to_string(),
-            )
-        })?;
-        path.clear();
-        path.extend(segments);
-    }
+    let mut path = url.path_segments_mut().map_err(|_| {
+        VisionCameraMaintenanceError::InvalidConfig(
+            "vision camera maintenance base URL cannot accept path segments".to_string(),
+        )
+    })?;
+    path.clear();
+    path.extend(segments);
+    drop(path);
     Ok(url)
 }
 
@@ -360,12 +151,9 @@ async fn invoke_json<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     method: Method,
     url: Url,
-    token: String,
     body: Option<serde_json::Value>,
 ) -> Result<T, VisionCameraMaintenanceError> {
-    let request = client
-        .request(method, url)
-        .header("X-Vision-Maintenance-Capability", token);
+    let request = client.request(method, url);
     let request = if let Some(body) = body {
         request.json(&body)
     } else {
@@ -381,9 +169,9 @@ async fn invoke_json<T: for<'de> Deserialize<'de>>(
         ))
     })?;
     if !status.is_success() {
-        let message = String::from_utf8_lossy(&bytes).to_string();
         return Err(VisionCameraMaintenanceError::Http(format!(
-            "vision maintenance returned HTTP {status}: {message}"
+            "vision maintenance returned HTTP {status}: {}",
+            String::from_utf8_lossy(&bytes)
         )));
     }
     serde_json::from_slice(&bytes).map_err(|error| {
@@ -396,18 +184,12 @@ async fn invoke_json<T: for<'de> Deserialize<'de>>(
 async fn invoke_bytes(
     client: &reqwest::Client,
     url: Url,
-    token: String,
 ) -> Result<Vec<u8>, VisionCameraMaintenanceError> {
-    let response = client
-        .get(url)
-        .header("X-Vision-Maintenance-Capability", token)
-        .send()
-        .await
-        .map_err(|error| {
-            VisionCameraMaintenanceError::Http(format!(
-                "vision maintenance preview request failed: {error}"
-            ))
-        })?;
+    let response = client.get(url).send().await.map_err(|error| {
+        VisionCameraMaintenanceError::Http(format!(
+            "vision maintenance preview request failed: {error}"
+        ))
+    })?;
     let status = response.status();
     let bytes = response.bytes().await.map_err(|error| {
         VisionCameraMaintenanceError::Http(format!(
@@ -442,33 +224,18 @@ fn validate_contract(
 
 pub async fn get_contract(
     http_client: &reqwest::Client,
-    data_dir: &Path,
-    public: &crate::config::EffectiveRuntimeConfig,
-    session_id: &str,
 ) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
-    let machine_code = public
-        .machine_code
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "machineCode is required for vision maintenance".to_string(),
-            )
-        })?;
-    let (key_id, signing_key) =
-        ensure_vision_verifier_files(data_dir, machine_code, session_id).await?;
-    let token = capability_token(
-        &signing_key,
-        &key_id,
-        machine_code,
-        session_id,
-        "camera.read",
-    )?;
-    let contract: VisionCameraMaintenanceContract = invoke_json(
+    get_contract_at(http_client, maintenance_base_url()?).await
+}
+
+async fn get_contract_at(
+    http_client: &reqwest::Client,
+    base_url: Url,
+) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
+    let contract = invoke_json(
         http_client,
         Method::GET,
-        maintenance_url(public, &["maintenance", "cameras"])?,
-        token,
+        maintenance_url_at(base_url, &["maintenance", "cameras"])?,
         None,
     )
     .await?;
@@ -477,33 +244,18 @@ pub async fn get_contract(
 
 pub async fn refresh_contract(
     http_client: &reqwest::Client,
-    data_dir: &Path,
-    public: &crate::config::EffectiveRuntimeConfig,
-    session_id: &str,
 ) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
-    let machine_code = public
-        .machine_code
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "machineCode is required for vision maintenance".to_string(),
-            )
-        })?;
-    let (key_id, signing_key) =
-        ensure_vision_verifier_files(data_dir, machine_code, session_id).await?;
-    let token = capability_token(
-        &signing_key,
-        &key_id,
-        machine_code,
-        session_id,
-        "camera.refresh",
-    )?;
-    let contract: VisionCameraMaintenanceContract = invoke_json(
+    refresh_contract_at(http_client, maintenance_base_url()?).await
+}
+
+async fn refresh_contract_at(
+    http_client: &reqwest::Client,
+    base_url: Url,
+) -> Result<VisionCameraMaintenanceContract, VisionCameraMaintenanceError> {
+    let contract = invoke_json(
         http_client,
         Method::POST,
-        maintenance_url(public, &["maintenance", "cameras", "refresh"])?,
-        token,
+        maintenance_url_at(base_url, &["maintenance", "cameras", "refresh"])?,
         None,
     )
     .await?;
@@ -512,67 +264,44 @@ pub async fn refresh_contract(
 
 pub async fn preview_candidate(
     http_client: &reqwest::Client,
-    data_dir: &Path,
-    public: &crate::config::EffectiveRuntimeConfig,
-    session_id: &str,
     candidate_id: &str,
 ) -> Result<Vec<u8>, VisionCameraMaintenanceError> {
-    let machine_code = public
-        .machine_code
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "machineCode is required for vision maintenance".to_string(),
-            )
-        })?;
-    let (key_id, signing_key) =
-        ensure_vision_verifier_files(data_dir, machine_code, session_id).await?;
-    let token = capability_token(
-        &signing_key,
-        &key_id,
-        machine_code,
-        session_id,
-        "camera.preview",
-    )?;
-    let url = maintenance_url(
-        public,
-        &["maintenance", "cameras", candidate_id, "preview.jpg"],
-    )?;
-    invoke_bytes(http_client, url, token).await
+    preview_candidate_at(http_client, maintenance_base_url()?, candidate_id).await
+}
+
+async fn preview_candidate_at(
+    http_client: &reqwest::Client,
+    base_url: Url,
+    candidate_id: &str,
+) -> Result<Vec<u8>, VisionCameraMaintenanceError> {
+    invoke_bytes(
+        http_client,
+        maintenance_url_at(
+            base_url,
+            &["maintenance", "cameras", candidate_id, "preview.jpg"],
+        )?,
+    )
+    .await
 }
 
 pub async fn test_role(
     http_client: &reqwest::Client,
-    data_dir: &Path,
-    public: &crate::config::EffectiveRuntimeConfig,
-    session_id: &str,
     role: VisionCameraRole,
     candidate_id: &str,
 ) -> Result<VisionCameraMaintenanceTestResponse, VisionCameraMaintenanceError> {
-    let machine_code = public
-        .machine_code
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "machineCode is required for vision maintenance".to_string(),
-            )
-        })?;
-    let (key_id, signing_key) =
-        ensure_vision_verifier_files(data_dir, machine_code, session_id).await?;
-    let token = capability_token(
-        &signing_key,
-        &key_id,
-        machine_code,
-        session_id,
-        "camera.test",
-    )?;
+    test_role_at(http_client, maintenance_base_url()?, role, candidate_id).await
+}
+
+async fn test_role_at(
+    http_client: &reqwest::Client,
+    base_url: Url,
+    role: VisionCameraRole,
+    candidate_id: &str,
+) -> Result<VisionCameraMaintenanceTestResponse, VisionCameraMaintenanceError> {
     invoke_json(
         http_client,
         Method::POST,
-        maintenance_url(public, &["maintenance", "cameras", role.as_str(), "test"])?,
-        token,
+        maintenance_url_at(base_url, &["maintenance", "cameras", role.as_str(), "test"])?,
         Some(serde_json::json!({ "candidateId": candidate_id })),
     )
     .await
@@ -580,49 +309,174 @@ pub async fn test_role(
 
 pub async fn confirm_role(
     http_client: &reqwest::Client,
-    data_dir: &Path,
-    public: &crate::config::EffectiveRuntimeConfig,
-    session_id: &str,
     role: VisionCameraRole,
     request: &VisionCameraMaintenanceConfirmRequest,
 ) -> Result<VisionCameraRoleStatus, VisionCameraMaintenanceError> {
-    let machine_code = public
-        .machine_code
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            VisionCameraMaintenanceError::InvalidConfig(
-                "machineCode is required for vision maintenance".to_string(),
-            )
-        })?;
-    let (key_id, signing_key) =
-        ensure_vision_verifier_files(data_dir, machine_code, session_id).await?;
-    let token = capability_token(
-        &signing_key,
-        &key_id,
-        machine_code,
-        session_id,
-        "camera.confirm",
-    )?;
+    confirm_role_at(http_client, maintenance_base_url()?, role, request).await
+}
+
+async fn confirm_role_at(
+    http_client: &reqwest::Client,
+    base_url: Url,
+    role: VisionCameraRole,
+    request: &VisionCameraMaintenanceConfirmRequest,
+) -> Result<VisionCameraRoleStatus, VisionCameraMaintenanceError> {
     invoke_json(
         http_client,
         Method::POST,
-        maintenance_url(
-            public,
+        maintenance_url_at(
+            base_url,
             &["maintenance", "cameras", role.as_str(), "confirm"],
         )?,
-        token,
         Some(serde_json::to_value(request).map_err(|error| {
-            VisionCameraMaintenanceError::Io(format!(
-                "serialize vision camera maintenance confirm request failed: {error}"
+            VisionCameraMaintenanceError::Contract(format!(
+                "serialize vision maintenance confirm request failed: {error}"
             ))
         })?),
     )
     .await
 }
 
-pub fn contract_revision(contract: &VisionCameraMaintenanceContract) -> Result<String, String> {
-    let payload = serde_json::to_vec(contract)
-        .map_err(|error| format!("serialize vision camera maintenance contract failed: {error}"))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+#[cfg(test)]
+mod tests {
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn plain_loopback_proxy_preserves_v2_contract_without_capability_headers() {
+        let server = MockServer::start().await;
+        let contract = serde_json::json!({
+            "contractVersion": CONTRACT_VERSION,
+            "generation": "test-generation",
+            "candidates": [{
+                "id": "top-001",
+                "label": "Top camera",
+                "backendObservation": {
+                    "backend": "opencv",
+                    "index": 0,
+                    "available": true,
+                    "mappingState": "proven"
+                }
+            }],
+            "roles": {
+                "top": { "role": "top", "state": "unbound", "ready": false, "reason": "camera_not_confirmed" },
+                "front": { "role": "front", "state": "unbound", "ready": false, "reason": "camera_not_confirmed" }
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(contract))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "contractVersion": CONTRACT_VERSION,
+                "generation": "refreshed-generation",
+                "candidates": [],
+                "roles": {
+                    "top": { "role": "top", "state": "unbound", "ready": false, "reason": "camera_not_confirmed" },
+                    "front": { "role": "front", "state": "unbound", "ready": false, "reason": "camera_not_confirmed" }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/maintenance/cameras/top-001/preview.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(b"jpeg-preview".to_vec(), "image/jpeg"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "role": "top",
+                "candidateId": "top-001",
+                "generation": "test-generation",
+                "ok": true,
+                "frame": { "width": 1280, "height": 720 },
+                "backendObservation": {
+                    "backend": "opencv",
+                    "index": 0,
+                    "available": true,
+                    "mappingState": "proven"
+                },
+                "evidence": {
+                    "id": "evidence-1",
+                    "role": "top",
+                    "candidateId": "top-001",
+                    "generation": "test-generation",
+                    "expiresAt": 1_800_000_000
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/maintenance/cameras/top/confirm"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "role": "top",
+                "state": "ready",
+                "ready": true,
+                "candidateId": "top-001",
+                "backendObservation": {
+                    "backend": "opencv",
+                    "index": 0,
+                    "available": true,
+                    "mappingState": "proven"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let base_url = Url::parse(&server.uri()).expect("loopback URL");
+        let listed = get_contract_at(&client, base_url.clone())
+            .await
+            .expect("plain proxy contract");
+        let refreshed = refresh_contract_at(&client, base_url.clone())
+            .await
+            .expect("refresh contract");
+        let preview = preview_candidate_at(&client, base_url.clone(), "top-001")
+            .await
+            .expect("preview bytes");
+        let tested = test_role_at(&client, base_url.clone(), VisionCameraRole::Top, "top-001")
+            .await
+            .expect("role test");
+        let confirmed = confirm_role_at(
+            &client,
+            base_url,
+            VisionCameraRole::Top,
+            &VisionCameraMaintenanceConfirmRequest {
+                candidate_id: "top-001".to_string(),
+                test_evidence_id: "evidence-1".to_string(),
+                operator_visual_confirmation: true,
+                expected_generation: "test-generation".to_string(),
+            },
+        )
+        .await
+        .expect("role confirm");
+
+        assert_eq!(listed.generation, "test-generation");
+        assert_eq!(refreshed.generation, "refreshed-generation");
+        assert_eq!(preview, b"jpeg-preview");
+        assert_eq!(tested.evidence.id, "evidence-1");
+        assert!(confirmed.ready);
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 5);
+        assert!(requests.iter().all(|request| {
+            !request
+                .headers
+                .contains_key("x-vision-maintenance-capability")
+        }));
+    }
 }

@@ -138,11 +138,13 @@ impl Default for SerialDeviceRoleProbeConfig {
     }
 }
 
-impl From<&crate::config::EffectiveRuntimeConfig> for SerialDeviceRoleProbeConfig {
-    fn from(config: &crate::config::EffectiveRuntimeConfig) -> Self {
+impl From<&crate::local_runtime_settings::ScannerProtocolParameters>
+    for SerialDeviceRoleProbeConfig
+{
+    fn from(config: &crate::local_runtime_settings::ScannerProtocolParameters) -> Self {
         Self {
-            scanner_baud_rate: config.scanner_baud_rate,
-            scanner_frame_suffix: config.scanner_frame_suffix,
+            scanner_baud_rate: config.baud_rate,
+            scanner_frame_suffix: config.frame_suffix,
         }
     }
 }
@@ -205,11 +207,10 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
         } else {
             match role {
                 LocalDeviceRole::LowerController => {
-                    let mut config = crate::config::default_public_config();
-                    config.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
-                    config.serial_port_path = Some(candidate.current_port.clone());
-                    config.lower_controller_usb_identity = None;
-                    match crate::hardware::HardwareSupervisor::from_config(&config) {
+                    match crate::hardware::HardwareSupervisor::from_serial_port(
+                        Some(candidate.current_port.clone()),
+                        None,
+                    ) {
                         Ok(supervisor) => {
                             let status = supervisor.self_check().await;
                             (
@@ -596,7 +597,7 @@ pub fn project_role_binding(
                     false,
                     "DEVICE_BINDING_MISSING".to_string(),
                     format!(
-                        "{} binding is not currently attached; replug or replace it in protected maintenance",
+                        "{} binding is not currently attached; replug or replace it through the local binding workflow",
                         role.as_str()
                     ),
                     false,
@@ -671,8 +672,7 @@ pub fn project_role_binding(
     }
 }
 
-pub fn apply_resolved_binding_to_runtime_config(
-    config: &mut crate::config::EffectiveRuntimeConfig,
+pub fn resolve_runtime_port(
     role: LocalDeviceRole,
     binding: &LocalSerialRoleBinding,
     observed: &[ObservedSerialDevice],
@@ -686,18 +686,6 @@ pub fn apply_resolved_binding_to_runtime_config(
             return Err(format!("{}_binding_ambiguous", role.as_str()));
         }
     };
-    match role {
-        LocalDeviceRole::LowerController => {
-            config.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
-            config.serial_port_path = Some(port.clone());
-            config.lower_controller_usb_identity = None;
-        }
-        LocalDeviceRole::Scanner => {
-            config.scanner_adapter = crate::config::ScannerAdapterKind::SerialText;
-            config.scanner_serial_port_path = Some(port.clone());
-            config.scanner_usb_identity = None;
-        }
-    }
     Ok(port)
 }
 

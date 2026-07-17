@@ -18,22 +18,13 @@ use vending_daemon::state::{
     LocalStateStore, OrderSessionUpsert,
 };
 
-fn mqtt_config(mqtt_url: String, serial_path: Option<String>) -> serde_json::Value {
+fn mqtt_config(mqtt_url: String) -> serde_json::Value {
     serde_json::json!({
         "machineCode": "MACHINE-MQTT",
         "apiBaseUrl": "http://127.0.0.1:9/api",
         "mqttUrl": mqtt_url,
-        "mqttUsername": null,
-        "hardwareAdapter": if serial_path.is_some() { "serial" } else { "mock" },
-        "localPortObservation": serial_path,
-        "scannerAdapter": "disabled",
-        "scannerPortObservation": null,
-        "scannerBaudRate": 9600,
-        "scannerFrameSuffix": "crlf",
-        "visionEnabled": false,
-        "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionRequestTimeoutMs": 8000,
-        "kioskMode": false
+        "hardwareModel": "vem-test-24",
+        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
     })
 }
 
@@ -131,10 +122,11 @@ async fn prepare_dispense_state(daemon: &DaemonHarness, command: &DispenseComman
 }
 
 #[tokio::test]
-async fn mqtt_environment_control_command_flow_publishes_ack_and_result() {
+async fn mqtt_environment_control_command_flow_publishes_ack_and_explicit_unbound_hardware_result()
+{
     let broker = MqttBrokerHarness::start().await;
     let mut daemon = DaemonHarness::start(
-        mqtt_config(broker.url(), None),
+        mqtt_config(broker.url()),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -198,19 +190,21 @@ async fn mqtt_environment_control_command_flow_publishes_ack_and_result() {
         .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
         .expect("environment control result publish");
     assert_eq!(result["payload"]["commandNo"], "ENV-MQTT-1");
-    assert_eq!(result["payload"]["success"], true);
-    assert_eq!(result["payload"]["airConditionerOn"], true);
-    assert_eq!(result["payload"]["targetTemperatureCelsius"], 24);
+    assert_eq!(result["payload"]["success"], false);
+    assert!(result["payload"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("lowerControllerUsbIdentity"));
     assert!(result["signature"].as_str().unwrap_or_default().len() >= 32);
 
     daemon.terminate().await;
 }
 
 #[tokio::test]
-async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
+async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay_when_hardware_is_unbound() {
     let broker = MqttBrokerHarness::start().await;
     let mut daemon = DaemonHarness::start(
-        mqtt_config(broker.url(), None),
+        mqtt_config(broker.url()),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -282,7 +276,7 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
         .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
         .expect("first result publish");
     assert_eq!(
-        first_result["payload"]["success"], true,
+        first_result["payload"]["success"], false,
         "unexpected result: {first_result}"
     );
     assert_eq!(first_result["payload"]["commandNo"], "CMD-MQTT-1");
@@ -304,7 +298,7 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
     assert_eq!(
         sqlite::scalar_i64(
             &pool,
-            "SELECT COUNT(1) FROM command_log WHERE command_no='CMD-MQTT-1' AND status='succeeded'",
+            "SELECT COUNT(1) FROM command_log WHERE command_no='CMD-MQTT-1' AND status='failed'",
         )
         .await,
         1
@@ -318,7 +312,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
     let data_dir = temp.path().join("vending-daemon");
     let mut daemon = DaemonHarness::start_at(
         data_dir.clone(),
-        mqtt_config(broker.url(), None),
+        mqtt_config(broker.url()),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -368,7 +362,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
 
     let mut daemon2 = DaemonHarness::start_at(
         data_dir.clone(),
-        mqtt_config(broker.url(), None),
+        mqtt_config(broker.url()),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -423,7 +417,7 @@ async fn initial_mqtt_backlog_drains_past_async_client_capacity_without_losing_d
 
     let mut daemon = DaemonHarness::start_at(
         data_dir.clone(),
-        mqtt_config(broker.url(), None),
+        mqtt_config(broker.url()),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -461,7 +455,7 @@ async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
 
     let mut daemon = DaemonHarness::start_at(
         data_dir.clone(),
-        mqtt_config(format!("mqtt://127.0.0.1:{unused_port}"), None),
+        mqtt_config(format!("mqtt://127.0.0.1:{unused_port}")),
         &[(
             "VEM_MQTT_SIGNING_SECRET",
             sensitive::TEST_MQTT_SIGNING_SECRET,
@@ -523,7 +517,7 @@ async fn puback_drop_proxy_retransmits_durable_qos1_without_stranding_other_outb
 
         let mut daemon = DaemonHarness::start_at(
             data_dir.clone(),
-            mqtt_config(proxy.url(), None),
+            mqtt_config(proxy.url()),
             &[(
                 "VEM_MQTT_SIGNING_SECRET",
                 sensitive::TEST_MQTT_SIGNING_SECRET,

@@ -10,17 +10,8 @@ fn configured_daemon(api_base_url: String) -> serde_json::Value {
         "machineCode": "MACHINE-NATURAL",
         "apiBaseUrl": api_base_url,
         "mqttUrl": "mqtt://127.0.0.1:1883",
-        "mqttUsername": null,
-        "hardwareAdapter": "mock",
-        "localPortObservation": null,
-        "scannerAdapter": "disabled",
-        "scannerPortObservation": null,
-        "scannerBaudRate": 9600,
-        "scannerFrameSuffix": "crlf",
-        "visionEnabled": false,
-        "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionRequestTimeoutMs": 8000,
-        "kioskMode": true
+        "hardwareModel": "vem-test-24",
+        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
     })
 }
 
@@ -103,9 +94,7 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
         snapshot["externalEnvironment"]["calendar"]["status"],
         "ready"
     );
-    assert_eq!(snapshot["localSiteSignals"]["status"], "ok");
-    assert_eq!(snapshot["localSiteSignals"]["temperatureCelsius"], 24);
-    assert_eq!(snapshot["localSiteSignals"]["humidityRh"], 50);
+    assert_eq!(snapshot["localSiteSignals"]["status"], "unavailable");
     assert_eq!(snapshot["degraded"], false);
     assert_eq!(snapshot["customerFacingBlocked"], false);
 

@@ -12,28 +12,20 @@ pub const KEYRING_SERVICE: &str = "com.vem.machine";
 pub const MACHINE_SECRET_ACCOUNT: &str = "machine_secret";
 pub const MQTT_SIGNING_SECRET_ACCOUNT: &str = "mqtt_signing_secret";
 pub const MQTT_PASSWORD_ACCOUNT: &str = "mqtt_password";
-pub const MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT: &str = "machine_wireguard_private_key";
-pub const MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT: &str =
-    "machine_wireguard_pending_private_key";
-pub const MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT: &str = "machine_maintenance_lifecycle";
-/// The field-maintenance PIN is deliberately a daemon-only secret.  It is
-/// never part of the IPC config summary or a UI runtime flag.
-pub const MACHINE_MAINTENANCE_PIN_ACCOUNT: &str = "machine_maintenance_pin";
-/// One-shot Factory bootstrap capability verifier. The raw capability is
-/// delivered only to the local maintenance account and is consumed before
-/// any provisioning mutation is accepted.
-pub const MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT: &str =
-    "machine_factory_bootstrap_capability";
+// Claim replacement keeps these protected copies only while its durable
+// transaction journal is present. They let restart recovery restore the last
+// accepted credential set without ever serialising secrets into a JSON file.
+pub const MACHINE_SECRET_ROLLBACK_ACCOUNT: &str = "machine_secret.rollback";
+pub const MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT: &str = "mqtt_signing_secret.rollback";
+pub const MQTT_PASSWORD_ROLLBACK_ACCOUNT: &str = "mqtt_password.rollback";
 
-const SECRET_ACCOUNTS: [&str; 8] = [
+const SECRET_ACCOUNTS: [&str; 6] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
-    MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
-    MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
-    MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
-    MACHINE_MAINTENANCE_PIN_ACCOUNT,
-    MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT,
+    MACHINE_SECRET_ROLLBACK_ACCOUNT,
+    MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
+    MQTT_PASSWORD_ROLLBACK_ACCOUNT,
 ];
 
 #[cfg(any(windows, test))]
@@ -54,8 +46,6 @@ pub struct SecretStoreStatus {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
-    pub maintenance_pin_configured: bool,
-    pub machine_wireguard_private_key_configured: bool,
     pub last_error: Option<String>,
 }
 
@@ -100,13 +90,9 @@ impl FileSecretStore {
             MACHINE_SECRET_ACCOUNT => "machine_secret",
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password",
-            MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key",
-            MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => {
-                "machine_wireguard_pending_private_key"
-            }
-            MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle",
-            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin",
-            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => "machine_factory_bootstrap_capability",
+            MACHINE_SECRET_ROLLBACK_ACCOUNT => "machine_secret.rollback",
+            MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT => "mqtt_signing_secret.rollback",
+            MQTT_PASSWORD_ROLLBACK_ACCOUNT => "mqtt_password.rollback",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -125,15 +111,9 @@ impl ProtectedLocalSecretStore {
             MACHINE_SECRET_ACCOUNT => "machine_secret.dpapi",
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret.dpapi",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password.dpapi",
-            MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key.dpapi",
-            MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => {
-                "machine_wireguard_pending_private_key.dpapi"
-            }
-            MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle.dpapi",
-            MACHINE_MAINTENANCE_PIN_ACCOUNT => "machine_maintenance_pin.dpapi",
-            MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => {
-                "machine_factory_bootstrap_capability.dpapi"
-            }
+            MACHINE_SECRET_ROLLBACK_ACCOUNT => "machine_secret.rollback.dpapi",
+            MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT => "mqtt_signing_secret.rollback.dpapi",
+            MQTT_PASSWORD_ROLLBACK_ACCOUNT => "mqtt_password.rollback.dpapi",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -191,9 +171,6 @@ impl SecretStore for InMemorySecretStore {
             machine_secret_configured: values.contains_key(MACHINE_SECRET_ACCOUNT),
             mqtt_signing_secret_configured: values.contains_key(MQTT_SIGNING_SECRET_ACCOUNT),
             mqtt_password_configured: values.contains_key(MQTT_PASSWORD_ACCOUNT),
-            maintenance_pin_configured: values.contains_key(MACHINE_MAINTENANCE_PIN_ACCOUNT),
-            machine_wireguard_private_key_configured: values
-                .contains_key(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT),
             last_error: None,
         })
     }
@@ -204,11 +181,9 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MACHINE_SECRET_ACCOUNT => Some("VEM_MACHINE_SECRET"),
         MQTT_SIGNING_SECRET_ACCOUNT => Some("VEM_MQTT_SIGNING_SECRET"),
         MQTT_PASSWORD_ACCOUNT => Some("VEM_MQTT_PASSWORD"),
-        MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => Some("VEM_MACHINE_WIREGUARD_PRIVATE_KEY"),
-        MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => None,
-        MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => None,
-        MACHINE_MAINTENANCE_PIN_ACCOUNT => None,
-        MACHINE_FACTORY_BOOTSTRAP_CAPABILITY_ACCOUNT => None,
+        MACHINE_SECRET_ROLLBACK_ACCOUNT
+        | MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT
+        | MQTT_PASSWORD_ROLLBACK_ACCOUNT => None,
         _ => None,
     }
 }
@@ -246,14 +221,6 @@ impl SecretStore for EnvSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
-            maintenance_pin_configured: self
-                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
-                .await?
-                .is_some(),
-            machine_wireguard_private_key_configured: self
-                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-                .await?
-                .is_some(),
             last_error: None,
         })
     }
@@ -315,14 +282,6 @@ impl SecretStore for FileSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
-            maintenance_pin_configured: self
-                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
-                .await?
-                .is_some(),
-            machine_wireguard_private_key_configured: self
-                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-                .await?
-                .is_some(),
             last_error: None,
         })
     }
@@ -387,14 +346,10 @@ impl SecretStore for ProtectedLocalSecretStore {
             .await;
         let (mqtt_password_configured, mqtt_password_error) =
             self.configured_for_status(MQTT_PASSWORD_ACCOUNT).await;
-        let (maintenance_pin_configured, maintenance_pin_error) = self
-            .configured_for_status(MACHINE_MAINTENANCE_PIN_ACCOUNT)
-            .await;
-        let mut last_error = [
+        let last_error = [
             machine_secret_error,
             mqtt_signing_secret_error,
             mqtt_password_error,
-            maintenance_pin_error,
         ]
         .into_iter()
         .flatten()
@@ -407,16 +362,6 @@ impl SecretStore for ProtectedLocalSecretStore {
             machine_secret_configured,
             mqtt_signing_secret_configured,
             mqtt_password_configured,
-            maintenance_pin_configured,
-            machine_wireguard_private_key_configured: {
-                let (configured, error) = self
-                    .configured_for_status(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-                    .await;
-                if last_error.is_none() {
-                    last_error = error;
-                }
-                configured
-            },
             last_error,
         })
     }
@@ -702,23 +647,13 @@ impl SecretStore for KeyringSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
-            maintenance_pin_configured: self
-                .read_secret(MACHINE_MAINTENANCE_PIN_ACCOUNT)
-                .await?
-                .is_some(),
-            machine_wireguard_private_key_configured: self
-                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-                .await?
-                .is_some(),
             last_error: None,
         })
     }
 }
 
 pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
-    // Production startup has one machine-scope secret lifecycle. Test stores
-    // are injected into ConfigStore/DaemonRuntime directly, never selected by
-    // inherited service environment variables.
+    // Production startup has one machine-scope secret lifecycle.
     Arc::new(ProtectedLocalSecretStore::new(data_dir))
 }
 
@@ -984,12 +919,12 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn windows_secret_acl_hardens_spaced_common_and_wireguard_secret_paths() {
+    async fn windows_secret_acl_hardens_spaced_secret_paths() {
         let temp = tempfile::tempdir().unwrap();
         let secret_root = temp.path().join("secret paths with spaces");
         std::fs::create_dir_all(&secret_root).unwrap();
 
-        for name in ["ordinary machine secret", "wireguard private key"] {
+        for name in ["machine secret", "mqtt signing secret"] {
             let path = secret_root.join(name);
             std::fs::write(&path, "secret").unwrap();
             let setup = run_windows_acl_probe(
@@ -1006,9 +941,8 @@ Set-Acl -LiteralPath $path -AclObject $acl"#,
                 String::from_utf8_lossy(&setup.stderr)
             );
 
-            // Both ordinary and WireGuard secrets use this exact production
-            // process invocation; the probe never passes the path as an argv
-            // token and therefore also exercises a path containing spaces.
+            // Every extracted claim secret uses this production process
+            // invocation; the probe also exercises a path containing spaces.
             harden_machine_protected_file_permissions(&path)
                 .await
                 .unwrap();

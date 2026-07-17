@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -9,9 +10,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{io::AsyncReadExt, process::Child, time::sleep};
-use vending_daemon::secret::{
-    ProtectedLocalSecretStore, SecretStore, MACHINE_MAINTENANCE_PIN_ACCOUNT,
-    MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+use vending_daemon::{
+    provisioning::{
+        HardwareSlotTopologyIdentity, MachineProvisioningProfile, ProductionControllerProfile,
+        ProductionMachineHardwareProfile, ProductionMachinePaymentCapability,
+        ProductionPaymentScannerProfile, ProductionVisionProfile, ProvisioningCredentials,
+        ProvisioningMachine, ProvisioningMetadata, ProvisioningMqttConnection,
+        ProvisioningRuntimeEndpoints,
+    },
+    runtime_configuration::CleanRuntimeConfigurationStore,
+    secret::ProtectedLocalSecretStore,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,14 +28,6 @@ pub struct ReadyFile {
     pub healthz_url: String,
     pub readyz_url: String,
     pub ipc_token: String,
-    #[serde(default)]
-    pub runtime_flags: RuntimeFlags,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeFlags {
-    pub advanced_maintenance_config: bool,
 }
 
 pub struct DaemonHarness {
@@ -39,38 +39,33 @@ pub struct DaemonHarness {
 }
 
 impl DaemonHarness {
+    /// `fixture` describes only deployment bootstrap values and a previously
+    /// accepted platform claim. It is never written as a daemon configuration
+    /// document.
     pub async fn start(
-        public_config: serde_json::Value,
-        protected_secrets: &[(&str, &str)],
+        fixture: serde_json::Value,
+        extracted_secrets: &[(&str, &str)],
         child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
         let data_dir = temp_dir.path().join("vending-daemon");
-        let mut harness =
-            Self::start_at(data_dir, public_config, protected_secrets, child_env).await?;
+        let mut harness = Self::start_at(data_dir, fixture, extracted_secrets, child_env).await?;
         harness._temp_dir = Some(temp_dir);
         Ok(harness)
     }
 
     pub async fn start_at(
         data_dir: PathBuf,
-        public_config: serde_json::Value,
-        protected_secrets: &[(&str, &str)],
+        fixture: serde_json::Value,
+        extracted_secrets: &[(&str, &str)],
         child_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         tokio::fs::create_dir_all(&data_dir)
             .await
             .map_err(|error| error.to_string())?;
+        prepare_runtime_sources(&data_dir, &fixture, extracted_secrets).await?;
 
         let ready_file = data_dir.join("daemon-ready.json");
-        tokio::fs::write(
-            data_dir.join("runtime-input.json"),
-            serde_json::to_vec_pretty(&public_config).map_err(|error| error.to_string())?,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        write_layered_runtime_test_config(&data_dir, &public_config).await?;
-        seed_protected_test_secrets(&data_dir, protected_secrets).await?;
         let _ = tokio::fs::remove_file(&ready_file).await;
 
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_vending-daemon"));
@@ -122,36 +117,6 @@ impl DaemonHarness {
         format!("Bearer {}", self.ready.ipc_token)
     }
 
-    pub async fn create_maintenance_session(&self, pin: &str) -> String {
-        let base = self.ready.healthz_url.trim_end_matches("/healthz");
-        let response = self
-            .client
-            .post(format!("{base}/v1/maintenance/sessions"))
-            .header("Authorization", self.bearer())
-            .json(&json!({
-                "pin": pin,
-                "operatorId": "integration-test"
-            }))
-            .send()
-            .await
-            .expect("create maintenance session request");
-        let status = response.status();
-        let body: Value = response
-            .json()
-            .await
-            .expect("create maintenance session response");
-        assert_eq!(
-            status,
-            reqwest::StatusCode::CREATED,
-            "session response: {body}"
-        );
-        body["sessionId"]
-            .as_str()
-            .filter(|session_id| !session_id.is_empty())
-            .expect("maintenance session id")
-            .to_string()
-    }
-
     pub fn state_db_path(&self) -> PathBuf {
         self.data_dir.join("state.db")
     }
@@ -175,193 +140,202 @@ impl DaemonHarness {
     }
 }
 
-/// Explicitly seed the same protected local store used by daemon startup.  The
-/// process environment is deliberately not a secret-store compatibility seam.
-async fn seed_protected_test_secrets(
+async fn prepare_runtime_sources(
     data_dir: &Path,
-    protected_secrets: &[(&str, &str)],
-) -> Result<(), String> {
-    let store = ProtectedLocalSecretStore::new(data_dir.to_path_buf());
-    for (name, value) in protected_secrets {
-        let account = match *name {
-            "VEM_MQTT_SIGNING_SECRET" | "mqtt_signing_secret" => MQTT_SIGNING_SECRET_ACCOUNT,
-            "VEM_MQTT_PASSWORD" | "mqtt_password" => MQTT_PASSWORD_ACCOUNT,
-            "VEM_MACHINE_SECRET" | "machine_secret" => MACHINE_SECRET_ACCOUNT,
-            "machine_maintenance_pin" => MACHINE_MAINTENANCE_PIN_ACCOUNT,
-            other => return Err(format!("unsupported explicit test secret: {other}")),
-        };
-        store.write_secret(account, value).await?;
-    }
-    Ok(())
-}
-
-async fn write_layered_runtime_test_config(
-    data_dir: &Path,
-    public_config: &Value,
+    fixture: &Value,
+    extracted_secrets: &[(&str, &str)],
 ) -> Result<(), String> {
     let root = data_dir.parent().unwrap_or(data_dir);
-    let bringup_dir = root.join("bringup");
-    tokio::fs::create_dir_all(&bringup_dir)
-        .await
-        .map_err(|error| error.to_string())?;
-    if let Some(topology) = public_config
+    let hardware_model = fixture_string(fixture, "hardwareModel", "vem-test-24");
+    let topology = fixture
         .get("hardwareSlotTopology")
-        .filter(|value| !value.is_null())
-    {
-        let factory_dir = root.join("factory");
-        tokio::fs::create_dir_all(&factory_dir)
-            .await
-            .map_err(|error| error.to_string())?;
-        let api_base_url = public_config
-            .get("apiBaseUrl")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("http://127.0.0.1:0/api");
-        let manifest = json!({
-            "layoutVersion": 1,
-            "environment": "testbed",
-            "provisioningEndpoint": api_base_url,
-            "hardwareMode": "production",
-            "hardwareModel": "test-fixture",
-            "hardwareSlotTopology": topology
-        });
-        tokio::fs::write(
-            factory_dir.join("factory-manifest.json"),
-            serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    }
-
-    let mut local = serde_json::Map::new();
-    copy_string(
-        public_config,
-        &mut local,
-        "apiBaseUrl",
-        "provisioningEndpointOverride",
-    );
-    copy_value(public_config, &mut local, "hardwareAdapter");
-    copy_value(public_config, &mut local, "localPortObservation");
-    copy_value(public_config, &mut local, "lowerControllerUsbIdentity");
-    copy_value(public_config, &mut local, "scannerAdapter");
-    copy_value(public_config, &mut local, "scannerPortObservation");
-    copy_value(public_config, &mut local, "scannerUsbIdentity");
-    copy_value(public_config, &mut local, "scannerBaudRate");
-    copy_value(public_config, &mut local, "scannerFrameSuffix");
-    copy_value(public_config, &mut local, "visionEnabled");
-    copy_value(public_config, &mut local, "visionWsUrl");
-    copy_value(public_config, &mut local, "visionRequestTimeoutMs");
-    copy_value(public_config, &mut local, "machineAudioVolume");
-    copy_value(public_config, &mut local, "tryOnCameraDeviceId");
-    copy_value(public_config, &mut local, "audioCueSettings");
-    copy_value(public_config, &mut local, "kioskMode");
-    copy_value(public_config, &mut local, "stockMovementRetentionDays");
+        .cloned()
+        .unwrap_or_else(|| json!({ "identity": hardware_model, "version": "2026-07-test" }));
+    let topology_identity = topology
+        .get("identity")
+        .and_then(Value::as_str)
+        .unwrap_or(&hardware_model);
+    let topology_version = topology
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("2026-07-test");
+    let provisioning_api_base_url = fixture_string(fixture, "apiBaseUrl", "http://127.0.0.1:9/api");
     tokio::fs::write(
-        bringup_dir.join("local-settings.json"),
-        serde_json::to_vec_pretty(&Value::Object(local)).map_err(|error| error.to_string())?,
+        root.join("runtime-bootstrap.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schemaVersion": 1,
+            "provisioningApiBaseUrl": provisioning_api_base_url,
+            "hardwareModel": hardware_model,
+            "topology": { "identity": topology_identity, "version": topology_version },
+        }))
+        .map_err(|error| error.to_string())?,
     )
     .await
     .map_err(|error| error.to_string())?;
 
-    let machine_code = public_config
+    let Some(machine_code) = fixture
         .get("machineCode")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    if let Some(machine_code) = machine_code {
-        let provisioning_dir = root.join("provisioning");
-        tokio::fs::create_dir_all(&provisioning_dir)
-            .await
-            .map_err(|error| error.to_string())?;
-        let api_base_url = public_config
-            .get("apiBaseUrl")
-            .and_then(Value::as_str)
-            .unwrap_or("http://127.0.0.1:0/api");
-        let mqtt_url = public_config
-            .get("mqttUrl")
-            .and_then(Value::as_str)
-            .unwrap_or("mqtt://127.0.0.1:1883");
-        let mqtt_client_id = public_config
-            .get("mqttClientId")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("vem-machine-{machine_code}"));
-        let mqtt_username = public_config
-            .get("mqttUsername")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let profile = json!({
-            "profileVersion": 1,
-            "profileRevision": 1,
-            "machineId": "550e8400-e29b-41d4-a716-446655440000",
-            "machineCode": machine_code,
-            "machineName": public_config.get("machineName").and_then(Value::as_str).unwrap_or("Test Machine"),
-            "machineStatus": public_config.get("machineStatus").and_then(Value::as_str).unwrap_or("online"),
-            "machineLocationLabel": public_config.get("machineLocationLabel").cloned().unwrap_or(Value::Null),
-            "claimedAt": "2026-07-08T00:00:00.000Z",
-            "apiBaseUrl": api_base_url,
-            "mqttUrl": mqtt_url,
-            "mqttClientId": mqtt_client_id,
-            "mqttUsername": mqtt_username,
-            "runtimeEndpoints": {
-                "apiBasePath": "/api",
-                "machineAuthTokenPath": "/api/machine-auth/token",
-                "machineApiBasePath": format!("/api/machines/{machine_code}"),
-                "mqttTopicPrefix": format!("vem/machines/{machine_code}")
-            },
-            "hardwareProfile": public_config.get("hardwareProfile").cloned().unwrap_or_else(|| json!({
-                "profile": "production",
-                "controller": { "required": true, "protocol": "vem-vending-controller" },
-                "paymentScanner": { "required": true, "supportsPaymentCode": true },
-                "vision": { "required": false, "supportsRecommendations": true }
-            })),
-            "hardwareSlotTopology": public_config.get("hardwareSlotTopology").cloned().unwrap_or_else(|| json!({
-                "identity": "vem-test-24",
-                "version": "2026-07-test"
-            })),
-            "paymentCapability": public_config.get("paymentCapability").cloned().unwrap_or_else(|| json!({
-                "profile": "production",
-                "qrCodeEnabled": true,
-                "paymentCodeEnabled": true,
-                "serverTime": "2026-07-08T00:00:00.000Z"
-            })),
-            "provisioningMetadata": {
-                "profileVersion": 1,
-                "profileRevision": 1,
-                "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
-                "claimedAt": "2026-07-08T00:00:00.000Z",
-                "serverTime": "2026-07-08T00:00:00.000Z"
-            }
-        });
-        tokio::fs::write(
-            provisioning_dir.join("profile-cache-summary.json"),
-            serde_json::to_vec_pretty(&profile).map_err(|error| error.to_string())?,
-        )
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+
+    let secret_store = Arc::new(ProtectedLocalSecretStore::new(data_dir.to_path_buf()));
+    let store = CleanRuntimeConfigurationStore::new(data_dir.to_path_buf(), secret_store);
+    if tokio::fs::try_exists(store.profile_cache_path())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
     }
-
-    Ok(())
+    store
+        .accept_profile(&profile_from_fixture(
+            fixture,
+            machine_code,
+            &hardware_model,
+            topology_identity,
+            topology_version,
+            extracted_secrets,
+        ))
+        .await
+        .map(|_| ())
 }
 
-fn copy_value(source: &Value, target: &mut serde_json::Map<String, Value>, key: &str) {
-    if let Some(value) = source.get(key).filter(|value| !value.is_null()) {
-        target.insert(key.to_string(), value.clone());
+fn profile_from_fixture(
+    fixture: &Value,
+    machine_code: &str,
+    hardware_model: &str,
+    topology_identity: &str,
+    topology_version: &str,
+    extracted_secrets: &[(&str, &str)],
+) -> MachineProvisioningProfile {
+    let machine_secret = extracted_secret(
+        extracted_secrets,
+        &["VEM_MACHINE_SECRET", "machine_secret"],
+        "machine-secret-for-integration-tests-0001",
+    );
+    let mqtt_signing_secret = extracted_secret(
+        extracted_secrets,
+        &["VEM_MQTT_SIGNING_SECRET", "mqtt_signing_secret"],
+        "mqtt-signing-secret-for-integration-tests-0001",
+    );
+    let mqtt_password = extracted_secrets
+        .iter()
+        .find(|(name, _)| matches!(*name, "VEM_MQTT_PASSWORD" | "mqtt_password"))
+        .map(|(_, value)| (*value).to_string());
+    MachineProvisioningProfile {
+        machine: ProvisioningMachine {
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            code: machine_code.to_string(),
+            name: fixture_string(fixture, "machineName", "Integration Test Machine"),
+            status: fixture_string(fixture, "machineStatus", "online"),
+            location_label: fixture
+                .get("machineLocationLabel")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        },
+        credentials: ProvisioningCredentials {
+            machine_secret,
+            mqtt_signing_secret,
+            mqtt_connection: ProvisioningMqttConnection {
+                url: fixture_string(fixture, "mqttUrl", "mqtt://127.0.0.1:1883"),
+                client_id: fixture_string(
+                    fixture,
+                    "mqttClientId",
+                    &format!("vem-machine-{machine_code}"),
+                ),
+                username: fixture
+                    .get("mqttUsername")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                password: mqtt_password,
+            },
+        },
+        api_base_url: fixture_string(fixture, "apiBaseUrl", "http://127.0.0.1:9/api"),
+        runtime_endpoints: ProvisioningRuntimeEndpoints {
+            api_base_path: "/api".to_string(),
+            machine_auth_token_path: "/api/machine-auth/token".to_string(),
+            machine_api_base_path: format!("/api/machines/{machine_code}"),
+            mqtt_topic_prefix: format!("vem/machines/{machine_code}"),
+        },
+        hardware_profile: serde_json::from_value(
+            fixture.get("hardwareProfile").cloned().unwrap_or_else(|| {
+                json!({
+                    "profile": "production",
+                    "controller": { "required": true, "protocol": "vem-vending-controller" },
+                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                    "vision": { "required": false, "supportsRecommendations": true },
+                })
+            }),
+        )
+        .unwrap_or(ProductionMachineHardwareProfile {
+            profile: "production".to_string(),
+            controller: ProductionControllerProfile {
+                required: true,
+                protocol: "vem-vending-controller".to_string(),
+            },
+            payment_scanner: ProductionPaymentScannerProfile {
+                required: true,
+                supports_payment_code: true,
+            },
+            vision: ProductionVisionProfile {
+                required: false,
+                supports_recommendations: true,
+            },
+        }),
+        hardware_model: hardware_model.to_string(),
+        hardware_slot_topology: HardwareSlotTopologyIdentity {
+            identity: topology_identity.to_string(),
+            version: topology_version.to_string(),
+        },
+        payment_capability: serde_json::from_value(
+            fixture
+                .get("paymentCapability")
+                .cloned()
+                .unwrap_or_else(|| {
+                    json!({
+                        "profile": "production",
+                        "qrCodeEnabled": true,
+                        "paymentCodeEnabled": true,
+                        "serverTime": "2026-07-17T00:00:00Z",
+                    })
+                }),
+        )
+        .unwrap_or(ProductionMachinePaymentCapability {
+            profile: "production".to_string(),
+            qr_code_enabled: true,
+            payment_code_enabled: true,
+            server_time: "2026-07-17T00:00:00Z".to_string(),
+            options: vec![],
+            default_option_key: None,
+            default_provider_code: None,
+        }),
+        metadata: ProvisioningMetadata {
+            profile_version: 1,
+            profile_revision: 1,
+            claim_code_id: "550e8400-e29b-41d4-a716-446655440111".to_string(),
+            claimed_at: "2026-07-17T00:00:00Z".to_string(),
+            server_time: "2026-07-17T00:00:00Z".to_string(),
+        },
     }
 }
 
-fn copy_string(
-    source: &Value,
-    target: &mut serde_json::Map<String, Value>,
-    source_key: &str,
-    target_key: &str,
-) {
-    if let Some(value) = source
-        .get(source_key)
+fn fixture_string(fixture: &Value, key: &str, default: &str) -> String {
+    fixture
+        .get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-    {
-        target.insert(target_key.to_string(), Value::String(value.to_string()));
-    }
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn extracted_secret(extracted_secrets: &[(&str, &str)], names: &[&str], default: &str) -> String {
+    extracted_secrets
+        .iter()
+        .find(|(name, _)| names.contains(name))
+        .map(|(_, value)| (*value).to_string())
+        .unwrap_or_else(|| default.to_string())
 }
 
 impl Drop for DaemonHarness {
