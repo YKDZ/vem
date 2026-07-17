@@ -61,6 +61,10 @@ function Register-SpiceGuestToolsResume {
   Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "VemResumeSpiceGuestToolsPreparation" -Value ("powershell.exe " + $arguments)
 }
 
+function Remove-SpiceGuestToolsResume {
+  Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "VemResumeSpiceGuestToolsPreparation" -ErrorAction SilentlyContinue
+}
+
 function Invoke-SpiceGuestToolsInstallerAsSystem {
   param([string] $InstallerPath)
   if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "SPICE guest tools installer is unavailable: $InstallerPath" }
@@ -91,26 +95,42 @@ function Install-SpiceGuestTools {
     $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
     if ($state.schemaVersion -ne "win10-kvm-spice-guest-tools-installation/v1") { throw "SPICE guest tools installation state schema is invalid" }
     if ($state.exitCode -eq 0 -and -not $state.rebootRequired -and -not $state.rebootApplied) { return }
+    if ($state.phase -eq "installing" -and $state.installBootIdentity -ne $currentBootIdentity) {
+      $state.phase = "complete"
+      $state.exitCode = 3010
+      $state.rebootRequired = $true
+      $state.rebootApplied = $true
+      $state.resumeBootIdentity = $currentBootIdentity
+      Write-SpiceGuestToolsInstallationState -State $state
+      Remove-SpiceGuestToolsResume
+      return
+    }
     if ($state.exitCode -eq 3010 -and $state.rebootRequired -and $state.installBootIdentity -ne $currentBootIdentity) {
       $state.rebootApplied = $true
       $state.resumeBootIdentity = $currentBootIdentity
       Write-SpiceGuestToolsInstallationState -State $state
+      Remove-SpiceGuestToolsResume
       return
     }
     throw "SPICE guest tools installation state has invalid reboot semantics"
   }
+
+  # The installer may reboot Windows before its scheduled task reports an exit
+  # code, so persist the resume contract before starting it.
+  Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "installing"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = $null; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
+  Register-SpiceGuestToolsResume
   $exitCode = Invoke-SpiceGuestToolsInstallerAsSystem -InstallerPath $SpiceGuestToolsInstallerPath
   if ($exitCode -eq 0) {
-    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 0; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
+    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "complete"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 0; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
+    Remove-SpiceGuestToolsResume
     return
   }
-  if ($exitCode -eq 3010) {
-    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 3010; rebootRequired = $true; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
-    Register-SpiceGuestToolsResume
+  if ($exitCode -eq 3010 -or $exitCode -eq 1641) {
+    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "complete"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 3010; rebootRequired = $true; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
     Restart-Computer -Force
     throw "SPICE guest tools requested a reboot but Windows did not restart"
   }
-  if ($exitCode -eq 1641) { throw "SPICE guest tools initiated an unmanaged reboot" }
+  Remove-SpiceGuestToolsResume
   throw "SPICE guest tools installer failed with exit code $exitCode"
 }
 

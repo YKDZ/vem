@@ -456,6 +456,32 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(shared, /-Argument "\/S"/);
     assert.match(shared, /exitCode -eq 3010/);
     assert.match(shared, /exitCode -eq 1641/);
+    const spiceInstallFunction = shared.slice(
+      shared.indexOf("function Install-SpiceGuestTools"),
+      shared.indexOf("function Disable-RemainingAutomaticLogon"),
+    );
+    assert.ok(
+      spiceInstallFunction.indexOf("phase = \"installing\"") <
+        spiceInstallFunction.indexOf(
+          "Invoke-SpiceGuestToolsInstallerAsSystem",
+        ),
+      "the reboot resume state must be durable before the installer starts",
+    );
+    assert.ok(
+      spiceInstallFunction.indexOf("Register-SpiceGuestToolsResume") <
+        spiceInstallFunction.indexOf(
+          "Invoke-SpiceGuestToolsInstallerAsSystem",
+        ),
+      "RunOnce must be registered before the installer can reboot Windows",
+    );
+    assert.match(
+      spiceInstallFunction,
+      /phase -eq "installing"[\s\S]*installBootIdentity -ne \$currentBootIdentity[\s\S]*resumeBootIdentity = \$currentBootIdentity/,
+    );
+    assert.match(
+      spiceInstallFunction,
+      /if \(\$exitCode -eq 0\)[\s\S]*Remove-SpiceGuestToolsResume/,
+    );
     assert.ok(
       shared.indexOf("Install-SpiceGuestTools") <
         shared.indexOf("Set-ClientDisplayMode -Width"),
