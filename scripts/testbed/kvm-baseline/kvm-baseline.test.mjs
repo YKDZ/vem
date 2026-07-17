@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -7,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +38,7 @@ import {
   readJsonWithBom,
   recoverPublishedBaseline,
   resolvePublishedBaselineRelease,
+  runtimeProfileForConfig,
   runtimeProfileForPublishedRelease,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
@@ -64,13 +67,14 @@ function buildConfig(root) {
     media: {
       windowsIsoPath: join(root, "media", "windows-10.iso"),
       windowsImageIndex: 1,
+      runnerArchivePath: join(root, "media", "actions-runner-win-x64.zip"),
+      runnerArchiveSha256: "a".repeat(64),
       spiceGuestToolsInstallerPath: join(
         root,
         "media",
         "spice-guest-tools-0.141.exe",
       ),
       webView2InstallerUri: "https://downloads.example.test/webview2.exe",
-      runnerArchiveUri: "https://downloads.example.test/actions-runner.zip",
     },
     guest: {
       administratorPasswordFile: join(
@@ -136,6 +140,8 @@ async function publishRelease(config, id, contents, onStage) {
     stagedDiagnosticPath: staged.diagnostic,
     profile: runtimeProfileForPublishedRelease(config, id),
     verified: true,
+    commitDefinition: async () => {},
+    rollbackDefinition: async () => {},
     onStage,
   });
 }
@@ -177,7 +183,8 @@ describe("Linux KVM Windows baseline", () => {
       /<model type="qxl" ram="65536" vram="65536" vgamem="16384" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
     );
     assert.match(xml, /target type="usb-serial" port="0"/);
-    assert.match(xml, /alias name="serial-scanner"/);
+    assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
+    assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
     assert.match(xml, /<sound model="ich9"\/>/);
     assert.match(xml, /<mac address="52:54:00:12:34:56"\/>/);
     assert.match(xml, /target dev="sdc" bus="sata"/);
@@ -204,7 +211,7 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
-  it("verifies the defined ICH9/SPICE audio and exact USB serial role devices", () => {
+  it("verifies the defined ICH9/SPICE backend and exact USB-port serial role mapping", () => {
     const profile = createRuntimeProfile({
       vmName: "win10-runtime-baseline",
       systemDiskPath: "/srv/vm/win10.qcow2",
@@ -217,6 +224,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.deepEqual(verifyDefinedRuntimeDevices(xml, profile), {
       audio: { model: "ich9", backend: "spice", defaultDevice: true },
       serialRoles: ["lower-controller", "scanner"],
+      serialUsbPorts: [1, 2],
     });
     assert.throws(
       () =>
@@ -229,14 +237,33 @@ describe("Linux KVM Windows baseline", () => {
     assert.throws(
       () =>
         verifyDefinedRuntimeDevices(
-          xml.replace(
-            'alias name="serial-scanner"',
-            'alias name="serial-extra"',
-          ),
+          xml.replace('address type="usb" bus="0" port="2"', 'address type="usb" bus="0" port="1"'),
           profile,
         ),
       /USB serial role scanner is invalid/,
     );
+    assert.doesNotThrow(() =>
+      verifyDefinedRuntimeDevices(
+        xml.replaceAll(/\s*<alias name="serial-[^"]+"\/>/g, ""),
+        profile,
+      ),
+    );
+  });
+
+  it("keeps published cache sidecars on storage.cacheDiskPath while retaining one release manifest", () => {
+    const root = "/var/tmp/vem-kvm-baseline";
+    const config = buildConfig(root);
+    config.storage.cacheDiskPath = "/var/cache/vem/win10-runtime-cache.qcow2";
+    config.host.largeFileRoot = "/";
+    const layout = baselinePublicationLayout(config);
+    const release = runtimeProfileForPublishedRelease(config, "release-cache-root");
+
+    assert.equal(layout.systemReleaseRoot, `${config.storage.baselinePath}.releases`);
+    assert.equal(layout.cacheReleaseRoot, `${config.storage.cacheDiskPath}.releases`);
+    assert.equal(layout.currentManifestPath, `${config.storage.baselinePath}.current.json`);
+    assert.match(release.disks.system.path, /^\/var\/tmp\/vem-kvm-baseline\/images\/win10-runtime-baseline\.qcow2\.releases\//);
+    assert.match(release.disks.cache.path, /^\/var\/cache\/vem\/win10-runtime-cache\.qcow2\.releases\//);
+    assert.deepEqual(runtimeProfileForConfig(config).disks.cache.path, config.storage.cacheDiskPath);
   });
 
   it("requires caller-owned identity, storage, media, network, and runner inputs", () => {
@@ -256,6 +283,20 @@ describe("Linux KVM Windows baseline", () => {
       assert.throws(
         () => validateBaselineBuildConfig(missingSpiceInstaller),
         /media\.spiceGuestToolsInstallerPath/,
+      );
+
+      const missingRunnerArchive = buildConfig(root);
+      delete missingRunnerArchive.media.runnerArchivePath;
+      assert.throws(
+        () => validateBaselineBuildConfig(missingRunnerArchive),
+        /media\.runnerArchivePath/,
+      );
+
+      const invalidRunnerArchiveHash = buildConfig(root);
+      invalidRunnerArchiveHash.media.runnerArchiveSha256 = "not-a-sha256";
+      assert.throws(
+        () => validateBaselineBuildConfig(invalidRunnerArchiveHash),
+        /media\.runnerArchiveSha256/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -287,6 +328,7 @@ describe("Linux KVM Windows baseline", () => {
             installationMedia: {
               windowsIso: true,
               spiceGuestToolsInstaller: true,
+              runnerArchive: true,
             },
             networkActive: true,
             storageAvailableBytes: {
@@ -317,6 +359,7 @@ describe("Linux KVM Windows baseline", () => {
             installationMedia: {
               windowsIso: true,
               spiceGuestToolsInstaller: true,
+              runnerArchive: true,
             },
             networkActive: true,
             storageAvailableBytes: {
@@ -346,6 +389,7 @@ describe("Linux KVM Windows baseline", () => {
           installationMedia: {
             windowsIso: true,
             spiceGuestToolsInstaller: true,
+            runnerArchive: true,
           },
           networkActive: true,
           storageAvailableBytes: {
@@ -379,6 +423,7 @@ describe("Linux KVM Windows baseline", () => {
             installationMedia: {
               windowsIso: true,
               spiceGuestToolsInstaller: true,
+              runnerArchive: true,
             },
             networkActive: true,
             storageAvailableBytes: {
@@ -417,6 +462,177 @@ describe("Linux KVM Windows baseline", () => {
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the selected release and restores its definition when final libvirt definition fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-define-failure-"));
+    try {
+      const config = buildConfig(root);
+      const oldRelease = await publishRelease(config, "release-old-defined", "old");
+      const staged = stagedRelease(config, "define-failure", "new");
+      const operations = [];
+
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-new-define-failure",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: runtimeProfileForPublishedRelease(
+            config,
+            "release-new-define-failure",
+          ),
+          verified: true,
+          commitDefinition: async (release) => {
+            operations.push(`define:${release.releaseId}`);
+            throw new Error("simulated virsh define failure");
+          },
+          rollbackDefinition: async (release) => {
+            operations.push(`restore:${release.releaseId}`);
+          },
+        }),
+        /simulated virsh define failure/,
+      );
+
+      assert.deepEqual(operations, [
+        "define:release-new-define-failure",
+        `restore:${oldRelease.releaseId}`,
+      ]);
+      assert.equal(
+        (await resolvePublishedBaselineRelease(config)).releaseId,
+        oldRelease.releaseId,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not roll back a successful final definition after the current manifest publishes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-post-publish-"));
+    try {
+      const config = buildConfig(root);
+      await publishRelease(config, "release-old-post-publish", "old");
+      const staged = stagedRelease(config, "post-publish", "new");
+      const operations = [];
+
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-new-post-publish",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: runtimeProfileForPublishedRelease(
+            config,
+            "release-new-post-publish",
+          ),
+          verified: true,
+          commitDefinition: async (release) => {
+            operations.push(`define:${release.releaseId}`);
+          },
+          rollbackDefinition: async (release) => {
+            operations.push(`restore:${release.releaseId}`);
+          },
+          onStage: async (stage) => {
+            if (stage === "current-manifest-published") {
+              throw new Error("simulated post-publication failure");
+            }
+          },
+        }),
+        /simulated post-publication failure/,
+      );
+
+      assert.deepEqual(operations, ["define:release-new-post-publish"]);
+      assert.equal(
+        (await resolvePublishedBaselineRelease(config)).releaseId,
+        "release-new-post-publish",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers an interrupted definition handoff to the release selected by the current manifest", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-define-recovery-"));
+    try {
+      const config = buildConfig(root);
+      const release = await publishRelease(config, "release-define-recovery", "old");
+      const layout = baselinePublicationLayout(config);
+      writeFileSync(
+        layout.publicationJournalPath,
+        JSON.stringify({
+          schemaVersion: "win10-kvm-baseline-publication-intent/v1",
+          previousReleaseId: release.releaseId,
+          releaseId: "release-uncommitted-definition",
+        }),
+      );
+      const definitions = [];
+
+      const recovered = await recoverPublishedBaseline(config, {
+        recoverDefinition: async (selected, intent) => {
+          definitions.push({ selected: selected.releaseId, intent });
+        },
+      });
+
+      assert.equal(recovered.releaseId, release.releaseId);
+      assert.deepEqual(definitions, [
+        {
+          selected: release.releaseId,
+          intent: {
+            schemaVersion: "win10-kvm-baseline-publication-intent/v1",
+            previousReleaseId: release.releaseId,
+            releaseId: "release-uncommitted-definition",
+          },
+        },
+      ]);
+      assert.equal(existsSync(layout.publicationJournalPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires staged system and cache artifacts to reside on their respective publication filesystems", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-sidecar-fs-"));
+    const cacheRoot = "/dev/shm";
+    let cacheReleaseRoot = null;
+    try {
+      if (statSync(root).dev === statSync(cacheRoot).dev) return;
+      const config = buildConfig(root);
+      config.host.largeFileRoot = "/";
+      config.storage.cacheDiskPath = join(
+        cacheRoot,
+        `vem-kvm-cache-${process.pid}-${Date.now()}.qcow2`,
+      );
+      cacheReleaseRoot = `${config.storage.cacheDiskPath}.releases`;
+      const staged = stagedRelease(config, "wrong-cache-filesystem", "new");
+
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-wrong-cache-filesystem",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: runtimeProfileForPublishedRelease(
+            config,
+            "release-wrong-cache-filesystem",
+          ),
+          verified: true,
+          commitDefinition: async () => {},
+          rollbackDefinition: async () => {},
+        }),
+        /cache publication filesystem/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      if (cacheReleaseRoot) {
+        rmSync(cacheReleaseRoot, { recursive: true, force: true });
+      }
     }
   });
 
@@ -565,6 +781,10 @@ describe("Linux KVM Windows baseline", () => {
       writeFileSync(config.guest.administratorPasswordFile, "test-password\n");
       writeFileSync(config.guest.authorizedKeysFile, "ssh-ed25519 test\n");
       writeFileSync(config.media.spiceGuestToolsInstallerPath, "spice-tools");
+      writeFileSync(config.media.runnerArchivePath, "runner-archive");
+      config.media.runnerArchiveSha256 = createHash("sha256")
+        .update("runner-archive")
+        .digest("hex");
       const commands = [];
       const stagingDirectory = join(root, "staging");
       await createConfigurationMedia(config, stagingDirectory, {
@@ -575,6 +795,7 @@ describe("Linux KVM Windows baseline", () => {
       assert.deepEqual(guestConfigurationFor(config), {
         webView2InstallerUri: config.media.webView2InstallerUri,
         spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
+        runnerArchiveFile: "actions-runner-win-x64.zip",
         display: { width: 1080, height: 1920, scalePercent: 100 },
       });
       assert.equal(
@@ -582,6 +803,10 @@ describe("Linux KVM Windows baseline", () => {
         "spice-tools",
       );
       assert.equal(existsSync(join(mediaRoot, "prepare-vm-runtime.ps1")), true);
+      assert.equal(
+        readFileSync(join(mediaRoot, "actions-runner-win-x64.zip"), "utf8"),
+        "runner-archive",
+      );
       assert.match(
         bootstrapScript(),
         /-SpiceGuestToolsInstallerPath \(Join-Path \$mediaRoot \$config\.spiceGuestToolsInstallerFile\)/,
@@ -597,6 +822,14 @@ describe("Linux KVM Windows baseline", () => {
       assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
       assert.deepEqual(commands[0][0], "xorriso");
       assert.ok(commands[0][1].includes(mediaRoot));
+
+      config.media.runnerArchiveSha256 = "b".repeat(64);
+      await assert.rejects(
+        createConfigurationMedia(config, join(root, "bad-hash-staging"), {
+          runCommand: async () => {},
+        }),
+        /runnerArchivePath SHA-256 does not match/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -693,9 +926,18 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /C:\\actions-runner\\_work/);
     assert.match(runtime, /"--work", \$runnerWorkRoot/);
     assert.doesNotMatch(runtime, /D:\\runtime-cache\\actions-work/);
-    assert.match(runtime, /pnpm-store\\node-lts/);
-    assert.match(runtime, /cargo\\rust-stable/);
+    assert.match(runtime, /\$nodeVersion = "24\.16\.0"/);
+    assert.match(runtime, /\$rustToolchain = "1\.96\.0-x86_64-pc-windows-msvc"/);
+    assert.match(runtime, /pnpm-store\\node-\$nodeVersion/);
+    assert.match(runtime, /cargo\\\$rustCacheNamespace/);
     assert.match(runtime, /turbo\\turbo-v2/);
+    assert.match(runtime, /RUSTUP_HOME = "C:\\ProgramData\\VEM\\Toolchains\\rustup\\rust-1\.96\.0"/);
+    assert.doesNotMatch(runtime, /RUSTUP_HOME = "D:/);
+    assert.match(runtime, /nodejs-lts", "--version=24\.16\.0"/);
+    assert.match(runtime, /rustup\.exe" -ArgumentList @\("toolchain", "install", "1\.96\.0-x86_64-pc-windows-msvc"/);
+    assert.doesNotMatch(runtime, /rustup\.exe" -ArgumentList @\("default", "stable"/);
+    assert.match(runtime, /RunnerArchivePath/);
+    assert.doesNotMatch(runtime, /RunnerArchiveUri|Invoke-WebRequest -UseBasicParsing -Uri \$RunnerArchive/);
     assert.doesNotMatch(shared, /config\.cmd|actions-runner|choco install/i);
     assert.match(runtime, /config\.cmd/);
     assert.match(runtime, /choco\.exe/);
@@ -714,10 +956,12 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(verify, /ExpectedRunnerName/);
     assert.match(verify, /ExpectedRunnerServiceName/);
     assert.match(verify, /ExpectedAudioModel/);
-    assert.match(verify, /ExpectedAudioBackend/);
+    assert.doesNotMatch(verify, /ExpectedAudioBackend|ExpectedAudioDeviceIdentity/);
+    assert.match(verify, /HDAUDIO\\\\/);
     assert.match(verify, /ExpectedSerialRole/);
-    assert.match(verify, /ExpectedSerialDeviceIdentity/);
-    assert.match(verify, /lower-controller and scanner QEMU USB serial roles/);
+    assert.match(verify, /ExpectedSerialUsbPort/);
+    assert.doesNotMatch(verify, /ExpectedSerialDeviceIdentity/);
+    assert.match(verify, /lower-controller and scanner USB port roles/);
     assert.doesNotMatch(verify, /serialPorts\.Count -ge 2/);
     assert.match(builder, /UserKnownHostsFile=/);
     assert.match(builder, /<Group>Administrators<\/Group>/);
@@ -726,7 +970,9 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(builder, /qemu-img", \[\s*"convert"/);
     assert.match(builder, /publishVerifiedBaselineRelease/);
     assert.match(builder, /PrepareKvmGuest/);
-    assert.match(builder, /USB\\\\VID_0403&PID_6001/);
+    assert.match(builder, /ExpectedSerialUsbPort '1','2'/);
+    assert.match(builder, /actions-runner-win-x64\.zip/);
+    assert.doesNotMatch(builder, /RunnerArchiveUri/);
     assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
     for (const expected of [
       "SSH",
@@ -740,6 +986,9 @@ describe("Linux KVM Windows baseline", () => {
     }
     assert.match(verify, /AudioDeviceRole/);
     assert.match(verify, /cacheDisk/);
+    assert.match(shared, /PreserveStartupType/);
+    assert.match(shared, /Set-BaselineService -Name "Schedule" -PreserveStartupType/);
+    assert.doesNotMatch(shared, /Set-Service -Name "Schedule" -StartupType/);
 
     for (const script of [
       "shared-guest-preparation.ps1",

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)] [ValidateSet("PrepareToolchain", "PrepareKvmGuest", "RegisterRunner")] [string] $Mode,
-  [string] $RunnerArchiveUri,
+  [string] $RunnerArchivePath,
   [string] $RunnerUrl,
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
@@ -13,19 +13,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 $cacheRoot = "D:\runtime-cache\v1"
+$toolchainRoot = "C:\ProgramData\VEM\Toolchains"
 $runnerRoot = "C:\actions-runner"
 $runnerWorkRoot = "C:\actions-runner\_work"
+$nodeVersion = "24.16.0"
+$rustToolchain = "1.96.0-x86_64-pc-windows-msvc"
+$rustCacheNamespace = "rust-1.96.0"
 
 function Get-CachePaths {
   return @{
-    PNPM_HOME = "$cacheRoot\pnpm-home\node-lts"
-    CARGO_HOME = "$cacheRoot\cargo\rust-stable"
-    RUSTUP_HOME = "$cacheRoot\rustup\rust-stable"
-    CARGO_TARGET_DIR = "$cacheRoot\target\rust-stable"
-    SCCACHE_DIR = "$cacheRoot\sccache\rust-stable"
+    PNPM_HOME = "$toolchainRoot\pnpm-home\node-$nodeVersion"
+    CARGO_HOME = "$cacheRoot\cargo\$rustCacheNamespace"
+    RUSTUP_HOME = "C:\ProgramData\VEM\Toolchains\rustup\rust-1.96.0"
+    CARGO_TARGET_DIR = "$cacheRoot\target\$rustCacheNamespace"
+    SCCACHE_DIR = "$cacheRoot\sccache\$rustCacheNamespace"
     TURBO_CACHE_DIR = "$cacheRoot\turbo\turbo-v2"
-    npm_config_cache = "$cacheRoot\npm\node-lts"
-    PNPM_STORE_PATH = "$cacheRoot\pnpm-store\node-lts"
+    npm_config_cache = "$cacheRoot\npm\node-$nodeVersion"
+    PNPM_STORE_PATH = "$cacheRoot\pnpm-store\node-$nodeVersion"
   }
 }
 
@@ -112,7 +116,8 @@ function Set-CacheEnvironment {
 }
 
 function Refresh-ProcessPath {
-  $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
+  $cachePaths = Get-CachePaths
+  $env:Path = $cachePaths.CARGO_HOME + "\bin;" + $cachePaths.PNPM_HOME + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
 }
 
 function Test-WindowsMediaStack {
@@ -135,16 +140,20 @@ function Install-Toolchain {
   Set-ExecutionPolicy Bypass -Scope Process -Force
   Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
   Refresh-ProcessPath
-  Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "git", "nodejs-lts", "rustup.install", "visualstudio2022buildtools", "visualstudio2022-workload-vctools") -Description "Windows build toolchain installation"
+  Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "git", "rustup.install", "visualstudio2022buildtools", "visualstudio2022-workload-vctools") -Description "Windows build toolchain installation"
+  Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "nodejs-lts", "--version=24.16.0") -Description "pinned Node.js installation"
   Refresh-ProcessPath
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("enable") -Description "Corepack enable"
-  Invoke-Native -FilePath "rustup.exe" -ArgumentList @("default", "stable") -Description "Rust stable toolchain installation"
+  Invoke-Native -FilePath "rustup.exe" -ArgumentList @("toolchain", "install", "1.96.0-x86_64-pc-windows-msvc", "--profile", "minimal") -Description "pinned Rust toolchain installation"
+  Invoke-Native -FilePath "rustup.exe" -ArgumentList @("default", "1.96.0-x86_64-pc-windows-msvc") -Description "pinned Rust toolchain activation"
   $cachePaths = Get-CachePaths
   New-Item -ItemType Directory -Force -Path $cachePaths.PNPM_STORE_PATH | Out-Null
   Invoke-Native -FilePath "pnpm.cmd" -ArgumentList @("config", "set", "store-dir", $cachePaths.PNPM_STORE_PATH, "--global") -Description "pnpm cache configuration"
   foreach ($tool in @("git.exe", "node.exe", "pnpm.cmd", "cargo.exe", "rustc.exe")) {
     Invoke-Native -FilePath $tool -ArgumentList @("--version") -Description "$tool version probe"
   }
+  if ((& node.exe --version).Trim().TrimStart("v") -ne $nodeVersion) { throw "Node.js version does not match $nodeVersion" }
+  if ((& rustc.exe --version) -notmatch "^rustc 1\\.96\\.0 ") { throw "Rust version does not match $rustToolchain" }
   $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
   if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe is unavailable" }
   $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Workload.VCTools -property installationPath).Trim()
@@ -160,11 +169,11 @@ function Install-Toolchain {
 }
 
 function Register-Runner {
-  foreach ($required in @("RunnerArchiveUri", "RunnerUrl", "RunnerRegistrationToken", "RunnerName")) {
+  foreach ($required in @("RunnerArchivePath", "RunnerUrl", "RunnerRegistrationToken", "RunnerName")) {
     if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { throw "$required is required for runner registration" }
   }
-  $archive = Join-Path $env:TEMP "actions-runner-$RunnerName.zip"
-  Invoke-WebRequest -UseBasicParsing -Uri $RunnerArchiveUri -OutFile $archive
+  if (-not (Test-Path -LiteralPath $RunnerArchivePath -PathType Leaf)) { throw "RunnerArchivePath is unavailable" }
+  $archive = (Resolve-Path -LiteralPath $RunnerArchivePath -ErrorAction Stop).Path
   Expand-Archive -Force -Path $archive -DestinationPath $runnerRoot
   Push-Location $runnerRoot
   try {
@@ -187,7 +196,6 @@ function Register-Runner {
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "C:\ProgramData\WindowsRuntimeBaseline\runner-registration.json"
   } finally {
     Pop-Location
-    Remove-Item -Force $archive -ErrorAction SilentlyContinue
   }
 }
 

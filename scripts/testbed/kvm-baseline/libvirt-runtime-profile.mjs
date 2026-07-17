@@ -10,6 +10,7 @@ export const DEFAULT_RUNTIME_PROFILE = Object.freeze({
     videoMemoryKiB: 65536,
   }),
   serialRoles: Object.freeze(["lower-controller", "scanner"]),
+  serialUsbPorts: Object.freeze([1, 2]),
   audio: Object.freeze({
     model: "ich9",
     backend: "spice",
@@ -70,6 +71,21 @@ export function createRuntimeProfile(options) {
   ) {
     throw new Error("serialRoles must contain two unique lowercase roles");
   }
+  const serialUsbPorts = options.serialUsbPorts ?? [
+    ...DEFAULT_RUNTIME_PROFILE.serialUsbPorts,
+  ];
+  if (
+    !Array.isArray(serialUsbPorts) ||
+    serialUsbPorts.length !== serialRoles.length ||
+    new Set(serialUsbPorts).size !== serialUsbPorts.length ||
+    serialUsbPorts.some(
+      (port) => !Number.isInteger(port) || port < 1 || port > 15,
+    )
+  ) {
+    throw new Error(
+      "serialUsbPorts must contain two unique QEMU USB controller ports",
+    );
+  }
   const audio = { ...DEFAULT_RUNTIME_PROFILE.audio, ...(options.audio ?? {}) };
   if (
     audio.model !== "ich9" ||
@@ -89,6 +105,7 @@ export function createRuntimeProfile(options) {
     memoryMiB,
     display,
     serialRoles: [...serialRoles],
+    serialUsbPorts: [...serialUsbPorts],
     audio,
     disks: {
       system: {
@@ -132,6 +149,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
     .map(
       (role, index) => `    <serial type="pty">
       <target type="usb-serial" port="${index}"/>
+      <address type="usb" bus="0" port="${profile.serialUsbPorts[index]}"/>
       <alias name="serial-${xml(role)}"/>
     </serial>`,
     )

@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 import { renderLibvirtDomainXml } from "./libvirt-runtime-profile.mjs";
 import {
   REQUIRED_COMMANDS,
+  assertFileSha256,
   assertReadableRegularFile,
   baselinePublicationLayout,
   evaluateHostPreflight,
@@ -37,6 +38,7 @@ import {
 const execFile = promisify(execFileCallback);
 const BASELINE_ROOT = new URL(".", import.meta.url);
 export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
+export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
 
 function parseArgs(argv) {
   const options = { execute: false };
@@ -187,6 +189,13 @@ async function collectHostObservation(config) {
       spiceGuestToolsInstaller: await readable(
         config.media.spiceGuestToolsInstallerPath,
       ),
+      runnerArchive: await assertFileSha256(
+        config.media.runnerArchivePath,
+        config.media.runnerArchiveSha256,
+        "media.runnerArchivePath",
+      )
+        .then(() => true)
+        .catch(() => false),
     },
     networkActive: !network.failed && /^Active:\s+yes$/im.test(network.stdout),
     profile,
@@ -245,6 +254,7 @@ export function guestConfigurationFor(config) {
   return {
     webView2InstallerUri: config.media.webView2InstallerUri,
     spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
+    runnerArchiveFile: RUNNER_ARCHIVE_FILE,
     display: {
       width: 1080,
       height: 1920,
@@ -300,6 +310,12 @@ export async function createConfigurationMedia(
     config.media.spiceGuestToolsInstallerPath,
     join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE),
   );
+  await assertFileSha256(
+    config.media.runnerArchivePath,
+    config.media.runnerArchiveSha256,
+    "media.runnerArchivePath",
+  );
+  await copyFile(config.media.runnerArchivePath, join(mediaRoot, RUNNER_ARCHIVE_FILE));
   const isoPath = join(stagingDirectory, "baseline-configuration.iso");
   await runCommand("xorriso", [
     "-as",
@@ -368,8 +384,8 @@ function xmlAttributeEquals(element, attribute, value) {
   return new RegExp(`\\b${attribute}=(['\"])${escaped}\\1`).test(element);
 }
 
-// The guest sees PnP identities, while libvirt remains authoritative for the
-// exact ICH9/SPICE and USB-serial role definition.
+// Libvirt owns the SPICE backend and pins each otherwise-identical QEMU USB
+// serial device to a distinct controller port. The guest verifies those ports.
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
   const audio = [...xml.matchAll(/<audio\b[^>]*\/?>(?:<\/audio>)?/g)];
@@ -402,7 +418,12 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
     if (
       !/<target\b[^>]*\btype=(['"])usb-serial\1/.test(definition) ||
       !xmlAttributeEquals(definition, "port", String(index)) ||
-      !xmlAttributeEquals(definition, "name", `serial-${role}`)
+      !/<address\b[^>]*\btype=(['"])usb\1/.test(definition) ||
+      !xmlAttributeEquals(
+        definition,
+        "port",
+        String(profile.serialUsbPorts[index]),
+      )
     ) {
       throw new Error(`defined domain USB serial role ${role} is invalid`);
     }
@@ -415,6 +436,7 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
       defaultDevice: profile.audio.defaultDevice,
     },
     serialRoles,
+    serialUsbPorts: [...profile.serialUsbPorts],
   };
 }
 
@@ -471,7 +493,7 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
         const runnerScript = join(stagingDirectory, "register-runner.ps1");
         await writeFile(
           runnerScript,
-          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchiveUri ${powershellLiteral(config.media.runnerArchiveUri)} -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
+          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
           { mode: 0o600 },
         );
         await run("scp", [
@@ -487,7 +509,7 @@ async function waitForGuestVerification(config, domainName, stagingDirectory) {
         await run("ssh", [
           ...sshOptions,
           target,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedAudioBackend 'spice' -ExpectedAudioDeviceIdentity 'SPICE' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialDeviceIdentity 'USB\\VID_0403&PID_6001','USB\\VID_0403&PID_6001' -OutputPath ${powershellLiteral(verificationPath)}"`,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialUsbPort '1','2' -OutputPath ${powershellLiteral(verificationPath)}"`,
         ]);
         await run("scp", [
           ...sshOptions,
@@ -625,13 +647,16 @@ export async function buildWin10Baseline(
   };
   if (!execute) return plan;
   await mkdir(dirname(config.storage.baselinePath), { recursive: true });
-  const publishedRelease = await recoverPublishedBaseline(config);
+  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
   const state = await domainState(config);
   if (state && state !== "shut off") {
     throw new Error(
       "the published baseline VM must be shut off before a rebuild",
     );
   }
+  const publishedRelease = await recoverPublishedBaseline(config, {
+    recoverDefinition: async (release) => definePublishedDomain(config, release),
+  });
   if (publishedRelease) await definePublishedDomain(config, publishedRelease);
   await assertReadableRegularFile(
     config.guest.administratorPasswordFile,
@@ -649,14 +674,25 @@ export async function buildWin10Baseline(
     config.media.spiceGuestToolsInstallerPath,
     "media.spiceGuestToolsInstallerPath",
   );
+  await assertFileSha256(
+    config.media.runnerArchivePath,
+    config.media.runnerArchiveSha256,
+    "media.runnerArchivePath",
+  );
   const stagingDirectory = await mkdtemp(
     join(
       dirname(config.storage.baselinePath),
       "." + config.vm.name + ".staging-",
     ),
   );
+  const cacheStagingDirectory = await mkdtemp(
+    join(
+      dirname(config.storage.cacheDiskPath),
+      "." + config.vm.name + ".cache-staging-",
+    ),
+  );
   const stagedPath = join(stagingDirectory, "system.qcow2");
-  const stagedCachePath = join(stagingDirectory, "cache.qcow2");
+  const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
   const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
   try {
     await run("qemu-img", [
@@ -772,8 +808,26 @@ export async function buildWin10Baseline(
       stagedDiagnosticPath,
       profile: publishedProfile,
       verified: verification.ok === true,
+      commitDefinition: async (candidateRelease) => {
+        await definePublishedDomain(config, candidateRelease);
+        await verifyDefinedRuntimeDevicesForDomain(
+          config,
+          config.vm.name,
+          publishedProfile,
+        );
+      },
+      rollbackDefinition: async (previousRelease) => {
+        if (previousRelease) {
+          await definePublishedDomain(config, previousRelease);
+          return;
+        }
+        await run(
+          "virsh",
+          ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
+          { allowFailure: true },
+        );
+      },
     });
-    await definePublishedDomain(config, release);
     return {
       ...plan,
       verification,
@@ -789,6 +843,7 @@ export async function buildWin10Baseline(
     throw error;
   } finally {
     await rm(stagingDirectory, { recursive: true, force: true });
+    await rm(cacheStagingDirectory, { recursive: true, force: true });
   }
 }
 

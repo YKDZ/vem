@@ -8,10 +8,8 @@ param(
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerName,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerServiceName,
   [Parameter(Mandatory = $true)] [ValidateSet("ich9")] [string] $ExpectedAudioModel,
-  [Parameter(Mandatory = $true)] [ValidateSet("spice")] [string] $ExpectedAudioBackend,
-  [Parameter(Mandatory = $true)] [string] $ExpectedAudioDeviceIdentity,
   [Parameter(Mandatory = $true)] [string[]] $ExpectedSerialRole,
-  [Parameter(Mandatory = $true)] [string[]] $ExpectedSerialDeviceIdentity,
+  [Parameter(Mandatory = $true)] [int[]] $ExpectedSerialUsbPort,
   [string] $OutputPath = "C:\ProgramData\WindowsRuntimeBaseline\verification.json"
 )
 
@@ -26,11 +24,11 @@ if ($interactiveDisplay.schemaVersion -ne "win10-kvm-interactive-display/v1") { 
 if ($interactiveDisplay.interactiveUser -notmatch ("\\" + [regex]::Escape($ExpectedInteractiveUser) + "$")) { throw "interactive display report belongs to an unexpected user" }
 $interactiveSessionId = 0
 if (-not [int]::TryParse([string]$interactiveDisplay.interactiveSessionId, [ref]$interactiveSessionId) -or $interactiveSessionId -lt 1) { throw "interactive display report has an invalid session binding" }
-if ($ExpectedSerialRole.Count -ne 2 -or $ExpectedSerialDeviceIdentity.Count -ne $ExpectedSerialRole.Count -or @($ExpectedSerialRole | Select-Object -Unique).Count -ne $ExpectedSerialRole.Count) {
-  throw "the verifier requires exactly two unique serial roles with matching QEMU USB serial identities"
+if ($ExpectedSerialRole.Count -ne 2 -or $ExpectedSerialUsbPort.Count -ne $ExpectedSerialRole.Count -or @($ExpectedSerialRole | Select-Object -Unique).Count -ne $ExpectedSerialRole.Count -or @($ExpectedSerialUsbPort | Select-Object -Unique).Count -ne $ExpectedSerialUsbPort.Count) {
+  throw "the verifier requires exactly two unique serial roles with matching QEMU USB ports"
 }
-if ($ExpectedSerialRole[0] -cne "lower-controller" -or $ExpectedSerialRole[1] -cne "scanner") {
-  throw "the verifier requires lower-controller and scanner QEMU USB serial roles in profile order"
+if ($ExpectedSerialRole[0] -cne "lower-controller" -or $ExpectedSerialRole[1] -cne "scanner" -or $ExpectedSerialUsbPort[0] -ne 1 -or $ExpectedSerialUsbPort[1] -ne 2) {
+  throw "the verifier requires lower-controller and scanner USB port roles in profile order"
 }
 if (-not (Test-Path -LiteralPath $runnerRegistrationPath -PathType Leaf)) { throw "runner registration evidence is unavailable" }
 $runnerRegistration = Get-Content -Raw -LiteralPath $runnerRegistrationPath | ConvertFrom-Json
@@ -64,20 +62,20 @@ $audioDeviceRoleType = [Windows.Media.Devices.AudioDeviceRole, Windows.Media.Dev
 $audioDeviceRole = [System.Enum]::Parse($audioDeviceRoleType, "Default")
 $audioEndpoint = [Windows.Media.Devices.MediaDevice, Windows.Media.Devices, ContentType = WindowsRuntime]::GetDefaultAudioRenderId($audioDeviceRole)
 $soundDevices = @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue)
-$audioDevice = @($soundDevices | Where-Object {
-  ($_.Name -match [regex]::Escape($ExpectedAudioDeviceIdentity)) -or
-  ($_.Caption -match [regex]::Escape($ExpectedAudioDeviceIdentity)) -or
-  ($_.PNPDeviceID -match [regex]::Escape($ExpectedAudioDeviceIdentity))
-} | Select-Object -First 1)
-$serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue | Sort-Object DeviceID)
+$hdaAudioDevices = @($soundDevices | Where-Object { $_.PNPDeviceID -match "^HDAUDIO\\" })
+$serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -match "VID_0403&PID_6001" } | Sort-Object DeviceID)
 $remainingSerialPorts = @($serialPorts)
 $serialRoleDevices = @()
 for ($index = 0; $index -lt $ExpectedSerialRole.Count; $index += 1) {
-  $identity = $ExpectedSerialDeviceIdentity[$index]
-  $match = @($remainingSerialPorts | Where-Object { $_.PNPDeviceID -match [regex]::Escape($identity) } | Select-Object -First 1)
+  $usbPort = $ExpectedSerialUsbPort[$index]
+  $match = @($remainingSerialPorts | Where-Object {
+    $locationPaths = @((Get-PnpDeviceProperty -InstanceId $_.PNPDeviceID -KeyName "DEVPKEY_Device_LocationPaths" -ErrorAction Stop).Data)
+    @($locationPaths | Where-Object { $_ -match "(^|#)USB\($usbPort\)($|#)" }).Count -eq 1
+  } | Select-Object -First 1)
   if ($match.Count -ne 1) { continue }
   $device = $match[0]
-  $serialRoleDevices += @{ role = $ExpectedSerialRole[$index]; expectedIdentity = $identity; deviceId = $device.DeviceID; name = $device.Name; pnpDeviceId = $device.PNPDeviceID }
+  $locationPaths = @((Get-PnpDeviceProperty -InstanceId $device.PNPDeviceID -KeyName "DEVPKEY_Device_LocationPaths" -ErrorAction Stop).Data)
+  $serialRoleDevices += @{ role = $ExpectedSerialRole[$index]; expectedUsbPort = $usbPort; deviceId = $device.DeviceID; name = $device.Name; pnpDeviceId = $device.PNPDeviceID; locationPaths = $locationPaths }
   $remainingSerialPorts = @($remainingSerialPorts | Where-Object { $_.DeviceID -ne $device.DeviceID })
 }
 $tools = @("git", "node", "pnpm", "cargo", "rustc") | ForEach-Object {
@@ -98,7 +96,7 @@ $checks = @{
   toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0
   WebView2 = $null -ne $webView2
   SPICEGuestTools = $null -ne $spiceGuestTools -and $null -ne $qxlDisplayAdapter -and $spiceGuestToolsRebootSemantics
-  Audio = $ExpectedAudioModel -ceq "ich9" -and $ExpectedAudioBackend -ceq "spice" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $audioDevice.Count -eq 1
+  Audio = $ExpectedAudioModel -ceq "ich9" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $hdaAudioDevices.Count -eq 1
   Serial = $serialPorts.Count -eq $ExpectedSerialRole.Count -and $serialRoleDevices.Count -eq $ExpectedSerialRole.Count -and $remainingSerialPorts.Count -eq 0
   cacheDisk = $cacheWritable
 }
@@ -108,7 +106,7 @@ $report = @{
   checks = $checks
   desktop = @{ width = $interactiveDisplay.desktop.width; height = $interactiveDisplay.desktop.height; scalePercent = $interactiveDisplay.desktop.scalePercent; interactiveUser = $interactiveDisplay.interactiveUser; interactiveSessionId = $interactiveDisplay.interactiveSessionId; source = "interactive-autologon-report" }
   runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
-  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; backend = $ExpectedAudioBackend; deviceIdentity = $ExpectedAudioDeviceIdentity }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); audioDevice = @{ name = $audioDevice[0].Name; pnpDeviceId = $audioDevice[0].PNPDeviceID }; qxlDisplayAdapter = $qxlDisplayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
+  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; qxlDisplayAdapter = $qxlDisplayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   spiceGuestTools = @{ installed = $null -ne $spiceGuestTools; displayName = $spiceGuestTools.DisplayName; qxlDisplayAdapter = $qxlDisplayAdapter.Name; installation = $spiceGuestToolsInstallation; rebootSemanticsValid = $spiceGuestToolsRebootSemantics }
   toolchain = $tools
 }

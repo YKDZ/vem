@@ -11,11 +11,15 @@ $baselineRoot = "C:\ProgramData\WindowsRuntimeBaseline"
 New-Item -ItemType Directory -Force -Path $baselineRoot | Out-Null
 
 function Set-BaselineService {
-  param([string] $Name, [string] $StartupType = "Automatic")
+  param([string] $Name, [string] $StartupType = "Automatic", [switch] $PreserveStartupType)
   $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
-  if ($null -ne $service) {
+  if ($null -eq $service) { throw "$Name service is unavailable" }
+  if (-not $PreserveStartupType) {
     Set-Service -Name $Name -StartupType $StartupType
-    if ($service.Status -ne "Running") { Start-Service -Name $Name }
+  }
+  if ($service.Status -ne "Running") { Start-Service -Name $Name }
+  if ((Get-Service -Name $Name -ErrorAction Stop).Status -ne "Running") {
+    throw "$Name must be running after baseline preparation"
   }
 }
 
@@ -36,9 +40,12 @@ function Invoke-Native {
 
 # Retain the Windows facilities used by Tauri, audio, DirectShow/Media Foundation,
 # serial hot-plug, network time, scheduled tasks, services, and diagnostics.
-foreach ($service in "PlugPlay", "DeviceInstall", "Audiosrv", "AudioEndpointBuilder", "Dhcp", "W32Time", "Schedule", "EventLog") {
+foreach ($service in "PlugPlay", "DeviceInstall", "Audiosrv", "AudioEndpointBuilder", "Dhcp", "W32Time", "EventLog") {
   Set-BaselineService -Name $service
 }
+# Task Scheduler protects its startup configuration. Retain its configured
+# startup type, start it only when necessary, and require it to be running.
+Set-BaselineService -Name "Schedule" -PreserveStartupType
 foreach ($service in "DiagTrack", "SysMain", "MapsBroker", "XblGameSave") {
   Disable-BaselineService -Name $service
 }
