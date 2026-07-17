@@ -33,6 +33,10 @@ describe("installed kiosk sale preflight", () => {
       JSON.stringify(steps),
       /payment-option.*:not\(:disabled\)/,
     );
+    assert.equal(
+      steps.find((step) => step.name === "payment submit")?.timeoutMs,
+      30_000,
+    );
   });
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
     assert.equal(
