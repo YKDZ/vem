@@ -343,6 +343,10 @@ foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; l
   else { $localSettings | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
 }
 [System.IO.File]::WriteAllText($localSettingsPath, ($localSettings | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
+$serviceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\VemVendingDaemon'
+$serviceEnvironment = @((Get-ItemProperty -LiteralPath $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment | Where-Object { -not ([string]$_).StartsWith('VEM_TESTBED_ALLOW_VIRTUAL_SERIAL_PORTS=', [StringComparison]::OrdinalIgnoreCase) })
+$serviceEnvironment += 'VEM_TESTBED_ALLOW_VIRTUAL_SERIAL_PORTS=1'
+Set-ItemProperty -LiteralPath $serviceKey -Name Environment -Type MultiString -Value $serviceEnvironment
 Start-Service -Name 'VemVendingDaemon'
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
@@ -361,6 +365,8 @@ if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
     lowerControllerPort = $lowerPort
     scannerPort = $scannerPort
     serviceStatus = if ($service) { [string]$service.Status } else { 'missing' }
+    localSettings = [System.IO.File]::ReadAllText($localSettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    machineConfig = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\machine-config.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     health = $health
   }
   throw "serial-backed daemon did not become hardware/scanner ready: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
