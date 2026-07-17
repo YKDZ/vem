@@ -4772,7 +4772,9 @@ if ($errors.Count -gt 0) {
       cleanup,
       /acceptance overlay CDP route is outside the post-sale return policy/,
     );
-    assert.match(cleanup, /#\/result/);
+    assert.match(cleanup, /#\/result\/\*/);
+    assert.match(cleanup, /\$initialRoute -like '#\/result\/\*'/);
+    assert.match(cleanup, /AddSeconds\(15\)/);
     assert.match(cleanup, /settledRoute/);
     assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
     assert.match(cleanup, /\[Console\]::Out\.WriteLine/);

@@ -2671,7 +2671,7 @@ $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
 $expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
-$allowedInitialRoutes = @($expectedRoute, '#/result') | Select-Object -Unique
+$allowedInitialRoutes = @($expectedRoute, '#/result/*') | Select-Object -Unique
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
@@ -2722,11 +2722,12 @@ $acceptanceTarget = $null
   }
   if (-not $listenerBound) { throw 'acceptance overlay CDP listener is not a machine.exe descendant' }
   $initialRoute = ([uri][string]$acceptanceTarget.url).Fragment
-  if ([string]::IsNullOrWhiteSpace($initialRoute) -or $allowedInitialRoutes -notcontains $initialRoute) { throw 'acceptance overlay CDP route is outside the post-sale return policy' }
+  $initialRouteAllowed = $initialRoute -eq $expectedRoute -or $initialRoute -like '#/result/*'
+  if ([string]::IsNullOrWhiteSpace($initialRoute) -or -not $initialRouteAllowed) { throw 'acceptance overlay CDP route is outside the post-sale return policy' }
   $settledTarget = $acceptanceTarget
   $settledRoute = $initialRoute
   $resultAutoReturnObserved = $false
-  if ($initialRoute -eq '#/result') {
+  if ($initialRoute -like '#/result/*') {
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
       $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
