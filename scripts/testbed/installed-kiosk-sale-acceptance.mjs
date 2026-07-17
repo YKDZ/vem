@@ -330,13 +330,19 @@ Stop-Service -Name 'VemVendingDaemon' -Force
 foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:\VEM\bringup\machine-config.json')) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
   $config = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-  if ($null -eq $config.public) { $config | Add-Member -NotePropertyName 'public' -NotePropertyValue ([pscustomobject]@{}) }
   foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
-    if ($config.public.PSObject.Properties.Name -contains $entry.Key) { $config.public.($entry.Key) = $entry.Value }
-    else { $config.public | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
+    if ($config.PSObject.Properties.Name -contains $entry.Key) { $config.($entry.Key) = $entry.Value }
+    else { $config | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
   }
   [System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 }
+$localSettingsPath = 'C:\ProgramData\VEM\bringup\local-settings.json'
+$localSettings = [System.IO.File]::ReadAllText($localSettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
+  if ($localSettings.PSObject.Properties.Name -contains $entry.Key) { $localSettings.($entry.Key) = $entry.Value }
+  else { $localSettings | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
+}
+[System.IO.File]::WriteAllText($localSettingsPath, ($localSettings | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 Start-Service -Name 'VemVendingDaemon'
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
