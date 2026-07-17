@@ -4012,10 +4012,11 @@ async function invokeAdapter({
         throw new Error(
           "deterministic fake adapter is restricted to contract unit tests",
         );
-    } catch {
+    } catch (error) {
       return {
         result: "failed",
         code: "evidence_invalid",
+        detail: error instanceof Error ? error.message : String(error),
         startedAt,
         completedAt,
         report: null,
@@ -4317,7 +4318,7 @@ export async function runVmHostAdapter({
   });
   rmSync(adapterWorkDirectory, { recursive: true, force: true });
   throw new VmHostAdapterExecutionError(
-    `VM Host Adapter reported ${outcome.result}: ${outcome.code}`,
+    `VM Host Adapter reported ${outcome.result}: ${outcome.code}${outcome.detail ? ` (${outcome.detail})` : ""}`,
     diagnostic,
   );
 }
