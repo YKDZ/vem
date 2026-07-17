@@ -477,32 +477,33 @@ export const useCheckoutStore = defineStore("checkout", {
         throw new Error(TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE);
       }
       if (!this.selectedItem) throw new Error("No selected item");
-      const catalogStore = useCatalogStore();
-      await catalogStore.refresh().catch(() => {
-        // Keep the existing cached sale view; the backend still performs the authoritative stock check.
-      });
-      const selectedItem = latestSaleViewItem(this.selectedItem);
-      if (!selectedItem) {
-        throw new Error("商品已更新，请重新选择");
-      }
-      if (!isSaleableItem(selectedItem)) {
-        throw new Error("商品已售罄");
-      }
-      this.selectedItem = selectedItem;
-
-      const selected = this.selectedPaymentOption;
-      if (!selected || selected.disabled) throw new Error("请选择支付方式");
-      if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
-      const planogramVersion = activePlanogramVersion();
-      if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
-      const idempotencyKey =
-        this.checkoutAttemptIdempotencyKey ??
-        createCheckoutAttemptIdempotencyKey();
-      this.checkoutAttemptIdempotencyKey = idempotencyKey;
-
       this.loading = true;
       this.error = null;
+      const catalogStore = useCatalogStore();
+      let selected: MachinePaymentOption | null = null;
       try {
+        await catalogStore.refresh().catch(() => {
+          // Keep the existing cached sale view; the backend still performs the authoritative stock check.
+        });
+        const selectedItem = latestSaleViewItem(this.selectedItem);
+        if (!selectedItem) {
+          throw new Error("商品已更新，请重新选择");
+        }
+        if (!isSaleableItem(selectedItem)) {
+          throw new Error("商品已售罄");
+        }
+        this.selectedItem = selectedItem;
+
+        selected = this.selectedPaymentOption;
+        if (!selected || selected.disabled) throw new Error("请选择支付方式");
+        if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
+        const planogramVersion = activePlanogramVersion();
+        if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
+        const idempotencyKey =
+          this.checkoutAttemptIdempotencyKey ??
+          createCheckoutAttemptIdempotencyKey();
+        this.checkoutAttemptIdempotencyKey = idempotencyKey;
+
         const snapshot = await daemonClient.createOrder({
           inventoryId: selectedItem.inventoryId,
           quantity: 1,
@@ -517,7 +518,8 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);
       } catch (error) {
-        this.error = selectedPaymentCodeLocalGateError(error, selected)
+        this.error =
+          selected && selectedPaymentCodeLocalGateError(error, selected)
           ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
           : errorString(error);
         await catalogStore.refresh().catch(() => {
