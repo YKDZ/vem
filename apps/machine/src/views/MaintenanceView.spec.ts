@@ -27,8 +27,6 @@ const {
   getPaymentEnvironmentDiagnosticMock,
   clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
-  getConfigMock,
-  saveConfigMock,
   getAudioOutputBindingMock,
   testAudioOutputMock,
   confirmAudioOutputMock,
@@ -63,8 +61,6 @@ const {
   getPaymentEnvironmentDiagnosticMock: vi.fn(),
   clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
-  getConfigMock: vi.fn(),
-  saveConfigMock: vi.fn(),
   getAudioOutputBindingMock: vi.fn(),
   testAudioOutputMock: vi.fn(),
   confirmAudioOutputMock: vi.fn(),
@@ -127,8 +123,6 @@ vi.mock("@/daemon/client", async (importOriginal) => {
       getPaymentEnvironmentDiagnostic: getPaymentEnvironmentDiagnosticMock,
       clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
       runHardwareSelfCheck: runHardwareSelfCheckMock,
-      getConfig: getConfigMock,
-      saveConfig: saveConfigMock,
       getAudioOutputBinding: getAudioOutputBindingMock,
       testAudioOutput: testAudioOutputMock,
       confirmAudioOutput: confirmAudioOutputMock,
@@ -154,8 +148,6 @@ vi.mock("@/native/tauri", () => ({
 vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
-
-type ConfigSummary = { public: Record<string, any>; [key: string]: any };
 
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
@@ -267,46 +259,70 @@ function maintenanceReadyFixture() {
   };
 }
 
-function provisionedConfigSummary(): ConfigSummary {
+function effectiveRuntimeConfigurationFixture() {
   return {
-    public: {
-      machineCode: "SECRET-MACHINE-CODE",
-      machineLocationLabel: "E2E lab",
-      apiBaseUrl: "https://api.secret.example/v1",
-      mqttUrl: "mqtt://secret-broker.example:1883",
-      mqttUsername: "secret-mqtt-user",
-      hardwareAdapter: "mock",
-      serialPortPath: null,
-      lowerControllerUsbIdentity: {
-        vendorId: "1A86",
-        productId: "55D3",
-        serialNumber: "SECRET-SERIAL",
-      },
-      scannerAdapter: "serial_text",
-      scannerSerialPortPath: "/dev/secret-scanner",
-      scannerBaudRate: 9600,
-      scannerFrameSuffix: "crlf",
-      visionEnabled: true,
-      visionWsUrl: "ws://secret-vision.example/ws",
-      visionRequestTimeoutMs: 8000,
-      machineAudioVolume: 0.7,
-      machineAudioOutputBinding: null,
-      audioCueSettings: {
-        enabled: false,
-        categories: {
-          presence: false,
-          transaction: false,
-        },
-      },
-      kioskMode: true,
-      stockMovementRetentionDays: 30,
+    schemaVersion: 1,
+    generation: 1,
+    sourceRevisions: {
+      bootstrapSchemaVersion: 1,
+      profile: null,
+      localSettingsRevision: 1,
     },
-    machineSecretConfigured: true,
-    mqttSigningSecretConfigured: true,
-    mqttPasswordConfigured: true,
-    maintenancePinConfigured: true,
-    provisioned: true,
-    provisioningIssues: [],
+    sourceDocuments: {
+      bootstrap: {
+        schemaVersion: 1,
+        provisioningApiBaseUrl: "https://api.secret.example/v1",
+        hardwareModel: "vem-prod-24",
+        topology: { identity: "vem-prod-24", version: "v1" },
+      },
+      profileCache: null,
+    },
+    machine: null,
+    platform: null,
+    hardware: {
+      model: "vem-prod-24",
+      topology: { identity: "vem-prod-24", version: "v1" },
+      expectedProfile: null,
+      lowerControllerBinding: {
+        identity: {
+          identityKey: "container:11111111-2222-3333-4444-555555555555",
+          instanceId: "USB\\VID_1A86&PID_55D3\\CTRL-001",
+          containerId: "11111111-2222-3333-4444-555555555555",
+          hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+          serialNumber: "CTRL-001",
+        },
+        confirmedAt: "2026-07-17T00:00:00.000Z",
+        confirmedBy: "test",
+        testEvidenceCode: "LOWER_CONTROLLER_READY",
+      },
+      scannerBinding: {
+        identity: {
+          identityKey: "container:22222222-3333-4444-5555-666666666666",
+          instanceId: "USB\\VID_1234&PID_5678\\SCAN-001",
+          containerId: "22222222-3333-4444-5555-666666666666",
+          hardwareIds: ["USB\\VID_1234&PID_5678"],
+          serialNumber: "SCAN-001",
+        },
+        confirmedAt: "2026-07-17T00:00:00.000Z",
+        confirmedBy: "test",
+        testEvidenceCode: "SCANNER_READY",
+      },
+      scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
+    },
+    experience: {
+      audio: {
+        volume: 0.7,
+        cuesEnabled: false,
+        presenceCuesEnabled: false,
+        transactionCuesEnabled: false,
+      },
+    },
+    secretStatus: {
+      machineSecretConfigured: true,
+      mqttSigningSecretConfigured: true,
+      mqttPasswordConfigured: true,
+    },
+    profileRefresh: { status: "unclaimed", lastError: null },
   };
 }
 
@@ -532,8 +548,6 @@ beforeEach(() => {
     resolutionSource: null,
     boundUsbIdentity: null,
   });
-  getConfigMock.mockResolvedValue(provisionedConfigSummary());
-  saveConfigMock.mockResolvedValue({});
   getAudioOutputBindingMock.mockResolvedValue({
     binding: null,
     currentObservation: null,
@@ -564,7 +578,7 @@ beforeEach(() => {
     configGeneration: 1,
     proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
   });
-  confirmAudioOutputMock.mockResolvedValue(provisionedConfigSummary());
+  confirmAudioOutputMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   beginMaintenanceSessionMock.mockResolvedValue({
     sessionId: "maintenance-session-1",
@@ -990,7 +1004,6 @@ describe("MaintenanceView hardware config", () => {
     expect(
       host.querySelector("input[type='password']:not([aria-label='维护 PIN'])"),
     ).toBeNull();
-    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 
   it("shows only narrow daemon-owned maintenance controls", async () => {
@@ -1038,33 +1051,25 @@ describe("MaintenanceView hardware config", () => {
 
   it("does not leak deployment values into production maintenance UI", async () => {
     (useMachineStore() as { $patch(value: unknown): void }).$patch({
-      configSummary: provisionedConfigSummary(),
+      effectiveRuntimeConfiguration: effectiveRuntimeConfigurationFixture(),
       configLoaded: true,
     });
 
     const host = await mountView();
 
-    expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
-    expect(host.textContent).not.toContain("E2E lab");
     expect(host.textContent).not.toContain("https://api.secret.example/v1");
-    expect(host.textContent).not.toContain("mqtt://secret-broker.example:1883");
-    expect(host.textContent).not.toContain("secret-mqtt-user");
-    expect(host.textContent).not.toContain("SECRET-SERIAL");
-    expect(host.textContent).not.toContain("/dev/secret-scanner");
-    expect(host.textContent).not.toContain("ws://secret-vision.example/ws");
-    expect(host.textContent).not.toContain("secret-vision-command");
-    expect(host.textContent).not.toContain("--secret-vision-args");
+    expect(host.textContent).not.toContain("CTRL-001");
+    expect(host.textContent).not.toContain("SCAN-001");
   });
 
   it("does not load deployment config into production maintenance state when advanced debug is disabled", async () => {
     (useMachineStore() as { $patch(value: unknown): void }).$patch({
-      configSummary: null,
+      effectiveRuntimeConfiguration: null,
       configLoaded: false,
     });
 
     const host = await mountView();
 
-    expect(getConfigMock).not.toHaveBeenCalled();
     expect(host.textContent).toContain("确认补货");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");

@@ -1,16 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getConfigMock } = vi.hoisted(() => ({
-  getConfigMock: vi.fn(),
-}));
-
-vi.mock("@/daemon/client", () => ({
-  daemonClient: {
-    getConfig: getConfigMock,
-  },
-}));
-
 import type {
   HealthSnapshot,
   NaturalContextSnapshot,

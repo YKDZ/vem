@@ -42,50 +42,13 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   await mkdir(dataDir, { recursive: true });
   daemonOutput = [];
   await writeFile(join(dataDir, "ipc-token"), "dev-token");
-  const secretsDir = join(dataDir, "secrets");
-  await mkdir(secretsDir, { recursive: true });
-  await Promise.all([
-    writeFile(
-      join(secretsDir, "machine_secret"),
-      "machine-secret-for-machine-ui-e2e",
-    ),
-    writeFile(
-      join(secretsDir, "mqtt_signing_secret"),
-      "mqtt-signing-secret-for-machine-ui-e2e",
-    ),
-    writeFile(
-      join(secretsDir, "mqtt_password"),
-      "mqtt-password-for-machine-ui-e2e",
-    ),
-  ]);
   await writeFile(
-    join(dataDir, "machine-config.json"),
+    join(runtimeRoot, "runtime-bootstrap.json"),
     JSON.stringify({
-      machineId: "550e8400-e29b-41d4-a716-446655440099",
-      machineCode: "MACHINE-UI",
-      machineName: "Machine UI E2E",
-      machineStatus: "online",
-      machineLocationLabel: "E2E lab",
-      apiBaseUrl: "http://127.0.0.1:9/api",
-      mqttUrl: "mqtt://127.0.0.1:1883",
-      mqttUsername: null,
-      mqttClientId: "vem-machine-MACHINE-UI",
-      hardwareAdapter: "mock",
-      serialPortPath: null,
-      scannerAdapter: "disabled",
-      scannerSerialPortPath: null,
-      scannerBaudRate: 9600,
-      scannerFrameSuffix: "crlf",
-      visionEnabled: false,
-      visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionRequestTimeoutMs: 8000,
-      kioskMode: false,
-      runtimeEndpoints: {
-        apiBasePath: "/api",
-        machineAuthTokenPath: "/api/machine-auth/token",
-        machineApiBasePath: "/api/machines/MACHINE-UI",
-        mqttTopicPrefix: "vem/machines/MACHINE-UI",
-      },
+      schemaVersion: 1,
+      provisioningApiBaseUrl: "http://127.0.0.1:9/api",
+      hardwareModel: "vem-prod-24",
+      topology: { identity: "vem-prod-24", version: "v1" },
     }),
   );
   daemon = spawn(
@@ -141,9 +104,12 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,
   });
   await expect(async () => {
-    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/config/summary`, {
-      headers: { Authorization: "Bearer dev-token" },
-    }).catch((error: unknown) => {
+    const response = await fetch(
+      `${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`,
+      {
+        headers: { Authorization: "Bearer dev-token" },
+      },
+    ).catch((error: unknown) => {
       throw new Error(
         `daemon HTTP config check failed: ${
           error instanceof Error ? error.message : String(error)
@@ -151,14 +117,15 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       );
     });
     expect(response.ok).toBe(true);
-    const config = (await response.json()) as {
-      effectivePublic?: unknown;
-      configuredState?: unknown;
+    const configuration = (await response.json()) as {
+      sourceDocuments?: { bootstrap?: unknown; profileCache?: unknown };
+      machine?: unknown;
+      profileRefresh?: { status?: unknown };
     };
-    expect(typeof config.effectivePublic).toBe("object");
-    expect(config.effectivePublic).not.toBeNull();
-    expect(typeof config.configuredState).toBe("object");
-    expect(config.configuredState).not.toBeNull();
+    expect(typeof configuration.sourceDocuments?.bootstrap).toBe("object");
+    expect(configuration.sourceDocuments?.profileCache).toBeNull();
+    expect(configuration.machine).toBeNull();
+    expect(configuration.profileRefresh?.status).toBe("unclaimed");
   }).toPass({
     intervals: [250, 500, 1000],
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,

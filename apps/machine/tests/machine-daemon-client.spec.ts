@@ -46,21 +46,149 @@ const saleViewItem = {
   slotSalesState: "sale_ready",
 };
 
-const publicConfig = {
-  machineCode: "M001",
-  apiBaseUrl: "http://127.0.0.1:3000/api",
-  mqttUrl: "mqtt://127.0.0.1:1883",
-  mqttUsername: "machine",
-  hardwareAdapter: "mock",
-  serialPortPath: null,
-  scannerAdapter: "disabled",
-  scannerSerialPortPath: null,
-  scannerBaudRate: 9600,
-  scannerFrameSuffix: "crlf",
-  visionEnabled: true,
-  visionWsUrl: "ws://127.0.0.1:7892/ws",
-  visionRequestTimeoutMs: 8000,
-  kioskMode: true,
+const effectiveRuntimeConfiguration = {
+  schemaVersion: 1,
+  generation: 1,
+  sourceRevisions: {
+    bootstrapSchemaVersion: 1,
+    profile: {
+      generation: 1,
+      profileRevision: 1,
+      acceptedAt: "2026-07-17T00:00:00.000Z",
+    },
+    localSettingsRevision: 2,
+  },
+  sourceDocuments: {
+    bootstrap: {
+      schemaVersion: 1,
+      provisioningApiBaseUrl: "http://127.0.0.1:3000/api",
+      hardwareModel: "vem-prod-24",
+      topology: { identity: "vem-prod-24", version: "v1" },
+    },
+    profileCache: {
+      schemaVersion: 1,
+      generation: 1,
+      acceptedAt: "2026-07-17T00:00:00.000Z",
+      profile: {
+        machine: {
+          id: "550e8400-e29b-41d4-a716-446655440001",
+          code: "M001",
+          name: "Machine E2E",
+          status: "online",
+          locationLabel: "Test lab",
+        },
+        apiBaseUrl: "http://127.0.0.1:3000/api",
+        runtimeEndpoints: {
+          apiBasePath: "/api",
+          machineAuthTokenPath: "/api/machine-auth/token",
+          machineApiBasePath: "/api/machines/M001",
+          mqttTopicPrefix: "vem/machines/M001",
+        },
+        mqttConnection: {
+          url: "mqtt://127.0.0.1:1883",
+          clientId: "vem-machine-M001",
+          username: "machine",
+        },
+        hardwareProfile: {
+          profile: "production",
+          controller: { required: true, protocol: "vem-vending-controller" },
+          paymentScanner: { required: true, supportsPaymentCode: true },
+          vision: { required: false, supportsRecommendations: true },
+        },
+        hardwareModel: "vem-prod-24",
+        hardwareSlotTopology: { identity: "vem-prod-24", version: "v1" },
+        paymentCapability: {
+          profile: "production",
+          qrCodeEnabled: true,
+          paymentCodeEnabled: true,
+          serverTime: "2026-07-17T00:00:00.000Z",
+        },
+        metadata: {
+          profileVersion: 1,
+          profileRevision: 1,
+          claimCodeId: "550e8400-e29b-41d4-a716-446655440002",
+          claimedAt: "2026-07-17T00:00:00.000Z",
+          serverTime: "2026-07-17T00:00:00.000Z",
+        },
+      },
+    },
+  },
+  machine: {
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    code: "M001",
+    name: "Machine E2E",
+    status: "online",
+    locationLabel: "Test lab",
+  },
+  platform: {
+    apiBaseUrl: "http://127.0.0.1:3000/api",
+    runtimeEndpoints: {
+      apiBasePath: "/api",
+      machineAuthTokenPath: "/api/machine-auth/token",
+      machineApiBasePath: "/api/machines/M001",
+      mqttTopicPrefix: "vem/machines/M001",
+    },
+    mqttConnection: {
+      url: "mqtt://127.0.0.1:1883",
+      clientId: "vem-machine-M001",
+      username: "machine",
+    },
+    paymentCapability: {
+      profile: "production",
+      qrCodeEnabled: true,
+      paymentCodeEnabled: true,
+      serverTime: "2026-07-17T00:00:00.000Z",
+    },
+  },
+  hardware: {
+    model: "vem-prod-24",
+    topology: { identity: "vem-prod-24", version: "v1" },
+    expectedProfile: {
+      profile: "production",
+      controller: { required: true, protocol: "vem-vending-controller" },
+      paymentScanner: { required: true, supportsPaymentCode: true },
+      vision: { required: false, supportsRecommendations: true },
+    },
+    lowerControllerBinding: {
+      identity: {
+        identityKey: "container:11111111-2222-3333-4444-555555555555",
+        instanceId: "USB\\VID_1A86&PID_55D3\\CTRL-001",
+        containerId: "11111111-2222-3333-4444-555555555555",
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: "CTRL-001",
+      },
+      confirmedAt: "2026-07-17T00:00:00.000Z",
+      confirmedBy: "test",
+      testEvidenceCode: "LOWER_CONTROLLER_READY",
+    },
+    scannerBinding: {
+      identity: {
+        identityKey: "container:22222222-3333-4444-5555-666666666666",
+        instanceId: "USB\\VID_1234&PID_5678\\SCAN-001",
+        containerId: "22222222-3333-4444-5555-666666666666",
+        hardwareIds: ["USB\\VID_1234&PID_5678"],
+        serialNumber: "SCAN-001",
+      },
+      confirmedAt: "2026-07-17T00:00:00.000Z",
+      confirmedBy: "test",
+      testEvidenceCode: "SCANNER_READY",
+    },
+    scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
+  },
+  experience: {
+    audio: {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    },
+  },
+  secretStatus: {
+    machineSecretConfigured: true,
+    mqttSigningSecretConfigured: true,
+    mqttPasswordConfigured: true,
+  },
+  profileRefresh: { status: "accepted", lastError: null },
 };
 
 const emptyTransaction = {
@@ -586,24 +714,9 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (url.pathname === "/v1/config/summary") {
-    const provisioned =
-      scenario !== "provisioning" && scenario !== "maintenance";
-    const payload = {
-      configuredState: {
-        factoryManifest: true,
-        localBringUpSettings: true,
-        provisioningProfileCache: provisioned,
-        machineSecretConfigured: provisioned,
-        mqttSigningSecretConfigured: provisioned,
-        mqttPasswordConfigured: provisioned,
-        maintenancePinConfigured: provisioned,
-      },
-      provisioningProfileCache: provisioned ? { machineCode: "M001" } : null,
-      effectivePublic: publicConfig,
-    };
-    expectNoSecretFields(payload);
-    respondJson(res, payload);
+  if (url.pathname === "/v1/runtime-configuration") {
+    expectNoSecretFields(effectiveRuntimeConfiguration);
+    respondJson(res, effectiveRuntimeConfiguration);
     return;
   }
 

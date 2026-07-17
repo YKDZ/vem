@@ -2,6 +2,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 const {
   routerPushMock,
@@ -12,7 +13,7 @@ const {
   getHealthMock,
   getReadyMock,
   getBringUpMock,
-  getConfigMock,
+  getEffectiveRuntimeConfigurationMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
   getSaleViewMock,
@@ -33,7 +34,7 @@ const {
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
   getBringUpMock: vi.fn(),
-  getConfigMock: vi.fn(),
+  getEffectiveRuntimeConfigurationMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getSaleViewMock: vi.fn(),
@@ -73,7 +74,7 @@ vi.mock("@/daemon/client", () => ({
     getHealth: getHealthMock,
     getReady: getReadyMock,
     getBringUp: getBringUpMock,
-    getConfig: getConfigMock,
+    getEffectiveRuntimeConfiguration: getEffectiveRuntimeConfigurationMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
     getSaleView: getSaleViewMock,
@@ -176,31 +177,9 @@ beforeEach(() => {
     operatorHint: null,
     updatedAt: "2026-06-04T00:00:00Z",
   });
-  getConfigMock.mockResolvedValue({
-    public: {
-      machineCode: "M001",
-      apiBaseUrl: "http://localhost:3000/api",
-      mqttUrl: "mqtt://localhost:1883",
-      mqttUsername: null,
-      hardwareAdapter: "mock",
-      serialPortPath: null,
-      lowerControllerUsbIdentity: null,
-      scannerAdapter: "disabled",
-      scannerSerialPortPath: null,
-      scannerBaudRate: 9600,
-      scannerFrameSuffix: "crlf",
-      visionEnabled: true,
-      visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionRequestTimeoutMs: 8000,
-      kioskMode: false,
-      stockMovementRetentionDays: 30,
-    },
-    machineSecretConfigured: true,
-    mqttSigningSecretConfigured: true,
-    mqttPasswordConfigured: false,
-    provisioned: true,
-    provisioningIssues: [],
-  });
+  getEffectiveRuntimeConfigurationMock.mockResolvedValue(
+    effectiveRuntimeConfigurationFixture(),
+  );
   getPaymentOptionsMock.mockResolvedValue({
     options: [
       {
@@ -354,8 +333,8 @@ function makeCatalogItem(): MachineCatalogItem {
   };
 }
 
-function applyVisionTryOnConfig(): void {
-  useMachineStore().applyEffectiveRuntimeConfiguration({
+function effectiveRuntimeConfigurationFixture(): EffectiveMachineRuntimeConfiguration {
+  return {
     schemaVersion: 1,
     generation: 1,
     sourceRevisions: {
@@ -378,16 +357,44 @@ function applyVisionTryOnConfig(): void {
       model: "test",
       topology: { identity: "test", version: "1" },
       expectedProfile: null,
-      lowerControllerBinding: null,
-      scannerBinding: null,
-      scannerProtocol: null,
+      lowerControllerBinding: {
+        identity: {
+          identityKey: "container:11111111-2222-3333-4444-555555555555",
+          instanceId: "USB\\VID_1A86&PID_55D3\\CTRL-001",
+          containerId: "11111111-2222-3333-4444-555555555555",
+          hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+          serialNumber: "CTRL-001",
+        },
+        confirmedAt: "2026-07-17T00:00:00.000Z",
+        confirmedBy: "test",
+        testEvidenceCode: "LOWER_CONTROLLER_READY",
+      },
+      scannerBinding: {
+        identity: {
+          identityKey: "container:22222222-3333-4444-5555-666666666666",
+          instanceId: "USB\\VID_1234&PID_5678\\SCAN-001",
+          containerId: "22222222-3333-4444-5555-666666666666",
+          hardwareIds: ["USB\\VID_1234&PID_5678"],
+          serialNumber: "SCAN-001",
+        },
+        confirmedAt: "2026-07-17T00:00:00.000Z",
+        confirmedBy: "test",
+        testEvidenceCode: "SCANNER_READY",
+      },
+      scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
     },
     experience: {
       audio: { volume: 0.7, cuesEnabled: false, presenceCuesEnabled: false, transactionCuesEnabled: false },
     },
     secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
     profileRefresh: { status: "unclaimed", lastError: null },
-  });
+  };
+}
+
+function applyVisionTryOnConfig(): void {
+  useMachineStore().applyEffectiveRuntimeConfiguration(
+    effectiveRuntimeConfigurationFixture(),
+  );
 }
 
 function mockTryOnSession(
@@ -754,35 +761,9 @@ describe("sale readiness UI flow", () => {
       suggestedRoute: "maintenance",
     });
     getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
-    getConfigMock.mockResolvedValue({
-      public: {
-        machineCode: null,
-        apiBaseUrl: "http://localhost:3000/api",
-        mqttUrl: "mqtt://localhost:1883",
-        mqttUsername: null,
-        hardwareAdapter: "mock",
-        serialPortPath: null,
-        lowerControllerUsbIdentity: null,
-        scannerAdapter: "disabled",
-        scannerSerialPortPath: null,
-        scannerBaudRate: 9600,
-        scannerFrameSuffix: "crlf",
-        visionEnabled: true,
-        visionWsUrl: "ws://127.0.0.1:7892/ws",
-        visionRequestTimeoutMs: 8000,
-        kioskMode: false,
-        stockMovementRetentionDays: 30,
-      },
-      machineSecretConfigured: false,
-      mqttSigningSecretConfigured: false,
-      mqttPasswordConfigured: false,
-      provisioned: false,
-      provisioningIssues: [
-        "machine_code_missing",
-        "machine_secret_missing",
-        "mqtt_signing_secret_missing",
-      ],
-    });
+    getEffectiveRuntimeConfigurationMock.mockResolvedValue(
+      effectiveRuntimeConfigurationFixture(),
+    );
 
     await mountView(BootView);
 
@@ -796,7 +777,9 @@ describe("sale readiness UI flow", () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
     getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
-    getConfigMock.mockRejectedValue(new Error("config unavailable"));
+    getEffectiveRuntimeConfigurationMock.mockRejectedValue(
+      new Error("runtime configuration unavailable"),
+    );
 
     await mountView(BootView);
 

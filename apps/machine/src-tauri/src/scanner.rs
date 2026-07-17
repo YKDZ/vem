@@ -11,7 +11,7 @@ use vending_core::scanner::{mask_code, ScannerFramer};
 pub struct ScannerSelfCheckResult {
     pub online: bool,
     pub adapter: String,
-    pub port: Option<String>,
+    pub observed_serial_address: Option<String>,
     pub message: String,
     pub checked_at_ms: u128,
 }
@@ -32,26 +32,26 @@ fn now_ms() -> u128 {
 }
 
 pub async fn self_check_serial(
-    port_path: Option<String>,
+    observed_serial_address: Option<String>,
     baud_rate: u32,
 ) -> ScannerSelfCheckResult {
     let checked_at_ms = now_ms();
-    let Some(path) = port_path else {
+    let Some(serial_address) = observed_serial_address else {
         return ScannerSelfCheckResult {
             online: false,
             adapter: "serial_text".to_string(),
-            port: None,
+            observed_serial_address: None,
             message: "scanner binding is not configured".to_string(),
             checked_at_ms,
         };
     };
-    match tokio_serial::new(path.clone(), baud_rate).open_native_async() {
+    match tokio_serial::new(serial_address.clone(), baud_rate).open_native_async() {
         Ok(mut port) => {
             let _ = port.flush().await;
             ScannerSelfCheckResult {
                 online: true,
                 adapter: "serial_text".to_string(),
-                port: Some(path),
+                observed_serial_address: Some(serial_address),
                 message: "扫码串口可打开".to_string(),
                 checked_at_ms,
             }
@@ -59,15 +59,19 @@ pub async fn self_check_serial(
         Err(error) => ScannerSelfCheckResult {
             online: false,
             adapter: "serial_text".to_string(),
-            port: Some(path),
+            observed_serial_address: Some(serial_address),
             message: format!("扫码串口打开失败: {error}"),
             checked_at_ms,
         },
     }
 }
 
-pub async fn read_loop(app: AppHandle, port_path: String, baud_rate: u32) -> Result<(), String> {
-    let mut port = tokio_serial::new(port_path, baud_rate)
+pub async fn read_loop(
+    app: AppHandle,
+    observed_serial_address: String,
+    baud_rate: u32,
+) -> Result<(), String> {
+    let mut port = tokio_serial::new(observed_serial_address, baud_rate)
         .open_native_async()
         .map_err(|error| format!("open scanner serial failed: {error}"))?;
     let mut buf = [0_u8; 256];
