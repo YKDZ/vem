@@ -725,6 +725,10 @@ function readOption(name, { optional = false } = {}) {
   return process.argv[index + 1];
 }
 
+function readRuntimeBaseOption() {
+  return readOption("--runtime-base", { optional: true }) ?? readOption("--approved-runtime-base");
+}
+
 function readStrictJsonObjectOption(name) {
   const value = readOption(name, { optional: true });
   if (value === null) return null;
@@ -812,11 +816,11 @@ function nonce() {
 
 function asset(identity) {
   const match = String(identity).match(
-    /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/,
+    /^(?:factory-cas|runtime-base):\/\/sha256\/([a-f0-9]{64})$/,
   );
   if (!match)
     throw new Error(
-      "--approved-runtime-base must be a factory-cas SHA-256 identity",
+      "--runtime-base must be a SHA-256 runtime base identity",
     );
   return {
     role: "approved-runtime-base",
@@ -941,7 +945,7 @@ async function main() {
   const scannerCode = readProtectedScannerCode();
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
-  const approvedRuntimeBase = readOption("--approved-runtime-base");
+  const approvedRuntimeBase = readRuntimeBaseOption();
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
   const startOnly = process.argv.includes("--start-only");

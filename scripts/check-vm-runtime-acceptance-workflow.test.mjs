@@ -170,7 +170,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.doesNotMatch(runtime, /127\.0\.0\.1:26849\/api/);
   });
 
-  it("creates run-scoped certificate SSH material from a local Factory or testbed CA", () => {
+  it("creates run-scoped certificate SSH material from the runtime testbed CA only", () => {
     const workflow = readWorkflow();
     const access = stepBlock(workflow, "Prepare Local VM Testbed SSH Access");
     const cleanup = stepBlock(workflow, "Cleanup Ephemeral Services");
@@ -181,8 +181,9 @@ describe("VM runtime acceptance workflow local direct path", () => {
 
     assert.match(
       access,
-      /ca_key_path="\$\{VEM_VM_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-\$\{VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-\$\{VEM_TESTBED_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-\}\}\}"/,
+      /ca_key_path="\$\{VEM_VM_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-\$\{VEM_TESTBED_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-\}\}"/,
     );
+    assert.doesNotMatch(access, /VEM_FACTORY/);
     assert.match(
       access,
       /ssh_dir="\$RUNNER_TEMP\/vem-vm-runtime-ssh-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
@@ -259,7 +260,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(overlay, /--operation create-disposable-overlay/);
     assert.match(
       overlay,
-      /--approved-runtime-base\s+"\$VEM_VM_HOST_APPROVED_BASE_ID"/,
+      /--runtime-base\s+"\$VEM_VM_HOST_RUNTIME_BASE_ID"/,
     );
     assert.match(
       overlay,
@@ -281,7 +282,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
 
     assert.match(
       runtime,
-      /--factory-guest-endpoint-json\s+"\$VM_GUEST_MAINTENANCE_ENDPOINT_JSON"/,
+      /--runtime-guest-endpoint-json\s+"\$VM_GUEST_MAINTENANCE_ENDPOINT_JSON"/,
     );
     assert.match(
       runtime,
@@ -297,7 +298,8 @@ describe("VM runtime acceptance workflow local direct path", () => {
       /--certificate\s+"\$VM_RUNTIME_SSH_DIR\/id_ed25519-cert\.pub"/,
     );
     assert.match(runtime, /--scanner-code-file/);
-    assert.match(runtime, /--approved-runtime-base/);
+    assert.match(runtime, /--runtime-base/);
+    assert.doesNotMatch(runtime, /--factory-guest-endpoint-json/);
     assert.doesNotMatch(runtime, /mock-payment/);
 
     for (const block of [display, audio]) {
@@ -355,7 +357,8 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(runtime, /win10-vem-e2e\.mjs/);
     assert.match(runtime, /--mode vm-runtime-acceptance/);
     assert.match(runtime, /VEM_EPHEMERAL_DATABASE_URL="\$DATABASE_URL"/);
-    assert.match(runtime, /--factory-guest-endpoint-json/);
+    assert.match(runtime, /--runtime-guest-endpoint-json/);
+    assert.doesNotMatch(runtime, /factory-preclaim-verify/);
 
     assert.match(bindAudioSession, /win10-runtime-acceptance-report\.json/);
     assert.match(bindAudioSession, /postSaleRuntimeAcceptance !== "passed"/);
@@ -365,7 +368,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(display, /if:\s+success\(\)/);
     assert.match(display, /--tauri-route\s+"\$VEM_ACTIVE_KIOSK_TAURI_ROUTE"/);
     assert.match(audio, /if:\s+success\(\)/);
-    assert.match(audio, /--selected-audio-endpoint-id/);
+    assert.doesNotMatch(audio, /--selected-audio-endpoint-id/);
     assert.match(audio, /--daemon-calibration-response-out/);
     assert.match(verifyAudio, /windows-native-audio-evidence\.mjs/);
     assert.match(cleanup, /if:\s+always\(\)/);
@@ -425,8 +428,9 @@ describe("VM runtime acceptance workflow local direct path", () => {
     }
     assert.match(deploy, /Stop-ScheduledTask -TaskName "VEMMachineUI"/);
     assert.match(deploy, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
-    assert.match(deploy, /component = "daemon"/);
-    assert.match(deploy, /component = "ui"/);
+    assert.match(deploy, /Stop-Service -Name "VemVendingDaemon"/);
+    assert.match(deploy, /Start-Service -Name "VemVendingDaemon"/);
+    assert.doesNotMatch(deploy, /runtime-manifest|component = "daemon"|component = "ui"/);
   });
 
   it("uses a portable runner-local runtime artifact cache by default", () => {
@@ -443,5 +447,24 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(restore, /\$\{RUNNER_TEMP%\/_temp\}\/_runtime-artifact-cache/);
     assert.match(persist, /\$\{RUNNER_TEMP%\/_temp\}\/_runtime-artifact-cache/);
     assert.doesNotMatch(`${restore}\n${persist}`, /\/opt\//);
+  });
+
+  it("keeps Factory and ISO paths out of active VM runtime acceptance", () => {
+    const workflow = readWorkflow();
+
+    for (const forbidden of [
+      /\bFactory\b/,
+      /\bfactory\b/,
+      /\bISO\b/,
+      /factory-image-acceptance/,
+      /build-factory-iso/,
+      /factory-runtime-manifest/,
+      /apply-managed-update/,
+      /VEM_FACTORY/,
+      /VEM_VM_AUDIO_ENDPOINT_ID/,
+      /--selected-audio-endpoint-id/,
+    ]) {
+      assert.doesNotMatch(workflow, forbidden);
+    }
   });
 });

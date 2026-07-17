@@ -93,6 +93,10 @@ function readOption(name, { optional = false } = {}) {
   return process.argv[index + 1];
 }
 
+function readRuntimeBaseOption() {
+  return readOption("--runtime-base", { optional: true }) ?? readOption("--approved-runtime-base");
+}
+
 function readOptions(name) {
   return process.argv.flatMap((value, index) =>
     value === name && process.argv[index + 1] ? [process.argv[index + 1]] : [],
@@ -100,10 +104,12 @@ function readOptions(name) {
 }
 
 function assetFromIdentity(role, identity) {
-  const match = String(identity).match(
-    /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/,
-  );
-  if (!match) throw new Error(`${role} must be a factory-cas SHA-256 identity`);
+  const pattern =
+    role === "approved-runtime-base"
+      ? /^(?:factory-cas|runtime-base):\/\/sha256\/([a-f0-9]{64})$/
+      : /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/;
+  const match = String(identity).match(pattern);
+  if (!match) throw new Error(`${role} must be a SHA-256 asset identity`);
   return { role, identity, digest: `sha256:${match[1]}` };
 }
 
@@ -123,7 +129,7 @@ function assetsForOperation(operation) {
   return [
     assetFromIdentity(
       "approved-runtime-base",
-      readOption("--approved-runtime-base"),
+      readRuntimeBaseOption(),
     ),
   ];
 }

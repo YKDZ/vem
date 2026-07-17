@@ -60,10 +60,10 @@ function parseArgs(argv) {
     "expected-testbed-user",
     "identity",
     "certificate",
-    "factory-guest-endpoint-json",
+    "runtime-guest-endpoint-json",
     "adapter",
     "target-identity",
-    "approved-runtime-base",
+    "runtime-base",
     "scanner-code-file",
     "maintenance-relay-session-json",
     "maintenance-endpoint-policy-json",
@@ -101,7 +101,7 @@ function parseArgs(argv) {
     "certificate",
     "adapter",
     "target_identity",
-    "approved_runtime_base",
+    "runtime_base",
     "out",
   ]) {
     required(options, name.replaceAll("_", "-"));
@@ -162,19 +162,19 @@ function readRuntimeBinding(path) {
 
 function resolveRemoteOptions(options) {
   const remote = options.remote;
-  const endpointJson = options.factory_guest_endpoint_json;
+  const endpointJson = options.runtime_guest_endpoint_json;
   if (remote && endpointJson) {
     throw new Error(
-      "--remote and --factory-guest-endpoint-json are mutually exclusive",
+      "--remote and --runtime-guest-endpoint-json are mutually exclusive",
     );
   }
   if (remote) return { remote, sshPort: options.ssh_port };
   let endpoint;
   try {
-    endpoint = JSON.parse(required(options, "factory-guest-endpoint-json"));
+    endpoint = JSON.parse(required(options, "runtime-guest-endpoint-json"));
   } catch {
     throw new Error(
-      "--factory-guest-endpoint-json must contain a discovered SSH endpoint",
+      "--runtime-guest-endpoint-json must contain a discovered SSH endpoint",
     );
   }
   if (
@@ -961,8 +961,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
         options.run_id,
         "--target-identity",
         options.target_identity,
-        "--approved-runtime-base",
-        options.approved_runtime_base,
+        "--runtime-base",
+        options.runtime_base,
         "--lifecycle-reference",
         options.lifecycle_reference ??
           `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
@@ -1086,8 +1086,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
           options.run_id,
           "--target-identity",
           options.target_identity,
-          "--approved-runtime-base",
-          options.approved_runtime_base,
+          "--runtime-base",
+          options.runtime_base,
           "--lifecycle-reference",
           options.lifecycle_reference ??
             `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
@@ -1321,7 +1321,7 @@ export function formatInstalledKioskSaleError(error) {
 
 function usage() {
   console.error(
-    `Usage: VEM_INSTALLED_KIOSK_SALE_DATABASE_URL=... installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --runtime-acceptance-report PATH (--remote USER@HOST | --factory-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --approved-runtime-base factory-cas://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition|factory-route-competition] --out PATH [--dry-run]`,
+    `Usage: VEM_INSTALLED_KIOSK_SALE_DATABASE_URL=... installed-kiosk-sale-acceptance.mjs --run-id ID --machine-code CODE --platform-target TARGET --ephemeral-platform-evidence PATH --runtime-acceptance-report PATH (--remote USER@HOST | --runtime-guest-endpoint-json JSON --expected-testbed-user USER) --identity KEY --certificate CERT --adapter PATH --target-identity ID --runtime-base runtime-base://sha256/HASH [--scanner-code-file PATH] [--profile vm-normal|vm-route-competition] --out PATH [--dry-run]`,
   );
 }
 

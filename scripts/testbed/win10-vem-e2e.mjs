@@ -16,12 +16,6 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
-import {
-  createFactoryPersonalizationStagingCopy,
-  readFactoryPersonalizationMediaSnapshot,
-  redactFactoryPersonalizationMedia,
-} from "../factory/factory-personalization-media.mjs";
 import {
   CdpClient,
   activateVisibleSelector,
@@ -35,6 +29,14 @@ import {
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { validateSerialConformanceReport } from "./vm-host-adapter-serial-conformance.mjs";
+
+async function loadFactoryAcceptanceAdmission() {
+  return import("../factory/factory-acceptance-admission.mjs");
+}
+
+async function loadFactoryPersonalizationMedia() {
+  return import("../factory/factory-personalization-media.mjs");
+}
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -831,6 +833,7 @@ async function admitFactoryMediaBeforeAcceptance(options) {
       "Factory acceptance provenance identity does not bind its digest",
     );
   const outputDigest = `sha256:${options.factoryIso.slice("factory-cas://sha256/".length)}`;
+  const { admitFactoryAcceptance } = await loadFactoryAcceptanceAdmission();
   return admitFactoryAcceptance({
     manifestPath: options.factoryManifestPath,
     provenancePath: options.factoryProvenancePath,
@@ -1767,6 +1770,10 @@ async function resolveHostOwnedFactoryPersonalizationMedia(options = {}) {
       "clean-base factory acceptance requires host-owned VEM_FACTORY_PERSONALIZATION_MEDIA_PATH after the trusted protected gate",
     );
   }
+  const {
+    readFactoryPersonalizationMediaSnapshot,
+    redactFactoryPersonalizationMedia,
+  } = await loadFactoryPersonalizationMedia();
   const snapshot = await readFactoryPersonalizationMediaSnapshot(mediaPath);
   const media = snapshot.media;
   const expectedProfile = options.factoryProfile ?? "testbed";
@@ -2989,7 +2996,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const ephemeralPlatformEvidence = `${evidenceRoot}/ephemeral-platform.json`;
   const cleanBaseFactoryAcceptance =
     options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
-  const approvedPreclaimBaseReport = `${evidenceRoot}/approved-preclaim-base-response.json`;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
   const postSaleRuntimeAcceptanceReport = `${evidenceRoot}/post-sale-runtime-acceptance-response.json`;
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
@@ -2998,20 +3004,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
   const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
   const customerUiSaleCompetitionReport = `${customerUiSaleCompetitionRoot}/report.json`;
-  const approvedPreclaimOptions = options.factoryGuestEndpointJson
-    ? { ...options, remote: undefined, sshPort: undefined }
-    : options;
-  const approvedPreclaimBaseCommand = buildAcceptanceScriptCommand(
-    "factory-preclaim-verify",
-    { ...approvedPreclaimOptions, runId, machineCode, platformTarget },
-    ["--out", approvedPreclaimBaseReport],
-  );
-  if (options.factoryGuestEndpointJson) {
-    approvedPreclaimBaseCommand.push(
-      "--factory-guest-endpoint-json",
-      options.factoryGuestEndpointJson,
-    );
-  }
   const runtimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
     { ...options, runId, machineCode, platformTarget },
@@ -3109,7 +3101,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
       "--target-identity",
       process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
-      "--approved-runtime-base",
+      "--runtime-base",
       options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
       "--lifecycle-reference",
       serialLifecycleReference,
@@ -3122,10 +3114,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     if (options.scannerCodeFile) {
       command.push("--scanner-code-file", options.scannerCodeFile);
     }
-    if (options.factoryGuestEndpointJson) {
+    if (options.runtimeGuestEndpointJson) {
       command.push(
-        "--factory-guest-endpoint-json",
-        options.factoryGuestEndpointJson,
+        "--runtime-guest-endpoint-json",
+        options.runtimeGuestEndpointJson,
         "--expected-testbed-user",
         options.expectedTestbedUser ?? DEFAULT_CONTROLLED_MAINTENANCE_USER,
       );
@@ -3255,7 +3247,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     runId,
     "--target-identity",
     process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
-    "--approved-runtime-base",
+    "--runtime-base",
     options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
     "--lifecycle-reference",
     serialLifecycleReference,
@@ -3338,14 +3330,14 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
     evidenceRoot,
     artifacts: {
-      source: "approved-preclaim-base",
+      source: "runtime-base",
       report: reportPath,
       logsRoot,
       screenshotsRoot,
       sessionsRoot,
       ephemeralPlatformEvidence,
       cleanBaseFactoryAcceptance,
-      approvedPreclaimBase: approvedPreclaimBaseReport,
+      runtimeBase: options.approvedRuntimeBase ?? null,
       runtimeAcceptance: runtimeAcceptanceReport,
       postSaleRuntimeAcceptance: postSaleRuntimeAcceptanceReport,
       simulatedHardwareSaleFlow: saleFlowReport,
@@ -3363,12 +3355,12 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
       requiredSecrets: [],
-      requiredCredentials: ["approved-preclaim-base", "certificate-only-ssh"],
+      requiredCredentials: ["runtime-base", "certificate-only-ssh"],
       requiredEnvironment: ["PAYMENT_MOCK_ENABLED=true"],
       githubActionsScope: "future manual runtime gate",
     },
     readinessLevels: {
-      approvedPreclaimBase: "asserted_by_preclaim_step",
+      runtimeBase: "asserted_by_overlay_restore",
       cleanBasePreparationAcceptance: cleanBaseFactoryAcceptance
         ? "asserted_by_clean_base_step"
         : "not_asserted",
@@ -3378,14 +3370,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
     steps: [
       ...cleanBaseStep,
-      {
-        name: "approved preclaim base verification",
-        mode: "factory-preclaim-verify",
-        status: "planned",
-        command: approvedPreclaimBaseCommand,
-        report: approvedPreclaimBaseReport,
-        blocksOnFailure: true,
-      },
       {
         name: "ephemeral platform setup",
         mode: "prepare-ephemeral-platform",
@@ -4503,9 +4487,6 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
 export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
   const cleanBase = stepMap.get("clean-base factory preparation acceptance");
-  const approvedPreclaimBase = stepMap.get(
-    "approved preclaim base verification",
-  );
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
   const saleFlow = stepMap.get("simulated hardware sale flow");
@@ -4545,18 +4526,13 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     },
   };
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
-  const approvedPreclaimBaseEvaluation =
-    evaluateApprovedPreclaimBaseStep(approvedPreclaimBase);
   const diagnostics = [
     ...(cleanBaseEvaluation.diagnostic ? [cleanBaseEvaluation.diagnostic] : []),
-    ...(approvedPreclaimBaseEvaluation.diagnostic
-      ? [approvedPreclaimBaseEvaluation.diagnostic]
-      : []),
     ...simulatedHardwareEvidence.diagnostics,
     ...installedKioskEvidence.diagnostics,
     ...steps
       .filter((step) => step.status !== "passed")
-      .filter((step) => step !== cleanBase && step !== approvedPreclaimBase)
+      .filter((step) => step !== cleanBase)
       .map((step) => ({
         code:
           step.status === "blocked"
@@ -4577,10 +4553,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     evidenceRoot: plan.evidenceRoot,
     artifacts: plan.artifacts,
     steps: steps.map(sanitizeVmRuntimeAcceptanceStep),
-    preparationVerifierStatus: approvedPreclaimBaseEvaluation.status,
+    preparationVerifierStatus: "not_asserted",
     bringUpStateProgression: {
       cleanBasePreparationAcceptance: cleanBaseEvaluation.status,
-      approvedPreclaimBase: approvedPreclaimBaseEvaluation.status,
+      runtimeBase: "asserted_by_overlay_restore",
       ephemeralPlatformSetup: ephemeral?.status ?? "missing",
       runtimeAcceptance: runtime?.status ?? "missing",
       simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
@@ -4645,9 +4621,9 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         }
       : null,
     finalReadiness: {
-      approvedPreclaimBase: {
-        status: approvedPreclaimBaseEvaluation.status,
-        asserted: approvedPreclaimBaseEvaluation.asserted,
+      runtimeBase: {
+        status: "asserted_by_overlay_restore",
+        asserted: true,
       },
       cleanBasePreparationAcceptance: {
         status: cleanBaseEvaluation.status,
@@ -4675,7 +4651,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
 export async function runVmRuntimeAcceptance(options, dependencies = {}) {
   if (!options.scannerCodeFile || !options.approvedRuntimeBase)
     throw new Error(
-      "VM runtime acceptance requires --scanner-code-file and --approved-runtime-base",
+      "VM runtime acceptance requires --scanner-code-file and --runtime-base",
     );
   const plan = buildVmRuntimeAcceptancePlan(options);
   const databaseUrl = process.env[EPHEMERAL_DATABASE_URL_ENV];
@@ -10092,7 +10068,7 @@ function parseArgs(argv) {
     } else if (arg === "--expected-serial-runner-public-key") {
       options.expectedSerialRunnerPublicKey = next;
       index += 1;
-    } else if (arg === "--approved-runtime-base") {
+    } else if (arg === "--runtime-base") {
       options.approvedRuntimeBase = next;
       index += 1;
     } else if (arg === "--machine-code-prefix") {
@@ -10149,8 +10125,8 @@ function parseArgs(argv) {
     } else if (arg === "--factory-iso") {
       options.factoryIso = next;
       index += 1;
-    } else if (arg === "--factory-guest-endpoint-json") {
-      options.factoryGuestEndpointJson = next;
+    } else if (arg === "--runtime-guest-endpoint-json") {
+      options.runtimeGuestEndpointJson = next;
       index += 1;
     } else if (arg === "--maintenance-relay-session-json") {
       options.maintenanceRelaySession = parseJsonObjectArgument(arg, next);
@@ -10289,13 +10265,13 @@ function applyFactoryGuestEndpoint(options) {
       "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
     );
   }
-  if (!options.factoryGuestEndpointJson) return options;
+  if (!options.runtimeGuestEndpointJson) return options;
   let endpoint;
   try {
-    endpoint = JSON.parse(options.factoryGuestEndpointJson);
+    endpoint = JSON.parse(options.runtimeGuestEndpointJson);
   } catch {
     throw new Error(
-      "--factory-guest-endpoint-json must be adapter-discovered endpoint JSON",
+      "--runtime-guest-endpoint-json must be adapter-discovered endpoint JSON",
     );
   }
   if (
@@ -10505,7 +10481,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (
         !options.sshKnownHostsPath &&
         (options.mode === "clean-base-factory-acceptance" ||
-          options.factoryGuestEndpointJson)
+          options.runtimeGuestEndpointJson)
       ) {
         options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
       }
@@ -10519,6 +10495,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         options.dryRun === true
           ? null
           : await resolveHostOwnedFactoryPersonalizationMedia(options);
+      const { createFactoryPersonalizationStagingCopy } =
+        await loadFactoryPersonalizationMedia();
       const localPersonalizationStaging = personalizationMedia
         ? await createFactoryPersonalizationStagingCopy({
             snapshot: personalizationMedia.snapshot,

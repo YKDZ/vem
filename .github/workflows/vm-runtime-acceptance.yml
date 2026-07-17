@@ -60,11 +60,9 @@ jobs:
       EPHEMERAL_MQTT_URL: ${{ format('mqtt://{0}:18883', vars.VEM_VM_RUNTIME_PLATFORM_INGRESS_HOST) }}
       PAYMENT_MOCK_ENABLED: "true"
       VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
-      VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
+      VEM_VM_HOST_RUNTIME_BASE_ID: ${{ vars.VEM_VM_HOST_RUNTIME_BASE_ID }}
       VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY }}
       VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 }}
-      # Factory/ISO integration must retain this daemon-selected stable endpoint contract.
-      VEM_VM_AUDIO_ENDPOINT_ID: ${{ vars.VEM_VM_AUDIO_ENDPOINT_ID }}
       VEM_RUNTIME_ARTIFACT_CACHE_ROOT: ${{ vars.VEM_VM_RUNTIME_ARTIFACT_CACHE_ROOT }}
     steps:
       - name: Checkout Trusted Commit
@@ -95,8 +93,7 @@ jobs:
           for (const name of [
             "VEM_VM_HOST_ADAPTER",
             "VEM_VM_HOST_TARGET_ID",
-            "VEM_VM_HOST_APPROVED_BASE_ID",
-            "VEM_VM_AUDIO_ENDPOINT_ID",
+            "VEM_VM_HOST_RUNTIME_BASE_ID",
           ]) {
             if (!process.env[name]) throw new Error(`environment variable is required: ${name}`);
           }
@@ -189,9 +186,9 @@ jobs:
           umask 077
           artifact_dir="artifacts/vm-runtime-acceptance/${RUN_ID}"
           mkdir -p "$artifact_dir"
-          ca_key_path="${VEM_VM_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-${VEM_FACTORY_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-${VEM_TESTBED_MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH:-}}}"
+          ca_key_path="${VEM_VM_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-${VEM_TESTBED_RUNTIME_SSH_CA_PRIVATE_KEY_PATH:-}}"
           [[ "$ca_key_path" = /* && -f "$ca_key_path" ]] || {
-            echo "A local VM runtime, Factory, or testbed SSH CA private key path is required." >&2
+            echo "A local VM runtime SSH CA private key path is required." >&2
             exit 1
           }
           ssh_dir="$RUNNER_TEMP/vem-vm-runtime-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -355,12 +352,12 @@ jobs:
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           test -n "${VEM_VM_HOST_ADAPTER:-}"
           test -n "$VEM_VM_HOST_TARGET_ID"
-          test -n "$VEM_VM_HOST_APPROVED_BASE_ID"
+          test -n "$VEM_VM_HOST_RUNTIME_BASE_ID"
           node scripts/testbed/run-vm-host-adapter.mjs \
             --operation create-disposable-overlay \
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
-            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --runtime-base "$VEM_VM_HOST_RUNTIME_BASE_ID" \
             --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
             --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
@@ -456,7 +453,7 @@ jobs:
           scp -O -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
           scp -O -P "$endpoint_port" "${ssh_options[@]}" "$machine" "$target:C:/Windows/Temp/vem-current-machine.exe"
           scp -O -P "$endpoint_port" "${ssh_options[@]}" "$webview_loader" "$target:C:/Windows/Temp/vem-current-WebView2Loader.dll"
-          remote_script='$ErrorActionPreference = "Stop"; $runtimeRoot = "C:\VEM\bringup"; $daemon = Join-Path $runtimeRoot "vending-daemon.exe"; $machine = Join-Path $runtimeRoot "machine.exe"; $webviewLoader = Join-Path $runtimeRoot "WebView2Loader.dll"; $manifestPath = "C:\ProgramData\VEM\factory\factory-runtime-manifest.json"; Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue; Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination $daemon -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-machine.exe" -Destination $machine -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-WebView2Loader.dll" -Destination $webviewLoader -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe","C:\Windows\Temp\vem-current-machine.exe","C:\Windows\Temp\vem-current-WebView2Loader.dll" -Force; $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json; foreach ($entry in @(@{ component = "daemon"; path = $daemon }, @{ component = "ui"; path = $machine })) { $component = @($manifest.components | Where-Object { $_.component -eq $entry.component }); if ($component.Count -ne 1) { throw "Factory runtime manifest $($entry.component) component is missing or ambiguous" }; $component[0].sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.path).Hash.ToLowerInvariant() }; [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false)); Start-Service -Name "VemVendingDaemon"; Start-ScheduledTask -TaskName "VEMMachineUI"'
+          remote_script='$ErrorActionPreference = "Stop"; $runtimeRoot = "C:\VEM\bringup"; $daemon = Join-Path $runtimeRoot "vending-daemon.exe"; $machine = Join-Path $runtimeRoot "machine.exe"; $webviewLoader = Join-Path $runtimeRoot "WebView2Loader.dll"; Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue; Get-Process -Name "machine" -ErrorAction SilentlyContinue | Stop-Process -Force; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination $daemon -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-machine.exe" -Destination $machine -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-WebView2Loader.dll" -Destination $webviewLoader -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe","C:\Windows\Temp\vem-current-machine.exe","C:\Windows\Temp\vem-current-WebView2Loader.dll" -Force; Start-Service -Name "VemVendingDaemon"; Start-ScheduledTask -TaskName "VEMMachineUI"'
           encoded_script="$(printf '%s' "$remote_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
           ssh -p "$endpoint_port" "${ssh_options[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded_script"
 
@@ -482,7 +479,7 @@ jobs:
             --platform-target "self-hosted-${RUN_ID}" \
             --ephemeral-api-base-url "$EPHEMERAL_API_BASE_URL" \
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
-            --factory-guest-endpoint-json "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" \
+            --runtime-guest-endpoint-json "$VM_GUEST_MAINTENANCE_ENDPOINT_JSON" \
             --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
             --maintenance-relay-peer-id "$MAINTENANCE_RELAY_PEER_ID" \
             --maintenance-relay-public-key "$MAINTENANCE_RELAY_PUBLIC_KEY" \
@@ -494,7 +491,7 @@ jobs:
             --identity "$VM_RUNTIME_SSH_DIR/id_ed25519" \
             --certificate "$VM_RUNTIME_SSH_DIR/id_ed25519-cert.pub" \
             --scanner-code-file "$VEM_VM_HOST_SCANNER_CODE_FILE" \
-            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --runtime-base "$VEM_VM_HOST_RUNTIME_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/win10-runtime-acceptance-report.json"
 
       - name: Remove Protected Simulated Scanner Code
@@ -544,7 +541,7 @@ jobs:
             --operation capture-display \
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
-            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --runtime-base "$VEM_VM_HOST_RUNTIME_BASE_ID" \
             --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
             --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
@@ -561,12 +558,11 @@ jobs:
             --operation capture-default-audio \
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
-            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --runtime-base "$VEM_VM_HOST_RUNTIME_BASE_ID" \
             --maintenance-relay-session-json "$VM_TESTBED_MAINTENANCE_SESSION_JSON" \
             --maintenance-endpoint-policy-json "$VM_TESTBED_ENDPOINT_POLICY_JSON" \
             --active-kiosk-session-user "$VEM_ACTIVE_KIOSK_SESSION_USER" \
             --active-kiosk-session-id "$VEM_ACTIVE_KIOSK_SESSION_ID" \
-            --selected-audio-endpoint-id "$VEM_VM_AUDIO_ENDPOINT_ID" \
             --daemon-calibration-response-out "artifacts/vm-runtime-acceptance/${RUN_ID}/daemon-audio-calibration-response.json" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json"
 
@@ -590,7 +586,7 @@ jobs:
             --operation cleanup \
             --run-id "$RUN_ID" \
             --target-identity "$VEM_VM_HOST_TARGET_ID" \
-            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --runtime-base "$VEM_VM_HOST_RUNTIME_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-cleanup-report.json"
 
       - name: Cleanup Ephemeral Services
