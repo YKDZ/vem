@@ -358,6 +358,10 @@ describe("Linux KVM Windows baseline", () => {
       /<HideWirelessSetupInOOBE>true<\/HideWirelessSetupInOOBE>/,
     );
     assert.match(xml, /<LogonCount>2<\/LogonCount>/);
+    assert.match(
+      xml,
+      /<ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX<\/Key><WillShowUI>Never<\/WillShowUI><\/ProductKey>/,
+    );
     assert.doesNotMatch(xml, /SkipMachineOOBE/i);
     const parsed = spawnSync("xmllint", ["--noout", "-"], {
       input: xml,
