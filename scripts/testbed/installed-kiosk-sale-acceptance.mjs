@@ -955,6 +955,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       "serial conformance prestart",
       { env: nonQueryEnvironment },
     );
+    runRemote(remote, buildInstalledKioskSerialActivationScript());
     await run(plan.fixtureCommand, "simulated hardware fixture", {
       env: nonQueryEnvironment,
     });
