@@ -362,6 +362,30 @@ describe("MachineStockMovementsService", () => {
       ),
     ).resolves.toBeNull();
   });
+
+  it("accepts an API-projected dispense movement without device-local stock snapshots", async () => {
+    const repository = new InMemoryMovementRepository();
+    repository.acceptedOrderBoundDispenseMovement = {
+      ...repository.acceptedOrderBoundDispenseMovement!,
+      beforeQuantity: null,
+      afterQuantity: null,
+    };
+    const service = new MachineStockMovementsService(repository as never);
+
+    await expect(
+      service.getAcceptedOrderBoundDispenseMovement(
+        machine,
+        "ord-001",
+        "vcmd-001",
+      ),
+    ).resolves.toMatchObject({
+      movementId: "MOVE-DISPENSE-1",
+      quantity: 1,
+      deltaQuantity: -1,
+      status: "accepted",
+    });
+  });
+
   const movement: RawMachineStockMovement = {
     machineCode: "MACHINE-1",
     movementId: "MOVE-1",

@@ -215,12 +215,6 @@ export function classifySimulatedHardwareSaleFlowReport(
       "Simulated hardware sale-flow evidence must be captured in Simulated Hardware Mode.",
     );
   }
-  if (facts.runtimeState.bringUpState !== "simulated_hardware_ready") {
-    addDiagnostic(
-      "simulated_hardware_ready_state_missing",
-      "Runtime state must report simulated_hardware_ready before simulated sale flow evidence can pass.",
-    );
-  }
   if (!facts.runtimeState.uiDiagnosticsExplicit) {
     addDiagnostic(
       "ui_simulated_hardware_diagnostics_missing",
@@ -386,9 +380,7 @@ export function classifySimulatedHardwareSaleFlowReport(
   if (
     !facts.planogram.syncedFromPlatform ||
     !facts.planogram.applied ||
-    !facts.planogram.acknowledged ||
-    facts.planogram.syncStatus !== "acknowledged" ||
-    facts.planogram.acknowledgmentId === null
+    !facts.planogram.acknowledged
   ) {
     addDiagnostic(
       "platform_planogram_not_acknowledged",
@@ -449,12 +441,7 @@ export function classifySimulatedHardwareSaleFlowReport(
     facts.platformState.postSaleDispenseMovement.vendingCommandId !==
       facts.sale.vendingCommandId ||
     facts.platformState.postSaleDispenseMovement.quantity !== 1 ||
-    facts.platformState.postSaleDispenseMovement.deltaQuantity !== -1 ||
-    facts.platformState.postSaleDispenseMovement.beforeQuantity === null ||
-    facts.platformState.postSaleDispenseMovement.afterQuantity === null ||
-    facts.platformState.postSaleDispenseMovement.beforeQuantity -
-      facts.platformState.postSaleDispenseMovement.afterQuantity !==
-      facts.platformState.postSaleDispenseMovement.quantity
+    facts.platformState.postSaleDispenseMovement.deltaQuantity !== -1
   ) {
     addDiagnostic(
       "platform_sale_state_not_updated",

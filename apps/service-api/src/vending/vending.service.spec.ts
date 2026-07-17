@@ -428,6 +428,63 @@ describe("VendingService line-level fulfillment", () => {
     ]);
   });
 
+  it("repairs a missing stock movement when a succeeded command is replayed", async () => {
+    const receiveRawMovement = vi.fn().mockResolvedValue({
+      status: "accepted",
+    });
+    const db = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(
+          commandLookup({
+            id: "cmd-1",
+            commandNo: "CMD-1",
+            orderId: "order1",
+            machineId: "machine1",
+            machineCode: "M001",
+            slotId: "slot1",
+            orderItemId: "line-1",
+            status: "succeeded",
+            payloadJson: {},
+            orderNo: "ORD-1",
+          }),
+        )
+        .mockReturnValueOnce(
+          orderItemLookup({
+            id: "line-1",
+            inventoryId: "inv1",
+            quantity: 1,
+            productSnapshot: { planogramVersion: "PLAN-A" },
+          }),
+        ),
+    };
+    const service = makeService({
+      db,
+      machineStockMovementsService: { receiveRawMovement },
+    });
+
+    const result = await service.resolveCommand("cmd-1", {
+      result: "dispensed",
+    });
+
+    expect(result).toEqual({
+      commandId: "cmd-1",
+      status: "succeeded",
+      stockMovementStatus: "accepted",
+    });
+    expect(receiveRawMovement).toHaveBeenCalledWith(
+      { id: "machine1", code: "M001", status: "online" },
+      expect.objectContaining({
+        movementId: "manual-dispense:CMD-1",
+        movementType: "dispense_succeeded",
+        orderContext: expect.objectContaining({
+          orderNo: "ORD-1",
+          vendingCommandNo: "CMD-1",
+        }),
+      }),
+    );
+  });
+
   it("releases active reservations without restoring on-hand stock when MQTT dispatch fully fails", async () => {
     const order = {
       id: "order1",

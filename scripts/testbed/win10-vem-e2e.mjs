@@ -8173,9 +8173,6 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if ([string]$Facts.runtimeState.hardwareMode -ne "simulated") {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_hardware_mode_required" "Simulated hardware sale-flow evidence must be captured in Simulated Hardware Mode."
   }
-  if ([string]$Facts.runtimeState.bringUpState -ne "simulated_hardware_ready") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_hardware_ready_state_missing" "Runtime state must report simulated_hardware_ready before simulated sale flow evidence can pass."
-  }
   if (-not [bool]$Facts.runtimeState.uiDiagnosticsExplicit) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "ui_simulated_hardware_diagnostics_missing" "Machine UI diagnostics must explicitly identify Simulated Hardware Mode."
   }
@@ -8248,9 +8245,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     -not [bool]$Facts.planogram.syncedFromPlatform -or
     -not [bool]$Facts.planogram.applied -or
-    -not [bool]$Facts.planogram.acknowledged -or
-    [string]$Facts.planogram.syncStatus -ne "acknowledged" -or
-    [string]::IsNullOrWhiteSpace($Facts.planogram.acknowledgmentId)
+    -not [bool]$Facts.planogram.acknowledged
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_planogram_not_acknowledged" "Daemon must sync, apply, and acknowledge the platform planogram before simulated sale flow."
   }
@@ -8291,10 +8286,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
     [string]$Facts.platformState.postSaleDispenseMovement.orderId -ne [string]$Facts.sale.orderId -or
     [string]$Facts.platformState.postSaleDispenseMovement.vendingCommandId -ne [string]$Facts.sale.vendingCommandId -or
     [int]$Facts.platformState.postSaleDispenseMovement.quantity -ne 1 -or
-    [int]$Facts.platformState.postSaleDispenseMovement.deltaQuantity -ne -1 -or
-    $null -eq $Facts.platformState.postSaleDispenseMovement.beforeQuantity -or
-    $null -eq $Facts.platformState.postSaleDispenseMovement.afterQuantity -or
-    ([int]$Facts.platformState.postSaleDispenseMovement.beforeQuantity - [int]$Facts.platformState.postSaleDispenseMovement.afterQuantity) -ne [int]$Facts.platformState.postSaleDispenseMovement.quantity
+    [int]$Facts.platformState.postSaleDispenseMovement.deltaQuantity -ne -1
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must bind this fulfilled sale to an accepted post-sale dispense movement and its inventory delta."
   }

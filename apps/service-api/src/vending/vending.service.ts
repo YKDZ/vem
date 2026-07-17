@@ -1004,9 +1004,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       occurredAt?: string;
     } = {},
   ) {
-    if (command.status === "succeeded") {
-      return { commandId: command.id, status: "succeeded" as const };
-    }
     if (command.status === "failed") {
       throw new ConflictException(
         "Failed command cannot be resolved as dispensed",
