@@ -21,8 +21,16 @@ permissions:
   contents: read
 
 jobs:
+  build-windows-runtime:
+    name: Build Current Windows Runtime
+    uses: ./.github/workflows/build-windows-runtime-artifacts.yml
+    with:
+      artifact_name: windows-runtime-artifacts-${{ github.run_id }}
+      retention_days: 1
+
   vm-runtime-acceptance:
     name: Restore VM And Run Acceptance
+    needs: build-windows-runtime
     if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 120
@@ -108,6 +116,12 @@ jobs:
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Download Current Windows Runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-windows-runtime.outputs.artifact_name }}
+          path: ${{ runner.temp }}/vem-current-windows-runtime
 
       - name: Restore Turbo cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -358,6 +372,31 @@ jobs:
             certificateSshAuthenticated: true,
           })}\n`, { mode: 0o600 });
           NODE
+
+      - name: Deploy Current Vending Daemon To Overlay
+        run: |
+          set -euo pipefail
+          runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
+          daemon="$runtime_dir/vending-daemon.exe"
+          test -f "$daemon"
+          endpoint_host="$(node -e 'process.stdout.write(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).host)')"
+          endpoint_port="$(node -e 'process.stdout.write(String(JSON.parse(process.env.VM_GUEST_MAINTENANCE_ENDPOINT_JSON).port))')"
+          ssh_options=(
+            -i "$VM_RUNTIME_SSH_DIR/id_ed25519"
+            -o "CertificateFile=$VM_RUNTIME_SSH_DIR/id_ed25519-cert.pub"
+            -o "UserKnownHostsFile=$VM_RUNTIME_SSH_KNOWN_HOSTS_PATH"
+            -o "HostKeyAlias=$VM_RUNTIME_SSH_HOST_KEY_ALIAS"
+            -o StrictHostKeyChecking=yes
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o BatchMode=yes
+            -o ProxyCommand=none
+          )
+          target="${WINDOWS_SSH_USER}@${endpoint_host}"
+          scp -P "$endpoint_port" "${ssh_options[@]}" "$daemon" "$target:C:/Windows/Temp/vem-current-vending-daemon.exe"
+          remote_script='$ErrorActionPreference = "Stop"; Stop-Service -Name "VemVendingDaemon" -Force; Copy-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Destination "C:\VEM\bringup\vending-daemon.exe" -Force; Remove-Item -LiteralPath "C:\Windows\Temp\vem-current-vending-daemon.exe" -Force; Start-Service -Name "VemVendingDaemon"'
+          encoded_script="$(printf '%s' "$remote_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
+          ssh -p "$endpoint_port" "${ssh_options[@]}" "$target" "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded_script"
 
       - name: Prepare Protected Simulated Scanner Code
         shell: bash

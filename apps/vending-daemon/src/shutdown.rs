@@ -137,6 +137,10 @@ async fn run_console_cycle(
             .load_local_bring_up_settings()
             .await?
             .unwrap_or_default();
+        #[cfg(windows)]
+        let allow_virtual_serial_ports =
+            std::env::var("VEM_TESTBED_ALLOW_VIRTUAL_SERIAL_PORTS")
+                .is_ok_and(|value| value == "1");
         if settings.lower_controller_binding.is_some() || settings.scanner_binding.is_some() {
             let observed = serial_device_platform.discover().await.unwrap_or_default();
             if let Some(binding) = settings.lower_controller_binding.as_ref() {
@@ -167,7 +171,8 @@ async fn run_console_cycle(
             }
         }
         #[cfg(windows)]
-        if settings.lower_controller_binding.is_none()
+        if !allow_virtual_serial_ports
+            && settings.lower_controller_binding.is_none()
             && matches!(
                 runtime_config.public.hardware_adapter,
                 crate::config::HardwareAdapterKind::Serial
@@ -177,7 +182,8 @@ async fn run_console_cycle(
             runtime_config.public.lower_controller_usb_identity = None;
         }
         #[cfg(windows)]
-        if settings.scanner_binding.is_none()
+        if !allow_virtual_serial_ports
+            && settings.scanner_binding.is_none()
             && matches!(
                 runtime_config.public.scanner_adapter,
                 crate::config::ScannerAdapterKind::SerialText
