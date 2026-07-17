@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
 
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
 
-const router = useRouter();
 const checkoutStore = useCheckoutStore();
 
 const authCode = ref("");
@@ -27,14 +26,17 @@ function maskAuthCode(value: string): string {
 async function submit(): Promise<void> {
   if (!authCode.value.trim() || !mockDaemon.value) return;
   if (!orderNo.value) {
-    await router.replace("/catalog");
+    await submitMachineNavigationIntent({
+      type: "customer.navigate",
+      target: { name: "catalog" },
+    });
     return;
   }
   submitting.value = true;
   checkoutStore.paymentCodeLastMasked = maskAuthCode(authCode.value.trim());
   await checkoutStore.submitDevPaymentCode(authCode.value.trim());
   submitting.value = false;
-  await router.replace("/payment");
+  await submitMachineNavigationIntent({ type: "transaction.projection" });
 }
 </script>
 

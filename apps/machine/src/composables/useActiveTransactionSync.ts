@@ -10,11 +10,13 @@ export function installActiveTransactionSync(input?: {
   intervalMs?: number;
 }): () => void {
   const checkoutStore = useCheckoutStore();
-  const stage = input?.stage ?? (() => checkoutStore.customerCheckoutView.stage);
-  const refresh = input?.refresh ?? (() => checkoutStore.refreshCurrentTransaction());
+  const stage =
+    input?.stage ?? (() => checkoutStore.customerCheckoutView.stage);
+  const refresh =
+    input?.refresh ?? (async () => checkoutStore.refreshCurrentTransaction());
   const refreshIfActive = (): void => {
     const currentStage = stage();
-    if (currentStage !== "payment" && currentStage !== "dispensing") return;
+    if (currentStage === "none") return;
     void refresh();
   };
   const stopWatch: WatchStopHandle = watch(stage, refreshIfActive);

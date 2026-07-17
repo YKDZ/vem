@@ -19,7 +19,6 @@ import { formatCents, formatCountdown } from "@/utils/format";
 const checkoutStore = useCheckoutStore();
 const scannerStore = useScannerStore();
 
-let pollTimer: number | undefined;
 let clockTimer: number | undefined;
 
 const checkoutView = computed(() => checkoutStore.customerCheckoutView);
@@ -122,11 +121,6 @@ const showMockControls = computed(
     }) && daemonClient.currentConnection?.mock === true,
 );
 
-async function refreshStatus(): Promise<void> {
-  await checkoutStore.refreshCurrentTransaction();
-  await submitMachineNavigationIntent({ type: "transaction.projection" });
-}
-
 async function simulateSuccess(): Promise<void> {
   await checkoutStore.markMockSucceeded();
   await submitMachineNavigationIntent({ type: "transaction.projection" });
@@ -162,20 +156,16 @@ onMounted(async () => {
     await submitMachineNavigationIntent({ type: "transaction.projection" });
     return;
   }
-  await refreshStatus();
+  void checkoutStore.invalidateCurrentTransaction();
   if (isPaymentCode.value) {
     await scannerStore.refresh();
   }
-  pollTimer = window.setInterval(() => {
-    void refreshStatus();
-  }, 2_000);
   clockTimer = window.setInterval(() => {
     checkoutStore.tick();
   }, 1_000);
 });
 
 onUnmounted(() => {
-  if (pollTimer) window.clearInterval(pollTimer);
   if (clockTimer) window.clearInterval(clockTimer);
 });
 </script>

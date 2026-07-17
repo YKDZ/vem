@@ -11,6 +11,7 @@ import {
 const {
   routeMock,
   routerReplaceMock,
+  submitMachineNavigationIntentMock,
   initializeMock,
   getHealthMock,
   getReadyMock,
@@ -46,6 +47,7 @@ const {
 } = vi.hoisted(() => ({
   routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
   initializeMock: vi.fn(),
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
@@ -83,6 +85,10 @@ const {
 vi.mock("vue-router", () => ({
   useRoute: () => routeMock,
   useRouter: () => ({ replace: routerReplaceMock }),
+}));
+
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 vi.mock("@/layouts/KioskLayout.vue", () => ({
@@ -308,6 +314,15 @@ beforeEach(() => {
   setActivePinia(pinia);
   globalThis.localStorage.clear();
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (!("target" in intent)) return;
+    const target = intent.target;
+    routerReplaceMock(
+      "name" in target && Object.keys(target).length === 1
+        ? `/${target.name}`
+        : target,
+    );
+  });
   maintenanceSessionInvalidationListener = null;
   routeMock.query = { source: "operator" };
   initializeMock.mockResolvedValue({
@@ -1989,7 +2004,7 @@ describe("MaintenanceView hardware config", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
-  it("auto-refreshes system maintenance diagnostics and returns to catalog after recovery", async () => {
+  it("keeps maintenance open after diagnostics recover until an operator exits", async () => {
     vi.useFakeTimers();
     routeMock.query = {};
     getReadyMock
@@ -2004,9 +2019,8 @@ describe("MaintenanceView hardware config", () => {
 
     await vi.advanceTimersByTimeAsync(5000);
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
-    });
+    expect(getReadyMock).toHaveBeenCalledTimes(2);
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
   it("keeps operator maintenance open while diagnostics auto-refresh", async () => {

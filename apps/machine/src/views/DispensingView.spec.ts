@@ -139,7 +139,7 @@ afterEach(() => {
 describe("DispensingView", () => {
   it("describes pickup closure as reset in progress until terminal F2", async () => {
     const checkoutStore = useCheckoutStore();
-    checkoutStore.refreshCurrentTransaction = vi
+    checkoutStore.invalidateCurrentTransaction = vi
       .fn()
       .mockResolvedValue(undefined) as never;
     checkoutStore.applyTransaction(
@@ -168,9 +168,9 @@ describe("DispensingView", () => {
     expect(host.textContent).not.toContain("出货完成");
   });
 
-  it("routes manual handling transaction status to ResultView", async () => {
+  it("projects manual handling without a page-owned route write", async () => {
     const checkoutStore = useCheckoutStore();
-    checkoutStore.refreshCurrentTransaction = vi
+    checkoutStore.invalidateCurrentTransaction = vi
       .fn()
       .mockResolvedValue(undefined) as never;
     checkoutStore.applyTransaction({
@@ -203,17 +203,15 @@ describe("DispensingView", () => {
 
     await mountView();
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith({
-        name: "result",
-        params: { kind: "manual_handling" },
-      });
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: { kind: "manual_handling" },
     });
   });
 
-  it("routes to result through the projected route target without legacy status", async () => {
+  it("projects result state through the shared checkout view", async () => {
     const checkoutStore = useCheckoutStore();
-    checkoutStore.refreshCurrentTransaction = vi
+    checkoutStore.invalidateCurrentTransaction = vi
       .fn()
       .mockResolvedValue(undefined) as never;
     checkoutStore.transaction = {
@@ -231,22 +229,18 @@ describe("DispensingView", () => {
 
     await mountView();
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith({
-        name: "result",
-        params: { kind: "manual_handling" },
-      });
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: { kind: "manual_handling" },
     });
   });
 
-  it("routes back to payment through the projected route target", async () => {
+  it("invalidates the transaction projection without a page-owned route write", async () => {
     getCurrentTransactionMock.mockResolvedValue(awaitingPaymentTransaction());
 
     await mountView();
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
-    });
+    expect(useCheckoutStore().customerCheckoutView.stage).toBe("payment");
   });
 
   it("keeps dispensing transaction on the dispensing page", async () => {
@@ -260,7 +254,7 @@ describe("DispensingView", () => {
       HTMLElement,
     );
     expect(host.textContent).toContain("正在出货");
-    expect(routerReplaceMock).toHaveBeenCalledWith("/dispensing");
+    expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 
   it("shows dispensing state from the customer checkout view without legacy order state", async () => {

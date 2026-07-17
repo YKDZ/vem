@@ -1127,16 +1127,13 @@ describe("checkout store", () => {
     });
   });
 
-  it("does not let an older payment refresh roll back a newer dispensing projection", async () => {
+  it("coalesces overlapping invalidations and discards an older successful snapshot", async () => {
     const older = deferred<TransactionSnapshot>();
     const newer = deferred<TransactionSnapshot>();
     getCurrentTransactionMock
       .mockReturnValueOnce(older.promise)
       .mockReturnValueOnce(newer.promise);
     const store = useCheckoutStore();
-    const payment = makeTransactionSnapshot({
-      updatedAt: "2026-07-15T01:00:00.000Z",
-    });
     const dispensing = makeTransactionSnapshot({
       paymentStatus: "succeeded",
       orderStatus: "dispensing",
@@ -1149,14 +1146,17 @@ describe("checkout store", () => {
       },
       updatedAt: "2026-07-15T01:00:02.000Z",
     });
-    store.applyTransaction(payment);
-
-    const olderRefresh = store.refreshCurrentTransaction();
-    const newerRefresh = store.refreshCurrentTransaction();
+    const olderRefresh = store.invalidateCurrentTransaction();
+    const newerRefresh = store.invalidateCurrentTransaction();
+    expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+    older.resolve(
+      makeTransactionSnapshot({ updatedAt: "2026-07-15T01:00:00.000Z" }),
+    );
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledTimes(2);
+    });
     newer.resolve(dispensing);
-    await newerRefresh;
-    older.resolve(payment);
-    await olderRefresh;
+    await Promise.all([olderRefresh, newerRefresh]);
 
     expect(store.customerCheckoutView).toMatchObject({
       stage: "dispensing",
@@ -1165,7 +1165,7 @@ describe("checkout store", () => {
     expect(store.transaction?.updatedAt).toBe("2026-07-15T01:00:02.000Z");
   });
 
-  it("does not reopen recovery when an older request fails after a newer terminal success", async () => {
+  it("discards an older refresh failure before applying the current generation", async () => {
     const older = deferred<TransactionSnapshot>();
     const newer = deferred<TransactionSnapshot>();
     getCurrentTransactionMock
@@ -1190,130 +1190,20 @@ describe("checkout store", () => {
       updatedAt: "2026-07-15T01:10:02.000Z",
     });
 
-    const olderRefresh = store.refreshCurrentTransaction();
-    const newerRefresh = store.refreshCurrentTransaction();
-    newer.resolve(terminal);
-    await newerRefresh;
+    const olderRefresh = store.invalidateCurrentTransaction();
+    const newerRefresh = store.invalidateCurrentTransaction();
+    expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
     older.reject(new Error("older daemon IPC request failed"));
-    await olderRefresh;
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledTimes(2);
+    });
+    newer.resolve(terminal);
+    await Promise.all([olderRefresh, newerRefresh]);
 
     expect(store.customerCheckoutView).toMatchObject({
       stage: "result",
       result: { kind: "success" },
     });
-    expect(store.customerCheckoutRecovery.active).toBe(false);
-    expect(store.error).toBeNull();
-  });
-
-  it("keeps refresh loading true until every concurrent daemon request settles", async () => {
-    const older = deferred<TransactionSnapshot>();
-    const newer = deferred<TransactionSnapshot>();
-    getCurrentTransactionMock
-      .mockReturnValueOnce(older.promise)
-      .mockReturnValueOnce(newer.promise);
-    const store = useCheckoutStore();
-    const payment = makeTransactionSnapshot();
-    store.applyTransaction(payment);
-
-    const olderRefresh = store.refreshCurrentTransaction();
-    const newerRefresh = store.refreshCurrentTransaction();
-    expect(store.loading).toBe(true);
-
-    newer.resolve(payment);
-    await newerRefresh;
-    expect(store.loading).toBe(true);
-
-    older.resolve(payment);
-    await olderRefresh;
-    expect(store.loading).toBe(false);
-  });
-
-  it("still accepts valid daemon progress from an older request instead of using blind latest-wins", async () => {
-    const older = deferred<TransactionSnapshot>();
-    const newer = deferred<TransactionSnapshot>();
-    getCurrentTransactionMock
-      .mockReturnValueOnce(older.promise)
-      .mockReturnValueOnce(newer.promise);
-    const store = useCheckoutStore();
-    store.applyTransaction(
-      makeTransactionSnapshot({
-        updatedAt: "2026-07-15T01:20:00.000Z",
-      }),
-    );
-    const newerPayment = makeTransactionSnapshot({
-      paymentStatus: "processing",
-      updatedAt: "2026-07-15T01:20:02.000Z",
-    });
-    const olderTerminal = makeTransactionSnapshot({
-      paymentStatus: "succeeded",
-      orderStatus: "fulfilled",
-      nextAction: "success",
-      vending: {
-        commandId: null,
-        commandNo: "CMD-OLDER-PROGRESS",
-        status: "succeeded",
-        lastError: null,
-      },
-      updatedAt: "2026-07-15T01:20:03.000Z",
-    });
-
-    const olderRefresh = store.refreshCurrentTransaction();
-    const newerRefresh = store.refreshCurrentTransaction();
-    newer.resolve(newerPayment);
-    await newerRefresh;
-    older.resolve(olderTerminal);
-    await olderRefresh;
-
-    expect(store.customerCheckoutView).toMatchObject({
-      stage: "result",
-      result: { kind: "success" },
-    });
-  });
-
-  it("ignores an older empty identity after a newer valid daemon progression", async () => {
-    const older = deferred<TransactionSnapshot>();
-    const newer = deferred<TransactionSnapshot>();
-    getCurrentTransactionMock
-      .mockReturnValueOnce(older.promise)
-      .mockReturnValueOnce(newer.promise);
-    const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot());
-    const dispensing = makeTransactionSnapshot({
-      paymentStatus: "succeeded",
-      orderStatus: "dispensing",
-      nextAction: "dispensing",
-      vending: {
-        commandId: null,
-        commandNo: "CMD-NEWER-IDENTITY",
-        status: "sent",
-        lastError: null,
-      },
-      updatedAt: "2026-07-15T01:30:02.000Z",
-    });
-    const empty = makeTransactionSnapshot({
-      orderId: null,
-      orderNo: null,
-      paymentId: null,
-      paymentNo: null,
-      paymentMethod: null,
-      paymentProvider: null,
-      paymentUrl: null,
-      paymentStatus: null,
-      orderStatus: null,
-      totalAmountCents: null,
-      nextAction: null,
-      expiresAt: null,
-      updatedAt: "2026-07-15T01:30:00.000Z",
-    });
-
-    const olderRefresh = store.refreshCurrentTransaction();
-    const newerRefresh = store.refreshCurrentTransaction();
-    newer.resolve(dispensing);
-    await newerRefresh;
-    older.resolve(empty);
-    await olderRefresh;
-
-    expect(store.customerCheckoutView.stage).toBe("dispensing");
     expect(store.customerCheckoutRecovery.active).toBe(false);
     expect(store.error).toBeNull();
   });

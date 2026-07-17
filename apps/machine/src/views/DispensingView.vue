@@ -10,7 +10,6 @@ import { useCheckoutStore } from "@/stores/checkout";
 
 const checkoutStore = useCheckoutStore();
 
-let pollTimer: number | undefined;
 let pickupRemainingTimer: number | undefined;
 const pickupRemainingSeconds = ref<number | null>(null);
 
@@ -98,19 +97,11 @@ function syncPickupRemainingSeconds(): void {
       : null;
 }
 
-async function refreshStatus(): Promise<void> {
-  await checkoutStore.refreshCurrentTransaction();
-  syncPickupRemainingSeconds();
-  await submitMachineNavigationIntent({ type: "transaction.projection" });
-}
-
 onMounted(async () => {
-  await refreshStatus();
+  void checkoutStore.invalidateCurrentTransaction();
+  syncPickupRemainingSeconds();
   if (!hasOrder.value) return;
 
-  pollTimer = window.setInterval(() => {
-    void refreshStatus();
-  }, 2_000);
   pickupRemainingTimer = window.setInterval(() => {
     if (pickupRemainingSeconds.value === null) return;
     pickupRemainingSeconds.value = Math.max(
@@ -121,7 +112,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (pollTimer) window.clearInterval(pollTimer);
   if (pickupRemainingTimer) window.clearInterval(pickupRemainingTimer);
 });
 </script>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
-import { nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick, ref } from "vue";
 
 import { installActiveTransactionSync } from "./useActiveTransactionSync";
 
@@ -15,7 +15,7 @@ describe("active transaction sync", () => {
     vi.useRealTimers();
   });
 
-  it("refreshes globally while payment or dispensing is active", async () => {
+  it("refreshes globally for every undismissed transaction stage", async () => {
     const stage = ref<"none" | "payment" | "dispensing" | "result">("none");
     const refresh = vi.fn().mockResolvedValue(null);
     const cleanup = installActiveTransactionSync({
@@ -38,7 +38,7 @@ describe("active transaction sync", () => {
     stage.value = "result";
     await nextTick();
     await vi.advanceTimersByTimeAsync(4_000);
-    expect(refresh).toHaveBeenCalledTimes(4);
+    expect(refresh).toHaveBeenCalledTimes(7);
 
     cleanup();
   });

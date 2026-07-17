@@ -67,10 +67,17 @@ describe("transaction route authority", () => {
     });
 
     expect(router.currentRoute.value.name).toBe("product-detail");
-    expect(authority.trace.snapshot().map((record) => record.decision)).toEqual(
-      ["accepted", "accepted", "rejected", "rejected"],
-    );
-    expect(authority.trace.snapshot()[2]).toMatchObject({
+    expect(
+      authority.trace
+        .snapshot()
+        .filter((record) => record.intentType !== "browser.navigate")
+        .map((record) => record.decision),
+    ).toEqual(["accepted", "accepted", "rejected", "rejected"]);
+    expect(
+      authority.trace
+        .snapshot()
+        .find((record) => record.intentType === "presence.departed"),
+    ).toMatchObject({
       intentType: "presence.departed",
       reasonCode: "touchscreen_session_active",
       transactionOrderNo: null,
@@ -171,16 +178,93 @@ describe("transaction route authority", () => {
       routes: [
         { path: "/catalog", name: "catalog", component: {} },
         { path: "/products/:id", name: "product-detail", component: {} },
+        { path: "/checkout", name: "checkout", component: {} },
         { path: "/payment", name: "payment", component: {} },
       ],
     });
     installTransactionRouteAuthority(router, pinia);
     await router.push("/products/product-1");
 
-    useCheckoutStore(pinia).loading = true;
+    useCheckoutStore(pinia).paymentCreationAttemptActive = true;
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(router.currentRoute.value.name).toBe("product-detail");
+    expect(router.currentRoute.value.name).toBe("checkout");
+  });
+
+  it("keeps a deferred payment creation attempt on checkout after inactivity", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/checkout", name: "checkout", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    await router.push("/checkout");
+    useCheckoutStore(pinia).paymentCreationAttemptActive = true;
+
+    await authority.submit({ type: "customer.touch", atMs: 1_000 });
+    await authority.submit({ type: "customer.inactive", atMs: 1_000 });
+
+    expect(router.currentRoute.value.name).toBe("checkout");
+    expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
+      reasonCode: "active_transaction_route",
+      intentType: "customer.inactive",
+    });
+    authority.dispose();
+  });
+
+  it("does not let customer inactivity exit maintenance or bring-up", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/maintenance", name: "maintenance", component: {} },
+        { path: "/bring-up", name: "bring-up", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    await router.push("/maintenance");
+    await authority.submit({ type: "customer.inactive" });
+    expect(router.currentRoute.value.name).toBe("maintenance");
+
+    await router.push("/bring-up");
+    await authority.submit({ type: "customer.inactive" });
+    expect(router.currentRoute.value.name).toBe("bring-up");
+    authority.dispose();
+  });
+
+  it("freezes immutable trace route decisions before guarding browser navigation", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useCheckoutStore(pinia).applyTransaction(activePaymentTransaction());
+
+    await router.push("/catalog");
+
+    const record = authority.trace
+      .snapshot()
+      .find((candidate) => candidate.requestedRoute === "/catalog");
+    expect(record).toMatchObject({
+      intentType: "browser.navigate",
+      requestedRoute: "/catalog",
+      decidedRoute: "/payment",
+      finalRoute: "/payment",
+    });
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(Object.isFrozen(authority.trace.snapshot())).toBe(true);
+    authority.dispose();
   });
 
   it("actively follows daemon transaction progress without waiting for page navigation", async () => {

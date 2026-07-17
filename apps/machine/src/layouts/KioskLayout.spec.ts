@@ -3,12 +3,12 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick } from "vue";
 
-const { routerPushMock } = vi.hoisted(() => ({
-  routerPushMock: vi.fn(),
+const { submitMachineNavigationIntentMock } = vi.hoisted(() => ({
+  submitMachineNavigationIntentMock: vi.fn(),
 }));
 
-vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: routerPushMock }),
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
 import KioskLayout from "./KioskLayout.vue";
@@ -55,9 +55,12 @@ describe("KioskLayout", () => {
       );
     }
 
-    expect(routerPushMock).toHaveBeenCalledWith({
-      path: "/maintenance",
-      query: { source: "operator" },
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "operator.navigate",
+      target: {
+        path: "/maintenance",
+        query: { source: "operator" },
+      },
     });
 
     app.unmount();

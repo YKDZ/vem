@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -28,9 +28,26 @@ function directRouteWriterOffenders(source: string): string[] {
     [/\buseRouter\s*\(/, "useRouter"],
     [/\brouter\s*\.\s*(?:push|replace|back|go)\b/, "router write"],
     [/\$router\s*\.\s*(?:push|replace|back|go)\b/, "$router write"],
+    [
+      /\b(?:window\.)?location\s*\.\s*(?:assign|replace|reload)\b/,
+      "location write",
+    ],
+    [
+      /\bhistory\s*\.\s*(?:back|forward|go|pushState|replaceState)\b/,
+      "history write",
+    ],
   ].flatMap(([pattern, label]) =>
     (pattern as RegExp).test(source) ? [label as string] : [],
   );
+}
+
+function machineSourceFiles(directory = `${machineRoot}/src`): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) return machineSourceFiles(path);
+    if (!entry.isFile() || !/\.(?:ts|vue)$/.test(entry.name)) return [];
+    return [path.slice(machineRoot.length + 1)];
+  });
 }
 
 describe("customer checkout projection architecture", () => {
@@ -123,26 +140,36 @@ describe("customer checkout projection architecture", () => {
     ).toEqual(["daemonClient.subscribeEvents", "daemonEventSchema"]);
   });
 
-  it("keeps non-debug views and composables from writing routes directly", () => {
-    const paths = [
-      "src/App.vue",
-      "src/composables/useMaintenanceEntry.ts",
-      "src/composables/usePresenceInteraction.ts",
-      "src/views/BootView.vue",
-      "src/views/CatalogView.vue",
-      "src/views/CheckoutView.vue",
-      "src/views/DispensingView.vue",
-      "src/views/MachineProvisioningView.vue",
-      "src/views/MaintenanceView.vue",
-      "src/views/OfflineView.vue",
-      "src/views/PaymentView.vue",
-      "src/views/ProductDetailView.vue",
-      "src/views/ResultView.vue",
-      "src/views/VirtualTryOnView.vue",
-    ];
+  it("recursively keeps production route writes in the navigation authority", () => {
+    const routeWriterAllowlist = new Set([
+      "src/router/transaction-route-authority.ts",
+    ]);
+    const debugRouteWriterAllowlist = new Set([
+      "src/dev/ui-debug-daemon.ts",
+      "src/views/dev/UiDebugView.vue",
+    ]);
 
-    for (const path of paths) {
-      expect(directRouteWriterOffenders(readSource(path))).toEqual([]);
+    for (const path of machineSourceFiles()) {
+      if (path.endsWith(".spec.ts")) continue;
+      if (path.startsWith("src/dev/") || path.startsWith("src/views/dev/")) {
+        if (debugRouteWriterAllowlist.has(path)) continue;
+        expect({
+          path,
+          offenders: directRouteWriterOffenders(readSource(path)),
+        }).toEqual({
+          path,
+          offenders: [],
+        });
+        continue;
+      }
+      if (routeWriterAllowlist.has(path)) continue;
+      expect({
+        path,
+        offenders: directRouteWriterOffenders(readSource(path)),
+      }).toEqual({
+        path,
+        offenders: [],
+      });
     }
   });
 });

@@ -355,6 +355,9 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
   submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (intent.type === "transaction.dismiss") {
+      useCheckoutStore().dismissCurrentTerminalTransaction();
+    }
     if (intent.type === "transaction.projection") {
       if (useCheckoutStore().customerCheckoutView.stage === "none") return;
       const target = useCheckoutStore().customerCheckoutView.routeTarget;
@@ -397,15 +400,13 @@ afterEach(() => {
 });
 
 describe("ResultView", () => {
-  it("routes away through the projected route target when the current checkout is no longer a result", async () => {
+  it("leaves non-result projection routing to the navigation authority", async () => {
     useCheckoutStore().applyTransaction(awaitingPaymentTransaction());
     applySaleReadiness(true);
 
     const host = await mountView();
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
-    });
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
     expect(host.textContent).not.toContain("支付失败");
   });
 
@@ -420,12 +421,12 @@ describe("ResultView", () => {
     });
 
     expect(host.textContent).toContain("出货成功");
-    expect(host.textContent).toContain("秒后自动返回首页");
+    expect(host.textContent).not.toContain("秒后自动返回首页");
     expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
     expect(host.textContent).not.toContain("等待人工处理");
   });
 
-  it("shows projected successful auto-return policy without waiting for page-level readiness refresh", async () => {
+  it("does not create an autonomous result dismissal while readiness is pending", async () => {
     routeParams.kind = "success";
     useCheckoutStore().applyTransaction(successfulTransaction());
     applySaleReadiness(true);
@@ -437,7 +438,11 @@ describe("ResultView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("出货成功");
-    expect(host.textContent).toContain("秒后自动返回首页");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(host.textContent).not.toContain("秒后自动返回首页");
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "transaction.dismiss" }),
+    );
   });
 
   it("keeps a successful terminal result visible when readiness is blocked and returns to maintenance", async () => {
@@ -763,10 +768,7 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("等待人工处理");
     expect(host.textContent).not.toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).not.toContain("出货结果待确认");
-    expect(routerReplaceMock).toHaveBeenCalledWith({
-      name: "result",
-      params: { kind: "manual_handling" },
-    });
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
   });
 
   it("shows refund processing credential and keeps the customer waiting", async () => {

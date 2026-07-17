@@ -1234,7 +1234,6 @@ async function runDiagnosticsRefresh(): Promise<void> {
         ? [refreshPaymentEnvironmentDiagnostic()]
         : []),
     ]);
-    await returnToCatalogAfterSystemRecovery();
   } catch (error) {
     diagnostics.message =
       error instanceof Error ? error.message : String(error);
@@ -1266,18 +1265,6 @@ function stopDiagnosticsAutoRefresh(): void {
   if (diagnosticsRefreshTimer !== null) {
     window.clearInterval(diagnosticsRefreshTimer);
     diagnosticsRefreshTimer = null;
-  }
-}
-
-async function returnToCatalogAfterSystemRecovery(): Promise<void> {
-  if (operatorEnteredMaintenance.value) {
-    return;
-  }
-  if (connectivityStore.ready?.canSell === true) {
-    await submitMachineNavigationIntent({
-      type: "readiness.navigate",
-      target: { name: "catalog" },
-    });
   }
 }
 

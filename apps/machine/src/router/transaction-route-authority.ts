@@ -23,6 +23,8 @@ export type MachineNavigationIntent =
   | { type: "readiness.navigate"; target: RouteLocationRaw }
   | { type: "startup.navigate"; target: RouteLocationRaw }
   | { type: "operator.navigate"; target: RouteLocationRaw }
+  | { type: "transaction.dismiss"; target: RouteLocationRaw }
+  | { type: "browser.navigate"; target: RouteLocationRaw }
   | { type: "transaction.projection" };
 
 export type MachineRuntimeTraceRecord = {
@@ -32,6 +34,9 @@ export type MachineRuntimeTraceRecord = {
   decision: "accepted" | "rejected" | "delayed";
   reasonCode: string;
   fromRoute: string;
+  requestedRoute: string | null;
+  decidedRoute: string | null;
+  finalRoute: string | null;
   targetRoute: string | null;
   transactionOrderNo: string | null;
   transactionStage: string;
@@ -44,11 +49,13 @@ export class MachineRuntimeTrace {
   private nextId = 1;
 
   record(record: Omit<MachineRuntimeTraceRecord, "id" | "at">): void {
-    this.records.push({
-      id: this.nextId,
-      at: new Date().toISOString(),
-      ...record,
-    });
+    this.records.push(
+      Object.freeze({
+        id: this.nextId,
+        at: new Date().toISOString(),
+        ...record,
+      }),
+    );
     this.nextId += 1;
     if (this.records.length > MAX_RUNTIME_TRACE_RECORDS) {
       this.records.splice(0, this.records.length - MAX_RUNTIME_TRACE_RECORDS);
@@ -56,7 +63,9 @@ export class MachineRuntimeTrace {
   }
 
   snapshot(): readonly MachineRuntimeTraceRecord[] {
-    return this.records;
+    return Object.freeze(
+      this.records.map((record) => Object.freeze({ ...record })),
+    );
   }
 }
 
@@ -74,6 +83,9 @@ type AuthorityOptions = {
 function routeTargetForTransaction(
   checkoutStore: ReturnType<typeof useCheckoutStore>,
 ): RouteLocationRaw | null {
+  if (checkoutStore.paymentCreationAttemptActive) {
+    return { name: "checkout" };
+  }
   const view = checkoutStore.customerCheckoutView;
   return view.stage === "none" ? null : view.routeTarget;
 }
@@ -111,14 +123,31 @@ export function createMachineNavigationAuthority(
     intent: MachineNavigationIntent,
     decision: MachineRuntimeTraceRecord["decision"],
     reasonCode: string,
-    target: RouteLocationRaw | null,
+    input: {
+      fromRoute: string;
+      requested: RouteLocationRaw | null;
+      decided: RouteLocationRaw | null;
+      final?: RouteLocationRaw | null;
+    },
   ): void {
+    const requestedRoute = input.requested
+      ? routePath(router, input.requested)
+      : null;
+    const decidedRoute = input.decided
+      ? routePath(router, input.decided)
+      : null;
+    const finalRoute = input.final
+      ? routePath(router, input.final)
+      : decidedRoute;
     trace.record({
       intentType: intent.type,
       decision,
       reasonCode,
-      fromRoute: router.currentRoute.value.fullPath,
-      targetRoute: target ? routePath(router, target) : null,
+      fromRoute: input.fromRoute,
+      requestedRoute,
+      decidedRoute,
+      finalRoute,
+      targetRoute: finalRoute,
       transactionOrderNo: checkoutStore.customerCheckoutView.orderCredential,
       transactionStage: transactionStage(),
       readinessRevision: connectivityStore.ready?.updatedAt ?? null,
@@ -150,29 +179,58 @@ export function createMachineNavigationAuthority(
   }
 
   async function submit(intent: MachineNavigationIntent): Promise<void> {
+    const fromRoute = router.currentRoute.value.fullPath;
+    const requestedTarget = "target" in intent ? intent.target : null;
+    const recordDecision = (
+      decision: MachineRuntimeTraceRecord["decision"],
+      reasonCode: string,
+      decided: RouteLocationRaw | null,
+    ): void => {
+      // Trace inputs are resolved before any router write so the record stays
+      // diagnostic even when a subsequent browser guard redirects again.
+      record(intent, decision, reasonCode, {
+        fromRoute,
+        requested: requestedTarget,
+        decided,
+      });
+    };
+
+    if (intent.type === "transaction.dismiss") {
+      if (checkoutStore.customerCheckoutView.stage !== "result") {
+        recordDecision("rejected", "no_terminal_transaction_to_dismiss", null);
+        return;
+      }
+      checkoutStore.dismissCurrentTerminalTransaction();
+      recordDecision(
+        "accepted",
+        "terminal_transaction_dismissed",
+        intent.target,
+      );
+      await writeRoute(intent.target);
+      return;
+    }
+
     const transactionTarget = routeTargetForTransaction(checkoutStore);
     if (transactionTarget && intent.type !== "customer.touch") {
       if (intent.type === "transaction.projection") {
+        recordDecision("accepted", "transaction_projection", transactionTarget);
         await writeRoute(transactionTarget);
-        record(intent, "accepted", "transaction_projection", transactionTarget);
         return;
       }
-      const requestedTarget = "target" in intent ? intent.target : null;
       if (
         requestedTarget &&
         routePath(router, requestedTarget) ===
           routePath(router, transactionTarget)
       ) {
-        record(
-          intent,
+        recordDecision(
           "accepted",
           "transaction_projection_current",
           transactionTarget,
         );
         return;
       }
+      recordDecision("rejected", "active_transaction_route", transactionTarget);
       await writeRoute(transactionTarget);
-      record(intent, "rejected", "active_transaction_route", transactionTarget);
       return;
     }
 
@@ -180,36 +238,40 @@ export function createMachineNavigationAuthority(
       touchscreenSessionActive = true;
       lastTouchAtMs = intent.atMs ?? now();
       scheduleInactivity();
-      record(intent, "accepted", "touchscreen_session_renewed", null);
+      recordDecision("accepted", "touchscreen_session_renewed", null);
       return;
     }
 
     if (intent.type === "customer.inactive") {
       if (intent.atMs !== undefined && intent.atMs !== lastTouchAtMs) {
-        record(intent, "rejected", "stale_touchscreen_inactivity", null);
+        recordDecision("rejected", "stale_touchscreen_inactivity", null);
         return;
       }
       touchscreenSessionActive = false;
       lastTouchAtMs = null;
       clearInactivityTimer();
+      if (!CUSTOMER_SESSION_ROUTE_NAMES.has(routeName(router))) {
+        recordDecision("rejected", "route_not_inactivity_eligible", null);
+        return;
+      }
       const target = { name: "catalog" };
+      recordDecision("accepted", "touchscreen_session_expired", target);
       await writeRoute(target);
-      record(intent, "accepted", "touchscreen_session_expired", target);
       return;
     }
 
     if (intent.type === "presence.departed") {
       if (touchscreenSessionActive) {
-        record(intent, "rejected", "touchscreen_session_active", null);
+        recordDecision("rejected", "touchscreen_session_active", null);
         return;
       }
       if (!CUSTOMER_SESSION_ROUTE_NAMES.has(routeName(router))) {
-        record(intent, "rejected", "route_not_departure_eligible", null);
+        recordDecision("rejected", "route_not_departure_eligible", null);
         return;
       }
       const target = { name: "catalog" };
+      recordDecision("accepted", "presence_departure", target);
       await writeRoute(target);
-      record(intent, "accepted", "presence_departure", target);
       return;
     }
 
@@ -218,37 +280,56 @@ export function createMachineNavigationAuthority(
       touchscreenSessionActive &&
       CUSTOMER_SESSION_ROUTE_NAMES.has(routeName(router))
     ) {
-      record(intent, "rejected", "touchscreen_session_active", intent.target);
+      recordDecision("rejected", "touchscreen_session_active", intent.target);
       return;
     }
 
     if (intent.type === "transaction.projection") {
-      record(intent, "rejected", "no_active_transaction", null);
+      recordDecision("rejected", "no_active_transaction", null);
       return;
     }
 
-    await writeRoute(intent.target);
-    record(
-      intent,
+    recordDecision(
       "accepted",
       `${intent.type.replace(".", "_")}_accepted`,
       intent.target,
     );
+    await writeRoute(intent.target);
   }
 
   const stopTransactionProjection: WatchStopHandle = watch(
-    () => checkoutStore.customerCheckoutView.routeTarget,
-    () => {
+    () => routeTargetForTransaction(checkoutStore),
+    (target) => {
       if (router.currentRoute.value.matched.length === 0) return;
+      if (!target) return;
       void submit({ type: "transaction.projection" });
     },
     { deep: true },
   );
-  const removeRouteGuard = router.beforeEach((to) => {
+  const removeRouteGuard = router.beforeEach((to, from) => {
     const transactionTarget = routeTargetForTransaction(checkoutStore);
-    if (!transactionTarget) return;
-    if (router.resolve(transactionTarget).fullPath === to.fullPath) return;
-    return transactionTarget;
+    const intent: MachineNavigationIntent = {
+      type: "browser.navigate",
+      target: to,
+    };
+    const fromRoute = from.fullPath;
+    const requested = to.redirectedFrom ?? to;
+    if (
+      transactionTarget &&
+      router.resolve(transactionTarget).fullPath !== to.fullPath
+    ) {
+      record(intent, "rejected", "active_transaction_route", {
+        fromRoute,
+        requested,
+        decided: transactionTarget,
+      });
+      return transactionTarget;
+    }
+    record(intent, "accepted", "browser_navigation_accepted", {
+      fromRoute,
+      requested,
+      decided: to,
+    });
   });
   const onDirectPointerInteraction = (event: PointerEvent | Event): void => {
     if (

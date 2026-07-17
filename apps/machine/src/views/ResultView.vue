@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref } from "vue";
 
 import type {
   CustomerCheckoutResultDetailIntent,
@@ -18,9 +18,6 @@ import { useCheckoutStore } from "@/stores/checkout";
 
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-
-const AUTO_RETURN_DELAY_MS = 6000;
-const AUTO_RETURN_TICK_MS = 1000;
 
 type ResultCopy = {
   title: string;
@@ -123,60 +120,14 @@ const resultDetail = computed(() => {
 const requiresMaintenanceReview = computed(() => {
   return activeReturnPolicy.value?.requiresMaintenanceReview === true;
 });
-const canAutoReturn = computed(
-  () =>
-    activeReturnPolicy.value?.canAutoReturn === true &&
-    resultReadinessError.value === null,
-);
 const canManuallyReturn = computed(
   () => activeReturnPolicy.value?.canManualReturn === true,
 );
-const autoReturnRemainingSeconds = ref(
-  Math.ceil(AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS),
-);
-const autoReturnMessage = computed(() => {
-  const seconds = autoReturnRemainingSeconds.value;
-  return `${seconds} 秒后自动返回首页。`;
-});
-
-let autoReturnTimer: number | null = null;
-let autoReturnStartedAt = 0;
 let returningToCatalog = false;
-
-function stopAutoReturn(): void {
-  if (autoReturnTimer !== null) {
-    window.clearInterval(autoReturnTimer);
-    autoReturnTimer = null;
-  }
-}
-
-function updateAutoReturnCountdown(): void {
-  const elapsedMs = Date.now() - autoReturnStartedAt;
-  const remainingMs = Math.max(AUTO_RETURN_DELAY_MS - elapsedMs, 0);
-  autoReturnRemainingSeconds.value = Math.ceil(
-    remainingMs / AUTO_RETURN_TICK_MS,
-  );
-  if (remainingMs <= 0) {
-    void backToCatalog();
-  }
-}
-
-function startAutoReturn(): void {
-  if (autoReturnTimer !== null || returningToCatalog) return;
-  autoReturnStartedAt = Date.now();
-  autoReturnRemainingSeconds.value = Math.ceil(
-    AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS,
-  );
-  autoReturnTimer = window.setInterval(
-    updateAutoReturnCountdown,
-    AUTO_RETURN_TICK_MS,
-  );
-}
 
 async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   returningToCatalog = true;
-  stopAutoReturn();
   const readinessConfirmed = await refreshResultReadiness();
   const returnPolicy = activeReturnPolicy.value;
   if (!readinessConfirmed || returnPolicy?.canManualReturn !== true) {
@@ -184,19 +135,17 @@ async function backToCatalog(): Promise<void> {
     return;
   }
   const projectedTargetRoute = returnPolicy.targetRoute;
-  checkoutStore.dismissCurrentTerminalTransaction();
+  await submitMachineNavigationIntent({
+    type: "transaction.dismiss",
+    target: { name: projectedTargetRoute },
+  });
   checkoutStore.reset();
-  const targetRoute = `/${projectedTargetRoute}`;
-  if (targetRoute === "/catalog") {
+  if (projectedTargetRoute === "catalog") {
     await catalogStore.refresh().catch((error: unknown) => {
       resultReadinessError.value =
         error instanceof Error ? error.message : String(error);
     });
   }
-  await submitMachineNavigationIntent({
-    type: "customer.navigate",
-    target: { name: projectedTargetRoute },
-  });
 }
 
 async function refreshResultReadiness(): Promise<boolean> {
@@ -205,28 +154,7 @@ async function refreshResultReadiness(): Promise<boolean> {
   return resultReadinessError.value === null;
 }
 
-watch(
-  canAutoReturn,
-  (enabled) => {
-    if (enabled) {
-      startAutoReturn();
-    } else {
-      stopAutoReturn();
-    }
-  },
-  { immediate: true },
-);
-
 void refreshResultReadiness();
-
-watch(
-  () => checkoutView.value.routeTarget,
-  () => {
-    void submitMachineNavigationIntent({ type: "transaction.projection" });
-  },
-);
-
-onBeforeUnmount(stopAutoReturn);
 </script>
 
 <template>
@@ -371,10 +299,7 @@ onBeforeUnmount(stopAutoReturn);
           订单凭证 {{ orderCredential }}
         </p>
         <p v-if="resultDetail" class="result-detail">{{ resultDetail }}</p>
-        <p v-if="canAutoReturn" class="result-detail">
-          {{ autoReturnMessage }}
-        </p>
-        <p v-else-if="requiresMaintenanceReview" class="result-detail">
+        <p v-if="requiresMaintenanceReview" class="result-detail">
           设备需要维护检查，当前保持本次处理结果。
         </p>
         <p v-else-if="resultReadinessError" class="result-detail">

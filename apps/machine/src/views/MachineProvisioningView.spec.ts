@@ -6,6 +6,7 @@ import { createApp, nextTick, type App } from "vue";
 const {
   DaemonUnavailableErrorMock,
   routerReplaceMock,
+  submitMachineNavigationIntentMock,
   getBringUpMock,
   executeBringUpTaskMock,
   getSaleViewMock,
@@ -19,6 +20,7 @@ const {
 } = vi.hoisted(() => ({
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {},
   routerReplaceMock: vi.fn(),
+  submitMachineNavigationIntentMock: vi.fn(),
   getBringUpMock: vi.fn(),
   executeBringUpTaskMock: vi.fn(),
   getSaleViewMock: vi.fn(),
@@ -33,6 +35,9 @@ const {
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ replace: routerReplaceMock }),
+}));
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 vi.mock("@/layouts/KioskLayout.vue", () => ({
   default: { template: "<main><slot /></main>" },
@@ -186,6 +191,10 @@ function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
+    if (!("target" in intent)) return;
+    routerReplaceMock(intent.target);
+  });
   getBringUpMock.mockReset();
   getBringUpMock.mockResolvedValue(snapshot());
   executeBringUpTaskMock.mockResolvedValue({

@@ -202,7 +202,7 @@ describe("PaymentView", () => {
     expect(host.textContent).toContain("正在确认支付结果");
     expect(host.textContent).toContain("订单凭证");
     expect(host.textContent).toContain("ORD-CONFIRM-001");
-    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
+    expect(checkoutStore.customerCheckoutView.stage).toBe("payment");
   });
 
   it("disables cancel while expired QR payment is confirming", async () => {
@@ -308,7 +308,7 @@ describe("PaymentView", () => {
     await mountView();
     await flushPromises();
 
-    expect(routerReplaceMock).toHaveBeenCalledWith("/dispensing");
+    expect(checkoutStore.customerCheckoutView.stage).toBe("dispensing");
   });
 
   it("uses projected payment-code intent to block cancellation with Chinese copy", async () => {
@@ -445,7 +445,7 @@ describe("PaymentView", () => {
     await mountView();
     await flushPromises();
 
-    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
+    expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(checkoutStore.customerCheckoutView).toMatchObject({
       stage: "payment",
       orderCredential: "ORD-CANCEL-001",

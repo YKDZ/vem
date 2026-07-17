@@ -124,4 +124,42 @@ describe("TransactionRecoveryOverlay", () => {
     app.unmount();
     host.remove();
   });
+
+  it("covers an undismissed manual handling result while the same order is reconciled", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const checkoutStore = useCheckoutStore(pinia);
+    checkoutStore.applyTransaction({
+      ...activePaymentTransaction(),
+      orderStatus: "manual_handling",
+      nextAction: "manual_handling",
+      paymentStatus: "succeeded",
+      vending: {
+        commandId: null,
+        commandNo: "CMD-MANUAL",
+        status: "result_unknown",
+        lastError: "awaiting operator reconciliation",
+      },
+    });
+    getCurrentTransactionMock.mockResolvedValue({
+      ...activePaymentTransaction(),
+      orderNo: "ORD-UNRELATED",
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const app = createApp(TransactionRecoveryOverlay);
+    app.use(pinia);
+    app.mount(host);
+
+    await checkoutStore.refreshCurrentTransaction();
+    await nextTick();
+
+    expect(checkoutStore.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-RECOVERY-OVERLAY",
+    });
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull();
+    app.unmount();
+    host.remove();
+  });
 });
