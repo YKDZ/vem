@@ -276,7 +276,7 @@ impl ScannerRuntime {
                         "scanner ready",
                         &port_path,
                     ));
-                    self.read_loop(port).await?;
+                    self.read_loop(port, &port_path).await?;
                 }
                 Err(error) => {
                     self.emit_health(self.health_snapshot_with_port(
@@ -340,13 +340,32 @@ impl ScannerRuntime {
         });
     }
 
-    async fn read_loop(&self, mut port: tokio_serial::SerialStream) -> Result<(), String> {
+    async fn read_loop(
+        &self,
+        mut port: tokio_serial::SerialStream,
+        port_path: &str,
+    ) -> Result<(), String> {
         let mut framer = vending_core::scanner::ScannerFramer::new(self.config.frame_suffix);
         let mut buffer = [0_u8; 1024];
+        let heartbeat_period = std::time::Duration::from_secs(5);
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + heartbeat_period,
+            heartbeat_period,
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => return Ok(()),
+                _ = heartbeat.tick() => {
+                    self.emit_health(self.health_snapshot_with_port(
+                        true,
+                        vending_core::health::HealthLevel::Ok,
+                        "SCANNER_READY",
+                        "scanner ready",
+                        port_path,
+                    ));
+                }
                 read = tokio::io::AsyncReadExt::read(&mut port, &mut buffer) => {
                     let read = match read {
                         Ok(read) => read,
