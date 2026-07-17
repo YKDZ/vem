@@ -158,7 +158,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
     </disk>
 ${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(profile.network.macAddress)}"/><source network="${xml(profile.network.name)}"/><model type="e1000e"/></interface>
     <graphics type="spice" autoport="yes"><listen type="none"/></graphics>
-    <video><model type="qxl" ram="${profile.display.videoMemoryKiB}" vram="${profile.display.videoMemoryKiB}" vgamem="16384" heads="1" primary="yes"/></video>
+    <video><model type="qxl" ram="${profile.display.videoMemoryKiB}" vram="${profile.display.videoMemoryKiB}" vgamem="16384" heads="1" primary="yes"><resolution x="${profile.display.width}" y="${profile.display.height}"/></model></video>
     <audio id="1" type="spice"/>
     <sound model="ich9"/>
 ${serial}

@@ -115,11 +115,30 @@ jobs:
           set -euo pipefail
           [[ "$VEM_VM_HOST_LOCK_PATH" = /* ]]
           mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
-          if ! mkdir "$VEM_VM_HOST_LOCK_PATH"; then
-            echo "another VM runtime operation already holds the host-global lock: $VEM_VM_HOST_LOCK_PATH" >&2
+          lock_owner_path="$RUNNER_TEMP/vem-vm-host-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.owner"
+          rm -f -- "$lock_owner_path"
+          flock -n "$VEM_VM_HOST_LOCK_PATH" bash -c '
+            owner_path="$1"
+            trap "exit 0" TERM INT
+            printf "%s\n" "$$" > "$owner_path"
+            while :; do sleep 60 & wait "$!"; done
+          ' _ "$lock_owner_path" &
+          flock_pid="$!"
+          for _ in $(seq 1 50); do
+            if [[ -s "$lock_owner_path" ]]; then break; fi
+            if ! kill -0 "$flock_pid" 2>/dev/null; then
+              wait "$flock_pid" || true
+              echo "another VM runtime operation already holds the host-global lock: $VEM_VM_HOST_LOCK_PATH" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          [[ -s "$lock_owner_path" ]] || {
+            echo "timed out acquiring the host-global flock: $VEM_VM_HOST_LOCK_PATH" >&2
             exit 1
-          fi
-          printf '%s\n' "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" > "$VEM_VM_HOST_LOCK_PATH/owner"
+          }
+          echo "VEM_VM_HOST_LOCK_PID=$(<"$lock_owner_path")" >> "$GITHUB_ENV"
+          echo "VEM_VM_HOST_LOCK_OWNER_PATH=$lock_owner_path" >> "$GITHUB_ENV"
 
       - name: Verify Runner Toolchain
         run: |
@@ -627,9 +646,15 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if [[ -n "${VEM_VM_HOST_LOCK_PATH:-}" && -d "$VEM_VM_HOST_LOCK_PATH" ]]; then
-            rm -rf -- "$VEM_VM_HOST_LOCK_PATH"
+          if [[ -n "${VEM_VM_HOST_LOCK_PID:-}" ]] && kill -0 "$VEM_VM_HOST_LOCK_PID" 2>/dev/null; then
+            kill -TERM "$VEM_VM_HOST_LOCK_PID"
           fi
+          for _ in $(seq 1 50); do
+            if flock -n "$VEM_VM_HOST_LOCK_PATH" true; then break; fi
+            sleep 0.1
+          done
+          flock -n "$VEM_VM_HOST_LOCK_PATH" true
+          rm -f -- "${VEM_VM_HOST_LOCK_OWNER_PATH:-}"
 
       - name: Guard Local VM Acceptance Credential Evidence
         id: credential_leak_guard

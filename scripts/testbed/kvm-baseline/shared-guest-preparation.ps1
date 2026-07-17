@@ -76,7 +76,7 @@ Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
 Set-BaselineService -Name "sshd"
 $administratorsKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
 Copy-Item -Force $AuthorizedKeysPath $administratorsKeys
-Invoke-Native -FilePath "icacls.exe" -ArgumentList @($administratorsKeys, "/inheritance:r", "/grant", "Administrators:F", "/grant", "SYSTEM:F") -Description "OpenSSH administrator key ACL"
+Invoke-Native -FilePath "icacls.exe" -ArgumentList @($administratorsKeys, "/inheritance:r", "/grant", "*S-1-5-32-544:F", "/grant", "SYSTEM:F") -Description "OpenSSH administrator key ACL"
 
 Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
 Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Win8DpiScaling -Type DWord -Value 1

@@ -367,6 +367,36 @@ async function destroyAndUndefine(config, domainName) {
   );
 }
 
+export async function recoverStaleConstructionDomains(
+  config,
+  { runCommand = run } = {},
+) {
+  const result = await runCommand("virsh", [
+    "--connect",
+    config.host.libvirtUri,
+    "list",
+    "--all",
+    "--name",
+  ]);
+  const constructionPrefix = `${config.vm.name}-build-`;
+  const constructionDomains = result.stdout
+    .split("\n")
+    .map((name) => name.trim())
+    .filter((name) => name.startsWith(constructionPrefix));
+  for (const domainName of constructionDomains) {
+    await runCommand(
+      "virsh",
+      ["--connect", config.host.libvirtUri, "destroy", domainName],
+      { allowFailure: true },
+    );
+    await runCommand(
+      "virsh",
+      ["--connect", config.host.libvirtUri, "undefine", domainName],
+      { allowFailure: true },
+    );
+  }
+}
+
 async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
   const address = await discoverGuestAddress(config, domainName);
   if (!address) throw new Error("guest DHCP lease disappeared before shutdown");
@@ -414,6 +444,7 @@ export async function buildWin10Baseline(
   { sourceCommit, execute = false } = {},
 ) {
   validateBaselineBuildConfig(config);
+  if (execute) await recoverStaleConstructionDomains(config);
   const profile = runtimeProfileForConfig(config);
   const observation = await collectHostObservation(config);
   evaluateHostPreflight(config, observation);
@@ -430,15 +461,6 @@ export async function buildWin10Baseline(
   if (!execute) return plan;
   await mkdir(dirname(config.storage.baselinePath), { recursive: true });
   await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
-  await mkdir(dirname(config.host.lockPath), { recursive: true });
-  const lockPath = config.host.lockPath;
-  try {
-    await mkdir(lockPath, { mode: 0o700 });
-  } catch (error) {
-    if (error.code === "EEXIST") throw new Error("another baseline build already holds the host lock");
-    throw error;
-  }
-  try {
   const state = await domainState(config);
   if (state && state !== "shut off") {
     throw new Error(
@@ -596,9 +618,6 @@ export async function buildWin10Baseline(
     if (cacheStagingDirectory !== stagingDirectory) {
       await rm(cacheStagingDirectory, { recursive: true, force: true });
     }
-  }
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
   }
 }
 

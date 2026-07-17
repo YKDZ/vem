@@ -14,6 +14,7 @@ import { describe, it } from "node:test";
 
 import {
   buildWin10Baseline,
+  recoverStaleConstructionDomains,
   renderUnattendedXml,
 } from "./build-win10-baseline.mjs";
 import {
@@ -114,7 +115,10 @@ describe("Linux KVM Windows baseline", () => {
       cdromPaths: ["/srv/media/windows.iso", "/srv/media/config.iso"],
     });
     assert.match(xml, /<memory unit="MiB">16384<\/memory>/);
-    assert.match(xml, /<model type="qxl" ram="65536"/);
+    assert.match(
+      xml,
+      /<model type="qxl" ram="65536" vram="65536" vgamem="16384" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
+    );
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /alias name="serial-scanner"/);
     assert.match(xml, /<sound model="ich9"\/>/);
@@ -128,6 +132,19 @@ describe("Linux KVM Windows baseline", () => {
       encoding: "utf8",
     });
     assert.equal(parsed.status, 0, parsed.stderr);
+
+    const alternateProfile = createRuntimeProfile({
+      vmName: "win10-runtime-baseline",
+      systemDiskPath: "/srv/vm/win10.qcow2",
+      cacheDiskPath: "/srv/vm/win10-cache.qcow2",
+      networkName: "runtime-testbed",
+      macAddress: "52:54:00:12:34:56",
+      display: { width: 1200, height: 1600 },
+    });
+    assert.match(
+      renderLibvirtDomainXml(alternateProfile),
+      /<resolution x="1200" y="1600"\/>/,
+    );
   });
 
   it("requires caller-owned identity, storage, media, network, and runner inputs", () => {
@@ -342,6 +359,11 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(shared, /Stop-Service/);
     assert.match(shared, /CDS_UPDATEREGISTRY/);
     assert.match(shared, /interactive-display-report\.json/);
+    assert.match(
+      shared,
+      /icacls\.exe" -ArgumentList @\(\$administratorsKeys, "\/inheritance:r", "\/grant", "\*S-1-5-32-544:F", "\/grant", "SYSTEM:F"\)/,
+    );
+    assert.doesNotMatch(shared, /"Administrators:F"/);
     assert.match(runtime, /Initialize-Disk/);
     assert.match(runtime, /FileSystemLabel/);
     assert.match(runtime, /SetEnvironmentVariable/);
@@ -359,6 +381,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(verify, /interactive-display-report\.json/);
     assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(builder, /UserKnownHostsFile=/);
+    assert.match(builder, /<Group>Administrators<\/Group>/);
     assert.match(builder, /readJsonWithBom/);
     assert.match(builder, /domifaddr/);
     assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
@@ -454,6 +477,110 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(acceptanceWorkflow, /VEM_VM_HOST_LOCK_PATH/);
     assert.match(acceptanceWorkflow, /Acquire Host Global Lock/);
     assert.match(acceptanceWorkflow, /Release Host Global Lock/);
+    for (const workflow of [baselineWorkflow, acceptanceWorkflow]) {
+      assert.match(workflow, /flock -n/);
+      assert.doesNotMatch(workflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);
+      assert.doesNotMatch(workflow, /rm -rf -- "\$VEM_VM_HOST_LOCK_PATH"/);
+    }
+    assert.match(acceptanceWorkflow, /trap "exit 0" TERM INT/);
+    assert.match(acceptanceWorkflow, /kill -TERM "\$VEM_VM_HOST_LOCK_PID"/);
+  });
+
+  it("releases the host flock when the acceptance lock holder receives SIGTERM", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-flock-"));
+    const lockPath = join(root, "vem-windows-runtime-testbed.lock");
+    try {
+      const cancelled = spawnSync(
+        "bash",
+        [
+          "-c",
+          `
+            exec 9>"$1"
+            flock -n 9
+            trap "exit 0" TERM INT
+            kill -TERM "$$"
+            exit 1
+          `,
+          "_",
+          lockPath,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(cancelled.status, 0, cancelled.stderr);
+      assert.equal(spawnSync("flock", ["-n", lockPath, "true"]).status, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers only stale construction domains for this baseline before starting another build", async () => {
+    const config = buildConfig("/var/tmp/vem-kvm-baseline-recovery");
+    const invocations = [];
+    const runCommand = async (command, args, options) => {
+      invocations.push({ command, args, options });
+      if (args.includes("list")) {
+        return {
+          stdout: [
+            "win10-runtime-baseline-build-old-a",
+            "win10-runtime-baseline-build-old-b",
+            "win10-runtime-baseline-backup",
+            "win10-runtime-baseline2-build-old",
+            "other-build-old",
+          ].join("\n"),
+        };
+      }
+      return { stdout: "" };
+    };
+
+    await recoverStaleConstructionDomains(config, { runCommand });
+
+    assert.deepEqual(invocations, [
+      {
+        command: "virsh",
+        args: ["--connect", "qemu:///system", "list", "--all", "--name"],
+        options: undefined,
+      },
+      {
+        command: "virsh",
+        args: [
+          "--connect",
+          "qemu:///system",
+          "destroy",
+          "win10-runtime-baseline-build-old-a",
+        ],
+        options: { allowFailure: true },
+      },
+      {
+        command: "virsh",
+        args: [
+          "--connect",
+          "qemu:///system",
+          "undefine",
+          "win10-runtime-baseline-build-old-a",
+        ],
+        options: { allowFailure: true },
+      },
+      {
+        command: "virsh",
+        args: [
+          "--connect",
+          "qemu:///system",
+          "destroy",
+          "win10-runtime-baseline-build-old-b",
+        ],
+        options: { allowFailure: true },
+      },
+      {
+        command: "virsh",
+        args: [
+          "--connect",
+          "qemu:///system",
+          "undefine",
+          "win10-runtime-baseline-build-old-b",
+        ],
+        options: { allowFailure: true },
+      },
+    ]);
   });
 
   it("keeps the new baseline boundary independent of historical image tooling", () => {

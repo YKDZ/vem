@@ -57,6 +57,13 @@ jobs:
             throw new Error("baseline config host.lockPath must equal VEM_VM_HOST_LOCK_PATH");
           }
           NODE
+          mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
+          exec {lock_fd}>"$VEM_VM_HOST_LOCK_PATH"
+          if ! flock -n "$lock_fd"; then
+            echo "another VM runtime operation already holds the host-global lock: $VEM_VM_HOST_LOCK_PATH" >&2
+            exit 1
+          fi
+          trap 'exit 0' TERM INT
           node scripts/testbed/kvm-baseline/build-win10-baseline.mjs \
             --config "$BASELINE_CONFIG_PATH" \
             --source-commit "$SOURCE_COMMIT" \
