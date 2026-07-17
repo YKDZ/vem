@@ -1318,7 +1318,17 @@ function runSaleCommand(command, expectedPhase) {
     throw new Error(
       `${expectedPhase} scanner sale failed: ${result.stderr || result.stdout}`,
     );
-  const output = JSON.parse(result.stdout || "null");
+  let output = JSON.parse(result.stdout || "null");
+  const outputOptionIndex = command.lastIndexOf("--out");
+  if (outputOptionIndex >= 0 && typeof command[outputOptionIndex + 1] === "string") {
+    try {
+      output = JSON.parse(
+        readFileSync(resolve(command[outputOptionIndex + 1]), "utf8"),
+      );
+    } catch {
+      // Commands without a durable output file retain their stdout contract.
+    }
+  }
   const sale = output?.simulatedHardwareSaleFlow?.sale;
   if (
     output?.simulatedHardwareSaleFlow?.phase !== expectedPhase ||
