@@ -595,30 +595,6 @@ pub struct LocalDeviceBindingSnapshot {
     pub revision: String,
 }
 
-fn local_device_binding_for_role(
-    settings: &LocalBringUpSettings,
-    role: crate::device_binding::LocalDeviceRole,
-) -> Option<crate::device_binding::LocalSerialRoleBinding> {
-    match role {
-        crate::device_binding::LocalDeviceRole::LowerController => {
-            settings.lower_controller_binding.clone()
-        }
-        crate::device_binding::LocalDeviceRole::Scanner => settings.scanner_binding.clone(),
-    }
-}
-
-fn local_device_binding_revision(
-    role: crate::device_binding::LocalDeviceRole,
-    binding: Option<&crate::device_binding::LocalSerialRoleBinding>,
-) -> Result<String, String> {
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "role": role,
-        "binding": binding,
-    }))
-    .map_err(|error| format!("serialize local device binding revision failed: {error}"))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -1550,6 +1526,7 @@ pub struct ConfigStore {
     secrets: Arc<dyn SecretStore>,
     maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
     local_settings_mutation_lock: tokio::sync::Mutex<()>,
+    local_runtime_settings: Arc<crate::local_runtime_settings::LocalRuntimeSettingsStore>,
     effective_config_generation: AtomicU64,
     clean_runtime_configuration: Arc<crate::runtime_configuration::CleanRuntimeConfigurationStore>,
 }
@@ -1748,6 +1725,8 @@ impl ConfigStore {
             secrets.clone(),
             tunnel,
         ));
+        let local_runtime_settings =
+            crate::local_runtime_settings::LocalRuntimeSettingsStore::new(data_dir.clone());
         Self {
             clean_runtime_configuration: Arc::new(
                 crate::runtime_configuration::CleanRuntimeConfigurationStore::new(
@@ -1760,6 +1739,7 @@ impl ConfigStore {
             secrets,
             maintenance,
             local_settings_mutation_lock: tokio::sync::Mutex::new(()),
+            local_runtime_settings,
             effective_config_generation: AtomicU64::new(0),
         }
     }
@@ -1788,6 +1768,16 @@ impl ConfigStore {
 
     pub fn local_bring_up_settings_path(&self) -> PathBuf {
         local_bring_up_settings_path(&self.data_dir)
+    }
+
+    pub fn local_runtime_settings_path(&self) -> &Path {
+        self.local_runtime_settings.path()
+    }
+
+    pub async fn load_local_runtime_settings(
+        &self,
+    ) -> Result<crate::local_runtime_settings::LocalRuntimeSettings, String> {
+        self.local_runtime_settings.load().await
     }
 
     pub fn provisioning_profile_cache_summary_path(&self) -> PathBuf {
@@ -2565,40 +2555,21 @@ impl ConfigStore {
         &self,
         role: crate::device_binding::LocalDeviceRole,
         binding: crate::device_binding::LocalSerialRoleBinding,
-    ) -> Result<LocalBringUpSettings, String> {
-        let _mutation = self.local_settings_mutation_lock.lock().await;
-        let mut settings = self
-            .load_local_bring_up_settings()
-            .await?
-            .unwrap_or_default();
-        match role {
-            crate::device_binding::LocalDeviceRole::LowerController => {
-                settings.lower_controller_binding = Some(binding);
-            }
-            crate::device_binding::LocalDeviceRole::Scanner => {
-                settings.scanner_binding = Some(binding);
-            }
-        }
-        let settings = normalize_local_bring_up_settings(settings)?;
-        self.write_local_bring_up_settings_unlocked(&settings)
+    ) -> Result<(), String> {
+        self.local_runtime_settings
+            .save_binding(role, binding)
             .await?;
-        Ok(settings)
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     pub async fn local_device_binding_snapshot(
         &self,
         role: crate::device_binding::LocalDeviceRole,
     ) -> Result<LocalDeviceBindingSnapshot, String> {
-        let _mutation = self.local_settings_mutation_lock.lock().await;
-        let settings = self
-            .load_local_bring_up_settings()
-            .await?
-            .unwrap_or_default();
-        let binding = local_device_binding_for_role(&settings, role);
-        Ok(LocalDeviceBindingSnapshot {
-            revision: local_device_binding_revision(role, binding.as_ref())?,
-            binding,
-        })
+        let (binding, revision) = self.local_runtime_settings.binding_snapshot(role).await?;
+        Ok(LocalDeviceBindingSnapshot { revision, binding })
     }
 
     pub async fn save_local_device_binding_if_revision(
@@ -2607,8 +2578,13 @@ impl ConfigStore {
         binding: crate::device_binding::LocalSerialRoleBinding,
         expected_revision: &str,
     ) -> Result<String, String> {
-        self.replace_local_device_binding_if_revision(role, Some(binding), expected_revision)
-            .await
+        let revision = self
+            .local_runtime_settings
+            .replace_binding_if_revision(role, Some(binding), expected_revision)
+            .await?;
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(revision)
     }
 
     pub async fn restore_local_device_binding_if_revision(
@@ -2617,40 +2593,13 @@ impl ConfigStore {
         binding: Option<crate::device_binding::LocalSerialRoleBinding>,
         expected_revision: &str,
     ) -> Result<String, String> {
-        self.replace_local_device_binding_if_revision(role, binding, expected_revision)
-            .await
-    }
-
-    async fn replace_local_device_binding_if_revision(
-        &self,
-        role: crate::device_binding::LocalDeviceRole,
-        binding: Option<crate::device_binding::LocalSerialRoleBinding>,
-        expected_revision: &str,
-    ) -> Result<String, String> {
-        let _mutation = self.local_settings_mutation_lock.lock().await;
-        let mut settings = self
-            .load_local_bring_up_settings()
-            .await?
-            .unwrap_or_default();
-        let current = local_device_binding_for_role(&settings, role);
-        let current_revision = local_device_binding_revision(role, current.as_ref())?;
-        if current_revision != expected_revision {
-            return Err(format!(
-                "{} binding revision changed: expected {expected_revision}, current {current_revision}",
-                role.as_str()
-            ));
-        }
-        match role {
-            crate::device_binding::LocalDeviceRole::LowerController => {
-                settings.lower_controller_binding = binding.clone();
-            }
-            crate::device_binding::LocalDeviceRole::Scanner => {
-                settings.scanner_binding = binding.clone();
-            }
-        }
-        self.write_local_bring_up_settings_unlocked(&settings)
+        let revision = self
+            .local_runtime_settings
+            .replace_binding_if_revision(role, binding, expected_revision)
             .await?;
-        local_device_binding_revision(role, binding.as_ref())
+        self.effective_config_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(revision)
     }
 
     pub async fn restore_local_bring_up_settings_snapshot(
@@ -3277,6 +3226,7 @@ mod tests {
                     supports_recommendations: true,
                 },
             },
+            hardware_model: "vem-prod-24".to_string(),
             hardware_slot_topology: HardwareSlotTopologyIdentity {
                 identity: "vem-prod-24".to_string(),
                 version: "2026-06-adr0026".to_string(),
@@ -3310,6 +3260,7 @@ mod tests {
             },
             metadata: ProvisioningMetadata {
                 profile_version: 1,
+                profile_revision: 2,
                 claim_code_id: "550e8400-e29b-41d4-a716-446655440111".to_string(),
                 claimed_at: "2026-06-08T16:30:00.000Z".to_string(),
                 server_time: "2026-06-08T16:30:00.000Z".to_string(),
@@ -3920,6 +3871,7 @@ mod tests {
                 },
                 "provisioningMetadata": {
                     "profileVersion": 1,
+                    "profileRevision": 2,
                     "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                     "claimedAt": "2026-07-04T16:00:00Z",
                     "serverTime": "2026-07-04T16:00:00Z"
@@ -4171,6 +4123,7 @@ mod tests {
                 },
                 "provisioningMetadata": {
                     "profileVersion": 1,
+                    "profileRevision": 2,
                     "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
                     "claimedAt": "2026-07-04T16:00:00Z",
                     "serverTime": "2026-07-04T16:00:00Z"
@@ -5449,13 +5402,10 @@ mod tests {
         assert!(device_race.contains("generation changed"));
 
         let saved = store
-            .load_local_bring_up_settings()
+            .load_local_runtime_settings()
             .await
-            .expect("load settings")
-            .expect("settings exist");
-        assert_eq!(saved.network_profile.as_deref(), Some("network-r1"));
+            .expect("load settings");
         assert_eq!(saved.scanner_binding, Some(scanner_binding));
-        assert!(saved.machine_audio_output_binding.is_none());
     }
 
     #[test]
@@ -5511,6 +5461,7 @@ mod tests {
                 "paymentScanner": { "required": true, "supportsPaymentCode": true },
                 "vision": { "required": false, "supportsRecommendations": true }
             },
+            "hardwareModel": "vem-prod-24",
             "hardwareSlotTopology": {
                 "identity": "vem-prod-24",
                 "version": "2026-06-adr0026"
@@ -5540,6 +5491,7 @@ mod tests {
             },
             "metadata": {
                 "profileVersion": 1,
+                "profileRevision": 2,
                 "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
                 "claimedAt": "2026-07-05T02:06:21.966Z",
                 "serverTime": "2026-07-05T02:06:21.966Z"
@@ -5987,13 +5939,13 @@ mod tests {
         let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
         fs::create_dir_all(
             store
-                .local_bring_up_settings_path()
+                .local_runtime_settings_path()
                 .parent()
                 .expect("settings parent"),
         )
         .await
         .expect("settings dir");
-        fs::write(store.local_bring_up_settings_path(), b"{invalid-json")
+        fs::write(store.local_runtime_settings_path(), b"{invalid-json")
             .await
             .expect("corrupt settings");
 
@@ -6002,7 +5954,7 @@ mod tests {
             .await
             .expect_err("corrupt settings must not become an empty snapshot");
 
-        assert!(error.contains("parse local bring-up settings failed"));
+        assert!(error.contains("local runtime settings contract invalid"));
     }
 
     #[tokio::test]
@@ -6050,16 +6002,8 @@ mod tests {
             .await
             .expect("role-scoped rollback");
 
-        let settings = store
-            .load_local_bring_up_settings()
-            .await
-            .expect("settings")
-            .expect("persisted settings");
+        let settings = store.load_local_runtime_settings().await.expect("settings");
         assert!(settings.scanner_binding.is_none());
-        assert_eq!(
-            settings.network_profile.as_deref(),
-            Some("field-network-updated")
-        );
         assert_eq!(
             settings
                 .lower_controller_binding
