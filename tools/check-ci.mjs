@@ -439,6 +439,10 @@ process.on("SIGTERM", async () => {
 
 async function runStaticJob() {
   printStep("Static checks");
+  await run("node", [
+    "--test",
+    "scripts/check-effective-config-hard-migration.test.mjs",
+  ]);
   await run("pnpm", ["check:boundaries"]);
   await run("pnpm", ["check:script-inventory"]);
   await run("pnpm", ["check:vision-main-consumer"]);
