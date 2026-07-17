@@ -329,9 +329,10 @@ $scannerPort = if ($ports -contains 'COM2') { 'COM2' } else { @($ports | Where-O
 foreach ($path in @('C:\ProgramData\VEM\vending-daemon\machine-config.json', 'C:\VEM\bringup\machine-config.json')) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
   $config = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  if ($null -eq $config.public) { $config | Add-Member -NotePropertyName 'public' -NotePropertyValue ([pscustomobject]@{}) }
   foreach ($entry in @{ hardwareAdapter = 'serial'; serialPortPath = $lowerPort; lowerControllerUsbIdentity = $null; scannerAdapter = 'serial_text'; scannerSerialPortPath = $scannerPort; scannerUsbIdentity = $null }.GetEnumerator()) {
-    if ($config.PSObject.Properties.Name -contains $entry.Key) { $config.($entry.Key) = $entry.Value }
-    else { $config | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
+    if ($config.public.PSObject.Properties.Name -contains $entry.Key) { $config.public.($entry.Key) = $entry.Value }
+    else { $config.public | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
   }
   [System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 30), [System.Text.UTF8Encoding]::new($false))
 }
