@@ -1555,23 +1555,17 @@ function assertAudioCaptureRequest(value, path, issues) {
   if (
     !assertExactKeys(
       value,
-      [
-        "schemaVersion",
-        "activeKioskSession",
-        "selectedEndpointId",
-        "daemonCalibration",
-        "threshold",
-      ],
+      ["schemaVersion", "activeKioskSession", "daemonCalibration", "threshold"],
       path,
       issues,
     )
   )
     return;
-  if (value.schemaVersion !== "vm-selected-audio-capture-request/v2")
+  if (value.schemaVersion !== "vm-default-audio-capture-request/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
-      "must be vm-selected-audio-capture-request/v2",
+      "must be vm-default-audio-capture-request/v2",
     );
   assertActiveKioskSession(
     value.activeKioskSession,
@@ -1608,17 +1602,6 @@ function assertAudioCaptureRequest(value, path, issues) {
         "must be a high-entropy cue challenge",
       );
   }
-  if (
-    typeof value.selectedEndpointId !== "string" ||
-    value.selectedEndpointId.length < 1 ||
-    value.selectedEndpointId.length > 512 ||
-    /[\u0000-\u001f\u007f]/u.test(value.selectedEndpointId)
-  )
-    issue(
-      issues,
-      `${path}.selectedEndpointId`,
-      "must name the daemon-selected stable endpoint",
-    );
   if (
     assertExactKeys(
       value.threshold,
@@ -1669,7 +1652,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "lifecycleReference",
         "captureOperationReference",
         "activeKioskSession",
-        "endpoint",
+        "defaultOutput",
         "daemonCalibration",
         "capture",
       ],
@@ -1678,11 +1661,11 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  if (value.schemaVersion !== "vm-selected-audio-capture-result/v2")
+  if (value.schemaVersion !== "vm-default-audio-capture-result/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
-      "must be vm-selected-audio-capture-result/v2",
+      "must be vm-default-audio-capture-result/v2",
     );
   if (value.runId !== request.runId)
     issue(issues, `${path}.runId`, "must bind the adapter run identity");
@@ -1713,35 +1696,21 @@ function assertAudioCaptureResult(value, request, report, issues) {
       "must match the requested active kiosk session",
     );
   if (
-    assertExactKeys(
-      value.endpoint,
-      ["status", "identity", "stableEndpointId"],
-      `${path}.endpoint`,
+    !assertExactKeys(
+      value.defaultOutput,
+      ["status"],
+      `${path}.defaultOutput`,
       issues,
     )
   ) {
-    if (value.endpoint.status !== "selected")
-      issue(
-        issues,
-        `${path}.endpoint.status`,
-        "must attest the selected stable Windows render endpoint",
-      );
-    if (value.endpoint.identity !== report.guest?.defaultAudioIdentity)
-      issue(
-        issues,
-        `${path}.endpoint.identity`,
-        "must bind the observed selected audio endpoint",
-      );
-    if (
-      value.endpoint.stableEndpointId !==
-      request.audioCapture?.selectedEndpointId
-    )
-      issue(
-        issues,
-        `${path}.endpoint.stableEndpointId`,
-        "must bind the daemon-selected stable endpoint",
-      );
+    return;
   }
+  if (value.defaultOutput.status !== "active")
+    issue(
+      issues,
+      `${path}.defaultOutput.status`,
+      "must attest the active Windows default output",
+    );
   if (
     assertExactKeys(
       value.daemonCalibration,
@@ -1750,7 +1719,6 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "source",
         "command",
         "challenge",
-        "endpointId",
         "responseArtifact",
         "responseDigest",
         "responseFileName",
@@ -1773,9 +1741,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
       value.daemonCalibration.command !==
         request.audioCapture?.daemonCalibration?.command ||
       value.daemonCalibration.challenge !==
-        request.audioCapture?.daemonCalibration?.challenge ||
-      value.daemonCalibration.endpointId !==
-        request.audioCapture?.selectedEndpointId
+        request.audioCapture?.daemonCalibration?.challenge
     )
       issue(
         issues,
@@ -3790,7 +3756,6 @@ function inspectExportedDaemonCalibrationResponse({
     "challenge",
     "configGeneration",
     "configRevision",
-    "endpointId",
     "observationGeneration",
     "observationRevision",
     "proposedSettingsDigest",
@@ -3802,7 +3767,6 @@ function inspectExportedDaemonCalibrationResponse({
   if (
     JSON.stringify(Object.keys(response).sort()) !==
       JSON.stringify(responseKeys) ||
-    response.endpointId !== request.audioCapture.selectedEndpointId ||
     response.challenge !== request.audioCapture.daemonCalibration.challenge ||
     typeof response.testEvidenceToken !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(

@@ -10,69 +10,12 @@ function readRunbook() {
 }
 
 describe("Maintenance Relay public runbook", () => {
-  it("documents the pull-based relay migration contract", () => {
+  it("is a tombstone rather than an active deployment runbook", () => {
     const runbook = readRunbook();
-    for (const text of [
-      "legacy Service API renderer",
-      "apps/maintenance-relay",
-      "MAINTENANCE_RELAY_CREDENTIAL",
-      "maintenance_relay",
-      "wg syncconf",
-      "ListenPort = 51820",
-      "relay runtime tmpfs",
-      "spawn argument\\s+array",
-      "inet vem_maintenance_relay",
-      "kernel timeouts",
-      "source, target, protocol, and port tuples",
-    ]) {
-      assert.match(
-        runbook,
-        new RegExp(
-          text.includes("\\s+")
-            ? text
-            : text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-        ),
-      );
-    }
-    assert.match(runbook, /never accepts\s+API-provided shell text/);
-  });
-
-  it("does not retain static renderer or deployable secret examples", () => {
-    const runbook = readRunbook();
-    assert.doesNotMatch(runbook, /maintenance-relay:plan/);
-    assert.doesNotMatch(runbook, /iptables -A/);
-    assert.doesNotMatch(runbook, /PrivateKey\s*=\s*[A-Za-z0-9+/]{43}=/);
-    assert.doesNotMatch(runbook, /^MAINTENANCE_RELAY_CREDENTIAL=/m);
-    assert.match(
-      runbook,
-      /^MAINTENANCE_RELAY_CREDENTIAL_FILE=\/run\/secrets\/maintenance_relay_credential$/m,
-    );
-  });
-
-  it("documents the constrained production container deployment", () => {
-    const runbook = readRunbook();
-    assert.equal(existsSync("apps/maintenance-relay/Dockerfile"), true);
-    assert.equal(
-      existsSync("apps/maintenance-relay/test/privileged/Dockerfile"),
-      true,
-    );
-    assert.equal(
-      existsSync("apps/maintenance-relay/compose.production.example.yaml"),
-      true,
-    );
-    for (const text of [
-      "MAINTENANCE_RELAY_ALLOW_INSECURE_HTTP=true",
-      "127.0.0.1",
-      "UDP 51820",
-      "NET_ADMIN",
-      "read-only filesystem",
-      "maintenance_relay_private_key",
-      "compose.production.example.yaml",
-    ]) {
-      assert.match(
-        runbook,
-        new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      );
-    }
+    assert.match(runbook, /historical tombstone/i);
+    assert.match(runbook, /direct certificate-only SSH deployment/i);
+    assert.doesNotMatch(runbook, /MAINTENANCE_RELAY_/);
+    assert.doesNotMatch(runbook, /wg syncconf/i);
+    assert.doesNotMatch(runbook, /WireGuard/i);
   });
 });

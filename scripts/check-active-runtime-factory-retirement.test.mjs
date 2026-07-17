@@ -10,18 +10,22 @@ const activeRuntimeFiles = [
   "tools/check-ci.mjs",
   "public/managed-machine-update.md",
   "public/machine-provisioning-default-api-base-url.md",
+  "public/maintenance-relay-bring-up.md",
+  "public/near-field-customer-speaker-acceptance.md",
   "public/unified-field-delivery.md",
   "public/windows-bringup-bundle.md",
 ];
 
 const runtimeEntrypoints = [
   "scripts/testbed/win10-vem-e2e.mjs",
+  "scripts/testbed/run-vm-host-adapter.mjs",
   "scripts/testbed/kvm-baseline/build-win10-baseline.mjs",
   "scripts/testbed/kvm-baseline/linux-kvm-baseline.mjs",
   "scripts/testbed/kvm-baseline/libvirt-runtime-profile.mjs",
   "scripts/windows/runtime-artifact-descriptor.mjs",
   "scripts/windows/test-vision-candidate.ps1",
   "scripts/windows/test-vision-candidate.windows-harness.ps1",
+  "scripts/windows/verify-vem-runtime.ps1",
 ];
 
 const activeRuntimeForbiddenPatterns = [
@@ -66,9 +70,16 @@ function activeWorkflows() {
 }
 
 function localImports(text) {
-  return [...text.matchAll(/(?:from|import\()\s*["']([^"']+)["']/g)].map(
-    (match) => match[1],
-  );
+  const imports = [];
+  for (const match of text.matchAll(
+    /\bimport\s*(?:[\w*${},\s]*\sfrom\s*)?["']([^"']+)["']/g,
+  )) {
+    imports.push(match[1]);
+  }
+  for (const match of text.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+    imports.push(match[1]);
+  }
+  return imports;
 }
 
 function runtimeImportClosure(entrypoint) {
@@ -82,11 +93,13 @@ function runtimeImportClosure(entrypoint) {
     for (const imported of localImports(text)) {
       if (!imported.startsWith(".")) continue;
       const resolved = resolve(dirname(path), imported);
-      const candidate = existsSync(resolved)
-        ? resolved
-        : existsSync(`${resolved}.mjs`)
-          ? `${resolved}.mjs`
-          : null;
+      const candidate = [
+        resolved,
+        `${resolved}.mjs`,
+        `${resolved}.js`,
+        join(resolved, "index.mjs"),
+        join(resolved, "index.js"),
+      ].find((candidatePath) => existsSync(candidatePath));
       if (candidate) pending.push(candidate);
     }
   }
@@ -94,6 +107,22 @@ function runtimeImportClosure(entrypoint) {
 }
 
 describe("active Windows runtime Factory retirement guard", () => {
+  it("recognizes side-effect, multiline, and dynamic local imports", () => {
+    assert.deepEqual(
+      localImports(`
+        import "./side-effect.mjs";
+        import {
+          adapter,
+        } from
+          "./multiline.mjs";
+        await import(
+          "./dynamic.mjs"
+        );
+      `),
+      ["./side-effect.mjs", "./multiline.mjs", "./dynamic.mjs"],
+    );
+  });
+
   for (const path of activeRuntimeFiles) {
     it(`${path} does not describe or invoke stopped Factory paths`, () => {
       const text = readFileSync(path, "utf8");
@@ -131,6 +160,8 @@ describe("active Windows runtime Factory retirement guard", () => {
     for (const path of [
       ".github/workflows/build-factory-iso.yml",
       ".github/workflows/factory-image-acceptance.yml",
+      "scripts/windows/prepare-unified-field-delivery.mjs",
+      "scripts/windows/prepare-unified-field-delivery.test.mjs",
     ]) {
       assert.equal(existsSync(path), false, `${path} must remain disabled`);
     }

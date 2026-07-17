@@ -7,7 +7,6 @@ import { verifyWindowsNativeAudioEvidence } from "./windows-native-audio-evidenc
 function fixture() {
   const hash = "a".repeat(64);
   const daemonCalibrationResponse = {
-    endpointId: "wasapi:endpoint-speaker",
     testEvidenceToken: "11111111-2222-4333-8444-555555555555",
     testEvidenceExpiresAt: "2026-07-13T00:05:00.000Z",
     observationRevision: `sha256:${"c".repeat(64)}`,
@@ -40,7 +39,6 @@ function fixture() {
         lifecycleReference: "vm-lifecycle://run-17-audio.runtime",
         audioCapture: {
           activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
-          selectedEndpointId: "wasapi:endpoint-speaker",
           daemonCalibration: {
             source: "vending_daemon_ipc",
             command: "audio_output_calibration",
@@ -62,17 +60,14 @@ function fixture() {
         runId: "RUN-17-AUDIO",
         lifecycleReference: "vm-lifecycle://run-17-audio.runtime",
         captureOperationReference: "vm-operation://op-0123456789abcdef",
-        endpoint: {
-          status: "selected",
-          identity: "guest-audio://runtime",
-          stableEndpointId: "wasapi:endpoint-speaker",
+        defaultOutput: {
+          status: "active",
         },
         daemonCalibration: {
           status: "completed",
           source: "vending_daemon_ipc",
           command: "audio_output_calibration",
           challenge: "b".repeat(64),
-          endpointId: "wasapi:endpoint-speaker",
           responseArtifact: `factory-evidence://sha256/${responseHash}`,
           responseDigest: `sha256:${responseHash}`,
           responseFileName: `${responseHash}.json`,
@@ -100,22 +95,20 @@ function fixture() {
 }
 
 describe("Windows native audio evidence", () => {
-  it("accepts daemon calibration on the selected stable endpoint with synchronized non-silent capture", () => {
+  it("accepts daemon calibration through the Windows default output with synchronized non-silent capture", () => {
     const result = verifyWindowsNativeAudioEvidence(fixture());
     assert.equal(result.result, "passed");
     assert.equal(result.schemaVersion, "windows-native-audio-evidence/v2");
-    assert.equal(result.selectedEndpointId, "wasapi:endpoint-speaker");
+    assert.equal(result.audioOutput, "windows_default");
     assert.equal(result.physicalSpeakerAudibility, "hitl_required");
   });
 
-  it("fails session, selected endpoint, daemon evidence, silence, and timing substitutions", () => {
+  it("fails session, default-output, daemon evidence, silence, and timing substitutions", () => {
     const input = fixture();
     input.adapterReport.defaultAudioCapture.lifecycleReference =
       "vm-lifecycle://different.runtime";
     input.adapterReport.request.audioCapture.activeKioskSession.sessionId = 7;
-    input.adapterReport.defaultAudioCapture.endpoint.status = "missing";
-    input.adapterReport.defaultAudioCapture.endpoint.stableEndpointId =
-      "wasapi:other";
+    input.adapterReport.defaultAudioCapture.defaultOutput.status = "missing";
     input.adapterReport.defaultAudioCapture.daemonCalibration.source =
       "tauri_native_audio";
     input.adapterReport.defaultAudioCapture.daemonCalibration.command =
@@ -133,8 +126,7 @@ describe("Windows native audio evidence", () => {
         "audio_capture_semantic_binding_mismatch",
         "audio_capture_challenge_mismatch",
         "audio_capture_session_mismatch",
-        "selected_audio_endpoint_missing",
-        "selected_audio_endpoint_mismatch",
+        "windows_default_output_missing",
         "daemon_audio_calibration_evidence_missing",
         "default_audio_capture_silent_or_invalid",
         "default_audio_capture_not_synchronized",
@@ -142,10 +134,8 @@ describe("Windows native audio evidence", () => {
     );
   });
 
-  it("rejects the legacy Tauri/default-device path as selected-endpoint evidence", () => {
+  it("rejects the legacy Tauri playback path as Windows default-output evidence", () => {
     const input = fixture();
-    delete input.adapterReport.request.audioCapture.selectedEndpointId;
-    delete input.adapterReport.defaultAudioCapture.endpoint.stableEndpointId;
     input.adapterReport.request.audioCapture.daemonCalibration.source =
       "tauri_native_audio";
     input.adapterReport.request.audioCapture.daemonCalibration.command =
@@ -158,11 +148,6 @@ describe("Windows native audio evidence", () => {
     const result = verifyWindowsNativeAudioEvidence(input);
 
     assert.equal(result.result, "failed");
-    assert.ok(
-      result.diagnostics.some(
-        (entry) => entry.code === "selected_audio_endpoint_missing",
-      ),
-    );
     assert.ok(
       result.diagnostics.some(
         (entry) => entry.code === "daemon_audio_calibration_evidence_missing",

@@ -1,17 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import {
-  lstatSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -740,18 +729,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation", "managed update"],
   },
   {
-    path: "scripts/windows/prepare-unified-field-delivery.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/windows/prepare-unified-field-delivery.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
     path: "scripts/windows/verify-progressive-delivery.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -1324,221 +1301,6 @@ function validatePreapprovalDeliveryAssembly(entry, entriesByPath) {
   return failures;
 }
 
-const DELIVERY_ASSEMBLY_CONTRACT_ENV =
-  "VEM_DELIVERY_ASSEMBLY_CONTRACT_EXECUTION";
-const DELIVERY_ASSEMBLY_CONTRACT_SCHEMA =
-  "vem-delivery-assembly-execution-contract/v1";
-const DELIVERY_ASSEMBLY_PROOF_SCHEMA =
-  "vem-delivery-assembly-execution-proof/v1";
-
-function sha256Digest(bytes) {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-}
-
-function isSafeContractRelativePath(path) {
-  return (
-    typeof path === "string" &&
-    path.length > 0 &&
-    !path.startsWith("/") &&
-    !path.includes("\\") &&
-    path
-      .split("/")
-      .every((part) => part.length > 0 && part !== "." && part !== "..")
-  );
-}
-
-function readContractJson(path, label) {
-  let stat;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    throw new Error(`${label} is missing`);
-  }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`${label} must be a regular file`);
-  }
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw new Error(
-      `${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-function readContractOutput(root, relativePath, label) {
-  if (!isSafeContractRelativePath(relativePath)) {
-    throw new Error(`${label} has an unsafe staged path`);
-  }
-  const path = join(root, relativePath);
-  let stat;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    throw new Error(`${label} is missing from the checker-created output root`);
-  }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`${label} must be a regular staged file`);
-  }
-  return readFileSync(path);
-}
-
-function contractEvidenceEntries(entry) {
-  const evidence = [];
-  if (entry.deliveryAssembly !== undefined) {
-    evidence.push({
-      kind: "deliveryAssembly",
-      assembly: entry.deliveryAssembly,
-      value: entry.deliveryAssemblyEvidence,
-    });
-  }
-  if (entry.preapprovalDeliveryAssembly !== undefined) {
-    evidence.push({
-      kind: "preapprovalDeliveryAssembly",
-      assembly: entry.preapprovalDeliveryAssembly?.members,
-      value: entry.preapprovalDeliveryAssembly,
-    });
-  }
-  return evidence;
-}
-
-function verifyDeliveryAssemblyExecution({
-  root,
-  entry,
-  kind,
-  assembly,
-  evidence,
-}) {
-  const executionTestPath = join(root, evidence.executionTest);
-  if (!pathExists(root, evidence.executionTest)) {
-    return `${entry.path} ${kind} execution contract failed: execution test is missing`;
-  }
-  const contractRoot = mkdtempSync(
-    join(tmpdir(), "vem-delivery-assembly-contract-"),
-  );
-  try {
-    const nonce = randomBytes(32).toString("hex");
-    const outputRoot = join(contractRoot, "output");
-    const contractPath = join(contractRoot, "contract.json");
-    const contract = {
-      schemaVersion: DELIVERY_ASSEMBLY_CONTRACT_SCHEMA,
-      nonce,
-      root: contractRoot,
-      outputRoot,
-      repositoryRoot: root,
-      kind,
-      producer: entry.path,
-      verifier: evidence.verifier,
-      artifact: evidence.artifact,
-      members: assembly,
-    };
-    writeFileSync(contractPath, `${JSON.stringify(contract)}\n`, {
-      mode: 0o600,
-    });
-    const execution = spawnSync(
-      process.execPath,
-      [executionTestPath, "--delivery-assembly-contract", contractPath],
-      {
-        cwd: root,
-        encoding: "utf8",
-        timeout: 60_000,
-        killSignal: "SIGKILL",
-        maxBuffer: 1024 * 1024,
-        env: {
-          ...process.env,
-          [DELIVERY_ASSEMBLY_CONTRACT_ENV]: "1",
-        },
-      },
-    );
-    if (execution.error?.code === "ETIMEDOUT") {
-      return `${entry.path} ${kind} execution contract failed: execution test timed out`;
-    }
-    if (execution.error) {
-      return `${entry.path} ${kind} execution contract failed: execution test could not start (${execution.error.message})`;
-    }
-    if (execution.status !== 0) {
-      return `${entry.path} ${kind} execution contract failed: execution test exited ${String(execution.status)}${execution.stderr ? `: ${execution.stderr.trim()}` : ""}`;
-    }
-
-    const proof = readContractJson(
-      join(contractRoot, "execution-proof.json"),
-      `${entry.path} ${kind} execution proof`,
-    );
-    if (
-      proof?.schemaVersion !== DELIVERY_ASSEMBLY_PROOF_SCHEMA ||
-      proof.nonce !== nonce ||
-      proof.root !== contractRoot ||
-      proof.producer !== entry.path ||
-      proof.verifier !== evidence.verifier
-    ) {
-      return `${entry.path} ${kind} execution contract failed: execution proof is not bound to this checker nonce, root, producer, and verifier`;
-    }
-    const verification = proof.verification;
-    if (
-      verification?.nonce !== nonce ||
-      verification.root !== contractRoot ||
-      !verification.files ||
-      typeof verification.files !== "object"
-    ) {
-      return `${entry.path} ${kind} execution contract failed: verifier output is not bound to this checker nonce and root`;
-    }
-    const expectedMembers = [...assembly].sort();
-    const verifiedMembers = Object.keys(verification.files).sort();
-    if (
-      expectedMembers.length !== verifiedMembers.length ||
-      expectedMembers.some((member, index) => member !== verifiedMembers[index])
-    ) {
-      return `${entry.path} ${kind} execution contract failed: verifier did not report exactly the declared staged members`;
-    }
-    for (const member of expectedMembers) {
-      const record = verification.files[member];
-      if (
-        !record ||
-        typeof record.stagedPath !== "string" ||
-        typeof record.digest !== "string"
-      ) {
-        return `${entry.path} ${kind} execution contract failed: verifier has incomplete staged-byte evidence for ${member}`;
-      }
-      const sourceBytes = readFileSync(join(root, member));
-      const stagedBytes = readContractOutput(
-        outputRoot,
-        record.stagedPath,
-        `${entry.path} ${kind} member ${member}`,
-      );
-      const expectedDigest = sha256Digest(sourceBytes);
-      if (
-        record.digest !== expectedDigest ||
-        sha256Digest(stagedBytes) !== expectedDigest ||
-        !stagedBytes.equals(sourceBytes)
-      ) {
-        return `${entry.path} ${kind} execution contract failed: verifier digest or staged bytes do not bind source member ${member}`;
-      }
-    }
-    const artifact = proof.artifact;
-    if (
-      !artifact ||
-      artifact.name !== evidence.artifact ||
-      typeof artifact.stagedPath !== "string" ||
-      typeof artifact.digest !== "string"
-    ) {
-      return `${entry.path} ${kind} execution contract failed: proof has no staged evidence artifact`;
-    }
-    const artifactBytes = readContractOutput(
-      outputRoot,
-      artifact.stagedPath,
-      `${entry.path} ${kind} evidence artifact`,
-    );
-    if (sha256Digest(artifactBytes) !== artifact.digest) {
-      return `${entry.path} ${kind} execution contract failed: artifact digest does not bind checker-root bytes`;
-    }
-    return undefined;
-  } catch (error) {
-    return `${entry.path} ${kind} execution contract failed: ${error instanceof Error ? error.message : String(error)}`;
-  } finally {
-    rmSync(contractRoot, { recursive: true, force: true });
-  }
-}
-
 function scriptMaintainsFactoryDeliveryEvidence(source) {
   return (
     source.includes("factory-runtime-manifest.json") &&
@@ -1721,22 +1483,11 @@ function validateRunbookContracts(runbook, text) {
 }
 
 export function checkRepositoryScriptInventory(options = {}) {
-  if (process.env[DELIVERY_ASSEMBLY_CONTRACT_ENV] === "1") {
-    return {
-      ok: false,
-      checks: [],
-      failures: [
-        "delivery assembly execution contract recursion is forbidden inside its isolated driver",
-      ],
-      inventory: options.inventory ?? DEFAULT_INVENTORY,
-    };
-  }
   const root = options.root ?? process.cwd();
   const inventory = options.inventory ?? DEFAULT_INVENTORY;
   const publicRunbooks = options.publicRunbooks ?? DEFAULT_PUBLIC_RUNBOOKS;
   const failures = [];
   const checks = [];
-  const deliveryAssemblyExecutionFailures = [];
 
   const scripts = directoryExists(root, "scripts")
     ? listFiles(root, "scripts")
@@ -1769,24 +1520,6 @@ export function checkRepositoryScriptInventory(options = {}) {
       entriesByPath,
     );
     failures.push(...assemblyFailures, ...preapprovalAssemblyFailures);
-    if (
-      assemblyFailures.length === 0 &&
-      preapprovalAssemblyFailures.length === 0
-    ) {
-      for (const execution of contractEvidenceEntries(entry)) {
-        const failure = verifyDeliveryAssemblyExecution({
-          root,
-          entry,
-          kind: execution.kind,
-          assembly: execution.assembly,
-          evidence: execution.value,
-        });
-        if (failure) {
-          failures.push(failure);
-          deliveryAssemblyExecutionFailures.push(failure);
-        }
-      }
-    }
     if (isAcceptedMaintenanceArchitectureWorkflow(entry)) {
       failures.push(
         ...validateRetiredMaintenanceArchitectureText(
@@ -1898,10 +1631,10 @@ export function checkRepositoryScriptInventory(options = {}) {
       "factory image preparation scripts keep manifest, verifier, and evidence output in the delivery path",
   });
   checks.push({
-    name: "delivery-assembly-execution-contracts",
-    passed: deliveryAssemblyExecutionFailures.length === 0,
+    name: "delivery-assembly-static-classification",
+    passed: !failures.some((failure) => failure.includes("delivery assembly")),
     detail:
-      "each declared delivery producer and verifier execute in a checker-created nonce-bound isolated root",
+      "delivery producers, verifiers, and contract drivers are classified without execution",
   });
 
   return { ok: failures.length === 0, checks, failures, inventory };

@@ -149,12 +149,11 @@ function audioCaptureForOperation(operation) {
   if (!Number.isInteger(sessionId) || sessionId < 1)
     throw new Error("--active-kiosk-session-id must be a positive integer");
   return {
-    schemaVersion: "vm-selected-audio-capture-request/v2",
+    schemaVersion: "vm-default-audio-capture-request/v2",
     activeKioskSession: {
       sessionUser: readOption("--active-kiosk-session-user"),
       sessionId,
     },
-    selectedEndpointId: readOption("--selected-audio-endpoint-id"),
     daemonCalibration: {
       source: "vending_daemon_ipc",
       command: "audio_output_calibration",
@@ -340,49 +339,12 @@ function maintenanceEndpointContextFromOptions() {
   return { maintenanceRelaySession, maintenanceEndpointPolicy };
 }
 
-async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
-  if (!["clean-install", "capture-approved-base"].includes(operation))
-    return null;
-  const manifestPath = readOption("--factory-manifest-path", {
-    optional: true,
-  });
-  const provenancePath = readOption("--factory-provenance-path", {
-    optional: true,
-  });
-  const isoPath = readOption("--factory-iso-path", { optional: true });
-  const udfExtractorPath = readOption("--factory-udf-extractor", {
-    optional: true,
-  });
-  const udfWriterPath = readOption("--factory-udf-writer", { optional: true });
-  const wimlibPath = readOption("--factory-wimlib", { optional: true });
-  const required =
-    process.env.VEM_FACTORY_ACCEPTANCE_REQUIRE_HOST_PROVENANCE === "1";
-  if (!manifestPath && !provenancePath && !isoPath && !required) return null;
-  if (
-    !manifestPath ||
-    !provenancePath ||
-    !isoPath ||
-    !udfExtractorPath ||
-    !udfWriterPath ||
-    !wimlibPath
-  )
+function assertActiveRuntimeOperation(operation) {
+  if (["clean-install", "capture-approved-base"].includes(operation)) {
     throw new Error(
-      "Factory acceptance requires host-owned manifest, provenance, and ISO paths before adapter mutation",
+      `${operation} is retired from the active VM runtime adapter`,
     );
-  const { admitFactoryAcceptance } =
-    await import("../factory/factory-acceptance-admission.mjs");
-  return admitFactoryAcceptance({
-    manifestPath,
-    provenancePath,
-    outputIsoPath: isoPath,
-    manifestIdentity: factoryMedia.manifestIdentity,
-    provenanceDigest: factoryMedia.provenanceDigest,
-    outputIdentity: factoryMedia.outputIdentity,
-    outputDigest: factoryMedia.outputDigest,
-    udfExtractorPath,
-    udfWriterPath,
-    wimlibPath,
-  });
+  }
 }
 
 async function main() {
@@ -391,6 +353,7 @@ async function main() {
   process.on("SIGINT", abort);
   process.on("SIGTERM", abort);
   const operation = readOption("--operation");
+  assertActiveRuntimeOperation(operation);
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
   const out = readOption("--out");
@@ -407,7 +370,6 @@ async function main() {
   const maintenanceEndpointContext = maintenanceEndpointContextFromOptions();
   if (serialSession?.scannerInjection?.operationNonce === null)
     serialSession.scannerInjection.operationNonce = nonce;
-  const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-request/v2",
@@ -440,13 +402,6 @@ async function main() {
         signal: cancellation.signal,
         scannerCode,
       });
-      if (
-        admission &&
-        report.observed.factoryProvenanceDigest !== admission.provenanceDigest
-      )
-        throw new Error(
-          "adapter report does not bind admitted Factory provenance",
-        );
       if (operation === "capture-default-audio") {
         const calibrationEvidence = report.evidence.find(
           (entry) => entry.role === "daemon-audio-calibration-response",

@@ -24,7 +24,6 @@ export function verifyWindowsNativeAudioEvidence({
   const kiosk = runtime?.kioskRuntime;
   const audio = adapterReport?.defaultAudioCapture;
   const requestedAudio = adapterReport?.request?.audioCapture;
-  const selectedEndpointId = requestedAudio?.selectedEndpointId;
   if (runtime?.result?.runtimeReady?.status !== "passed")
     diagnostics.push(diagnostic("runtime_acceptance_not_ready"));
   if (adapterReport?.request?.runId !== runId)
@@ -60,20 +59,8 @@ export function verifyWindowsNativeAudioEvidence({
     })
   )
     diagnostics.push(diagnostic("audio_capture_session_mismatch"));
-  if (
-    typeof selectedEndpointId !== "string" ||
-    selectedEndpointId.length === 0 ||
-    audio?.endpoint?.status !== "selected"
-  )
-    diagnostics.push(diagnostic("selected_audio_endpoint_missing"));
-  if (
-    typeof selectedEndpointId === "string" &&
-    selectedEndpointId.length > 0 &&
-    (audio?.endpoint?.stableEndpointId !== selectedEndpointId ||
-      calibration?.endpointId !== selectedEndpointId ||
-      daemonCalibrationResponse?.endpointId !== selectedEndpointId)
-  )
-    diagnostics.push(diagnostic("selected_audio_endpoint_mismatch"));
+  if (audio?.defaultOutput?.status !== "active")
+    diagnostics.push(diagnostic("windows_default_output_missing"));
   const digestPattern = /^sha256:[0-9a-f]{64}$/;
   const tokenPattern =
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -81,7 +68,6 @@ export function verifyWindowsNativeAudioEvidence({
     "challenge",
     "configGeneration",
     "configRevision",
-    "endpointId",
     "observationGeneration",
     "observationRevision",
     "proposedSettingsDigest",
@@ -162,11 +148,8 @@ export function verifyWindowsNativeAudioEvidence({
     schemaVersion: "windows-native-audio-evidence/v2",
     runId,
     result: diagnostics.length === 0 ? "passed" : "failed",
-    selectedEndpointId:
-      typeof selectedEndpointId === "string" && selectedEndpointId.length > 0
-        ? selectedEndpointId
-        : null,
-    automatedCaptureScope: "daemon_selected_endpoint_non_silent_pcm",
+    audioOutput: "windows_default",
+    automatedCaptureScope: "windows_default_output_non_silent_pcm",
     physicalSpeakerAudibility: "hitl_required",
     adapter: adapterReport?.adapter
       ? {

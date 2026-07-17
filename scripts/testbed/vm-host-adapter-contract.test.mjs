@@ -256,9 +256,8 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     audioCapture:
       operation === "capture-default-audio"
         ? {
-            schemaVersion: "vm-selected-audio-capture-request/v2",
+            schemaVersion: "vm-default-audio-capture-request/v2",
             activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 3 },
-            selectedEndpointId: "wasapi:endpoint-speaker",
             daemonCalibration: {
               source: "vending_daemon_ipc",
               command: "audio_output_calibration",
@@ -666,22 +665,19 @@ function reportFor(request, overrides = {}) {
     defaultAudioCapture:
       request.operation === "capture-default-audio"
         ? {
-            schemaVersion: "vm-selected-audio-capture-result/v2",
+            schemaVersion: "vm-default-audio-capture-result/v2",
             runId: request.runId,
             lifecycleReference: request.lifecycleReference,
             captureOperationReference: request.operationReference,
             activeKioskSession: request.audioCapture.activeKioskSession,
-            endpoint: {
-              status: "selected",
-              identity: "guest-audio://runtime-testbed-001",
-              stableEndpointId: request.audioCapture.selectedEndpointId,
+            defaultOutput: {
+              status: "active",
             },
             daemonCalibration: {
               status: "completed",
               source: "vending_daemon_ipc",
               command: "audio_output_calibration",
               challenge: request.audioCapture.daemonCalibration.challenge,
-              endpointId: request.audioCapture.selectedEndpointId,
               responseArtifact: evidence[1].identity,
               responseDigest: evidence[1].digest,
               responseFileName: evidence[1].fileName,
@@ -2017,7 +2013,7 @@ describe("VM Host Adapter contract", () => {
       );
   });
 
-  it("rejects selected-audio evidence without kiosk binding, daemon calibration, or synchronized non-silent capture", () => {
+  it("requires Windows default-output evidence without endpoint selection", () => {
     const request = createVmHostAdapterRequest(
       requestFor("capture-default-audio"),
     );
@@ -2038,7 +2034,7 @@ describe("VM Host Adapter contract", () => {
       {
         defaultAudioCapture: {
           ...report.defaultAudioCapture,
-          endpoint: { status: "missing", identity: null },
+          defaultOutput: { status: "missing" },
         },
       },
       {
@@ -2824,7 +2820,7 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("carries production CLI daemon calibration response into selected-endpoint PCM evidence", () => {
+  it("carries production CLI daemon calibration response into default-output PCM evidence", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-audio-cli-"));
     const out = join(root, "audio.json");
     const responseOut = join(root, "daemon-audio-response.json");
@@ -2844,8 +2840,6 @@ describe("VM Host Adapter contract", () => {
         "VEMKiosk",
         "--active-kiosk-session-id",
         "3",
-        "--selected-audio-endpoint-id",
-        "wasapi:endpoint-speaker",
         "--daemon-calibration-response-out",
         responseOut,
         "--out",
@@ -2862,11 +2856,8 @@ describe("VM Host Adapter contract", () => {
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
     const response = JSON.parse(readFileSync(responseOut, "utf8"));
-    assert.equal(
-      report.defaultAudioCapture.endpoint.stableEndpointId,
-      "wasapi:endpoint-speaker",
-    );
-    assert.equal(response.endpointId, "wasapi:endpoint-speaker");
+    assert.equal(report.defaultAudioCapture.defaultOutput.status, "active");
+    assert.equal("endpointId" in response, false);
     assert.equal(
       response.challenge,
       report.defaultAudioCapture.daemonCalibration.challenge,
@@ -3013,10 +3004,10 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("builds a logical clean-install request from Factory ISO and personalization asset identities", () => {
+  it("rejects retired clean-install CLI compatibility instead of invoking Factory admission", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-install-"));
     const out = join(root, "report.json");
-    execFileSync(
+    const result = spawnSync(
       process.execPath,
       [
         CLIENT,
@@ -3052,12 +3043,8 @@ describe("VM Host Adapter contract", () => {
         },
       },
     );
-    const report = JSON.parse(readFileSync(out, "utf8"));
-    assert.deepEqual(
-      report.consumedAssets.map((asset) => asset.role),
-      ["factory-iso", "factory-personalization-media"],
-    );
-    assert.equal(report.observed.firmwareMode, "bios");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr.toString("utf8"), /clean-install is retired/);
   });
 
   it("builds v2 serial-session requests from logical CLI options", () => {

@@ -34,22 +34,19 @@ function evidence(role, hash) {
 function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
   if (request.operation !== "capture-default-audio") return null;
   return {
-    schemaVersion: "vm-selected-audio-capture-result/v2",
+    schemaVersion: "vm-default-audio-capture-result/v2",
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
     captureOperationReference: request.operationReference,
     activeKioskSession: request.audioCapture.activeKioskSession,
-    endpoint: {
-      status: "selected",
-      identity: "guest-audio://fake-runtime-testbed-001",
-      stableEndpointId: request.audioCapture.selectedEndpointId,
+    defaultOutput: {
+      status: "active",
     },
     daemonCalibration: {
       status: "completed",
       source: "vending_daemon_ipc",
       command: "audio_output_calibration",
       challenge: request.audioCapture.daemonCalibration.challenge,
-      endpointId: request.audioCapture.selectedEndpointId,
       responseArtifact: calibrationEvidence.identity,
       responseDigest: calibrationEvidence.digest,
       responseFileName: calibrationEvidence.fileName,
@@ -231,7 +228,6 @@ function materializeDaemonCalibrationEvidence(request) {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
   const response = {
-    endpointId: request.audioCapture.selectedEndpointId,
     testEvidenceToken: "11111111-2222-4333-8444-555555555555",
     testEvidenceExpiresAt: "2026-07-11T00:05:00.000Z",
     observationRevision: `sha256:${"a".repeat(64)}`,
