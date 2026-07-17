@@ -4,6 +4,7 @@ import { RouterView, useRoute, useRouter } from "vue-router";
 
 import ProtectedTouchKeyboard from "@/components/ProtectedTouchKeyboard.vue";
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
+import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
@@ -15,11 +16,13 @@ const router = useRouter();
 const cleanupCustomerEventSources = installCustomerEventSources({
   routeName: computed(() => route.name),
 });
+const cleanupActiveTransactionSync = installActiveTransactionSync();
 useReturnHomeOnCustomerDeparture();
 installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 
 onUnmounted(() => {
+  cleanupActiveTransactionSync();
   cleanupCustomerEventSources();
 });
 
