@@ -258,10 +258,7 @@ describe("VM runtime acceptance workflow local direct path", () => {
       /vm-lifecycle:\/\/\$\{runId\.toLowerCase\(\)\}\.\$\{lifecycleSeed\}/,
     );
     assert.match(overlay, /--operation create-disposable-overlay/);
-    assert.match(
-      overlay,
-      /--runtime-base\s+"\$VEM_VM_HOST_RUNTIME_BASE_ID"/,
-    );
+    assert.match(overlay, /--runtime-base\s+"\$VEM_VM_HOST_RUNTIME_BASE_ID"/);
     assert.match(
       overlay,
       /--maintenance-relay-session-json\s+"\$VM_TESTBED_MAINTENANCE_SESSION_JSON"/,
@@ -430,7 +427,10 @@ describe("VM runtime acceptance workflow local direct path", () => {
     assert.match(deploy, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
     assert.match(deploy, /Stop-Service -Name "VemVendingDaemon"/);
     assert.match(deploy, /Start-Service -Name "VemVendingDaemon"/);
-    assert.doesNotMatch(deploy, /runtime-manifest|component = "daemon"|component = "ui"/);
+    assert.doesNotMatch(
+      deploy,
+      /runtime-manifest|component = "daemon"|component = "ui"/,
+    );
   });
 
   it("uses a portable runner-local runtime artifact cache by default", () => {

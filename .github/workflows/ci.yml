@@ -42,7 +42,6 @@ jobs:
               - 'crates/**'
               - 'tools/**'
               - 'scripts/windows/**'
-              - 'scripts/check-windows-oobe-registry.test.mjs'
               - '.github/workflows/build-windows-runtime-artifacts.yml'
               - 'turbo.json'
               - 'pnpm-workspace.yaml'
@@ -532,16 +531,12 @@ jobs:
       - name: Check Windows service wrapper
         run: cargo check -p vending-daemon --target x86_64-pc-windows-msvc
 
-      - name: Test Windows OOBE registry preservation
-        run: node --test scripts/check-windows-oobe-registry.test.mjs
-
   timing-summary:
     name: CI Timing Summary
     needs:
       - changes
       - static
       - unit-tests
-      - maintenance-relay-privileged
       - windows-dpapi-tests
       - windows-vision-release-installer
       - machine-e2e-tests

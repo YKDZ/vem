@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 const activeRuntimeFiles = [
@@ -26,6 +35,9 @@ const runtimeEntrypoints = [
   "scripts/windows/test-vision-candidate.ps1",
   "scripts/windows/test-vision-candidate.windows-harness.ps1",
   "scripts/windows/verify-vem-runtime.ps1",
+  "scripts/testbed/windows-native-audio-evidence.mjs",
+  ...directScriptEntrypoints(".github/workflows/ci.yml"),
+  ...directScriptEntrypoints("tools/check-ci.mjs"),
 ];
 
 const activeRuntimeForbiddenPatterns = [
@@ -69,7 +81,15 @@ function activeWorkflows() {
     .map((path) => join(".github/workflows", path));
 }
 
-function localImports(text) {
+function directScriptEntrypoints(path) {
+  return [
+    ...readFileSync(path, "utf8").matchAll(
+      /(?:^|[\s"'`])(?:\.\/)?((?:scripts|tools)\/[\w./-]+\.(?:c?js|mjs|ps1|psm1))/g,
+    ),
+  ].map((match) => match[1]);
+}
+
+function javascriptImports(text) {
   const imports = [];
   for (const match of text.matchAll(
     /\bimport\s*(?:[\w*${},\s]*\sfrom\s*)?["']([^"']+)["']/g,
@@ -82,21 +102,59 @@ function localImports(text) {
   return imports;
 }
 
-function runtimeImportClosure(entrypoint) {
-  const pending = [entrypoint];
+function powerShellImports(text) {
+  const imports = [];
+  const source = text.replace(/^\s*#.*$/gm, "");
+  const localVariables = new Map(
+    [
+      ...source.matchAll(
+        /^\s*\$(\w+)\s*=\s*(?:Join-Path\s+\$PSScriptRoot\s+)?["']([^"']+)["']/gim,
+      ),
+    ].map((match) => [match[1], match[2]]),
+  );
+  for (const pattern of [
+    /\bImport-Module\s+(?:\(\s*)?(?:Join-Path\s+\$PSScriptRoot\s+)?["']([^"']+)["']/gi,
+    /^\s*\.\s+(?:\(\s*)?(?:Join-Path\s+\$PSScriptRoot\s+)?["']([^"']+)["']/gim,
+    /\bImport-Module\s+["']\$PSScriptRoot[\\/]+([^"']+)["']/gi,
+    /^\s*\.\s+["']\$PSScriptRoot[\\/]+([^"']+)["']/gim,
+  ]) {
+    for (const match of source.matchAll(pattern)) imports.push(match[1]);
+  }
+  for (const pattern of [
+    /\bImport-Module\s+\$(\w+)/gi,
+    /^\s*\.\s+\$(\w+)/gim,
+  ]) {
+    for (const match of source.matchAll(pattern)) {
+      const imported = localVariables.get(match[1]);
+      if (imported) imports.push(imported);
+    }
+  }
+  return imports;
+}
+
+function localImports(path, text) {
+  return /\.ps(?:1|m1)$/i.test(path)
+    ? powerShellImports(text)
+    : javascriptImports(text);
+}
+
+function runtimeImportClosure(entrypoint, root = process.cwd()) {
+  const pending = [resolve(root, entrypoint)];
   const closure = new Set();
   while (pending.length > 0) {
     const path = pending.pop();
     if (closure.has(path)) continue;
     closure.add(path);
     const text = readFileSync(path, "utf8");
-    for (const imported of localImports(text)) {
-      if (!imported.startsWith(".")) continue;
+    for (const imported of localImports(path, text)) {
+      if (!imported.startsWith(".") && !/\.ps(?:1|m1)$/i.test(path)) continue;
       const resolved = resolve(dirname(path), imported);
       const candidate = [
         resolved,
         `${resolved}.mjs`,
         `${resolved}.js`,
+        `${resolved}.ps1`,
+        `${resolved}.psm1`,
         join(resolved, "index.mjs"),
         join(resolved, "index.js"),
       ].find((candidatePath) => existsSync(candidatePath));
@@ -106,10 +164,39 @@ function runtimeImportClosure(entrypoint) {
   return closure;
 }
 
+function assertNoFactoryImports(entrypoint, root = process.cwd()) {
+  for (const importedPath of runtimeImportClosure(entrypoint, root)) {
+    const text = readFileSync(importedPath, "utf8");
+    for (const imported of localImports(importedPath, text)) {
+      assert.doesNotMatch(
+        imported,
+        /(?:^|[\\/])factory(?:[\\/]|$)/,
+        `${relative(root, importedPath)} imports retired Factory source: ${imported}`,
+      );
+    }
+  }
+}
+
+function withFixture(files, callback) {
+  const root = mkdtempSync(join(tmpdir(), "vem-factory-retirement-"));
+  try {
+    for (const [path, content] of Object.entries(files)) {
+      const filePath = join(root, path);
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, content);
+    }
+    return callback(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe("active Windows runtime Factory retirement guard", () => {
   it("recognizes side-effect, multiline, and dynamic local imports", () => {
     assert.deepEqual(
-      localImports(`
+      localImports(
+        "entry.mjs",
+        `
         import "./side-effect.mjs";
         import {
           adapter,
@@ -118,8 +205,41 @@ describe("active Windows runtime Factory retirement guard", () => {
         await import(
           "./dynamic.mjs"
         );
-      `),
+      `,
+      ),
       ["./side-effect.mjs", "./multiline.mjs", "./dynamic.mjs"],
+    );
+  });
+
+  it("recognizes PowerShell module imports and dot-sourced local scripts", () => {
+    assert.deepEqual(
+      localImports(
+        "entry.ps1",
+        `
+          $modulePath = Join-Path $PSScriptRoot "runtime.psm1"
+          $supportPath = Join-Path $PSScriptRoot "support.ps1"
+          Import-Module $modulePath -Force
+          . $supportPath
+        `,
+      ),
+      ["runtime.psm1", "support.ps1"],
+    );
+  });
+
+  it("rejects a PowerShell entrypoint with a transitive Factory import", () => {
+    withFixture(
+      {
+        "entry.ps1":
+          'Import-Module (Join-Path $PSScriptRoot "runtime.psm1") -Force',
+        "runtime.psm1": '. (Join-Path $PSScriptRoot "../factory/legacy.ps1")',
+        "factory/legacy.ps1": "Write-Output legacy",
+      },
+      (root) => {
+        assert.throws(
+          () => assertNoFactoryImports("entry.ps1", root),
+          /runtime\.psm1 imports retired Factory source: \.\.\/factory\/legacy\.ps1/,
+        );
+      },
     );
   });
 
@@ -141,18 +261,9 @@ describe("active Windows runtime Factory retirement guard", () => {
     });
   }
 
-  for (const path of runtimeEntrypoints) {
+  for (const path of [...new Set(runtimeEntrypoints)]) {
     it(`${path} and its transitive imports exclude historical Factory source`, () => {
-      for (const importedPath of runtimeImportClosure(path)) {
-        const text = readFileSync(importedPath, "utf8");
-        for (const imported of localImports(text)) {
-          assert.doesNotMatch(
-            imported,
-            /(?:^|\/)factory(?:\/|$)/,
-            `${importedPath} imports retired Factory source: ${imported}`,
-          );
-        }
-      }
+      assertNoFactoryImports(path);
     });
   }
 

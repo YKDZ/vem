@@ -328,6 +328,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/check-ci-workflow-needs.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["smoke", "testbed workflows"],
+  },
+  {
     path: "scripts/check-windows-bringup-bundle.mjs",
     owner: "machine-runtime",
     category: "verifier-test guard",
