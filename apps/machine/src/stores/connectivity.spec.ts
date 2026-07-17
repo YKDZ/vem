@@ -1,19 +1,15 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getHealthMock, getReadyMock, getSaleReadinessMock } = vi.hoisted(
-  () => ({
-    getHealthMock: vi.fn(),
-    getReadyMock: vi.fn(),
-    getSaleReadinessMock: vi.fn(),
-  }),
-);
+const { getHealthMock, getReadyMock } = vi.hoisted(() => ({
+  getHealthMock: vi.fn(),
+  getReadyMock: vi.fn(),
+}));
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     getHealth: getHealthMock,
     getReady: getReadyMock,
-    getSaleReadiness: getSaleReadinessMock,
   },
 }));
 
@@ -21,7 +17,7 @@ import { useConnectivityStore } from "./connectivity";
 
 function healthSnapshot() {
   return {
-    status: "healthy",
+    status: "healthy" as const,
     process: {
       component: "process",
       level: "ok",
@@ -46,220 +42,49 @@ function healthSnapshot() {
   };
 }
 
-function readySnapshot() {
-  return {
-    ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
-    updatedAt: "2026-06-04T00:00:00Z",
-  };
-}
-
-function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
-  return {
-    canStartNetworkAuthorizedSale,
-    blockingCodes: canStartNetworkAuthorizedSale
-      ? []
-      : ["PLATFORM_UNREACHABLE"],
-    components: {
-      platformReachability: {
-        ready: canStartNetworkAuthorizedSale,
-        code: canStartNetworkAuthorizedSale
-          ? "PLATFORM_REACHABLE"
-          : "PLATFORM_UNREACHABLE",
-        message: canStartNetworkAuthorizedSale
-          ? "platform reachable"
-          : "platform offline",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment option available",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-    },
-  };
-}
-
-function scannerUnavailableWithQrReadySaleReadiness() {
-  return {
-    canStartNetworkAuthorizedSale: true,
-    blockingCodes: [],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment option available",
-        methods: [
-          {
-            method: "qr_code",
-            optionKey: "qr",
-            providerCode: "alipay",
-            ready: true,
-          },
-          {
-            method: "payment_code",
-            optionKey: "payment-code",
-            providerCode: "alipay",
-            ready: false,
-            disabledReason: "扫码器不可用：scanner usb not found",
-          },
-        ],
-      },
-      scannerCapability: {
-        ready: false,
-        code: "SCANNER_UNAVAILABLE",
-        message: "scanner usb not found",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-      slotSaleSafety: {
-        ready: true,
-        code: "SLOT_SALE_SAFETY_READY",
-        message: "slot sale safety ready",
-        blockedSlots: [],
-      },
-    },
-  };
-}
-
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
 });
 
-describe("connectivity sale readiness", () => {
-  it("uses machine sale readiness as the sale network gate", async () => {
+describe("connectivity diagnostics", () => {
+  it("refreshes health and narrow readyz without deriving sale availability", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+    getReadyMock.mockResolvedValue({
+      ready: false,
+      updatedAt: "2026-06-04T00:00:01Z",
+    });
 
     const store = useConnectivityStore();
     await store.refresh();
 
-    expect(getSaleReadinessMock).toHaveBeenCalledOnce();
-    expect(store.saleReadiness?.canStartNetworkAuthorizedSale).toBe(false);
-    expect(store.isSaleNetworkReady).toBe(false);
-    expect(store.saleReadinessBlockingMessages).toEqual(["platform offline"]);
-  });
-
-  it("treats scanner outage as a visible payment-code degradation when qr payment remains ready", async () => {
-    getHealthMock.mockResolvedValue({
-      ...healthSnapshot(),
-      scannerOnline: false,
-      operatorReason: "SCANNER_USB_NOT_FOUND",
+    expect(store.health?.backendOnline).toBe(true);
+    expect(store.ready).toEqual({
+      ready: false,
+      updatedAt: "2026-06-04T00:00:01Z",
     });
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(
-      scannerUnavailableWithQrReadySaleReadiness(),
-    );
-
-    const store = useConnectivityStore();
-    await store.refresh();
-
-    expect(store.isSaleNetworkReady).toBe(true);
-    expect(store.saleReadinessBlockingMessages).toEqual([]);
-    expect(store.saleReadinessDegradedMessages).toEqual([
-      "扫码器不可用：scanner usb not found；付款码支付不可用，二维码支付仍可用。",
+    expect(Object.keys(store.$state).sort()).toEqual([
+      "error",
+      "health",
+      "lastCheckedAt",
+      "latestUnknownEventDiagnostic",
+      "loading",
+      "ready",
+      "stale",
     ]);
   });
 
-  it("does not add scanner technical detail prefix to daemon customer-safe scanner copy", async () => {
-    const readiness = scannerUnavailableWithQrReadySaleReadiness();
-    const paymentCode = readiness.components.paymentOptions.methods.find(
-      (method) => method.method === "payment_code",
-    );
-    if (!paymentCode) throw new Error("payment code method missing");
-    paymentCode.disabledReason = "扫码器暂不可用，请选择其他支付方式";
-
-    const store = useConnectivityStore();
-    store.applySaleReadiness(readiness);
-
-    expect(store.saleReadinessDegradedMessages).toEqual([
-      "扫码器暂不可用，请选择其他支付方式；付款码支付不可用，二维码支付仍可用。",
-    ]);
-  });
-
-  it("surfaces production dispense path blockers from sale readiness", () => {
-    const store = useConnectivityStore();
-    store.applySaleReadiness({
-      ...saleReadiness(false),
-      blockingCodes: ["PRODUCTION_DISPENSE_PATH_MOCK"],
-      components: {
-        ...saleReadiness(false).components,
-        platformReachability: {
-          ready: true,
-          code: "PLATFORM_REACHABLE",
-          message: "platform reachable",
-        },
-        paymentOptions: {
-          ready: true,
-          code: "PAYMENT_OPTIONS_READY",
-          message: "payment option available",
-          methods: [],
-        },
-        productionDispensePath: {
-          ready: false,
-          code: "PRODUCTION_DISPENSE_PATH_MOCK",
-          message: "生产出货路径不能使用 mock hardwareAdapter",
-        },
-      },
+  it("marks diagnostics stale when refresh fails", async () => {
+    getHealthMock.mockRejectedValue(new Error("health unavailable"));
+    getReadyMock.mockResolvedValue({
+      ready: true,
+      updatedAt: "2026-06-04T00:00:01Z",
     });
 
-    expect(store.saleReadinessBlockingMessages).toEqual([
-      "生产出货路径不能使用 mock hardwareAdapter",
-    ]);
+    const store = useConnectivityStore();
+    await expect(store.refresh()).rejects.toThrow("health unavailable");
+
+    expect(store.stale).toBe(true);
+    expect(store.error).toBe("health unavailable");
   });
 });

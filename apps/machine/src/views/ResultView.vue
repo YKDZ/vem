@@ -15,9 +15,11 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 
 type ResultCopy = {
   title: string;
@@ -177,9 +179,8 @@ async function backToCatalog(): Promise<void> {
 }
 
 async function refreshResultReadiness(): Promise<boolean> {
-  resultReadinessError.value =
-    await checkoutStore.refreshCustomerCheckoutReadiness();
-  return resultReadinessError.value === null;
+  resultReadinessError.value = await checkoutStore.refreshSaleStartCapability();
+  return saleCapabilityStore.hasAcceptedCapability;
 }
 
 onMounted(() => {

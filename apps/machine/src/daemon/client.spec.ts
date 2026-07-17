@@ -1,4 +1,5 @@
 import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDaemonConnectionInfo } from "@/native/daemon-connection";
@@ -178,7 +179,6 @@ beforeEach(() => {
     token: "daemon-token",
     source: "browser_env",
     mock: true,
-    runtimeFlags: { advancedMaintenanceConfig: false },
   });
   vi.stubGlobal("fetch", vi.fn());
 });
@@ -188,12 +188,51 @@ afterEach(() => {
 });
 
 describe("DaemonApiClient direct runtime intents", () => {
+  it("reads the daemon-owned sale-start capability from its exact endpoint", async () => {
+    const snapshot = {
+      generation: "daemon-generation-2",
+      revision: 19,
+      observedAt: "2026-07-17T00:00:00.000Z",
+      canStartSale: true,
+      blockers: [],
+      degradations: [],
+      paymentOptions: {
+        ready: true,
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
+        options: [
+          {
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝",
+            description: "扫码支付",
+            icon: "alipay",
+            recommended: true,
+            ready: true,
+            disabledReason: null,
+          },
+        ],
+      },
+    };
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(jsonResponse(snapshot));
+
+    await expect(
+      new DaemonApiClient().getSaleStartCapability(),
+    ).resolves.toEqual(snapshot);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/sale-start-capability",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("reads the effective runtime snapshot without a maintenance credential", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       jsonResponse(configurationFixture()),
     );
 
-    const configuration = await new DaemonApiClient().getEffectiveRuntimeConfiguration();
+    const configuration =
+      await new DaemonApiClient().getEffectiveRuntimeConfiguration();
 
     expect(configuration.profileRefresh.status).toBe("unclaimed");
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
@@ -208,17 +247,19 @@ describe("DaemonApiClient direct runtime intents", () => {
   });
 
   it("sends network setup as a narrow direct intent and preserves typed rejection guidance", async () => {
-    vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce(
-        jsonResponse({
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse(
+        {
           status: "failed",
           ssid: "Venue-Wifi",
           hidden: false,
           diagnostics: [],
           operatorGuidance: "检查无线网络密码",
           updatedAt: "2026-07-17T00:00:00.000Z",
-        }, 422),
-      );
+        },
+        422,
+      ),
+    );
 
     const result = await new DaemonApiClient().applyNetworkSettings({
       ssid: "Venue-Wifi",
@@ -250,7 +291,9 @@ describe("DaemonApiClient direct runtime intents", () => {
       }),
     );
 
-    await expect(new DaemonApiClient().claimMachine("  claim-001  ")).resolves.toMatchObject({
+    await expect(
+      new DaemonApiClient().claimMachine("  claim-001  "),
+    ).resolves.toMatchObject({
       machineCode: "MACHINE-001",
     });
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
@@ -297,7 +340,10 @@ describe("DaemonApiClient direct runtime intents", () => {
       "550e8400-e29b-41d4-a716-446655440099",
     );
     await client.clearDeviceBinding("scanner");
-    await client.setScannerProtocolParameters({ baudRate: 115200, frameSuffix: "lf" });
+    await client.setScannerProtocolParameters({
+      baudRate: 115200,
+      frameSuffix: "lf",
+    });
     await client.setAudioPreferences({
       volume: 0.35,
       cuesEnabled: true,
@@ -311,12 +357,26 @@ describe("DaemonApiClient direct runtime intents", () => {
       "http://127.0.0.1:7891/v1/runtime-configuration/intents/scanner-protocol-parameters",
       "http://127.0.0.1:7891/v1/runtime-configuration/intents/audio-preferences",
     ]);
-    expect(fetchMock.mock.calls.map(([, options]) => options?.headers)).toEqual([
-      { Authorization: "Bearer daemon-token", "Content-Type": "application/json" },
-      { Authorization: "Bearer daemon-token", "Content-Type": "application/json" },
-      { Authorization: "Bearer daemon-token", "Content-Type": "application/json" },
-      { Authorization: "Bearer daemon-token", "Content-Type": "application/json" },
-    ]);
+    expect(fetchMock.mock.calls.map(([, options]) => options?.headers)).toEqual(
+      [
+        {
+          Authorization: "Bearer daemon-token",
+          "Content-Type": "application/json",
+        },
+        {
+          Authorization: "Bearer daemon-token",
+          "Content-Type": "application/json",
+        },
+        {
+          Authorization: "Bearer daemon-token",
+          "Content-Type": "application/json",
+        },
+        {
+          Authorization: "Bearer daemon-token",
+          "Content-Type": "application/json",
+        },
+      ],
+    );
   });
 
   it("decodes health, Wi-Fi discovery, and the null transaction boundary from daemon IPC", async () => {
@@ -360,7 +420,9 @@ describe("DaemonApiClient direct runtime intents", () => {
       jsonResponse({ ...noCurrentTransaction(), orderNo: "ORD-1" }),
     );
 
-    await expect(new DaemonApiClient().getCurrentTransaction()).rejects.toThrow();
+    await expect(
+      new DaemonApiClient().getCurrentTransaction(),
+    ).rejects.toThrow();
   });
 
   it("preserves daemon JSON errors for direct customer intents", async () => {
@@ -392,9 +454,9 @@ describe("DaemonApiClient direct runtime intents", () => {
       }),
     );
 
-    await expect(new DaemonApiClient().getEffectiveRuntimeConfiguration()).rejects.toBeInstanceOf(
-      DaemonUnavailableError,
-    );
+    await expect(
+      new DaemonApiClient().getEffectiveRuntimeConfiguration(),
+    ).rejects.toBeInstanceOf(DaemonUnavailableError);
   });
 
   it("retries a daemon 401 once with a refreshed bearer token and no extra credential", async () => {
@@ -415,21 +477,28 @@ describe("DaemonApiClient direct runtime intents", () => {
       .mockResolvedValueOnce(jsonResponse({ message: "unauthorized" }, 401))
       .mockResolvedValueOnce(jsonResponse(configurationFixture()));
 
-    await expect(new DaemonApiClient().getEffectiveRuntimeConfiguration()).resolves.toMatchObject({
+    await expect(
+      new DaemonApiClient().getEffectiveRuntimeConfiguration(),
+    ).resolves.toMatchObject({
       generation: 1,
     });
     expect(vi.mocked(globalThis.fetch)).toHaveBeenNthCalledWith(
       2,
       "http://127.0.0.1:7891/v1/runtime-configuration",
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer fresh-token",
+        }),
       }),
     );
   });
 
   it("does not misclassify malformed network rejections as safe operator guidance", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-      jsonResponse({ code: "invalid_network", message: "invalid network" }, 422),
+      jsonResponse(
+        { code: "invalid_network", message: "invalid network" },
+        422,
+      ),
     );
 
     await expect(
@@ -438,7 +507,10 @@ describe("DaemonApiClient direct runtime intents", () => {
         password: "network-secret",
         hidden: false,
       }),
-    ).rejects.toMatchObject({ responseCode: "invalid_network", statusCode: 422 });
+    ).rejects.toMatchObject({
+      responseCode: "invalid_network",
+      statusCode: 422,
+    });
   });
 
   it("keeps sale routing usable when malformed managed media is replaced with diagnostics", async () => {
@@ -543,7 +615,9 @@ describe("DaemonApiClient direct runtime intents", () => {
       }),
     );
 
-    await expect(new DaemonApiClient().cancelOrder("ORD-001")).resolves.toMatchObject({
+    await expect(
+      new DaemonApiClient().cancelOrder("ORD-001"),
+    ).resolves.toMatchObject({
       orderNo: "ORD-001",
       nextAction: "closed",
     });
@@ -606,7 +680,10 @@ describe("DaemonApiClient direct runtime intents", () => {
 
     expect(events).toEqual(["scanner_code"]);
     expect(onUnknownEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "temperature_sensor_changed", known: false }),
+      expect.objectContaining({
+        type: "temperature_sensor_changed",
+        known: false,
+      }),
     );
     subscription.close();
     socket.onmessage?.({
@@ -620,5 +697,42 @@ describe("DaemonApiClient direct runtime intents", () => {
       }),
     } as MessageEvent<string>);
     expect(events).toEqual(["scanner_code"]);
+  });
+
+  it("delivers one event id independently to concurrent subscribers", async () => {
+    const client = new DaemonApiClient();
+    const first = vi.fn();
+    const second = vi.fn();
+    const subscriptions = [
+      client.subscribeEvents({
+        onEvent: first,
+        onError: vi.fn(),
+        onStale: vi.fn(),
+      }),
+      client.subscribeEvents({
+        onEvent: second,
+        onError: vi.fn(),
+        onStale: vi.fn(),
+      }),
+    ];
+    await vi.waitFor(() => {
+      expect(MockWebSocket.instances).toHaveLength(2);
+    });
+    const payload = JSON.stringify({
+      type: "sale_start_capability_changed",
+      eventId: "capability-event-2",
+      updatedAt: "2026-07-17T00:00:02Z",
+      generation: "daemon-a",
+      revision: 2,
+    });
+
+    for (const socket of MockWebSocket.instances) {
+      socket.onmessage?.({ data: payload } as MessageEvent<string>);
+      socket.onmessage?.({ data: payload } as MessageEvent<string>);
+    }
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    for (const subscription of subscriptions) subscription.close();
   });
 });

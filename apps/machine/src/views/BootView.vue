@@ -19,6 +19,7 @@ import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
@@ -30,6 +31,7 @@ const mqttStore = useMqttStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const remoteOpsStore = useRemoteOpsStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 const naturalContextStore = useNaturalContextStore();
 const steps = ref<string[]>([]);
 
@@ -52,8 +54,8 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
     return;
   }
 
-  if (event.type === "ready_changed") {
-    connectivityStore.applyReady(event.snapshot);
+  if (event.type === "sale_start_capability_changed") {
+    saleCapabilityStore.invalidate(event);
     return;
   }
 
@@ -115,27 +117,25 @@ async function runBootCheck(): Promise<void> {
       await daemonClient.initialize();
       if (!ownsBoot(signal, generation)) return;
 
-      pushStep("读取 daemon 健康与交易快照");
+      pushStep("读取配置、销售能力与交易快照");
       // Start every bounded read concurrently, but recover the transaction
-      // first. A later readiness response must never replace an already known
+      // first. A later diagnostic response must never replace an already known
       // customer journey when the boot bound expires.
       const healthRequest = daemonClient.getHealth();
-      const readyRequest = daemonClient.getReady();
-      const configurationRequest = daemonClient.getEffectiveRuntimeConfiguration();
-      const saleReadinessRequest = daemonClient.getSaleReadiness();
+      const configurationRequest =
+        daemonClient.getEffectiveRuntimeConfiguration();
+      const saleCapabilityRequest = saleCapabilityStore.refresh();
       const transactionRequest = daemonClient.getCurrentTransaction();
       const [
         transactionResult,
         healthResult,
-        readyResult,
         configurationResult,
-        saleReadinessResult,
+        saleCapabilityResult,
       ] = await Promise.allSettled([
         transactionRequest,
         healthRequest,
-        readyRequest,
         configurationRequest,
-        saleReadinessRequest,
+        saleCapabilityRequest,
       ]);
       if (!ownsBoot(signal, generation)) return;
       if (transactionResult.status === "rejected") {
@@ -163,15 +163,11 @@ async function runBootCheck(): Promise<void> {
       } else {
         connectivityStore.markStale(healthResult.reason);
       }
-      if (readyResult.status === "fulfilled") {
-        connectivityStore.applyReady(readyResult.value);
-      } else {
-        connectivityStore.markStale(readyResult.reason);
-      }
-      if (saleReadinessResult.status === "fulfilled") {
-        connectivityStore.applySaleReadiness(saleReadinessResult.value);
-      } else {
-        connectivityStore.markStale(saleReadinessResult.reason);
+      if (
+        saleCapabilityResult.status === "fulfilled" &&
+        saleCapabilityResult.value === null
+      ) {
+        pushStep("销售能力仍在确认，保留顾客目录入口");
       }
       if (!ownsBoot(signal, generation)) return;
       machineStore.applyEffectiveRuntimeConfiguration(configuration);
@@ -198,6 +194,7 @@ async function runBootCheck(): Promise<void> {
           onStale: () => {
             void Promise.allSettled([
               connectivityStore.refresh(),
+              saleCapabilityStore.refresh(),
               catalogStore.refresh(),
               mqttStore.refresh(),
               checkoutStore.refreshCurrentTransaction(),

@@ -19,8 +19,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 import type { HealthSnapshot, TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { applySaleCapability } from "@/test-support/sale-capability";
 
 import {
   createBrowserMachineAudioPlaybackDriver,
@@ -113,66 +114,8 @@ function healthyRuntimeSnapshot(): HealthSnapshot {
 }
 
 function applyReadyRuntime(): void {
-  const connectivityStore = useConnectivityStore();
-  connectivityStore.applyHealth(healthyRuntimeSnapshot());
-  connectivityStore.applyReady({
-    ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
-    updatedAt: "2026-07-03T08:02:00.000Z",
-  });
-  connectivityStore.applySaleReadiness({
-    canStartNetworkAuthorizedSale: true,
-    blockingCodes: [],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine authenticated",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment ready",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync ready",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "machine ready",
-      },
-      slotSaleSafety: {
-        ready: true,
-        code: "SLOT_SALE_SAFETY_READY",
-        message: "slot ready",
-        blockedSlots: [],
-      },
-    },
-  });
+  useMachineStore().applyHealth(healthyRuntimeSnapshot());
+  applySaleCapability();
 }
 
 function checkoutObservation() {
@@ -190,15 +133,12 @@ function checkoutObservation() {
   };
 }
 
-function readinessObservation() {
+function capabilityObservation() {
   const machineStore = useMachineStore();
-  const connectivityStore = useConnectivityStore();
+  const capabilityStore = useSaleCapabilityStore();
   return {
-    machineCanSell: machineStore.canSell,
     machineHealth: machineStore.health,
-    saleNetworkReady: connectivityStore.isSaleNetworkReady,
-    ready: connectivityStore.ready,
-    saleReadiness: connectivityStore.saleReadiness,
+    capability: capabilityStore.accepted,
   };
 }
 
@@ -388,7 +328,8 @@ describe("createMachineAudioPlayback", () => {
       status: "started",
       driver: "browser",
       sourceUrl: "/assets/payment-succeeded.wav",
-      message: "native playback degraded: configured audio output binding not found",
+      message:
+        "native playback degraded: configured audio output binding not found",
     });
   });
 
@@ -421,7 +362,9 @@ describe("createMachineAudioPlayback", () => {
   });
 
   it("invokes the installed Tauri default-output command and observes its terminal event", async () => {
-    let completed: ((event: { payload: { requestId: string } }) => void) | null = null;
+    let completed:
+      | ((event: { payload: { requestId: string } }) => void)
+      | null = null;
     const unlisten = vi.fn();
     nativeAudio.isTauriRuntime.mockReturnValue(true);
     nativeAudio.listen.mockImplementation(async (_event, listener) => {
@@ -430,10 +373,13 @@ describe("createMachineAudioPlayback", () => {
     });
     nativeAudio.callTauriCommand.mockResolvedValue(undefined);
     const driver = createTauriNativeMachineAudioPlaybackDriver();
-    if (!driver) throw new Error("expected installed Tauri native audio driver");
+    if (!driver)
+      throw new Error("expected installed Tauri native audio driver");
     const playback = createMachineAudioPlayback({ driver, volume: 0.4 });
 
-    const started = await playback.playLocal("/assets/maintenance-test-tone.wav");
+    const started = await playback.playLocal(
+      "/assets/maintenance-test-tone.wav",
+    );
     const requestId = playback.latestDiagnostic()?.requestId;
 
     expect(started).toBe(true);
@@ -454,7 +400,8 @@ describe("createMachineAudioPlayback", () => {
     const completion = completed as unknown as
       | ((event: { payload: { requestId: string } }) => void)
       | null;
-    if (!completion) throw new Error("native completion listener was not installed");
+    if (!completion)
+      throw new Error("native completion listener was not installed");
     completion({ payload: { requestId: requestId ?? "missing" } });
 
     expect(playback.latestDiagnostic()).toMatchObject({
@@ -734,7 +681,7 @@ describe("createMachineAudioPlayback", () => {
     machineStore.applyHealth(healthyRuntimeSnapshot());
     applyReadyRuntime();
     const initialCheckout = checkoutObservation();
-    const initialReadiness = readinessObservation();
+    const initialReadiness = capabilityObservation();
     const completedAudio = new MockBrowserAudio("/assets/manual-handling.wav");
     const failedAudio = new MockBrowserAudio(
       "/assets/refund-pending.wav",
@@ -755,6 +702,6 @@ describe("createMachineAudioPlayback", () => {
       sourceUrl: "/assets/refund-pending.wav",
     });
     expect(checkoutObservation()).toEqual(initialCheckout);
-    expect(readinessObservation()).toEqual(initialReadiness);
+    expect(capabilityObservation()).toEqual(initialReadiness);
   });
 });

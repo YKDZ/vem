@@ -5,10 +5,7 @@ import { createApp, nextTick, type App } from "vue";
 
 const {
   createOrderMock,
-  getHealthMock,
-  getPaymentOptionsMock,
-  getReadyMock,
-  getSaleReadinessMock,
+  getSaleStartCapabilityMock,
   getSaleViewMock,
   routeState,
   routerBackMock,
@@ -16,10 +13,7 @@ const {
   routerReplaceMock,
 } = vi.hoisted(() => ({
   createOrderMock: vi.fn(),
-  getHealthMock: vi.fn(),
-  getPaymentOptionsMock: vi.fn(),
-  getReadyMock: vi.fn(),
-  getSaleReadinessMock: vi.fn(),
+  getSaleStartCapabilityMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   routeState: { params: {}, query: {} },
   routerBackMock: vi.fn(),
@@ -74,24 +68,19 @@ vi.mock("@/composables/useCustomerEvents", () => ({
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     createOrder: createOrderMock,
-    getHealth: getHealthMock,
-    getPaymentOptions: getPaymentOptionsMock,
-    getReady: getReadyMock,
-    getSaleReadiness: getSaleReadinessMock,
+    getSaleStartCapability: getSaleStartCapabilityMock,
     getSaleView: getSaleViewMock,
   },
 }));
 
-import type {
-  HealthSnapshot,
-  MachineSaleReadiness,
-  ReadySnapshot,
-} from "@/daemon/schemas";
 import type { MachineSaleViewItem } from "@/types/catalog";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
+import {
+  applySaleCapability,
+  saleCapabilitySnapshot,
+} from "@/test-support/sale-capability";
 
 import CatalogView from "./CatalogView.vue";
 import CheckoutView from "./CheckoutView.vue";
@@ -141,115 +130,10 @@ function saleViewSnapshot(items = [saleViewItem()]) {
   };
 }
 
-function healthFixture(): HealthSnapshot {
-  return {
-    status: "healthy",
-    process: {
-      component: "daemon",
-      level: "ok",
-      code: "PROCESS_READY",
-      message: "ready",
-      updatedAt: "2026-07-15T00:00:00.000Z",
-    },
-    components: [],
-    configConfigured: true,
-    databaseOnline: true,
-    backendOnline: true,
-    mqttConnected: true,
-    outboxSize: 0,
-    outboxMax: 1000,
-    hardwareOnline: true,
-    scannerOnline: true,
-    visionOnline: true,
-    remoteOpsActive: false,
-    currentTransaction: null,
-    operatorReason: "",
-    updatedAt: "2026-07-15T00:00:00.000Z",
-  } as HealthSnapshot;
-}
-
-function readyFixture(): ReadySnapshot {
-  return {
-    ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
-    updatedAt: "2026-07-15T00:00:00.000Z",
-  };
-}
-
-function saleReadinessFixture(): MachineSaleReadiness {
-  return {
-    canStartNetworkAuthorizedSale: true,
-    blockingCodes: [],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment option available",
-        methods: [
-          {
-            method: "qr_code",
-            optionKey: "qr_code:alipay",
-            providerCode: "alipay",
-            ready: true,
-          },
-        ],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-      slotSaleSafety: {
-        ready: true,
-        code: "SLOT_SALE_SAFETY_READY",
-        message: "slot sale safety ready",
-        blockedSlots: [],
-      },
-    },
-  };
-}
-
 function applySaleView(): MachineSaleViewItem {
   const item = saleViewItem();
   useCatalogStore().applySnapshot(saleViewSnapshot([item]));
   return item;
-}
-
-function applySaleReadiness(): void {
-  const connectivityStore = useConnectivityStore();
-  connectivityStore.applyHealth(healthFixture());
-  connectivityStore.applyReady(readyFixture());
-  connectivityStore.applySaleReadiness(saleReadinessFixture());
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
@@ -271,27 +155,7 @@ beforeEach(() => {
   routeState.params = {};
   routeState.query = {};
   getSaleViewMock.mockResolvedValue(saleViewSnapshot());
-  getHealthMock.mockResolvedValue(healthFixture());
-  getReadyMock.mockResolvedValue(readyFixture());
-  getSaleReadinessMock.mockResolvedValue(saleReadinessFixture());
-  getPaymentOptionsMock.mockResolvedValue({
-    options: [
-      {
-        optionKey: "qr_code:alipay",
-        providerCode: "alipay",
-        method: "qr_code",
-        displayName: "支付宝扫码",
-        description: "请使用支付宝扫描屏幕二维码",
-        icon: "alipay",
-        disabled: false,
-        disabledReason: null,
-        recommended: true,
-      },
-    ],
-    defaultOptionKey: "qr_code:alipay",
-    defaultProviderCode: "alipay",
-    serverTime: "2026-07-15T00:00:00.000Z",
-  });
+  getSaleStartCapabilityMock.mockResolvedValue(saleCapabilitySnapshot());
 });
 
 afterEach(() => {
@@ -304,7 +168,7 @@ afterEach(() => {
 describe("customer acceptance hooks", () => {
   it("exposes catalog category and product identity attrs", async () => {
     const item = applySaleView();
-    applySaleReadiness();
+    applySaleCapability();
 
     const host = await mountView(CatalogView);
     const category = host.querySelector(
@@ -346,13 +210,16 @@ describe("customer acceptance hooks", () => {
 
   it("exposes checkout payment-option and submit identity attrs", async () => {
     applySaleView();
-    applySaleReadiness();
+    applySaleCapability();
     const checkoutStore = useCheckoutStore();
     const selectedItem = useCatalogStore().availableItems[0];
     if (!selectedItem) throw new Error("expected saleable catalog item");
     checkoutStore.selectItem(selectedItem);
 
     const host = await mountView(CheckoutView);
+    await vi.waitFor(() => {
+      expect(checkoutStore.selectedPaymentOptionKey).toBe("qr_code:alipay");
+    });
     const option = host.querySelector('[data-test="payment-option"]');
     const submit = host.querySelector('[data-test="checkout-submit"]');
 

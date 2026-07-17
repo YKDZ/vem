@@ -17,6 +17,7 @@ import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
@@ -28,7 +29,9 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   useMachineStore().applyHealth(scenario.health);
   useConnectivityStore().applyHealth(scenario.health);
   useConnectivityStore().applyReady(scenario.ready);
-  useConnectivityStore().applySaleReadiness(scenario.saleReadiness);
+  const saleCapabilityStore = useSaleCapabilityStore();
+  saleCapabilityStore.$reset();
+  saleCapabilityStore.acceptSnapshot(scenario.saleCapability);
   useCatalogStore().applySnapshot(saleView);
   useMqttStore().applySync(scenario.sync);
   useScannerStore().applyStatus(scenario.scanner);

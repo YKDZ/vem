@@ -14,14 +14,14 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { formatCents } from "@/utils/format";
 
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 
 const item = computed(() => {
   const selectedItem = checkoutStore.selectedItem;
@@ -46,7 +46,7 @@ const canSubmit = computed(
   () =>
     Boolean(item.value) &&
     checkoutStore.canCreateOrder &&
-    connectivityStore.isSaleNetworkReady &&
+    saleCapabilityStore.canStartSale &&
     !checkoutStore.loading,
 );
 
@@ -271,11 +271,11 @@ async function submitOrder(): Promise<void> {
               "下一步将展示所选渠道二维码，请使用对应 App 扫码支付。"
             }}
           </p>
-          <p v-if="!connectivityStore.isSaleNetworkReady">
-            网络未就绪，当前不能创建订单。
-          </p>
-          <p v-if="!connectivityStore.ready?.canSell">
-            设备暂时未准备好，当前不能创建订单。
+          <p v-if="!saleCapabilityStore.canStartSale">
+            {{
+              saleCapabilityStore.blockingMessages[0] ??
+              "正在确认当前购买状态。"
+            }}
           </p>
           <p v-if="checkoutStore.error">{{ checkoutStore.error }}</p>
         </div>

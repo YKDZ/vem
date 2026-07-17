@@ -1,7 +1,9 @@
 import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import { describe, expect, it } from "vitest";
 
 import type { TransactionSnapshot } from "./schemas";
+
 import { routeForBootFailure, routeForStartup } from "./startup";
 
 function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
@@ -23,7 +25,8 @@ function transaction(
     paymentNo: null,
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : null,
     paymentProvider: nextAction === "wait_payment" ? "alipay" : null,
-    paymentUrl: nextAction === "wait_payment" ? "https://pay.example/order" : null,
+    paymentUrl:
+      nextAction === "wait_payment" ? "https://pay.example/order" : null,
     paymentStatus: nextAction === "wait_payment" ? "pending" : null,
     orderStatus: nextAction === "wait_payment" ? "pending_payment" : null,
     totalAmountCents: nextAction === "wait_payment" ? 1200 : null,
@@ -50,11 +53,19 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("uses the accepted provisioning profile as catalog authority even when readiness is degraded", () => {
+  it("uses the accepted provisioning profile as catalog authority even when refresh is degraded", () => {
+    const claimedWithDegradedRefresh = {
+      ...configuration(true),
+      profileRefresh: {
+        status: "degraded" as const,
+        lastError: "profile refresh unavailable",
+      },
+    } as EffectiveMachineRuntimeConfiguration;
+
     expect(
       routeForStartup({
         daemonAvailable: true,
-        effectiveRuntimeConfiguration: configuration(true),
+        effectiveRuntimeConfiguration: claimedWithDegradedRefresh,
         restoredTransaction: null,
       }),
     ).toBe("/catalog");
@@ -70,17 +81,20 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("requires accepted claim state and machine identity, not a cache-shape heuristic", () => {
+  it("requires both the accepted profile cache and machine identity", () => {
     const missingMachine = {
       ...configuration(true),
       machine: null,
     } as EffectiveMachineRuntimeConfiguration;
-    const unacceptedClaim = {
+    const missingProfileCache = {
       ...configuration(true),
-      profileRefresh: { status: "refreshing" },
+      sourceDocuments: { profileCache: null },
     } as unknown as EffectiveMachineRuntimeConfiguration;
 
-    for (const effectiveRuntimeConfiguration of [missingMachine, unacceptedClaim]) {
+    for (const effectiveRuntimeConfiguration of [
+      missingMachine,
+      missingProfileCache,
+    ]) {
       expect(
         routeForStartup({
           daemonAvailable: true,
@@ -89,17 +103,6 @@ describe("routeForStartup", () => {
         }),
       ).toBe("/maintenance");
     }
-
-    expect(
-      routeForStartup({
-        daemonAvailable: true,
-        effectiveRuntimeConfiguration: {
-          ...configuration(true),
-          sourceDocuments: { profileCache: null },
-        } as unknown as EffectiveMachineRuntimeConfiguration,
-        restoredTransaction: null,
-      }),
-    ).toBe("/catalog");
   });
 
   it("keeps recovered payment navigation ahead of an unclaimed configuration", () => {
@@ -131,7 +134,12 @@ describe("routeForStartup", () => {
   });
 
   it("keeps each terminal customer result ahead of Local Operations", () => {
-    const terminalCases = ["success", "payment_failed", "closed", "refund_pending"] as const;
+    const terminalCases = [
+      "success",
+      "payment_failed",
+      "closed",
+      "refund_pending",
+    ] as const;
     for (const nextAction of terminalCases) {
       expect(
         routeForStartup({

@@ -134,6 +134,26 @@ function scannerContractOffenders(source: string): string[] {
   return offenders;
 }
 
+function retiredMachineSurfaceOffenders(source: string): string[] {
+  const offenders: string[] = [];
+  for (const term of [
+    "advancedMaintenanceConfig",
+    "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG",
+    "advanced_maintenance_config",
+    "shouldShowAdvancedMaintenanceConfig",
+    "/v1/sale-readiness",
+    "MachineSaleReadiness",
+    "getSaleReadiness",
+    "saleReadiness",
+  ]) {
+    if (source.includes(term)) offenders.push(term);
+  }
+  if (/["'`]\/provisioning(?:["'`?#]|$)/.test(source)) {
+    offenders.push("/provisioning production route");
+  }
+  return offenders;
+}
+
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -156,7 +176,15 @@ function allProductionSourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return allProductionSourceFiles(path);
-    return /\.(ts|vue)$/.test(path) && !path.endsWith(".spec.ts")
+    return /\.(ts|vue)$/.test(path) && !path.endsWith(".spec.ts") ? [path] : [];
+  });
+}
+
+function guardedProductionSourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return guardedProductionSourceFiles(path);
+    return /\.(ts|tsx|vue|rs)$/.test(path) && !path.endsWith(".spec.ts")
       ? [path]
       : [];
   });
@@ -187,6 +215,40 @@ describe("machine-ui daemon migration guards", () => {
     );
 
     expect(offenders).toEqual([]);
+  });
+
+  it("does not retain advanced-maintenance selectors or the retired provisioning page across Machine production roots", () => {
+    const root = new URL("../..", import.meta.url).pathname;
+    const sourceFiles = [
+      ...guardedProductionSourceFiles(join(root, "src")),
+      ...guardedProductionSourceFiles(join(root, "src-tauri/src")),
+    ];
+    const offenders = sourceFiles.flatMap((file) =>
+      retiredMachineSurfaceOffenders(readFileSync(file, "utf8")).map(
+        (term) => `${relative(root, file)}:${term}`,
+      ),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("detects retired Machine selector and route fixtures without scanning guard tests as production", () => {
+    expect(
+      retiredMachineSurfaceOffenders(`
+        const advancedMaintenanceConfig = true;
+        const flag = "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG";
+        const route = "/provisioning";
+      `),
+    ).toEqual([
+      "advancedMaintenanceConfig",
+      "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG",
+      "/provisioning production route",
+    ]);
+    expect(
+      retiredMachineSurfaceOffenders(
+        `await client.post("/v1/provisioning/claim")`,
+      ),
+    ).toEqual([]);
   });
 
   it("does not keep machine-local vocabulary aliases for covered daemon IPC transaction payloads", () => {

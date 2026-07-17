@@ -17,6 +17,7 @@ import { submitMachineNavigationIntent } from "@/router/transaction-route-author
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { formatCents } from "@/utils/format";
 
 type VariantOption = {
@@ -29,6 +30,7 @@ const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -69,6 +71,7 @@ const selectedConcreteItem = computed(() => {
 });
 const canBuy = computed(
   () =>
+    saleCapabilityStore.canStartSale &&
     Boolean(selectedConcreteItem.value) &&
     selectedVariant.value?.slotSalesState === "sale_ready" &&
     (selectedVariant.value?.saleableStock ?? 0) > 0,

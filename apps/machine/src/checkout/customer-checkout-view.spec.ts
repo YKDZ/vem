@@ -471,7 +471,7 @@ describe("Customer Checkout View Projection", () => {
     });
   });
 
-  it("keeps successful terminal results from auto-returning when sale readiness is blocked", () => {
+  it("keeps successful terminal results from auto-returning when sale-start capability is blocked", () => {
     const view = projectCustomerCheckoutView({
       transaction: successfulTransaction(),
       nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),

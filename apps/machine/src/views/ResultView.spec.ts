@@ -4,21 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
 import type {
-  MachineSaleReadiness,
-  ReadySnapshot,
+  SaleStartCapabilitySnapshot,
   TransactionSnapshot,
 } from "@/daemon/schemas";
 
+import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
+
 const {
-  getReadyMock,
-  getSaleReadinessMock,
+  getSaleStartCapabilityMock,
   getSaleViewMock,
   routeParams,
   routerReplaceMock,
   submitMachineNavigationIntentMock,
 } = vi.hoisted(() => ({
-  getReadyMock: vi.fn(),
-  getSaleReadinessMock: vi.fn(),
+  getSaleStartCapabilityMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
   routerReplaceMock: vi.fn(),
@@ -40,20 +39,20 @@ vi.mock("@/layouts/KioskLayout.vue", () => ({
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
-    getReady: getReadyMock,
-    getSaleReadiness: getSaleReadinessMock,
+    getSaleStartCapability: getSaleStartCapabilityMock,
     getSaleView: getSaleViewMock,
   },
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useVisionStore } from "@/stores/vision";
 
 import ResultView from "./ResultView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let capabilityRevision = 0;
 
 function terminalDispenseFailedTransaction(): TransactionSnapshot {
   return {
@@ -215,126 +214,26 @@ function awaitingPaymentTransaction(): TransactionSnapshot {
   } as TransactionSnapshot;
 }
 
-function applySaleReadiness(
+function applyCapability(
   canSell: boolean,
-  blockedSlots: Array<{
+  _blockedSlots: Array<{
     slotId: string;
     slotCode: string;
     slotSalesState: string;
   }> = [],
 ): void {
-  const connectivityStore = useConnectivityStore();
-  connectivityStore.applyHealth({
-    status: canSell ? "healthy" : "degraded",
-    process: {
-      component: "daemon",
-      level: "ok",
-      code: "PROCESS_READY",
-      message: "ready",
-      updatedAt: "2026-06-11T06:16:32.320Z",
-    },
-    components: [],
-    configConfigured: true,
-    databaseOnline: true,
-    backendOnline: true,
-    mqttConnected: true,
-    outboxSize: 0,
-    outboxMax: 1000,
-    hardwareOnline: canSell,
-    scannerOnline: true,
-    visionOnline: true,
-    remoteOpsActive: false,
-    currentTransaction: null,
-    operatorReason: canSell ? "" : "LOWER_CONTROLLER_UNAVAILABLE",
-    updatedAt: "2026-06-11T06:16:32.320Z",
+  useSaleCapabilityStore().acceptSnapshot(capabilityFixture(canSell));
+}
+
+function capabilityFixture(
+  canSell: boolean,
+  code = "LOWER_CONTROLLER_UNAVAILABLE",
+): SaleStartCapabilitySnapshot {
+  return saleCapabilitySnapshot({
+    canStartSale: canSell,
+    blockerCode: code,
+    revision: ++capabilityRevision,
   });
-  connectivityStore.applyReady(readyFixture(canSell));
-  connectivityStore.applySaleReadiness(
-    saleReadinessFixture(canSell, blockedSlots),
-  );
-}
-
-function readyFixture(
-  canSell: boolean,
-  code = "LOWER_CONTROLLER_UNAVAILABLE",
-): ReadySnapshot {
-  return {
-    ready: true,
-    canSell,
-    mode: canSell ? "catalog" : "maintenance",
-    blockingCodes: canSell ? [] : [code],
-    blockingReasons: canSell
-      ? []
-      : [
-          {
-            code,
-            component: "hardware",
-            message: "hardware blocked",
-          },
-        ],
-    degradedReasons: [],
-    suggestedRoute: canSell ? "catalog" : "maintenance",
-    updatedAt: "2026-06-11T06:16:32.320Z",
-  };
-}
-
-function saleReadinessFixture(
-  canSell: boolean,
-  blockedSlots: Array<{
-    slotId: string;
-    slotCode: string;
-    slotSalesState: string;
-  }> = [],
-  code = "LOWER_CONTROLLER_UNAVAILABLE",
-): MachineSaleReadiness {
-  return {
-    canStartNetworkAuthorizedSale: canSell,
-    blockingCodes: canSell ? [] : [code],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment option available",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: canSell,
-        code: canSell ? "WHOLE_MACHINE_READY" : code,
-        message: canSell ? "hardware ready" : "hardware blocked",
-      },
-      slotSaleSafety: {
-        ready: canSell,
-        code: canSell ? "SLOT_SALE_SAFETY_READY" : "NO_SALEABLE_SLOTS",
-        message: canSell ? "slot sale safety ready" : "no saleable slots",
-        blockedSlots,
-      },
-    },
-  };
 }
 
 async function mountView(): Promise<HTMLElement> {
@@ -354,6 +253,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-06-11T06:16:32.320Z"));
   window.localStorage.clear();
   vi.clearAllMocks();
+  capabilityRevision = 0;
   submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
     if (intent.type === "transaction.dismiss") {
       useCheckoutStore().dismissCurrentTerminalTransaction();
@@ -380,16 +280,7 @@ beforeEach(() => {
     planogramVersion: "PLAN-1",
     lastUpdatedAt: "2026-06-11T06:16:32.320Z",
   });
-  getReadyMock.mockResolvedValue(readyFixture(true));
-  getSaleReadinessMock.mockResolvedValue(
-    saleReadinessFixture(true, [
-      {
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
-        slotCode: "B1",
-        slotSalesState: "frozen",
-      },
-    ]),
-  );
+  getSaleStartCapabilityMock.mockResolvedValue(capabilityFixture(true));
 });
 
 afterEach(() => {
@@ -402,7 +293,7 @@ afterEach(() => {
 describe("ResultView", () => {
   it("leaves non-result projection routing to the navigation authority", async () => {
     useCheckoutStore().applyTransaction(awaitingPaymentTransaction());
-    applySaleReadiness(true);
+    applyCapability(true);
 
     const host = await mountView();
 
@@ -413,11 +304,11 @@ describe("ResultView", () => {
   it("derives successful result semantics and credential behavior from the customer checkout view", async () => {
     routeParams.kind = "manual_handling";
     useCheckoutStore().applyTransaction(successfulTransaction());
-    applySaleReadiness(true);
+    applyCapability(true);
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     expect(host.textContent).toContain("出货成功");
@@ -431,10 +322,9 @@ describe("ResultView", () => {
   it("does not create an autonomous result dismissal while readiness is pending", async () => {
     routeParams.kind = "success";
     useCheckoutStore().applyTransaction(successfulTransaction());
-    applySaleReadiness(true);
-    getReadyMock.mockReturnValue(new Promise<ReadySnapshot>(() => undefined));
-    getSaleReadinessMock.mockReturnValue(
-      new Promise<MachineSaleReadiness>(() => undefined),
+    applyCapability(true);
+    getSaleStartCapabilityMock.mockReturnValue(
+      new Promise<SaleStartCapabilitySnapshot>(() => undefined),
     );
 
     const host = await mountView();
@@ -447,20 +337,17 @@ describe("ResultView", () => {
     );
   });
 
-  it("keeps a successful terminal result visible when readiness is blocked and returns to maintenance", async () => {
+  it("keeps a successful terminal result visible when capability is blocked and returns to catalog", async () => {
     routeParams.kind = "success";
     useCheckoutStore().applyTransaction(successfulTransaction());
-    applySaleReadiness(false);
-    getReadyMock.mockResolvedValue(
-      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
-    getSaleReadinessMock.mockResolvedValue(
-      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    applyCapability(false);
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
     );
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     expect(host.textContent).toContain("出货成功");
@@ -473,38 +360,35 @@ describe("ResultView", () => {
     await nextTick();
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
-    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
-  it("stops successful auto-return and shows readiness error when readiness refresh fails", async () => {
+  it("retains successful auto-return when capability refresh becomes stale", async () => {
     routeParams.kind = "success";
     const transaction = successfulTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true);
-    getReadyMock.mockRejectedValue(new Error("daemon readiness unavailable"));
+    applyCapability(true);
+    getSaleStartCapabilityMock.mockRejectedValue(
+      new Error("daemon readiness unavailable"),
+    );
 
-    const host = await mountView();
+    await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
     await vi.advanceTimersByTimeAsync(10000);
 
-    expect(host.textContent).toContain("出货成功");
-    expect(host.textContent).not.toContain("秒后自动返回首页");
-    expect(host.textContent).toContain("无法确认设备恢复状态");
-    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
-    expect(getSaleViewMock).not.toHaveBeenCalled();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
+    expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("allows a recovered dispense failure result to be dismissed back to catalog", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true, [
+    applyCapability(true, [
       {
         slotId: "550e8400-e29b-41d4-a716-446655440001",
         slotCode: "B1",
@@ -514,7 +398,7 @@ describe("ResultView", () => {
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     expect(host.textContent).toContain("出货失败");
@@ -545,11 +429,11 @@ describe("ResultView", () => {
     const checkoutStore = useCheckoutStore();
     routeParams.kind = "refunded";
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true);
+    applyCapability(true);
 
     await mountView();
 
-    expect(getReadyMock).toHaveBeenCalledOnce();
+    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
   });
 
   it("routes dismissal to catalog when sale-view refresh fails after fresh readiness is ready", async () => {
@@ -557,12 +441,12 @@ describe("ResultView", () => {
     const transaction = paymentFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true);
+    applyCapability(true);
     getSaleViewMock.mockRejectedValue(new Error("sale view unavailable"));
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     const returnButton = Array.from(host.querySelectorAll("button")).find(
@@ -581,18 +465,15 @@ describe("ResultView", () => {
   it("keeps dispense failures on the result page when the machine remains blocked", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(false);
-    getReadyMock.mockResolvedValue(
-      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
-    getSaleReadinessMock.mockResolvedValue(
-      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    applyCapability(false);
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
     );
 
     const host = await mountView();
 
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     expect(host.textContent).toContain("出货失败");
@@ -606,17 +487,14 @@ describe("ResultView", () => {
     routeParams.kind = "manual_handling";
     const transaction = terminalUnknownDispenseTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(false);
-    getReadyMock.mockResolvedValue(
-      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
-    getSaleReadinessMock.mockResolvedValue(
-      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    applyCapability(false);
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
     );
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     expect(host.textContent).toContain("等待人工处理");
@@ -624,10 +502,13 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("返回首页");
   });
 
-  it("keeps dismissible exceptional results visible when sale readiness is unknown", async () => {
+  it("keeps dismissible exceptional results visible when capability is unknown", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
+    getSaleStartCapabilityMock.mockReturnValue(
+      new Promise<SaleStartCapabilitySnapshot>(() => undefined),
+    );
 
     const host = await mountView();
 
@@ -637,18 +518,17 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("ZodError");
   });
 
-  it("does not dismiss a high-risk result when refreshed readiness requires retention", async () => {
+  it("does not dismiss a high-risk result when refreshed capability requires retention", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true);
-    getReadyMock
-      .mockReturnValueOnce(new Promise<ReadySnapshot>(() => undefined))
-      .mockResolvedValue(readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"));
-    getSaleReadinessMock
-      .mockReturnValueOnce(new Promise<MachineSaleReadiness>(() => undefined))
+    applyCapability(true);
+    getSaleStartCapabilityMock
+      .mockReturnValueOnce(
+        new Promise<SaleStartCapabilitySnapshot>(() => undefined),
+      )
       .mockResolvedValue(
-        saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+        capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
       );
 
     const host = await mountView();
@@ -663,7 +543,7 @@ describe("ResultView", () => {
     await nextTick();
 
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledTimes(2);
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
     });
     await nextTick();
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
@@ -673,7 +553,7 @@ describe("ResultView", () => {
         kind: "dispense_failed",
         returnPolicy: {
           canManualReturn: false,
-          targetRoute: "maintenance",
+          targetRoute: "catalog",
           requiresMaintenanceReview: true,
         },
       },
@@ -682,36 +562,28 @@ describe("ResultView", () => {
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });
 
-  it("routes dismissed terminal results to maintenance when severe blockers remain", async () => {
+  it("keeps terminal results retained when severe blockers remain", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true);
-    getReadyMock.mockResolvedValue(
-      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
-    getSaleReadinessMock.mockResolvedValue(
-      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    applyCapability(true);
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
     );
 
     const host = await mountView();
     await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
 
     const returnButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("返回首页"),
     );
-    returnButton?.click();
-    await nextTick();
-
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
-    });
-    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(returnButton).toBeUndefined();
+    expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(getSaleViewMock).not.toHaveBeenCalled();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
   });
 
   it("shows manual handling copy and customer order credential for result_unknown", async () => {
@@ -719,7 +591,7 @@ describe("ResultView", () => {
     const transaction = terminalUnknownDispenseTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applySaleReadiness(true, [
+    applyCapability(true, [
       {
         slotId: "550e8400-e29b-41d4-a716-446655440001",
         slotCode: "B1",
@@ -752,7 +624,7 @@ describe("ResultView", () => {
     routeParams.kind = "manual_handling";
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(terminalUnknownDispenseTransaction());
-    applySaleReadiness(true);
+    applyCapability(true);
 
     const host = await mountView();
 
@@ -777,7 +649,7 @@ describe("ResultView", () => {
     routeParams.kind = "refund_pending";
     const transaction = refundPendingTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(true);
+    applyCapability(true);
 
     const host = await mountView();
 
@@ -790,7 +662,7 @@ describe("ResultView", () => {
     routeParams.kind = "refunded";
     const transaction = refundedTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(true);
+    applyCapability(true);
 
     const host = await mountView();
 
@@ -822,7 +694,7 @@ describe("ResultView", () => {
       document.body.innerHTML = "";
       routeParams.kind = testCase.kind;
       useCheckoutStore().applyTransaction(testCase.transaction);
-      applySaleReadiness(true);
+      applyCapability(true);
 
       const host = await mountView();
 
@@ -836,7 +708,7 @@ describe("ResultView", () => {
     routeParams.kind = "refunded";
     const transaction = refundedTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(true);
+    applyCapability(true);
     applySensitiveVisionProfile();
 
     const host = await mountView();
@@ -848,18 +720,15 @@ describe("ResultView", () => {
   it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    applySaleReadiness(true);
-    getReadyMock.mockResolvedValue(
-      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
-    getSaleReadinessMock.mockResolvedValue(
-      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    applyCapability(true);
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
     );
 
     await mountView();
     await vi.advanceTimersByTimeAsync(10000);
 
-    expect(getReadyMock).toHaveBeenCalledOnce();
+    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();

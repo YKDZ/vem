@@ -251,7 +251,7 @@ export const machineRuntimeScenarios = [
     id: "maintenance",
     name: "维护控制台",
     category: "maintenance",
-    targetRoute: "/maintenance",
+    targetRoute: "/maintenance?source=operator",
     fixtureScenarioId: "blocked",
     setup: ["装载维护拦截 fixture", "装载诊断状态 fixture"],
     visualChecks: ["展示维护控制台", "展示销售阻塞原因", "展示诊断区域"],

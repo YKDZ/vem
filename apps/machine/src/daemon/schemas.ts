@@ -6,6 +6,8 @@ import {
   daemonIpcDeviceBindingActivationSchema,
   daemonIpcDeviceBindingSnapshotSchema,
   daemonIpcDeviceBindingTestResultSchema,
+  daemonIpcSaleStartCapabilityChangedEventSchema,
+  daemonIpcSaleStartCapabilitySnapshotSchema,
   daemonIpcScannerStatusSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
@@ -41,12 +43,6 @@ const componentHealthSchema = z.object({
   updatedAt: z.string(),
 });
 
-export const readyReasonSchema = z.object({
-  code: z.string(),
-  component: z.string(),
-  message: z.string(),
-});
-
 export const healthSnapshotSchema = z.object({
   status: z.enum(["healthy", "degraded", "offline", "maintenance", "starting"]),
   process: componentHealthSchema,
@@ -75,21 +71,13 @@ export const healthSnapshotSchema = z.object({
 
 export const readySnapshotSchema = z.object({
   ready: z.boolean(),
-  canSell: z.boolean(),
-  mode: z.string(),
-  blockingCodes: z.array(z.string()),
-  blockingReasons: z.array(readyReasonSchema),
-  degradedReasons: z.array(readyReasonSchema),
-  suggestedRoute: z.enum([
-    "maintenance",
-    "offline",
-    "catalog",
-    "payment",
-    "dispensing",
-    "result",
-  ]),
   updatedAt: z.string(),
 });
+
+export const saleStartCapabilitySnapshotSchema =
+  daemonIpcSaleStartCapabilitySnapshotSchema;
+export const saleStartCapabilityChangedEventSchema =
+  daemonIpcSaleStartCapabilityChangedEventSchema;
 
 const networkDiagnosticSchema = z.object({
   component: z.string(),
@@ -427,50 +415,6 @@ export const manualDispenseDiagnosticResultSchema = z.object({
 export const environmentControlResultSchema =
   environmentControlResultPayloadSchema;
 
-const saleReadinessComponentSchema = z.object({
-  ready: z.boolean(),
-  code: z.string(),
-  message: z.string(),
-});
-
-export const machineSaleReadinessSchema = z.object({
-  canStartNetworkAuthorizedSale: z.boolean(),
-  blockingCodes: z.array(z.string()),
-  components: z.object({
-    platformReachability: saleReadinessComponentSchema,
-    machineAuthentication: saleReadinessComponentSchema,
-    activePlanogram: saleReadinessComponentSchema,
-    paymentOptions: saleReadinessComponentSchema.extend({
-      methods: z.array(
-        z.object({
-          method: z.string(),
-          optionKey: z.string().nullable(),
-          providerCode: z.string().nullable(),
-          ready: z.boolean(),
-          disabledReason: z.string().nullable().optional(),
-        }),
-      ),
-    }),
-    scannerCapability: saleReadinessComponentSchema,
-    syncHealth: saleReadinessComponentSchema,
-    wholeMachineBlockers: saleReadinessComponentSchema,
-    productionDispensePath: saleReadinessComponentSchema.optional(),
-    slotSaleSafety: saleReadinessComponentSchema
-      .extend({
-        blockedSlots: z
-          .array(
-            z.object({
-              slotId: z.string(),
-              slotCode: z.string(),
-              slotSalesState: z.string(),
-            }),
-          )
-          .default([]),
-      })
-      .optional(),
-  }),
-});
-
 export const catalogSnapshotSchema = z.object({
   items: z.array(machineCatalogItemSchema),
   cached: z.boolean(),
@@ -525,7 +469,12 @@ export type ManualDispenseDiagnosticResult = z.infer<
 export type EnvironmentControlResult = z.infer<
   typeof environmentControlResultSchema
 >;
-export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
+export type SaleStartCapabilitySnapshot = z.infer<
+  typeof saleStartCapabilitySnapshotSchema
+>;
+export type SaleStartCapabilityChangedEvent = z.infer<
+  typeof saleStartCapabilityChangedEventSchema
+>;
 export type PaymentProviderEnvironmentDiagnostic = z.infer<
   typeof paymentProviderEnvironmentDiagnosticSchema
 >;

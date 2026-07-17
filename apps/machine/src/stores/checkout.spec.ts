@@ -1,10 +1,17 @@
+import type { MachinePaymentOption } from "@vem/shared";
+
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { TransactionSnapshot } from "@/daemon/schemas";
+import type {
+  SaleStartCapabilitySnapshot,
+  TransactionSnapshot,
+} from "@/daemon/schemas";
+
+import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
-  getPaymentOptionsMock,
+  getSaleStartCapabilityMock,
   createOrderMock,
   cancelOrderMock,
   getCurrentTransactionMock,
@@ -12,7 +19,7 @@ const {
   markMockPaymentMock,
   getSaleViewMock,
 } = vi.hoisted(() => ({
-  getPaymentOptionsMock: vi.fn(),
+  getSaleStartCapabilityMock: vi.fn(),
   createOrderMock: vi.fn(),
   cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
@@ -24,7 +31,7 @@ const {
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     currentConnection: { mock: true },
-    getPaymentOptions: getPaymentOptionsMock,
+    getSaleStartCapability: getSaleStartCapabilityMock,
     createOrder: createOrderMock,
     cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
@@ -42,11 +49,52 @@ import type {
 import { useCatalogStore } from "./catalog";
 import { useCheckoutStore } from "./checkout";
 import { useConnectivityStore } from "./connectivity";
+import { useSaleCapabilityStore } from "./sale-capability";
+
+let capabilityRevision = 0;
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  capabilityRevision = 0;
 });
+
+function capabilityResponse(input: {
+  options: MachinePaymentOption[];
+  defaultOptionKey: string | null;
+  defaultProviderCode: string | null;
+  canStartSale?: boolean;
+}): SaleStartCapabilitySnapshot {
+  const snapshot = saleCapabilitySnapshot({
+    revision: ++capabilityRevision,
+    canStartSale: input.canStartSale,
+  });
+  snapshot.paymentOptions = {
+    ready: input.options.some((option) => !option.disabled),
+    defaultOptionKey: input.defaultOptionKey,
+    defaultProviderCode: input.defaultProviderCode,
+    options: input.options.map(({ disabled, ...option }) => ({
+      ...option,
+      ready: !disabled,
+    })),
+  };
+  return snapshot;
+}
+
+function applyPaymentOptions(
+  options: MachinePaymentOption[],
+  canStartSale = true,
+): void {
+  const firstEnabled = options.find((option) => !option.disabled) ?? null;
+  useSaleCapabilityStore().acceptSnapshot(
+    capabilityResponse({
+      options,
+      defaultOptionKey: firstEnabled?.optionKey ?? null,
+      defaultProviderCode: firstEnabled?.providerCode ?? null,
+      canStartSale,
+    }),
+  );
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -224,116 +272,85 @@ function applyNetworkSaleReady(): void {
   });
   connectivityStore.applyReady({
     ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
     updatedAt: "2026-06-04T00:00:00Z",
   });
-  connectivityStore.applySaleReadiness({
-    canStartNetworkAuthorizedSale: true,
-    blockingCodes: [],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
+  if (!useSaleCapabilityStore().hasAcceptedCapability) {
+    applyPaymentOptions([
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
       },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment option available",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-    },
-  });
+    ]);
+  }
 }
 
 describe("checkout store", () => {
   it("loads payment options from daemon client", async () => {
-    getPaymentOptionsMock.mockResolvedValue({
-      options: [
-        {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示付款码",
-          icon: "alipay",
-          disabled: false,
-          disabledReason: null,
-          recommended: true,
-        },
-      ],
-      defaultOptionKey: "payment_code:alipay",
-      defaultProviderCode: "alipay",
-      serverTime: "2026-01-01T00:00:00Z",
-    });
+    getSaleStartCapabilityMock.mockImplementation(async () =>
+      capabilityResponse({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+      }),
+    );
 
     const store = useCheckoutStore();
     await store.loadPaymentOptions();
 
     expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
-    expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
+    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
   });
 
   it("preserves daemon option order while selecting the daemon default", async () => {
-    getPaymentOptionsMock.mockResolvedValue({
-      options: [
-        {
-          optionKey: "qr_code:wechat_pay",
-          providerCode: "wechat_pay",
-          method: "qr_code",
-          displayName: "微信扫码",
-          description: "请使用微信扫描屏幕二维码",
-          icon: "wechat",
-          disabled: false,
-          disabledReason: null,
-          recommended: false,
-        },
-        {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示支付宝付款码",
-          icon: "alipay",
-          disabled: false,
-          disabledReason: null,
-          recommended: true,
-        },
-      ],
-      defaultOptionKey: "payment_code:alipay",
-      defaultProviderCode: "alipay",
-      serverTime: "2026-01-01T00:00:00Z",
-    });
+    getSaleStartCapabilityMock.mockImplementation(async () =>
+      capabilityResponse({
+        options: [
+          {
+            optionKey: "qr_code:wechat_pay",
+            providerCode: "wechat_pay",
+            method: "qr_code",
+            displayName: "微信扫码",
+            description: "请使用微信扫描屏幕二维码",
+            icon: "wechat",
+            disabled: false,
+            disabledReason: null,
+            recommended: false,
+          },
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示支付宝付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+      }),
+    );
 
     const store = useCheckoutStore();
     await store.loadPaymentOptions();
@@ -346,35 +363,36 @@ describe("checkout store", () => {
   });
 
   it("selects the first enabled payment option when daemon default is disabled", async () => {
-    getPaymentOptionsMock.mockResolvedValue({
-      options: [
-        {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示付款码",
-          icon: "alipay",
-          disabled: true,
-          disabledReason: "扫码器不可用：scanner open failed",
-          recommended: true,
-        },
-        {
-          optionKey: "qr_code:alipay",
-          providerCode: "alipay",
-          method: "qr_code",
-          displayName: "支付宝扫码",
-          description: "请使用支付宝扫描屏幕二维码",
-          icon: "alipay",
-          disabled: false,
-          disabledReason: null,
-          recommended: false,
-        },
-      ],
-      defaultOptionKey: "payment_code:alipay",
-      defaultProviderCode: "alipay",
-      serverTime: "2026-01-01T00:00:00Z",
-    });
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityResponse({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示付款码",
+            icon: "alipay",
+            disabled: true,
+            disabledReason: "扫码器不可用：scanner open failed",
+            recommended: true,
+          },
+          {
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝扫码",
+            description: "请使用支付宝扫描屏幕二维码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: false,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+      }),
+    );
 
     const store = useCheckoutStore();
     await store.loadPaymentOptions();
@@ -383,24 +401,25 @@ describe("checkout store", () => {
   });
 
   it("does not select disabled payment options when no enabled option exists", async () => {
-    getPaymentOptionsMock.mockResolvedValue({
-      options: [
-        {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示付款码",
-          icon: "alipay",
-          disabled: true,
-          disabledReason: "扫码器不可用：scanner open failed",
-          recommended: true,
-        },
-      ],
-      defaultOptionKey: null,
-      defaultProviderCode: null,
-      serverTime: "2026-01-01T00:00:00Z",
-    });
+    getSaleStartCapabilityMock.mockImplementation(async () =>
+      capabilityResponse({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示付款码",
+            icon: "alipay",
+            disabled: true,
+            disabledReason: "扫码器不可用：scanner open failed",
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
+      }),
+    );
 
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
@@ -422,12 +441,13 @@ describe("checkout store", () => {
   });
 
   it("reports no payment options without creating an order", async () => {
-    getPaymentOptionsMock.mockResolvedValue({
-      options: [],
-      defaultOptionKey: null,
-      defaultProviderCode: null,
-      serverTime: "2026-01-01T00:00:00Z",
-    });
+    getSaleStartCapabilityMock.mockResolvedValue(
+      capabilityResponse({
+        options: [],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
+      }),
+    );
 
     const store = useCheckoutStore();
     await store.loadPaymentOptions();
@@ -439,11 +459,40 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a selected payment key removed by a newer capability snapshot", () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyPaymentOptions([
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝扫码",
+        description: "请使用支付宝扫码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ]);
+    const store = useCheckoutStore();
+    store.selectItem(item);
+    store.selectedPaymentOptionKey = "mock:mock";
+
+    expect(store.selectedPaymentOption).toBeNull();
+    expect(store.canCreateOrder).toBe(false);
+  });
+
   it("creates order without machineCode payload and applies transaction", async () => {
     createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
     const store = useCheckoutStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -455,7 +504,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     useCatalogStore().applySnapshot({
       items: [makeCatalogItem()],
@@ -463,82 +512,7 @@ describe("checkout store", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    useConnectivityStore().applyHealth({
-      status: "healthy",
-      process: {
-        component: "daemon",
-        level: "ok",
-        code: "PROCESS_READY",
-        message: "ready",
-        updatedAt: "2026-06-04T00:00:00Z",
-      },
-      components: [],
-      configConfigured: true,
-      databaseOnline: true,
-      backendOnline: true,
-      mqttConnected: true,
-      outboxSize: 0,
-      outboxMax: 1000,
-      hardwareOnline: true,
-      scannerOnline: true,
-      visionOnline: true,
-      remoteOpsActive: false,
-      currentTransaction: null,
-      operatorReason: "",
-      updatedAt: "2026-06-04T00:00:00Z",
-    });
-    useConnectivityStore().applyReady({
-      ready: true,
-      canSell: true,
-      mode: "catalog",
-      blockingCodes: [],
-      blockingReasons: [],
-      degradedReasons: [],
-      suggestedRoute: "catalog",
-      updatedAt: "2026-06-04T00:00:00Z",
-    });
-    useConnectivityStore().applySaleReadiness({
-      canStartNetworkAuthorizedSale: true,
-      blockingCodes: [],
-      components: {
-        platformReachability: {
-          ready: true,
-          code: "PLATFORM_REACHABLE",
-          message: "platform reachable",
-        },
-        machineAuthentication: {
-          ready: true,
-          code: "MACHINE_AUTH_READY",
-          message: "machine code configured",
-        },
-        activePlanogram: {
-          ready: true,
-          code: "ACTIVE_PLANOGRAM_READY",
-          message: "PLAN-1",
-        },
-        paymentOptions: {
-          ready: true,
-          code: "PAYMENT_OPTIONS_READY",
-          message: "payment option available",
-          methods: [],
-        },
-        scannerCapability: {
-          ready: true,
-          code: "SCANNER_READY",
-          message: "scanner ready",
-        },
-        syncHealth: {
-          ready: true,
-          code: "SYNC_READY",
-          message: "sync connected",
-        },
-        wholeMachineBlockers: {
-          ready: true,
-          code: "WHOLE_MACHINE_READY",
-          message: "hardware ready",
-        },
-      },
-    });
+    applyNetworkSaleReady();
     store.selectItem(makeCatalogItem());
 
     await store.createOrder();
@@ -578,7 +552,7 @@ describe("checkout store", () => {
   it("reuses one checkout idempotency key when the customer retries a failed create", async () => {
     const item = makeCatalogItem();
     const store = useCheckoutStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "qr_code:alipay",
         providerCode: "alipay",
@@ -590,7 +564,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "qr_code:alipay";
     useCatalogStore().applySnapshot({
       items: [item],
@@ -635,7 +609,7 @@ describe("checkout store", () => {
 
     const item = makeCatalogItem();
     const store = useCheckoutStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -647,7 +621,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     useCatalogStore().applySnapshot({
       items: [item],
@@ -673,7 +647,7 @@ describe("checkout store", () => {
 
     const store = useCheckoutStore();
     const catalogStore = useCatalogStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -685,7 +659,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     applyNetworkSaleReady();
     store.selectItem(makeCatalogItem());
@@ -713,7 +687,7 @@ describe("checkout store", () => {
   it("does not switch variants when another variant for the same product is saleable", async () => {
     const store = useCheckoutStore();
     const catalogStore = useCatalogStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -725,7 +699,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     applyNetworkSaleReady();
     store.selectItem(
@@ -778,7 +752,7 @@ describe("checkout store", () => {
 
     const store = useCheckoutStore();
     const catalogStore = useCatalogStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -790,7 +764,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     applyNetworkSaleReady();
     store.selectItem(makeCatalogItem({ saleableStock: 2 }));
@@ -832,7 +806,7 @@ describe("checkout store", () => {
   it("blocks stale selected item when latest sale view is sold out", async () => {
     const store = useCheckoutStore();
     const catalogStore = useCatalogStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -844,7 +818,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     store.selectItem(
       makeCatalogItem({ saleableStock: 1, slotSalesState: "sale_ready" }),
@@ -866,64 +840,24 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
-  it("blocks order creation when machine sale readiness is not ready", async () => {
+  it("blocks order creation when sale-start capability is blocked", async () => {
     const store = useCheckoutStore();
-    const connectivityStore = useConnectivityStore();
-    connectivityStore.applySaleReadiness({
-      canStartNetworkAuthorizedSale: false,
-      blockingCodes: ["PLATFORM_UNREACHABLE"],
-      components: {
-        platformReachability: {
-          ready: false,
-          code: "PLATFORM_UNREACHABLE",
-          message: "platform offline",
+    applyPaymentOptions(
+      [
+        {
+          optionKey: "mock:mock",
+          providerCode: "mock",
+          method: "mock",
+          displayName: "模拟支付",
+          description: "本地模拟",
+          icon: "mock",
+          disabled: false,
+          disabledReason: null,
+          recommended: true,
         },
-        machineAuthentication: {
-          ready: true,
-          code: "MACHINE_AUTH_READY",
-          message: "machine code configured",
-        },
-        activePlanogram: {
-          ready: true,
-          code: "ACTIVE_PLANOGRAM_READY",
-          message: "PLAN-1",
-        },
-        paymentOptions: {
-          ready: true,
-          code: "PAYMENT_OPTIONS_READY",
-          message: "payment option available",
-          methods: [],
-        },
-        scannerCapability: {
-          ready: true,
-          code: "SCANNER_READY",
-          message: "scanner ready",
-        },
-        syncHealth: {
-          ready: true,
-          code: "SYNC_READY",
-          message: "sync connected",
-        },
-        wholeMachineBlockers: {
-          ready: true,
-          code: "WHOLE_MACHINE_READY",
-          message: "hardware ready",
-        },
-      },
-    });
-    store.paymentOptions = [
-      {
-        optionKey: "mock:mock",
-        providerCode: "mock",
-        method: "mock",
-        displayName: "模拟支付",
-        description: "本地模拟",
-        icon: "mock",
-        disabled: false,
-        disabledReason: null,
-        recommended: true,
-      },
-    ];
+      ],
+      false,
+    );
     store.selectedPaymentOptionKey = "mock:mock";
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
@@ -939,21 +873,8 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
-  it("fails closed when machine sale readiness is unknown", async () => {
+  it("fails closed when sale-start capability is unknown", async () => {
     const store = useCheckoutStore();
-    store.paymentOptions = [
-      {
-        optionKey: "mock:mock",
-        providerCode: "mock",
-        method: "mock",
-        displayName: "模拟支付",
-        description: "本地模拟",
-        icon: "mock",
-        disabled: false,
-        disabledReason: null,
-        recommended: true,
-      },
-    ];
     store.selectedPaymentOptionKey = "mock:mock";
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
@@ -969,86 +890,9 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
-  it("fails closed when a previously ready machine becomes stale", async () => {
+  it("retains an accepted capability when refresh diagnostics become stale", () => {
     const store = useCheckoutStore();
-    const connectivityStore = useConnectivityStore();
-    connectivityStore.applyHealth({
-      status: "healthy",
-      process: {
-        component: "daemon",
-        level: "ok",
-        code: "PROCESS_READY",
-        message: "ready",
-        updatedAt: "2026-06-04T00:00:00Z",
-      },
-      components: [],
-      configConfigured: true,
-      databaseOnline: true,
-      backendOnline: true,
-      mqttConnected: true,
-      outboxSize: 0,
-      outboxMax: 1000,
-      hardwareOnline: true,
-      scannerOnline: true,
-      visionOnline: true,
-      remoteOpsActive: false,
-      currentTransaction: null,
-      operatorReason: "",
-      updatedAt: "2026-06-04T00:00:00Z",
-    });
-    connectivityStore.applyReady({
-      ready: true,
-      canSell: true,
-      mode: "catalog",
-      blockingCodes: [],
-      blockingReasons: [],
-      degradedReasons: [],
-      suggestedRoute: "catalog",
-      updatedAt: "2026-06-04T00:00:00Z",
-    });
-    connectivityStore.applySaleReadiness({
-      canStartNetworkAuthorizedSale: true,
-      blockingCodes: [],
-      components: {
-        platformReachability: {
-          ready: true,
-          code: "PLATFORM_REACHABLE",
-          message: "platform reachable",
-        },
-        machineAuthentication: {
-          ready: true,
-          code: "MACHINE_AUTH_READY",
-          message: "machine code configured",
-        },
-        activePlanogram: {
-          ready: true,
-          code: "ACTIVE_PLANOGRAM_READY",
-          message: "PLAN-1",
-        },
-        paymentOptions: {
-          ready: true,
-          code: "PAYMENT_OPTIONS_READY",
-          message: "payment option available",
-          methods: [],
-        },
-        scannerCapability: {
-          ready: true,
-          code: "SCANNER_READY",
-          message: "scanner ready",
-        },
-        syncHealth: {
-          ready: true,
-          code: "SYNC_READY",
-          message: "sync connected",
-        },
-        wholeMachineBlockers: {
-          ready: true,
-          code: "WHOLE_MACHINE_READY",
-          message: "hardware ready",
-        },
-      },
-    });
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "mock:mock",
         providerCode: "mock",
@@ -1060,7 +904,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "mock:mock";
     useCatalogStore().applySnapshot({
       items: [makeCatalogItem()],
@@ -1072,16 +916,15 @@ describe("checkout store", () => {
 
     expect(store.canCreateOrder).toBe(true);
 
-    connectivityStore.markStale("event stream disconnected");
+    useSaleCapabilityStore().markStale("event stream disconnected");
 
-    expect(store.canCreateOrder).toBe(false);
-    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
-    expect(createOrderMock).not.toHaveBeenCalled();
+    expect(useSaleCapabilityStore().stale).toBe(true);
+    expect(store.canCreateOrder).toBe(true);
   });
 
   it("blocks order creation for sold-out sale-view item", async () => {
     const store = useCheckoutStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "payment_code:alipay",
         providerCode: "alipay",
@@ -1093,7 +936,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: true,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "payment_code:alipay";
     const item = makeCatalogItem({
       physicalStock: 0,
@@ -1283,7 +1126,7 @@ describe("checkout store", () => {
       new Error("daemon IPC disconnected"),
     );
     const store = useCheckoutStore();
-    store.paymentOptions = [
+    applyPaymentOptions([
       {
         optionKey: "mock:mock",
         providerCode: "mock",
@@ -1306,7 +1149,7 @@ describe("checkout store", () => {
         disabledReason: null,
         recommended: false,
       },
-    ];
+    ]);
     store.selectedPaymentOptionKey = "mock:mock";
     store.applyTransaction(makeTransactionSnapshot());
     await store.refreshCurrentTransaction();

@@ -393,13 +393,6 @@ onMounted(() => {
           >
             Maintenance
           </button>
-          <button
-            class="debug-button"
-            type="button"
-            @click="goStaticRoute('/provisioning')"
-          >
-            Provisioning
-          </button>
         </div>
       </section>
 

@@ -1,7 +1,20 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAudioCueStore } from "./audio-cues";
+import { useMachineStore } from "./machine";
+
+function applyAudioPreferences(input: {
+  cuesEnabled: boolean;
+  presenceCuesEnabled: boolean;
+  transactionCuesEnabled: boolean;
+}): void {
+  useMachineStore().applyEffectiveRuntimeConfiguration({
+    experience: { audio: { volume: 0.7, ...input } },
+  } as EffectiveMachineRuntimeConfiguration);
+}
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -34,9 +47,10 @@ beforeEach(() => {
 describe("useAudioCueStore", () => {
   it("rejects cue requests while global audio cues are disabled", () => {
     const store = useAudioCueStore();
-    store.applySettings({
-      enabled: false,
-      categories: { presence: true, transaction: true },
+    applyAudioPreferences({
+      cuesEnabled: false,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
     });
 
     expect(
@@ -51,9 +65,10 @@ describe("useAudioCueStore", () => {
 
   it("accepts enabled category requests as pending and then playing state", () => {
     const store = useAudioCueStore();
-    store.applySettings({
-      enabled: true,
-      categories: { presence: true, transaction: false },
+    applyAudioPreferences({
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: false,
     });
 
     const request = store.requestCue({
@@ -100,9 +115,10 @@ describe("useAudioCueStore", () => {
 
   it("records latest playback diagnostic without mutating transaction memory", () => {
     const store = useAudioCueStore();
-    store.applySettings({
-      enabled: true,
-      categories: { presence: false, transaction: true },
+    applyAudioPreferences({
+      cuesEnabled: true,
+      presenceCuesEnabled: false,
+      transactionCuesEnabled: true,
     });
     const request = store.requestCue({
       category: "transaction",

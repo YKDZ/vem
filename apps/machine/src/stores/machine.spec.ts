@@ -1,6 +1,7 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import { useAudioCueStore } from "./audio-cues";
 import { useMachineStore } from "./machine";
@@ -11,8 +12,9 @@ beforeEach(() => {
 });
 
 describe("useMachineStore", () => {
-  it("applies daemon-owned effective audio preferences to the runtime cue store", () => {
-    useMachineStore().applyEffectiveRuntimeConfiguration({
+  it("keeps effective runtime configuration as the cue preference authority", () => {
+    const machineStore = useMachineStore();
+    machineStore.applyEffectiveRuntimeConfiguration({
       experience: {
         audio: {
           volume: 0.7,
@@ -32,6 +34,25 @@ describe("useMachineStore", () => {
       category: "presence",
       cueKey: "presence.detected",
     });
+    expect(useAudioCueStore()).not.toHaveProperty("settings");
+    expect(useAudioCueStore()).not.toHaveProperty("applySettings");
+
+    machineStore.applyEffectiveRuntimeConfiguration({
+      experience: {
+        audio: {
+          volume: 0.7,
+          cuesEnabled: false,
+          presenceCuesEnabled: true,
+          transactionCuesEnabled: true,
+        },
+      },
+    } as EffectiveMachineRuntimeConfiguration);
+    expect(
+      useAudioCueStore().requestCue({
+        category: "transaction",
+        cueKey: "payment.succeeded",
+      }),
+    ).toBeNull();
   });
 
   it("does not expose a generic mutable machine configuration action", () => {

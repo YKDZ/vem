@@ -7,18 +7,18 @@ import {
 } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 
-import {
-  createMachineAudioPlayback,
-  createTauriNativeMachineAudioPlaybackDriver,
-  type MachineAudioPlayback,
-  type MachineAudioPlaybackDiagnostic,
-} from "@/audio-playback/machine-audio-playback";
 import type { DeviceBindingSnapshot } from "@/daemon/schemas";
 
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import {
+  createMachineAudioPlayback,
+  createTauriNativeMachineAudioPlaybackDriver,
+  type MachineAudioPlayback,
+  type MachineAudioPlaybackDiagnostic,
+} from "@/audio-playback/machine-audio-playback";
 import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { daemonClient } from "@/daemon/client";
@@ -35,6 +35,7 @@ import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
@@ -45,6 +46,7 @@ const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
 const naturalContextStore = useNaturalContextStore();
 const remoteOpsStore = useRemoteOpsStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
@@ -94,12 +96,12 @@ let diagnosticsRefreshTimer: number | null = null;
 let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const wholeMachineMaintenanceLock = computed(
   () =>
-    connectivityStore.ready?.blockingReasons.find(
+    saleCapabilityStore.accepted?.blockers.find(
       (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
     ) ?? null,
 );
 const saleCriticalBlockers = computed(() =>
-  (connectivityStore.ready?.blockingReasons ?? []).map((reason) => ({
+  (saleCapabilityStore.accepted?.blockers ?? []).map((reason) => ({
     ...reason,
     operatorLabel: saleCriticalBlockerLabel(reason.code),
     operatorAction: saleCriticalBlockerAction(reason.code),
@@ -121,9 +123,7 @@ const audioCueSettingsRows = computed(() => [
   },
   {
     label: "来人音频提示",
-    value: machineStore.customerAudio.presenceCuesEnabled
-      ? "已启用"
-      : "已停用",
+    value: machineStore.customerAudio.presenceCuesEnabled ? "已启用" : "已停用",
   },
   {
     label: "交易音频提示",
@@ -163,7 +163,9 @@ const effectiveRuntimeConfigurationRows = computed(() => {
     },
     {
       label: "Profile 版本",
-      value: String(configuration.sourceRevisions.profile?.profileRevision ?? "未接受"),
+      value: String(
+        configuration.sourceRevisions.profile?.profileRevision ?? "未接受",
+      ),
     },
     {
       label: "Profile 接受时间",
@@ -219,24 +221,16 @@ const clearWholeMachineLockDisabled = computed(
     wholeMachineLockMaintenance.operatorNote.trim().length === 0,
 );
 const returnToCatalogBlockedReason = computed(() => {
-  if (connectivityStore.ready?.canSell === true) {
-    return null;
-  }
-  const reason = connectivityStore.ready?.blockingReasons[0];
-  if (reason) {
-    return reason.message;
-  }
-  if (!connectivityStore.ready) {
-    return "正在读取机器状态。";
-  }
-  return "机器未就绪。";
+  return hasAcceptedProvisioningProfile.value
+    ? null
+    : "机器尚未接受有效的配置档案。";
 });
-const hasAcceptedProvisioningProfile = computed(
-  () => {
-    const configuration = machineStore.effectiveRuntimeConfiguration;
-    return Boolean(configuration?.sourceDocuments.profileCache && configuration.machine);
-  },
-);
+const hasAcceptedProvisioningProfile = computed(() => {
+  const configuration = machineStore.effectiveRuntimeConfiguration;
+  return Boolean(
+    configuration?.sourceDocuments.profileCache && configuration.machine,
+  );
+});
 
 const commissioning = reactive({
   ssid: "",
@@ -484,10 +478,7 @@ onMounted(async () => {
     refreshStockMaintenanceView(),
     refreshDiagnostics(),
   ]);
-  if (
-    !isOperatorEnteredMaintenance() &&
-    connectivityStore.ready?.canSell === true
-  ) {
+  if (!isOperatorEnteredMaintenance() && hasAcceptedProvisioningProfile.value) {
     await submitMachineNavigationIntent({
       type: "readiness.navigate",
       target: { name: "catalog" },
@@ -652,9 +643,7 @@ async function confirmDeviceBinding(
   role: "lower_controller" | "scanner",
   identityKey: string,
 ): Promise<void> {
-  if (
-    deviceBindingMaintenance.tested[role]?.identityKey !== identityKey
-  )
+  if (deviceBindingMaintenance.tested[role]?.identityKey !== identityKey)
     return;
   deviceBindingMaintenance.loading = true;
   deviceBindingMaintenance.message = null;
@@ -893,7 +882,8 @@ async function playMachineAudioTestPlayback(): Promise<void> {
         machineAudioTestPlayback.diagnostic = diagnostic;
         machineAudioTestPlayback.driver = diagnostic.driver;
         if (diagnostic.status === "completed") {
-          machineAudioTestPlayback.message = "Windows 默认输出设备已完成测试播放。";
+          machineAudioTestPlayback.message =
+            "Windows 默认输出设备已完成测试播放。";
         }
         if (diagnostic.status === "failed") {
           machineAudioTestPlayback.message = diagnostic.message;
@@ -906,7 +896,8 @@ async function playMachineAudioTestPlayback(): Promise<void> {
     if (!started) {
       throw new Error("Windows 默认输出设备未开始播放测试音频");
     }
-    machineAudioTestPlayback.message = "Windows 默认输出设备已开始测试播放，等待完成结果。";
+    machineAudioTestPlayback.message =
+      "Windows 默认输出设备已开始测试播放，等待完成结果。";
   } catch (error) {
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
@@ -950,7 +941,10 @@ async function startTryOnPreviewDiagnostic(): Promise<void> {
     const session = await openVisionTryOnSession({
       machineCode: machineStore.machineCode,
     });
-    if (!maintenanceViewMounted || sequence !== tryOnPreviewDiagnosticSequence) {
+    if (
+      !maintenanceViewMounted ||
+      sequence !== tryOnPreviewDiagnosticSequence
+    ) {
       await session.stop("replaced");
       return;
     }
@@ -1051,6 +1045,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
     await Promise.allSettled([
+      saleCapabilityStore.refresh(),
       mqttStore.refresh(),
       scannerStore.refresh(),
       visionStore.refresh(),
@@ -1428,7 +1423,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
             aria-label="可用网络"
           >
             <option value="">选择网络</option>
-            <option v-for="ssid in commissioning.wifiNetworks" :key="ssid" :value="ssid">
+            <option
+              v-for="ssid in commissioning.wifiNetworks"
+              :key="ssid"
+              :value="ssid"
+            >
               {{ ssid }}
             </option>
           </select>
@@ -1477,7 +1476,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
             {{ commissioning.claiming ? "认领中" : "认领机器" }}
           </button>
         </form>
-        <p v-if="commissioning.message" class="md:col-span-2 text-sm text-amber-100">
+        <p
+          v-if="commissioning.message"
+          class="text-sm text-amber-100 md:col-span-2"
+        >
           {{ commissioning.message }}
         </p>
       </section>
@@ -1533,10 +1535,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
         </article>
       </section>
 
-      <section
-        class="mt-4 grid gap-3 md:grid-cols-2"
-        aria-label="维护任务概览"
-      >
+      <section class="mt-4 grid gap-3 md:grid-cols-2" aria-label="维护任务概览">
         <article
           class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
         >
@@ -1740,7 +1739,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
         >
           {{ scannerProtocolForm.saving ? "应用中" : "应用扫码器协议" }}
         </button>
-        <p v-if="scannerProtocolForm.message" class="md:col-span-3 text-sm text-sky-100">
+        <p
+          v-if="scannerProtocolForm.message"
+          class="text-sm text-sky-100 md:col-span-3"
+        >
           {{ scannerProtocolForm.message }}
         </p>
       </form>
@@ -2000,7 +2002,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
-            :disabled="hardwareMaintenance.loading"
+              :disabled="hardwareMaintenance.loading"
               @click="runHardwareCheck"
             >
               硬件自检
@@ -2115,12 +2117,13 @@ async function submitStockMaintenanceTask(): Promise<void> {
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">销售就绪</dt>
+            <dt class="text-sm text-slate-400">销售启动能力</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
+              {{ saleCapabilityStore.canStartSale ? "可开始销售" : "不可开始" }}
               ·
               {{
-                runtimeStatusLabel(connectivityStore.ready?.mode ?? "unknown")
+                saleCapabilityStore.orderingKey ??
+                (saleCapabilityStore.updating ? "读取中" : "尚未读取")
               }}
             </dd>
           </div>
@@ -2301,7 +2304,9 @@ async function submitStockMaintenanceTask(): Promise<void> {
               :key="row.label"
               class="rounded-xl bg-slate-950/35 p-3"
             >
-              <dt class="text-xs font-semibold text-slate-400">{{ row.label }}</dt>
+              <dt class="text-xs font-semibold text-slate-400">
+                {{ row.label }}
+              </dt>
               <dd class="mt-1 font-bold text-white">{{ row.value }}</dd>
             </div>
           </dl>
@@ -2362,9 +2367,15 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
-                @change="updateAudioPreferences({ cuesEnabled: checkedInputValue($event) })"
+                @change="
+                  updateAudioPreferences({
+                    cuesEnabled: checkedInputValue($event),
+                  })
+                "
               />
-              <span class="text-sm font-semibold text-slate-200">启用机器音频提示</span>
+              <span class="text-sm font-semibold text-slate-200"
+                >启用机器音频提示</span
+              >
             </label>
             <label class="flex items-center gap-3">
               <input
@@ -2372,9 +2383,15 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
-                @change="updateAudioPreferences({ presenceCuesEnabled: checkedInputValue($event) })"
+                @change="
+                  updateAudioPreferences({
+                    presenceCuesEnabled: checkedInputValue($event),
+                  })
+                "
               />
-              <span class="text-sm font-semibold text-slate-200">来人音频提示</span>
+              <span class="text-sm font-semibold text-slate-200"
+                >来人音频提示</span
+              >
             </label>
             <label class="flex items-center gap-3">
               <input
@@ -2382,16 +2399,26 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
                 type="checkbox"
-                @change="updateAudioPreferences({ transactionCuesEnabled: checkedInputValue($event) })"
+                @change="
+                  updateAudioPreferences({
+                    transactionCuesEnabled: checkedInputValue($event),
+                  })
+                "
               />
-              <span class="text-sm font-semibold text-slate-200">交易音频提示</span>
+              <span class="text-sm font-semibold text-slate-200"
+                >交易音频提示</span
+              >
             </label>
           </fieldset>
           <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200">机器音频音量</span>
+            <span class="text-sm font-semibold text-slate-200"
+              >机器音频音量</span
+            >
             <div class="flex items-center gap-3">
               <input
-                :value="machineAudioVolumePercent(machineStore.customerAudio.volume)"
+                :value="
+                  machineAudioVolumePercent(machineStore.customerAudio.volume)
+                "
                 :disabled="audioPreferenceMutation.saving"
                 class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
                 data-test="machine-audio-volume-percent"
@@ -2399,7 +2426,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 min="0"
                 step="1"
                 type="number"
-                @change="updateAudioPreferences({ volume: audioVolumeFromInput($event) })"
+                @change="
+                  updateAudioPreferences({
+                    volume: audioVolumeFromInput($event),
+                  })
+                "
               />
               <span class="text-sm font-bold text-slate-200">%</span>
             </div>
@@ -2426,8 +2457,12 @@ async function submitStockMaintenanceTask(): Promise<void> {
               :key="row.label"
               class="rounded-xl bg-slate-950/35 p-3"
             >
-              <dt class="text-xs font-semibold text-cyan-100/70">{{ row.label }}</dt>
-              <dd class="mt-1 font-bold break-all text-white">{{ row.value }}</dd>
+              <dt class="text-xs font-semibold text-cyan-100/70">
+                {{ row.label }}
+              </dt>
+              <dd class="mt-1 font-bold break-all text-white">
+                {{ row.value }}
+              </dd>
             </div>
           </dl>
           <p

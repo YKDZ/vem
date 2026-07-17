@@ -47,18 +47,8 @@ const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
 const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
 const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
   "vem.machine.uiDebug.dispenseResult";
-const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
-  "vem.machine.uiDebug.advancedMaintenanceConfig";
 const TRY_ON_PREVIEW_DIAGNOSTIC_URL =
   "http://127.0.0.1:7892/try-on/e2e-maintenance.mjpeg";
-
-async function enableUiDebugAdvancedMaintenanceConfig(
-  page: Page,
-): Promise<void> {
-  await page.addInitScript((storageKey) => {
-    window.localStorage.setItem(storageKey, "1");
-  }, UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY);
-}
 
 async function installMockVisionTryOnWebSocket(page: Page): Promise<void> {
   await page.addInitScript((previewUrl) => {
@@ -296,7 +286,11 @@ async function expectRuntimeScenarioClearsStoredDebugTransaction(
   storedTransaction: string,
 ): Promise<void> {
   await switchRuntimeScenario(page, scenario, storedTransaction);
-  await expect(page).toHaveURL(new RegExp(`#${scenario.targetRoute}$`));
+  const escapedTargetRoute = scenario.targetRoute.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  await expect(page).toHaveURL(new RegExp(`#${escapedTargetRoute}$`));
   await expect(page).not.toHaveURL(/#\/(payment|dispensing)$/);
   await expectUiDebugTransactionStorageCleared(page);
 }
@@ -716,7 +710,7 @@ test("runtime matrix can directly load offline state", async ({ page }) => {
 test("runtime matrix can directly load maintenance state", async ({ page }) => {
   await loadMachineRuntimeScenario(page, maintenanceScenario);
 
-  await expect(page).toHaveURL(/#\/maintenance$/);
+  await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
   await expectKioskMainFrame(page);
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
   await expect(page.getByText("维护控制台")).toBeVisible();
@@ -733,8 +727,8 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "销售就绪",
-    /^(就绪|未就绪)\s+·\s+\S+$/,
+    "销售启动能力",
+    /^(可开始销售|不可开始)\s+·\s+\S+$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
@@ -777,7 +771,7 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "视觉状态" }).first(),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "回到目录" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "回到目录" })).toBeEnabled();
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);
@@ -787,11 +781,10 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
 test("maintenance can start and release the vision try-on preview diagnostic", async ({
   page,
 }) => {
-  await enableUiDebugAdvancedMaintenanceConfig(page);
   await installMockVisionTryOnWebSocket(page);
   await loadMachineRuntimeScenario(page, maintenanceScenario);
 
-  await expect(page).toHaveURL(/#\/maintenance$/);
+  await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
   await expect(page.getByText("视觉试衣预览诊断")).toBeVisible();
 
   await tapLocator(page, page.getByRole("button", { name: "启动试衣预览" }));

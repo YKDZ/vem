@@ -1,10 +1,8 @@
 import { defineStore } from "pinia";
 
+import { useMachineStore } from "@/stores/machine";
+
 export type AudioCueCategory = "presence" | "transaction";
-export type AudioCueSettings = {
-  enabled: boolean;
-  categories: Record<AudioCueCategory, boolean>;
-};
 export type AudioCuePlaybackStatus = "idle" | "pending" | "playing";
 export type AudioCuePlaybackOutcome =
   | "played"
@@ -62,7 +60,6 @@ type SuppressedCueDiagnosticInput = {
 };
 
 type AudioCueState = {
-  settings: AudioCueSettings;
   playback: AudioCuePlaybackState;
   latestPlaybackDiagnostic: AudioCuePlaybackDiagnostic | null;
   orderCueMemory: Record<string, Record<string, true>>;
@@ -70,20 +67,11 @@ type AudioCueState = {
   nextRequestSequence: number;
 };
 
-const DEFAULT_AUDIO_CUE_SETTINGS: AudioCueSettings = {
-  enabled: false,
-  categories: {
-    presence: false,
-    transaction: false,
-  },
-};
-
 const ORDER_CUE_MEMORY_STORAGE_KEY = "vem.machine.transactionAudioCueMemory.v1";
 const ORDER_CUE_MEMORY_LIMIT = 100;
 
 export const useAudioCueStore = defineStore("audio-cues", {
   state: (): AudioCueState => ({
-    settings: cloneAudioCueSettings(DEFAULT_AUDIO_CUE_SETTINGS),
     playback: {
       status: "idle",
       request: null,
@@ -97,11 +85,9 @@ export const useAudioCueStore = defineStore("audio-cues", {
     nextRequestSequence: 1,
   }),
   actions: {
-    applySettings(settings: AudioCueSettings): void {
-      this.settings = cloneAudioCueSettings(settings);
-    },
     requestCue(input: AudioCueRequestInput): CustomerAudioCueRequest | null {
-      if (!this.settings.enabled) {
+      const audioPreferences = useMachineStore().customerAudio;
+      if (!audioPreferences.cuesEnabled) {
         this.recordSuppressedCue({
           category: input.category,
           cueKey: input.cueKey,
@@ -111,7 +97,11 @@ export const useAudioCueStore = defineStore("audio-cues", {
         });
         return null;
       }
-      if (!this.settings.categories[input.category]) {
+      const categoryEnabled =
+        input.category === "presence"
+          ? audioPreferences.presenceCuesEnabled
+          : audioPreferences.transactionCuesEnabled;
+      if (!categoryEnabled) {
         this.recordSuppressedCue({
           category: input.category,
           cueKey: input.cueKey,
@@ -233,16 +223,6 @@ export const useAudioCueStore = defineStore("audio-cues", {
     },
   },
 });
-
-function cloneAudioCueSettings(settings: AudioCueSettings): AudioCueSettings {
-  return {
-    enabled: settings.enabled,
-    categories: {
-      presence: settings.categories.presence,
-      transaction: settings.categories.transaction,
-    },
-  };
-}
 
 function runtimeStorage(): Storage | null {
   try {

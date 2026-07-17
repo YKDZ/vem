@@ -1,6 +1,7 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import type {
   HealthSnapshot,
@@ -17,9 +18,10 @@ import {
 } from "@/audio-playback/machine-audio-playback";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { applySaleCapability } from "@/test-support/sale-capability";
 
 import { createMachineAudioCuePlaybackAdapter } from "./browser-playback";
 
@@ -93,9 +95,11 @@ function mockDriver(playback: CapturedPlayback): MockPlaybackDriver {
 }
 
 function enableAudioCues(): void {
-  useAudioCueStore().applySettings({
-    enabled: true,
-    categories: { presence: true, transaction: true },
+  applyEffectiveAudioPreferences({
+    volume: 0.7,
+    cuesEnabled: true,
+    presenceCuesEnabled: true,
+    transactionCuesEnabled: true,
   });
 }
 
@@ -234,66 +238,8 @@ function healthyRuntimeSnapshot(): HealthSnapshot {
 }
 
 function applyReadyRuntime(): void {
-  const connectivityStore = useConnectivityStore();
-  connectivityStore.applyHealth(healthyRuntimeSnapshot());
-  connectivityStore.applyReady({
-    ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
-    updatedAt: "2026-06-29T08:02:00.000Z",
-  });
-  connectivityStore.applySaleReadiness({
-    canStartNetworkAuthorizedSale: true,
-    blockingCodes: [],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "platform reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine authenticated",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "payment ready",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync ready",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "machine ready",
-      },
-      slotSaleSafety: {
-        ready: true,
-        code: "SLOT_SALE_SAFETY_READY",
-        message: "slot ready",
-        blockedSlots: [],
-      },
-    },
-  });
+  useMachineStore().applyHealth(healthyRuntimeSnapshot());
+  applySaleCapability();
 }
 
 function checkoutObservation() {
@@ -311,15 +257,12 @@ function checkoutObservation() {
   };
 }
 
-function readinessObservation() {
+function capabilityObservation() {
   const machineStore = useMachineStore();
-  const connectivityStore = useConnectivityStore();
+  const capabilityStore = useSaleCapabilityStore();
   return {
-    machineCanSell: machineStore.canSell,
     machineHealth: machineStore.health,
-    saleNetworkReady: connectivityStore.isSaleNetworkReady,
-    ready: connectivityStore.ready,
-    saleReadiness: connectivityStore.saleReadiness,
+    capability: capabilityStore.accepted,
   };
 }
 
@@ -622,7 +565,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       machineStore.applyHealth(healthyRuntimeSnapshot());
       applyReadyRuntime();
       const initialCheckout = checkoutObservation();
-      const initialReadiness = readinessObservation();
+      const initialReadiness = capabilityObservation();
       const playback = createPlaybackHarness(() =>
         failingPlaybackDriver("NotAllowedError"),
       );
@@ -648,7 +591,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
         message: "NotAllowedError",
       });
       expect(checkoutObservation()).toEqual(initialCheckout);
-      expect(readinessObservation()).toEqual(initialReadiness);
+      expect(capabilityObservation()).toEqual(initialReadiness);
       expect(useAudioCueStore().hasOrderCuePlayed(orderKey, cue)).toBe(false);
     },
   );
@@ -746,7 +689,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   ] as const)(
     "records the latest diagnostic when production presence cues are suppressed by %s",
     async (_settingName, settings, message) => {
-      useAudioCueStore().applySettings(settings);
+      applyEffectiveAudioPreferences({
+        volume: 0.7,
+        cuesEnabled: settings.enabled,
+        presenceCuesEnabled: settings.categories.presence,
+        transactionCuesEnabled: settings.categories.transaction,
+      });
       const playback = createPlaybackHarness();
       const adapter = createMachineAudioCuePlaybackAdapter({
         playbackFactory: playback.playbackFactory,

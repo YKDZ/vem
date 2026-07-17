@@ -1,6 +1,6 @@
 import { computed, type ComputedRef } from "vue";
 
-import { useConnectivityStore } from "@/stores/connectivity";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 type CatalogNotificationTone = "info" | "warning";
 
@@ -10,9 +10,9 @@ export type CatalogNotification = {
   tone: CatalogNotificationTone;
 };
 
-type ReadinessComponent = {
-  ready: boolean;
+type CapabilityReason = {
   code: string;
+  component: string;
   message: string;
 };
 
@@ -36,31 +36,6 @@ function customerMessageForBlockingCode(code: string): string {
   return "设备暂时不可购买，请稍后再试。";
 }
 
-function firstBlockingComponent(
-  connectivityStore: ReturnType<typeof useConnectivityStore>,
-): ReadinessComponent | null {
-  const components = connectivityStore.saleReadiness?.components;
-  if (!components) return null;
-  const blockingCodes = new Set(
-    connectivityStore.saleReadiness?.blockingCodes ?? [],
-  );
-  const candidates: ReadinessComponent[] = [
-    components.platformReachability,
-    components.machineAuthentication,
-    components.activePlanogram,
-    components.paymentOptions,
-    components.syncHealth,
-    components.wholeMachineBlockers,
-    components.productionDispensePath,
-    components.slotSaleSafety,
-  ].filter((component): component is ReadinessComponent => Boolean(component));
-  return (
-    candidates.find(
-      (component) => !component.ready && blockingCodes.has(component.code),
-    ) ?? null
-  );
-}
-
 function customerMessageForDegradedMessage(message: string): string {
   if (message.includes("付款码支付不可用")) {
     return message.includes("二维码支付仍可用")
@@ -74,37 +49,47 @@ export function useCatalogNotifications(): {
   notifications: ComputedRef<CatalogNotification[]>;
   primaryNotification: ComputedRef<CatalogNotification | null>;
 } {
-  const connectivityStore = useConnectivityStore();
+  const saleCapabilityStore = useSaleCapabilityStore();
 
   const notifications = computed<CatalogNotification[]>(() => {
-    if (connectivityStore.stale || connectivityStore.error) {
+    if (!saleCapabilityStore.accepted) {
       return [
         {
-          id: "daemon-connection",
-          message: "设备连接正在恢复，请稍后再试。",
+          id: "sale-capability-updating",
+          message: "正在确认当前购买状态，请稍候。",
+          tone: "info",
+        },
+      ];
+    }
+
+    if (!saleCapabilityStore.canStartSale) {
+      const blocker: CapabilityReason | null =
+        saleCapabilityStore.accepted.blockers[0] ?? null;
+      return [
+        {
+          id: blocker?.code ?? "sale-start-capability",
+          message: customerMessageForBlockingCode(blocker?.code ?? ""),
           tone: "warning",
         },
       ];
     }
 
-    if (!connectivityStore.isSaleNetworkReady) {
-      const component = firstBlockingComponent(connectivityStore);
-      return [
-        {
-          id: component?.code ?? "sale-readiness",
-          message: customerMessageForBlockingCode(component?.code ?? ""),
-          tone: "warning",
-        },
-      ];
-    }
-
-    const degradedMessage =
-      connectivityStore.saleReadinessDegradedMessages[0] ?? null;
+    const degradedMessage = saleCapabilityStore.degradationMessages[0] ?? null;
     if (degradedMessage) {
       return [
         {
-          id: "sale-readiness-degraded",
+          id: "sale-capability-degraded",
           message: customerMessageForDegradedMessage(degradedMessage),
+          tone: "info",
+        },
+      ];
+    }
+
+    if (saleCapabilityStore.stale || saleCapabilityStore.updating) {
+      return [
+        {
+          id: "sale-capability-refreshing",
+          message: "购买状态正在更新，仍可继续选购。",
           tone: "info",
         },
       ];

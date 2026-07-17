@@ -36,9 +36,8 @@ import {
   deviceBindingTestResultSchema,
   environmentControlResultSchema,
   healthSnapshotSchema,
-  machinePaymentOptionsResponseSchema,
   paymentProviderEnvironmentDiagnosticSchema,
-  machineSaleReadinessSchema,
+  saleStartCapabilitySnapshotSchema,
   naturalContextSnapshotSchema,
   networkSettingsResponseSchema,
   readySnapshotSchema,
@@ -59,7 +58,7 @@ import {
   type DeviceBindingSnapshot,
   type DeviceBindingTestResult,
   type EnvironmentControlResult,
-  type MachineSaleReadiness,
+  type SaleStartCapabilitySnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
   type MaintenanceEnrollmentStatus,
@@ -226,8 +225,6 @@ function isUnknownArray(value: unknown): value is unknown[] {
 
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
-  private readonly seenEventIds = new Set<string>();
-  private readonly seenEventIdQueue: string[] = [];
 
   private async request(
     path: string,
@@ -483,15 +480,9 @@ export class DaemonApiClient {
     });
   }
 
-  async getSaleReadiness(): Promise<MachineSaleReadiness> {
-    return machineSaleReadinessSchema.parse(
-      await this.request("/v1/sale-readiness"),
-    );
-  }
-
-  async getPaymentOptions() {
-    return machinePaymentOptionsResponseSchema.parse(
-      await this.request("/v1/payment-options"),
+  async getSaleStartCapability(): Promise<SaleStartCapabilitySnapshot> {
+    return saleStartCapabilitySnapshotSchema.parse(
+      await this.request("/v1/sale-start-capability"),
     );
   }
 
@@ -750,6 +741,8 @@ export class DaemonApiClient {
     let closed = false;
     let socket: WebSocket | null = null;
     let retryMs = 500;
+    const seenEventIds = new Set<string>();
+    const seenEventIdQueue: string[] = [];
 
     const connect = async (): Promise<void> => {
       const connection = await this.initialize(true);
@@ -766,12 +759,12 @@ export class DaemonApiClient {
           handlers.onUnknownEvent?.(event);
           return;
         }
-        if (this.seenEventIds.has(event.eventId)) return;
-        this.seenEventIds.add(event.eventId);
-        this.seenEventIdQueue.push(event.eventId);
-        while (this.seenEventIdQueue.length > MAX_SEEN_EVENT_IDS) {
-          const expired = this.seenEventIdQueue.shift();
-          if (expired) this.seenEventIds.delete(expired);
+        if (seenEventIds.has(event.eventId)) return;
+        seenEventIds.add(event.eventId);
+        seenEventIdQueue.push(event.eventId);
+        while (seenEventIdQueue.length > MAX_SEEN_EVENT_IDS) {
+          const expired = seenEventIdQueue.shift();
+          if (expired) seenEventIds.delete(expired);
         }
         handlers.onEvent(event);
       };

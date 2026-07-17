@@ -2,8 +2,8 @@
 import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
-import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import TouchKeyboard from "@/components/TouchKeyboard.vue";
+import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
@@ -11,8 +11,10 @@ import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-load
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { router } from "@/router";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 const route = useRoute();
+const saleCapabilityStore = useSaleCapabilityStore();
 const cleanupCustomerEventSources = installCustomerEventSources({
   routeName: computed(() => route.name),
 });
@@ -22,6 +24,7 @@ installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 
 onUnmounted(() => {
+  saleCapabilityStore.stopRuntime();
   cleanupActiveTransactionSync();
   cleanupCustomerEventSources();
 });
@@ -45,6 +48,7 @@ function isDevDirectRouteAllowed(): boolean {
 }
 
 onMounted(() => {
+  saleCapabilityStore.startRuntime();
   if (isDevDirectRouteAllowed()) {
     return;
   }

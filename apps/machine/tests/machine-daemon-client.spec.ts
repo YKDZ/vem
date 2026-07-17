@@ -98,13 +98,22 @@ function effectiveRuntimeConfiguration(claimed: boolean) {
       mqttSigningSecretConfigured: true,
       mqttPasswordConfigured: true,
     },
-    profileRefresh: { status: claimed ? "accepted" : "unclaimed", lastError: null },
+    profileRefresh: {
+      status: claimed ? "accepted" : "unclaimed",
+      lastError: null,
+    },
   };
 }
 
 const health = {
   status: "healthy",
-  process: { component: "daemon", level: "ok", code: "READY", message: "daemon ready", updatedAt: timestamp },
+  process: {
+    component: "daemon",
+    level: "ok",
+    code: "READY",
+    message: "daemon ready",
+    updatedAt: timestamp,
+  },
   components: [],
   configConfigured: true,
   databaseOnline: true,
@@ -123,12 +132,6 @@ const health = {
 
 const ready = {
   ready: false,
-  canSell: false,
-  mode: "maintenance",
-  blockingCodes: [],
-  blockingReasons: [],
-  degradedReasons: [],
-  suggestedRoute: "maintenance",
   updatedAt: timestamp,
 };
 
@@ -155,17 +158,36 @@ const noCurrentTransaction = {
   updatedAt: timestamp,
 };
 
-const saleReadiness = {
-  canStartNetworkAuthorizedSale: false,
-  blockingCodes: [],
-  components: {
-    platformReachability: { ready: true, code: "READY", message: "ready" },
-    machineAuthentication: { ready: true, code: "READY", message: "ready" },
-    activePlanogram: { ready: true, code: "READY", message: "ready" },
-    paymentOptions: { ready: true, code: "READY", message: "ready", methods: [] },
-    scannerCapability: { ready: true, code: "READY", message: "ready" },
-    syncHealth: { ready: true, code: "READY", message: "ready" },
-    wholeMachineBlockers: { ready: true, code: "READY", message: "ready" },
+const saleStartCapability = {
+  generation: "playwright-daemon",
+  revision: 1,
+  observedAt: timestamp,
+  canStartSale: false,
+  blockers: [
+    {
+      code: "PLATFORM_UNREACHABLE",
+      component: "platform",
+      message: "platform unavailable",
+    },
+  ],
+  degradations: [],
+  paymentOptions: {
+    ready: true,
+    defaultOptionKey: "qr_code:alipay",
+    defaultProviderCode: "alipay",
+    options: [
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝",
+        description: "扫码支付",
+        icon: "alipay",
+        recommended: true,
+        ready: true,
+        disabledReason: null,
+      },
+    ],
   },
 };
 
@@ -225,7 +247,9 @@ function deviceBindings() {
   };
 }
 
-test("clean bootstrap claims in Local Operations and uses direct configuration intents", async ({ page }) => {
+test("clean bootstrap claims in Local Operations and uses direct configuration intents", async ({
+  page,
+}) => {
   let claimed = false;
   const requests: string[] = [];
 
@@ -234,41 +258,153 @@ test("clean bootstrap claims in Local Operations and uses direct configuration i
     const url = new URL(request.url());
     requests.push(`${request.method()} ${url.pathname}`);
     const response = (payload: unknown, status = 200) =>
-      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(payload) });
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(payload),
+      });
 
     if (url.pathname === "/healthz") return response(health);
     if (url.pathname === "/readyz") return response(ready);
     if (url.pathname === "/v1/runtime-configuration") {
       return response(effectiveRuntimeConfiguration(claimed));
     }
-    if (url.pathname === "/v1/transactions/current") return response(noCurrentTransaction);
-    if (url.pathname === "/v1/sale-readiness") return response(saleReadiness);
-    if (url.pathname === "/v1/provisioning/claim" && request.method() === "POST") {
+    if (url.pathname === "/v1/transactions/current")
+      return response(noCurrentTransaction);
+    if (url.pathname === "/v1/sale-start-capability") {
+      return response(saleStartCapability);
+    }
+    if (
+      url.pathname === "/v1/provisioning/claim" &&
+      request.method() === "POST"
+    ) {
       expect(request.postDataJSON()).toEqual({ claimCode: "CLAIM-001" });
       claimed = true;
-      return response({ status: "provisioned", machineCode: "M001", restartRequested: false });
+      return response({
+        status: "provisioned",
+        machineCode: "M001",
+        restartRequested: false,
+      });
     }
     if (url.pathname === "/v1/network/available") {
-      return response({ status: "available", networks: [{ ssid: "Venue-Wifi", signalQuality: 80, security: "wpa2_personal", connected: false, profileSaved: false }], operatorGuidance: "", updatedAt: timestamp });
+      return response({
+        status: "available",
+        networks: [
+          {
+            ssid: "Venue-Wifi",
+            signalQuality: 80,
+            security: "wpa2_personal",
+            connected: false,
+            profileSaved: false,
+          },
+        ],
+        operatorGuidance: "",
+        updatedAt: timestamp,
+      });
     }
     if (url.pathname === "/v1/stock/maintenance-task") {
-      return response({ taskId: "stock-1", mode: "routine_refill", status: "ready", slots: [] });
+      return response({
+        taskId: "stock-1",
+        mode: "routine_refill",
+        status: "ready",
+        slots: [],
+      });
     }
-    if (url.pathname === "/v1/hardware-bindings") return response(deviceBindings());
+    if (url.pathname === "/v1/hardware-bindings")
+      return response(deviceBindings());
     if (url.pathname === "/v1/hardware-bindings/scanner/test") {
-      return response({ role: "scanner", identityKey, currentPort: "COM7", success: true, code: "SCANNER_READY", message: "scanner ready", testedAt: timestamp, testEvidenceToken: "550e8400-e29b-41d4-a716-446655440099", testEvidenceExpiresAt: "2026-07-17T09:00:00.000Z", observationRevision: `sha256:${"a".repeat(64)}`, configRevision: `sha256:${"b".repeat(64)}` });
+      return response({
+        role: "scanner",
+        identityKey,
+        currentPort: "COM7",
+        success: true,
+        code: "SCANNER_READY",
+        message: "scanner ready",
+        testedAt: timestamp,
+        testEvidenceToken: "550e8400-e29b-41d4-a716-446655440099",
+        testEvidenceExpiresAt: "2026-07-17T09:00:00.000Z",
+        observationRevision: `sha256:${"a".repeat(64)}`,
+        configRevision: `sha256:${"b".repeat(64)}`,
+      });
     }
-    if (url.pathname === "/v1/runtime-configuration/intents/hardware-bindings/scanner/confirm") {
-      return response({ binding: deviceBindings().roles[1].binding, currentPort: "COM7", ready: true, code: "DEVICE_BINDING_ACTIVATED", message: "bound", unrelatedRuntimeRestarted: false });
+    if (
+      url.pathname ===
+      "/v1/runtime-configuration/intents/hardware-bindings/scanner/confirm"
+    ) {
+      return response({
+        binding: deviceBindings().roles[1].binding,
+        currentPort: "COM7",
+        ready: true,
+        code: "DEVICE_BINDING_ACTIVATED",
+        message: "bound",
+        unrelatedRuntimeRestarted: false,
+      });
     }
-    if (url.pathname === "/v1/runtime-configuration/intents/hardware-bindings/scanner/clear") return response(effectiveRuntimeConfiguration(claimed));
-    if (url.pathname === "/v1/runtime-configuration/intents/scanner-protocol-parameters") return response(effectiveRuntimeConfiguration(claimed));
-    if (url.pathname === "/v1/sync/status") return response({ mqttRunning: true, mqttConnected: true, brokerUrlMasked: null, lastHeartbeatAt: null, lastCommandNo: null, outboxSize: 0, outboxMax: 10, outboxUsage: 0, nextRetryAt: null, lastError: null, tlsAuthStatus: null });
-    if (url.pathname === "/v1/scanner/status") return response({ online: true, adapter: "serial_text", port: "COM7", level: "ready", code: "SCANNER_READY", message: "scanner ready", updatedAt: timestamp });
-    if (url.pathname === "/v1/vision/status") return response({ enabled: false, online: false, message: "vision unavailable", latestDiagnosticPayload: null });
-    if (url.pathname === "/v1/natural-context") return response({ status: "unconfigured", machineCode: "M001", checkedAt: timestamp, degraded: false, customerFacingBlocked: false, externalEnvironment: null, localSiteSignals: null });
-    if (url.pathname === "/v1/remote-ops/status") return response({ lastPolledAt: null, pending: 0, lastError: null, processing: null });
-    if (url.pathname === "/v1/maintenance/payment-environment") return response({ environment: "production", readiness: "ready", errorCategory: "none", channels: [] });
+    if (
+      url.pathname ===
+      "/v1/runtime-configuration/intents/hardware-bindings/scanner/clear"
+    )
+      return response(effectiveRuntimeConfiguration(claimed));
+    if (
+      url.pathname ===
+      "/v1/runtime-configuration/intents/scanner-protocol-parameters"
+    )
+      return response(effectiveRuntimeConfiguration(claimed));
+    if (url.pathname === "/v1/sync/status")
+      return response({
+        mqttRunning: true,
+        mqttConnected: true,
+        brokerUrlMasked: null,
+        lastHeartbeatAt: null,
+        lastCommandNo: null,
+        outboxSize: 0,
+        outboxMax: 10,
+        outboxUsage: 0,
+        nextRetryAt: null,
+        lastError: null,
+        tlsAuthStatus: null,
+      });
+    if (url.pathname === "/v1/scanner/status")
+      return response({
+        online: true,
+        adapter: "serial_text",
+        port: "COM7",
+        level: "ready",
+        code: "SCANNER_READY",
+        message: "scanner ready",
+        updatedAt: timestamp,
+      });
+    if (url.pathname === "/v1/vision/status")
+      return response({
+        enabled: false,
+        online: false,
+        message: "vision unavailable",
+        latestDiagnosticPayload: null,
+      });
+    if (url.pathname === "/v1/natural-context")
+      return response({
+        status: "unconfigured",
+        machineCode: "M001",
+        checkedAt: timestamp,
+        degraded: false,
+        customerFacingBlocked: false,
+        externalEnvironment: null,
+        localSiteSignals: null,
+      });
+    if (url.pathname === "/v1/remote-ops/status")
+      return response({
+        lastPolledAt: null,
+        pending: 0,
+        lastError: null,
+        processing: null,
+      });
+    if (url.pathname === "/v1/maintenance/payment-environment")
+      return response({
+        environment: "production",
+        readiness: "ready",
+        errorCategory: "none",
+        channels: [],
+      });
     return response({});
   });
 
@@ -292,18 +428,30 @@ test("clean bootstrap claims in Local Operations and uses direct configuration i
   await expect(page.getByText("M001")).toBeVisible();
 
   const scannerBinding = page.locator('[data-test="device-binding-scanner"]');
-  await scannerBinding.getByRole("button", { name: "测试", exact: true }).click();
-  await scannerBinding.getByRole("button", { name: "确认绑定", exact: true }).click();
-  await scannerBinding.getByRole("button", { name: "清除绑定", exact: true }).click();
+  await scannerBinding
+    .getByRole("button", { name: "测试", exact: true })
+    .click();
+  await scannerBinding
+    .getByRole("button", { name: "确认绑定", exact: true })
+    .click();
+  await scannerBinding
+    .getByRole("button", { name: "清除绑定", exact: true })
+    .click();
   const protocol = page.getByLabel("扫码器协议");
   await protocol.locator("input[type=number]").fill("115200");
   await protocol.locator("select").selectOption("lf");
   await protocol.getByRole("button", { name: "应用扫码器协议" }).click();
 
   expect(requests).toContain("POST /v1/provisioning/claim");
-  expect(requests).toContain("POST /v1/runtime-configuration/intents/hardware-bindings/scanner/confirm");
-  expect(requests).toContain("POST /v1/runtime-configuration/intents/hardware-bindings/scanner/clear");
-  expect(requests).toContain("POST /v1/runtime-configuration/intents/scanner-protocol-parameters");
+  expect(requests).toContain(
+    "POST /v1/runtime-configuration/intents/hardware-bindings/scanner/confirm",
+  );
+  expect(requests).toContain(
+    "POST /v1/runtime-configuration/intents/hardware-bindings/scanner/clear",
+  );
+  expect(requests).toContain(
+    "POST /v1/runtime-configuration/intents/scanner-protocol-parameters",
+  );
 
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/catalog$/);

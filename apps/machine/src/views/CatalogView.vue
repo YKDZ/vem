@@ -27,17 +27,14 @@ import { useVisionRecommendations } from "@/composables/useVisionRecommendations
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
-import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
-const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
 const machineStore = useMachineStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { primaryNotification } = useCatalogNotifications();
-const READINESS_REFRESH_INTERVAL_MS = 5000;
 const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
 const CAROUSEL_SWIPE_THRESHOLD_PX = 60;
 const RUNTIME_SCREENSHOT_STORAGE_KEY = "vem.machine.runtimeScreenshot";
@@ -46,8 +43,6 @@ const selectedTopCategoryKey = ref<CatalogSelectionKey | null>(null);
 const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
 const carouselSwipeStartX = ref<number | null>(null);
-let readinessRefreshTimer: number | null = null;
-let readinessRefreshInFlight: Promise<void> | null = null;
 let carouselAutoAdvanceTimer: number | null = null;
 
 type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
@@ -159,34 +154,6 @@ watch(
   },
   { immediate: true },
 );
-
-async function refreshReadinessAndRoute(): Promise<void> {
-  if (readinessRefreshInFlight) {
-    return readinessRefreshInFlight;
-  }
-  readinessRefreshInFlight = connectivityStore
-    .refresh()
-    .catch(() => undefined)
-    .finally(() => {
-      readinessRefreshInFlight = null;
-    });
-  return readinessRefreshInFlight;
-}
-
-function startReadinessAutoRefresh(): void {
-  stopReadinessAutoRefresh();
-  void refreshReadinessAndRoute();
-  readinessRefreshTimer = window.setInterval(() => {
-    void refreshReadinessAndRoute();
-  }, READINESS_REFRESH_INTERVAL_MS);
-}
-
-function stopReadinessAutoRefresh(): void {
-  if (readinessRefreshTimer !== null) {
-    window.clearInterval(readinessRefreshTimer);
-    readinessRefreshTimer = null;
-  }
-}
 
 function previousSlide(): void {
   activeCarouselIndex.value =
@@ -338,13 +305,11 @@ async function openProductDetail(product: DisplayProduct): Promise<void> {
 
 onMounted(() => {
   catalogStore.startAutoRefresh();
-  startReadinessAutoRefresh();
   startCarouselAutoAdvance();
 });
 
 onUnmounted(() => {
   catalogStore.stopAutoRefresh();
-  stopReadinessAutoRefresh();
   stopCarouselAutoAdvance();
 });
 </script>

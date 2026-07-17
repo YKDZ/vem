@@ -57,10 +57,9 @@ async function readDaemonBootEndpoint(path: string): Promise<unknown> {
     headers: { Authorization: "Bearer dev-token" },
   });
   const body = await response.text();
-  expect(
-    response.ok,
-    `${path} returned HTTP ${response.status}: ${body}`,
-  ).toBe(true);
+  expect(response.ok, `${path} returned HTTP ${response.status}: ${body}`).toBe(
+    true,
+  );
   return JSON.parse(body) as unknown;
 }
 
@@ -75,13 +74,14 @@ async function buildDaemonBinary(): Promise<void> {
   build.stderr.on("data", (chunk) => {
     output += String(chunk);
   });
-  const result = await new Promise<{ code: number | null; signal: string | null }>(
-    (resolve) => {
-      build.on("exit", (code, signal) => {
-        resolve({ code, signal });
-      });
-    },
-  );
+  const result = await new Promise<{
+    code: number | null;
+    signal: string | null;
+  }>((resolve) => {
+    build.on("exit", (code, signal) => {
+      resolve({ code, signal });
+    });
+  });
   if (result.code !== 0) {
     throw new Error(
       `build vending-daemon failed code=${result.code} signal=${result.signal}\n${output}`,
@@ -92,13 +92,7 @@ async function buildDaemonBinary(): Promise<void> {
 function startDaemonProcess(): void {
   daemon = spawn(
     DAEMON_BINARY,
-    [
-      "--console",
-      "--data-dir",
-      dataDir,
-      "--bind",
-      "127.0.0.1:7891",
-    ],
+    ["--console", "--data-dir", dataDir, "--bind", "127.0.0.1:7891"],
     {
       env: {
         ...process.env,
@@ -133,9 +127,40 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   await writeFile(join(dataDir, "ipc-token"), "dev-token");
   provisioningServer = createServer((request, response) => {
     if (
-      request.method !== "POST" ||
-      request.url !== "/api/machines/claim"
+      request.method === "POST" &&
+      request.url === "/api/machine-auth/token"
     ) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ accessToken: "real-daemon-test-token" }));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url === "/api/machine-orders/payment-options"
+    ) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          options: [
+            {
+              optionKey: "qr_code:alipay",
+              providerCode: "alipay",
+              method: "qr_code",
+              displayName: "支付宝扫码",
+              description: "请使用支付宝扫码支付",
+              icon: "alipay",
+              recommended: true,
+              disabled: false,
+              disabledReason: null,
+            },
+          ],
+          defaultOptionKey: "qr_code:alipay",
+          defaultProviderCode: "alipay",
+        }),
+      );
+      return;
+    }
+    if (request.method !== "POST" || request.url !== "/api/machines/claim") {
       response.writeHead(404).end();
       return;
     }
@@ -151,6 +176,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
         },
         credentials: {
           machineSecret: "machine-secret-0123456789-0123456789",
+          machineSecretVersion: 1,
           mqttSigningSecret: "mqtt-signing-secret-0123456789-0123456789",
           mqttConnection: {
             url: "mqtt://127.0.0.1:1883",
@@ -159,7 +185,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
             password: "mqtt-password",
           },
         },
-        apiBaseUrl: "http://127.0.0.1:3000/api",
+        apiBaseUrl: provisioningBaseUrl,
         runtimeEndpoints: {
           apiBasePath: "/api",
           machineAuthTokenPath: "/api/machine-auth/token",
@@ -288,15 +314,19 @@ test.afterAll(async () => {
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
 });
 
-test("real daemon clean bootstrap claims through Local Operations and then routes to catalog", async ({ page }) => {
+test("real daemon clean bootstrap claims through Local Operations and then routes to catalog", async ({
+  page,
+}) => {
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/maintenance$/, { timeout: 20_000 });
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
   await expect(page.getByLabel("认领码")).toBeVisible();
 
-  await page.getByLabel("认领码").fill("real-claim-001");
+  await page.getByLabel("认领码").fill("REAL-0001");
   await page.getByRole("button", { name: "认领机器" }).click();
-  await expect(page.getByText("REAL-DAEMON-001")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("REAL-DAEMON-001")).toBeVisible({
+    timeout: 20_000,
+  });
 
   const claimedDaemonExit = daemonExit;
   daemon?.kill("SIGKILL");
@@ -309,34 +339,43 @@ test("real daemon clean bootstrap claims through Local Operations and then route
     }),
   ]);
   if (!exited) {
-    throw new Error(`daemon did not stop for supervised runtime restart\n${formatDaemonOutput()}`);
+    throw new Error(
+      `daemon did not stop for supervised runtime restart\n${formatDaemonOutput()}`,
+    );
   }
   startDaemonProcess();
   await expect(async () => {
-    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`, {
-      headers: { Authorization: "Bearer dev-token" },
-    });
+    const response = await fetch(
+      `${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`,
+      {
+        headers: { Authorization: "Bearer dev-token" },
+      },
+    );
     expect(response.ok).toBe(true);
     const configuration = (await response.json()) as {
       machine?: { code?: unknown } | null;
-      profileRefresh?: { status?: unknown };
+      sourceDocuments?: { profileCache?: unknown };
     };
     expect(configuration.machine?.code).toBe("REAL-DAEMON-001");
-    expect(configuration.profileRefresh?.status).toBe("accepted");
+    expect(typeof configuration.sourceDocuments?.profileCache).toBe("object");
   }).toPass({ intervals: [250, 500, 1000], timeout: 20_000 });
 
-  const [health, ready, transaction, saleReadiness, configuration] =
+  const [health, ready, transaction, saleStartCapability, configuration] =
     await Promise.all([
       readDaemonBootEndpoint("/healthz"),
       readDaemonBootEndpoint("/readyz"),
       readDaemonBootEndpoint("/v1/transactions/current"),
-      readDaemonBootEndpoint("/v1/sale-readiness"),
+      readDaemonBootEndpoint("/v1/sale-start-capability"),
       readDaemonBootEndpoint("/v1/runtime-configuration"),
     ]);
   healthSnapshotSchema.parse(health);
   readySnapshotSchema.parse(ready);
   transactionSnapshotSchema.parse(transaction);
-  expect(saleReadiness).toEqual(expect.any(Object));
+  expect(saleStartCapability).toMatchObject({
+    generation: expect.any(String),
+    revision: expect.any(Number),
+    canStartSale: expect.any(Boolean),
+  });
   effectiveMachineRuntimeConfigurationSchema.parse(configuration);
 
   await page.goto("/#/boot");

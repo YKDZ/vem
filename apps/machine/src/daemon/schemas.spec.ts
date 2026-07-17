@@ -8,6 +8,7 @@ import {
   daemonEventSchema,
   networkSettingsResponseSchema,
   naturalContextSnapshotSchema,
+  saleStartCapabilitySnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
   type TransactionSnapshot,
@@ -36,6 +37,48 @@ describe("daemon schemas", () => {
     operatorHint: null,
     updatedAt: "2026-06-11T06:16:32.320Z",
   };
+
+  it("decodes the generated sale-start capability shape and change event", () => {
+    const snapshot = saleStartCapabilitySnapshotSchema.parse({
+      generation: "daemon-generation-2",
+      revision: 19,
+      observedAt: "2026-07-17T00:00:00.000Z",
+      canStartSale: false,
+      blockers: [
+        {
+          code: "PAYMENT_OPTIONS_UNAVAILABLE",
+          component: "payment_options",
+          message: "no payment option is currently ready",
+        },
+      ],
+      degradations: [],
+      paymentOptions: {
+        ready: false,
+        defaultOptionKey: null,
+        defaultProviderCode: null,
+        options: [],
+      },
+    });
+
+    expect(snapshot).toMatchObject({
+      generation: "daemon-generation-2",
+      revision: 19,
+      canStartSale: false,
+    });
+    expect(
+      daemonEventSchema.parse({
+        type: "sale_start_capability_changed",
+        eventId: "sale-capability-19",
+        updatedAt: snapshot.observedAt,
+        generation: snapshot.generation,
+        revision: snapshot.revision,
+      }),
+    ).toMatchObject({
+      type: "sale_start_capability_changed",
+      generation: "daemon-generation-2",
+      revision: 19,
+    });
+  });
 
   it("uses the shared Daemon IPC transaction snapshot boundary parser", () => {
     expect(transactionSnapshotSchema.parse).toBe(
@@ -369,6 +412,5 @@ describe("daemon schemas", () => {
     expect(tx.vending?.pickupReminder?.stage).toBe("pickup_timeout_warning");
     expect(tx.vending?.pickupReminder?.remainingSeconds).toBe(12);
     expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
-
   });
 });

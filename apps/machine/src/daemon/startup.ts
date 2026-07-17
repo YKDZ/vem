@@ -1,8 +1,9 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 import {
   projectCustomerCheckoutView,
   type CustomerCheckoutRouteTarget,
 } from "@/checkout/customer-checkout-view";
-import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import type { TransactionSnapshot } from "./schemas";
 
@@ -44,12 +45,12 @@ export function routeForStartup(input: {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
-  // Claim acceptance and the resulting machine identity are the startup
-  // authority. Readiness and the cache's renderer shape are operational
+  // The accepted profile cache and resulting machine identity are the startup
+  // authority. Refresh and sale-capability health remain operational
   // observations; neither may move a claimed machine into Local Operations.
   const configuration = input.effectiveRuntimeConfiguration;
   return configuration !== null &&
-    configuration.profileRefresh.status === "accepted" &&
+    configuration.sourceDocuments.profileCache !== null &&
     configuration.machine !== null
     ? "/catalog"
     : "/maintenance";

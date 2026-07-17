@@ -4,7 +4,7 @@ import type { RouteLocationRaw, Router } from "vue-router";
 import { watch, type WatchStopHandle } from "vue";
 
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
@@ -105,7 +105,7 @@ export function createMachineNavigationAuthority(
   options: AuthorityOptions = {},
 ): MachineNavigationAuthority {
   const checkoutStore = useCheckoutStore(pinia);
-  const connectivityStore = useConnectivityStore(pinia);
+  const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const trace = new MachineRuntimeTrace();
   const now = options.now ?? Date.now;
   const inactivityMs =
@@ -150,7 +150,7 @@ export function createMachineNavigationAuthority(
       targetRoute: finalRoute,
       transactionOrderNo: checkoutStore.customerCheckoutView.orderCredential,
       transactionStage: transactionStage(),
-      readinessRevision: connectivityStore.ready?.updatedAt ?? null,
+      readinessRevision: saleCapabilityStore.orderingKey,
       touchscreenSessionActive,
     });
   }

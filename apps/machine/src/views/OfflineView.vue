@@ -6,13 +6,15 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
-import { useConnectivityStore } from "@/stores/connectivity";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
-const connectivityStore = useConnectivityStore();
+const saleCapabilityStore = useSaleCapabilityStore();
 
 const reasonText = computed(() => {
-  const codes = connectivityStore.ready?.blockingCodes ?? [];
-  if (connectivityStore.loading) return "正在检测设备状态";
+  const codes = saleCapabilityStore.blockerCodes;
+  if (!saleCapabilityStore.accepted || saleCapabilityStore.updating) {
+    return "正在确认当前购买状态";
+  }
   if (codes.includes("WHOLE_MACHINE_HARDWARE_FAULT")) {
     return "设备需要工作人员检查后才能继续售卖";
   }
@@ -38,13 +40,14 @@ const reasonText = computed(() => {
   if (codes.includes("ACTIVE_PLANOGRAM_MISSING")) {
     return "商品信息暂未准备好";
   }
-  if (!connectivityStore.ready) return "正在读取设备状态";
   return "当前设备暂时无法购买";
 });
 
 const supportHint = computed(() => {
-  const codes = connectivityStore.ready?.blockingCodes ?? [];
-  if (connectivityStore.loading) return "状态检测中";
+  const codes = saleCapabilityStore.blockerCodes;
+  if (!saleCapabilityStore.accepted || saleCapabilityStore.updating) {
+    return "状态确认中";
+  }
   if (codes.includes("WHOLE_MACHINE_HARDWARE_FAULT")) return "设备维护";
   if (
     codes.includes("LOWER_CONTROLLER_UNAVAILABLE") ||
@@ -66,7 +69,6 @@ const supportHint = computed(() => {
     return "支付服务不可用";
   }
   if (codes.includes("ACTIVE_PLANOGRAM_MISSING")) return "商品信息未准备";
-  if (!connectivityStore.ready) return "状态读取中";
   return "暂不可售";
 });
 

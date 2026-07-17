@@ -1,8 +1,11 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
-import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
+const submitMachineNavigationIntentMock = vi.hoisted(() => vi.fn());
 
 const client = vi.hoisted(() => ({
   getEffectiveRuntimeConfiguration: vi.fn(),
@@ -30,6 +33,9 @@ const client = vi.hoisted(() => ({
 }));
 
 vi.mock("@/daemon/client", () => ({ daemonClient: client }));
+vi.mock("@/router/transaction-route-authority", () => ({
+  submitMachineNavigationIntent: submitMachineNavigationIntentMock,
+}));
 vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({
   default: { template: "<section data-test='vision-panel-stub' />" },
 }));
@@ -86,7 +92,10 @@ function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
       mqttSigningSecretConfigured: true,
       mqttPasswordConfigured: true,
     },
-    profileRefresh: { status: claimed ? "accepted" : "unclaimed", lastError: null },
+    profileRefresh: {
+      status: claimed ? "accepted" : "unclaimed",
+      lastError: null,
+    },
   };
 }
 
@@ -149,7 +158,13 @@ function deviceBindings() {
 function health() {
   return {
     status: "healthy",
-    process: { component: "daemon", level: "ok", code: "READY", message: "daemon ready", updatedAt: "2026-07-17T00:00:00.000Z" },
+    process: {
+      component: "daemon",
+      level: "ok",
+      code: "READY",
+      message: "daemon ready",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    },
     components: [],
     configConfigured: true,
     databaseOnline: true,
@@ -185,8 +200,8 @@ async function render(): Promise<HTMLElement> {
 }
 
 function button(host: HTMLElement, name: string): HTMLButtonElement {
-  const result = Array.from(host.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent?.trim().includes(name),
+  const result = Array.from(host.querySelectorAll("button")).find((candidate) =>
+    candidate.textContent?.trim().includes(name),
   );
   if (!result) throw new Error(`button ${name} not found`);
   return result;
@@ -197,24 +212,97 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   currentConfiguration = configuration(false);
-  client.getEffectiveRuntimeConfiguration.mockImplementation(async () => currentConfiguration);
-  client.getStockMaintenanceTask.mockResolvedValue({ taskId: "stock-1", mode: "routine_refill", status: "ready", slots: [] });
+  client.getEffectiveRuntimeConfiguration.mockImplementation(
+    async () => currentConfiguration,
+  );
+  client.getStockMaintenanceTask.mockResolvedValue({
+    taskId: "stock-1",
+    mode: "routine_refill",
+    status: "ready",
+    slots: [],
+  });
   client.getHealth.mockResolvedValue(health());
-  client.getReady.mockResolvedValue({ ready: false, canSell: false, mode: "maintenance", blockingCodes: [], blockingReasons: [], degradedReasons: [], suggestedRoute: "maintenance", updatedAt: "2026-07-17T00:00:00.000Z" });
-  client.getSyncStatus.mockResolvedValue({ mqttRunning: true, mqttConnected: true, brokerUrlMasked: null, lastHeartbeatAt: null, lastCommandNo: null, outboxSize: 0, outboxMax: 10, outboxUsage: 0, nextRetryAt: null, lastError: null, tlsAuthStatus: null });
-  client.getScannerStatus.mockResolvedValue({ online: true, adapter: "serial_text", port: "COM7", level: "ready", code: "SCANNER_READY", message: "scanner ready", updatedAt: "2026-07-17T00:00:00.000Z" });
-  client.getVisionStatus.mockResolvedValue({ enabled: false, online: false, message: "vision ready", latestDiagnosticPayload: null });
-  client.getNaturalContext.mockResolvedValue({ status: "unconfigured", machineCode: "MACHINE-001", checkedAt: "2026-07-17T00:00:00.000Z", degraded: false, customerFacingBlocked: false, externalEnvironment: null, localSiteSignals: null });
-  client.getRemoteOpsStatus.mockResolvedValue({ lastPolledAt: null, pending: 0, lastError: null, processing: null });
+  client.getReady.mockResolvedValue({
+    ready: false,
+    updatedAt: "2026-07-17T00:00:00.000Z",
+  });
+  client.getSyncStatus.mockResolvedValue({
+    mqttRunning: true,
+    mqttConnected: true,
+    brokerUrlMasked: null,
+    lastHeartbeatAt: null,
+    lastCommandNo: null,
+    outboxSize: 0,
+    outboxMax: 10,
+    outboxUsage: 0,
+    nextRetryAt: null,
+    lastError: null,
+    tlsAuthStatus: null,
+  });
+  client.getScannerStatus.mockResolvedValue({
+    online: true,
+    adapter: "serial_text",
+    port: "COM7",
+    level: "ready",
+    code: "SCANNER_READY",
+    message: "scanner ready",
+    updatedAt: "2026-07-17T00:00:00.000Z",
+  });
+  client.getVisionStatus.mockResolvedValue({
+    enabled: false,
+    online: false,
+    message: "vision ready",
+    latestDiagnosticPayload: null,
+  });
+  client.getNaturalContext.mockResolvedValue({
+    status: "unconfigured",
+    machineCode: "MACHINE-001",
+    checkedAt: "2026-07-17T00:00:00.000Z",
+    degraded: false,
+    customerFacingBlocked: false,
+    externalEnvironment: null,
+    localSiteSignals: null,
+  });
+  client.getRemoteOpsStatus.mockResolvedValue({
+    lastPolledAt: null,
+    pending: 0,
+    lastError: null,
+    processing: null,
+  });
   client.getDeviceBindings.mockResolvedValue(deviceBindings());
-  client.getPaymentEnvironmentDiagnostic.mockResolvedValue({ environment: "production", readiness: "ready", errorCategory: "none", channels: [] });
-  client.scanWifiNetworks.mockResolvedValue({ status: "available", networks: [{ ssid: "Venue-Wifi" }], operatorGuidance: "", updatedAt: "2026-07-17T00:00:00.000Z" });
-  client.applyNetworkSettings.mockResolvedValue({ status: "connected", ssid: "Venue-Wifi", hidden: false, diagnostics: [], operatorGuidance: "network connected", updatedAt: "2026-07-17T00:00:00.000Z" });
+  client.getPaymentEnvironmentDiagnostic.mockResolvedValue({
+    environment: "production",
+    readiness: "ready",
+    errorCategory: "none",
+    channels: [],
+  });
+  client.scanWifiNetworks.mockResolvedValue({
+    status: "available",
+    networks: [{ ssid: "Venue-Wifi" }],
+    operatorGuidance: "",
+    updatedAt: "2026-07-17T00:00:00.000Z",
+  });
+  client.applyNetworkSettings.mockResolvedValue({
+    status: "connected",
+    ssid: "Venue-Wifi",
+    hidden: false,
+    diagnostics: [],
+    operatorGuidance: "network connected",
+    updatedAt: "2026-07-17T00:00:00.000Z",
+  });
   client.claimMachine.mockImplementation(async () => {
     currentConfiguration = configuration(true);
-    return { status: "provisioned", machineCode: "MACHINE-001", restartRequested: false };
+    return {
+      status: "provisioned",
+      machineCode: "MACHINE-001",
+      restartRequested: false,
+    };
   });
-  client.testDeviceBinding.mockResolvedValue({ identityKey: "container:11111111-2222-3333-4444-555555555555", currentPort: "COM7", testEvidenceToken: "550e8400-e29b-41d4-a716-446655440099" });
+  client.testDeviceBinding.mockResolvedValue({
+    identityKey: "container:11111111-2222-3333-4444-555555555555",
+    currentPort: "COM7",
+    testEvidenceToken: "550e8400-e29b-41d4-a716-446655440099",
+  });
   client.confirmDeviceBinding.mockResolvedValue({});
   client.clearDeviceBinding.mockResolvedValue(configuration(false));
   client.setScannerProtocolParameters.mockResolvedValue(configuration(false));
@@ -262,7 +350,9 @@ describe("Local Operations", () => {
     expect(host.textContent).toContain("Profile 接受时间");
     expect(host.querySelector("input[aria-label='网络密码']")).not.toBeNull();
 
-    const claimCode = host.querySelector<HTMLInputElement>("input[aria-label='认领码']");
+    const claimCode = host.querySelector<HTMLInputElement>(
+      "input[aria-label='认领码']",
+    );
     if (!claimCode) throw new Error("claim input not found");
     claimCode.value = "claim-001";
     claimCode.dispatchEvent(new Event("input", { bubbles: true }));
@@ -278,15 +368,20 @@ describe("Local Operations", () => {
 
   it("scans and applies Wi-Fi from the same pre-claim Local Operations surface", async () => {
     const host = await render();
-    const initialReloads = client.getEffectiveRuntimeConfiguration.mock.calls.length;
+    const initialReloads =
+      client.getEffectiveRuntimeConfiguration.mock.calls.length;
 
     button(host, "扫描网络").click();
     await flush();
     expect(client.scanWifiNetworks).toHaveBeenCalledOnce();
     expect(host.textContent).toContain("Venue-Wifi");
 
-    const ssid = host.querySelector<HTMLInputElement>("input[aria-label='网络名称']");
-    const password = host.querySelector<HTMLInputElement>("input[aria-label='网络密码']");
+    const ssid = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络名称']",
+    );
+    const password = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络密码']",
+    );
     if (!ssid || !password) throw new Error("network inputs not found");
     ssid.value = "Venue-Wifi";
     ssid.dispatchEvent(new Event("input", { bubbles: true }));
@@ -301,7 +396,9 @@ describe("Local Operations", () => {
       password: "network-secret",
       hidden: false,
     });
-    expect(client.getEffectiveRuntimeConfiguration.mock.calls.length).toBeGreaterThan(initialReloads);
+    expect(
+      client.getEffectiveRuntimeConfiguration.mock.calls.length,
+    ).toBeGreaterThan(initialReloads);
     expect(password.value).toBe("");
   });
 
@@ -310,8 +407,12 @@ describe("Local Operations", () => {
       new Error("wireless authentication failed"),
     );
     const host = await render();
-    const ssid = host.querySelector<HTMLInputElement>("input[aria-label='网络名称']");
-    const password = host.querySelector<HTMLInputElement>("input[aria-label='网络密码']");
+    const ssid = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络名称']",
+    );
+    const password = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络密码']",
+    );
     if (!ssid || !password) throw new Error("network inputs not found");
     ssid.value = "Venue-Wifi";
     ssid.dispatchEvent(new Event("input", { bubbles: true }));
@@ -335,7 +436,9 @@ describe("Local Operations", () => {
   it("keeps a rejected claim in Local Operations with direct operator feedback", async () => {
     client.claimMachine.mockRejectedValueOnce(new Error("claim code rejected"));
     const host = await render();
-    const claimCode = host.querySelector<HTMLInputElement>("input[aria-label='认领码']");
+    const claimCode = host.querySelector<HTMLInputElement>(
+      "input[aria-label='认领码']",
+    );
     if (!claimCode) throw new Error("claim input not found");
     claimCode.value = "bad-claim";
     claimCode.dispatchEvent(new Event("input", { bubbles: true }));
@@ -351,9 +454,12 @@ describe("Local Operations", () => {
   it("requires a tested stable identity before confirm, offers explicit clear, and reloads after every binding mutation", async () => {
     const host = await render();
     const identityKey = "container:11111111-2222-3333-4444-555555555555";
-    const initialReloads = client.getEffectiveRuntimeConfiguration.mock.calls.length;
+    const initialReloads =
+      client.getEffectiveRuntimeConfiguration.mock.calls.length;
     await vi.waitFor(() => {
-      expect(host.querySelector("[data-test='device-binding-scanner']")).not.toBeNull();
+      expect(
+        host.querySelector("[data-test='device-binding-scanner']"),
+      ).not.toBeNull();
     });
 
     const scannerBinding = host.querySelector<HTMLElement>(
@@ -362,7 +468,10 @@ describe("Local Operations", () => {
     if (!scannerBinding) throw new Error("scanner binding card not found");
     button(scannerBinding, "测试").click();
     await flush();
-    expect(client.testDeviceBinding).toHaveBeenCalledWith("scanner", identityKey);
+    expect(client.testDeviceBinding).toHaveBeenCalledWith(
+      "scanner",
+      identityKey,
+    );
     expect(button(scannerBinding, "确认绑定").disabled).toBe(false);
 
     button(scannerBinding, "确认绑定").click();
@@ -379,15 +488,22 @@ describe("Local Operations", () => {
     button(scannerBinding, "清除绑定").click();
     await flush();
     expect(client.clearDeviceBinding).toHaveBeenCalledWith("scanner");
-    expect(client.getEffectiveRuntimeConfiguration.mock.calls.length).toBeGreaterThanOrEqual(initialReloads + 2);
+    expect(
+      client.getEffectiveRuntimeConfiguration.mock.calls.length,
+    ).toBeGreaterThanOrEqual(initialReloads + 2);
   });
 
   it("uses the scanner protocol intent and reloads the central snapshot", async () => {
     const host = await render();
-    const initialReloads = client.getEffectiveRuntimeConfiguration.mock.calls.length;
-    const form = host.querySelector<HTMLFormElement>("form[aria-label='扫码器协议']");
+    const initialReloads =
+      client.getEffectiveRuntimeConfiguration.mock.calls.length;
+    const form = host.querySelector<HTMLFormElement>(
+      "form[aria-label='扫码器协议']",
+    );
     if (!form) throw new Error("scanner protocol form not found");
-    const baudRate = form.querySelector<HTMLInputElement>("input[type='number']");
+    const baudRate = form.querySelector<HTMLInputElement>(
+      "input[type='number']",
+    );
     if (!baudRate) throw new Error("baud rate input not found");
     baudRate.value = "115200";
     baudRate.dispatchEvent(new Event("input", { bubbles: true }));
@@ -395,11 +511,18 @@ describe("Local Operations", () => {
     if (!frameSuffix) throw new Error("frame suffix select not found");
     frameSuffix.value = "lf";
     frameSuffix.dispatchEvent(new Event("change", { bubbles: true }));
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
     await flush();
 
-    expect(client.setScannerProtocolParameters).toHaveBeenCalledWith({ baudRate: 115200, frameSuffix: "lf" });
-    expect(client.getEffectiveRuntimeConfiguration.mock.calls.length).toBeGreaterThan(initialReloads);
+    expect(client.setScannerProtocolParameters).toHaveBeenCalledWith({
+      baudRate: 115200,
+      frameSuffix: "lf",
+    });
+    expect(
+      client.getEffectiveRuntimeConfiguration.mock.calls.length,
+    ).toBeGreaterThan(initialReloads);
   });
 
   it("does not offer arbitrary selection while scanner observation is ambiguous", async () => {
@@ -426,12 +549,17 @@ describe("Local Operations", () => {
       "[data-test='device-binding-scanner']",
     );
     if (!scannerBinding) throw new Error("scanner binding card not found");
-    expect(Array.from(scannerBinding.querySelectorAll("button")).map((item) => item.textContent?.trim())).not.toContain("确认绑定");
+    expect(
+      Array.from(scannerBinding.querySelectorAll("button")).map((item) =>
+        item.textContent?.trim(),
+      ),
+    ).not.toContain("确认绑定");
   });
 
   it("applies audio preference changes as direct daemon-owned updates without a local preference projection", async () => {
     const host = await render();
-    const initialReloads = client.getEffectiveRuntimeConfiguration.mock.calls.length;
+    const initialReloads =
+      client.getEffectiveRuntimeConfiguration.mock.calls.length;
     const checkboxes = host.querySelectorAll<HTMLInputElement>(
       "[data-test='audio-preferences'] input[type='checkbox']",
     );
@@ -447,7 +575,9 @@ describe("Local Operations", () => {
       presenceCuesEnabled: true,
       transactionCuesEnabled: true,
     });
-    expect(client.getEffectiveRuntimeConfiguration.mock.calls.length).toBeGreaterThan(initialReloads);
+    expect(
+      client.getEffectiveRuntimeConfiguration.mock.calls.length,
+    ).toBeGreaterThan(initialReloads);
   });
 
   it("runs hardware and manual dispense diagnostics directly without an authorization interstitial", async () => {
@@ -481,18 +611,21 @@ describe("Local Operations", () => {
     button(host, "出货一件").click();
     await flush();
     const firstRequest = client.runManualDispenseDiagnostic.mock.calls[0]?.[0];
-    if (!firstRequest) throw new Error("first manual dispense request not found");
+    if (!firstRequest)
+      throw new Error("first manual dispense request not found");
     expect(host.textContent).toContain("diagnostic response lost");
 
     button(host, "出货一件").click();
     await flush();
-    const retriedRequest = client.runManualDispenseDiagnostic.mock.calls[1]?.[0];
+    const retriedRequest =
+      client.runManualDispenseDiagnostic.mock.calls[1]?.[0];
     expect(retriedRequest?.idempotencyKey).toBe(firstRequest.idempotencyKey);
 
     button(host, "新建诊断").click();
     button(host, "出货一件").click();
     await flush();
-    const newDiagnosticRequest = client.runManualDispenseDiagnostic.mock.calls[2]?.[0];
+    const newDiagnosticRequest =
+      client.runManualDispenseDiagnostic.mock.calls[2]?.[0];
     expect(newDiagnosticRequest?.idempotencyKey).not.toBe(
       firstRequest.idempotencyKey,
     );
@@ -528,7 +661,9 @@ describe("Local Operations", () => {
     const stockForm = Array.from(host.querySelectorAll("form")).find((form) =>
       form.textContent?.includes("补货数量"),
     );
-    const addition = stockForm?.querySelector<HTMLInputElement>("input[type='number']");
+    const addition = stockForm?.querySelector<HTMLInputElement>(
+      "input[type='number']",
+    );
     if (!addition) throw new Error("stock addition input not found");
     addition.value = "2";
     addition.dispatchEvent(new Event("input", { bubbles: true }));
@@ -576,7 +711,9 @@ describe("Local Operations", () => {
     const stockForm = Array.from(host.querySelectorAll("form")).find((form) =>
       form.textContent?.includes("补货数量"),
     );
-    const addition = stockForm?.querySelector<HTMLInputElement>("input[type='number']");
+    const addition = stockForm?.querySelector<HTMLInputElement>(
+      "input[type='number']",
+    );
     if (!addition) throw new Error("stock addition input not found");
     addition.value = "1.5";
     addition.dispatchEvent(new Event("input", { bubbles: true }));
@@ -619,7 +756,9 @@ describe("Local Operations", () => {
     const stockForm = Array.from(host.querySelectorAll("form")).find((form) =>
       form.textContent?.includes("实际数量"),
     );
-    const quantity = stockForm?.querySelector<HTMLInputElement>("input[type='number']");
+    const quantity = stockForm?.querySelector<HTMLInputElement>(
+      "input[type='number']",
+    );
     if (!quantity) throw new Error("stock quantity input not found");
     quantity.value = "6";
     quantity.dispatchEvent(new Event("input", { bubbles: true }));
@@ -648,7 +787,9 @@ describe("Local Operations", () => {
       },
     });
     const host = await render();
-    const payload = host.querySelector("[data-test='vision-diagnostic-payload']");
+    const payload = host.querySelector(
+      "[data-test='vision-diagnostic-payload']",
+    );
     if (!(payload instanceof HTMLElement)) {
       throw new Error("vision diagnostic payload not found");
     }
@@ -669,7 +810,9 @@ describe("Local Operations", () => {
     expect(host.textContent).toContain(
       "测试音频只能在已安装的 Windows Tauri 运行时播放",
     );
-    expect(host.textContent).not.toContain("Windows 默认输出设备已开始测试播放");
+    expect(host.textContent).not.toContain(
+      "Windows 默认输出设备已开始测试播放",
+    );
   });
 
   it("keeps return-to-catalog unavailable until Local Operations is sellable", async () => {

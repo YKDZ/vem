@@ -5,9 +5,6 @@ export type DaemonConnectionInfo = {
   token: string;
   source: "tauri_ready_file" | "browser_env";
   mock: boolean;
-  runtimeFlags?: {
-    advancedMaintenanceConfig: boolean;
-  };
 };
 
 function browserConnection(): DaemonConnectionInfo {
@@ -18,10 +15,6 @@ function browserConnection(): DaemonConnectionInfo {
     token: String(import.meta.env.VITE_DAEMON_IPC_TOKEN ?? "dev-token"),
     source: "browser_env",
     mock: import.meta.env.VITE_DAEMON_MOCK === "true",
-    runtimeFlags: {
-      advancedMaintenanceConfig:
-        import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG === "true",
-    },
   };
 }
 
@@ -36,9 +29,5 @@ export async function getDaemonConnectionInfo(): Promise<DaemonConnectionInfo> {
   return {
     ...info,
     baseUrl: info.baseUrl.replace(/\/+$/, ""),
-    runtimeFlags: {
-      advancedMaintenanceConfig:
-        info.runtimeFlags?.advancedMaintenanceConfig === true,
-    },
   };
 }

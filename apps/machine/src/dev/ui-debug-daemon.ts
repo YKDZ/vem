@@ -46,8 +46,6 @@ const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
 const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
 const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
   "vem.machine.uiDebug.dispenseResult";
-const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
-  "vem.machine.uiDebug.advancedMaintenanceConfig";
 
 let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
@@ -142,18 +140,6 @@ function resetSaleEvidence(): void {
 
 function currentScenario() {
   return getActiveUiDebugScenario();
-}
-
-function uiDebugConnection(): DaemonConnectionInfo {
-  return {
-    ...connection,
-    runtimeFlags: {
-      advancedMaintenanceConfig:
-        localStorageOrNull()?.getItem(
-          UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY,
-        ) === "1",
-    },
-  };
 }
 
 function currentSaleView(): SaleViewSnapshot {
@@ -646,7 +632,7 @@ async function injectInstalledKioskSaleDisturbance(
         break;
       case "readiness_refresh":
         await Promise.all([
-          useCheckoutStore().refreshCustomerCheckoutReadiness(),
+          useCheckoutStore().refreshSaleStartCapability(),
           (async () => {
             const { router } = await import("@/router");
             await router.push("/maintenance");
@@ -747,12 +733,11 @@ export function installUiDebugDaemon(): void {
   if (installed) return;
   installed = true;
   const client = daemonClient as unknown as Record<string, unknown>;
-  client.connection = uiDebugConnection();
+  client.connection = connection;
 
   client.initialize = async () => {
-    const nextConnection = uiDebugConnection();
-    client.connection = nextConnection;
-    return nextConnection;
+    client.connection = connection;
+    return connection;
   };
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;
@@ -761,7 +746,8 @@ export function installUiDebugDaemon(): void {
     currentScenario().runtimeConfiguration;
   client.claimMachine = async (): Promise<ProvisioningClaimResponse> => ({
     status: "provisioned",
-    machineCode: currentScenario().runtimeConfiguration.machine?.code ?? "UI-DEBUG-001",
+    machineCode:
+      currentScenario().runtimeConfiguration.machine?.code ?? "UI-DEBUG-001",
     restartRequested: false,
   });
   client.getCatalog = async () => catalogFromSaleView(currentSaleView());
@@ -802,8 +788,7 @@ export function installUiDebugDaemon(): void {
       duplicate: false,
     });
   client.clearWholeMachineMaintenanceLock = async () => ({ ok: true });
-  client.getSaleReadiness = async () => currentScenario().saleReadiness;
-  client.getPaymentOptions = async () => currentScenario().paymentOptions;
+  client.getSaleStartCapability = async () => currentScenario().saleCapability;
   client.createOrder = async (body: unknown) =>
     createTransactionFromOrder(body);
   client.cancelOrder = async () => closedTransaction();

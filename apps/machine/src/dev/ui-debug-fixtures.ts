@@ -1,14 +1,13 @@
-import type { MachinePaymentOptionsResponse } from "@/types/checkout";
 import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import {
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
   type HealthSnapshot,
-  type MachineSaleReadiness,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
+  type SaleStartCapabilitySnapshot,
   type ScannerStatus,
   type SyncStatus,
   type TransactionSnapshot,
@@ -43,9 +42,8 @@ export type UiDebugScenario = {
   health: HealthSnapshot;
   ready: ReadySnapshot;
   runtimeConfiguration: EffectiveMachineRuntimeConfiguration;
-  saleReadiness: MachineSaleReadiness;
+  saleCapability: SaleStartCapabilitySnapshot;
   saleView: SaleViewSnapshot;
-  paymentOptions: MachinePaymentOptionsResponse;
   transaction: TransactionSnapshot;
   sync: SyncStatus;
   scanner: ScannerStatus;
@@ -55,6 +53,52 @@ export type UiDebugScenario = {
 
 const UPDATED_AT = "2026-06-14T08:00:00.000Z";
 const EXPIRES_AT = new Date(Date.now() + 5 * 60_000).toISOString();
+const uiDebugMachine = {
+  id: "550e8400-e29b-41d4-a716-446655440001",
+  code: "UI-DEBUG-001",
+  name: "UI Debug Machine",
+  status: "online" as const,
+  locationLabel: "UI debug lab",
+};
+const uiDebugProvisioningProfile = {
+  machine: uiDebugMachine,
+  apiBaseUrl: "http://ui-debug.local/api",
+  runtimeEndpoints: {
+    apiBasePath: "/api" as const,
+    machineAuthTokenPath: "/api/machine-auth/token" as const,
+    machineApiBasePath: "/api/machines/UI-DEBUG-001",
+    mqttTopicPrefix: "vem/machines/UI-DEBUG-001",
+  },
+  mqttConnection: {
+    url: "mqtt://ui-debug.local",
+    clientId: "vem-machine-UI-DEBUG-001",
+    username: "ui-debug",
+  },
+  hardwareProfile: {
+    profile: "production" as const,
+    controller: {
+      required: true as const,
+      protocol: "vem-vending-controller" as const,
+    },
+    paymentScanner: { required: true as const, supportsPaymentCode: true },
+    vision: { required: false, supportsRecommendations: true },
+  },
+  hardwareModel: "ui-debug",
+  hardwareSlotTopology: { identity: "ui-debug", version: "1" },
+  paymentCapability: {
+    profile: "production" as const,
+    qrCodeEnabled: true,
+    paymentCodeEnabled: true,
+    serverTime: UPDATED_AT,
+  },
+  metadata: {
+    profileVersion: 1 as const,
+    profileRevision: 1,
+    claimCodeId: "550e8400-e29b-41d4-a716-446655440002",
+    claimedAt: UPDATED_AT,
+    serverTime: UPDATED_AT,
+  },
+};
 
 function localStorageOrNull(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -79,17 +123,58 @@ function component(componentName: string, ready: boolean, message: string) {
 const runtimeConfiguration: EffectiveMachineRuntimeConfiguration = {
   schemaVersion: 1,
   generation: 1,
-  sourceRevisions: { bootstrapSchemaVersion: 1, profile: null, localSettingsRevision: 0 },
-  sourceDocuments: {
-    bootstrap: { schemaVersion: 1, provisioningApiBaseUrl: "http://ui-debug.local", hardwareModel: "ui-debug", topology: { identity: "ui-debug", version: "1" } },
-    profileCache: null,
+  sourceRevisions: {
+    bootstrapSchemaVersion: 1,
+    profile: {
+      generation: 1,
+      profileRevision: 1,
+      acceptedAt: UPDATED_AT,
+    },
+    localSettingsRevision: 0,
   },
-  machine: null,
-  platform: null,
-  hardware: { model: "ui-debug", topology: { identity: "ui-debug", version: "1" }, expectedProfile: null, lowerControllerBinding: null, scannerBinding: null, scannerProtocol: null },
-  experience: { audio: { volume: 0.7, cuesEnabled: true, presenceCuesEnabled: true, transactionCuesEnabled: true } },
-  secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
-  profileRefresh: { status: "unclaimed", lastError: null },
+  sourceDocuments: {
+    bootstrap: {
+      schemaVersion: 1,
+      provisioningApiBaseUrl: "http://ui-debug.local",
+      hardwareModel: "ui-debug",
+      topology: { identity: "ui-debug", version: "1" },
+    },
+    profileCache: {
+      schemaVersion: 1,
+      generation: 1,
+      acceptedAt: UPDATED_AT,
+      profile: uiDebugProvisioningProfile,
+    },
+  },
+  machine: uiDebugMachine,
+  platform: {
+    apiBaseUrl: uiDebugProvisioningProfile.apiBaseUrl,
+    runtimeEndpoints: uiDebugProvisioningProfile.runtimeEndpoints,
+    mqttConnection: uiDebugProvisioningProfile.mqttConnection,
+    paymentCapability: uiDebugProvisioningProfile.paymentCapability,
+  },
+  hardware: {
+    model: "ui-debug",
+    topology: { identity: "ui-debug", version: "1" },
+    expectedProfile: uiDebugProvisioningProfile.hardwareProfile,
+    lowerControllerBinding: null,
+    scannerBinding: null,
+    scannerProtocol: null,
+  },
+  experience: {
+    audio: {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    },
+  },
+  secretStatus: {
+    machineSecretConfigured: true,
+    mqttSigningSecretConfigured: true,
+    mqttPasswordConfigured: false,
+  },
+  profileRefresh: { status: "accepted", lastError: null },
 };
 
 const readyHealth: HealthSnapshot = {
@@ -130,109 +215,45 @@ const blockedHealth: HealthSnapshot = {
 
 const readySnapshot: ReadySnapshot = {
   ready: true,
-  canSell: true,
-  mode: "catalog",
-  blockingCodes: [],
-  blockingReasons: [],
-  degradedReasons: [],
-  suggestedRoute: "catalog",
   updatedAt: UPDATED_AT,
 };
 
 const blockedReady: ReadySnapshot = {
   ready: false,
-  canSell: false,
-  mode: "maintenance",
-  blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
-  blockingReasons: [
-    {
-      code: "WHOLE_MACHINE_HARDWARE_FAULT",
-      component: "hardware",
-      message: "模拟下位机故障，售卖入口被屏蔽",
-    },
-  ],
-  degradedReasons: [],
-  suggestedRoute: "maintenance",
   updatedAt: UPDATED_AT,
 };
 
-function saleReadiness(ready: boolean): MachineSaleReadiness {
+function saleCapability(ready: boolean): SaleStartCapabilitySnapshot {
   return {
-    canStartNetworkAuthorizedSale: ready,
-    blockingCodes: ready ? [] : ["WHOLE_MACHINE_HARDWARE_FAULT"],
-    components: {
-      platformReachability: {
-        ready: true,
-        code: "PLATFORM_REACHABLE",
-        message: "mock backend reachable",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "UI-DEBUG-PLAN",
-      },
-      paymentOptions: {
-        ready: true,
-        code: "PAYMENT_OPTIONS_READY",
-        message: "mock payment options available",
-        methods: [
+    generation: "ui-debug-daemon",
+    revision: 1,
+    observedAt: UPDATED_AT,
+    canStartSale: ready,
+    blockers: ready
+      ? []
+      : [
           {
-            method: "mock",
-            optionKey: "mock:mock",
-            providerCode: "mock",
-            ready: true,
-            disabledReason: null,
-          },
-          {
-            method: "qr_code",
-            optionKey: "qr_code:alipay",
-            providerCode: "alipay",
-            ready: true,
-            disabledReason: null,
-          },
-          {
-            method: "payment_code",
-            optionKey: "payment_code:alipay",
-            providerCode: "alipay",
-            ready,
-            disabledReason: ready ? null : "scanner blocked by scenario",
+            code: "WHOLE_MACHINE_HARDWARE_FAULT",
+            component: "hardware",
+            message: "模拟下位机故障，售卖入口被屏蔽",
           },
         ],
-      },
-      scannerCapability: {
-        ready,
-        code: ready ? "SCANNER_READY" : "SCANNER_BLOCKED",
-        message: ready ? "mock scanner ready" : "mock scanner blocked",
-      },
-      syncHealth: {
-        ready,
-        code: ready ? "SYNC_READY" : "SYNC_BLOCKED",
-        message: ready ? "mock sync connected" : "mock sync disconnected",
-      },
-      wholeMachineBlockers: {
-        ready,
-        code: ready ? "WHOLE_MACHINE_READY" : "WHOLE_MACHINE_HARDWARE_FAULT",
-        message: ready ? "mock machine ready" : "mock hardware fault",
-      },
-      slotSaleSafety: {
-        ready,
-        code: ready ? "SLOTS_READY" : "SLOTS_BLOCKED",
-        message: ready ? "all slots saleable" : "slot state blocked",
-        blockedSlots: ready
-          ? []
-          : [
-              {
-                slotId: "550e8400-e29b-41d4-a716-446655440001",
-                slotCode: "A1",
-                slotSalesState: "frozen",
-              },
-            ],
-      },
+    degradations: [],
+    paymentOptions: {
+      ready: true,
+      defaultOptionKey: paymentOptions.defaultOptionKey,
+      defaultProviderCode: paymentOptions.defaultProviderCode,
+      options: paymentOptions.options.map((option) => ({
+        optionKey: option.optionKey,
+        providerCode: option.providerCode,
+        method: option.method,
+        displayName: option.displayName,
+        description: option.description,
+        icon: option.icon,
+        recommended: option.recommended,
+        ready: !option.disabled,
+        disabledReason: option.disabledReason,
+      })),
     },
   };
 }
@@ -678,9 +699,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: readyHealth,
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: emptyTransaction,
     sync,
     scanner,
@@ -694,9 +714,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: blockedHealth,
     ready: blockedReady,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(false),
+    saleCapability: saleCapability(false),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: emptyTransaction,
     sync: { ...sync, mqttConnected: false, lastError: "mock MQTT offline" },
     scanner: { ...scanner, online: false, level: "error" },
@@ -710,9 +729,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: readyHealth,
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: soldOutSaleView,
-    paymentOptions,
     transaction: emptyTransaction,
     sync,
     scanner,
@@ -734,9 +752,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({}),
     sync,
     scanner,
@@ -758,9 +775,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentMethod: "payment_code",
       paymentProvider: "alipay",
@@ -788,9 +804,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "canceled",
       orderStatus: "canceled",
@@ -810,9 +825,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: readyHealth,
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "dispensing",
@@ -837,9 +851,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: readyHealth,
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "dispensing",
@@ -870,9 +883,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     health: readyHealth,
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "dispensing",
@@ -911,9 +923,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: blockedReady,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(false),
+    saleCapability: saleCapability(false),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "dispense_failed",
@@ -948,9 +959,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: blockedReady,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(false),
+    saleCapability: saleCapability(false),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "manual_handling",
@@ -985,9 +995,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: blockedReady,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(false),
+    saleCapability: saleCapability(false),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "refund_pending",
       orderStatus: "refund_pending",
@@ -1022,9 +1031,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "refunded",
       orderStatus: "refunded",
@@ -1059,9 +1067,8 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     },
     ready: readySnapshot,
     runtimeConfiguration,
-    saleReadiness: saleReadiness(true),
+    saleCapability: saleCapability(true),
     saleView: baseSaleView,
-    paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
       orderStatus: "fulfilled",

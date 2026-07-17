@@ -11,14 +11,6 @@ struct DaemonReadyFile {
     #[serde(rename = "readyzUrl")]
     _readyz_url: String,
     ipc_token: String,
-    #[serde(default)]
-    runtime_flags: MachineRuntimeFlags,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MachineRuntimeFlags {
-    advanced_maintenance_config: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,7 +20,6 @@ struct DaemonConnectionInfo {
     token: String,
     source: &'static str,
     mock: bool,
-    runtime_flags: MachineRuntimeFlags,
 }
 
 fn daemon_ready_file_path() -> String {
@@ -79,7 +70,6 @@ fn get_daemon_connection() -> Result<DaemonConnectionInfo, String> {
         token: ready.ipc_token,
         source: "tauri_ready_file",
         mock: false,
-        runtime_flags: ready.runtime_flags,
     })
 }
 

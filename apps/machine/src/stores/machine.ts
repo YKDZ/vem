@@ -3,8 +3,8 @@ import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 import { defineStore } from "pinia";
 
 import type { HealthSnapshot } from "@/daemon/schemas";
+
 import { daemonClient } from "@/daemon/client";
-import { useAudioCueStore } from "@/stores/audio-cues";
 
 type MachineState = {
   effectiveRuntimeConfiguration: EffectiveMachineRuntimeConfiguration | null;
@@ -36,9 +36,6 @@ export const useMachineStore = defineStore("machine", {
     platformApiBaseUrl: (state): string | null =>
       state.effectiveRuntimeConfiguration?.platform?.apiBaseUrl ?? null,
     hardwareReady: (state): boolean => state.health?.hardwareOnline ?? false,
-    canSell: (state): boolean =>
-      state.health?.hardwareOnline === true &&
-      (state.health.status === "healthy" || state.health.status === "degraded"),
     hasDeploymentConfig: (state): boolean =>
       Boolean(
         state.health?.configConfigured &&
@@ -56,13 +53,6 @@ export const useMachineStore = defineStore("machine", {
       configuration: EffectiveMachineRuntimeConfiguration,
     ): void {
       this.effectiveRuntimeConfiguration = configuration;
-      useAudioCueStore().applySettings({
-        enabled: configuration.experience.audio.cuesEnabled,
-        categories: {
-          presence: configuration.experience.audio.presenceCuesEnabled,
-          transaction: configuration.experience.audio.transactionCuesEnabled,
-        },
-      });
       this.configLoaded = true;
     },
     async loadEffectiveRuntimeConfiguration(): Promise<void> {

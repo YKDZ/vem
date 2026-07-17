@@ -1,8 +1,9 @@
+import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
-import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 const {
   routerPushMock,
@@ -13,10 +14,9 @@ const {
   getHealthMock,
   getReadyMock,
   getEffectiveRuntimeConfigurationMock,
-  getSaleReadinessMock,
+  getSaleStartCapabilityMock,
   getCurrentTransactionMock,
   getSaleViewMock,
-  getPaymentOptionsMock,
   createOrderMock,
   subscribeVisionProfilesMock,
   openVisionTryOnSessionMock,
@@ -33,10 +33,9 @@ const {
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
   getEffectiveRuntimeConfigurationMock: vi.fn(),
-  getSaleReadinessMock: vi.fn(),
+  getSaleStartCapabilityMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getSaleViewMock: vi.fn(),
-  getPaymentOptionsMock: vi.fn(),
   createOrderMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
@@ -72,10 +71,9 @@ vi.mock("@/daemon/client", () => ({
     getHealth: getHealthMock,
     getReady: getReadyMock,
     getEffectiveRuntimeConfiguration: getEffectiveRuntimeConfigurationMock,
-    getSaleReadiness: getSaleReadinessMock,
+    getSaleStartCapability: getSaleStartCapabilityMock,
     getCurrentTransaction: getCurrentTransactionMock,
     getSaleView: getSaleViewMock,
-    getPaymentOptions: getPaymentOptionsMock,
     createOrder: createOrderMock,
   },
 }));
@@ -100,8 +98,10 @@ import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
+import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 import BootView from "./BootView.vue";
 import CatalogView from "./CatalogView.vue";
@@ -115,6 +115,7 @@ let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 let propertyRestorers: Array<() => void> = [];
 let customerExperienceEventCleanups: Array<() => void> = [];
+let capabilityRevision = 0;
 
 beforeEach(() => {
   resetCustomerPresenceSessionForTests();
@@ -122,6 +123,7 @@ beforeEach(() => {
   setActivePinia(pinia);
   window.localStorage.clear();
   vi.clearAllMocks();
+  capabilityRevision = 0;
   submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
     if (intent.type === "customer.navigate") {
       routerPushMock(intent.target);
@@ -176,24 +178,7 @@ beforeEach(() => {
   getEffectiveRuntimeConfigurationMock.mockResolvedValue(
     effectiveRuntimeConfigurationFixture(),
   );
-  getPaymentOptionsMock.mockResolvedValue({
-    options: [
-      {
-        optionKey: "mock:mock",
-        providerCode: "mock",
-        method: "mock",
-        displayName: "模拟支付",
-        description: "本地模拟",
-        icon: "mock",
-        disabled: false,
-        disabledReason: null,
-        recommended: true,
-      },
-    ],
-    defaultOptionKey: "mock:mock",
-    defaultProviderCode: "mock",
-    serverTime: "2026-06-04T00:00:00Z",
-  });
+  getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
   createOrderMock.mockResolvedValue(transactionSnapshot());
 });
 
@@ -388,10 +373,22 @@ function effectiveRuntimeConfigurationFixture(
       scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
     },
     experience: {
-      audio: { volume: 0.7, cuesEnabled: false, presenceCuesEnabled: false, transactionCuesEnabled: false },
+      audio: {
+        volume: 0.7,
+        cuesEnabled: false,
+        presenceCuesEnabled: false,
+        transactionCuesEnabled: false,
+      },
     },
-    secretStatus: { machineSecretConfigured: true, mqttSigningSecretConfigured: true, mqttPasswordConfigured: false },
-    profileRefresh: { status: claimed ? "accepted" : "unclaimed", lastError: null },
+    secretStatus: {
+      machineSecretConfigured: true,
+      mqttSigningSecretConfigured: true,
+      mqttPasswordConfigured: false,
+    },
+    profileRefresh: {
+      status: claimed ? "accepted" : "unclaimed",
+      lastError: null,
+    },
   };
   return configuration as unknown as EffectiveMachineRuntimeConfiguration;
 }
@@ -544,72 +541,19 @@ function healthSnapshot() {
 function readySnapshot() {
   return {
     ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog" as const,
     updatedAt: "2026-06-04T00:00:00Z",
   };
 }
 
-function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
-  return {
-    canStartNetworkAuthorizedSale,
-    blockingCodes: canStartNetworkAuthorizedSale
-      ? []
-      : ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"],
-    components: {
-      platformReachability: {
-        ready: canStartNetworkAuthorizedSale,
-        code: canStartNetworkAuthorizedSale
-          ? "PLATFORM_REACHABLE"
-          : "PLATFORM_UNREACHABLE",
-        message: canStartNetworkAuthorizedSale
-          ? "platform reachable"
-          : "platform offline",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: canStartNetworkAuthorizedSale,
-        code: canStartNetworkAuthorizedSale
-          ? "PAYMENT_OPTIONS_READY"
-          : "NO_PAYMENT_OPTIONS",
-        message: canStartNetworkAuthorizedSale
-          ? "payment option available"
-          : "no ready payment option",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-    },
-  };
+function saleCapability(canStartSale: boolean) {
+  return saleCapabilitySnapshot({
+    canStartSale,
+    revision: ++capabilityRevision,
+    blockerCode: "PLATFORM_UNREACHABLE",
+  });
 }
 
-function applyBlockedSaleReadiness(): void {
+function applyBlockedCapability(): void {
   const health = {
     status: "healthy" as const,
     process: {
@@ -634,64 +578,11 @@ function applyBlockedSaleReadiness(): void {
     operatorReason: "",
     updatedAt: "2026-06-04T00:00:00Z",
   };
-  const ready = {
-    ready: true,
-    canSell: true,
-    mode: "catalog",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog" as const,
-    updatedAt: "2026-06-04T00:00:00Z",
-  };
-  const readiness = {
-    canStartNetworkAuthorizedSale: false,
-    blockingCodes: ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"],
-    components: {
-      platformReachability: {
-        ready: false,
-        code: "PLATFORM_UNREACHABLE",
-        message: "platform offline",
-      },
-      machineAuthentication: {
-        ready: true,
-        code: "MACHINE_AUTH_READY",
-        message: "machine code configured",
-      },
-      activePlanogram: {
-        ready: true,
-        code: "ACTIVE_PLANOGRAM_READY",
-        message: "PLAN-1",
-      },
-      paymentOptions: {
-        ready: false,
-        code: "NO_PAYMENT_OPTIONS",
-        message: "no ready payment option",
-        methods: [],
-      },
-      scannerCapability: {
-        ready: true,
-        code: "SCANNER_READY",
-        message: "scanner ready",
-      },
-      syncHealth: {
-        ready: true,
-        code: "SYNC_READY",
-        message: "sync connected",
-      },
-      wholeMachineBlockers: {
-        ready: true,
-        code: "WHOLE_MACHINE_READY",
-        message: "hardware ready",
-      },
-    },
-  };
+  const capability = saleCapability(false);
   getHealthMock.mockResolvedValue(health);
-  getReadyMock.mockResolvedValue(ready);
-  getSaleReadinessMock.mockResolvedValue(readiness);
+  getSaleStartCapabilityMock.mockResolvedValue(capability);
   useConnectivityStore().applyHealth(health);
-  useConnectivityStore().applyReady(ready);
-  useConnectivityStore().applySaleReadiness(readiness);
+  useSaleCapabilityStore().acceptSnapshot(capability);
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
@@ -705,18 +596,13 @@ async function mountView(component: object): Promise<HTMLElement> {
   return host;
 }
 
-describe("sale readiness UI flow", () => {
+describe("sale-start capability UI flow", () => {
   it("routes first boot machines without provisioning to Local Operations", async () => {
     getHealthMock.mockResolvedValue({
       ...healthSnapshot(),
       configConfigured: false,
     });
-    getReadyMock.mockResolvedValue({
-      ...readySnapshot(),
-      canSell: false,
-      suggestedRoute: "maintenance",
-    });
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(false));
     getEffectiveRuntimeConfigurationMock.mockResolvedValue(
       effectiveRuntimeConfigurationFixture(false),
     );
@@ -726,12 +612,12 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
     });
+    expect(getReadyMock).not.toHaveBeenCalled();
   });
 
   it("does not route to catalog when startup config loading fails", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
     getEffectiveRuntimeConfigurationMock.mockRejectedValue(
       new Error("runtime configuration unavailable"),
     );
@@ -744,11 +630,12 @@ describe("sale readiness UI flow", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
-  it("keeps accepted effective configuration as startup authority when sale-readiness decoding fails", async () => {
+  it("keeps accepted effective configuration as startup authority when sale-start-capability decoding fails", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockRejectedValue(
-      new Error("sale readiness decoder rejected a stale daemon projection"),
+    getSaleStartCapabilityMock.mockRejectedValue(
+      new Error(
+        "sale-start capability decoder rejected a stale daemon projection",
+      ),
     );
     getEffectiveRuntimeConfigurationMock.mockResolvedValue(
       effectiveRuntimeConfigurationFixture(true),
@@ -759,15 +646,14 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
-    expect(useMachineStore().effectiveRuntimeConfiguration?.profileRefresh.status).toBe(
-      "accepted",
-    );
+    expect(
+      useMachineStore().effectiveRuntimeConfiguration?.profileRefresh.status,
+    ).toBe("accepted");
   });
 
   it("does not render raw current-transaction parse errors during boot", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
     getCurrentTransactionMock.mockRejectedValue(
       new Error("ZodError: Invalid enum value at nextAction"),
     );
@@ -805,11 +691,10 @@ describe("sale readiness UI flow", () => {
     expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 
-  it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
+  it("loads sale-start capability during boot so a ready catalog can enter purchase", async () => {
     const item = makeCatalogItem();
     getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
@@ -820,27 +705,12 @@ describe("sale readiness UI flow", () => {
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(getSaleReadinessMock).toHaveBeenCalledOnce();
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     });
-    expect(
-      useConnectivityStore().saleReadiness?.canStartNetworkAuthorizedSale,
-    ).toBe(true);
+    expect(useSaleCapabilityStore().canStartSale).toBe(true);
 
     const checkoutStore = useCheckoutStore();
-    checkoutStore.paymentOptions = [
-      {
-        optionKey: "mock:mock",
-        providerCode: "mock",
-        method: "mock",
-        displayName: "模拟支付",
-        description: "本地模拟",
-        icon: "mock",
-        disabled: false,
-        disabledReason: null,
-        recommended: true,
-      },
-    ];
-    checkoutStore.selectedPaymentOptionKey = "mock:mock";
+    checkoutStore.selectedPaymentOptionKey = "qr_code:alipay";
     checkoutStore.selectItem(item);
 
     expect(checkoutStore.canCreateOrder).toBe(true);
@@ -852,7 +722,7 @@ describe("sale readiness UI flow", () => {
   it("records unknown daemon events from the real boot subscription without dispatching business updates", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
 
     await mountView(BootView);
 
@@ -919,7 +789,7 @@ describe("sale readiness UI flow", () => {
     };
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
     getCurrentTransactionMock.mockResolvedValue(dismissedTransaction);
     getSaleViewMock.mockResolvedValue({
       items: [makeCatalogItem()],
@@ -964,7 +834,7 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyBlockedSaleReadiness();
+    applyBlockedCapability();
 
     const host = await mountView(CatalogView);
 
@@ -1013,10 +883,10 @@ describe("sale readiness UI flow", () => {
     });
     useConnectivityStore().applyHealth(healthSnapshot());
     useConnectivityStore().applyReady(readySnapshot());
-    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
 
     const host = await mountView(CatalogView);
 
@@ -1045,7 +915,7 @@ describe("sale readiness UI flow", () => {
     });
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
 
     const host = await mountView(CatalogView);
     requireButtonByText(host, "T恤").click();
@@ -1091,7 +961,7 @@ describe("sale readiness UI flow", () => {
     });
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
 
     const host = await mountView(CatalogView);
     requireButtonByText(host, "T恤").click();
@@ -1140,28 +1010,12 @@ describe("sale readiness UI flow", () => {
   });
 
   it("keeps the fixed catalog home through repeated readiness changes", async () => {
-    vi.useFakeTimers();
     const item = makeCatalogItem();
     const blockedHealth = {
       ...healthSnapshot(),
       status: "degraded" as const,
       hardwareOnline: false,
       operatorReason: "LOWER_CONTROLLER_UNAVAILABLE",
-    };
-    const blockedReady = {
-      ...readySnapshot(),
-      ready: false,
-      canSell: false,
-      mode: "maintenance" as const,
-      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
-      blockingReasons: [
-        {
-          code: "LOWER_CONTROLLER_UNAVAILABLE",
-          component: "hardware",
-          message: "lower controller unavailable",
-        },
-      ],
-      suggestedRoute: "maintenance" as const,
     };
     useCatalogStore().applySnapshot({
       items: [item],
@@ -1176,14 +1030,12 @@ describe("sale readiness UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     getHealthMock.mockResolvedValue(blockedHealth);
-    getReadyMock.mockResolvedValue(blockedReady);
-    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+    const blockedCapability = saleCapability(false);
+    getSaleStartCapabilityMock.mockResolvedValue(blockedCapability);
+    useSaleCapabilityStore().acceptSnapshot(blockedCapability);
 
     await mountView(CatalogView);
 
-    await vi.waitFor(() => {
-      expect(getReadyMock).toHaveBeenCalled();
-    });
     expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
 
@@ -1209,10 +1061,9 @@ describe("sale readiness UI flow", () => {
     await nextTick();
     expect(document.querySelector(".presence-present")).toBeTruthy();
 
-    getReadyMock.mockResolvedValue(readySnapshot());
-    await vi.advanceTimersByTimeAsync(5_000);
-    getReadyMock.mockResolvedValue(blockedReady);
-    await vi.advanceTimersByTimeAsync(5_000);
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(false));
+    await nextTick();
 
     expect(routerReplaceMock).not.toHaveBeenCalled();
     expect(document.querySelectorAll(".home-category-card")).toHaveLength(3);
@@ -1273,6 +1124,8 @@ describe("sale readiness UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     routeParams.catalogKey = item.catalogKey;
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
     applySensitiveVisionProfile();
 
     const host = await mountView(ProductDetailView);
@@ -1291,6 +1144,7 @@ describe("sale readiness UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     routeParams.catalogKey = item.catalogKey;
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
 
     const host = await mountView(ProductDetailView);
 
@@ -1794,7 +1648,7 @@ describe("sale readiness UI flow", () => {
     useCatalogStore().applySnapshot(saleView);
     useConnectivityStore().applyHealth(healthSnapshot());
     useConnectivityStore().applyReady(readySnapshot());
-    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
     getSaleViewMock.mockResolvedValue(saleView);
     applySensitiveVisionProfile();
     applyVisionTryOnConfig();
@@ -1836,7 +1690,9 @@ describe("sale readiness UI flow", () => {
 
     host = await mountView(CheckoutView);
     await vi.waitFor(() => {
-      expect(useCheckoutStore().selectedPaymentOptionKey).toBe("mock:mock");
+      expect(useCheckoutStore().selectedPaymentOptionKey).toBe(
+        "qr_code:alipay",
+      );
     });
 
     const submitButton = Array.from(host.querySelectorAll("button")).find(
@@ -1855,8 +1711,8 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       slotId: silhouettedVariant.slotId,
       slotCode: silhouettedVariant.slotCode,
-      paymentMethod: "mock",
-      paymentProviderCode: "mock",
+      paymentMethod: "qr_code",
+      paymentProviderCode: "alipay",
       profileSnapshot: null,
       idempotencyKey: expect.stringMatching(/^checkout:/),
     });
@@ -1886,7 +1742,7 @@ describe("sale readiness UI flow", () => {
     useCatalogStore().applySnapshot(saleView);
     useConnectivityStore().applyHealth(healthSnapshot());
     useConnectivityStore().applyReady(readySnapshot());
-    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
     getSaleViewMock.mockResolvedValue(saleView);
     applySensitiveVisionProfile();
     applyVisionTryOnConfig();
@@ -1928,7 +1784,9 @@ describe("sale readiness UI flow", () => {
 
     host = await mountView(CheckoutView);
     await vi.waitFor(() => {
-      expect(useCheckoutStore().selectedPaymentOptionKey).toBe("mock:mock");
+      expect(useCheckoutStore().selectedPaymentOptionKey).toBe(
+        "qr_code:alipay",
+      );
     });
 
     const submitButton = Array.from(host.querySelectorAll("button")).find(
@@ -1947,8 +1805,8 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       slotId: silhouettedVariant.slotId,
       slotCode: silhouettedVariant.slotCode,
-      paymentMethod: "mock",
-      paymentProviderCode: "mock",
+      paymentMethod: "qr_code",
+      paymentProviderCode: "alipay",
       profileSnapshot: null,
       idempotencyKey: expect.stringMatching(/^checkout:/),
     });
@@ -2087,7 +1945,7 @@ describe("sale readiness UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     useCheckoutStore().selectItem(item);
-    applyBlockedSaleReadiness();
+    applyBlockedCapability();
     applySensitiveVisionProfile();
 
     const host = await mountView(CheckoutView);
@@ -2145,16 +2003,19 @@ describe("sale readiness UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     useCheckoutStore().selectItem(item);
-    applyBlockedSaleReadiness();
+    applyBlockedCapability();
 
     const host = await mountView(CheckoutView);
     await nextTick();
 
     expect(host.textContent).toContain("确认购买");
     expect(host.textContent).toContain("基础短袖");
-    expect(host.textContent).toContain("网络未就绪");
-    const submitButton = Array.from(host.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("确认并生成支付二维码"),
+    expect(host.textContent).toContain("platform unavailable");
+    await vi.waitFor(() => {
+      expect(useCheckoutStore().loading).toBe(false);
+    });
+    const submitButton = host.querySelector<HTMLButtonElement>(
+      '[data-test="checkout-submit"]',
     );
     expect(submitButton).toBeTruthy();
     expect(submitButton?.disabled).toBe(true);

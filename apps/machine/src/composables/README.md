@@ -31,7 +31,7 @@
 - 打包音频放在 `apps/machine/src/assets/audio/`，由 TypeScript import 进入 Vite 构建；Tauri 打包时随 `dist` 一起进入应用包。不要在客户流程里手写不受构建校验的本地文件路径。
 - 客户流程调用 `playLocal()` 时应传入 Vite import 得到的音频 URL，而不是手写文件名字符串或本机文件路径。
 - 第一版只支持单个 active playback。新的播放请求默认停止并替换当前播放；`stop()` 停止当前播放并记录 stopped 诊断；不支持多路混播或按句柄精确停止。
-- 播放诊断可记录 requested、started、completed、failed、stopped。`completed` 仅用于诊断和测试观察，不参与交易、出货、页面跳转或 sale readiness。
+- 播放诊断可记录 requested、started、completed、failed、stopped。`completed` 仅用于诊断和测试观察，不参与交易、出货、页面跳转或销售能力判断。
 - #150 首版客户流程只支持本地打包音频。平台托管音频属于后续能力，届时应使用 service-api 管理的媒体资产 URL；任意外部 URL 只允许用于 protected maintenance/debug 诊断，不作为客户流程输入。
 - 整体 Machine Audio Playback 规划包含单一全局机器音频音量，由维护页以 0-100% 呈现并应用到本地打包音频、未来平台托管音频和测试播放；不要为每个音频单独配置音量。
 - Machine Audio Playback helper 应自动解析 playback driver：E2E/单元测试使用 mock driver；生产 Tauri runtime 在 native playback 可用时优先使用 native driver；非 Tauri 或 native 不可用时使用 browser driver。native 不可用时允许自动降级到 browser driver，但必须记录降级诊断。

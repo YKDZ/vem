@@ -76,14 +76,31 @@ function healthSnapshot(overrides: Record<string, unknown> = {}) {
 function readySnapshot(overrides: Record<string, unknown> = {}) {
   return {
     ready: true,
-    canSell: true,
-    mode: "normal",
-    blockingCodes: [],
-    blockingReasons: [],
-    degradedReasons: [],
-    suggestedRoute: "catalog",
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
+  };
+}
+
+function capabilitySnapshot(
+  options: Array<Record<string, unknown>>,
+  defaultOptionKey: string | null,
+) {
+  return {
+    generation: "integration-daemon",
+    revision: 7,
+    observedAt: "2026-01-01T00:00:00Z",
+    canStartSale: true,
+    blockers: [],
+    degradations: [],
+    paymentOptions: {
+      ready: true,
+      defaultOptionKey,
+      defaultProviderCode: defaultOptionKey?.split(":")[1] ?? null,
+      options: options.map(({ disabled, ...option }) => ({
+        ...option,
+        ready: disabled !== true,
+      })),
+    },
   };
 }
 
@@ -153,7 +170,7 @@ function currentFixtures() {
   if (scenario === "payment") {
     return {
       health: healthSnapshot(),
-      ready: readySnapshot({ suggestedRoute: "payment" }),
+      ready: readySnapshot(),
       transaction: paymentTransaction(),
       scanner: {
         online: true,
@@ -164,8 +181,8 @@ function currentFixtures() {
         message: "scanner ready",
         updatedAt: "2026-01-01T00:00:00Z",
       },
-      paymentOptions: {
-        options: [
+      capability: capabilitySnapshot(
+        [
           {
             optionKey: "mock:mock",
             providerCode: "mock",
@@ -200,17 +217,15 @@ function currentFixtures() {
             disabledReason: null,
           },
         ],
-        defaultOptionKey: "payment_code:alipay",
-        defaultProviderCode: "alipay",
-        serverTime: "2026-01-01T00:00:00Z",
-      },
+        "payment_code:alipay",
+      ),
     };
   }
 
   if (scenario === "scannerOffline") {
     return {
       health: healthSnapshot({ scannerOnline: false, status: "degraded" }),
-      ready: readySnapshot({ suggestedRoute: "catalog" }),
+      ready: readySnapshot(),
       transaction: emptyTransaction,
       scanner: {
         online: false,
@@ -221,8 +236,8 @@ function currentFixtures() {
         message: "open scanner serial failed: Access denied",
         updatedAt: "2026-01-01T00:00:00Z",
       },
-      paymentOptions: {
-        options: [
+      capability: capabilitySnapshot(
+        [
           {
             optionKey: "qr_code:alipay",
             providerCode: "alipay",
@@ -247,10 +262,8 @@ function currentFixtures() {
               "扫码器不可用：open scanner serial failed: Access denied",
           },
         ],
-        defaultOptionKey: "qr_code:alipay",
-        defaultProviderCode: "alipay",
-        serverTime: "2026-01-01T00:00:00Z",
-      },
+        "qr_code:alipay",
+      ),
     };
   }
 
@@ -267,12 +280,7 @@ function currentFixtures() {
       message: "scanner ready",
       updatedAt: "2026-01-01T00:00:00Z",
     },
-    paymentOptions: {
-      options: [],
-      defaultOptionKey: null,
-      defaultProviderCode: null,
-      serverTime: "2026-01-01T00:00:00Z",
-    },
+    capability: capabilitySnapshot([], null),
   };
 }
 
@@ -320,8 +328,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     respondJson(res, fixtures.scanner);
     return;
   }
-  if (url.pathname === "/v1/payment-options") {
-    respondJson(res, fixtures.paymentOptions);
+  if (url.pathname === "/v1/sale-start-capability") {
+    respondJson(res, fixtures.capability);
     return;
   }
   if (url.pathname === "/v1/sync/status") {
@@ -455,45 +463,47 @@ describe("machine daemon client integration", () => {
   it("parses serial_text scanner status and payment transaction fixtures", async () => {
     scenario = "payment";
 
-    const [health, ready, tx, scanner, options] = await Promise.all([
+    const [health, ready, tx, scanner, capability] = await Promise.all([
       daemonClient.getHealth(),
       daemonClient.getReady(),
       daemonClient.getCurrentTransaction(),
       daemonClient.getScannerStatus(),
-      daemonClient.getPaymentOptions(),
+      daemonClient.getSaleStartCapability(),
     ]);
 
     expect(health.scannerOnline).toBe(true);
-    expect(ready.suggestedRoute).toBe("payment");
+    expect(ready.ready).toBe(true);
     expect(tx.paymentMethod).toBe("payment_code");
     expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
     expect(tx.paymentCodeAttempt?.maskedAuthCode).toBe("6212****3456");
     expect(scanner.adapter).toBe("serial_text");
     expect(scanner.code).toBe("SCANNER_READY");
-    expect(options.defaultOptionKey).toBe("payment_code:alipay");
-    expectNoSecretFields({ health, ready, tx, scanner, options });
+    expect(capability.paymentOptions.defaultOptionKey).toBe(
+      "payment_code:alipay",
+    );
+    expectNoSecretFields({ health, ready, tx, scanner, capability });
   });
 
   it("keeps qr option enabled when scanner is offline", async () => {
     scenario = "scannerOffline";
 
-    const [scanner, options] = await Promise.all([
+    const [scanner, capability] = await Promise.all([
       daemonClient.getScannerStatus(),
-      daemonClient.getPaymentOptions(),
+      daemonClient.getSaleStartCapability(),
     ]);
 
     expect(scanner.online).toBe(false);
     expect(scanner.code).toBe("SCANNER_OPEN_FAILED");
-    const paymentCode = options.options.find(
+    const paymentCode = capability.paymentOptions.options.find(
       (option) => option.method === "payment_code",
     );
-    const qrCode = options.options.find(
+    const qrCode = capability.paymentOptions.options.find(
       (option) => option.method === "qr_code",
     );
-    expect(paymentCode?.disabled).toBe(true);
+    expect(paymentCode?.ready).toBe(false);
     expect(paymentCode?.disabledReason).toContain("扫码器不可用");
-    expect(qrCode?.disabled).toBe(false);
-    expect(options.defaultOptionKey).toBe("qr_code:alipay");
+    expect(qrCode?.ready).toBe(true);
+    expect(capability.paymentOptions.defaultOptionKey).toBe("qr_code:alipay");
   });
 
   it("retains the Machine Location Label in the effective configuration", async () => {

@@ -7,9 +7,10 @@ import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
 import { useNaturalContextStore } from "@/stores/natural-context";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useVisionStore } from "@/stores/vision";
+import { applySaleCapability } from "@/test-support/sale-capability";
 
 import { onCustomerEvent } from "./useCustomerEvents";
 import {
@@ -1157,46 +1158,19 @@ describe("customer event sources", () => {
     ]);
   });
 
-  it("emits hardware fault events from readiness blockers through the central event source", () => {
+  it("emits hardware fault events from capability blockers through the central event source", () => {
     const observed: CustomerExperienceEvent[] = [];
     const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
     installCustomerEventSources();
 
-    const connectivityStore = useConnectivityStore();
-    connectivityStore.applyReady({
-      ready: false,
-      canSell: false,
-      mode: "offline",
-      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
-      blockingReasons: [
-        {
-          code: "LOWER_CONTROLLER_UNAVAILABLE",
-          component: "hardware",
-          message: "lower controller unavailable",
-        },
-      ],
-      degradedReasons: [],
-      suggestedRoute: "offline",
-      updatedAt: "2026-07-05T12:40:00.000Z",
+    const blocked = applySaleCapability({
+      canStartSale: false,
+      blockerCode: "LOWER_CONTROLLER_UNAVAILABLE",
+      revision: 1,
     });
-    connectivityStore.applyReady({
-      ready: false,
-      canSell: false,
-      mode: "offline",
-      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
-      blockingReasons: [
-        {
-          code: "LOWER_CONTROLLER_UNAVAILABLE",
-          component: "hardware",
-          message: "lower controller unavailable",
-        },
-      ],
-      degradedReasons: [],
-      suggestedRoute: "offline",
-      updatedAt: "2026-07-05T12:40:00.000Z",
-    });
+    useSaleCapabilityStore().acceptSnapshot(blocked);
 
     unsubscribe();
     expect(observed).toHaveLength(1);
