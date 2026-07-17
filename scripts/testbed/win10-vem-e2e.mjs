@@ -2687,10 +2687,7 @@ if ($preCleanupRoute -ne $expectedRoute) { throw 'live ResultView did not automa
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
-foreach ($listener in $listeners) { Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue }
-Get-Process -Name machine -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
-if (@(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue).Count -ne 0) { throw 'CDP listener remained after debug UI cleanup' }
+if ($listeners.Count -ne 1) { throw 'live kiosk did not retain exactly one CDP listener after sale' }
 $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 if (-not [bool]$normalTaskInstance.Settings.Enabled) { throw 'normal VEMMachineUI task is disabled during cleanup' }
 $normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
@@ -2702,7 +2699,6 @@ Unregister-ScheduledTask -TaskName $normalTask -Confirm:$false -ErrorAction Stop
 $acceptanceOverlayTask = New-ScheduledTask -Action $acceptanceOverlayAction -Principal $acceptanceOverlayPrincipal
 Register-ScheduledTask -TaskName $normalTask -InputObject $acceptanceOverlayTask -Force | Out-Null
 $normalTaskPrincipal = $principal
-Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 $acceptanceTarget = $null
   do {
