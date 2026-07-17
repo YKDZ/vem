@@ -1206,6 +1206,16 @@ export class OrdersService {
           and(
             eq(payments.id, row.paymentId),
             inArray(payments.status, ["created", "pending", "processing"]),
+            // Payment-code submission claims this same payment row before it
+            // creates its durable attempt. Re-check inside this terminal CAS
+            // so a cancellation that raced an attempt can never close the
+            // order and let that attempt reach a provider afterwards.
+            sql`not exists (
+              select 1
+              from ${paymentCodeAttempts} active_attempt
+              where active_attempt.payment_id = ${payments.id}
+                and active_attempt.is_active = true
+            )`,
           ),
         )
         .returning({ id: payments.id });

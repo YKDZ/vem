@@ -46,6 +46,7 @@ pub struct ScannerFramer {
     suffix: ScannerFrameSuffix,
     frame: Vec<u8>,
     invalid_frame: bool,
+    pending_cr: bool,
     last_input_at_ms: Option<u128>,
     last_code: String,
     last_at_ms: u128,
@@ -63,6 +64,7 @@ impl ScannerFramer {
             suffix,
             frame: Vec::new(),
             invalid_frame: false,
+            pending_cr: false,
             last_input_at_ms: None,
             last_code: String::new(),
             last_at_ms: 0,
@@ -75,8 +77,7 @@ impl ScannerFramer {
                 .last_input_at_ms
                 .is_some_and(|last| now_ms.saturating_sub(last) >= SCANNER_FRAME_IDLE_TIMEOUT_MS)
         {
-            self.frame.clear();
-            self.invalid_frame = false;
+            self.reset_frame_state();
         }
         if !bytes.is_empty() {
             self.last_input_at_ms = Some(now_ms);
@@ -84,13 +85,11 @@ impl ScannerFramer {
         let mut out = Vec::new();
         for byte in bytes {
             match self.suffix {
-                ScannerFrameSuffix::Crlf | ScannerFrameSuffix::Lf if *byte == b'\n' => {
-                    self.flush(now_ms, &mut out);
-                }
+                ScannerFrameSuffix::Crlf => self.push_crlf_byte(*byte, now_ms, &mut out),
+                ScannerFrameSuffix::Lf if *byte == b'\n' => self.flush(now_ms, &mut out),
                 ScannerFrameSuffix::Cr if *byte == b'\r' => {
                     self.flush(now_ms, &mut out);
                 }
-                ScannerFrameSuffix::Crlf if *byte == b'\r' => {}
                 _ if is_allowed_payload_byte(*byte)
                     && !self.invalid_frame
                     && self.frame.len() < SCANNER_MAX_FRAME_BYTES =>
@@ -106,10 +105,54 @@ impl ScannerFramer {
         out
     }
 
+    /// Reset every per-frame and cross-frame acceptance state. Scanner arm
+    /// changes call this before accepting bytes for the next transaction, so
+    /// a partial frame or a duplicate from an earlier order cannot affect it.
+    pub fn reset(&mut self) {
+        self.reset_frame_state();
+        self.last_input_at_ms = None;
+        self.last_code.clear();
+        self.last_at_ms = 0;
+    }
+
+    fn push_crlf_byte(&mut self, byte: u8, now_ms: u128, out: &mut Vec<RawPaymentCode>) {
+        if self.pending_cr {
+            self.pending_cr = false;
+            if byte == b'\n' {
+                self.flush(now_ms, out);
+                return;
+            }
+
+            // CR belongs only to the configured terminal delimiter. A lone
+            // CR or CR followed by payload is malformed, never whitespace.
+            self.invalid_frame = true;
+            return;
+        }
+
+        match byte {
+            b'\r' => self.pending_cr = true,
+            // A lone LF is an invalid CRLF terminal, but it still terminates
+            // that malformed frame. Do not let it poison the next frame.
+            b'\n' => self.reset_frame_state(),
+            _ if is_allowed_payload_byte(byte)
+                && !self.invalid_frame
+                && self.frame.len() < SCANNER_MAX_FRAME_BYTES =>
+            {
+                self.frame.push(byte);
+            }
+            _ => self.invalid_frame = true,
+        }
+    }
+
+    fn reset_frame_state(&mut self) {
+        self.frame.clear();
+        self.invalid_frame = false;
+        self.pending_cr = false;
+    }
+
     fn flush(&mut self, now_ms: u128, out: &mut Vec<RawPaymentCode>) {
         if self.invalid_frame {
-            self.frame.clear();
-            self.invalid_frame = false;
+            self.reset_frame_state();
             return;
         }
         let Ok(code) = String::from_utf8(std::mem::take(&mut self.frame)) else {
@@ -210,6 +253,62 @@ mod tests {
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_crlf_requires_one_exact_terminal_pair() {
+        let mut framer = ScannerFramer::new(ScannerFrameSuffix::Crlf);
+
+        assert!(framer.push_bytes(b"6212\n", 1_000).is_empty());
+        assert!(framer.push_bytes(b"6212\rX\r\n", 1_001).is_empty());
+        assert!(framer.push_bytes(b"6212\r", 1_002).is_empty());
+        assert!(framer.push_bytes(b"X\r\n", 1_003).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 1_004);
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_discards_a_lone_lf_without_poisoning_the_next_crlf_frame() {
+        let mut framer = ScannerFramer::new(ScannerFrameSuffix::Crlf);
+        assert!(framer.push_bytes(b"6212\n", 1_000).is_empty());
+
+        let scanned = framer.push_bytes(b"621234567890123456\r\n", 1_001);
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].auth_code, "621234567890123456");
+    }
+
+    #[test]
+    fn scanner_framer_suffixes_have_exact_delimiter_semantics() {
+        let mut lf = ScannerFramer::new(ScannerFrameSuffix::Lf);
+        assert!(lf.push_bytes(b"6212\r\n", 1_000).is_empty());
+        assert_eq!(
+            lf.push_bytes(b"621234567890123456\n", 1_001)[0].auth_code,
+            "621234567890123456"
+        );
+
+        let mut cr = ScannerFramer::new(ScannerFrameSuffix::Cr);
+        assert!(cr.push_bytes(b"6212\n\r", 1_000).is_empty());
+        assert_eq!(
+            cr.push_bytes(b"621234567890123456\r", 1_001)[0].auth_code,
+            "621234567890123456"
+        );
+
+        let mut none = ScannerFramer::new(ScannerFrameSuffix::None);
+        assert!(none.push_bytes(b"6212\r", 1_000).is_empty());
+        assert_eq!(
+            none.push_bytes(b"621234567890123456", 1_001)[0].auth_code,
+            "621234567890123456"
+        );
+    }
+
+    #[test]
+    fn scanner_framer_reset_clears_duplicate_debounce() {
+        let mut framer = ScannerFramer::default();
+        assert_eq!(framer.push_bytes(b"621234567890123456\r\n", 1_000).len(), 1);
+        framer.reset();
+        assert_eq!(framer.push_bytes(b"621234567890123456\r\n", 1_001).len(), 1);
     }
 
     #[test]

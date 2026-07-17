@@ -52,18 +52,22 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
             .is_err(),
         "a complete pre-arm frame must not enter the payment path"
     );
-    let stale_event = loop {
-        let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
-            .await
-            .expect("stale scanner event timeout")
-            .expect("scanner event channel closed");
-        if matches!(event, DaemonEvent::ScannerCode { .. }) {
-            break event;
-        }
-    };
-    let stale_public_event = serde_json::to_string(&stale_event).expect("serialize stale event");
-    assert!(stale_public_event.contains("stal****-arm"));
-    assert!(!stale_public_event.contains("stale-before-arm"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let event = events_rx
+                    .recv()
+                    .await
+                    .expect("scanner event channel closed");
+                if matches!(event, DaemonEvent::ScannerCode { .. }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "unarmed bytes must not emit a completed scanner event"
+    );
     payment_code_scan_armer
         .arm_for_order("ORDER-SCANNER-PTY")
         .await;
@@ -77,6 +81,8 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         .expect("scanner raw channel closed");
     assert_eq!(raw.raw.auth_code, "621234567890123456");
     assert_eq!(raw.raw.masked_code, "6212****3456");
+    assert!(raw.scanner_health.online);
+    assert_eq!(raw.scanner_health.code, "SCANNER_READY");
 
     let event = loop {
         let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
@@ -91,6 +97,118 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
     assert!(public_event.contains("6212****3456"));
     assert!(!public_event.contains("621234567890123456"));
     assert!(!public_event.contains("authCode"));
+
+    // The frame has already been captured with online health evidence. A
+    // transport loss immediately afterwards cannot withdraw that scan.
+    drop(scanner_pty);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("scanner disconnect timeout")
+            .expect("scanner event channel closed");
+        if matches!(event, DaemonEvent::ScannerHealthChanged { ref snapshot, .. } if snapshot.code == "SCANNER_RECONNECTING")
+        {
+            break;
+        }
+    }
+
+    shutdown.cancel();
+    assert!(task.await.expect("scanner task join").is_ok());
+}
+
+#[tokio::test]
+async fn serial_text_scanner_pty_resets_partial_and_duplicate_state_for_the_next_arm() {
+    let mut scanner_pty = PtyHarness::open();
+    let (raw_tx, mut raw_rx) = mpsc::channel(4);
+    let (events_tx, mut events_rx) = broadcast::channel(8);
+    let shutdown = CancellationToken::new();
+    let payment_code_scan_armer = PaymentCodeScanArmer::default();
+    let runtime = ScannerRuntime::new(
+        ScannerRuntimeConfig {
+            port_path: Some(scanner_pty.slave_path.to_string_lossy().to_string()),
+            baud_rate: 9_600,
+            source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+        },
+        raw_tx,
+        events_tx,
+        shutdown.clone(),
+        payment_code_scan_armer.clone(),
+    );
+    let task = tokio::spawn(runtime.run());
+
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("scanner readiness timeout")
+            .expect("scanner event channel closed");
+        if matches!(event, DaemonEvent::ScannerHealthChanged { ref snapshot, .. } if snapshot.code == "SCANNER_READY")
+        {
+            break;
+        }
+    }
+
+    let code = b"621234567890123456";
+    payment_code_scan_armer.arm_for_order("ORDER-A").await;
+    scanner_pty.write(&code[..6]).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Replacement is itself an arm epoch boundary. The A frame terminator
+    // must not complete its prefix as a payment for B.
+    payment_code_scan_armer.arm_for_order("ORDER-B").await;
+    scanner_pty.write(b"\r\n").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
+            .await
+            .is_err(),
+        "A's prefix must not complete after B replaces its arm"
+    );
+
+    scanner_pty
+        .write(&[code.as_slice(), b"\r\n"].concat())
+        .await;
+    let raw = tokio::time::timeout(Duration::from_secs(2), raw_rx.recv())
+        .await
+        .expect("B frame timeout")
+        .expect("scanner raw channel closed");
+    assert_eq!(raw.raw.auth_code, "621234567890123456");
+
+    scanner_pty
+        .write(&[code.as_slice(), b"\r\n"].concat())
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
+            .await
+            .is_err(),
+        "the consumed arm must suppress a duplicate frame"
+    );
+
+    payment_code_scan_armer.arm_for_order("ORDER-C").await;
+    scanner_pty
+        .write(&[code.as_slice(), b"\r\n"].concat())
+        .await;
+    let next_order = tokio::time::timeout(Duration::from_secs(2), raw_rx.recv())
+        .await
+        .expect("C frame timeout")
+        .expect("scanner raw channel closed");
+    assert_eq!(next_order.raw.auth_code, "621234567890123456");
+
+    drop(scanner_pty);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("scanner disconnect timeout")
+            .expect("scanner event channel closed");
+        if matches!(event, DaemonEvent::ScannerHealthChanged { ref snapshot, .. } if snapshot.code == "SCANNER_RECONNECTING")
+        {
+            break;
+        }
+    }
+    assert!(
+        next_order.scanner_health.online,
+        "a later disconnect must not mutate the completion-time scan evidence"
+    );
+    assert_eq!(next_order.scanner_health.code, "SCANNER_READY");
 
     shutdown.cancel();
     assert!(task.await.expect("scanner task join").is_ok());

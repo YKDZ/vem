@@ -294,6 +294,29 @@ describe("PaymentCodeOrchestratorService", () => {
     expect(provider.chargePaymentCode).not.toHaveBeenCalled();
   });
 
+  it("does not reach a provider when durable payment-code admission rejects the order", async () => {
+    const { service, attempts, provider, configService } = makeHarness();
+    attempts.createOrReplay.mockRejectedValue(
+      new Error("payment_code_order_not_payable"),
+    );
+
+    await expect(
+      service.submit({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-not-payable",
+        source: "serial_text",
+        clientIp: "127.0.0.1",
+      }),
+    ).rejects.toThrow("payment_code_order_not_payable");
+
+    expect(
+      configService.assertMachinePaymentChannelAvailable,
+    ).not.toHaveBeenCalled();
+    expect(provider.chargePaymentCode).not.toHaveBeenCalled();
+  });
+
   it("keeps indeterminate charge result active for provider query instead of retry", async () => {
     const { service, attempts, paymentsService } = makeHarness({
       provider: {

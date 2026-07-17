@@ -239,7 +239,6 @@ async fn run_console_cycle(
     let payment_watcher = tokio::spawn(run_payment_code_watcher(
         rx_raw,
         ipc_ctx.ui.transaction.clone(),
-        ipc_ctx.ui.status_cache.clone(),
         stop_token.clone(),
     ));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
@@ -694,7 +693,6 @@ fn scanner_unavailable(
 async fn run_payment_code_watcher(
     mut rx: mpsc::Receiver<ArmedPaymentCode>,
     machine: TransactionStateMachine,
-    status_cache: ipc::RuntimeStatusCache,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     loop {
@@ -702,19 +700,10 @@ async fn run_payment_code_watcher(
             _ = shutdown.cancelled() => return Ok(()),
             scan = rx.recv() => {
                 let Some(scan) = scan else { return Ok(()); };
-                let health = status_cache.scanner.read().await.clone();
-                if health.online && health.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT {
-                    let _ = machine
-                        .submit_armed_payment_code(
-                            scan.arm,
-                            scan.raw,
-                            vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
-                            Some(health),
-                        )
-                        .await;
-                } else {
-                    machine.discard_armed_payment_code(&scan.arm).await;
-                }
+                // ScannerRuntime captured online evidence at the completion
+                // byte. Do not reread a mutable cache here: a disconnect after
+                // receipt cannot retroactively invalidate that customer scan.
+                let _ = machine.submit_armed_payment_code(scan).await;
             }
         }
     }

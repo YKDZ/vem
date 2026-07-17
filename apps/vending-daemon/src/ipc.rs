@@ -1385,13 +1385,10 @@ pub(crate) fn local_payment_code_submit_guard(
                         .to_string(),
                 );
             }
-            let scanner = cache.scanner.read().await.clone();
-            let (ready, message) = scanner_payment_readiness(&scanner);
-            if ready {
-                Ok(())
-            } else {
-                Err(message)
-            }
+            // ScannerRuntime validates readiness at the serial frame boundary
+            // and carries that immutable evidence with the armed frame. A
+            // second cache read here can race a post-scan disconnect.
+            Ok(())
         })
     })
 }

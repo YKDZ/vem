@@ -350,12 +350,56 @@ impl ScannerRuntime {
         });
     }
 
+    async fn handoff_completed_frames(
+        &self,
+        frames: Vec<vending_core::scanner::RawPaymentCode>,
+        arm_epoch: crate::transaction::PaymentCodeScanEpoch,
+        port_path: &str,
+    ) -> Result<(), String> {
+        for raw in frames {
+            // This snapshot is evidence captured at the completion byte while
+            // this SerialStream is online. A later reconnect or cache update
+            // must not invalidate this particular customer scan.
+            let scanner_health = self.health_snapshot_with_port(
+                true,
+                vending_core::health::HealthLevel::Ok,
+                "SCANNER_READY",
+                "scanner ready",
+                port_path,
+            );
+            let Some(arm) = self
+                .payment_code_scan_armer
+                .consume_at_epoch(arm_epoch.epoch, raw.scanned_at_ms)
+                .await
+            else {
+                continue;
+            };
+            let _ = self.tx_events.send(DaemonEvent::ScannerCode {
+                event_id: Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                masked_code: raw.masked_code.clone(),
+                source: self.config.source.clone(),
+                scanned_at_ms: raw.scanned_at_ms,
+            });
+            self.tx_raw
+                .send(ArmedPaymentCode {
+                    raw,
+                    arm,
+                    scanner_health,
+                })
+                .await
+                .map_err(|error| format!("submit scanner code failed: {error}"))?;
+        }
+        Ok(())
+    }
+
     async fn read_loop(
         &self,
         mut port: tokio_serial::SerialStream,
         port_path: &str,
     ) -> Result<(), String> {
         let mut framer = vending_core::scanner::ScannerFramer::new(self.config.frame_suffix);
+        let mut observed_arm_epoch = None;
         let mut buffer = [0_u8; 1024];
         let heartbeat_period = std::time::Duration::from_secs(5);
         let mut heartbeat = tokio::time::interval_at(
@@ -400,24 +444,45 @@ impl ScannerRuntime {
                     }
 
                     let now_ms = crate::state::store::now_millis();
-                    for raw in framer.push_bytes(&buffer[..read], now_ms) {
-                        let _ = self.tx_events.send(DaemonEvent::ScannerCode {
-                            event_id: Uuid::new_v4().simple().to_string(),
-                            updated_at: crate::state::store::now_iso(),
-                            masked_code: raw.masked_code.clone(),
-                            source: self.config.source.clone(),
-                            scanned_at_ms: raw.scanned_at_ms,
-                        });
-                        let Some(arm) = self
-                            .payment_code_scan_armer
-                            .consume_at(raw.scanned_at_ms)
-                            .await
-                        else {
-                            continue;
-                        };
-                        if let Err(error) = self.tx_raw.send(ArmedPaymentCode { raw, arm }).await {
-                            return Err(format!("submit scanner code failed: {error}"));
+                    // `None` intentionally means one serial read is one
+                    // frame. Check its epoch once before accepting the batch;
+                    // there is no await while it is framed, so no other task
+                    // can replace that arm between its bytes.
+                    if matches!(self.config.frame_suffix, vending_core::scanner::ScannerFrameSuffix::None) {
+                        let arm_epoch = self.payment_code_scan_armer.scanner_epoch().await;
+                        if observed_arm_epoch != Some(arm_epoch.epoch) {
+                            framer.reset();
+                            observed_arm_epoch = Some(arm_epoch.epoch);
                         }
+                        if arm_epoch.accepting {
+                            self.handoff_completed_frames(
+                                framer.push_bytes(&buffer[..read], now_ms),
+                                arm_epoch,
+                                port_path,
+                            ).await?;
+                        }
+                        continue;
+                    }
+
+                    for byte in &buffer[..read] {
+                        let arm_epoch = self.payment_code_scan_armer.scanner_epoch().await;
+                        if observed_arm_epoch != Some(arm_epoch.epoch) {
+                            framer.reset();
+                            observed_arm_epoch = Some(arm_epoch.epoch);
+                        }
+
+                        // The port remains readable while no payment-code
+                        // transaction is armed. Those bytes are intentionally
+                        // not framed or surfaced as scanner events.
+                        if !arm_epoch.accepting {
+                            continue;
+                        }
+
+                        self.handoff_completed_frames(
+                            framer.push_bytes(std::slice::from_ref(byte), now_ms),
+                            arm_epoch,
+                            port_path,
+                        ).await?;
                     }
                 }
             }

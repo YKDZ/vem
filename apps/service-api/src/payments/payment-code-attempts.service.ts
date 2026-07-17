@@ -87,6 +87,20 @@ function isIncidentLocked(row: {
   );
 }
 
+function isPayablePaymentCodeOrder(row: {
+  orderStatus: string;
+  paymentState: string;
+  fulfillmentState: string;
+  paymentStatus: string;
+}): boolean {
+  return (
+    row.orderStatus === "pending_payment" &&
+    row.paymentState === "awaiting_payment" &&
+    row.fulfillmentState === "awaiting_fulfillment" &&
+    ["created", "pending", "processing"].includes(row.paymentStatus)
+  );
+}
+
 @Injectable()
 export class PaymentCodeAttemptsService {
   constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
@@ -154,6 +168,12 @@ export class PaymentCodeAttemptsService {
       if (isIncidentLocked(row)) {
         throw new ConflictException("payment_incident_locked");
       }
+      // This is the durable admission boundary before the orchestrator can
+      // touch a provider. Canceled, closed, paid, or fulfillment-transitioned
+      // orders must never create a new payment-code attempt.
+      if (!isPayablePaymentCodeOrder(row)) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
 
       const [existingByKey] = await tx
         .select()
@@ -185,6 +205,41 @@ export class PaymentCodeAttemptsService {
         .limit(1);
       if (active) {
         throw new ConflictException("payment_code_attempt_in_progress");
+      }
+
+      // Take the payment row through a conditional write before inserting the
+      // attempt. Cancellation uses the same row as its terminal CAS, so the
+      // two transactions serialize without keeping a database transaction
+      // open across the provider request. The predicates are deliberately
+      // repeated here because the earlier reads may have become stale while
+      // another transaction was waiting for this row lock.
+      const [claimedPayablePayment] = await tx
+        .update(payments)
+        .set({ updatedAt: new Date() })
+        .where(
+          and(
+            eq(payments.id, row.paymentId),
+            inArray(payments.status, ["created", "pending", "processing"]),
+            sql`exists (
+              select 1
+              from ${orders} current_order
+              where current_order.id = ${row.orderId}
+                and current_order.payment_id = ${payments.id}
+                and current_order.status = 'pending_payment'
+                and current_order.payment_state = 'awaiting_payment'
+                and current_order.fulfillment_state = 'awaiting_fulfillment'
+            )`,
+            sql`not exists (
+              select 1
+              from ${paymentCodeAttempts} active_attempt
+              where active_attempt.payment_id = ${payments.id}
+                and active_attempt.is_active = true
+            )`,
+          ),
+        )
+        .returning({ id: payments.id });
+      if (!claimedPayablePayment) {
+        throw new ConflictException("payment_code_order_not_payable");
       }
 
       const [{ total }] = await tx

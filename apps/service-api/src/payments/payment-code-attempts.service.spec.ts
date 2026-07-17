@@ -28,6 +28,16 @@ function makeCountResult(total: number) {
   };
 }
 
+function makePaymentClaimResult(result: unknown[]) {
+  return {
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(result),
+      }),
+    }),
+  };
+}
+
 describe("PaymentCodeAttemptsService", () => {
   it("rejects disabled mock payment before creating or replaying an attempt", async () => {
     const tx = { select: vi.fn(), insert: vi.fn() };
@@ -36,6 +46,9 @@ describe("PaymentCodeAttemptsService", () => {
         {
           orderId: "order-1",
           orderNo: "ORD001",
+          orderStatus: "pending_payment",
+          paymentState: "awaiting_payment",
+          fulfillmentState: "awaiting_fulfillment",
           machineId: "machine-1",
           paymentId: "payment-1",
           paymentNo: "PAY001",
@@ -87,6 +100,9 @@ describe("PaymentCodeAttemptsService", () => {
           {
             orderId: "order-1",
             orderNo: "ORD001",
+            orderStatus: "pending_payment",
+            paymentState: "awaiting_payment",
+            fulfillmentState: "awaiting_fulfillment",
             machineId: "machine-1",
             paymentId: "payment-1",
             paymentNo: "PAY001",
@@ -132,6 +148,9 @@ describe("PaymentCodeAttemptsService", () => {
           {
             orderId: "order-1",
             orderNo: "ORD001",
+            orderStatus: "pending_payment",
+            paymentState: "awaiting_payment",
+            fulfillmentState: "awaiting_fulfillment",
             machineId: "machine-1",
             paymentId: "payment-1",
             paymentNo: "PAY001",
@@ -233,6 +252,9 @@ describe("PaymentCodeAttemptsService", () => {
     };
     const tx = {
       select: vi.fn(),
+      update: vi
+        .fn()
+        .mockReturnValue(makePaymentClaimResult([{ id: "payment-1" }])),
       insert: vi.fn().mockReturnValue({
         values: vi
           .fn()
@@ -250,6 +272,9 @@ describe("PaymentCodeAttemptsService", () => {
           {
             orderId: "order-1",
             orderNo: "ORD001",
+            orderStatus: "pending_payment",
+            paymentState: "awaiting_payment",
+            fulfillmentState: "awaiting_fulfillment",
             machineId: "machine-1",
             paymentId: "payment-1",
             paymentNo: "PAY001",
@@ -299,5 +324,94 @@ describe("PaymentCodeAttemptsService", () => {
     });
     expect(insertedValues).not.toHaveProperty("authCode");
     expect(JSON.stringify(insertedValues)).not.toContain("28763443825664394");
+  });
+
+  it("rejects when the durable attempt claim loses to cancellation or another attempt", async () => {
+    const tx = {
+      select: vi.fn(),
+      update: vi.fn().mockReturnValue(makePaymentClaimResult([])),
+      insert: vi.fn(),
+    };
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: "pending_payment",
+            paymentState: "awaiting_payment",
+            fulfillmentState: "awaiting_fulfillment",
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: "pending",
+            paymentMethod: "payment_code",
+            providerId: "provider-1",
+            providerCode: "alipay",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([]))
+      .mockReturnValueOnce(makeSelectResult([]));
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx)),
+    };
+    const service = new PaymentCodeAttemptsService(db as never);
+
+    await expect(
+      service.createOrReplay({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-cas-lost",
+        source: "serial_text",
+      }),
+    ).rejects.toThrow(new ConflictException("payment_code_order_not_payable"));
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a canceled payment-code order before an attempt can reach a provider", async () => {
+    const tx = { select: vi.fn(), insert: vi.fn() };
+    tx.select.mockReturnValueOnce(
+      makeSelectResult([
+        {
+          orderId: "order-1",
+          orderNo: "ORD001",
+          orderStatus: "canceled",
+          paymentState: "canceled",
+          fulfillmentState: "canceled",
+          machineId: "machine-1",
+          paymentId: "payment-1",
+          paymentNo: "PAY001",
+          paymentProviderConfigId: "cfg-1",
+          amountCents: 300,
+          paymentStatus: "canceled",
+          paymentMethod: "payment_code",
+          providerId: "provider-1",
+          providerCode: "alipay",
+        },
+      ]),
+    );
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx)),
+    };
+    const service = new PaymentCodeAttemptsService(db as never);
+
+    await expect(
+      service.createOrReplay({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-canceled",
+        source: "serial_text",
+      }),
+    ).rejects.toThrow(new ConflictException("payment_code_order_not_payable"));
+    expect(tx.insert).not.toHaveBeenCalled();
   });
 });

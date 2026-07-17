@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 
 use chrono::{SecondsFormat, Utc};
@@ -8,6 +9,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{sqlite::SqlitePoolOptions, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use uuid::Uuid;
 
 use vending_core::domain::{
@@ -152,6 +154,8 @@ pub enum StoreError {
     OutboxCapacity,
     #[error("payment code attempt is already active")]
     ActivePaymentCodeAttempt,
+    #[error("payment code order is no longer payable")]
+    PaymentCodeOrderNotPayable,
     #[error("invalid stock input: {0}")]
     InvalidStockInput(String),
     #[error("invalid checkout flow action for new write: {0}")]
@@ -709,6 +713,7 @@ impl OutboxInput {
 #[derive(Debug, Clone)]
 pub struct LocalStateStore {
     pool: SqlitePool,
+    transaction_mutation_lock: Arc<Mutex<()>>,
 }
 
 impl LocalStateStore {
@@ -721,6 +726,12 @@ impl LocalStateStore {
         &self,
     ) -> Result<Transaction<'static, Sqlite>, StoreError> {
         Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
+    /// Serializes short local transaction mutations across every clone of this
+    /// store. It is deliberately not held across Service API or provider I/O.
+    pub(crate) async fn lock_transaction_mutation(&self) -> OwnedMutexGuard<()> {
+        self.transaction_mutation_lock.clone().lock_owned().await
     }
 
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
@@ -747,7 +758,10 @@ impl LocalStateStore {
                 pool.close().await;
                 let quarantine = quarantine_sqlite_file(path).await?;
                 let pool = open_sqlite_pool(path).await.map_err(StoreError::Sqlx)?;
-                let store = Self { pool };
+                let store = Self {
+                    pool,
+                    transaction_mutation_lock: Arc::new(Mutex::new(())),
+                };
                 store.run_migrations().await?;
                 store
                     .record_stock_ledger_quarantine(quarantine, Some(error))
@@ -757,7 +771,10 @@ impl LocalStateStore {
             }
         }
 
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            transaction_mutation_lock: Arc::new(Mutex::new(())),
+        };
         store.run_migrations().await?;
         if let Some((quarantine, reason)) = quarantine {
             store
@@ -2324,6 +2341,16 @@ impl LocalStateStore {
             "UPDATE order_sessions
              SET payment_attempt_json = ?2, updated_at = ?3
              WHERE order_no = ?1
+               AND payment_method = 'payment_code'
+               AND status IN ('waiting_payment', 'pending_payment')
+               AND next_action = 'wait_payment'
+               AND order_no = (
+                 SELECT order_no
+                 FROM order_sessions
+                 WHERE status != 'closed'
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT 1
+               )
                AND (
                  payment_attempt_json IS NULL
                  OR COALESCE(json_extract(payment_attempt_json, '$.status'), '') NOT IN ('submitting', 'user_confirming', 'querying', 'processing')
@@ -2340,13 +2367,56 @@ impl LocalStateStore {
         .await?
         .rows_affected();
         if updated != 1 {
-            return Err(StoreError::ActivePaymentCodeAttempt);
+            let current_attempt_active =
+                self.load_attempt_json(order_no)
+                    .await?
+                    .is_some_and(|attempt| {
+                        matches!(
+                            attempt.get("status").and_then(|value| value.as_str()),
+                            Some("submitting" | "user_confirming" | "querying" | "processing")
+                        )
+                    });
+            return Err(if current_attempt_active {
+                StoreError::ActivePaymentCodeAttempt
+            } else {
+                StoreError::PaymentCodeOrderNotPayable
+            });
         }
         Ok(payload
             .get("idempotencyKey")
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string())
+    }
+
+    pub async fn payment_code_attempt_is_current(
+        &self,
+        order_no: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, StoreError> {
+        let current: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1
+             FROM order_sessions
+             WHERE order_no = ?1
+               AND payment_method = 'payment_code'
+               AND status IN ('waiting_payment', 'pending_payment')
+               AND next_action = 'wait_payment'
+               AND json_extract(payment_attempt_json, '$.idempotencyKey') = ?2
+               AND json_extract(payment_attempt_json, '$.status') = 'submitting'
+               AND order_no = (
+                 SELECT order_no
+                 FROM order_sessions
+                 WHERE status != 'closed'
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT 1
+               )
+             LIMIT 1",
+        )
+        .bind(order_no)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(current.is_some())
     }
 
     pub async fn finish_payment_code_attempt(
