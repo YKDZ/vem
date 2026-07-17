@@ -18,8 +18,10 @@ export function installTransactionRouteAuthority(
     return target;
   });
   const stopRouteSync = watch(
-    () => checkoutStore.customerCheckoutView.routeTarget,
-    (target) => {
+    () => checkoutStore.customerCheckoutView,
+    (view) => {
+      if (view.stage === "none") return;
+      const target = view.routeTarget;
       if (router.currentRoute.value.matched.length === 0) return;
       if (router.resolve(target).path === router.currentRoute.value.path) return;
       void router.replace(target);
