@@ -170,6 +170,16 @@ describe("useSaleCapabilityStore", () => {
     expect(store.lastRejectedObservation).toBe("daemon-before-restart:99");
   });
 
+  it("reports an explicit refreshed outcome after accepting a daemon snapshot", async () => {
+    const snapshot = capability("daemon-a", 4, true);
+    getSaleStartCapabilityMock.mockResolvedValueOnce(snapshot);
+
+    await expect(useSaleCapabilityStore().refresh()).resolves.toEqual({
+      status: "refreshed",
+      snapshot,
+    });
+  });
+
   it("uses a newer same-tuple response as the barrier for an older generation", async () => {
     const olderDifferentGeneration = deferred<SaleStartCapabilitySnapshot>();
     getSaleStartCapabilityMock
@@ -197,14 +207,26 @@ describe("useSaleCapabilityStore", () => {
       new Error("capability refresh unavailable"),
     );
 
-    await expect(store.refresh()).resolves.toEqual(
-      capability("daemon-a", 4, true),
-    );
+    await expect(store.refresh()).resolves.toMatchObject({
+      status: "failed",
+      snapshot: capability("daemon-a", 4, true),
+    });
 
     expect(store.canStartSale).toBe(true);
     expect(store.accepted).toEqual(capability("daemon-a", 4, true));
     expect(store.stale).toBe(true);
     expect(store.diagnostic).toBe("capability refresh unavailable");
+  });
+
+  it("reports an explicit failure outcome when no cached capability exists", async () => {
+    const failure = new Error("capability refresh unavailable");
+    getSaleStartCapabilityMock.mockRejectedValueOnce(failure);
+
+    await expect(useSaleCapabilityStore().refresh()).resolves.toEqual({
+      status: "failed",
+      snapshot: null,
+      error: failure,
+    });
   });
 
   it("does not let an older failed refresh overwrite a newer successful outcome", async () => {
@@ -222,6 +244,19 @@ describe("useSaleCapabilityStore", () => {
     expect(store.orderingKey).toBe("daemon-a:5");
     expect(store.stale).toBe(false);
     expect(store.diagnostic).toBeNull();
+  });
+
+  it("treats an older accepted observation as a refreshed read", async () => {
+    const store = useSaleCapabilityStore();
+    store.acceptSnapshot(capability("daemon-a", 5, true));
+    getSaleStartCapabilityMock.mockResolvedValueOnce(
+      capability("daemon-a", 4, false),
+    );
+
+    await expect(store.refresh()).resolves.toMatchObject({
+      status: "refreshed",
+      snapshot: capability("daemon-a", 5, true),
+    });
   });
 
   it("invalidates only for an observation newer than the accepted tuple", async () => {

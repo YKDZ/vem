@@ -116,7 +116,7 @@ async function runBootCheck(): Promise<void> {
     } catch (error) {
       if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
-      pushStep("daemon 不可用，进入维护页");
+      pushStep("daemon 不可用，进入离线页面");
       await submitMachineNavigationIntent({
         type: "startup.navigate",
         target: routeForBootFailure(

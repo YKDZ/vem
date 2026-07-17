@@ -127,16 +127,41 @@ async function reconcileAfterStreamReconnect(
       // oxlint-disable-next-line no-await-in-loop -- each forced IPC read must finish before deciding whether this bounded reconciliation needs another attempt.
       await daemonClient.initialize(true);
       // oxlint-disable-next-line no-await-in-loop -- all projections belong to the same reconnect observation and must settle before retrying it.
-      const results = await Promise.allSettled([
+      const [
+        connectivityResult,
+        saleCapabilityResult,
+        catalogResult,
+        mqttResult,
+        transactionResult,
+        // oxlint-disable-next-line no-await-in-loop -- all projections belong to the same reconnect observation and must settle before retrying it.
+      ] = await Promise.allSettled([
         connectivityStore.refresh(),
         saleCapabilityStore.refresh(),
         catalogStore.refresh(),
         mqttStore.refresh(),
         checkoutStore.refreshCurrentTransaction(),
       ]);
-      const failed = results.find((result) => result.status === "rejected");
-      if (!failed) return;
-      throw failed.reason;
+      const rejected = [
+        connectivityResult,
+        saleCapabilityResult,
+        catalogResult,
+        mqttResult,
+        transactionResult,
+      ].find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
+      if (
+        saleCapabilityResult.status === "fulfilled" &&
+        saleCapabilityResult.value.status === "failed"
+      ) {
+        throw saleCapabilityResult.value.error;
+      }
+      if (
+        transactionResult.status === "fulfilled" &&
+        transactionResult.value.status === "failed"
+      ) {
+        throw transactionResult.value.error;
+      }
+      return;
     } catch (error) {
       connectivityStore.markStale(error);
       saleCapabilityStore.markStale(error);

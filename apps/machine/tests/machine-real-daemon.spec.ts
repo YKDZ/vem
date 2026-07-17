@@ -44,7 +44,9 @@ type DaemonReadyFile = {
 };
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
-const DAEMON_HTTP_BASE_URL = "http://127.0.0.1:7891";
+const DAEMON_HTTP_BASE_URL =
+  process.env.VEM_REAL_DAEMON_HTTP_BASE_URL ?? "http://127.0.0.1:7891";
+const DAEMON_BIND_ADDRESS = new URL(DAEMON_HTTP_BASE_URL).host;
 const REPOSITORY_ROOT = new URL("../../..", import.meta.url).pathname;
 const DAEMON_BINARY = join(
   REPOSITORY_ROOT,
@@ -101,7 +103,8 @@ async function startBrowserEventStreamProbe(
       onEvent: () => undefined,
       onError: () => records.push("error"),
       onStale: () => records.push("stale"),
-      onOpen: () => records.push("opened"),
+      onOpen: ({ reconnected }) =>
+        records.push(reconnected ? "opened:reconnected" : "opened:initial"),
       onReconnect: () => records.push("reconnected"),
     });
     Reflect.set(window, "__vemRealDaemonEventStream", records);
@@ -117,22 +120,6 @@ async function browserEventStreamLifecycle(
     return Array.isArray(records)
       ? records.filter((record): record is string => typeof record === "string")
       : [];
-  });
-}
-
-async function stopBrowserEventStreamProbe(
-  page: import("@playwright/test").Page,
-): Promise<void> {
-  await page.evaluate(() => {
-    const subscription = Reflect.get(window, "__vemRealDaemonEventSubscription");
-    if (
-      typeof subscription === "object" &&
-      subscription !== null &&
-      "close" in subscription &&
-      typeof subscription.close === "function"
-    ) {
-      subscription.close();
-    }
   });
 }
 
@@ -165,7 +152,7 @@ async function buildDaemonBinary(): Promise<void> {
 function startDaemonProcess(): void {
   daemon = spawn(
     DAEMON_BINARY,
-    ["--console", "--data-dir", dataDir, "--bind", "127.0.0.1:7891"],
+    ["--console", "--data-dir", dataDir, "--bind", DAEMON_BIND_ADDRESS],
     {
       env: {
         ...process.env,
@@ -394,7 +381,7 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   await expect.poll(() => browserUsesRealDaemon(page)).toBe(true);
   await startBrowserEventStreamProbe(page);
   await expect.poll(async () =>
-    (await browserEventStreamLifecycle(page)).includes("opened"),
+    (await browserEventStreamLifecycle(page)).includes("opened:initial"),
   ).toBe(true);
   await expect(page).toHaveURL(/#\/maintenance$/, { timeout: 20_000 });
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
@@ -411,11 +398,17 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
       readyBeforeClaim.generation,
     );
   }).toPass({ intervals: [100, 250, 500], timeout: 20_000 });
-  await stopBrowserEventStreamProbe(page);
-  await startBrowserEventStreamProbe(page);
   await expect.poll(async () =>
-    (await browserEventStreamLifecycle(page)).includes("opened"),
+    (await browserEventStreamLifecycle(page)).includes("stale"),
   ).toBe(true);
+  await expect.poll(async () =>
+    (await browserEventStreamLifecycle(page)).includes("opened:reconnected"),
+  ).toBe(true);
+  const streamLifecycle = await browserEventStreamLifecycle(page);
+  expect(streamLifecycle.indexOf("stale")).toBeGreaterThanOrEqual(0);
+  expect(streamLifecycle.indexOf("opened:reconnected")).toBeGreaterThan(
+    streamLifecycle.indexOf("stale"),
+  );
   await expect(async () => {
     const response = await fetch(
       `${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`,
@@ -450,7 +443,6 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   });
   effectiveMachineRuntimeConfigurationSchema.parse(configuration);
 
-  await stopBrowserEventStreamProbe(page);
   await expect(page).toHaveURL(/#\/maintenance$/);
   await page.getByRole("button", { name: "回到目录" }).click();
   await expect(page).toHaveURL(/#\/catalog$/, { timeout: 20_000 });

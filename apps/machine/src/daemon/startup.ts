@@ -34,6 +34,11 @@ export function routeForStartup(input: {
     configuration !== null &&
     configuration.sourceDocuments.profileCache !== null &&
     configuration.machine !== null;
+  const hasKnownUnclaimedLifecycle =
+    configuration !== null &&
+    configuration.profileRefresh.status === "unclaimed" &&
+    configuration.sourceDocuments.profileCache === null &&
+    configuration.machine === null;
   const transactionView = projectCustomerCheckoutView({
     transaction: input.restoredTransaction,
     nowMs: Date.now(),
@@ -49,14 +54,14 @@ export function routeForStartup(input: {
     return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
-  if (!input.daemonAvailable) {
-    return hasClaimedIdentity ? "/offline" : "/maintenance";
-  }
-
   // The accepted profile cache and resulting machine identity are the startup
   // authority. Refresh and sale-capability health remain operational
-  // observations; neither may move a claimed machine into Local Operations.
-  return hasClaimedIdentity ? "/catalog" : "/maintenance";
+  // observations; only an explicit unclaimed lifecycle may open Local
+  // Operations. A claimed or unknown outage stays on the customer surface.
+  if (hasClaimedIdentity) {
+    return input.daemonAvailable ? "/catalog" : "/offline";
+  }
+  return hasKnownUnclaimedLifecycle ? "/maintenance" : "/offline";
 }
 
 /**

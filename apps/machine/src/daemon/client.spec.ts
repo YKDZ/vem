@@ -781,6 +781,45 @@ describe("DaemonApiClient direct runtime intents", () => {
     subscription.close();
   });
 
+  it("reconnects the original event subscription after a runtime reconfigure request", async () => {
+    vi.useFakeTimers();
+    const onEvent = vi.fn();
+    const onStale = vi.fn();
+    const onOpen = vi.fn();
+    const onReconnect = vi.fn();
+    const subscription = new DaemonApiClient().subscribeEvents({
+      onEvent,
+      onError: vi.fn(),
+      onStale,
+      onOpen,
+      onReconnect,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const firstSocket = MockWebSocket.instances[0];
+    if (!firstSocket) throw new Error("initial event socket was not opened");
+    firstSocket.onmessage?.({
+      data: JSON.stringify({
+        type: "runtime_reconfigure_requested",
+        eventId: "reconfigure-1",
+        updatedAt: "2026-07-17T00:00:03Z",
+        reason: "claim_completed",
+        machineCode: "MACHINE-001",
+      }),
+    } as MessageEvent<string>);
+
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "runtime_reconfigure_requested" }),
+    );
+    expect(onStale).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(onOpen).toHaveBeenLastCalledWith({ reconnected: true });
+    expect(onReconnect).toHaveBeenCalledOnce();
+    subscription.close();
+  });
+
   it("retries a failed forced connection refresh with bounded backoff", async () => {
     vi.useFakeTimers();
     const onError = vi.fn();

@@ -95,7 +95,6 @@ export default defineConfig({
       VITE_DAEMON_HTTP_BASE_URL: "http://127.0.0.1:7891",
       VITE_DAEMON_IPC_TOKEN: "dev-token",
       VITE_DAEMON_MOCK: "true",
-      VITE_ENABLE_MOCK_PAYMENT_CONTROLS: "true",
     },
   },
   projects: [

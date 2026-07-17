@@ -23,6 +23,17 @@ export type ApplyTransactionOptions = {
   restored?: boolean;
 };
 
+export type TransactionRefreshOutcome =
+  | {
+      status: "refreshed";
+      snapshot: TransactionSnapshot | null;
+    }
+  | {
+      status: "failed";
+      snapshot: null;
+      error: unknown;
+    };
+
 const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
   "vem.machine.dismissedTerminalOrderNos";
 const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
@@ -32,7 +43,7 @@ const TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE =
   "正在恢复当前交易，请稍候，暂不可修改交易";
 
 type TransactionRefreshCoordinator = {
-  running: Promise<TransactionSnapshot | null> | null;
+  running: Promise<TransactionRefreshOutcome> | null;
 };
 
 const transactionRefreshCoordinators = new WeakMap<
@@ -161,22 +172,6 @@ function selectedPaymentCodeLocalGateError(
       lower.includes("selected payment option is not ready") ||
       lower.includes("selected payment method payment_code is unavailable") ||
       lower.includes("scanner"))
-  );
-}
-
-function paymentCodeSubmitLocalGateError(error: unknown): boolean {
-  const text = [
-    errorString(error),
-    stringField(error, "responseMessage"),
-    stringField(error, "responseBody"),
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join("\n");
-  const lower = text.toLowerCase();
-  return (
-    text.includes("扫码器") ||
-    lower.includes("machine_not_ready_for_payment_code") ||
-    lower.includes("scanner")
   );
 }
 
@@ -319,7 +314,6 @@ export const useCheckoutStore = defineStore("checkout", {
     loading: false,
     error: null as string | null,
     selectedPaymentOptionKey: null as MachinePaymentOptionKey | null,
-    paymentCodeSubmitting: false,
     paymentCodeMessage: null as string | null,
     paymentCodeLastMasked: null as string | null,
     checkoutAttemptIdempotencyKey: null as string | null,
@@ -403,7 +397,6 @@ export const useCheckoutStore = defineStore("checkout", {
       this.transaction = null;
       this.error = null;
       this.loading = false;
-      this.paymentCodeSubmitting = false;
       this.paymentCodeMessage = null;
       this.paymentCodeLastMasked = null;
       this.paymentCreationAttemptActive = false;
@@ -555,13 +548,13 @@ export const useCheckoutStore = defineStore("checkout", {
         this.loading = false;
       }
     },
-    async invalidateCurrentTransaction(): Promise<TransactionSnapshot | null> {
+    async invalidateCurrentTransaction(): Promise<TransactionRefreshOutcome> {
       this.transactionRefreshGeneration += 1;
       const coordinator = transactionRefreshCoordinator(this);
       if (coordinator.running) return coordinator.running;
 
       const refreshGeneration =
-        async (): Promise<TransactionSnapshot | null> => {
+        async (): Promise<TransactionRefreshOutcome> => {
           const generation = this.transactionRefreshGeneration;
           this.transactionRefreshRequestNo = generation;
           this.transactionRefreshInFlight = 1;
@@ -580,12 +573,12 @@ export const useCheckoutStore = defineStore("checkout", {
             ) {
               this.transactionRecoveryOrderNo = currentView.orderCredential;
               this.error = "正在恢复当前交易，请稍候";
-              return null;
+              return { status: "refreshed", snapshot: null };
             }
             if (this.shouldIgnoreTransaction(snapshot)) {
               this.applyTransaction(snapshot);
               this.transactionRefreshLastAcceptedRequestNo = generation;
-              return null;
+              return { status: "refreshed", snapshot: null };
             }
             const incomingView = projectCustomerCheckoutView({
               transaction: snapshot,
@@ -607,11 +600,11 @@ export const useCheckoutStore = defineStore("checkout", {
                   this.transactionRefreshLastAcceptedRequestNo,
               })
             ) {
-              return this.transaction;
+              return { status: "refreshed", snapshot: this.transaction };
             }
             this.applyTransaction(snapshot, { restored: true });
             this.transactionRefreshLastAcceptedRequestNo = generation;
-            return snapshot;
+            return { status: "refreshed", snapshot };
           } catch (error) {
             if (generation !== this.transactionRefreshGeneration) {
               return refreshGeneration();
@@ -621,7 +614,7 @@ export const useCheckoutStore = defineStore("checkout", {
             if (view.stage !== "none") {
               this.transactionRecoveryOrderNo = view.orderCredential;
             }
-            return null;
+            return { status: "failed", snapshot: null, error };
           }
         };
       const running = refreshGeneration().finally(() => {
@@ -632,7 +625,7 @@ export const useCheckoutStore = defineStore("checkout", {
       coordinator.running = running;
       return running;
     },
-    async refreshCurrentTransaction(): Promise<TransactionSnapshot | null> {
+    async refreshCurrentTransaction(): Promise<TransactionRefreshOutcome> {
       return this.invalidateCurrentTransaction();
     },
     async cancelCurrentOrder(options?: {
@@ -672,57 +665,6 @@ export const useCheckoutStore = defineStore("checkout", {
       } finally {
         this.loading = false;
       }
-    },
-    async submitDevPaymentCode(
-      authCode: string,
-    ): Promise<TransactionSnapshot | null> {
-      if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
-        return null;
-      }
-      const orderNo = this.customerCheckoutView.orderCredential;
-      if (!orderNo) return null;
-      if (this.paymentCodeSubmitting) return null;
-      if (daemonClient.currentConnection?.mock !== true) {
-        throw new Error("当前不是 mock daemon，禁止手动提交付款码");
-      }
-
-      this.paymentCodeSubmitting = true;
-      this.paymentCodeMessage = "正在提交付款码";
-      try {
-        const snapshot = await daemonClient.submitDevPaymentCode({
-          orderNo,
-          authCode,
-          source: "browser_test",
-        });
-        this.applyTransaction(snapshot);
-        return snapshot;
-      } catch (error) {
-        this.error = paymentCodeSubmitLocalGateError(error)
-          ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
-          : errorString(error);
-        return null;
-      } finally {
-        this.paymentCodeSubmitting = false;
-      }
-    },
-    async markMockSucceeded(): Promise<void> {
-      if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
-        return;
-      }
-      const orderNo = this.customerCheckoutView.orderCredential;
-      if (!orderNo) return;
-      this.applyTransaction(await daemonClient.markMockPayment(orderNo, true));
-    },
-    async markMockFailed(): Promise<void> {
-      if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
-        return;
-      }
-      const orderNo = this.customerCheckoutView.orderCredential;
-      if (!orderNo) return;
-      this.applyTransaction(await daemonClient.markMockPayment(orderNo, false));
     },
   },
 });

@@ -609,7 +609,7 @@ describe("sale-start capability UI flow", () => {
     expect(getReadyMock).not.toHaveBeenCalled();
   });
 
-  it("does not route to catalog when startup config loading fails", async () => {
+  it("keeps an unknown startup config failure on the customer offline surface", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
     getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
     getEffectiveRuntimeConfigurationMock.mockRejectedValue(
@@ -619,9 +619,21 @@ describe("sale-start capability UI flow", () => {
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/offline");
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
+  it("keeps a fresh-store daemon outage on the customer offline surface", async () => {
+    initializeMock.mockRejectedValue(new Error("daemon unavailable"));
+    expect(useMachineStore().effectiveRuntimeConfiguration).toBeNull();
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/offline");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
   });
 
   it("keeps a known claimed machine on the customer offline surface when daemon IPC is unavailable", async () => {
@@ -672,9 +684,9 @@ describe("sale-start capability UI flow", () => {
     const host = await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/offline");
     });
-    expect(host.textContent).toContain("daemon 不可用，进入维护页");
+    expect(host.textContent).toContain("daemon 不可用，进入离线页面");
     expect(host.textContent).not.toContain("ZodError");
     expect(host.textContent).not.toContain("Invalid enum value");
   });

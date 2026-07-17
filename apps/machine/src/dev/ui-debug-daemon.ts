@@ -789,7 +789,6 @@ export function installUiDebugDaemon(): void {
   client.createOrder = async (body: unknown) =>
     createTransactionFromOrder(body);
   client.cancelOrder = async () => closedTransaction();
-  client.submitDevPaymentCode = async () => handleUiDebugPaymentStatus(true);
   client.getCurrentTransaction = async () => {
     if (currentTransactionFailuresRemaining > 0) {
       currentTransactionFailuresRemaining -= 1;
@@ -811,8 +810,6 @@ export function installUiDebugDaemon(): void {
     candidates: [],
     configUpdated: false,
   });
-  client.markMockPayment = async (_orderNo: string, succeed: boolean) =>
-    handleUiDebugPaymentStatus(succeed);
   client.downloadLogExport = async () =>
     new Response("ui debug log export\n", {
       headers: { "Content-Type": "text/plain" },

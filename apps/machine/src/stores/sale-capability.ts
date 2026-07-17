@@ -28,6 +28,16 @@ const SUPPORTED_PAYMENT_METHODS = [
 const SUPPORTED_PAYMENT_ICONS = ["mock", "wechat", "alipay"] as const;
 
 export type SaleCapabilitySnapshotAcceptance = "accepted" | "same" | "older";
+export type SaleCapabilityRefreshOutcome =
+  | {
+      status: "refreshed";
+      snapshot: SaleStartCapabilitySnapshot | null;
+    }
+  | {
+      status: "failed";
+      snapshot: SaleStartCapabilitySnapshot | null;
+      error: unknown;
+    };
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -151,7 +161,7 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
       this.lastRejectedObservation = null;
       return "accepted";
     },
-    async refresh(): Promise<SaleStartCapabilitySnapshot | null> {
+    async refresh(): Promise<SaleCapabilityRefreshOutcome> {
       this.refreshSequence += 1;
       const requestSequence = this.refreshSequence;
       this.refreshesInFlight += 1;
@@ -167,14 +177,14 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
           this.stale = false;
           this.diagnostic = null;
         }
-        return this.accepted;
+        return { status: "refreshed", snapshot: this.accepted };
       } catch (error) {
         if (requestSequence >= this.latestRefreshOutcomeSequence) {
           this.latestRefreshOutcomeSequence = requestSequence;
           this.stale = true;
           this.diagnostic = errorMessage(error);
         }
-        return this.accepted;
+        return { status: "failed", snapshot: this.accepted, error };
       } finally {
         this.refreshesInFlight = Math.max(0, this.refreshesInFlight - 1);
         this.updating = this.refreshesInFlight > 0;

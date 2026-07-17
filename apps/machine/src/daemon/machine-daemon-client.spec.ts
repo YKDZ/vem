@@ -1,6 +1,7 @@
 import {
   createServer,
   type IncomingMessage,
+  type Server,
   type ServerResponse,
 } from "node:http";
 import {
@@ -148,9 +149,8 @@ function expectNoSecretFields(payload: unknown): void {
 }
 
 let scenario: ScenarioName = "catalog";
-let server: {
-  close(callback: (error?: Error | null) => void): void;
-} | null = null;
+let server: Server | null = null;
+let daemonBaseUrl = "";
 
 function respondJson(
   res: ServerResponse,
@@ -425,9 +425,15 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
 async function startMockDaemon() {
   const daemon = createServer(handleRequest);
-  await new Promise<void>((resolve) =>
-    daemon.listen(7891, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve, reject) => {
+    daemon.once("error", reject);
+    daemon.listen(0, "127.0.0.1", resolve);
+  });
+  const address = daemon.address();
+  if (!address || typeof address === "string") {
+    throw new Error("mock daemon did not allocate a TCP port");
+  }
+  daemonBaseUrl = `http://127.0.0.1:${address.port}`;
   return daemon;
 }
 
@@ -452,7 +458,7 @@ describe("machine daemon client integration", () => {
     scenario = "catalog";
     vi.clearAllMocks();
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
-      baseUrl: "http://127.0.0.1:7891",
+      baseUrl: daemonBaseUrl,
       token: "dev-token",
       source: "browser_env",
       mock: true,

@@ -53,6 +53,16 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
+  it("keeps a positively known unclaimed lifecycle in Local Operations during an outage", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: false,
+        effectiveRuntimeConfiguration: configuration(false),
+        restoredTransaction: null,
+      }),
+    ).toBe("/maintenance");
+  });
+
   it("uses the accepted provisioning profile as catalog authority even when refresh is degraded", () => {
     const claimedWithDegradedRefresh = {
       ...configuration(true),
@@ -71,17 +81,50 @@ describe("routeForStartup", () => {
     ).toBe("/catalog");
   });
 
-  it("fails closed to Local Operations when the effective snapshot is unavailable", () => {
+  it("keeps an unknown runtime snapshot on the customer offline surface", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
         effectiveRuntimeConfiguration: null,
         restoredTransaction: null,
       }),
-    ).toBe("/maintenance");
+    ).toBe("/offline");
   });
 
-  it("requires both the accepted profile cache and machine identity", () => {
+  it("keeps a degraded runtime snapshot without identity on the customer offline surface", () => {
+    const degradedWithoutIdentity = {
+      ...configuration(false),
+      profileRefresh: {
+        status: "degraded" as const,
+        lastError: "profile refresh unavailable",
+      },
+    } as EffectiveMachineRuntimeConfiguration;
+
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: degradedWithoutIdentity,
+        restoredTransaction: null,
+      }),
+    ).toBe("/offline");
+  });
+
+  it("keeps an unclaimed status with a cached profile on the customer offline surface", () => {
+    const inconsistentUnclaimedProfile = {
+      ...configuration(false),
+      sourceDocuments: { profileCache: {} },
+    } as unknown as EffectiveMachineRuntimeConfiguration;
+
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: inconsistentUnclaimedProfile,
+        restoredTransaction: null,
+      }),
+    ).toBe("/offline");
+  });
+
+  it("keeps partial claimed identity observations on the customer offline surface", () => {
     const missingMachine = {
       ...configuration(true),
       machine: null,
@@ -101,7 +144,7 @@ describe("routeForStartup", () => {
           effectiveRuntimeConfiguration,
           restoredTransaction: null,
         }),
-      ).toBe("/maintenance");
+      ).toBe("/offline");
     }
   });
 
@@ -110,6 +153,16 @@ describe("routeForStartup", () => {
       routeForStartup({
         daemonAvailable: true,
         effectiveRuntimeConfiguration: configuration(false),
+        restoredTransaction: transaction("wait_payment"),
+      }),
+    ).toBe("/payment");
+  });
+
+  it("keeps recovered payment navigation ahead of an unknown daemon outage", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: false,
+        effectiveRuntimeConfiguration: null,
         restoredTransaction: transaction("wait_payment"),
       }),
     ).toBe("/payment");
@@ -161,9 +214,19 @@ describe("routeForStartup", () => {
     ).toBe("/offline");
   });
 
+  it("keeps a fresh unknown daemon outage on the customer offline surface", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: false,
+        effectiveRuntimeConfiguration: null,
+        restoredTransaction: null,
+      }),
+    ).toBe("/offline");
+  });
+
   it("preserves a recovered transaction if an ordinary boot read fails", () => {
     expect(routeForBootFailure(transaction("wait_payment"))).toBe("/payment");
-    expect(routeForBootFailure(null)).toBe("/maintenance");
+    expect(routeForBootFailure(null)).toBe("/offline");
     expect(routeForBootFailure(null, configuration(true))).toBe("/offline");
   });
 });

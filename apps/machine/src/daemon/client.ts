@@ -517,15 +517,6 @@ export class DaemonApiClient {
     );
   }
 
-  async submitDevPaymentCode(body: unknown): Promise<TransactionSnapshot> {
-    return transactionSnapshotSchema.parse(
-      await this.request("/v1/intents/dev-submit-payment-code", {
-        method: "POST",
-        body,
-      }),
-    );
-  }
-
   async getCurrentTransaction(): Promise<TransactionSnapshot> {
     return transactionSnapshotSchema.parse(
       await this.request("/v1/transactions/current"),
@@ -711,21 +702,6 @@ export class DaemonApiClient {
     );
   }
 
-  async markMockPayment(
-    orderNo: string,
-    succeed: boolean,
-  ): Promise<TransactionSnapshot> {
-    return transactionSnapshotSchema.parse(
-      await this.request("/v1/intents/mock-payment", {
-        method: "POST",
-        body: {
-          orderNo,
-          succeed,
-        },
-      }),
-    );
-  }
-
   async downloadLogExport(): Promise<Response> {
     const connection = await this.initialize();
     const response = await fetch(`${connection.baseUrl}/v1/logs/export`, {
@@ -751,9 +727,16 @@ export class DaemonApiClient {
     let socket: WebSocket | null = null;
     let retryMs = 500;
     let hasOpened = false;
+    let stale = false;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     const seenEventIds = new Set<string>();
     const seenEventIdQueue: string[] = [];
+
+    const markStale = (): void => {
+      if (closed || stale) return;
+      stale = true;
+      handlers.onStale();
+    };
 
     const scheduleReconnect = (): void => {
       if (closed || retryTimer !== null) return;
@@ -775,17 +758,19 @@ export class DaemonApiClient {
     const connect = async (): Promise<void> => {
       const connection = await this.initialize(true);
       const url = `${connection.baseUrl.replace(/^[hH][tT][tT][pP]/, "ws")}/v1/events?token=${encodeURIComponent(connection.token)}`;
-      socket = new WebSocket(url);
-      socket.onopen = () => {
-        if (closed) return;
+      const nextSocket = new WebSocket(url);
+      socket = nextSocket;
+      nextSocket.onopen = () => {
+        if (closed || socket !== nextSocket) return;
         const reconnected = hasOpened;
         hasOpened = true;
+        stale = false;
         retryMs = 500;
         handlers.onOpen?.({ reconnected });
         if (reconnected) handlers.onReconnect?.();
       };
-      socket.onmessage = (message) => {
-        if (closed) return;
+      nextSocket.onmessage = (message) => {
+        if (closed || socket !== nextSocket) return;
         const event = daemonEventSchema.parse(JSON.parse(String(message.data)));
         if ("known" in event) {
           handlers.onUnknownEvent?.(event);
@@ -799,16 +784,20 @@ export class DaemonApiClient {
           if (expired) seenEventIds.delete(expired);
         }
         handlers.onEvent(event);
+        if (event.type === "runtime_reconfigure_requested") {
+          markStale();
+          nextSocket.close();
+        }
       };
-      socket.onerror = () => {
-        if (closed) return;
+      nextSocket.onerror = () => {
+        if (closed || socket !== nextSocket) return;
         handlers.onError(
           new DaemonUnavailableError("daemon event stream error"),
         );
       };
-      socket.onclose = () => {
-        if (closed) return;
-        handlers.onStale();
+      nextSocket.onclose = () => {
+        if (closed || socket !== nextSocket) return;
+        markStale();
         scheduleReconnect();
       };
     };

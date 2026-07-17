@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const chromiumChannel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL ?? "chrome";
+const daemonHttpBaseUrl =
+  process.env.VEM_REAL_DAEMON_HTTP_BASE_URL ?? "http://127.0.0.1:7891";
 
 export default defineConfig({
   testDir: "./tests",
@@ -26,10 +28,9 @@ export default defineConfig({
     url: "http://127.0.0.1:1421",
     reuseExistingServer: false,
     env: {
-      VITE_DAEMON_HTTP_BASE_URL: "http://127.0.0.1:7891",
+      VITE_DAEMON_HTTP_BASE_URL: daemonHttpBaseUrl,
       VITE_DAEMON_IPC_TOKEN: "dev-token",
       VITE_DAEMON_MOCK: "false",
-      VITE_ENABLE_MOCK_PAYMENT_CONTROLS: "false",
     },
   },
   projects: [{ name: "machine-real-daemon" }],

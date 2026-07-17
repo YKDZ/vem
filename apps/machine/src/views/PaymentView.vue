@@ -5,11 +5,6 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
-import {
-  shouldShowMockPaymentControls,
-  shouldShowPaymentCodeDevScan,
-} from "@/config/runtime-flags";
-import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -65,14 +60,6 @@ const paymentCodeStatusCopy = computed(() => {
       return "请打开支付宝或微信付款码，靠近设备扫码窗口。";
   }
 });
-const canUseDevScan = computed(() =>
-  shouldShowPaymentCodeDevScan({
-    dev: import.meta.env.DEV,
-    mockDaemon: daemonClient.currentConnection?.mock === true,
-    flag: import.meta.env.VITE_ENABLE_PAYMENT_CODE_DEV_SCAN,
-  }),
-);
-
 const confirmingExpiredPayment = computed(
   () => paymentView.value?.display.state === "expired_confirming",
 );
@@ -111,25 +98,6 @@ const cancelOrderDisabledReason = computed(() => {
 const syncErrorCopy = computed(() =>
   checkoutStore.error ? "订单状态同步失败，请稍后重试" : null,
 );
-
-const showMockControls = computed(
-  () =>
-    shouldShowMockPaymentControls({
-      dev: import.meta.env.DEV,
-      paymentMethod: paymentView.value?.method,
-      flag: import.meta.env.VITE_ENABLE_MOCK_PAYMENT_CONTROLS,
-    }) && daemonClient.currentConnection?.mock === true,
-);
-
-async function simulateSuccess(): Promise<void> {
-  await checkoutStore.markMockSucceeded();
-  await submitMachineNavigationIntent({ type: "transaction.projection" });
-}
-
-async function simulateFail(): Promise<void> {
-  await checkoutStore.markMockFailed();
-  await submitMachineNavigationIntent({ type: "transaction.projection" });
-}
 
 async function cancelOrder(): Promise<void> {
   const catalogKey = checkoutStore.selectedItem?.catalogKey ?? null;
@@ -229,9 +197,6 @@ onUnmounted(() => {
             </span>
             <h2>{{ paymentCodeStatusTitle }}</h2>
             <p>{{ paymentCodeStatusCopy }}</p>
-            <RouterLink v-if="canUseDevScan" to="/dev/payment-code-scan">
-              手动扫码测试
-            </RouterLink>
           </div>
         </div>
 
@@ -337,23 +302,6 @@ onUnmounted(() => {
       <footer class="payment-footer">
         <div class="payment-help">？ 支付遇到问题？ 联系客服</div>
       </footer>
-
-      <div v-if="showMockControls" class="payment-mock-controls">
-        <button
-          type="button"
-          :disabled="checkoutStore.loading || expired"
-          @click="simulateSuccess"
-        >
-          模拟支付成功
-        </button>
-        <button
-          type="button"
-          :disabled="checkoutStore.loading"
-          @click="simulateFail"
-        >
-          模拟支付失败
-        </button>
-      </div>
 
       <img
         :src="mascotListImage"
@@ -777,24 +725,6 @@ onUnmounted(() => {
   margin: 0 auto;
   object-fit: contain;
   opacity: 0.92;
-}
-
-.payment-mock-controls {
-  position: absolute;
-  right: 1rem;
-  bottom: 1rem;
-  z-index: 9;
-  display: flex;
-  gap: 0.5rem;
-}
-
-.payment-mock-controls button {
-  border: 1px solid rgba(211, 203, 180, 0.86);
-  border-radius: 999px;
-  background: rgba(255, 253, 248, 0.86);
-  padding: 0.45rem 0.8rem;
-  color: #625b52;
-  font-size: 0.8rem;
 }
 
 .payment-mist {

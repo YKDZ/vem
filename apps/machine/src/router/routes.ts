@@ -38,11 +38,6 @@ export const machineRoutes: RouteRecordRaw[] = [
   ...(import.meta.env.DEV
     ? [
         {
-          path: "/dev/payment-code-scan",
-          name: "payment-code-dev-scan",
-          component: async () => import("@/views/PaymentCodeDevScanView.vue"),
-        } satisfies RouteRecordRaw,
-        {
           path: "/dev/vision",
           name: "vision-dev",
           component: async () => import("@/views/VisionDevView.vue"),

@@ -14,26 +14,19 @@ const {
   createOrderMock,
   cancelOrderMock,
   getCurrentTransactionMock,
-  submitDevPaymentCodeMock,
-  markMockPaymentMock,
   getSaleViewMock,
 } = vi.hoisted(() => ({
   createOrderMock: vi.fn(),
   cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
-  submitDevPaymentCodeMock: vi.fn(),
-  markMockPaymentMock: vi.fn(),
   getSaleViewMock: vi.fn(),
 }));
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
-    currentConnection: { mock: true },
     createOrder: createOrderMock,
     cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
-    submitDevPaymentCode: submitDevPaymentCodeMock,
-    markMockPayment: markMockPaymentMock,
     getSaleView: getSaleViewMock,
   },
 }));
@@ -983,17 +976,49 @@ describe("checkout store", () => {
   });
 
   it("refreshes current transaction from daemon", async () => {
-    getCurrentTransactionMock.mockResolvedValue(
-      makeTransactionSnapshot({ nextAction: "dispensing" }),
-    );
+    const snapshot = makeTransactionSnapshot({ nextAction: "dispensing" });
+    getCurrentTransactionMock.mockResolvedValue(snapshot);
 
     const store = useCheckoutStore();
-    await store.refreshCurrentTransaction();
+    await expect(store.refreshCurrentTransaction()).resolves.toEqual({
+      status: "refreshed",
+      snapshot,
+    });
 
     expect(store.customerCheckoutView).toMatchObject({
       stage: "dispensing",
       routeTarget: { path: "/dispensing" },
     });
+  });
+
+  it("reports an explicit transaction refresh failure while retaining recovery state", async () => {
+    const failure = new Error("daemon IPC disconnected");
+    getCurrentTransactionMock.mockRejectedValueOnce(failure);
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await expect(store.refreshCurrentTransaction()).resolves.toEqual({
+      status: "failed",
+      snapshot: null,
+      error: failure,
+    });
+
+    expect(store.customerCheckoutRecovery.active).toBe(true);
+  });
+
+  it("treats a transaction identity mismatch as a refreshed read", async () => {
+    getCurrentTransactionMock.mockResolvedValueOnce(
+      makeTransactionSnapshot({ orderNo: null, nextAction: null }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await expect(store.refreshCurrentTransaction()).resolves.toEqual({
+      status: "refreshed",
+      snapshot: null,
+    });
+
+    expect(store.customerCheckoutRecovery.active).toBe(true);
   });
 
   it("coalesces overlapping invalidations and discards an older successful snapshot", async () => {
@@ -1090,40 +1115,6 @@ describe("checkout store", () => {
     );
 
     expect(cancelOrderMock).not.toHaveBeenCalled();
-    expect(store.customerCheckoutView).toMatchObject({
-      stage: "payment",
-      orderCredential: "ORD-001",
-    });
-  });
-
-  it("blocks payment-code submission at the store boundary while recovering", async () => {
-    getCurrentTransactionMock.mockRejectedValue(
-      new Error("daemon IPC disconnected"),
-    );
-    const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot());
-    await store.refreshCurrentTransaction();
-
-    await expect(
-      store.submitDevPaymentCode("28763443825664394"),
-    ).resolves.toBeNull();
-
-    expect(submitDevPaymentCodeMock).not.toHaveBeenCalled();
-    expect(store.customerCheckoutView.orderCredential).toBe("ORD-001");
-  });
-
-  it("blocks both mock payment mutations at the store boundary while recovering", async () => {
-    getCurrentTransactionMock.mockRejectedValue(
-      new Error("daemon IPC disconnected"),
-    );
-    const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot());
-    await store.refreshCurrentTransaction();
-
-    await store.markMockSucceeded();
-    await store.markMockFailed();
-
-    expect(markMockPaymentMock).not.toHaveBeenCalled();
     expect(store.customerCheckoutView).toMatchObject({
       stage: "payment",
       orderCredential: "ORD-001",
@@ -1472,7 +1463,7 @@ describe("checkout store", () => {
     store.reset();
     const refreshed = await store.refreshCurrentTransaction();
 
-    expect(refreshed).toBeNull();
+    expect(refreshed).toEqual({ status: "refreshed", snapshot: null });
     expect(store.shouldIgnoreTransaction(failedTransaction)).toBe(true);
     expect(store.customerCheckoutView).toMatchObject({
       stage: "none",
@@ -1509,7 +1500,7 @@ describe("checkout store", () => {
     store.reset();
     const refreshed = await store.refreshCurrentTransaction();
 
-    expect(refreshed).toBeNull();
+    expect(refreshed).toEqual({ status: "refreshed", snapshot: null });
     expect(store.shouldIgnoreTransaction(successTransaction)).toBe(true);
     expect(store.customerCheckoutView).toMatchObject({
       stage: "none",
@@ -1632,52 +1623,4 @@ describe("checkout store", () => {
     expect(store.paymentCodeMessage).toBe("正在确认支付结果");
   });
 
-  it("drops concurrent dev payment submissions", async () => {
-    let resolveSubmit!: (
-      value: ReturnType<typeof makeTransactionSnapshot>,
-    ) => void;
-    submitDevPaymentCodeMock.mockImplementation(async () => {
-      return await new Promise<ReturnType<typeof makeTransactionSnapshot>>(
-        (resolve) => {
-          resolveSubmit = resolve;
-        },
-      );
-    });
-
-    const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot());
-
-    const first = store.submitDevPaymentCode("28763443825664394");
-    const second = await store.submitDevPaymentCode("28763443825664395");
-
-    resolveSubmit(makeTransactionSnapshot());
-    await first;
-
-    expect(second).toBeNull();
-    expect(submitDevPaymentCodeMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows customer-safe scanner copy when payment-code submit guard rejects", async () => {
-    const technicalMessage =
-      "MACHINE_NOT_READY_FOR_PAYMENT_CODE: open serial port COM3 failed: SCANNER_OPEN_FAILED (/v1/intents/dev-submit-payment-code returned HTTP 500)";
-    submitDevPaymentCodeMock.mockRejectedValue(
-      daemonRejectedRequestError(
-        technicalMessage,
-        "submit_payment_code_failed",
-        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: open serial port COM3 failed: SCANNER_OPEN_FAILED",
-      ),
-    );
-
-    const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot());
-
-    const result = await store.submitDevPaymentCode("28763443825664394");
-
-    expect(result).toBeNull();
-    expect(store.error).toBe("扫码器暂不可用，请选择其他支付方式");
-    expect(store.error).not.toContain("MACHINE_NOT_READY_FOR_PAYMENT_CODE");
-    expect(store.error).not.toContain("/v1/intents/dev-submit-payment-code");
-    expect(store.error).not.toContain("SCANNER_OPEN_FAILED");
-    expect(store.error).not.toContain("COM3");
-  });
 });
