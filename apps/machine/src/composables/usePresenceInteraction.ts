@@ -493,6 +493,7 @@ export function useReturnHomeOnCustomerDeparture(
     () => session.state.value.personPresent,
     (personPresent, wasPresent) => {
       if (personPresent || !wasPresent) return;
+      if (checkoutStore.loading) return;
       if (checkoutStore.customerCheckoutView.stage !== "none") return;
       const routeName =
         typeof route.name === "string" ? route.name : String(route.name ?? "");
