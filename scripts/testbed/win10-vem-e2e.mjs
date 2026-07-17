@@ -31,11 +31,15 @@ import {
 import { validateSerialConformanceReport } from "./vm-host-adapter-serial-conformance.mjs";
 
 async function loadFactoryAcceptanceAdmission() {
-  return import("../factory/factory-acceptance-admission.mjs");
+  throw new Error(
+    "Factory acceptance is retired; use the VM runtime baseline and Runtime Bootstrap",
+  );
 }
 
 async function loadFactoryPersonalizationMedia() {
-  return import("../factory/factory-personalization-media.mjs");
+  throw new Error(
+    "Factory personalization media is retired; use Runtime Bootstrap and Provisioning Profile Cache",
+  );
 }
 
 const VEM_RESET_ROOTS = [

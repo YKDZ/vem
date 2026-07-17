@@ -15,7 +15,7 @@ import test from "node:test";
 import {
   createRuntimeArtifactDescriptor,
   writeRuntimeArtifactDescriptor,
-} from "../factory/runtime-artifact-descriptor.mjs";
+} from "./runtime-artifact-descriptor.mjs";
 
 function canonicalJson(value) {
   if (Array.isArray(value)) {

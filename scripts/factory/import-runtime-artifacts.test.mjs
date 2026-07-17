@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
-import { importRuntimeArtifacts } from "./import-runtime-artifacts.mjs";
 import {
   createRuntimeArtifactDescriptor,
   validateRuntimeArtifactDescriptor,
   writeRuntimeArtifactDescriptor,
-} from "./runtime-artifact-descriptor.mjs";
+} from "../windows/runtime-artifact-descriptor.mjs";
+import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
+import { importRuntimeArtifacts } from "./import-runtime-artifacts.mjs";
 
 const COMMIT = "1".repeat(40);
 const WORKFLOW_RUN = "github-actions://vem/vem/actions/runs/42/attempts/1";

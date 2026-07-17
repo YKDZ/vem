@@ -4,8 +4,6 @@ import { open, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { canonicalJson } from "./factory-manifest.mjs";
-
 export const RUNTIME_ARTIFACT_FILES = Object.freeze([
   { role: "vem-daemon", name: "vending-daemon.exe" },
   { role: "vem-machine-ui", name: "machine.exe" },
@@ -27,6 +25,19 @@ const TOOLCHAIN_KEYS = [
   "cargo",
   "tauriCli",
 ];
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 function exactKeys(value, expected, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

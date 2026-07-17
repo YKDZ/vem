@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 const activeRuntimeFiles = [
@@ -11,7 +12,16 @@ const activeRuntimeFiles = [
   "public/machine-provisioning-default-api-base-url.md",
   "public/unified-field-delivery.md",
   "public/windows-bringup-bundle.md",
-  "public/windows-factory-runtime-and-maintenance.md",
+];
+
+const runtimeEntrypoints = [
+  "scripts/testbed/win10-vem-e2e.mjs",
+  "scripts/testbed/kvm-baseline/build-win10-baseline.mjs",
+  "scripts/testbed/kvm-baseline/linux-kvm-baseline.mjs",
+  "scripts/testbed/kvm-baseline/libvirt-runtime-profile.mjs",
+  "scripts/windows/runtime-artifact-descriptor.mjs",
+  "scripts/windows/test-vision-candidate.ps1",
+  "scripts/windows/test-vision-candidate.windows-harness.ps1",
 ];
 
 const activeRuntimeForbiddenPatterns = [
@@ -35,6 +45,54 @@ const activeRuntimeForbiddenPatterns = [
   /100\.68\.189\.11/,
 ];
 
+const activeWorkflowForbiddenPatterns = [
+  /scripts\/factory\//,
+  /build-factory-iso/,
+  /factory-image-acceptance/,
+  /prepare-factory-runtime/,
+  /verify-factory-runtime/,
+  /provision-vision-factory-release/,
+  /machine-config\.bringup/,
+  /\bCOM[0-9]\b/,
+];
+
+function activeWorkflows() {
+  return readdirSync(".github/workflows")
+    .filter((path) => path.endsWith(".yml") || path.endsWith(".yaml"))
+    .filter((path) =>
+      /^on:/m.test(readFileSync(join(".github/workflows", path), "utf8")),
+    )
+    .map((path) => join(".github/workflows", path));
+}
+
+function localImports(text) {
+  return [...text.matchAll(/(?:from|import\()\s*["']([^"']+)["']/g)].map(
+    (match) => match[1],
+  );
+}
+
+function runtimeImportClosure(entrypoint) {
+  const pending = [entrypoint];
+  const closure = new Set();
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (closure.has(path)) continue;
+    closure.add(path);
+    const text = readFileSync(path, "utf8");
+    for (const imported of localImports(text)) {
+      if (!imported.startsWith(".")) continue;
+      const resolved = resolve(dirname(path), imported);
+      const candidate = existsSync(resolved)
+        ? resolved
+        : existsSync(`${resolved}.mjs`)
+          ? `${resolved}.mjs`
+          : null;
+      if (candidate) pending.push(candidate);
+    }
+  }
+  return closure;
+}
+
 describe("active Windows runtime Factory retirement guard", () => {
   for (const path of activeRuntimeFiles) {
     it(`${path} does not describe or invoke stopped Factory paths`, () => {
@@ -45,12 +103,51 @@ describe("active Windows runtime Factory retirement guard", () => {
     });
   }
 
-  it("runtime acceptance CLI does not import historical Factory source at module load", () => {
-    const text = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
-    assert.doesNotMatch(
-      text,
-      /^import .*"\.\.\/factory\//m,
-      "runtime acceptance CLI must not load scripts/factory for active runtime modes",
+  for (const path of activeWorkflows()) {
+    it(`${path} has no retired Factory or fixed-config execution path`, () => {
+      const text = readFileSync(path, "utf8");
+      for (const pattern of activeWorkflowForbiddenPatterns) {
+        assert.doesNotMatch(text, pattern, `${path} matched ${pattern}`);
+      }
+    });
+  }
+
+  for (const path of runtimeEntrypoints) {
+    it(`${path} and its transitive imports exclude historical Factory source`, () => {
+      for (const importedPath of runtimeImportClosure(path)) {
+        const text = readFileSync(importedPath, "utf8");
+        for (const imported of localImports(text)) {
+          assert.doesNotMatch(
+            imported,
+            /(?:^|\/)factory(?:\/|$)/,
+            `${importedPath} imports retired Factory source: ${imported}`,
+          );
+        }
+      }
+    });
+  }
+
+  it("removes retired workflow entrypoints and active runbook inventory", () => {
+    for (const path of [
+      ".github/workflows/build-factory-iso.yml",
+      ".github/workflows/factory-image-acceptance.yml",
+    ]) {
+      assert.equal(existsSync(path), false, `${path} must remain disabled`);
+    }
+    const inventory = readFileSync(
+      "scripts/check-repository-script-inventory.mjs",
+      "utf8",
     );
+    for (const path of [
+      "public/customer-accessible-kiosk-lockdown.md",
+      "public/production-pilot-sop.md",
+      "public/vision-release-bundle.md",
+    ]) {
+      assert.doesNotMatch(
+        inventory,
+        new RegExp(`path: ${JSON.stringify(path)}`),
+        `${path} must not be an active public runbook`,
+      );
+    }
   });
 });

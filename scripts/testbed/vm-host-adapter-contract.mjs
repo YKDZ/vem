@@ -18,7 +18,8 @@ const CONTRACT_VERSION = "vem-vm-host-adapter-contract/v2";
 const REQUEST_SCHEMA_VERSION = "vem-vm-host-adapter-request/v2";
 const REPORT_SCHEMA_VERSION = "vem-vm-host-adapter-report/v2";
 const DIAGNOSTIC_SCHEMA_VERSION = "vem-vm-host-adapter-diagnostic/v2";
-const ASSET_IDENTITY = /^(?:factory-cas|runtime-base):\/\/sha256\/([a-f0-9]{64})$/;
+const ASSET_IDENTITY = /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/;
+const RUNTIME_BASE_IDENTITY = /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/;
 const EVIDENCE_IDENTITY = /^factory-evidence:\/\/sha256\/([a-f0-9]{64})$/;
 const TARGET_IDENTITY = /^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/;
 const OPERATION_NONCE = /^op-[a-f0-9]{16,64}$/;
@@ -243,7 +244,9 @@ function assertNoHostReference(value, path, issues) {
 function assertLogicalIdentity(value, path, issues) {
   if (
     typeof value !== "string" ||
-    (!LOGICAL_IDENTITY.test(value) && !ASSET_IDENTITY.test(value))
+    (!LOGICAL_IDENTITY.test(value) &&
+      !ASSET_IDENTITY.test(value) &&
+      !RUNTIME_BASE_IDENTITY.test(value))
   ) {
     issue(issues, path, "must be a logical identity");
     return;
@@ -261,12 +264,22 @@ function assertAsset(asset, index, issues, pathPrefix = "assets") {
   ) {
     issue(issues, `${path}.role`, "must be a logical asset role");
   }
+  const identityPattern =
+    asset.role === "approved-runtime-base"
+      ? RUNTIME_BASE_IDENTITY
+      : ASSET_IDENTITY;
   const identity =
     typeof asset.identity === "string"
-      ? asset.identity.match(ASSET_IDENTITY)
+      ? asset.identity.match(identityPattern)
       : null;
   if (!identity)
-    issue(issues, `${path}.identity`, "must be a SHA-256 asset identity");
+    issue(
+      issues,
+      `${path}.identity`,
+      asset.role === "approved-runtime-base"
+        ? "must be a runtime-base SHA-256 identity"
+        : "must be a factory-cas SHA-256 identity",
+    );
   if (
     typeof asset.digest !== "string" ||
     !/^sha256:[a-f0-9]{64}$/.test(asset.digest)

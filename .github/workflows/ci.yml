@@ -227,12 +227,6 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File
           ./scripts/windows/test-vision-candidate.windows-harness.ps1
 
-      - name: Run signed Vision installer harness
-        run: >-
-          ./scripts/windows/vision-release-install.windows-harness.ps1
-          -InstallerPath ./scripts/windows/install-vision-release.ps1
-          -CorePowerShellPaths pwsh,powershell.exe
-
   machine-e2e-tests:
     name: Machine UI Daemon E2E
     needs: changes

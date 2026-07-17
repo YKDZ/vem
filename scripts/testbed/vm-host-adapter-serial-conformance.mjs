@@ -725,10 +725,6 @@ function readOption(name, { optional = false } = {}) {
   return process.argv[index + 1];
 }
 
-function readRuntimeBaseOption() {
-  return readOption("--runtime-base", { optional: true }) ?? readOption("--approved-runtime-base");
-}
-
 function readStrictJsonObjectOption(name) {
   const value = readOption(name, { optional: true });
   if (value === null) return null;
@@ -816,12 +812,10 @@ function nonce() {
 
 function asset(identity) {
   const match = String(identity).match(
-    /^(?:factory-cas|runtime-base):\/\/sha256\/([a-f0-9]{64})$/,
+    /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/,
   );
   if (!match)
-    throw new Error(
-      "--runtime-base must be a SHA-256 runtime base identity",
-    );
+    throw new Error("--runtime-base must be a SHA-256 runtime base identity");
   return {
     role: "approved-runtime-base",
     identity,
@@ -945,7 +939,7 @@ async function main() {
   const scannerCode = readProtectedScannerCode();
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
-  const approvedRuntimeBase = readRuntimeBaseOption();
+  const approvedRuntimeBase = readOption("--runtime-base");
   const lifecycleReference = readOption("--lifecycle-reference");
   const saleCorrelationId = readOption("--sale-correlation-id");
   const startOnly = process.argv.includes("--start-only");
@@ -1324,7 +1318,10 @@ function runSaleCommand(command, expectedPhase) {
     );
   let output = JSON.parse(result.stdout || "null");
   const outputOptionIndex = command.lastIndexOf("--out");
-  if (outputOptionIndex >= 0 && typeof command[outputOptionIndex + 1] === "string") {
+  if (
+    outputOptionIndex >= 0 &&
+    typeof command[outputOptionIndex + 1] === "string"
+  ) {
     try {
       output = JSON.parse(
         readFileSync(resolve(command[outputOptionIndex + 1]), "utf8"),

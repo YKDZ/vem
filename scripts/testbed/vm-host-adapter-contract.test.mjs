@@ -275,7 +275,7 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     assets: [
       {
         role: "approved-runtime-base",
-        identity: `factory-cas://sha256/${HASH}`,
+        identity: `runtime-base://sha256/${HASH}`,
         digest: `sha256:${HASH}`,
       },
     ],
@@ -802,6 +802,22 @@ function reportFor(request, overrides = {}) {
 }
 
 describe("VM Host Adapter contract", () => {
+  it("accepts runtime-base identities only for the approved runtime base role", () => {
+    const request = requestFor("restore-approved-base", {
+      assets: [
+        {
+          role: "approved-runtime-base",
+          identity: `factory-cas://sha256/${HASH}`,
+          digest: `sha256:${HASH}`,
+        },
+      ],
+    });
+    assert.throws(
+      () => createVmHostAdapterRequest(request),
+      /runtime-base SHA-256 identity/,
+    );
+  });
+
   it("permits lifecycle cleanup to recover a failed clean install from its Factory ISO", () => {
     const request = createVmHostAdapterRequest(
       requestFor("cleanup", {
@@ -1850,7 +1866,7 @@ describe("VM Host Adapter contract", () => {
             ...cleanInstall.assets,
             {
               role: "approved-runtime-base",
-              identity: `factory-cas://sha256/${HASH}`,
+              identity: `runtime-base://sha256/${HASH}`,
               digest: `sha256:${HASH}`,
             },
           ],
@@ -2616,8 +2632,8 @@ describe("VM Host Adapter contract", () => {
           "RUN-12-CONTRACT",
           "--target-identity",
           "vm-target://runtime-testbed",
-          "--approved-runtime-base",
-          `factory-cas://sha256/${HASH}`,
+          "--runtime-base",
+          `runtime-base://sha256/${HASH}`,
           "--out",
           out,
         ],
@@ -2657,8 +2673,8 @@ describe("VM Host Adapter contract", () => {
           "RUN-12-CONTRACT",
           "--target-identity",
           "vm-target://runtime-testbed",
-          "--approved-runtime-base",
-          `factory-cas://sha256/${HASH}`,
+          "--runtime-base",
+          `runtime-base://sha256/${HASH}`,
           "--out",
           out,
         ],
@@ -2695,8 +2711,8 @@ describe("VM Host Adapter contract", () => {
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
-        "--approved-runtime-base",
-        `factory-cas://sha256/${HASH}`,
+        "--runtime-base",
+        `runtime-base://sha256/${HASH}`,
         "--active-kiosk-session-user",
         "VEMKiosk",
         "--active-kiosk-session-id",
@@ -2752,8 +2768,8 @@ describe("VM Host Adapter contract", () => {
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
-        "--approved-runtime-base",
-        `factory-cas://sha256/${HASH}`,
+        "--runtime-base",
+        `runtime-base://sha256/${HASH}`,
         "--maintenance-relay-session-json",
         JSON.stringify(maintenanceContext.maintenanceRelaySession),
         "--out",
@@ -2792,8 +2808,8 @@ describe("VM Host Adapter contract", () => {
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
-        "--approved-runtime-base",
-        `factory-cas://sha256/${HASH}`,
+        "--runtime-base",
+        `runtime-base://sha256/${HASH}`,
         "--maintenance-endpoint-policy-json",
         JSON.stringify(maintenanceContext.maintenanceEndpointPolicy),
         "--out",
@@ -2822,8 +2838,8 @@ describe("VM Host Adapter contract", () => {
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
-        "--approved-runtime-base",
-        `factory-cas://sha256/${HASH}`,
+        "--runtime-base",
+        `runtime-base://sha256/${HASH}`,
         "--active-kiosk-session-user",
         "VEMKiosk",
         "--active-kiosk-session-id",
@@ -3052,8 +3068,8 @@ describe("VM Host Adapter contract", () => {
       "RUN-12-CONTRACT",
       "--target-identity",
       "vm-target://runtime-testbed",
-      "--approved-runtime-base",
-      `factory-cas://sha256/${HASH}`,
+      "--runtime-base",
+      `runtime-base://sha256/${HASH}`,
       "--sale-correlation-id",
       "sale-correlation://sale-001",
       "--order-id",
@@ -3169,8 +3185,8 @@ describe("VM Host Adapter contract", () => {
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
-        "--approved-runtime-base",
-        `factory-cas://sha256/${HASH}`,
+        "--runtime-base",
+        `runtime-base://sha256/${HASH}`,
         "--lifecycle-reference",
         "vm-lifecycle://run-12-contract.runtime-testbed",
         "--maintenance-relay-session-json",
@@ -3639,8 +3655,8 @@ describe("VM Host Adapter contract", () => {
           "RUN-12-CONTRACT",
           "--target-identity",
           "vm-target://runtime-testbed",
-          "--approved-runtime-base",
-          `factory-cas://sha256/${HASH}`,
+          "--runtime-base",
+          `runtime-base://sha256/${HASH}`,
           "--lifecycle-reference",
           "vm-lifecycle://run-12-contract.runtime-testbed",
           "--sale-correlation-id",
@@ -3729,8 +3745,8 @@ describe("VM Host Adapter contract", () => {
           "RUN-12-CONTRACT",
           "--target-identity",
           "vm-target://runtime-testbed",
-          "--approved-runtime-base",
-          `factory-cas://sha256/${HASH}`,
+          "--runtime-base",
+          `runtime-base://sha256/${HASH}`,
           "--out",
           out,
         ],

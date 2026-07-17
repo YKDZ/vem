@@ -12,23 +12,6 @@ on:
           - smoke
           - field
           - release
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/windows-bringup-bundle.yml
-      - .github/workflows/build-windows-runtime-artifacts.yml
-      - apps/machine/**
-      - apps/vending-daemon/**
-      - crates/**
-      - packages/shared/**
-      - scripts/windows/**
-      - public/windows-bringup-bundle.md
-      - Cargo.lock
-      - Cargo.toml
-      - pnpm-lock.yaml
-      - package.json
-      - pnpm-workspace.yaml
 concurrency:
   group: windows-bringup-bundle-${{ github.ref }}
   cancel-in-progress: false
@@ -81,7 +64,6 @@ jobs:
 
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\setup-scheduled-tasks.ps1") -Destination $scriptDir
-          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\machine-config.bringup.example.json") -Destination (Join-Path $bundleRoot "machine-config.bringup.example.json")
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "public\windows-bringup-bundle.md") -Destination (Join-Path $bundleRoot "README.md")
 
           $hashLines = Get-ChildItem -Path $bundleRoot -File -Recurse |

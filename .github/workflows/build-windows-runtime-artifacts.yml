@@ -171,7 +171,7 @@ jobs:
             cargo = ((cargo --version) -split ' ')[1]
             tauriCli = (((pnpm --filter machine exec tauri --version).Trim()) -split ' ')[-1]
           }
-          $descriptorJson = & node scripts/factory/runtime-artifact-descriptor.mjs `
+          $descriptorJson = & node scripts/windows/runtime-artifact-descriptor.mjs `
             --directory $artifactRoot `
             --commit "${{ github.sha }}" `
             --artifact-name $artifactName `

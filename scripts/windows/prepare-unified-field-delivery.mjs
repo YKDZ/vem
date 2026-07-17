@@ -20,7 +20,7 @@ import {
   readRuntimeArtifactDescriptor,
   validateRuntimeArtifactDescriptor,
   validateRuntimeArtifactDirectory,
-} from "../factory/runtime-artifact-descriptor.mjs";
+} from "./runtime-artifact-descriptor.mjs";
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;

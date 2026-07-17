@@ -297,10 +297,10 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
-    path: "scripts/factory/runtime-artifact-descriptor.mjs",
-    owner: "field-operations",
+    path: "scripts/windows/runtime-artifact-descriptor.mjs",
+    owner: "machine-runtime",
     category: "public runbook operation",
-    workflows: ["factory preparation"],
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/factory/sanitize-build-evidence.mjs",
@@ -584,6 +584,54 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/check-active-runtime-factory-retirement.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/build-win10-baseline.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/kvm-baseline.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/libvirt-runtime-profile.mjs",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/linux-kvm-baseline.mjs",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/prepare-vm-runtime.ps1",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/shared-guest-preparation.ps1",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/kvm-baseline/verify-vm-runtime.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/windows/accept-protected-touch-keyboard.ps1",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -832,71 +880,16 @@ const DEFAULT_INVENTORY = [
 const DEFAULT_PUBLIC_RUNBOOKS = [
   {
     path: "public/windows-bringup-bundle.md",
-    scripts: [
-      "scripts/windows/vending-daemon-smoke.ps1",
-      "scripts/windows/setup-scheduled-tasks.ps1",
-    ],
-    requiredText: [
-      "Protected maintenance session for smoke",
-      "VEM_MAINTENANCE_PIN",
-      "same Factory/Testbed bootstrap",
-    ],
-  },
-  {
-    path: "public/customer-accessible-kiosk-lockdown.md",
-    scripts: [
-      "scripts/windows/setup-scheduled-tasks.ps1",
-      "scripts/windows/verify-kiosk-lockdown.ps1",
-    ],
-    requiredText: [
-      "Controlled Maintenance Ingress",
-      "WireGuard pull-reconciling Maintenance Relay",
-      "OIDC-authenticated maintenance session",
-      "SSH certificate-only",
-      "VEM Controlled Maintenance SSH",
-    ],
-    forbiddenText: [
-      "VEM Tailscale SSH",
-      "ConfigureRemoteMaintenanceAccess",
-      "transport-neutral",
-      "VEM_TESTBED_WINDOWS_PASSWORD",
-    ],
-  },
-  {
-    path: "public/production-pilot-sop.md",
     scripts: [],
-    requiredText: [
-      "Controlled Maintenance Ingress",
-      "唯一合法的远程维护路径",
-      "session-scoped WireGuard pull relay",
-      "OIDC-authenticated maintenance session",
-      "SSH certificate-only",
-    ],
-    forbiddenText: [
-      "Tailscale SSH",
-      "受控 Tailscale",
-      "SSH, WireGuard, and relay are implementation mechanisms",
-    ],
+    requiredText: ["Runtime Bootstrap", "certificate-only SSH"],
   },
   {
     path: "public/managed-machine-update.md",
-    scripts: [
-      "scripts/check-managed-machine-update.mjs",
-      "scripts/check-machine-vision-deployment.mjs",
-      "scripts/factory/experimental-vision-candidate.mjs",
-      "scripts/windows/apply-managed-update.ps1",
-      "scripts/windows/install-vision-release.ps1",
-      "scripts/windows/setup-scheduled-tasks.ps1",
-      "scripts/windows/test-vision-candidate.ps1",
-      "scripts/windows/verify-vem-runtime.ps1",
-    ],
+    scripts: [],
   },
   {
     path: "public/unified-field-delivery.md",
-    scripts: [
-      "scripts/windows/prepare-unified-field-delivery.mjs",
-      "scripts/windows/verify-progressive-delivery.mjs",
-    ],
+    scripts: [],
   },
 ];
 

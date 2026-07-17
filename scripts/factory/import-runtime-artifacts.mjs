@@ -4,13 +4,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
-import { validateFactoryManifest } from "./factory-manifest.mjs";
 import {
   readRuntimeArtifactDescriptor,
   validateRuntimeArtifactDescriptor,
   validateRuntimeArtifactDirectory,
-} from "./runtime-artifact-descriptor.mjs";
+} from "../windows/runtime-artifact-descriptor.mjs";
+import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
+import { validateFactoryManifest } from "./factory-manifest.mjs";
 
 function parseArgs(argv) {
   const options = {};
