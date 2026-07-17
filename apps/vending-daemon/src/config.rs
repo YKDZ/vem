@@ -503,7 +503,7 @@ pub struct HardwareSlotTopologyIdentity {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum FactoryProfile {
     Production,
@@ -515,6 +515,37 @@ impl FactoryProfile {
         match self {
             Self::Production => "production",
             Self::Testbed => "testbed",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FactoryProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "production" => Ok(Self::Production),
+            "testbed" => Ok(Self::Testbed),
+            legacy
+                if legacy.starts_with("vps-")
+                    || legacy.starts_with("field-")
+                    || legacy.starts_with("experimental-") =>
+            {
+                Ok(Self::Testbed)
+            }
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &[
+                    "production",
+                    "testbed",
+                    "vps-*",
+                    "field-*",
+                    "experimental-*",
+                ],
+            )),
         }
     }
 }
@@ -535,6 +566,8 @@ pub struct FactoryRuntimeManifest {
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBringUpSettings {
+    #[serde(default, skip_serializing)]
+    pub environment: Option<serde_json::Value>,
     #[serde(default)]
     pub provisioning_endpoint_override: Option<String>,
     #[serde(default)]

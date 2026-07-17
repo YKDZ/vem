@@ -305,7 +305,12 @@ function shouldEmitSystemHardwareFault(): boolean {
   );
   if (!hasHardwareBlocker) return false;
 
-  const readyKey = `${ready.updatedAt}:${codes.join(",")}`;
+  const readyKey = codes
+    .filter((code) =>
+      ["LOWER_CONTROLLER_UNAVAILABLE", "HARDWARE_UNAVAILABLE"].includes(code),
+    )
+    .sort()
+    .join(",");
   if (lastSystemHardwareFaultReadyKey === readyKey) return false;
   lastSystemHardwareFaultReadyKey = readyKey;
   return true;

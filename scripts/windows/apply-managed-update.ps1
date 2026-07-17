@@ -81,6 +81,11 @@ function Normalize-Sha256 {
   return $normalized
 }
 
+function Convert-BytesToLowerHex {
+  param([byte[]]$Bytes)
+  return [BitConverter]::ToString($Bytes).Replace("-", "").ToLowerInvariant()
+}
+
 function Assert-NoPlatformPaymentSecretBytes {
   param(
     [byte[]]$Bytes,
@@ -338,7 +343,7 @@ function Assert-NoPlatformPaymentSecretBytes {
           (& $isValidDerOid $element.contentStart $element.end)
         ) {
           [byte[]]$oidValue = $Bytes[$element.contentStart..($element.end - 1)]
-          if ($privateBagOidValues -contains [Convert]::ToHexString($oidValue)) {
+          if ($privateBagOidValues -contains (Convert-BytesToLowerHex -Bytes $oidValue)) {
             return [pscustomobject]@{
               valid = $true
               found = $true
