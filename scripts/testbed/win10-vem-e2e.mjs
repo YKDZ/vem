@@ -2672,6 +2672,18 @@ $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
 $expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
 $allowedInitialRoutes = @($expectedRoute, '#/result/*') | Select-Object -Unique
+$preCleanupDeadline = [DateTime]::UtcNow.AddSeconds(15)
+$preCleanupRoute = $null
+do {
+  $preCleanupTargets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
+  if ($preCleanupTargets.Count -eq 1) {
+    $preCleanupRoute = ([uri][string]$preCleanupTargets[0].url).Fragment
+    if ($preCleanupRoute -eq $expectedRoute) { break }
+    if ($preCleanupRoute -notlike '#/result/*') { throw 'live kiosk route is outside the post-sale return policy before cleanup' }
+  }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $preCleanupDeadline)
+if ($preCleanupRoute -ne $expectedRoute) { throw 'live ResultView did not automatically return to the post-sale route before cleanup' }
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)

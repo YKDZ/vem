@@ -874,13 +874,13 @@ describe("simulated hardware serial acceptance evidence", () => {
                     initialTargetId: "restored-normal-target",
                     initialTargetUrl:
                       "http://127.0.0.1:9222/devtools/page/restored-normal-target",
-                    initialRoute: "#/result",
-                    allowedInitialRoutes: ["#/catalog", "#/result"],
+                    initialRoute: "#/catalog",
+                    allowedInitialRoutes: ["#/catalog", "#/result/*"],
                     settledTargetId: "restored-normal-target",
                     settledTargetUrl:
                       "http://127.0.0.1:9222/devtools/page/restored-normal-target",
                     settledRoute: "#/catalog",
-                    resultAutoReturnObserved: true,
+                    resultAutoReturnObserved: false,
                     settledWithAcceptanceOverlay: true,
                     processId: 4243,
                     principal: "VEM\\VEMKiosk",
@@ -4775,6 +4775,10 @@ if ($errors.Count -gt 0) {
     assert.match(cleanup, /#\/result\/\*/);
     assert.match(cleanup, /\$initialRoute -like '#\/result\/\*'/);
     assert.match(cleanup, /AddSeconds\(15\)/);
+    assert.match(
+      cleanup,
+      /live ResultView did not automatically return to the post-sale route before cleanup/,
+    );
     assert.match(cleanup, /settledRoute/);
     assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
     assert.match(cleanup, /\[Console\]::Out\.WriteLine/);
