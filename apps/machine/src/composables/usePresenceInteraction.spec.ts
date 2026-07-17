@@ -613,6 +613,39 @@ describe("usePresenceInteraction", () => {
     });
   });
 
+  it("ignores vision departure while a recent local interaction is active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T11:07:00.000Z"));
+    const presence = await mountPresence({ inactivityDepartureMs: 5000 });
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    useVisionStore().applyPresenceStatus({
+      eventId: "VISION-PRESENCE-EVENT-EMPTY-001",
+      state: "empty",
+      reason: "no_person",
+      detectedAt: "2026-06-29T11:07:01.000Z",
+      personPresent: false,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: false, closeNow: false, close: false },
+    });
+    await nextTick();
+
+    expect(presence.state?.value).toMatchObject({
+      personPresent: true,
+      source: "local_interaction",
+    });
+
+    vi.advanceTimersByTime(5000);
+    await nextTick();
+    expect(presence.state?.value).toMatchObject({
+      personPresent: false,
+      source: "inactivity",
+    });
+  });
+
   it("emits interaction awakened for local interaction from a not-present session", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T12:10:00.000Z"));

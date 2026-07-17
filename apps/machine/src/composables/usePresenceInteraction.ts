@@ -274,6 +274,17 @@ function markDeparted(input: {
   keepLastSeenAt?: boolean;
   suppressAudioCue?: boolean;
 }): void {
+  const lastInteractionAt = state.value.lastInteractionAt
+    ? Date.parse(state.value.lastInteractionAt)
+    : Number.NaN;
+  if (
+    (input.source === "vision" || input.source === "unavailable") &&
+    activeOptions &&
+    Number.isFinite(lastInteractionAt) &&
+    Date.now() - lastInteractionAt < activeOptions.inactivityDepartureMs
+  ) {
+    return;
+  }
   const wasPersonPresent = state.value.personPresent;
   state.value = {
     personPresent: false,
