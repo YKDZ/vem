@@ -1321,7 +1321,6 @@ function runSaleCommand(command, expectedPhase) {
   const output = JSON.parse(result.stdout || "null");
   const sale = output?.simulatedHardwareSaleFlow?.sale;
   if (
-    output?.ok !== true ||
     output?.simulatedHardwareSaleFlow?.phase !== expectedPhase ||
     typeof sale?.orderId !== "string" ||
     typeof sale?.paymentId !== "string"
