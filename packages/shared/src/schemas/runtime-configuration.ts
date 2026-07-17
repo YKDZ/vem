@@ -137,13 +137,15 @@ export const effectiveMachineRuntimeConfigurationSchema = z.strictObject({
       apiBaseUrl: cachedProvisioningProfileSchema.shape.apiBaseUrl,
       runtimeEndpoints: cachedProvisioningProfileSchema.shape.runtimeEndpoints,
       mqttConnection: cachedProvisioningProfileSchema.shape.mqttConnection,
-      paymentCapability: cachedProvisioningProfileSchema.shape.paymentCapability,
+      paymentCapability:
+        cachedProvisioningProfileSchema.shape.paymentCapability,
     })
     .nullable(),
   hardware: z.strictObject({
     model: runtimeBootstrapSchema.shape.hardwareModel,
     topology: runtimeBootstrapSchema.shape.topology,
-    expectedProfile: cachedProvisioningProfileSchema.shape.hardwareProfile.nullable(),
+    expectedProfile:
+      cachedProvisioningProfileSchema.shape.hardwareProfile.nullable(),
     lowerControllerBinding: localSerialRoleBindingSchema.nullable(),
     scannerBinding: localSerialRoleBindingSchema.nullable(),
     scannerProtocol: scannerProtocolParametersSchema.nullable(),

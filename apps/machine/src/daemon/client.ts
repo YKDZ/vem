@@ -910,7 +910,7 @@ export class DaemonApiClient {
       await this.request(
         `/v1/runtime-configuration/intents/hardware-bindings/${role}/confirm`,
         {
-        method: "POST",
+          method: "POST",
           body: request,
         },
       ),
@@ -934,10 +934,13 @@ export class DaemonApiClient {
   ): Promise<EffectiveMachineRuntimeConfiguration> {
     const request = setAudioPreferencesRequestSchema.parse(body);
     return effectiveMachineRuntimeConfigurationSchema.parse(
-      await this.request("/v1/runtime-configuration/intents/audio-preferences", {
-        method: "POST",
-        body: request,
-      }),
+      await this.request(
+        "/v1/runtime-configuration/intents/audio-preferences",
+        {
+          method: "POST",
+          body: request,
+        },
+      ),
     );
   }
 

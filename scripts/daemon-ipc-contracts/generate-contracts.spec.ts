@@ -130,10 +130,10 @@ describe("Daemon IPC contract generator", () => {
             "--no-builder",
             "--additional-derive",
             "PartialEq",
+            expect.stringContaining("src/generated/runtime_configuration.rs"),
             expect.stringContaining(
-              "src/generated/runtime_configuration.rs",
+              "schemas/runtime_configuration.schema.json",
             ),
-            expect.stringContaining("schemas/runtime_configuration.schema.json"),
           ]),
           cwd: root,
         }),

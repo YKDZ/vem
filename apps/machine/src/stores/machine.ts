@@ -1,6 +1,6 @@
-import { defineStore } from "pinia";
-
 import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
+
+import { defineStore } from "pinia";
 
 import type { HealthSnapshot, ConfigSummary } from "@/daemon/schemas";
 
