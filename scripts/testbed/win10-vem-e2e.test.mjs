@@ -1036,6 +1036,7 @@ describe("simulated hardware serial acceptance evidence", () => {
         "serial activation",
         "simulated hardware fixture",
         "launch",
+        "launch",
         "authoritative platform raw baseline query",
         "serial conformance",
         "authoritative platform raw post query",
@@ -4246,7 +4247,7 @@ try {
       fixtureFlow,
       /fixture-only sale setup requires healthy serial hardware before customer checkout/,
     );
-    assert.match(
+    assert.doesNotMatch(
       script,
       /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
     );

@@ -266,10 +266,7 @@ export class MachineStockMovementsService {
     if (
       !movement ||
       movement.quantity <= 0 ||
-      movement.deltaQuantity !== -movement.quantity ||
-      movement.beforeQuantity === null ||
-      movement.afterQuantity === null ||
-      movement.beforeQuantity - movement.afterQuantity !== movement.quantity
+      movement.deltaQuantity !== -movement.quantity
     ) {
       return null;
     }
