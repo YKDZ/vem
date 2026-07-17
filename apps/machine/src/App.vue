@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getActivePinia } from "pinia";
 import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
@@ -11,10 +12,15 @@ import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-load
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { router } from "@/router";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
-import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import {
+  startMachineRuntime,
+  stopMachineRuntime,
+} from "@/runtime/machine-runtime";
 
 const route = useRoute();
-const saleCapabilityStore = useSaleCapabilityStore();
+const pinia = getActivePinia();
+if (!pinia)
+  throw new Error("Machine runtime requires an active Pinia instance");
 const cleanupCustomerEventSources = installCustomerEventSources({
   routeName: computed(() => route.name),
 });
@@ -24,7 +30,7 @@ installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 
 onUnmounted(() => {
-  saleCapabilityStore.stopRuntime();
+  stopMachineRuntime(pinia);
   cleanupActiveTransactionSync();
   cleanupCustomerEventSources();
 });
@@ -48,7 +54,7 @@ function isDevDirectRouteAllowed(): boolean {
 }
 
 onMounted(() => {
-  saleCapabilityStore.startRuntime();
+  startMachineRuntime(pinia);
   if (isDevDirectRouteAllowed()) {
     return;
   }

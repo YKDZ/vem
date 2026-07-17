@@ -81,12 +81,16 @@ describe("useSaleCapabilityStore", () => {
   it("accepts only increasing revisions within one daemon generation", () => {
     const store = useSaleCapabilityStore();
 
-    expect(store.acceptSnapshot(capability("daemon-a", 2, true))).toBe(true);
-    expect(store.acceptSnapshot(capability("daemon-a", 1, false))).toBe(false);
-    expect(store.acceptSnapshot(capability("daemon-a", 2, false))).toBe(false);
+    expect(store.acceptSnapshot(capability("daemon-a", 2, true))).toBe(
+      "accepted",
+    );
+    expect(store.acceptSnapshot(capability("daemon-a", 1, false))).toBe(
+      "older",
+    );
+    expect(store.acceptSnapshot(capability("daemon-a", 2, false))).toBe("same");
 
     expect(store.accepted).toEqual(capability("daemon-a", 2, true));
-    expect(store.lastRejectedObservation).toBe("daemon-a:2");
+    expect(store.lastRejectedObservation).toBeNull();
   });
 
   it("projects only payment options supported by the Machine checkout UI", () => {
@@ -117,10 +121,10 @@ describe("useSaleCapabilityStore", () => {
     store.acceptSnapshot(capability("daemon-before-restart", 9, false));
     expect(
       store.acceptSnapshot(capability("daemon-after-restart", 1, true)),
-    ).toBe(true);
+    ).toBe("accepted");
     expect(
       store.acceptSnapshot(capability("daemon-before-restart", 10, false)),
-    ).toBe(false);
+    ).toBe("older");
 
     expect(store.orderingKey).toBe("daemon-after-restart:1");
     expect(store.canStartSale).toBe(true);
@@ -229,23 +233,21 @@ describe("useSaleCapabilityStore", () => {
     expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
   });
 
-  it("polls as a fallback and stops the runtime coordinator cleanly", async () => {
-    vi.useFakeTimers();
+  it("does not clear stale diagnostics when an older concurrent snapshot arrives", async () => {
+    const older = deferred<SaleStartCapabilitySnapshot>();
     getSaleStartCapabilityMock
-      .mockResolvedValueOnce(capability("daemon-a", 1, true))
-      .mockResolvedValueOnce(capability("daemon-a", 2, false));
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(capability("daemon-a", 5, false));
     const store = useSaleCapabilityStore();
 
-    store.startRuntime();
-    vi.runAllTicks();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.orderingKey).toBe("daemon-a:1");
+    const staleRefresh = store.refresh();
+    await store.refresh();
+    store.markStale(new Error("event stream disconnected"));
+    older.resolve(capability("daemon-a", 4, true));
+    await staleRefresh;
 
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(store.orderingKey).toBe("daemon-a:2");
-
-    store.stopRuntime();
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
+    expect(store.orderingKey).toBe("daemon-a:5");
+    expect(store.stale).toBe(true);
+    expect(store.diagnostic).toBe("event stream disconnected");
   });
 });

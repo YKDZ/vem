@@ -65,6 +65,22 @@ describe("useCatalogNotifications", () => {
     });
   });
 
+  it("prioritizes refresh state over an accepted stale blocker", () => {
+    applySaleCapability({
+      canStartSale: false,
+      blockerCode: "NO_SALEABLE_SLOTS",
+    });
+    useSaleCapabilityStore().markStale(new Error("daemon reconnecting"));
+
+    const { primaryNotification } = useCatalogNotifications();
+
+    expect(primaryNotification.value).toEqual({
+      id: "sale-capability-refreshing",
+      message: "购买状态正在更新，仍可继续选购。",
+      tone: "info",
+    });
+  });
+
   it("uses the capability degradation path for payment-code diagnostics", () => {
     applySaleCapability({
       degradationCode: "SCANNER_USB_NOT_FOUND",

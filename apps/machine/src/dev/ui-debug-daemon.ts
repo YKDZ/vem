@@ -631,19 +631,16 @@ async function injectInstalledKioskSaleDisturbance(
         ]);
         break;
       case "readiness_refresh":
-        await Promise.all([
-          useCheckoutStore().refreshSaleStartCapability(),
-          (async () => {
-            const { router } = await import("@/router");
-            await router.push("/maintenance");
-            injection.pressure = {
-              refreshedState: "readiness",
-              attemptedRoute: "/maintenance",
-              resolvedRoute: router.currentRoute.value.path,
-              routeAuthorityWon: router.currentRoute.value.path === "/payment",
-            };
-          })(),
-        ]);
+        {
+          const { router } = await import("@/router");
+          await router.push("/maintenance");
+          injection.pressure = {
+            refreshedState: "readiness",
+            attemptedRoute: "/maintenance",
+            resolvedRoute: router.currentRoute.value.path,
+            routeAuthorityWon: router.currentRoute.value.path === "/payment",
+          };
+        }
         break;
       case "presence_departure":
         useVisionStore().applyPersonDeparted({

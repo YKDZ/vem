@@ -139,7 +139,12 @@ function stopAutoReturn(): void {
 }
 
 function startAutoReturn(): void {
-  if (activeReturnPolicy.value?.canAutoReturn !== true) return;
+  if (
+    !saleCapabilityStore.canStartSale ||
+    activeReturnPolicy.value?.canAutoReturn !== true
+  ) {
+    return;
+  }
   stopAutoReturn();
   autoReturnRemainingSeconds.value = AUTO_RETURN_SECONDS;
   autoReturnTimer = globalThis.setInterval(() => {
@@ -158,9 +163,11 @@ async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   stopAutoReturn();
   returningToCatalog = true;
-  const readinessConfirmed = await refreshResultReadiness();
   const returnPolicy = activeReturnPolicy.value;
-  if (!readinessConfirmed || returnPolicy?.canManualReturn !== true) {
+  if (
+    !saleCapabilityStore.hasAcceptedCapability ||
+    returnPolicy?.canManualReturn !== true
+  ) {
     returningToCatalog = false;
     return;
   }
@@ -178,15 +185,8 @@ async function backToCatalog(): Promise<void> {
   }
 }
 
-async function refreshResultReadiness(): Promise<boolean> {
-  resultReadinessError.value = await checkoutStore.refreshSaleStartCapability();
-  return saleCapabilityStore.hasAcceptedCapability;
-}
-
 onMounted(() => {
-  void refreshResultReadiness().then((ready) => {
-    if (ready) startAutoReturn();
-  });
+  if (saleCapabilityStore.hasAcceptedCapability) startAutoReturn();
 });
 
 onUnmounted(stopAutoReturn);

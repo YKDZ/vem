@@ -220,9 +220,7 @@ async function expectCoreElements(
         page.getByText("设备需要工作人员检查后才能继续售卖"),
       ).toBeVisible();
       await expect(page.getByText("客服提示：设备维护")).toBeVisible();
-      await expect(page.getByText("WHOLE_MACHINE_HARDWARE_FAULT")).toHaveCount(
-        0,
-      );
+      await expect(page.getByText("WHOLE_MACHINE_LOCKED")).toHaveCount(0);
       break;
     case "maintenance":
       await expectMaintenanceConsoleScreenshot(page);

@@ -3,6 +3,7 @@ import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 import {
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
+  WHOLE_MACHINE_LOCKED_BLOCKER_CODE,
   type HealthSnapshot,
   type ReadySnapshot,
   type RemoteOpsStatus,
@@ -233,7 +234,7 @@ function saleCapability(ready: boolean): SaleStartCapabilitySnapshot {
       ? []
       : [
           {
-            code: "WHOLE_MACHINE_HARDWARE_FAULT",
+            code: WHOLE_MACHINE_LOCKED_BLOCKER_CODE,
             component: "hardware",
             message: "模拟下位机故障，售卖入口被屏蔽",
           },

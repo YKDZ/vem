@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDaemonConnectionInfo } from "@/native/daemon-connection";
 
-import { DaemonApiClient, DaemonUnavailableError } from "./client";
+import {
+  DaemonApiClient,
+  DaemonUnavailableError,
+  isDaemonTransportFailure,
+} from "./client";
 
 vi.mock("@/native/daemon-connection", () => ({
   getDaemonConnectionInfo: vi.fn(),
@@ -303,6 +307,21 @@ describe("DaemonApiClient direct runtime intents", () => {
         body: JSON.stringify({ claimCode: "CLAIM-001" }),
       }),
     );
+  });
+
+  it("recognizes only daemon transport failures as recoverable claim disconnects", () => {
+    expect(
+      isDaemonTransportFailure(
+        new DaemonUnavailableError("daemon request failed", new TypeError()),
+      ),
+    ).toBe(true);
+    expect(
+      isDaemonTransportFailure(
+        new DaemonUnavailableError("machine claim rejected", undefined, {
+          statusCode: 422,
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("uses only runtime-configuration intents for binding, scanner protocol, and audio mutations", async () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed } from "vue";
 
 import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
@@ -94,15 +94,6 @@ function paymentDescription(description: string, method: string): string {
     ? "展示付款码扫码界面"
     : "展示二维码支付界面";
 }
-
-onMounted(async () => {
-  if (!item.value) return;
-  try {
-    await checkoutStore.loadPaymentOptions();
-  } catch {
-    // checkoutStore.error carries the operator-facing message.
-  }
-});
 
 async function submitOrder(): Promise<void> {
   if (!canSubmit.value) return;
@@ -204,7 +195,8 @@ async function submitOrder(): Promise<void> {
               class="payment-option kiosk-touch-target"
               :class="{
                 'payment-option-selected':
-                  option.optionKey === checkoutStore.selectedPaymentOptionKey,
+                  option.optionKey ===
+                  checkoutStore.selectedPaymentOption?.optionKey,
               }"
               type="button"
               :disabled="option.disabled"

@@ -3,21 +3,16 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-import type {
-  SaleStartCapabilitySnapshot,
-  TransactionSnapshot,
-} from "@/daemon/schemas";
+import type { TransactionSnapshot } from "@/daemon/schemas";
 
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
-  getSaleStartCapabilityMock,
   getSaleViewMock,
   routeParams,
   routerReplaceMock,
   submitMachineNavigationIntentMock,
 } = vi.hoisted(() => ({
-  getSaleStartCapabilityMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
   routerReplaceMock: vi.fn(),
@@ -39,7 +34,6 @@ vi.mock("@/layouts/KioskLayout.vue", () => ({
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
-    getSaleStartCapability: getSaleStartCapabilityMock,
     getSaleView: getSaleViewMock,
   },
 }));
@@ -216,22 +210,17 @@ function awaitingPaymentTransaction(): TransactionSnapshot {
 
 function applyCapability(
   canSell: boolean,
-  _blockedSlots: Array<{
-    slotId: string;
-    slotCode: string;
-    slotSalesState: string;
-  }> = [],
+  blockerCode = "LOWER_CONTROLLER_UNAVAILABLE",
 ): void {
-  useSaleCapabilityStore().acceptSnapshot(capabilityFixture(canSell));
+  useSaleCapabilityStore().acceptSnapshot(
+    capabilityFixture(canSell, blockerCode),
+  );
 }
 
-function capabilityFixture(
-  canSell: boolean,
-  code = "LOWER_CONTROLLER_UNAVAILABLE",
-): SaleStartCapabilitySnapshot {
+function capabilityFixture(canSell: boolean, blockerCode?: string) {
   return saleCapabilitySnapshot({
     canStartSale: canSell,
-    blockerCode: code,
+    blockerCode,
     revision: ++capabilityRevision,
   });
 }
@@ -280,7 +269,6 @@ beforeEach(() => {
     planogramVersion: "PLAN-1",
     lastUpdatedAt: "2026-06-11T06:16:32.320Z",
   });
-  getSaleStartCapabilityMock.mockResolvedValue(capabilityFixture(true));
 });
 
 afterEach(() => {
@@ -307,9 +295,6 @@ describe("ResultView", () => {
     applyCapability(true);
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     expect(host.textContent).toContain("出货成功");
     await vi.waitFor(() => {
@@ -322,10 +307,6 @@ describe("ResultView", () => {
   it("does not create an autonomous result dismissal while readiness is pending", async () => {
     routeParams.kind = "success";
     useCheckoutStore().applyTransaction(successfulTransaction());
-    applyCapability(true);
-    getSaleStartCapabilityMock.mockReturnValue(
-      new Promise<SaleStartCapabilitySnapshot>(() => undefined),
-    );
 
     const host = await mountView();
 
@@ -341,14 +322,8 @@ describe("ResultView", () => {
     routeParams.kind = "success";
     useCheckoutStore().applyTransaction(successfulTransaction());
     applyCapability(false);
-    getSaleStartCapabilityMock.mockResolvedValue(
-      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     expect(host.textContent).toContain("出货成功");
     expect(host.textContent).not.toContain("秒后自动返回首页");
@@ -370,14 +345,11 @@ describe("ResultView", () => {
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
     applyCapability(true);
-    getSaleStartCapabilityMock.mockRejectedValue(
+    useSaleCapabilityStore().markStale(
       new Error("daemon readiness unavailable"),
     );
 
     await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
     await vi.advanceTimersByTimeAsync(10000);
 
     expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
@@ -388,18 +360,9 @@ describe("ResultView", () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applyCapability(true, [
-      {
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
-        slotCode: "B1",
-        slotSalesState: "frozen",
-      },
-    ]);
+    applyCapability(true);
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     expect(host.textContent).toContain("出货失败");
     expect(host.textContent).toContain("订单凭证 ORD-FAILED-001");
@@ -424,7 +387,7 @@ describe("ResultView", () => {
     });
   });
 
-  it("refreshes readiness for the restored terminal result", async () => {
+  it("uses the shell-owned capability selector for the restored terminal result", async () => {
     const transaction = refundedTransaction();
     const checkoutStore = useCheckoutStore();
     routeParams.kind = "refunded";
@@ -432,8 +395,7 @@ describe("ResultView", () => {
     applyCapability(true);
 
     await mountView();
-
-    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
+    expect(useSaleCapabilityStore().hasAcceptedCapability).toBe(true);
   });
 
   it("routes dismissal to catalog when sale-view refresh fails after fresh readiness is ready", async () => {
@@ -445,9 +407,6 @@ describe("ResultView", () => {
     getSaleViewMock.mockRejectedValue(new Error("sale view unavailable"));
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     const returnButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("返回首页"),
@@ -466,15 +425,8 @@ describe("ResultView", () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applyCapability(false);
-    getSaleStartCapabilityMock.mockResolvedValue(
-      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
 
     const host = await mountView();
-
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     expect(host.textContent).toContain("出货失败");
     expect(host.textContent).not.toContain("返回首页");
@@ -488,14 +440,8 @@ describe("ResultView", () => {
     const transaction = terminalUnknownDispenseTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applyCapability(false);
-    getSaleStartCapabilityMock.mockResolvedValue(
-      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     expect(host.textContent).toContain("等待人工处理");
     expect(host.textContent).toContain("设备需要维护检查");
@@ -506,9 +452,6 @@ describe("ResultView", () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
-    getSaleStartCapabilityMock.mockReturnValue(
-      new Promise<SaleStartCapabilitySnapshot>(() => undefined),
-    );
 
     const host = await mountView();
 
@@ -523,13 +466,6 @@ describe("ResultView", () => {
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
     applyCapability(true);
-    getSaleStartCapabilityMock
-      .mockReturnValueOnce(
-        new Promise<SaleStartCapabilitySnapshot>(() => undefined),
-      )
-      .mockResolvedValue(
-        capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-      );
 
     const host = await mountView();
 
@@ -539,12 +475,8 @@ describe("ResultView", () => {
     const returnButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("返回首页"),
     );
+    applyCapability(false);
     returnButton?.click();
-    await nextTick();
-
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
-    });
     await nextTick();
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
     expect(checkoutStore.customerCheckoutView).toMatchObject({
@@ -568,14 +500,9 @@ describe("ResultView", () => {
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
     applyCapability(true);
-    getSaleStartCapabilityMock.mockResolvedValue(
-      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
+    applyCapability(false);
 
     const host = await mountView();
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
 
     const returnButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("返回首页"),
@@ -591,13 +518,7 @@ describe("ResultView", () => {
     const transaction = terminalUnknownDispenseTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
-    applyCapability(true, [
-      {
-        slotId: "550e8400-e29b-41d4-a716-446655440001",
-        slotCode: "B1",
-        slotSalesState: "frozen",
-      },
-    ]);
+    applyCapability(true);
 
     const host = await mountView();
 
@@ -717,18 +638,15 @@ describe("ResultView", () => {
     expectRecognitionDetailsHidden(host);
   });
 
-  it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {
+  it("keeps a stale ready selector from routing a dispense failure away from the result page", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applyCapability(true);
-    getSaleStartCapabilityMock.mockResolvedValue(
-      capabilityFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
-    );
+    useSaleCapabilityStore().markStale(new Error("daemon reconnecting"));
 
     await mountView();
     await vi.advanceTimersByTimeAsync(10000);
 
-    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();

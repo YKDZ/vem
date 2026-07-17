@@ -34,6 +34,7 @@ const removedRuntimePaths = [
   "ProtectedTouchKeyboard",
   "maintenance-session-route",
   "MachineProvisioningView",
+  "provisioning-page",
   "native/scanner",
   "scanner_self_check",
   "start_scanner",
@@ -145,6 +146,7 @@ function retiredMachineSurfaceOffenders(source: string): string[] {
     "MachineSaleReadiness",
     "getSaleReadiness",
     "saleReadiness",
+    "provisioning-page",
   ]) {
     if (source.includes(term)) offenders.push(term);
   }
@@ -184,7 +186,7 @@ function guardedProductionSourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return guardedProductionSourceFiles(path);
-    return /\.(ts|tsx|vue|rs)$/.test(path) && !path.endsWith(".spec.ts")
+    return /\.(ts|tsx|vue|rs|css)$/.test(path) && !path.endsWith(".spec.ts")
       ? [path]
       : [];
   });
@@ -238,10 +240,12 @@ describe("machine-ui daemon migration guards", () => {
         const advancedMaintenanceConfig = true;
         const flag = "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG";
         const route = "/provisioning";
+        const className = "provisioning-page";
       `),
     ).toEqual([
       "advancedMaintenanceConfig",
       "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG",
+      "provisioning-page",
       "/provisioning production route",
     ]);
     expect(

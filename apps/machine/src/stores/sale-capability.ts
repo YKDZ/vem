@@ -9,7 +9,6 @@ import type {
 
 import { daemonClient } from "@/daemon/client";
 
-const CAPABILITY_POLL_INTERVAL_MS = 15_000;
 const RETIRED_GENERATION_LIMIT = 8;
 const SUPPORTED_OPTION_KEYS = [
   "mock:mock",
@@ -28,20 +27,7 @@ const SUPPORTED_PAYMENT_METHODS = [
 ] as const;
 const SUPPORTED_PAYMENT_ICONS = ["mock", "wechat", "alipay"] as const;
 
-type RuntimeCoordinator = {
-  subscription: { close(): void } | null;
-  pollTimer: ReturnType<typeof globalThis.setInterval> | null;
-};
-
-const runtimeCoordinators = new WeakMap<object, RuntimeCoordinator>();
-
-function runtimeCoordinator(store: object): RuntimeCoordinator {
-  const existing = runtimeCoordinators.get(store);
-  if (existing) return existing;
-  const created: RuntimeCoordinator = { subscription: null, pollTimer: null };
-  runtimeCoordinators.set(store, created);
-  return created;
-}
+export type SaleCapabilitySnapshotAcceptance = "accepted" | "same" | "older";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -121,12 +107,16 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
     acceptSnapshot(
       snapshot: SaleStartCapabilitySnapshot,
       refreshSequence?: number,
-    ): boolean {
+    ): SaleCapabilitySnapshotAcceptance {
       const current = this.accepted;
       if (current?.generation === snapshot.generation) {
-        if (snapshot.revision <= current.revision) {
+        if (snapshot.revision < current.revision) {
           this.lastRejectedObservation = `${snapshot.generation}:${snapshot.revision}`;
-          return false;
+          return "older";
+        }
+        if (snapshot.revision === current.revision) {
+          this.lastRejectedObservation = null;
+          return "same";
         }
       } else if (
         this.retiredGenerations.includes(snapshot.generation) ||
@@ -135,7 +125,7 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
           refreshSequence < this.latestAcceptedRefreshSequence)
       ) {
         this.lastRejectedObservation = `${snapshot.generation}:${snapshot.revision}`;
-        return false;
+        return "older";
       } else if (current) {
         this.retiredGenerations = [
           ...this.retiredGenerations.filter(
@@ -153,7 +143,7 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
         );
       }
       this.lastRejectedObservation = null;
-      return true;
+      return "accepted";
     },
     async refresh(): Promise<SaleStartCapabilitySnapshot | null> {
       this.refreshSequence += 1;
@@ -162,8 +152,11 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
       this.updating = true;
       try {
         const snapshot = await daemonClient.getSaleStartCapability();
-        this.acceptSnapshot(snapshot, requestSequence);
-        if (requestSequence >= this.latestRefreshOutcomeSequence) {
+        const outcome = this.acceptSnapshot(snapshot, requestSequence);
+        if (
+          outcome !== "older" &&
+          requestSequence >= this.latestRefreshOutcomeSequence
+        ) {
           this.latestRefreshOutcomeSequence = requestSequence;
           this.stale = false;
           this.diagnostic = null;
@@ -195,35 +188,6 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
     markStale(error: unknown): void {
       this.stale = true;
       this.diagnostic = errorMessage(error);
-    },
-    startRuntime(): void {
-      const coordinator = runtimeCoordinator(this);
-      if (coordinator.subscription) return;
-
-      void this.refresh();
-      coordinator.subscription = daemonClient.subscribeEvents({
-        onEvent: (event) => {
-          if (event.type === "sale_start_capability_changed") {
-            this.invalidate(event);
-          }
-        },
-        onError: (error) => {
-          this.markStale(error);
-        },
-        onStale: () => void this.refresh(),
-      });
-      coordinator.pollTimer = globalThis.setInterval(() => {
-        void this.refresh();
-      }, CAPABILITY_POLL_INTERVAL_MS);
-    },
-    stopRuntime(): void {
-      const coordinator = runtimeCoordinator(this);
-      coordinator.subscription?.close();
-      coordinator.subscription = null;
-      if (coordinator.pollTimer !== null) {
-        globalThis.clearInterval(coordinator.pollTimer);
-        coordinator.pollTimer = null;
-      }
     },
   },
 });

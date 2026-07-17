@@ -10,7 +10,6 @@ const {
   routerBackMock,
   routerReplaceMock,
   initializeMock,
-  subscribeEventsMock,
   getHealthMock,
   getReadyMock,
   getEffectiveRuntimeConfigurationMock,
@@ -29,7 +28,6 @@ const {
   routerBackMock: vi.fn(),
   routerReplaceMock: vi.fn(),
   initializeMock: vi.fn(),
-  subscribeEventsMock: vi.fn(),
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
   getEffectiveRuntimeConfigurationMock: vi.fn(),
@@ -67,7 +65,6 @@ vi.mock("vue-router", () => ({
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     initialize: initializeMock,
-    subscribeEvents: subscribeEventsMock,
     getHealth: getHealthMock,
     getReady: getReadyMock,
     getEffectiveRuntimeConfiguration: getEffectiveRuntimeConfigurationMock,
@@ -93,13 +90,11 @@ import type {
 
 import { onCustomerEvent } from "@/composables/useCustomerEvents";
 import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
-import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
-import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
@@ -151,7 +146,6 @@ beforeEach(() => {
     },
   );
   initializeMock.mockResolvedValue(undefined);
-  subscribeEventsMock.mockReturnValue({ close: vi.fn() });
   getSaleViewMock.mockRejectedValue(new Error("sale view not mocked"));
   getCurrentTransactionMock.mockResolvedValue({
     orderId: null,
@@ -689,74 +683,6 @@ describe("sale-start capability UI flow", () => {
     await nextTick();
 
     expect(routerReplaceMock).not.toHaveBeenCalled();
-  });
-
-  it("loads sale-start capability during boot so a ready catalog can enter purchase", async () => {
-    const item = makeCatalogItem();
-    getHealthMock.mockResolvedValue(healthSnapshot());
-    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
-    useCatalogStore().applySnapshot({
-      items: [item],
-      source: "local_stock",
-      planogramVersion: "PLAN-1",
-      lastUpdatedAt: "2026-06-04T00:00:00Z",
-    });
-
-    await mountView(BootView);
-
-    await vi.waitFor(() => {
-      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
-    });
-    expect(useSaleCapabilityStore().canStartSale).toBe(true);
-
-    const checkoutStore = useCheckoutStore();
-    checkoutStore.selectedPaymentOptionKey = "qr_code:alipay";
-    checkoutStore.selectItem(item);
-
-    expect(checkoutStore.canCreateOrder).toBe(true);
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
-    });
-  });
-
-  it("records unknown daemon events from the real boot subscription without dispatching business updates", async () => {
-    getHealthMock.mockResolvedValue(healthSnapshot());
-    getReadyMock.mockResolvedValue(readySnapshot());
-    getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
-
-    await mountView(BootView);
-
-    await vi.waitFor(() => {
-      expect(subscribeEventsMock).toHaveBeenCalledOnce();
-    });
-
-    const handlers = subscribeEventsMock.mock.calls[0]?.[0] as {
-      onEvent: (event: unknown) => void;
-      onUnknownEvent?: (event: {
-        known: false;
-        type: string;
-        eventId: string;
-        updatedAt: string;
-        diagnostic?: unknown;
-      }) => void;
-    };
-
-    handlers.onUnknownEvent?.({
-      known: false,
-      type: "temperature_sensor_changed",
-      eventId: "unknown-evt-001",
-      updatedAt: "2026-07-06T00:00:00.000Z",
-      diagnostic: { status: "warm" },
-    });
-
-    expect(useConnectivityStore().latestUnknownEventDiagnostic).toMatchObject({
-      type: "temperature_sensor_changed",
-      eventId: "unknown-evt-001",
-      diagnostic: { status: "warm" },
-    });
-    expect(useScannerStore().lastMaskedCode).toBeNull();
-    expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
-    expect(useAudioCueStore().latestPlaybackDiagnostic).toBeNull();
   });
 
   it("does not reopen a dismissed successful terminal transaction during boot after a fresh reload", async () => {

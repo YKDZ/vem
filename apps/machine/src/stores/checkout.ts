@@ -212,6 +212,27 @@ function isMachineSaleReady(): boolean {
   return useSaleCapabilityStore().canStartSale;
 }
 
+function selectedPaymentOptionForCapability(
+  selectedOptionKey: MachinePaymentOptionKey | null,
+): MachinePaymentOption | null {
+  const capabilityStore = useSaleCapabilityStore();
+  const options = capabilityStore.paymentOptions;
+  const enabledOption = (
+    optionKey: string | null,
+  ): MachinePaymentOption | null =>
+    options.find(
+      (option) => option.optionKey === optionKey && !option.disabled,
+    ) ?? null;
+  if (selectedOptionKey !== null) {
+    return enabledOption(selectedOptionKey);
+  }
+  return (
+    enabledOption(capabilityStore.defaultPaymentOptionKey) ??
+    options.find((option) => !option.disabled) ??
+    null
+  );
+}
+
 function suggestedReturnRoute(): CustomerCheckoutReturnRoute {
   return "catalog";
 }
@@ -333,17 +354,11 @@ export const useCheckoutStore = defineStore("checkout", {
     }),
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
-      const paymentOptions = useSaleCapabilityStore().paymentOptions;
       return Boolean(
         isSaleableItem(selectedItem) &&
         activePlanogramVersion() &&
         isMachineSaleReady() &&
-        state.selectedPaymentOptionKey &&
-        paymentOptions.some(
-          (option) =>
-            option.optionKey === state.selectedPaymentOptionKey &&
-            !option.disabled,
-        ),
+        selectedPaymentOptionForCapability(state.selectedPaymentOptionKey),
       );
     },
     paymentOptions: (): MachinePaymentOption[] =>
@@ -351,18 +366,15 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentOptionsLoaded: (): boolean =>
       useSaleCapabilityStore().hasAcceptedCapability,
     selectedPaymentOption: (state): MachinePaymentOption | null =>
-      useSaleCapabilityStore().paymentOptions.find(
-        (option) => option.optionKey === state.selectedPaymentOptionKey,
-      ) ?? null,
+      selectedPaymentOptionForCapability(state.selectedPaymentOptionKey),
     activePaymentProviderCode: (state): MachinePaymentProviderCode | null => {
       const transactionProviderCode = state.transaction
         ? providerCodeFromSnapshot(state.transaction)
         : null;
       if (transactionProviderCode) return transactionProviderCode;
       return (
-        useSaleCapabilityStore().paymentOptions.find(
-          (option) => option.optionKey === state.selectedPaymentOptionKey,
-        )?.providerCode ?? null
+        selectedPaymentOptionForCapability(state.selectedPaymentOptionKey)
+          ?.providerCode ?? null
       );
     },
   },
@@ -380,6 +392,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.checkoutAttemptIdempotencyKey =
         createCheckoutAttemptIdempotencyKey();
       this.nowMs = Date.now();
+      this.syncPaymentOptions();
     },
     reset(): void {
       if (this.customerCheckoutRecovery.active) {
@@ -449,34 +462,20 @@ export const useCheckoutStore = defineStore("checkout", {
         this.paymentCodeLastMasked;
       this.nowMs = Date.now();
     },
-    async loadPaymentOptions(): Promise<void> {
+    syncPaymentOptions(): void {
       this.loading = true;
       this.error = null;
       try {
-        const capabilityStore = useSaleCapabilityStore();
-        const snapshot = await capabilityStore.refresh();
-        if (!snapshot) {
-          throw new Error(
-            capabilityStore.diagnostic ?? "当前机器尚未返回销售启动能力",
-          );
-        }
-        const options = capabilityStore.paymentOptions;
-        const enabledDefault = options.find(
-          (option) =>
-            option.optionKey === capabilityStore.defaultPaymentOptionKey &&
-            !option.disabled,
-        );
+        if (!useSaleCapabilityStore().hasAcceptedCapability) return;
         this.selectedPaymentOptionKey =
-          enabledDefault?.optionKey ??
-          options.find((option) => !option.disabled)?.optionKey ??
-          null;
+          selectedPaymentOptionForCapability(this.selectedPaymentOptionKey)
+            ?.optionKey ?? null;
         if (!this.selectedPaymentOptionKey) {
           this.error = "当前机器暂无可用支付方式";
         }
       } catch (error) {
         this.error = errorString(error);
         this.selectedPaymentOptionKey = null;
-        throw error;
       } finally {
         this.loading = false;
       }
@@ -635,11 +634,6 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async refreshCurrentTransaction(): Promise<TransactionSnapshot | null> {
       return this.invalidateCurrentTransaction();
-    },
-    async refreshSaleStartCapability(): Promise<string | null> {
-      const capabilityStore = useSaleCapabilityStore();
-      await capabilityStore.refresh();
-      return capabilityStore.diagnostic;
     },
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;

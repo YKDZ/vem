@@ -5,9 +5,15 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
+import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
+
 const submitMachineNavigationIntentMock = vi.hoisted(() => vi.fn());
+const isDaemonTransportFailureMock = vi.hoisted(() => vi.fn());
 
 const client = vi.hoisted(() => ({
+  initialize: vi.fn(),
   getEffectiveRuntimeConfiguration: vi.fn(),
   getStockMaintenanceTask: vi.fn(),
   getHealth: vi.fn(),
@@ -27,12 +33,16 @@ const client = vi.hoisted(() => ({
   clearDeviceBinding: vi.fn(),
   setScannerProtocolParameters: vi.fn(),
   setAudioPreferences: vi.fn(),
+  clearWholeMachineMaintenanceLock: vi.fn(),
   submitStockMaintenanceBatch: vi.fn(),
   runHardwareSelfCheck: vi.fn(),
   runManualDispenseDiagnostic: vi.fn(),
 }));
 
-vi.mock("@/daemon/client", () => ({ daemonClient: client }));
+vi.mock("@/daemon/client", () => ({
+  daemonClient: client,
+  isDaemonTransportFailure: isDaemonTransportFailureMock,
+}));
 vi.mock("@/router/transaction-route-authority", () => ({
   submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
@@ -43,9 +53,19 @@ vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({
 import MaintenanceView from "./MaintenanceView.vue";
 
 let mountedApp: App<Element> | null = null;
+let pinia: ReturnType<typeof createPinia>;
 let currentConfiguration: EffectiveMachineRuntimeConfiguration;
 
 function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
+  const machine = claimed
+    ? {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        code: "MACHINE-001",
+        name: "Machine",
+        status: "online",
+        locationLabel: null,
+      }
+    : null;
   return {
     schemaVersion: 1,
     generation: claimed ? 2 : 1,
@@ -67,9 +87,9 @@ function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
         hardwareModel: "vem-prod-24",
         topology: { identity: "vem-prod-24", version: "v1" },
       },
-      profileCache: claimed ? ({} as never) : null,
+      profileCache: claimed ? ({ profile: { machine } } as never) : null,
     },
-    machine: claimed ? ({ code: "MACHINE-001" } as never) : null,
+    machine: machine as never,
     platform: null,
     hardware: {
       model: "vem-prod-24",
@@ -192,7 +212,7 @@ async function flush(): Promise<void> {
 async function render(): Promise<HTMLElement> {
   document.body.innerHTML = "<div id='app'></div>";
   const app = createApp(MaintenanceView);
-  app.use(createPinia());
+  app.use(pinia);
   mountedApp = app;
   app.mount("#app");
   await flush();
@@ -208,7 +228,8 @@ function button(host: HTMLElement, name: string): HTMLButtonElement {
 }
 
 beforeEach(() => {
-  setActivePinia(createPinia());
+  pinia = createPinia();
+  setActivePinia(pinia);
   vi.clearAllMocks();
   localStorage.clear();
   currentConfiguration = configuration(false);
@@ -298,6 +319,8 @@ beforeEach(() => {
       restartRequested: false,
     };
   });
+  client.initialize.mockResolvedValue(undefined);
+  isDaemonTransportFailureMock.mockReturnValue(false);
   client.testDeviceBinding.mockResolvedValue({
     identityKey: "container:11111111-2222-3333-4444-555555555555",
     currentPort: "COM7",
@@ -307,6 +330,7 @@ beforeEach(() => {
   client.clearDeviceBinding.mockResolvedValue(configuration(false));
   client.setScannerProtocolParameters.mockResolvedValue(configuration(false));
   client.setAudioPreferences.mockResolvedValue(configuration(false));
+  client.clearWholeMachineMaintenanceLock.mockResolvedValue({ cleared: true });
   client.submitStockMaintenanceBatch.mockImplementation(async (request) => ({
     task: {
       taskId: request.taskId,
@@ -362,8 +386,10 @@ describe("Local Operations", () => {
 
     expect(client.claimMachine).toHaveBeenCalledWith("claim-001");
     expect(client.getEffectiveRuntimeConfiguration).toHaveBeenCalledTimes(2);
-    expect(host.textContent).toContain("MACHINE-001");
-    expect(host.textContent).toContain("2026-07-17T08:00:00.000Z");
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("MACHINE-001");
+      expect(host.textContent).toContain("2026-07-17T08:00:00.000Z");
+    });
   });
 
   it("scans and applies Wi-Fi from the same pre-claim Local Operations surface", async () => {
@@ -449,6 +475,44 @@ describe("Local Operations", () => {
     expect(client.claimMachine).toHaveBeenCalledWith("bad-claim");
     expect(host.textContent).toContain("claim code rejected");
     expect(host.textContent).toContain("生产维护");
+  });
+
+  it("accepts a persisted claim after the expected daemon IPC disconnect", async () => {
+    client.claimMachine.mockRejectedValueOnce(new Error("daemon disconnected"));
+    isDaemonTransportFailureMock.mockReturnValue(true);
+    const host = await render();
+    currentConfiguration = configuration(true);
+    const claimCode = host.querySelector<HTMLInputElement>(
+      "input[aria-label='认领码']",
+    );
+    if (!claimCode) throw new Error("claim input not found");
+    claimCode.value = "claim-001";
+    claimCode.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    button(host, "认领机器").click();
+    await flush();
+
+    expect(client.initialize).toHaveBeenCalledWith(true);
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("MACHINE-001");
+      expect(host.querySelector("input[aria-label='认领码']")).toBeNull();
+    });
+  });
+
+  it("renders the generated whole-machine lock snapshot and exposes its clear action", async () => {
+    const host = await render();
+    useSaleCapabilityStore().acceptSnapshot(
+      saleCapabilitySnapshot({
+        canStartSale: false,
+        blockerCode: WHOLE_MACHINE_LOCKED_BLOCKER_CODE,
+        blockerMessage: "lower controller recovery is required",
+      }),
+    );
+    await nextTick();
+
+    expect(host.textContent).toContain("整机维护锁");
+    expect(host.textContent).toContain("lower controller recovery is required");
+    expect(button(host, "确认解除整机锁")).toBeTruthy();
   });
 
   it("requires a tested stable identity before confirm, offers explicit clear, and reloads after every binding mutation", async () => {

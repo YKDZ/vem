@@ -1,7 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { effectiveMachineRuntimeConfigurationSchema } from "@vem/shared";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  readFile,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +68,10 @@ async function readDaemonBootEndpoint(path: string): Promise<unknown> {
     true,
   );
   return JSON.parse(body) as unknown;
+}
+
+async function readyFileMtimeMs(): Promise<number> {
+  return (await stat(join(dataDir, "daemon-ready.json"))).mtimeMs;
 }
 
 async function buildDaemonBinary(): Promise<void> {
@@ -314,7 +325,7 @@ test.afterAll(async () => {
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
 });
 
-test("real daemon clean bootstrap claims through Local Operations and then routes to catalog", async ({
+test("real daemon claim survives its supervised reconfigure cycle and reaches catalog", async ({
   page,
 }) => {
   await page.goto("/#/boot");
@@ -322,28 +333,15 @@ test("real daemon clean bootstrap claims through Local Operations and then route
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
   await expect(page.getByLabel("认领码")).toBeVisible();
 
+  const readyFileBeforeClaim = await readyFileMtimeMs();
   await page.getByLabel("认领码").fill("REAL-0001");
   await page.getByRole("button", { name: "认领机器" }).click();
   await expect(page.getByText("REAL-DAEMON-001")).toBeVisible({
     timeout: 20_000,
   });
-
-  const claimedDaemonExit = daemonExit;
-  daemon?.kill("SIGKILL");
-  const exited = await Promise.race([
-    claimedDaemonExit?.then(() => true) ?? Promise.resolve(true),
-    new Promise<false>((resolve) => {
-      setTimeout(() => {
-        resolve(false);
-      }, 20_000);
-    }),
-  ]);
-  if (!exited) {
-    throw new Error(
-      `daemon did not stop for supervised runtime restart\n${formatDaemonOutput()}`,
-    );
-  }
-  startDaemonProcess();
+  await expect(async () => {
+    expect(await readyFileMtimeMs()).toBeGreaterThan(readyFileBeforeClaim);
+  }).toPass({ intervals: [100, 250, 500], timeout: 20_000 });
   await expect(async () => {
     const response = await fetch(
       `${DAEMON_HTTP_BASE_URL}/v1/runtime-configuration`,
@@ -378,6 +376,6 @@ test("real daemon clean bootstrap claims through Local Operations and then route
   });
   effectiveMachineRuntimeConfigurationSchema.parse(configuration);
 
-  await page.goto("/#/boot");
+  await page.getByRole("button", { name: "回到目录" }).click();
   await expect(page).toHaveURL(/#\/catalog$/, { timeout: 20_000 });
 });

@@ -11,7 +11,6 @@ import type {
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
-  getSaleStartCapabilityMock,
   createOrderMock,
   cancelOrderMock,
   getCurrentTransactionMock,
@@ -19,7 +18,6 @@ const {
   markMockPaymentMock,
   getSaleViewMock,
 } = vi.hoisted(() => ({
-  getSaleStartCapabilityMock: vi.fn(),
   createOrderMock: vi.fn(),
   cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
@@ -31,7 +29,6 @@ const {
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     currentConnection: { mock: true },
-    getSaleStartCapability: getSaleStartCapabilityMock,
     createOrder: createOrderMock,
     cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
@@ -292,8 +289,8 @@ function applyNetworkSaleReady(): void {
 }
 
 describe("checkout store", () => {
-  it("loads payment options from daemon client", async () => {
-    getSaleStartCapabilityMock.mockImplementation(async () =>
+  it("selects payment options from the accepted capability snapshot", () => {
+    useSaleCapabilityStore().acceptSnapshot(
       capabilityResponse({
         options: [
           {
@@ -314,14 +311,44 @@ describe("checkout store", () => {
     );
 
     const store = useCheckoutStore();
-    await store.loadPaymentOptions();
+    store.syncPaymentOptions();
 
     expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
-    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
   });
 
-  it("preserves daemon option order while selecting the daemon default", async () => {
-    getSaleStartCapabilityMock.mockImplementation(async () =>
+  it("uses the shell-owned capability default when it arrives after item selection", () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    const store = useCheckoutStore();
+    store.selectItem(item);
+
+    expect(store.selectedPaymentOptionKey).toBeNull();
+    applyPaymentOptions([
+      {
+        optionKey: "qr_code:alipay",
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝扫码",
+        description: "请使用支付宝扫码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ]);
+    applyNetworkSaleReady();
+
+    expect(store.selectedPaymentOption?.optionKey).toBe("qr_code:alipay");
+    expect(store.canCreateOrder).toBe(true);
+  });
+
+  it("preserves capability option order while selecting the daemon default", () => {
+    useSaleCapabilityStore().acceptSnapshot(
       capabilityResponse({
         options: [
           {
@@ -353,7 +380,7 @@ describe("checkout store", () => {
     );
 
     const store = useCheckoutStore();
-    await store.loadPaymentOptions();
+    store.syncPaymentOptions();
 
     expect(store.paymentOptions.map((option) => option.optionKey)).toEqual([
       "qr_code:wechat_pay",
@@ -362,8 +389,8 @@ describe("checkout store", () => {
     expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
   });
 
-  it("selects the first enabled payment option when daemon default is disabled", async () => {
-    getSaleStartCapabilityMock.mockResolvedValue(
+  it("selects the first enabled payment option when daemon default is disabled", () => {
+    useSaleCapabilityStore().acceptSnapshot(
       capabilityResponse({
         options: [
           {
@@ -395,13 +422,13 @@ describe("checkout store", () => {
     );
 
     const store = useCheckoutStore();
-    await store.loadPaymentOptions();
+    store.syncPaymentOptions();
 
     expect(store.selectedPaymentOptionKey).toBe("qr_code:alipay");
   });
 
-  it("does not select disabled payment options when no enabled option exists", async () => {
-    getSaleStartCapabilityMock.mockImplementation(async () =>
+  it("does not select disabled payment options when no enabled option exists", () => {
+    useSaleCapabilityStore().acceptSnapshot(
       capabilityResponse({
         options: [
           {
@@ -432,7 +459,6 @@ describe("checkout store", () => {
 
     const store = useCheckoutStore();
     store.selectItem(item);
-    await store.loadPaymentOptions();
 
     expect(store.selectedPaymentOptionKey).toBeNull();
     expect(store.canCreateOrder).toBe(false);
@@ -440,8 +466,8 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
-  it("reports no payment options without creating an order", async () => {
-    getSaleStartCapabilityMock.mockResolvedValue(
+  it("reports no payment options without creating an order", () => {
+    useSaleCapabilityStore().acceptSnapshot(
       capabilityResponse({
         options: [],
         defaultOptionKey: null,
@@ -450,7 +476,7 @@ describe("checkout store", () => {
     );
 
     const store = useCheckoutStore();
-    await store.loadPaymentOptions();
+    store.syncPaymentOptions();
 
     expect(store.paymentOptionsLoaded).toBe(true);
     expect(store.selectedPaymentOptionKey).toBeNull();

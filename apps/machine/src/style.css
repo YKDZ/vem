@@ -132,8 +132,7 @@ img[alt="唐诗村"] {
 .kiosk-shell:has(.dispense-failure-page),
 .kiosk-shell:has(.dispense-result-page),
 .kiosk-shell:has(.offline-page),
-.kiosk-shell:has(.maintenance-page),
-.kiosk-shell:has(.provisioning-page) {
+.kiosk-shell:has(.maintenance-page) {
   padding: 0;
 }
 
@@ -146,8 +145,7 @@ img[alt="唐诗村"] {
 .kiosk-shell:has(.dispense-failure-page) > .kiosk-scroll,
 .kiosk-shell:has(.dispense-result-page) > .kiosk-scroll,
 .kiosk-shell:has(.offline-page) > .kiosk-scroll,
-.kiosk-shell:has(.maintenance-page) > .kiosk-scroll,
-.kiosk-shell:has(.provisioning-page) > .kiosk-scroll {
+.kiosk-shell:has(.maintenance-page) > .kiosk-scroll {
   width: 100%;
   height: 100%;
   margin-top: 0;

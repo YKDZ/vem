@@ -151,6 +151,13 @@ export class DaemonUnavailableError extends Error {
   }
 }
 
+export function isDaemonTransportFailure(error: unknown): boolean {
+  return (
+    error instanceof DaemonUnavailableError &&
+    (error.statusCode === undefined || error.cause !== undefined)
+  );
+}
+
 type RequestOptions = {
   method?: string;
   body?: unknown;

@@ -21,7 +21,9 @@ import {
 } from "@/audio-playback/machine-audio-playback";
 import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { daemonClient } from "@/daemon/client";
+import { recoverPersistedClaim } from "@/daemon/claim-recovery";
+import { daemonClient, isDaemonTransportFailure } from "@/daemon/client";
+import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import {
   openVisionTryOnSession,
@@ -97,7 +99,7 @@ let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const wholeMachineMaintenanceLock = computed(
   () =>
     saleCapabilityStore.accepted?.blockers.find(
-      (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
+      (reason) => reason.code === WHOLE_MACHINE_LOCKED_BLOCKER_CODE,
     ) ?? null,
 );
 const saleCriticalBlockers = computed(() =>
@@ -315,18 +317,47 @@ async function submitClaim(): Promise<void> {
   if (!commissioning.claimCode.trim() || commissioning.claiming) return;
   commissioning.claiming = true;
   commissioning.message = null;
+  let claimedMachineCode: string | null = null;
   try {
-    await daemonClient.claimMachine(commissioning.claimCode);
-    commissioning.claimCode = "";
-    await reloadEffectiveRuntimeConfiguration();
-    await refreshDiagnostics();
-    commissioning.message = "机器认领已接受，正在读取当前运行状态。";
+    const claim = await daemonClient.claimMachine(commissioning.claimCode);
+    claimedMachineCode = claim.machineCode;
+    const configuration = await recoverPersistedClaim(
+      daemonClient,
+      claimedMachineCode,
+    );
+    if (!configuration) {
+      throw new Error("认领已提交，但 daemon 未在限定时间内恢复运行状态。");
+    }
+    applyRecoveredClaim(configuration);
   } catch (error) {
-    commissioning.message =
-      error instanceof Error ? error.message : String(error);
+    if (!isDaemonTransportFailure(error)) {
+      commissioning.message =
+        error instanceof Error ? error.message : String(error);
+      return;
+    }
+    const configuration = await recoverPersistedClaim(
+      daemonClient,
+      claimedMachineCode,
+    );
+    if (configuration) {
+      applyRecoveredClaim(configuration);
+    } else {
+      commissioning.message =
+        error instanceof Error ? error.message : String(error);
+    }
   } finally {
     commissioning.claiming = false;
   }
+}
+
+function applyRecoveredClaim(
+  configuration: EffectiveMachineRuntimeConfiguration,
+): void {
+  commissioning.claimCode = "";
+  machineStore.applyEffectiveRuntimeConfiguration(configuration);
+  syncScannerProtocolForm();
+  void refreshDiagnostics();
+  commissioning.message = "机器认领已接受，正在读取当前运行状态。";
 }
 
 function isOperatorEnteredMaintenance(): boolean {
@@ -1045,7 +1076,6 @@ async function runDiagnosticsRefresh(): Promise<void> {
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
     await Promise.allSettled([
-      saleCapabilityStore.refresh(),
       mqttStore.refresh(),
       scannerStore.refresh(),
       visionStore.refresh(),
@@ -1112,7 +1142,7 @@ async function clearWholeMachineLock(): Promise<void> {
 function saleCriticalBlockerLabel(code: string): string {
   const labels: Record<string, string> = {
     LOWER_CONTROLLER_UNAVAILABLE: "下位机未在线",
-    WHOLE_MACHINE_HARDWARE_FAULT: "整机维护锁",
+    [WHOLE_MACHINE_LOCKED_BLOCKER_CODE]: "整机维护锁",
     PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING: "生产出货路径证据缺失",
     PRODUCTION_DISPENSE_PATH_MOCK: "当前不是生产出货路径",
     SYNC_UNHEALTHY: "平台同步异常",
@@ -1129,7 +1159,7 @@ function saleCriticalBlockerAction(code: string): string {
   const actions: Record<string, string> = {
     LOWER_CONTROLLER_UNAVAILABLE:
       "检查下位机供电、串口线和 COM 口后运行硬件自检。",
-    WHOLE_MACHINE_HARDWARE_FAULT:
+    [WHOLE_MACHINE_LOCKED_BLOCKER_CODE]:
       "处理卡货或机械故障，运行下位机自检，通过后填写处理记录解除整机锁。",
     PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING:
       "核对生产硬件配置和验收资料，确认真实下位机路径。",
@@ -1147,7 +1177,7 @@ function saleCriticalBlockerAction(code: string): string {
 function blockerRecoveryLabel(code: string): string {
   if (
     code === "LOWER_CONTROLLER_UNAVAILABLE" ||
-    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code === WHOLE_MACHINE_LOCKED_BLOCKER_CODE ||
     code.startsWith("PRODUCTION_DISPENSE_PATH_")
   ) {
     return "执行硬件自检";
@@ -1168,7 +1198,7 @@ async function runBlockerRecovery(code: string): Promise<void> {
   }
   if (
     code === "LOWER_CONTROLLER_UNAVAILABLE" ||
-    code === "WHOLE_MACHINE_HARDWARE_FAULT" ||
+    code === WHOLE_MACHINE_LOCKED_BLOCKER_CODE ||
     code.startsWith("PRODUCTION_DISPENSE_PATH_")
   ) {
     await runHardwareCheck();

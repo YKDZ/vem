@@ -4,6 +4,7 @@ import { computed } from "vue";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
+import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
@@ -15,7 +16,7 @@ const reasonText = computed(() => {
   if (!saleCapabilityStore.accepted || saleCapabilityStore.updating) {
     return "正在确认当前购买状态";
   }
-  if (codes.includes("WHOLE_MACHINE_HARDWARE_FAULT")) {
+  if (codes.includes(WHOLE_MACHINE_LOCKED_BLOCKER_CODE)) {
     return "设备需要工作人员检查后才能继续售卖";
   }
   if (
@@ -48,7 +49,7 @@ const supportHint = computed(() => {
   if (!saleCapabilityStore.accepted || saleCapabilityStore.updating) {
     return "状态确认中";
   }
-  if (codes.includes("WHOLE_MACHINE_HARDWARE_FAULT")) return "设备维护";
+  if (codes.includes(WHOLE_MACHINE_LOCKED_BLOCKER_CODE)) return "设备维护";
   if (
     codes.includes("LOWER_CONTROLLER_UNAVAILABLE") ||
     codes.includes("SLOT_SALE_SAFETY_BLOCKED")

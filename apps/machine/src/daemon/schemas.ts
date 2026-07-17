@@ -79,6 +79,11 @@ export const saleStartCapabilitySnapshotSchema =
 export const saleStartCapabilityChangedEventSchema =
   daemonIpcSaleStartCapabilityChangedEventSchema;
 
+// The generated daemon contract intentionally leaves operational reason codes
+// open-ended. Keep the one recovery selector in one place until that contract
+// publishes a closed code enum.
+export const WHOLE_MACHINE_LOCKED_BLOCKER_CODE = "WHOLE_MACHINE_LOCKED";
+
 const networkDiagnosticSchema = z.object({
   component: z.string(),
   level: z.string(),
