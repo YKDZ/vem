@@ -563,6 +563,25 @@ describe("usePresenceInteraction", () => {
     });
   });
 
+  it("does not expire active local touch presence on the vision stale timer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T11:05:00.000Z"));
+    const presence = await mountPresence({
+      presenceStaleMs: 1000,
+      inactivityDepartureMs: 5000,
+    });
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    vi.advanceTimersByTime(1000);
+    await nextTick();
+
+    expect(presence.state?.value).toMatchObject({
+      personPresent: true,
+      source: "local_interaction",
+    });
+  });
+
   it("emits interaction awakened for local interaction from a not-present session", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T12:10:00.000Z"));

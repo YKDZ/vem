@@ -208,7 +208,12 @@ function nowIso(): string {
 
 function restartStaleTimer(): void {
   clearStaleTimer();
-  if (!activeOptions || !state.value.personPresent) return;
+  if (
+    !activeOptions ||
+    !state.value.personPresent ||
+    state.value.source !== "vision"
+  )
+    return;
   staleTimer = setTimeout(() => {
     markDeparted({
       source: "unavailable",
