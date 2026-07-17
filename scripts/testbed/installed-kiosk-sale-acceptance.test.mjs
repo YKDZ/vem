@@ -28,7 +28,7 @@ describe("installed kiosk sale preflight", () => {
     assert.match(JSON.stringify(steps), /catalog-category.*:not\(:disabled\)/);
     assert.match(
       JSON.stringify(steps),
-      /payment-option.*data-payment-option-key.*mock:mock.*:not\(:disabled\)/,
+      /payment-option.*data-payment-option-key.*payment_code:mock.*:not\(:disabled\)/,
     );
     assert.equal(
       steps.find((step) => step.name === "payment submit")?.timeoutMs,
