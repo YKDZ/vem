@@ -374,6 +374,27 @@ if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
 `.trim();
 }
 
+export function buildInstalledKioskSerialReadinessScript() {
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+$health = $null
+do {
+  Start-Sleep -Milliseconds 500
+  try {
+    $ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3
+    if ([bool]$health.hardwareOnline -and [bool]$health.scannerOnline) { break }
+  } catch {}
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $health -or -not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
+  throw "serial-backed daemon lost hardware/scanner readiness after fixture"
+}
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
+`.trim();
+}
+
 function createRunnerTrust(root) {
   const signingKeyFile = join(root, "runner-ed25519.pem");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -962,7 +983,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
     // Bring-up applies the fixture's machine profile and can restart device
     // runtimes. Prove the production serial path is ready after that change,
     // immediately before the customer journey begins.
-    runRemote(remote, buildInstalledKioskSerialActivationScript());
+    runRemote(remote, buildInstalledKioskSerialReadinessScript());
     launch = runRemote(remote, buildInstalledKioskSaleLaunchScript());
     if (
       launch?.prelaunch?.principal == null ||
