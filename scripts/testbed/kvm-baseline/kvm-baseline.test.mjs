@@ -188,6 +188,83 @@ function configureCrossFilesystemCache(config, root, label) {
   return cacheRoot;
 }
 
+function publicationKillChildSource() {
+  return `
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+import {
+  publishVerifiedBaselineRelease,
+  runtimeProfileForPublishedRelease,
+} from ${JSON.stringify(new URL("./linux-kvm-baseline.mjs", import.meta.url).href)};
+
+const [configurationPath, faultStage, statePath] = process.argv.slice(2);
+if (!configurationPath || !faultStage || !statePath) {
+  throw new Error("usage: child <config> <stage> <fake-libvirt-state>");
+}
+const config = JSON.parse(await readFile(configurationPath, "utf8"));
+const releaseId = "release-new-sigkill";
+const systemDirectory = join(
+  dirname(config.storage.baselinePath),
+  ".release-kill-system-" + faultStage + "-" + process.pid,
+);
+const cacheDirectory = join(
+  dirname(config.storage.cacheDiskPath),
+  ".release-kill-cache-" + faultStage + "-" + process.pid,
+);
+const staged = {
+  system: join(systemDirectory, "system.qcow2"),
+  cache: join(cacheDirectory, "cache.qcow2"),
+  domainXml: join(systemDirectory, "runtime-profile.xml"),
+  diagnostic: join(systemDirectory, "diagnostic.json"),
+};
+await mkdir(systemDirectory, { recursive: true });
+await mkdir(cacheDirectory, { recursive: true });
+await Promise.all([
+  writeFile(staged.system, "new-system"),
+  writeFile(staged.cache, "new-cache"),
+  writeFile(staged.domainXml, "<domain>new</domain>"),
+  writeFile(staged.diagnostic, '{"contents":"new"}\\n'),
+]);
+const writeFakeDefinition = async (release) => {
+  const prior = JSON.parse(await readFile(statePath, "utf8"));
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      ...prior,
+      definedReleaseId: release?.releaseId ?? null,
+      history: [...prior.history, release?.releaseId ?? null],
+    }) + "\\n",
+  );
+};
+await publishVerifiedBaselineRelease({
+  config,
+  releaseId,
+  stagedSystemPath: staged.system,
+  stagedCachePath: staged.cache,
+  stagedDomainXmlPath: staged.domainXml,
+  stagedDiagnosticPath: staged.diagnostic,
+  profile: runtimeProfileForPublishedRelease(config, releaseId),
+  verified: true,
+  commitDefinition: writeFakeDefinition,
+  rollbackDefinition: writeFakeDefinition,
+  onStage: async (stage) => {
+    if (stage === faultStage) process.kill(process.pid, "SIGKILL");
+  },
+});
+`;
+}
+
+function runPublicationKillChild(root, configPath, faultStage, statePath) {
+  const childPath = join(root, "kvm-baseline-publication-kill-child.mjs");
+  writeFileSync(childPath, publicationKillChildSource());
+  return spawnSync(
+    process.execPath,
+    [childPath, configPath, faultStage, statePath],
+    { encoding: "utf8" },
+  );
+}
+
 async function recoverWithFakeLibvirt(config, statePath) {
   return recoverPublishedBaseline(config, {
     recoverDefinition: async (release) => {
@@ -201,16 +278,28 @@ async function recoverWithFakeLibvirt(config, statePath) {
 }
 
 function expectedSigkillRelease(stage, hasPriorCurrent) {
+  const currentPublicationStages = new Set([
+    "current-manifest-renamed",
+    "current-manifest-published",
+  ]);
   if (hasPriorCurrent) {
-    return stage === "current-manifest-published"
+    return currentPublicationStages.has(stage)
       ? "release-new-sigkill"
       : "release-old-sigkill";
   }
-  return BASELINE_PUBLICATION_STAGES.indexOf(stage) >=
-    BASELINE_PUBLICATION_STAGES.indexOf("definition-intent-staged")
+  return stage === "system-release-directory-renamed" ||
+    BASELINE_PUBLICATION_STAGES.indexOf(stage) >=
+      BASELINE_PUBLICATION_STAGES.indexOf("system-release-directory-published")
     ? "release-new-sigkill"
     : null;
 }
+
+const REQUIRED_PRE_PHASE_KILL_STAGES = Object.freeze([
+  "cache-release-directory-renamed",
+  "system-release-directory-renamed",
+  "libvirt-definition-mutated",
+  "current-manifest-renamed",
+]);
 
 describe("Linux KVM Windows baseline", () => {
   it("exposes a loadable builder that is inert unless explicitly executed", () => {
@@ -709,45 +798,31 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
-  it("never publishes a first current manifest when recovered definition verification fails", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-first-recovery-"));
+  it("rolls back a first publication when recovered definition verification fails", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-kvm-baseline-first-recovery-"),
+    );
     try {
       const config = buildConfig(root);
-      const staged = stagedRelease(config, "first-recovery", "new");
       const layout = baselinePublicationLayout(config);
+      const configPath = join(root, "config.json");
       const statePath = join(root, "fake-libvirt.json");
       writeFileSync(statePath, '{"definedReleaseId":null,"history":[]}\n');
-
-      await assert.rejects(
-        publishVerifiedBaselineRelease({
-          config,
-          releaseId: "release-first-recovery",
-          stagedSystemPath: staged.system,
-          stagedCachePath: staged.cache,
-          stagedDomainXmlPath: staged.domainXml,
-          stagedDiagnosticPath: staged.diagnostic,
-          profile: runtimeProfileForPublishedRelease(
-            config,
-            "release-first-recovery",
-          ),
-          verified: true,
-          commitDefinition: async () => {
-            throw new Error("definition must not run before recovery");
-          },
-          rollbackDefinition: async () => {},
-          onStage: async (stage) => {
-            if (stage === "definition-intent-staged") {
-              throw new Error("interrupted before first definition");
-            }
-          },
-        }),
-        /interrupted before first definition/,
+      writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+      const child = runPublicationKillChild(
+        root,
+        configPath,
+        "libvirt-definition-mutated",
+        statePath,
       );
+      assert.equal(child.signal, "SIGKILL", child.stderr);
 
       await assert.rejects(
         recoverPublishedBaseline(config, {
           recoverDefinition: async () => {
-            throw new Error("simulated recovered definition verification failure");
+            throw new Error(
+              "simulated recovered definition verification failure",
+            );
           },
           rollbackDefinition: async (release) =>
             writeFakeLibvirtState(statePath, release?.releaseId ?? null),
@@ -756,36 +831,49 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.equal(existsSync(layout.currentManifestPath), false);
       assert.equal(readFakeLibvirtState(statePath).definedReleaseId, null);
-
-      const recovered = await recoverWithFakeLibvirt(config, statePath);
-      assert.equal(recovered.releaseId, "release-first-recovery");
-      assert.equal(
-        readFakeLibvirtState(statePath).definedReleaseId,
-        "release-first-recovery",
-      );
-      assert.equal(existsSync(layout.currentManifestPath), true);
+      assert.equal(existsSync(layout.publicationJournalPath), false);
+      assert.deepEqual(finalReleaseIds(layout.systemReleaseRoot), []);
+      assert.deepEqual(finalReleaseIds(layout.cacheReleaseRoot), []);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
   it("cleans a truncated journal and an unmatched cache sidecar without blocking a valid current release", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-journal-repair-"));
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-kvm-baseline-journal-repair-"),
+    );
     try {
       const config = buildConfig(root);
-      const oldRelease = await publishRelease(config, "release-journal-old", "old");
+      const oldRelease = await publishRelease(
+        config,
+        "release-journal-old",
+        "old",
+      );
       const layout = baselinePublicationLayout(config);
+      const statePath = join(root, "fake-libvirt.json");
+      writeFileSync(
+        statePath,
+        `${JSON.stringify({
+          definedReleaseId: oldRelease.releaseId,
+          history: [oldRelease.releaseId],
+        })}\n`,
+      );
       const orphanId = "release-orphan-sidecar";
       const orphanCacheDirectory = join(layout.cacheReleaseRoot, orphanId);
       mkdirSync(orphanCacheDirectory, { recursive: true });
       writeFileSync(join(orphanCacheDirectory, "cache.qcow2"), "orphan-cache");
       writeFileSync(layout.publicationJournalPath, '{"schemaVersion":');
 
-      const recovered = await recoverPublishedBaseline(config);
+      const recovered = await recoverWithFakeLibvirt(config, statePath);
 
       assert.equal(recovered.releaseId, oldRelease.releaseId);
       assert.equal(existsSync(layout.publicationJournalPath), false);
       assert.equal(existsSync(orphanCacheDirectory), false);
+      assert.equal(
+        readFakeLibvirtState(statePath).definedReleaseId,
+        oldRelease.releaseId,
+      );
       assert.deepEqual(
         finalReleaseIds(layout.systemReleaseRoot),
         finalReleaseIds(layout.cacheReleaseRoot),
@@ -796,7 +884,133 @@ describe("Linux KVM Windows baseline", () => {
   });
 
   for (const hasPriorCurrent of [true, false]) {
-    for (const interruptedStage of BASELINE_PUBLICATION_STAGES) {
+    it(`restores a persisted fake libvirt definition after a truncated post-definition journal with ${hasPriorCurrent ? "a prior current" : "no prior current"}`, async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-kvm-baseline-truncated-definition-"),
+      );
+      try {
+        const config = buildConfig(root);
+        const configPath = join(root, "config.json");
+        const statePath = join(root, "fake-libvirt.json");
+        writeFileSync(statePath, '{"definedReleaseId":null,"history":[]}\n');
+        let oldRelease = null;
+        if (hasPriorCurrent) {
+          oldRelease = await publishRelease(
+            config,
+            "release-old-truncated-definition",
+            "old",
+          );
+          writeFakeLibvirtState(statePath, oldRelease.releaseId);
+        }
+        writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+
+        const child = runPublicationKillChild(
+          root,
+          configPath,
+          "libvirt-definition-committed",
+          statePath,
+        );
+        assert.equal(child.signal, "SIGKILL", child.stderr);
+
+        const layout = baselinePublicationLayout(config);
+        writeFileSync(layout.publicationJournalPath, '{"schemaVersion":');
+        const recovered = await recoverWithFakeLibvirt(config, statePath);
+
+        const expectedReleaseId = oldRelease?.releaseId ?? null;
+        assert.equal(recovered?.releaseId ?? null, expectedReleaseId);
+        assert.equal(
+          readFakeLibvirtState(statePath).definedReleaseId,
+          expectedReleaseId,
+        );
+        assert.equal(
+          existsSync(layout.currentManifestPath),
+          expectedReleaseId !== null,
+        );
+        assert.equal(existsSync(layout.publicationJournalPath), false);
+        assert.deepEqual(
+          finalReleaseIds(layout.systemReleaseRoot),
+          expectedReleaseId === null ? [] : [expectedReleaseId],
+        );
+        assert.deepEqual(
+          finalReleaseIds(layout.cacheReleaseRoot),
+          expectedReleaseId === null ? [] : [expectedReleaseId],
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("rolls current back when recovered new-definition verification restores the previous libvirt definition", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-kvm-baseline-recovered-definition-failure-"),
+    );
+    try {
+      const config = buildConfig(root);
+      const oldRelease = await publishRelease(
+        config,
+        "release-old-recovered-definition-failure",
+        "old",
+      );
+      const configPath = join(root, "config.json");
+      const statePath = join(root, "fake-libvirt.json");
+      writeFileSync(
+        statePath,
+        `${JSON.stringify({
+          definedReleaseId: oldRelease.releaseId,
+          history: [oldRelease.releaseId],
+        })}\n`,
+      );
+      writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+
+      const child = runPublicationKillChild(
+        root,
+        configPath,
+        "current-manifest-renamed",
+        statePath,
+      );
+      assert.equal(child.signal, "SIGKILL", child.stderr);
+
+      const layout = baselinePublicationLayout(config);
+      await assert.rejects(
+        recoverPublishedBaseline(config, {
+          recoverDefinition: async (release) => {
+            assert.equal(release.releaseId, "release-new-sigkill");
+            throw new Error(
+              "simulated recovered definition verification failure",
+            );
+          },
+          rollbackDefinition: async (release) =>
+            writeFakeLibvirtState(statePath, release?.releaseId ?? null),
+        }),
+        /verification failure/,
+      );
+
+      assert.equal(
+        (await resolvePublishedBaselineRelease(config)).releaseId,
+        oldRelease.releaseId,
+      );
+      assert.equal(
+        readFakeLibvirtState(statePath).definedReleaseId,
+        oldRelease.releaseId,
+      );
+      assert.equal(existsSync(layout.publicationJournalPath), false);
+      assert.deepEqual(finalReleaseIds(layout.systemReleaseRoot), [
+        oldRelease.releaseId,
+      ]);
+      assert.deepEqual(finalReleaseIds(layout.cacheReleaseRoot), [
+        oldRelease.releaseId,
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const hasPriorCurrent of [true, false]) {
+    for (const interruptedStage of new Set([
+      ...BASELINE_PUBLICATION_STAGES,
+      ...REQUIRED_PRE_PHASE_KILL_STAGES,
+    ])) {
       it(`recovers an actual child SIGKILL at ${interruptedStage} with ${hasPriorCurrent ? "a prior current" : "no prior current"}`, async (t) => {
         const root = mkdtempSync(
           join(tmpdir(), "vem-kvm-baseline-publish-sigkill-"),
@@ -827,18 +1041,11 @@ describe("Linux KVM Windows baseline", () => {
           }
           writeFileSync(configPath, `${JSON.stringify(config)}\n`);
 
-          const child = spawnSync(
-            process.execPath,
-            [
-              new URL(
-                "./kvm-baseline-publication-kill-child.mjs",
-                import.meta.url,
-              ).pathname,
-              configPath,
-              interruptedStage,
-              statePath,
-            ],
-            { encoding: "utf8" },
+          const child = runPublicationKillChild(
+            root,
+            configPath,
+            interruptedStage,
+            statePath,
           );
           assert.equal(child.signal, "SIGKILL", child.stderr);
 
