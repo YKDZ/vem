@@ -99,6 +99,12 @@ async fn run_console_cycle(
     let state = LocalStateStore::open(&data_dir.join("state.db"))
         .await
         .map_err(|error| error.to_string())?;
+    if std::env::var("VEM_ALLOW_TCP_SIMULATOR_FOR_SALE").is_ok_and(|value| value == "1") {
+        state
+            .delete_metadata("whole_machine_maintenance_lock")
+            .await
+            .map_err(|error| format!("clear simulator acceptance lock failed: {error}"))?;
+    }
     let secret_store = secret::default_secret_store(data_dir.clone());
     let config_store = std::sync::Arc::new(ConfigStore::new(
         data_dir.clone(),

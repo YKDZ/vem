@@ -582,6 +582,37 @@ describe("usePresenceInteraction", () => {
     });
   });
 
+  it("cancels an existing vision stale timer when the customer touches the screen", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T11:06:00.000Z"));
+    const presence = await mountPresence({
+      presenceStaleMs: 1000,
+      inactivityDepartureMs: 5000,
+    });
+
+    useVisionStore().applyPresenceStatus({
+      eventId: "VISION-PRESENCE-EVENT-TOUCH-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-06-29T11:06:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true, closeNow: false, close: false },
+    });
+    await nextTick();
+
+    window.dispatchEvent(new Event("pointerdown"));
+    vi.advanceTimersByTime(1000);
+    await nextTick();
+
+    expect(presence.state?.value).toMatchObject({
+      personPresent: true,
+      source: "vision",
+    });
+  });
+
   it("emits interaction awakened for local interaction from a not-present session", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T12:10:00.000Z"));

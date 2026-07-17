@@ -326,6 +326,7 @@ function markDeparted(input: {
 
 function registerInteraction(): void {
   const seenAt = nowIso();
+  clearStaleTimer();
   state.value = {
     ...state.value,
     lastInteractionAt: seenAt,
