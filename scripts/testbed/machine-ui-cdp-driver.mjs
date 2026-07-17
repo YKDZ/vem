@@ -1503,13 +1503,24 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         executedExecution.customerActivations += 1;
         assertHealthy();
-        const after = await waitForRoute(client, step.routeAfter, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-          pollMs: routePollMs,
-          forbiddenRoutes: activeForbiddenRoutes,
-          allowedRoutes: activeAllowedRoutes,
-          assertHealthy,
-        });
+        let after;
+        try {
+          after = await waitForRoute(client, step.routeAfter, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+            pollMs: routePollMs,
+            forbiddenRoutes: activeForbiddenRoutes,
+            allowedRoutes: activeAllowedRoutes,
+            assertHealthy,
+          });
+        } catch (error) {
+          const probe = await probeSelectorBounds(client, step.selector, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+          }).catch(() => null);
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)}; activation probe=${JSON.stringify(probe)}`,
+            { cause: error },
+          );
+        }
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
         if (step.activatesRouteBarrier) {
           activeAllowedRoutes = validateAllowedRoutes(

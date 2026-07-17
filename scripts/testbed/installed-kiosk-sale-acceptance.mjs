@@ -245,6 +245,7 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       selector: '[data-test="checkout-submit"]',
       routeBefore: "#/checkout",
       routeAfter: /^#\/payment/,
+      timeoutMs: 30_000,
       activatesRouteBarrier: true,
       screenshot: true,
     },
