@@ -1,0 +1,519 @@
+#!/usr/bin/env node
+
+import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import {
+  access,
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
+import { availableParallelism } from "node:os";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+
+import { renderLibvirtDomainXml } from "./libvirt-runtime-profile.mjs";
+import {
+  REQUIRED_COMMANDS,
+  assertReadableRegularFile,
+  evaluateHostPreflight,
+  promoteVerifiedBaseline,
+  runtimeProfileForConfig,
+  validateBaselineBuildConfig,
+} from "./linux-kvm-baseline.mjs";
+
+const execFile = promisify(execFileCallback);
+const BASELINE_ROOT = new URL(".", import.meta.url);
+
+function parseArgs(argv) {
+  const options = { execute: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === "--execute") {
+      options.execute = true;
+      continue;
+    }
+    if (!value.startsWith("--") || index + 1 >= argv.length) {
+      throw new Error(`invalid argument: ${value}`);
+    }
+    options[value.slice(2)] = argv[++index];
+  }
+  if (!options.config) throw new Error("--config is required");
+  if (
+    options["source-commit"] !== undefined &&
+    !/^[0-9a-f]{7,64}$/i.test(options["source-commit"])
+  ) {
+    throw new Error("--source-commit must be a Git commit SHA");
+  }
+  return options;
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function run(command, args, { allowFailure = false } = {}) {
+  return execFile(command, args, { maxBuffer: 1024 * 1024 }).catch((error) => {
+    if (allowFailure)
+      return {
+        stdout: error.stdout ?? "",
+        stderr: error.stderr ?? "",
+        failed: true,
+      };
+    throw new Error(`${command} failed: ${error.stderr || error.message}`);
+  });
+}
+
+async function existingParent(path) {
+  let candidate = path;
+  while (true) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      const parent = dirname(candidate);
+      if (parent === candidate)
+        throw new Error(`no existing parent for ${path}`);
+      candidate = parent;
+    }
+  }
+}
+
+async function availableStorageBytes(path) {
+  const filesystem = await statfs(await existingParent(path));
+  return Number(filesystem.bavail) * Number(filesystem.bsize);
+}
+
+async function readable(path) {
+  try {
+    await assertReadableRegularFile(path, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function kvmDeviceAvailable() {
+  try {
+    await access("/dev/kvm", constants.R_OK | constants.W_OK);
+    return (await stat("/dev/kvm")).isCharacterDevice();
+  } catch {
+    return false;
+  }
+}
+
+function commandExists(command) {
+  return (
+    spawnSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" })
+      .status === 0
+  );
+}
+
+async function collectHostObservation(config) {
+  const profile = runtimeProfileForConfig(config);
+  const commands = REQUIRED_COMMANDS.filter(commandExists);
+  const network = await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "net-info", config.vm.networkName],
+    { allowFailure: true },
+  );
+  const libvirt = await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "uri"],
+    {
+      allowFailure: true,
+    },
+  );
+  const memory = await readFile("/proc/meminfo", "utf8").catch(() => "");
+  const availableMemoryKiB = Number(
+    /^MemAvailable:\s+(\d+)/m.exec(memory)?.[1] ?? 0,
+  );
+  return {
+    kvmAvailable: await kvmDeviceAvailable(),
+    libvirtAvailable: !libvirt.failed,
+    commands,
+    cpuCount: availableParallelism(),
+    availableMemoryMiB: Math.floor(availableMemoryKiB / 1024),
+    availableStorageBytes: await availableStorageBytes(
+      config.storage.baselinePath,
+    ),
+    installationMedia: {
+      windowsIso: await readable(config.media.windowsIsoPath),
+    },
+    networkAvailable: !network.failed,
+    profile,
+  };
+}
+
+function unattendedXml(config) {
+  const password = escapeXml(config.__secrets.administratorPassword);
+  const user = escapeXml(config.guest.sshUser);
+  return `<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration><Disk wcm:action="add"><DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk><CreatePartitions><CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>500</Size></CreatePartition><CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition></CreatePartitions><ModifyPartitions><ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Active>true</Active><Format>NTFS</Format><Label>System</Label></ModifyPartition><ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition></ModifyPartitions></Disk></DiskConfiguration>
+      <ImageInstall><OSImage><InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>${config.media.windowsImageIndex}</Value></MetaData></InstallFrom><InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo></OSImage></ImageInstall>
+      <UserData><AcceptEula>true</AcceptEula><FullName>Runtime Baseline</FullName><Organization>Runtime Baseline</Organization></UserData>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE><HideEULAPage>true</HideEULAPage><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>${user}</Name><Group>Administrators</Group><Password><Value>${password}</Value><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
+      <AutoLogon><Username>${user}</Username><Password><Value>${password}</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount></AutoLogon>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drive = (Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive 'baseline-config.json') } | Select-Object -First 1 -ExpandProperty Drive); &amp; (Join-Path $drive 'bootstrap.ps1')"</CommandLine><Description>Prepare runtime baseline</Description></SynchronousCommand></FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>
+`;
+}
+
+function bootstrapScript() {
+  return `$ErrorActionPreference = "Stop"
+$drive = Get-CimInstance Win32_CDROMDrive | Where-Object { Test-Path (Join-Path $_.Drive "baseline-config.json") } | Select-Object -First 1 -ExpandProperty Drive
+if ([string]::IsNullOrWhiteSpace($drive)) { throw "baseline configuration media is unavailable" }
+$config = Get-Content -Raw (Join-Path $drive "baseline-config.json") | ConvertFrom-Json
+& (Join-Path $drive "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $drive "administrators_authorized_keys") -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $drive "prepare-vm-runtime.ps1") -RunnerArchiveUri $config.runner.archiveUri -RunnerUrl $config.runner.url -RunnerRegistrationToken $config.runner.registrationToken -RunnerName $config.runner.name
+& (Join-Path $drive "verify-vm-runtime.ps1") -ExpectedWidth $config.display.width -ExpectedHeight $config.display.height -ExpectedScalePercent $config.display.scalePercent -OutputPath "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json"
+`;
+}
+
+async function createConfigurationMedia(config, stagingDirectory) {
+  const mediaRoot = join(stagingDirectory, "configuration-media");
+  await mkdir(mediaRoot, { recursive: true, mode: 0o700 });
+  for (const name of [
+    "shared-guest-preparation.ps1",
+    "prepare-vm-runtime.ps1",
+    "verify-vm-runtime.ps1",
+  ]) {
+    await copyFile(new URL(name, BASELINE_ROOT), join(mediaRoot, name));
+  }
+  const secrets = {
+    administratorPassword: (
+      await readFile(config.guest.administratorPasswordFile, "utf8")
+    ).trim(),
+    runnerRegistrationToken: (
+      await readFile(config.runner.registrationTokenFile, "utf8")
+    ).trim(),
+  };
+  if (!secrets.administratorPassword || !secrets.runnerRegistrationToken) {
+    throw new Error(
+      "administrator password and runner registration token files must not be empty",
+    );
+  }
+  const protectedConfig = {
+    ...config,
+    __secrets: secrets,
+  };
+  const guestConfig = {
+    webView2InstallerUri: config.media.webView2InstallerUri,
+    display: {
+      width: 1080,
+      height: 1920,
+      scalePercent: config.guest.desktopScalePercent,
+    },
+    runner: {
+      archiveUri: config.media.runnerArchiveUri,
+      url: config.runner.url,
+      registrationToken: secrets.runnerRegistrationToken,
+      name: config.runner.name,
+    },
+  };
+  await writeFile(
+    join(mediaRoot, "autounattend.xml"),
+    unattendedXml(protectedConfig),
+    { mode: 0o600 },
+  );
+  await writeFile(join(mediaRoot, "bootstrap.ps1"), bootstrapScript(), {
+    mode: 0o600,
+  });
+  await writeFile(
+    join(mediaRoot, "baseline-config.json"),
+    `${JSON.stringify(guestConfig)}\n`,
+    { mode: 0o600 },
+  );
+  await copyFile(
+    config.guest.authorizedKeysFile,
+    join(mediaRoot, "administrators_authorized_keys"),
+  );
+  const isoPath = join(stagingDirectory, "baseline-configuration.iso");
+  await run("xorriso", [
+    "-as",
+    "mkisofs",
+    "-iso-level",
+    "3",
+    "-J",
+    "-r",
+    "-o",
+    isoPath,
+    mediaRoot,
+  ]);
+  return isoPath;
+}
+
+async function waitForGuestVerification(config, stagingDirectory) {
+  const verificationPath =
+    "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
+  const localReport = join(stagingDirectory, "verification.json");
+  const deadline = Date.now() + 60 * 60 * 1000;
+  const sshArguments = [
+    "-i",
+    config.guest.sshPrivateKeyFile,
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ConnectTimeout=10",
+    `${config.guest.sshUser}@${config.vm.guestAddress}`,
+    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${verificationPath}`,
+  ];
+  while (Date.now() < deadline) {
+    const result = await run("ssh", sshArguments, { allowFailure: true });
+    if (!result.failed) {
+      await run("scp", [
+        "-i",
+        config.guest.sshPrivateKeyFile,
+        `${config.guest.sshUser}@${config.vm.guestAddress}:${verificationPath}`,
+        localReport,
+      ]);
+      const report = JSON.parse(await readFile(localReport, "utf8"));
+      if (report.ok !== true)
+        throw new Error("guest prerequisite verification reported failure");
+      return report;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+  }
+  throw new Error(
+    "timed out waiting for Windows guest prerequisite verification",
+  );
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function domainState(config) {
+  const result = await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "domstate", config.vm.name],
+    { allowFailure: true },
+  );
+  return result.failed ? null : result.stdout.trim().toLowerCase();
+}
+
+async function destroyAndUndefine(config, domainName) {
+  await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "destroy", domainName],
+    { allowFailure: true },
+  );
+  await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "undefine", domainName],
+    { allowFailure: true },
+  );
+}
+
+export async function buildWin10Baseline(
+  config,
+  { sourceCommit, execute = false } = {},
+) {
+  validateBaselineBuildConfig(config);
+  const profile = runtimeProfileForConfig(config);
+  const observation = await collectHostObservation(config);
+  evaluateHostPreflight(config, observation);
+  const plan = {
+    schemaVersion: "win10-kvm-baseline-build-plan/v1",
+    hostAddress: config.host.address,
+    vmName: config.vm.name,
+    sourceCommit: sourceCommit ?? null,
+    baselinePath: config.storage.baselinePath,
+    cacheDiskPath: config.storage.cacheDiskPath,
+    profile,
+    execute,
+  };
+  if (!execute) return plan;
+  const state = await domainState(config);
+  if (state && state !== "shut off") {
+    throw new Error(
+      "the published baseline VM must be shut off before a rebuild",
+    );
+  }
+  await assertReadableRegularFile(
+    config.guest.administratorPasswordFile,
+    "guest.administratorPasswordFile",
+  );
+  await assertReadableRegularFile(
+    config.guest.authorizedKeysFile,
+    "guest.authorizedKeysFile",
+  );
+  await assertReadableRegularFile(
+    config.guest.sshPrivateKeyFile,
+    "guest.sshPrivateKeyFile",
+  );
+  await assertReadableRegularFile(
+    config.runner.registrationTokenFile,
+    "runner.registrationTokenFile",
+  );
+  const publishedBaselineExists = await pathExists(config.storage.baselinePath);
+  const persistentCacheExists = await pathExists(config.storage.cacheDiskPath);
+  if (publishedBaselineExists && !persistentCacheExists) {
+    throw new Error(
+      "a published baseline requires its persistent cache disk before rebuild",
+    );
+  }
+  await mkdir(dirname(config.storage.baselinePath), { recursive: true });
+  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
+  const stagingDirectory = await mkdtemp(
+    join(
+      dirname(config.storage.baselinePath),
+      "." + config.vm.name + ".staging-",
+    ),
+  );
+  const cacheStagingDirectory = persistentCacheExists
+    ? stagingDirectory
+    : await mkdtemp(
+        join(
+          dirname(config.storage.cacheDiskPath),
+          "." + config.vm.name + ".cache-staging-",
+        ),
+      );
+  const stagedPath = join(stagingDirectory, "system.qcow2");
+  const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
+  const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
+  try {
+    await run("qemu-img", [
+      "create",
+      "-f",
+      "qcow2",
+      stagedPath,
+      `${config.storage.systemDiskGiB}G`,
+    ]);
+    await run("qemu-img", [
+      "create",
+      "-f",
+      "qcow2",
+      stagedCachePath,
+      `${config.storage.cacheDiskGiB}G`,
+    ]);
+    const configurationIso = await createConfigurationMedia(
+      config,
+      stagingDirectory,
+    );
+    const constructionProfile = {
+      ...profile,
+      vmName: constructionDomain,
+      disks: {
+        ...profile.disks,
+        system: { ...profile.disks.system, path: stagedPath },
+        cache: { ...profile.disks.cache, path: stagedCachePath },
+      },
+    };
+    const constructionXmlPath = join(
+      stagingDirectory,
+      "construction-domain.xml",
+    );
+    await writeFile(
+      constructionXmlPath,
+      renderLibvirtDomainXml(constructionProfile, {
+        cdromPaths: [config.media.windowsIsoPath, configurationIso],
+      }),
+      { mode: 0o600 },
+    );
+    await run("virsh", [
+      "--connect",
+      config.host.libvirtUri,
+      "define",
+      constructionXmlPath,
+    ]);
+    await run("virsh", [
+      "--connect",
+      config.host.libvirtUri,
+      "start",
+      constructionDomain,
+    ]);
+    const verification = await waitForGuestVerification(
+      config,
+      stagingDirectory,
+    );
+    await destroyAndUndefine(config, constructionDomain);
+    if (!persistentCacheExists) {
+      await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
+      await promoteVerifiedBaseline({
+        stagedPath: stagedCachePath,
+        baselinePath: config.storage.cacheDiskPath,
+        verified: verification.ok,
+      });
+    }
+    await promoteVerifiedBaseline({
+      stagedPath,
+      baselinePath: config.storage.baselinePath,
+      verified: verification.ok,
+    });
+    const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
+    await writeFile(finalXmlPath, renderLibvirtDomainXml(profile), {
+      mode: 0o600,
+    });
+    await run("virsh", [
+      "--connect",
+      config.host.libvirtUri,
+      "define",
+      finalXmlPath,
+    ]);
+    const diagnostic = {
+      schemaVersion: "win10-kvm-baseline-diagnostic/v1",
+      sourceCommit: sourceCommit ?? null,
+      verifiedAt: new Date().toISOString(),
+      profile,
+      verification,
+    };
+    await writeFile(
+      `${config.storage.baselinePath}.diagnostic.json`,
+      `${JSON.stringify(diagnostic, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    return { ...plan, verification, promoted: true };
+  } catch (error) {
+    await destroyAndUndefine(config, constructionDomain);
+    throw error;
+  } finally {
+    await rm(stagingDirectory, { recursive: true, force: true });
+    if (cacheStagingDirectory !== stagingDirectory) {
+      await rm(cacheStagingDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const config = JSON.parse(await readFile(options.config, "utf8"));
+  const result = await buildWin10Baseline(config, {
+    sourceCommit: options["source-commit"],
+    execute: options.execute,
+  });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+if (import.meta.main) {
+  main().catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  });
+}
