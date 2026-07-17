@@ -65,6 +65,7 @@ jobs:
       VEM_VM_HOST_EXPECTED_ADAPTER_SHA256: ${{ vars.VEM_VM_HOST_EXPECTED_ADAPTER_SHA256 }}
       # Factory/ISO integration must retain this daemon-selected stable endpoint contract.
       VEM_VM_AUDIO_ENDPOINT_ID: ${{ vars.VEM_VM_AUDIO_ENDPOINT_ID }}
+      VEM_RUNTIME_ARTIFACT_CACHE_ROOT: ${{ vars.VEM_VM_RUNTIME_ARTIFACT_CACHE_ROOT }}
     steps:
       - name: Checkout Trusted Commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -122,21 +123,55 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Restore Host Windows Runtime Artifact Cache
+        id: runtime-artifact-cache
+        env:
+          REQUESTED_RUNTIME_ARTIFACT_RUN_ID: ${{ inputs.runtime_artifact_run_id }}
+        run: |
+          set -euo pipefail
+          artifact_run_id="${REQUESTED_RUNTIME_ARTIFACT_RUN_ID:-$GITHUB_RUN_ID}"
+          [[ "$artifact_run_id" =~ ^[0-9]+$ ]]
+          cache_dir="${VEM_RUNTIME_ARTIFACT_CACHE_ROOT:-}/$artifact_run_id"
+          runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
+          if [[ "$cache_dir" = /* ]] && test -f "$cache_dir/WINDOWS-RUNTIME-ARTIFACTS.json" && test -f "$cache_dir/vending-daemon.exe" && test -f "$cache_dir/machine.exe" && test -f "$cache_dir/WebView2Loader.dll"; then
+            rm -rf -- "$runtime_dir"
+            mkdir -p "$runtime_dir"
+            cp -a "$cache_dir/." "$runtime_dir/"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "artifact_run_id=$artifact_run_id" >> "$GITHUB_OUTPUT"
+
       - name: Download Current Windows Runtime
-        if: inputs.runtime_artifact_run_id == ''
+        if: inputs.runtime_artifact_run_id == '' && steps.runtime-artifact-cache.outputs.hit != 'true'
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build-windows-runtime.outputs.artifact_name }}
           path: ${{ runner.temp }}/vem-current-windows-runtime
 
       - name: Download Reused Windows Runtime
-        if: inputs.runtime_artifact_run_id != ''
+        if: inputs.runtime_artifact_run_id != '' && steps.runtime-artifact-cache.outputs.hit != 'true'
         uses: actions/download-artifact@v4
         with:
           name: windows-runtime-artifacts-${{ inputs.runtime_artifact_run_id }}
           path: ${{ runner.temp }}/vem-current-windows-runtime
           github-token: ${{ github.token }}
           run-id: ${{ inputs.runtime_artifact_run_id }}
+
+      - name: Persist Host Windows Runtime Artifact Cache
+        if: steps.runtime-artifact-cache.outputs.hit != 'true' && env.VEM_RUNTIME_ARTIFACT_CACHE_ROOT != ''
+        run: |
+          set -euo pipefail
+          [[ "$VEM_RUNTIME_ARTIFACT_CACHE_ROOT" = /* ]]
+          runtime_dir="$RUNNER_TEMP/vem-current-windows-runtime"
+          cache_dir="$VEM_RUNTIME_ARTIFACT_CACHE_ROOT/${{ steps.runtime-artifact-cache.outputs.artifact_run_id }}"
+          staging="${cache_dir}.tmp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$staging"
+          mkdir -p "$staging"
+          cp -a "$runtime_dir/." "$staging/"
+          rm -rf -- "$cache_dir"
+          mv "$staging" "$cache_dir"
 
       - name: Restore Turbo cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830

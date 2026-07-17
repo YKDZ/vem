@@ -164,6 +164,14 @@ async function runInstalledRouteCompetitionScenario({
               setRoute(touchIntervalRoute);
             }
           }
+          if (
+            message.method === "Input.dispatchTouchEvent" &&
+            message.params.type === "touchEnd" &&
+            activations === 5 &&
+            touchIntervalRoute === "#/checkout"
+          ) {
+            setRoute("#/payment");
+          }
           if (message.method === "Page.captureScreenshot") {
             return {
               id: message.id,
@@ -980,16 +988,21 @@ describe("machine-ui-cdp-driver", () => {
     });
   }
 
-  for (const transientRoute of ["#/checkout", "#/products/test-item"]) {
-    it(`rejects ${transientRoute} injected between payment touch start and end`, async () => {
-      await assert.rejects(
-        runInstalledRouteCompetitionScenario({
-          touchIntervalRoute: transientRoute,
-        }),
-        new RegExp(`payment barrier route observed: ${transientRoute}`),
-      );
+  it("allows checkout while payment submission is creating the first order", async () => {
+    const { result } = await runInstalledRouteCompetitionScenario({
+      touchIntervalRoute: "#/checkout",
     });
-  }
+    assert.equal(result.status, "passed");
+  });
+
+  it("rejects a product route injected between payment touch start and end", async () => {
+    await assert.rejects(
+      runInstalledRouteCompetitionScenario({
+        touchIntervalRoute: "#/products/test-item",
+      }),
+      /payment barrier route observed: #\/products\/test-item/,
+    );
+  });
 
   it("records Input evidence and bounded chronological checkpoints", async () => {
     await withFakeHttpTargets(
