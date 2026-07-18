@@ -1268,21 +1268,65 @@ if ($stageExitCode -ne 0) {
     runnerScript,
     `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`,
   ]);
-  await runCommand("ssh", [
-    ...sshOptions,
-    target,
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1",
-  ]);
-  await runCommand("ssh", [
-    ...sshOptions,
-    target,
-    verificationCommand({
-      config,
-      expectedVirtioGpuDriverPackageSha256,
-      runnerName,
-      verificationPath,
-    }),
-  ]);
+  try {
+    await runCommand("ssh", [
+      ...sshOptions,
+      target,
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1",
+    ]);
+  } catch (error) {
+    const localFailurePath = join(
+      stagingDirectory,
+      "runner-registration-failure.json",
+    );
+    const copied = await runCommand(
+      "scp",
+      [
+        ...sshOptions,
+        `${target}:C:/ProgramData/WindowsRuntimeBaseline/guest-stage-failure.json`,
+        localFailurePath,
+      ],
+      { allowFailure: true },
+    );
+    const detail = copied.failed
+      ? null
+      : await readFile(localFailurePath, "utf8").catch(() => null);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${
+        detail ? `\nrunner registration failure:\n${detail}` : ""
+      }`,
+    );
+  }
+  try {
+    await runCommand("ssh", [
+      ...sshOptions,
+      target,
+      verificationCommand({
+        config,
+        expectedVirtioGpuDriverPackageSha256,
+        runnerName,
+        verificationPath,
+      }),
+    ]);
+  } catch (error) {
+    const copied = await runCommand(
+      "scp",
+      [
+        ...sshOptions,
+        `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
+        localReport,
+      ],
+      { allowFailure: true },
+    );
+    const detail = copied.failed
+      ? null
+      : await readFile(localReport, "utf8").catch(() => null);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${
+        detail ? `\nguest verification report:\n${detail}` : ""
+      }`,
+    );
+  }
   await runCommand("scp", [
     ...sshOptions,
     `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
