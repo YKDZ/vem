@@ -912,22 +912,17 @@ async function injectDebugDisturbance(client, disturbance, options = {}) {
     })()`,
     options,
   );
-  const expectedState =
-    disturbance === "catalog_refresh" ? "catalog" : "readiness";
+  const hasCompetingPressure =
+    disturbance === "catalog_refresh" || disturbance === "readiness_refresh";
+  const expectedState = disturbance === "catalog_refresh" ? "catalog" : "readiness";
   if (
     injection?.kind !== disturbance ||
     injection.count !== 1 ||
-    injection.outcome !== "completed" ||
-    injection.pressure?.refreshedState !== expectedState ||
-    injection.pressure?.routeAuthorityWon !== true ||
-    injection.pressure?.resolvedRoute !== "/payment" ||
-    injection.pressure.attemptedRoute === injection.pressure.resolvedRoute
+    injection.outcome !== "completed"
   ) {
-    throw new Error(
-      `${disturbance} did not prove competing navigation pressure during payment`,
-    );
+    throw new Error(`${disturbance} did not complete at the payment barrier`);
   }
-  return {
+  const baseInjection = {
     injectionId: boundedRequiredString(
       injection.injectionId,
       "debug disturbance injection id",
@@ -936,16 +931,74 @@ async function injectDebugDisturbance(client, disturbance, options = {}) {
     kind: disturbance,
     count: 1,
     outcome: "completed",
-    pressure: {
-      refreshedState: expectedState,
-      attemptedRoute: boundedRequiredString(
-        injection.pressure.attemptedRoute,
-        "debug disturbance attempted route",
-        MAX_URL_LENGTH,
-      ),
-      resolvedRoute: "/payment",
-      routeAuthorityWon: true,
-    },
+  };
+  if (hasCompetingPressure) {
+    if (
+      injection.pressure?.refreshedState !== expectedState ||
+      injection.pressure?.routeAuthorityWon !== true ||
+      injection.pressure?.resolvedRoute !== "/payment" ||
+      injection.pressure.attemptedRoute === injection.pressure.resolvedRoute
+    ) {
+      throw new Error(
+        `${disturbance} did not prove competing navigation pressure during payment`,
+      );
+    }
+    return {
+      ...baseInjection,
+      pressure: {
+        refreshedState: expectedState,
+        attemptedRoute: boundedRequiredString(
+          injection.pressure.attemptedRoute,
+          "debug disturbance attempted route",
+          MAX_URL_LENGTH,
+        ),
+        resolvedRoute: "/payment",
+        routeAuthorityWon: true,
+      },
+    };
+  }
+  if (injection.pressure != null) {
+    throw new Error(
+      `${disturbance} unexpectedly reported competing navigation pressure`,
+    );
+  }
+  if (disturbance === "ipc_interruption") {
+    const retainedOrderCredential =
+      typeof injection?.recovery?.retainedOrderCredential === "string"
+        ? boundedString(
+            injection.recovery.retainedOrderCredential,
+            MAX_LABEL_LENGTH,
+          )
+        : null;
+    const resumedOrderCredential =
+      typeof injection?.recovery?.resumedOrderCredential === "string"
+        ? boundedString(
+            injection.recovery.resumedOrderCredential,
+            MAX_LABEL_LENGTH,
+          )
+        : null;
+    if (
+      injection?.recovery?.overlayObserved !== true ||
+      !retainedOrderCredential ||
+      retainedOrderCredential !== resumedOrderCredential
+    ) {
+      throw new Error(
+        "ipc_interruption did not prove one recovery overlay and same-order reconciliation",
+      );
+    }
+    return {
+      ...baseInjection,
+      pressure: null,
+      recovery: {
+        overlayObserved: true,
+        retainedOrderCredential,
+        resumedOrderCredential,
+      },
+    };
+  }
+  return {
+    ...baseInjection,
+    pressure: null,
   };
 }
 
@@ -1382,6 +1435,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   const evidence = [];
   let ordinal = 0;
   let fatalError = null;
+  let lastCustomerActivation = null;
   const record = (entry) => {
     if (evidence.length >= MAX_EVIDENCE_ENTRIES) {
       throw new Error("machine UI CDP evidence exceeded maximum entries");
@@ -1544,22 +1598,45 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           });
           assertHealthy();
         }
-        const activation = await activateVisibleSelector(
-          client,
-          step.selector,
-          {
-            kind: step.inputKind ?? inputKind,
-            timeoutMs: step.timeoutMs ?? timeoutMs,
-          },
-        );
-        if (!activation.input.method.startsWith("Input.")) {
+        const repeatedActivation =
+          step.repeatPreviousActivationCenter === true;
+        const activation = repeatedActivation
+          ? (() => {
+              if (!lastCustomerActivation?.center) {
+                throw new Error(
+                  `${step.name} requires a previous physical activation center`,
+                );
+              }
+              return {
+                selector: step.selector,
+                center: lastCustomerActivation.center,
+                bounds: lastCustomerActivation.bounds,
+                input: null,
+              };
+            })()
+          : await activateVisibleSelector(client, step.selector, {
+              kind: step.inputKind ?? inputKind,
+              timeoutMs: step.timeoutMs ?? timeoutMs,
+            });
+        const dispatchedInput = repeatedActivation
+          ? await dispatchPhysicalInput(client, activation.center, {
+              kind: step.inputKind ?? inputKind,
+              timeoutMs: step.timeoutMs ?? timeoutMs,
+            })
+          : activation.input;
+        if (!dispatchedInput.method.startsWith("Input.")) {
           throw new Error(`${step.name} emitted no physical Input evidence`);
         }
+        lastCustomerActivation = {
+          selector: step.selector,
+          center: activation.center,
+          bounds: activation.bounds,
+        };
         record({
           type: "customer-activation",
           label: step.name,
           selector: step.selector,
-          input: activation.input,
+          input: dispatchedInput,
           ...(step.activatesRouteBarrier ? {} : { routeBefore: before.route }),
         });
         executedExecution.customerActivations += 1;
@@ -1583,7 +1660,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           );
         }
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
-        if (step.activatesRouteBarrier) {
+        if (
+          (step.activatesRouteBarrier === true &&
+            step.completesRouteBarrier !== false) ||
+          (step.activatesRouteBarrier !== true &&
+            step.completesRouteBarrier === true)
+        ) {
           activeAllowedRoutes = validateAllowedRoutes(
             PAYMENT_BARRIER_ALLOWED_ROUTES,
           );
@@ -1699,6 +1781,20 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           routeAfter: after.route,
           injection,
         });
+        if (step.screenshot) {
+          const checkpoint = await captureCheckpoint(client, `${step.name}:after`, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+            screenshot: true,
+            screenshotSink: adapter.screenshotSink,
+            clock,
+          });
+          assertAllowedRoute(
+            checkpoint.identity.route,
+            activeForbiddenRoutes,
+            activeAllowedRoutes,
+          );
+          record(checkpoint);
+        }
         continue;
       }
       const checkpoint = await captureCheckpoint(client, step.name, {
@@ -1874,6 +1970,24 @@ function validateScenarioSequence({ sequenceName, steps }) {
                   index,
                 ),
               }),
+          ...(step.completesRouteBarrier == null
+            ? {}
+            : {
+                completesRouteBarrier: requiredStepBoolean(
+                  step,
+                  "completesRouteBarrier",
+                  index,
+                ),
+              }),
+          ...(step.repeatPreviousActivationCenter == null
+            ? {}
+            : {
+                repeatPreviousActivationCenter: requiredStepBoolean(
+                  step,
+                  "repeatPreviousActivationCenter",
+                  index,
+                ),
+              }),
         }),
       );
     } else if (type === "observation") {
@@ -1930,6 +2044,8 @@ function assertClosedStep(step, index, type) {
           "inputKind",
           "screenshot",
           "activatesRouteBarrier",
+          "completesRouteBarrier",
+          "repeatPreviousActivationCenter",
         ])
       : type === "observation"
         ? new Set(["type", "name", "route", "timeoutMs", "screenshot"])
@@ -2007,7 +2123,10 @@ function requiredStepDebugDisturbance(step, index) {
   const disturbance = requiredStepString(step, "disturbance", index);
   if (
     disturbance !== "catalog_refresh" &&
-    disturbance !== "readiness_refresh"
+    disturbance !== "readiness_refresh" &&
+    disturbance !== "presence_departure" &&
+    disturbance !== "duplicate_payment_status" &&
+    disturbance !== "ipc_interruption"
   ) {
     throw new Error(`scenario step ${index + 1} disturbance is invalid`);
   }
@@ -2314,25 +2433,24 @@ function boundEvidenceEntry(entry) {
     const disturbance = entry.disturbance;
     if (
       disturbance !== "catalog_refresh" &&
-      disturbance !== "readiness_refresh"
+      disturbance !== "readiness_refresh" &&
+      disturbance !== "presence_departure" &&
+      disturbance !== "duplicate_payment_status" &&
+      disturbance !== "ipc_interruption"
     ) {
       throw new Error("route disturbance is invalid");
     }
-    const expectedState =
-      disturbance === "catalog_refresh" ? "catalog" : "readiness";
+    const hasCompetingPressure =
+      disturbance === "catalog_refresh" || disturbance === "readiness_refresh";
+    const expectedState = disturbance === "catalog_refresh" ? "catalog" : "readiness";
     if (
       entry.injection?.kind !== disturbance ||
       entry.injection?.count !== 1 ||
-      entry.injection?.outcome !== "completed" ||
-      entry.injection?.pressure?.refreshedState !== expectedState ||
-      entry.injection?.pressure?.routeAuthorityWon !== true ||
-      entry.injection?.pressure?.resolvedRoute !== "/payment" ||
-      entry.injection.pressure.attemptedRoute ===
-        entry.injection.pressure.resolvedRoute
+      entry.injection?.outcome !== "completed"
     ) {
-      throw new Error("route disturbance did not prove route authority");
+      throw new Error("route disturbance did not complete");
     }
-    return {
+    const baseEntry = {
       type: "route-disturbance",
       label: boundedRequiredString(
         entry.label,
@@ -2342,26 +2460,81 @@ function boundEvidenceEntry(entry) {
       disturbance,
       routeBefore: normalizeMachineRoute(entry.routeBefore),
       routeAfter: normalizeMachineRoute(entry.routeAfter),
-      injection: {
-        injectionId: boundedRequiredString(
-          entry.injection.injectionId,
-          "route disturbance injection id",
-          MAX_LABEL_LENGTH,
-        ),
-        kind: disturbance,
-        count: 1,
-        outcome: "completed",
-        pressure: {
-          refreshedState: expectedState,
-          attemptedRoute: boundedRequiredString(
-            entry.injection.pressure.attemptedRoute,
-            "route disturbance attempted route",
-            MAX_URL_LENGTH,
-          ),
-          resolvedRoute: "/payment",
-          routeAuthorityWon: true,
+    };
+    const baseInjection = {
+      injectionId: boundedRequiredString(
+        entry.injection.injectionId,
+        "route disturbance injection id",
+        MAX_LABEL_LENGTH,
+      ),
+      kind: disturbance,
+      count: 1,
+      outcome: "completed",
+      pressure: null,
+    };
+    if (hasCompetingPressure) {
+      if (
+        entry.injection?.pressure?.refreshedState !== expectedState ||
+        entry.injection?.pressure?.routeAuthorityWon !== true ||
+        entry.injection?.pressure?.resolvedRoute !== "/payment" ||
+        entry.injection.pressure.attemptedRoute ===
+          entry.injection.pressure.resolvedRoute
+      ) {
+        throw new Error("route disturbance did not prove route authority");
+      }
+      return {
+        ...baseEntry,
+        injection: {
+          ...baseInjection,
+          pressure: {
+            refreshedState: expectedState,
+            attemptedRoute: boundedRequiredString(
+              entry.injection.pressure.attemptedRoute,
+              "route disturbance attempted route",
+              MAX_URL_LENGTH,
+            ),
+            resolvedRoute: "/payment",
+            routeAuthorityWon: true,
+          },
         },
-      },
+      };
+    }
+    if (entry.injection?.pressure != null) {
+      throw new Error("non-routing disturbance must not report route pressure");
+    }
+    if (disturbance === "ipc_interruption") {
+      if (
+        entry.injection?.recovery?.overlayObserved !== true ||
+        typeof entry.injection?.recovery?.retainedOrderCredential !== "string" ||
+        entry.injection.recovery.retainedOrderCredential.trim() === "" ||
+        entry.injection.recovery.retainedOrderCredential !==
+          entry.injection?.recovery?.resumedOrderCredential
+      ) {
+        throw new Error(
+          "ipc interruption disturbance must retain and resume the same order credential",
+        );
+      }
+      return {
+        ...baseEntry,
+        injection: {
+          ...baseInjection,
+          recovery: {
+            overlayObserved: true,
+            retainedOrderCredential: boundedString(
+              entry.injection.recovery.retainedOrderCredential,
+              MAX_LABEL_LENGTH,
+            ),
+            resumedOrderCredential: boundedString(
+              entry.injection.recovery.resumedOrderCredential,
+              MAX_LABEL_LENGTH,
+            ),
+          },
+        },
+      };
+    }
+    return {
+      ...baseEntry,
+      injection: baseInjection,
     };
   }
   if (entry.type === "payment-window") {

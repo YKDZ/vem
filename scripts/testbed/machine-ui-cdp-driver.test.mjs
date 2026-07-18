@@ -85,6 +85,7 @@ async function runInstalledRouteCompetitionScenario({
     async (endpoint) => {
       let route = "#/catalog";
       let activations = 0;
+      let disturbanceCount = 0;
       let cdpSocket;
       const setRoute = (nextRoute) => {
         route = nextRoute;
@@ -124,6 +125,18 @@ async function runInstalledRouteCompetitionScenario({
               );
             }
             if (expression.includes("__VEM_INSTALLED_KIOSK_SALE_DEBUG__")) {
+              disturbanceCount += 1;
+              if (disturbanceCount === 1) {
+                return cdpValue(
+                  {
+                    injectionId: "browser-injection-presence-1",
+                    kind: "presence_departure",
+                    count: 1,
+                    outcome: "completed",
+                  },
+                  message.id,
+                );
+              }
               return cdpValue(
                 {
                   injectionId: "browser-injection-catalog-1",
@@ -152,6 +165,7 @@ async function runInstalledRouteCompetitionScenario({
               "#/products/test-item",
               "#/checkout",
               "#/checkout",
+              "#/checkout",
               "#/payment",
             ][activations - 1];
             if (nextRoute !== route) {
@@ -161,14 +175,14 @@ async function runInstalledRouteCompetitionScenario({
                 params: { url: `http://tauri.localhost/${route}` },
               });
             }
-            if (activations === 5 && touchIntervalRoute) {
+            if (activations === 6 && touchIntervalRoute) {
               setRoute(touchIntervalRoute);
             }
           }
           if (
             message.method === "Input.dispatchTouchEvent" &&
             message.params.type === "touchEnd" &&
-            activations === 5 &&
+            activations === 6 &&
             touchIntervalRoute === "#/checkout"
           ) {
             setRoute("#/payment");
@@ -876,9 +890,19 @@ describe("machine-ui-cdp-driver", () => {
     const { result, sockets } = await runInstalledRouteCompetitionScenario();
 
     assert.deepEqual(result.execution, {
-      planned: { customerActivations: 5, observations: 0, routeActions: 1 },
-      executed: { customerActivations: 5, observations: 0, routeActions: 1 },
+      planned: { customerActivations: 6, observations: 0, routeActions: 1 },
+      executed: { customerActivations: 6, observations: 0, routeActions: 1 },
     });
+    assert.ok(
+      result.evidence.some(
+        (entry) =>
+          entry.type === "route-disturbance" &&
+          entry.disturbance === "presence_departure" &&
+          entry.routeBefore === "#/payment" &&
+          entry.routeAfter === "#/payment" &&
+          entry.injection.pressure === null,
+      ),
+    );
     assert.ok(
       result.evidence.some(
         (entry) =>
@@ -906,9 +930,9 @@ describe("machine-ui-cdp-driver", () => {
     const paymentActivation = result.evidence.find(
       (entry) =>
         entry.type === "customer-activation" &&
-        entry.label === "payment submit",
+        entry.label === "payment submit repeat",
     );
-    assert.equal("routeBefore" in paymentActivation, false);
+    assert.equal(paymentActivation.routeBefore, "#/checkout");
     assert.ok(
       sockets[0].sent.some(
         (message) =>

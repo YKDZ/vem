@@ -3037,10 +3037,12 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
   const customerUiSaleScannerRoot = `${evidenceRoot}/installed-kiosk-sale-scanner`;
   const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
+  const customerUiSaleIpcRecoveryRoot = `${evidenceRoot}/installed-kiosk-sale-ipc-recovery`;
   const delayedPickupNativeAudioRoot = `${evidenceRoot}/installed-kiosk-sale-delayed-pickup-native-audio`;
   const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
   const customerUiSaleScannerReport = `${customerUiSaleScannerRoot}/report.json`;
   const customerUiSaleCompetitionReport = `${customerUiSaleCompetitionRoot}/report.json`;
+  const customerUiSaleIpcRecoveryReport = `${customerUiSaleIpcRecoveryRoot}/report.json`;
   const delayedPickupNativeAudioReport = `${delayedPickupNativeAudioRoot}/report.json`;
   const runtimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
@@ -3199,6 +3201,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
     "vm-route-competition",
     customerUiSaleCompetitionReport,
+    true,
+  );
+  const installedKioskSaleIpcRecoveryCommand = buildInstalledKioskSaleCommand(
+    "vm-ipc-recovery",
+    customerUiSaleIpcRecoveryReport,
     true,
   );
   const delayedPickupNativeAudioCommand = buildInstalledKioskSaleCommand(
@@ -3394,6 +3401,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       customerUiSaleNormal: customerUiSaleNormalReport,
       customerUiSaleScanner: customerUiSaleScannerReport,
       customerUiSaleRouteCompetition: customerUiSaleCompetitionReport,
+      customerUiSaleIpcRecovery: customerUiSaleIpcRecoveryReport,
       customerUiSale: customerUiSaleCompetitionReport,
       delayedPickupNativeAudio: delayedPickupNativeAudioReport,
     },
@@ -3501,6 +3509,16 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         command: installedKioskSaleCompetitionCommand,
         ephemeralPlatformEvidence,
         report: customerUiSaleCompetitionReport,
+        blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
+      },
+      {
+        name: "installed kiosk sale ipc recovery",
+        mode: "installed-kiosk-sale",
+        status: "planned",
+        command: installedKioskSaleIpcRecoveryCommand,
+        ephemeralPlatformEvidence,
+        report: customerUiSaleIpcRecoveryReport,
         blocksOnFailure: true,
         requiresEphemeralDatabase: true,
       },
@@ -4513,6 +4531,9 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   const exactOnce = report?.correlation?.exactOnce;
   const observations = platform?.observations;
   const reservation = platform?.reservation;
+  const scenarioEvidence = Array.isArray(report?.machineUiCdpScenario?.evidence)
+    ? report.machineUiCdpScenario.evidence
+    : [];
   if (
     !rendered?.orderId ||
     !rendered?.paymentId ||
@@ -4563,6 +4584,91 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
         "Rendered payment, platform completion, and serial reports must bind one order, payment, order number, reservation when exposed, command, movement, and stock delta.",
       ),
     );
+  }
+  const requiredDisturbances = new Set(
+    step?.name === "installed kiosk sale route competition"
+      ? ["presence_departure", "catalog_refresh"]
+      : step?.name === "installed kiosk sale ipc recovery"
+        ? ["ipc_interruption"]
+        : [],
+  );
+  if (
+    requiredDisturbances.size > 0 &&
+    ![...requiredDisturbances].every((disturbance) =>
+      scenarioEvidence.some(
+        (entry) =>
+          entry?.type === "route-disturbance" &&
+          entry?.disturbance === disturbance &&
+          entry?.routeBefore === "#/payment" &&
+          entry?.routeAfter === "#/payment",
+      ),
+    )
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "installed_kiosk_required_disturbance_missing",
+        "Installed kiosk evidence must include the declared disturbance while the active payment route stays on Payment.",
+      ),
+    );
+  }
+  if (
+    step?.name === "installed kiosk sale route competition" &&
+    !scenarioEvidence.some(
+      (entry) =>
+        entry?.type === "customer-activation" &&
+        entry?.label === "payment submit repeat" &&
+        entry?.input?.method === "Input.dispatchTouchEvent",
+    )
+  ) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "installed_kiosk_repeat_submit_missing",
+        "Route-competition evidence must repeat the original touchscreen submit during payment creation.",
+      ),
+    );
+  }
+  if (step?.name === "installed kiosk sale route competition") {
+    const routeAction = scenarioEvidence.find(
+      (entry) =>
+        entry?.type === "route-action" &&
+        entry?.label === "history competition during payment",
+    );
+    if (
+      routeAction?.routeBefore !== "#/payment" ||
+      routeAction?.routeAfter !== "#/payment"
+    ) {
+      diagnostics.push(
+        serialAcceptanceDiagnostic(
+          "installed_kiosk_route_competition_missing",
+          "Route-competition evidence must prove the payment route rejects a competing history action.",
+        ),
+      );
+    }
+  }
+  if (step?.name === "installed kiosk sale ipc recovery") {
+    const ipcRecovery = scenarioEvidence.find(
+      (entry) =>
+        entry?.type === "route-disturbance" &&
+        entry?.disturbance === "ipc_interruption",
+    );
+    const retained =
+      ipcRecovery?.injection?.recovery?.retainedOrderCredential ?? null;
+    const resumed =
+      ipcRecovery?.injection?.recovery?.resumedOrderCredential ?? null;
+    if (
+      ipcRecovery?.injection?.recovery?.overlayObserved !== true ||
+      typeof retained !== "string" ||
+      retained.length === 0 ||
+      retained !== resumed ||
+      retained !== rendered?.orderNo
+    ) {
+      diagnostics.push(
+        serialAcceptanceDiagnostic(
+          "installed_kiosk_ipc_recovery_missing",
+          "IPC recovery evidence must prove the recovery overlay appeared and the same order credential resumed on Payment.",
+        ),
+      );
+    }
   }
   return {
     status: diagnostics.length === 0 ? "passed" : "failed",
@@ -4624,6 +4730,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleNormal = stepMap.get("installed kiosk sale normal");
   const saleScanner = stepMap.get("installed kiosk sale scanner payment-code");
   const saleCompetition = stepMap.get("installed kiosk sale route competition");
+  const saleIpcRecovery = stepMap.get("installed kiosk sale ipc recovery");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const delayedPickup = stepMap.get("delayed pickup native audio live sale");
   const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
@@ -4644,6 +4751,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     saleCompetition,
     plan,
   );
+  const ipcRecoverySaleEvidence = evaluateInstalledKioskSaleEvidence(
+    saleIpcRecovery,
+    plan,
+  );
   const delayedPickupEvidence =
     evaluateDelayedPickupNativeAudioEvidence(delayedPickup);
   const installedKioskEvidence = {
@@ -4651,6 +4762,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       normalSaleEvidence.status === "passed" &&
       scannerSaleEvidence.status === "passed" &&
       competitionSaleEvidence.status === "passed" &&
+      ipcRecoverySaleEvidence.status === "passed" &&
       delayedPickupEvidence.status === "passed"
         ? "passed"
         : "failed",
@@ -4658,17 +4770,20 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       normalSaleEvidence.asserted === true &&
       scannerSaleEvidence.asserted === true &&
       competitionSaleEvidence.asserted === true &&
+      ipcRecoverySaleEvidence.asserted === true &&
       delayedPickupEvidence.asserted === true,
     diagnostics: [
       ...normalSaleEvidence.diagnostics,
       ...scannerSaleEvidence.diagnostics,
       ...competitionSaleEvidence.diagnostics,
+      ...ipcRecoverySaleEvidence.diagnostics,
       ...delayedPickupEvidence.diagnostics,
     ],
     evidence: {
       normal: normalSaleEvidence.evidence,
       scannerPaymentCode: scannerSaleEvidence.evidence,
       routeCompetition: competitionSaleEvidence.evidence,
+      ipcRecovery: ipcRecoverySaleEvidence.evidence,
       delayedPickupNativeAudio: delayedPickupEvidence.evidence,
     },
   };
@@ -4710,6 +4825,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       installedKioskSaleNormal: saleNormal?.status ?? "missing",
       installedKioskSaleScannerPaymentCode: saleScanner?.status ?? "missing",
       installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
+      installedKioskSaleIpcRecovery: saleIpcRecovery?.status ?? "missing",
       postSaleRuntimeAcceptance: postSaleRuntime?.status ?? "missing",
       delayedPickupNativeAudio: delayedPickup?.status ?? "missing",
     },
@@ -4746,6 +4862,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       routeCompetition: {
         status: saleCompetition?.status ?? "missing",
         evidencePath: plan.artifacts.customerUiSaleRouteCompetition,
+      },
+      ipcRecovery: {
+        status: saleIpcRecovery?.status ?? "missing",
+        evidencePath: plan.artifacts.customerUiSaleIpcRecovery,
       },
       delayedPickupNativeAudio: {
         status: delayedPickupEvidence.status,

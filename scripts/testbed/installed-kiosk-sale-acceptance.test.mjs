@@ -64,6 +64,47 @@ describe("installed kiosk sale preflight", () => {
       ],
     );
   });
+
+  it("keeps route competition on one checkout order until the repeated submit reaches payment", () => {
+    const steps = buildInstalledKioskSaleScenarioSteps("vm-route-competition");
+    assert.deepEqual(
+      steps.map((step) => step.name),
+      [
+        "catalog category",
+        "catalog product",
+        "buy",
+        "payment option",
+        "payment submit",
+        "payment submit repeat",
+        "vision departure during payment",
+        "catalog refresh during payment",
+        "history competition during payment",
+      ],
+    );
+    assert.equal(steps[4].routeAfter, "#/checkout");
+    assert.equal(steps[4].completesRouteBarrier, false);
+    assert.equal(steps[5].repeatPreviousActivationCenter, true);
+    assert.equal(steps[5].completesRouteBarrier, true);
+    assert.equal(steps[6].disturbance, "presence_departure");
+    assert.equal(steps[7].disturbance, "catalog_refresh");
+  });
+
+  it("adds the installed IPC recovery disturbance as a payment-route hold", () => {
+    const steps = buildInstalledKioskSaleScenarioSteps("vm-ipc-recovery");
+    assert.deepEqual(
+      steps.map((step) => step.name),
+      [
+        "catalog category",
+        "catalog product",
+        "buy",
+        "payment option",
+        "payment submit",
+        "daemon IPC interruption during payment",
+      ],
+    );
+    assert.equal(steps[5].disturbance, "ipc_interruption");
+  });
+
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
     assert.equal(
       formatInstalledKioskSaleError(

@@ -656,9 +656,24 @@ async function injectInstalledKioskSaleDisturbance(
         await routeToTransactionProjection();
         break;
       case "ipc_interruption":
-        currentTransactionFailuresRemaining = 1;
-        await useCheckoutStore().refreshCurrentTransaction();
-        await useCheckoutStore().refreshCurrentTransaction();
+        {
+          const checkoutStore = useCheckoutStore();
+          const retainedOrderCredential =
+            checkoutStore.currentTransaction?.orderNo ?? null;
+          currentTransactionFailuresRemaining = 1;
+          await checkoutStore.refreshCurrentTransaction();
+          const overlayObserved = checkoutStore.customerCheckoutRecovery.active;
+          const overlayOrderCredential =
+            checkoutStore.customerCheckoutRecovery.orderCredential ?? null;
+          await checkoutStore.refreshCurrentTransaction();
+          injection.recovery = {
+            overlayObserved,
+            retainedOrderCredential:
+              overlayOrderCredential ?? retainedOrderCredential,
+            resumedOrderCredential:
+              checkoutStore.currentTransaction?.orderNo ?? null,
+          };
+        }
         break;
     }
     injection.outcome = "completed";

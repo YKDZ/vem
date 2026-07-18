@@ -41,6 +41,7 @@ const PROFILE_NAMES = new Set([
   "vm-normal",
   "vm-scanner-payment-code",
   "vm-route-competition",
+  "vm-ipc-recovery",
   "factory-route-competition",
   "vm-delayed-pickup-native-audio",
 ]);
@@ -118,7 +119,7 @@ function parseArgs(argv) {
   if (options.profile == null) options.profile = "vm-normal";
   if (!PROFILE_NAMES.has(options.profile)) {
     throw new Error(
-      "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, factory-route-competition, or vm-delayed-pickup-native-audio",
+      "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, vm-ipc-recovery, factory-route-competition, or vm-delayed-pickup-native-audio",
     );
   }
   if (options.ssh_port != null) {
@@ -257,9 +258,17 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       name: "payment submit",
       selector: '[data-test="checkout-submit"]',
       routeBefore: "#/checkout",
-      routeAfter: /^#\/payment/,
+      routeAfter:
+        profile === "vm-route-competition" ||
+        profile === "factory-route-competition"
+          ? "#/checkout"
+          : /^#\/payment/,
       timeoutMs: 30_000,
       activatesRouteBarrier: true,
+      ...((profile === "vm-route-competition" ||
+        profile === "factory-route-competition")
+        ? { completesRouteBarrier: false }
+        : {}),
       screenshot: true,
     },
   ];
@@ -267,6 +276,24 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
     profile === "vm-route-competition" ||
     profile === "factory-route-competition"
   ) {
+    steps.push({
+      type: "customer-activation",
+      name: "payment submit repeat",
+      selector: '[data-test="checkout-submit"]',
+      routeBefore: "#/checkout",
+      routeAfter: /^#\/payment/,
+      timeoutMs: 30_000,
+      completesRouteBarrier: true,
+      repeatPreviousActivationCenter: true,
+    });
+    steps.push({
+      type: "debug-disturbance",
+      name: "vision departure during payment",
+      disturbance: "presence_departure",
+      routeBefore: /^#\/payment/,
+      routeAfter: /^#\/payment/,
+      screenshot: true,
+    });
     steps.push({
       type: "debug-disturbance",
       name: "catalog refresh during payment",
@@ -280,6 +307,16 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       stimulus: "history-back",
       routeBefore: /^#\/payment/,
       routeAfter: /^#\/payment/,
+    });
+  }
+  if (profile === "vm-ipc-recovery") {
+    steps.push({
+      type: "debug-disturbance",
+      name: "daemon IPC interruption during payment",
+      disturbance: "ipc_interruption",
+      routeBefore: /^#\/payment/,
+      routeAfter: /^#\/payment/,
+      screenshot: true,
     });
   }
   return steps;

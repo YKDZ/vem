@@ -4551,6 +4551,7 @@ if ($errors.Count -gt 0) {
           "installed kiosk sale normal",
           "installed kiosk sale scanner payment-code",
           "installed kiosk sale route competition",
+          "installed kiosk sale ipc recovery",
           "post-sale runtime acceptance",
           "delayed pickup native audio live sale",
         ],
@@ -5895,24 +5896,39 @@ if ($errors.Count -gt 0) {
     for (const step of plan.steps) {
       assert.equal(commandArg(step.command, "--run-id"), "RUN-181-LOCAL");
     }
+    const ephemeralPlatformStep = plan.steps.find(
+      (step) => step.name === "ephemeral platform setup",
+    );
+    const runtimeAcceptanceStep = plan.steps.find(
+      (step) => step.name === "runtime acceptance",
+    );
+    const postSaleRuntimeStep = plan.steps.find(
+      (step) => step.name === "post-sale runtime acceptance",
+    );
     assert.equal(
-      commandArg(plan.steps[1].command, "--machine-code-prefix"),
+      commandArg(ephemeralPlatformStep.command, "--machine-code-prefix"),
       "VEM-TESTBED-CUSTOM",
     );
     assert.equal(
-      commandArg(plan.steps[1].command, "--maintenance-relay-peer-id"),
+      commandArg(ephemeralPlatformStep.command, "--maintenance-relay-peer-id"),
       "650e8400-e29b-41d4-a716-446655440001",
     );
     assert.equal(
-      commandArg(plan.steps[1].command, "--maintenance-relay-public-key"),
+      commandArg(
+        ephemeralPlatformStep.command,
+        "--maintenance-relay-public-key",
+      ),
       "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
     );
     assert.equal(
-      commandArg(plan.steps[1].command, "--maintenance-relay-tunnel-address"),
+      commandArg(
+        ephemeralPlatformStep.command,
+        "--maintenance-relay-tunnel-address",
+      ),
       "10.91.0.1",
     );
     assert.equal(
-      commandArg(plan.steps[3].command, "--machine-code"),
+      commandArg(runtimeAcceptanceStep.command, "--machine-code"),
       "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
     );
     const saleStep = plan.steps.find(
@@ -5923,6 +5939,9 @@ if ($errors.Count -gt 0) {
     );
     const normalSaleStep = plan.steps.find(
       (step) => step.name === "installed kiosk sale normal",
+    );
+    const ipcRecoverySaleStep = plan.steps.find(
+      (step) => step.name === "installed kiosk sale ipc recovery",
     );
     const delayedSaleStep = plan.steps.find(
       (step) => step.name === "delayed pickup native audio live sale",
@@ -5940,6 +5959,10 @@ if ($errors.Count -gt 0) {
       "vm-scanner-payment-code",
     );
     assert.equal(commandArg(normalSaleStep.command, "--profile"), "vm-normal");
+    assert.equal(
+      commandArg(ipcRecoverySaleStep.command, "--profile"),
+      "vm-ipc-recovery",
+    );
     assert.equal(
       commandArg(delayedSaleStep.command, "--profile"),
       "vm-delayed-pickup-native-audio",
@@ -5965,6 +5988,10 @@ if ($errors.Count -gt 0) {
       plan.artifacts.customerUiSaleNormal,
     );
     assert.equal(
+      commandArg(ipcRecoverySaleStep.command, "--out"),
+      plan.artifacts.customerUiSaleIpcRecovery,
+    );
+    assert.equal(
       commandArg(saleStep.command, "--sale-prepare-command-json"),
       undefined,
     );
@@ -5976,9 +6003,12 @@ if ($errors.Count -gt 0) {
     assert.equal(scannerSaleStep.command.includes("--already-claimed"), true);
     assert.equal(normalSaleStep.command.includes("--already-claimed"), true);
     assert.equal(
+      ipcRecoverySaleStep.command.includes("--already-claimed"),
+      true,
+    );
+    assert.equal(
       commandArg(
-        plan.steps.find((step) => step.name === "post-sale runtime acceptance")
-          .command,
+        postSaleRuntimeStep.command,
         "--out",
       ),
       plan.artifacts.postSaleRuntimeAcceptance,
@@ -6127,8 +6157,8 @@ if ($errors.Count -gt 0) {
         report.steps.every((step) => step.status === "passed"),
         true,
       );
-      assert.equal(scannerCopies.length, 3);
-      assert.equal(new Set(scannerCopies).size, 3);
+      assert.equal(scannerCopies.length, 5);
+      assert.equal(new Set(scannerCopies).size, 5);
       assert.equal(
         report.installedKioskSale.delayedPickupNativeAudio.status,
         "passed",
@@ -6233,12 +6263,12 @@ if ($errors.Count -gt 0) {
       plan.steps.map((step) => step.name),
       [
         "clean-base factory preparation acceptance",
-        "approved preclaim base verification",
         "ephemeral platform setup",
         "runtime acceptance",
         "installed kiosk sale normal",
         "installed kiosk sale scanner payment-code",
         "installed kiosk sale route competition",
+        "installed kiosk sale ipc recovery",
         "post-sale runtime acceptance",
         "delayed pickup native audio live sale",
       ],
@@ -6262,11 +6292,6 @@ if ($errors.Count -gt 0) {
           status: "passed",
           parsed: cleanBaseFactoryAcceptanceEvidence(),
         },
-        {
-          ...plan.steps[1],
-          status: "passed",
-          parsed: approvedPreclaimBaseEvidence(),
-        },
       ],
     });
 
@@ -6278,7 +6303,6 @@ if ($errors.Count -gt 0) {
       status: "passed",
       asserted: true,
     });
-    assert.equal(report.finalReadiness.approvedPreclaimBase.status, "passed");
   });
 
   it("fails runtime acceptance when approved preclaim evidence lacks the expected schema or kind", () => {
