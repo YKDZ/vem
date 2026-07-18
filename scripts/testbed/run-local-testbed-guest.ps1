@@ -127,16 +127,16 @@ function Update-WorkflowIdentityCacheObservation(
   [string[]]$RemovedUndeclaredCaches
 ) {
   Require-Path $Path
-  $input = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
-  if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") {
+  $guestInput = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+  if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") {
     throw "invalid local testbed guest input"
   }
-  if ($null -eq $input.workflowIdentity) {
+  if ($null -eq $guestInput.workflowIdentity) {
     throw "workflow identity is missing from local testbed guest input"
   }
-  $input.workflowIdentity.observedRetainedCaches = @($ObservedRetainedCaches)
-  $input.workflowIdentity.removedUndeclaredCaches = @($RemovedUndeclaredCaches)
-  $input | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding utf8
+  $guestInput.workflowIdentity.observedRetainedCaches = @($ObservedRetainedCaches)
+  $guestInput.workflowIdentity.removedUndeclaredCaches = @($RemovedUndeclaredCaches)
+  $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding utf8
 }
 
 function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
@@ -333,8 +333,8 @@ if ($Mode -eq "clear_cache") {
 }
 
 Require-Path $GuestInputPath
-$input = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
-if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
+$guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
+if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
 Write-TestbedPhase "bootstrap"
 
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -392,7 +392,7 @@ $machinePath = Join-Path $deploymentRoot "machine.exe"
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
-$input.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
+$guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
 Get-Process vending-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-Process machine -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
@@ -400,7 +400,7 @@ $daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
 $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
 Write-TestbedPhase "claim-runtime"
-$claim = Invoke-Claim $input
+$claim = Invoke-Claim $guestInput
 $runtimeReady = Wait-RuntimeReady
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
 if ($daemonEvidence.processId -ne $daemonProcess.Id -or $daemonEvidence.commandLine -notmatch '(?i)(?:^|\s)--console(?:\s|$)') {
@@ -418,13 +418,13 @@ Unregister-ScheduledTask -TaskName $machineTaskName -Confirm:$false -ErrorAction
   "`"$machinePath`""
 ) | Set-Content -LiteralPath $machineLauncher -Encoding ascii
 $machineAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /c `"$machineLauncher`"" -WorkingDirectory $deploymentRoot
-$machinePrincipal = New-ScheduledTaskPrincipal -UserId ([string]$input.interactiveUser) -LogonType Interactive -RunLevel Limited
+$machinePrincipal = New-ScheduledTaskPrincipal -UserId ([string]$guestInput.interactiveUser) -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $machineTaskName -Action $machineAction -Principal $machinePrincipal -Force | Out-Null
 Start-ScheduledTask -TaskName $machineTaskName
 Write-TestbedPhase "wait-installed-ui"
 $target = Wait-InstalledTauriTarget
 $machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $machinePath
-$expectedInteractiveUser = ([string]$input.interactiveUser -split '\\')[-1]
+$expectedInteractiveUser = ([string]$guestInput.interactiveUser -split '\\')[-1]
 $observedInteractiveUser = ([string]$machineEvidence.principal -split '\\')[-1]
 if ($observedInteractiveUser -ine $expectedInteractiveUser) {
   throw "installed Tauri process is not owned by the baseline interactive user"
@@ -441,7 +441,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$workflowSummaryOutPath = Join-Path $handoffRoot "full-workflow-tracks.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"
-  machineCode = [string]$input.machineCode
+  machineCode = [string]$guestInput.machineCode
   claim = [ordered]@{ status = [string]$claim.status; machineCode = [string]$claim.machineCode }
   daemon = [ordered]@{
     executablePath = $daemonEvidence.executablePath
