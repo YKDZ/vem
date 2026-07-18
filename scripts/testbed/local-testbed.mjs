@@ -39,6 +39,7 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\target",
   "D:\\runtime-cache\\v1\\sccache",
   "D:\\runtime-cache\\v1\\turbo",
+  "D:\\runtime-cache\\v1\\vision-main",
 ]);
 const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "NODE_ENV",
@@ -351,6 +352,8 @@ function workflowIdentity(options, contract) {
       .update(`${options.runId}\n${baselineDigest}\n${runtimeBase}`)
       .digest("hex")}`,
     retainedCaches: [...RETAINED_CACHE_CONTRACT],
+    observedRetainedCaches: null,
+    removedUndeclaredCaches: [],
   };
 }
 

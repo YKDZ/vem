@@ -32,28 +32,24 @@ describe("VM runtime acceptance workflow", () => {
     assert.doesNotMatch(workflow, /2\.22|192\.168\.|118\.25\.|VPS|admin-ui/i);
   });
 
-  it("uploads bounded reports and text logs without binary media", () => {
+  it("uploads only the bounded evidence bundle plus the clear-cache report without forbidden media", () => {
     const windows = workflow.slice(
       workflow.indexOf("run-inside-windows-pass-1:"),
     );
-    assert.match(windows, /if: always\(\)/);
+    assert.match(windows, /mode != 'clear_cache'/);
+    assert.match(windows, /mode == 'clear_cache'/);
     assert.match(
       windows,
       /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/,
     );
-    assert.match(windows, /fast-route-stress-sale\.json/);
-    assert.match(windows, /fast-route-stress-sale-artifacts/);
-    assert.match(windows, /scanner-payment-code\.json/);
-    assert.match(windows, /serial-fulfillment-error\.json/);
-    assert.match(windows, /installed-ipc-recovery\.json/);
-    assert.match(windows, /vision-try-on-acceptance\.json/);
-    assert.match(windows, /vision-try-on-acceptance-artifacts/);
-    assert.match(windows, /delayed-pickup-native-audio\.json/);
-    assert.match(windows, /full-workflow-tracks\.json/);
-    assert.match(windows, /full-workflow-evidence-manifest\.json/);
+    assert.match(windows, /full-workflow-evidence-bundle/);
+    assert.match(windows, /clear-cache-report\.json/);
     assert.match(windows, /retention-days: 7/);
     assert.doesNotMatch(windows, /\.(?:mp4|webm|avi|mov)\b/i);
-    assert.doesNotMatch(windows, /\.(?:png|jpg|jpeg|gif|wav|bin|qcow2|iso)\b/i);
+    assert.doesNotMatch(
+      windows,
+      /\.(?:jpg|jpeg|gif|bmp|tiff|wav|bin|qcow2|iso)\b/i,
+    );
     assert.doesNotMatch(windows, /\bFactory\b/i);
   });
 
@@ -85,6 +81,10 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
     assert.match(workflow, /VISION_GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
     assert.match(workflow, /GITHUB_SHA: \$\{\{ github\.sha \}\}/);
+    assert.match(
+      workflow,
+      /Collect Compact Runtime Acceptance Evidence Pass 1[\s\S]*if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,
+    );
     assert.match(
       workflow,
       /Collect Compact Runtime Acceptance Evidence Pass 1\n\s+if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,

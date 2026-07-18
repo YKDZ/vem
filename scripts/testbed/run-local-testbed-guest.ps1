@@ -14,7 +14,8 @@ $declaredCachePaths = @(
   (Join-Path $cacheRoot "cargo-home"),
   (Join-Path $cacheRoot "target"),
   (Join-Path $cacheRoot "sccache"),
-  (Join-Path $cacheRoot "turbo")
+  (Join-Path $cacheRoot "turbo"),
+  (Join-Path $cacheRoot "vision-main")
 )
 
 function Require-Path([string]$Path) {
@@ -27,6 +28,100 @@ function Clear-DeclaredCaches {
   }
   foreach ($path in $declaredCachePaths) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
+  }
+}
+
+function Get-ObservedCacheDirectories {
+  $resolvedRoot = [IO.Path]::GetFullPath($cacheRoot)
+  if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
+    return @()
+  }
+  return @(
+    Get-ChildItem -LiteralPath $resolvedRoot -Force -ErrorAction SilentlyContinue |
+      Where-Object { $_.PSIsContainer } |
+      ForEach-Object { [IO.Path]::GetFullPath($_.FullName) } |
+      Sort-Object
+  )
+}
+
+function Remove-UndeclaredCacheDirectories {
+  $declared = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($path in $declaredCachePaths) {
+    [void]$declared.Add([IO.Path]::GetFullPath($path))
+  }
+  $removed = @()
+  foreach ($path in Get-ObservedCacheDirectories) {
+    if (-not $declared.Contains($path)) {
+      Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+      $removed += $path
+    }
+  }
+  return @($removed | Sort-Object)
+}
+
+function Get-DeclaredCacheObservation {
+  return [ordered]@{
+    declaredRetainedCaches = @($declaredCachePaths | ForEach-Object { [IO.Path]::GetFullPath($_) } | Sort-Object)
+    observedRetainedCaches = @(Get-ObservedCacheDirectories)
+  }
+}
+
+function Assert-ObservedCachesMatchAllowlist([object]$Observation) {
+  $declared = @($Observation.declaredRetainedCaches)
+  $observed = @($Observation.observedRetainedCaches)
+  if ((Compare-Object -ReferenceObject $declared -DifferenceObject $observed -SyncWindow 0).Count -ne 0) {
+    throw "observed D: runtime cache directories drifted from the declared allowlist"
+  }
+}
+
+function Update-WorkflowIdentityCacheObservation(
+  [string]$Path,
+  [string[]]$ObservedRetainedCaches,
+  [string[]]$RemovedUndeclaredCaches
+) {
+  Require-Path $Path
+  $input = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+  if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") {
+    throw "invalid local testbed guest input"
+  }
+  if ($null -eq $input.workflowIdentity) {
+    throw "workflow identity is missing from local testbed guest input"
+  }
+  $input.workflowIdentity.observedRetainedCaches = @($ObservedRetainedCaches)
+  $input.workflowIdentity.removedUndeclaredCaches = @($RemovedUndeclaredCaches)
+  $input | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding utf8
+}
+
+function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
+  Require-Path $ManifestPath
+  if (Test-Path -LiteralPath $BundleRoot) {
+    Remove-Item -LiteralPath $BundleRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
+  $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+  foreach ($path in @(
+    (Join-Path $handoffRoot "installed-runtime-smoke.json"),
+    (Join-Path $handoffRoot "full-workflow-tracks.json"),
+    $ManifestPath
+  )) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      Copy-Item -LiteralPath $path -Destination (Join-Path $BundleRoot ([IO.Path]::GetFileName($path))) -Force
+    }
+  }
+  foreach ($file in @($manifest.files)) {
+    $sourcePath = [string]$file.path
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+      throw "manifest file listed for evidence bundle is missing: $sourcePath"
+    }
+    $extension = [IO.Path]::GetExtension($sourcePath).ToLowerInvariant()
+    if ($extension -notin @(".json", ".log", ".txt", ".png")) {
+      throw "manifest file listed for evidence bundle has a forbidden extension: $sourcePath"
+    }
+    $targetPath = Join-Path $BundleRoot ([IO.Path]::GetFileName($sourcePath))
+    if (Test-Path -LiteralPath $targetPath) {
+      $targetPath = Join-Path $BundleRoot ("{0}-{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($sourcePath), ([Math]::Abs($sourcePath.GetHashCode())), $extension)
+    }
+    Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
   }
 }
 
@@ -172,8 +267,21 @@ function Invoke-FullVisionTryOnAcceptance(
 }
 
 if ($Mode -eq "clear_cache") {
+  $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
   Clear-DeclaredCaches
-  [Console]::Out.WriteLine('{"ok":true,"mode":"clear_cache","cacheCleared":true}')
+  $clearCacheReportPath = Join-Path $handoffRoot "clear-cache-report.json"
+  New-Item -ItemType Directory -Force -Path $handoffRoot | Out-Null
+  $cacheObservation = Get-DeclaredCacheObservation
+  Assert-ObservedCachesMatchAllowlist $cacheObservation
+  [ordered]@{
+    schemaVersion = "vem-local-testbed-clear-cache/v1"
+    ok = $true
+    mode = "clear_cache"
+    cacheCleared = $true
+    removedUndeclaredCaches = @($removedUndeclaredCaches)
+    observedRetainedCaches = @($cacheObservation.observedRetainedCaches)
+  } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $clearCacheReportPath -Encoding utf8
+  Get-Content -Raw -LiteralPath $clearCacheReportPath | Write-Output
   exit 0
 }
 
@@ -189,6 +297,7 @@ $env:PNPM_STORE_PATH = Join-Path $cacheRoot "pnpm-store"
 $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
 $sccache = (Get-Command sccache -ErrorAction Stop).Source
 $env:RUSTC_WRAPPER = $sccache
+$removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 foreach ($pair in @{
   CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR
@@ -306,6 +415,14 @@ Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
 if ($Mode -eq "full") {
   Write-RecordedVisionSiteConfiguration (Join-Path $handoffRoot "vision-recorded-site-config.json")
 }
+if ($Mode -eq "full") {
+  $cacheObservation = Get-DeclaredCacheObservation
+  Assert-ObservedCachesMatchAllowlist $cacheObservation
+  Update-WorkflowIdentityCacheObservation `
+    -Path $GuestInputPath `
+    -ObservedRetainedCaches $cacheObservation.observedRetainedCaches `
+    -RemovedUndeclaredCaches $removedUndeclaredCaches
+}
 node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
 if ($LASTEXITCODE -ne 0) { throw "local testbed workflow aggregate failed" }
 if (Test-Path -LiteralPath $fastRouteOutPath) {
@@ -327,5 +444,10 @@ if ($Mode -eq "full") {
   if (Test-Path -LiteralPath $visionTryOnOutPath) {
     Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
   }
+}
+if ($Mode -ne "clear_cache") {
+  New-BoundedEvidenceBundle `
+    -ManifestPath (Join-Path $handoffRoot "full-workflow-evidence-manifest.json") `
+    -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle")
 }
 Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output

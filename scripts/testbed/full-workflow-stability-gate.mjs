@@ -11,6 +11,7 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\target",
   "D:\\runtime-cache\\v1\\sccache",
   "D:\\runtime-cache\\v1\\turbo",
+  "D:\\runtime-cache\\v1\\vision-main",
 ]);
 const REQUIRED_EXECUTION_ORDER = Object.freeze([
   "fast",
@@ -48,6 +49,10 @@ function loadReport(path, label) {
       }`,
     );
   }
+}
+
+function sameStringArray(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
 export function buildStabilityGateReport({
@@ -109,11 +114,16 @@ export function buildStabilityGateReport({
     ) {
       gateFailures.push(`${label} reconstruction ID is invalid`);
     }
-    if (
-      JSON.stringify(identity?.retainedCaches) !==
-      JSON.stringify(RETAINED_CACHE_CONTRACT)
-    ) {
+    if (!sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)) {
       gateFailures.push(`${label} retained-cache contract drifted`);
+    }
+    if (
+      !sameStringArray(identity?.observedRetainedCaches, RETAINED_CACHE_CONTRACT)
+    ) {
+      gateFailures.push(`${label} observed retained caches drifted`);
+    }
+    if (!Array.isArray(identity?.removedUndeclaredCaches)) {
+      gateFailures.push(`${label} undeclared cache cleanup evidence is missing`);
     }
     if (
       JSON.stringify(
@@ -146,11 +156,16 @@ export function buildStabilityGateReport({
     gateFailures.push("runtime-base differs between passes");
   if (passA.identity?.reconstructionId === passB.identity?.reconstructionId)
     gateFailures.push("two passes reused one reconstruction ID");
-  if (
-    JSON.stringify(passA.identity?.retainedCaches) !==
-    JSON.stringify(passB.identity?.retainedCaches)
-  )
+  if (!sameStringArray(passA.identity?.retainedCaches, passB.identity?.retainedCaches))
     gateFailures.push("retained-cache contract differs between passes");
+  if (
+    !sameStringArray(
+      passA.identity?.observedRetainedCaches,
+      passB.identity?.observedRetainedCaches,
+    )
+  ) {
+    gateFailures.push("observed retained caches differ between passes");
+  }
   return {
     schemaVersion: "vem-local-testbed-stability-gate/v2",
     commit: required(commit, "commit"),
@@ -158,7 +173,7 @@ export function buildStabilityGateReport({
     declaredStateReconstruction: {
       systemDrive: "reconstructed C:",
       platform: "reconstructed ephemeral platform state",
-      retainedCaches: RETAINED_CACHE_CONTRACT,
+      retainedCachesAllowlist: RETAINED_CACHE_CONTRACT,
     },
     passes: {
       passA: {

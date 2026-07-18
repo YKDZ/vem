@@ -27,22 +27,65 @@ function writeJson(path, value) {
 
 function sampleEvidenceManifest(path) {
   return {
-    schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v1",
+    schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
     ok: true,
     limits: {
-      tracePerFileBytes: 512 * 1024,
+      reportPerFileBytes: 512 * 1024,
+      tracePerTrackBytes: 512 * 1024,
       logPerFileBytes: 256 * 1024,
       screenshotPerFileBytes: 2 * 1024 * 1024,
       totalBytes: 8 * 1024 * 1024,
     },
-    requiredKinds: ["traces", "logs", "screenshots"],
-    totals: { byteLength: 3, traces: 1, logs: 1, screenshots: 1 },
-    files: ["traces", "logs", "screenshots"].map((kind, index) => ({
-      path,
-      kind,
-      byteLength: 1,
-      sha256: String.fromCharCode(97 + index).repeat(64),
-    })),
+    requiredKinds: ["machineRuntimeTrace", "logs", "screenshots"],
+    totals: {
+      byteLength: 2,
+      tracks: 1,
+      reports: 1,
+      machineRuntimeTrace: 1,
+      logs: 1,
+      screenshots: 1,
+    },
+    tracks: [
+      {
+        key: "fast",
+        report: path,
+        machineRuntimeTrace: `${path}#runtimeTrace`,
+        logs: [`${path}#logs`],
+        screenshots: [`${path}.png`],
+      },
+    ],
+    files: [
+      {
+        path,
+        track: "fast",
+        kind: "reports",
+        byteLength: 1,
+        sha256: "a".repeat(64),
+      },
+      {
+        path: `${path}.png`,
+        track: "fast",
+        kind: "screenshots",
+        byteLength: 1,
+        sha256: "b".repeat(64),
+      },
+    ],
+    sections: [
+      {
+        path: `${path}#runtimeTrace`,
+        track: "fast",
+        kind: "machineRuntimeTrace",
+        byteLength: 1,
+        sha256: "c".repeat(64),
+      },
+      {
+        path: `${path}#logs`,
+        track: "fast",
+        kind: "logs",
+        byteLength: 1,
+        sha256: "d".repeat(64),
+      },
+    ],
     failures: [],
   };
 }
@@ -80,7 +123,17 @@ function sampleIdentity(reconstruction = "a") {
       "D:\\runtime-cache\\v1\\target",
       "D:\\runtime-cache\\v1\\sccache",
       "D:\\runtime-cache\\v1\\turbo",
+      "D:\\runtime-cache\\v1\\vision-main",
     ],
+    observedRetainedCaches: [
+      "D:\\runtime-cache\\v1\\pnpm-store",
+      "D:\\runtime-cache\\v1\\cargo-home",
+      "D:\\runtime-cache\\v1\\target",
+      "D:\\runtime-cache\\v1\\sccache",
+      "D:\\runtime-cache\\v1\\turbo",
+      "D:\\runtime-cache\\v1\\vision-main",
+    ],
+    removedUndeclaredCaches: [],
   };
 }
 
@@ -415,7 +468,10 @@ describe("full workflow stability gate", () => {
     });
     assert.equal(report.ok, true);
     assert.deepEqual(report.gateFailures, []);
-    assert.equal(report.declaredStateReconstruction.retainedCaches.length, 5);
+    assert.equal(
+      report.declaredStateReconstruction.retainedCachesAllowlist.length,
+      6,
+    );
   });
 
   it("rejects a repeated reconstruction ID", () => {
@@ -462,6 +518,65 @@ describe("full workflow stability gate", () => {
     assert.equal(report.ok, false);
     assert.ok(
       report.gateFailures.includes("two passes reused one reconstruction ID"),
+    );
+  });
+
+  it("rejects when observed retained caches drift from the allowlist", () => {
+    const root = tempRoot();
+    const passA = join(root, "pass-a.json");
+    const passB = join(root, "pass-b.json");
+    const aggregate = {
+      schemaVersion: "vem-local-testbed-full-workflow/v3",
+      mode: "full",
+      ok: true,
+      failures: [],
+      tracks: Object.fromEntries(
+        [
+          "standardSale",
+          "ipcRecovery",
+          "fulfillmentFailure",
+          "audio",
+          "scanner",
+          "vision",
+          "tryOn",
+          "evidence",
+          "error",
+        ].map((key) => [key, { status: "passed" }]),
+      ),
+      execution: {
+        executedTracks: [
+          "fast",
+          "delayedPickup",
+          "scanner",
+          "ipcRecovery",
+          "fulfillmentFailure",
+          "visionTryOn",
+        ].map((key) => ({ key })),
+      },
+      identity: sampleIdentity("a"),
+    };
+    writeJson(passA, {
+      ...aggregate,
+      identity: {
+        ...sampleIdentity("a"),
+        observedRetainedCaches: sampleIdentity("a").observedRetainedCaches.slice(
+          0,
+          -1,
+        ),
+      },
+    });
+    writeJson(passB, {
+      ...aggregate,
+      identity: sampleIdentity("b"),
+    });
+    const report = buildStabilityGateReport({
+      commit: "c".repeat(40),
+      passAPath: passA,
+      passBPath: passB,
+    });
+    assert.equal(report.ok, false);
+    assert.ok(
+      report.gateFailures.includes("passA observed retained caches drifted"),
     );
   });
 });

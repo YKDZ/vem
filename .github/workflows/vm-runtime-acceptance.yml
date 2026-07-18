@@ -78,20 +78,15 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
-            C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
-            C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-manifest.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
-            C:\ProgramData\VEM\runtime\testbed\serial-fulfillment-error.json
-            C:\ProgramData\VEM\runtime\testbed\installed-ipc-recovery.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
+          path: C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-bundle\**
+          if-no-files-found: error
+          retention-days: 7
+      - name: Collect Clear Cache Report Pass 1
+        if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'clear_cache' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-runtime-clear-cache-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: C:\ProgramData\VEM\runtime\testbed\clear-cache-report.json
           if-no-files-found: error
           retention-days: 7
 
@@ -150,20 +145,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: vm-runtime-acceptance-pass-2-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
-            C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
-            C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-manifest.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
-            C:\ProgramData\VEM\runtime\testbed\serial-fulfillment-error.json
-            C:\ProgramData\VEM\runtime\testbed\installed-ipc-recovery.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
+          path: C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-bundle\**
           if-no-files-found: error
           retention-days: 7
 
