@@ -611,6 +611,24 @@ export function validateFastRouteStressSaleEvidence(input) {
   const runtimeTrace = Array.isArray(input.runtimeTrace)
     ? input.runtimeTrace
     : [];
+  const projectionRefresh = runtimeTrace.find(
+    (entry) =>
+      entry?.type === "navigation" &&
+      entry?.intentType === "transaction.projection" &&
+      entry?.decision === "accepted" &&
+      ["transaction_projection", "transaction_projection_current"].includes(
+        entry?.reasonCode,
+      ) &&
+      entry?.transactionOrderNo === order.orderNo &&
+      entry?.finalRoute !== "#/catalog" &&
+      Number.isFinite(visionAt) &&
+      Date.parse(entry.at) >= visionAt,
+  );
+  if (!projectionRefresh) {
+    throw new Error(
+      "runtime trace must contain the real transaction projection refresh for the correlated order after Vision departure",
+    );
+  }
   const spontaneousCatalog = runtimeTrace.some(
     (entry) =>
       entry.type === "navigation" &&
@@ -668,6 +686,8 @@ export function validateFastRouteStressSaleEvidence(input) {
     movementId: movement.id,
     visionEventId: vision.eventId,
     guardedNavigationReason: guardedDeparture.reasonCode,
+    projectionRefreshReason: projectionRefresh.reasonCode,
+    projectionRefreshRoute: projectionRefresh.finalRoute,
     saleStartCapabilityRevision: saleStartCapability.revision,
     mockPaymentOptionKey: mockOption.optionKey,
     uiViewport: {

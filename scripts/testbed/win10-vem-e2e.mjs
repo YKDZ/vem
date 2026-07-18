@@ -3497,6 +3497,19 @@ function readJsonIfPresent(path) {
   }
 }
 
+function readFailureMatrixArtifacts(paths) {
+  if (!paths || typeof paths !== "object") return null;
+  const artifactKinds = ["report", "salePrepare", "saleComplete", "runtimeRecovery"];
+  return Object.fromEntries(
+    Object.entries(paths).map(([failureMode, entries]) => [
+      failureMode,
+      Object.fromEntries(
+        artifactKinds.map((kind) => [kind, readJsonIfPresent(entries?.[kind])]),
+      ),
+    ]),
+  );
+}
+
 const REDACTED = "[REDACTED]";
 const REDACTED_KEY = "[REDACTED_KEY]";
 const SENSITIVE_REPORT_KEY_PATTERN =
@@ -4151,6 +4164,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
   serialConformance,
   expectedRunnerPublicKey,
   expectedAdapterIdentity,
+  failureArtifacts = null,
+  requireFailureArtifacts = false,
 } = {}) {
   const diagnostics = [];
   const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
@@ -4361,9 +4376,13 @@ export function evaluateSimulatedHardwareSerialEvidence({
         failure?.daemonFailClosed?.hardwareOnline === false &&
         failure?.daemonFailClosed?.readyzObserved === true &&
         failure?.daemonFailClosed?.saleBindingCreated === false &&
-        Array.isArray(failure?.daemonFailClosed?.capabilityBlockerCodes) &&
-        failure.daemonFailClosed.capabilityBlockerCodes.length === 1 &&
-        failure.daemonFailClosed.capabilityBlockerCodes[0] ===
+        Array.isArray(failure?.daemonFailClosed?.readinessBlockingCodes) &&
+        failure.daemonFailClosed.readinessBlockingCodes.length === 1 &&
+        failure.daemonFailClosed.readinessBlockingCodes[0] ===
+          "LOWER_CONTROLLER_UNAVAILABLE" &&
+        Array.isArray(failure?.daemonFailClosed?.responseBlockingCodes) &&
+        failure.daemonFailClosed.responseBlockingCodes.length === 1 &&
+        failure.daemonFailClosed.responseBlockingCodes[0] ===
           "LOWER_CONTROLLER_UNAVAILABLE";
       return (
         failure?.result === "observed_failure" &&
@@ -4396,6 +4415,58 @@ export function evaluateSimulatedHardwareSerialEvidence({
       serialAcceptanceDiagnostic(
         "guest_serial_lifecycle_evidence_required",
         "Acceptance requires idempotent serial-session cleanup and the complete observed failure matrix before hardware readiness can be asserted.",
+      ),
+    );
+  }
+  const malformedFrame = failureByMode.get("malformed-frame");
+  const scannerTimeout = failureByMode.get("scanner-timeout");
+  const dispenseFailed = failureByMode.get("dispense-failed");
+  const dispenseFailedSale =
+    failureArtifacts?.["dispense-failed"]?.saleComplete?.simulatedHardwareSaleFlow ??
+    failureArtifacts?.["dispense-failed"]?.saleComplete ??
+    null;
+  const dispenseFailedSaleFacts = dispenseFailedSale?.sale ?? null;
+  const dispenseFailedPlatform = dispenseFailedSale?.platformState ?? null;
+  const dispenseFailedOutcomeValid =
+    dispenseFailedSale?.phase === "complete" &&
+    dispenseFailed?.orderId &&
+    dispenseFailed?.paymentId &&
+    dispenseFailed?.vendingCommandId &&
+    dispenseFailedSaleFacts?.orderId === dispenseFailed.orderId &&
+    dispenseFailedSaleFacts?.paymentId === dispenseFailed.paymentId &&
+    dispenseFailedSaleFacts?.vendingCommandId === dispenseFailed.vendingCommandId &&
+    ["succeeded", "refund_pending", "refunded"].includes(
+      String(dispenseFailedSaleFacts?.paymentStatus ?? ""),
+    ) &&
+    ["dispense_failed", "refund_pending", "refunded", "manual_handling"].includes(
+      String(dispenseFailedSaleFacts?.orderStatus ?? ""),
+    ) &&
+    dispenseFailedSaleFacts?.customerResult !== "success" &&
+    dispenseFailedSaleFacts?.dispenseSucceeded !== true &&
+    dispenseFailedPlatform?.fulfillmentStatus === "dispense_failed" &&
+    dispenseFailedPlatform?.stockMovementAccepted !== true &&
+    dispenseFailedPlatform?.postSaleDispenseMovement?.status === "missing" &&
+    dispenseFailedPlatform?.postSaleDispenseMovement?.movementId == null;
+  if (requireFailureArtifacts && !dispenseFailedOutcomeValid) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "serial_failure_authority_missing",
+        "Issue20 requires authoritative daemon/platform failure evidence showing post-payment dispense faults end in refund or manual handling without success, accepted stock movement, or inventory decrement.",
+      ),
+    );
+  }
+  const scannerFailureAtomic =
+    malformedFrame?.orderId === sale?.orderId &&
+    malformedFrame?.paymentId === sale?.paymentId &&
+    malformedFrame?.vendingCommandId === sale?.vendingCommandId &&
+    scannerTimeout?.orderId &&
+    scannerTimeout?.paymentId &&
+    !Object.hasOwn(scannerTimeout ?? {}, "vendingCommandId");
+  if (requireFailureArtifacts && !scannerFailureAtomic) {
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "serial_scanner_failure_atomicity_missing",
+        "Issue20 requires malformed scanner evidence to stay bound to the successful sale and timeout evidence to stop before any vending command is created.",
       ),
     );
   }
@@ -4434,6 +4505,37 @@ export function evaluateSimulatedHardwareSerialEvidence({
               vendingCommandId: record.saleBinding?.vendingCommandId ?? null,
             }))
           : [],
+      },
+      issue20FailureMatrix: {
+        malformedFrame: malformedFrame
+          ? {
+              orderId: malformedFrame.orderId ?? null,
+              paymentId: malformedFrame.paymentId ?? null,
+              vendingCommandId: malformedFrame.vendingCommandId ?? null,
+            }
+          : null,
+        scannerTimeout: scannerTimeout
+          ? {
+              orderId: scannerTimeout.orderId ?? null,
+              paymentId: scannerTimeout.paymentId ?? null,
+              vendingCommandId: scannerTimeout.vendingCommandId ?? null,
+            }
+          : null,
+        dispenseFailed:
+          dispenseFailed && dispenseFailedSale
+            ? {
+                orderId: dispenseFailed.orderId ?? null,
+                paymentId: dispenseFailed.paymentId ?? null,
+                vendingCommandId: dispenseFailed.vendingCommandId ?? null,
+                orderStatus: dispenseFailedSaleFacts?.orderStatus ?? null,
+                paymentStatus: dispenseFailedSaleFacts?.paymentStatus ?? null,
+                fulfillmentStatus: dispenseFailedPlatform?.fulfillmentStatus ?? null,
+                stockMovementAccepted:
+                  dispenseFailedPlatform?.stockMovementAccepted ?? null,
+                movementStatus:
+                  dispenseFailedPlatform?.postSaleDispenseMovement?.status ?? null,
+              }
+            : null,
       },
     },
   };
@@ -4677,11 +4779,17 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleIpcRecovery = stepMap.get("installed kiosk sale ipc recovery");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const delayedPickup = stepMap.get("delayed pickup native audio live sale");
+  const failureArtifacts = readFailureMatrixArtifacts(plan?.artifacts?.failureMatrix);
   const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
     expectedRunnerPublicKey: plan.serialRunnerExpectedPublicKey,
     expectedAdapterIdentity: plan.expectedAdapterIdentity,
+    failureArtifacts,
+    requireFailureArtifacts:
+      saleFlow?.status === "passed" &&
+      saleFlow?.parsed != null &&
+      plan?.artifacts?.failureMatrix != null,
   });
   const normalSaleEvidence = evaluateInstalledKioskSaleEvidence(
     saleNormal,

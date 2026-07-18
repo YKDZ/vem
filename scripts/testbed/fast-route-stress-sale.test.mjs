@@ -209,6 +209,17 @@ function validEvidence() {
         fromRoute: "#/checkout",
         finalRoute: "#/checkout",
         at: "2026-07-18T04:00:00.100Z",
+        transactionOrderNo: "ORD-1",
+      },
+      {
+        type: "navigation",
+        intentType: "transaction.projection",
+        decision: "accepted",
+        reasonCode: "transaction_projection",
+        fromRoute: "#/checkout",
+        finalRoute: "#/payment",
+        at: "2026-07-18T04:00:00.150Z",
+        transactionOrderNo: "ORD-1",
       },
       {
         type: "transaction_surface",
@@ -404,6 +415,8 @@ describe("fast route stress sale tracer", () => {
     assert.equal(summary.platformStockDeltaAfterF2, -1);
     assert.equal(summary.daemonStockDeltaAfterF2, -1);
     assert.equal(summary.saleStartCapabilityRevision, 7);
+    assert.equal(summary.projectionRefreshReason, "transaction_projection");
+    assert.equal(summary.projectionRefreshRoute, "#/payment");
     assert.deepEqual(summary.uiViewport, { width: 1080, height: 1920 });
     assert.deepEqual(summary.runtimeTraceCorrelation.rawFrames, [
       { parsedOpcode: "F0", rawFrameHex: "55F0" },
@@ -515,6 +528,17 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /payment -> F0 -> F1 -> F2 -> result/,
+    );
+  });
+
+  it("fails closed when the real transaction projection refresh is missing after Vision departure", () => {
+    const evidence = validEvidence();
+    evidence.runtimeTrace = evidence.runtimeTrace.filter(
+      (entry) => entry.intentType !== "transaction.projection",
+    );
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /real transaction projection refresh/,
     );
   });
 

@@ -850,7 +850,7 @@ describe("simulated hardware serial acceptance evidence", () => {
             return { status: 0 };
           },
           runRemote(_options, script) {
-            if (script.includes("scannerAdapter = 'serial_text'")) {
+            if (script.includes("/v1/hardware-bindings")) {
               calls.push("serial activation");
               return {
                 lowerControllerPort: "COM1",
@@ -858,11 +858,12 @@ describe("simulated hardware serial acceptance evidence", () => {
                 health: { hardwareOnline: true, scannerOnline: true },
               };
             }
-            if (script.includes("acceptance_overlay_cdp")) {
+            if (script.includes("original_vem_machine_ui_task")) {
               calls.push("cleanup");
               return {
+                restored: "original_vem_machine_ui_task",
                 daemonRunning: true,
-                cdpListenerCount: 1,
+                cdpListenerCount: 0,
                 normal: {
                   processId: 4243,
                   principal: "VEM\\VEMKiosk",
@@ -873,14 +874,11 @@ describe("simulated hardware serial acceptance evidence", () => {
                     exists: true,
                     enabled: true,
                     runAsUser: "VEMKiosk",
-                    acceptanceOverlayCdp: true,
-                    launcher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
+                    execute: "C:\\Windows\\System32\\wscript.exe",
+                    arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
+                    workingDirectory: "C:\\VEM\\bringup",
                   },
-                  acceptanceOverlayCdp: true,
-                  cdpListenerCount: 1,
-                  cdpListenerProcessId: 5151,
-                  cdpListenerSessionId: 1,
-                  cdpMachineAncestorProcessId: 4243,
+                  cdpListenerCount: 0,
                   route: "#/catalog",
                   routeEvidence: {
                     source: "acceptance_overlay_cdp",
@@ -908,6 +906,12 @@ describe("simulated hardware serial acceptance evidence", () => {
                 principal: "VEM\\VEMKiosk",
                 sessionId: 1,
                 executablePath: "C:\\VEM\\bringup\\machine.exe",
+                task: {
+                  name: "VEMMachineUI",
+                  execute: "C:\\Windows\\System32\\wscript.exe",
+                  arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
+                  workingDirectory: "C:\\VEM\\bringup",
+                },
               },
               machine: {
                 principal: "VEM\\VEMKiosk",
@@ -924,13 +928,6 @@ describe("simulated hardware serial acceptance evidence", () => {
             assert.equal(
               options.expectedRuntimeAttestation.targetId,
               "debug-target",
-            );
-            assert.ok(
-              options.steps.some(
-                (step) =>
-                  step.type === "route-action" &&
-                  step.stimulus === "history-back",
-              ),
             );
             assert.equal(
               options.tunnelOptions.sshKnownHostsPath,
@@ -951,29 +948,25 @@ describe("simulated hardware serial acceptance evidence", () => {
                   forbiddenRoutes: ["/catalog"],
                   allowedRoutes: ["/payment", "/dispensing", "/result"],
                 },
-                {
-                  type: "route-action",
-                  stimulus: "history-back",
-                  routeBefore: "#/payment",
-                  routeAfter: "#/payment",
-                  triggerAcknowledged: true,
-                },
-                {
-                  type: "route-disturbance",
-                  disturbance: "catalog_refresh",
-                  injection: {
-                    injectionId: "browser-injection-catalog-1",
-                    kind: "catalog_refresh",
-                    count: 1,
-                    outcome: "completed",
-                    pressure: {
-                      refreshedState: "catalog",
-                      attemptedRoute: "/catalog",
-                      resolvedRoute: "/payment",
-                      routeAuthorityWon: true,
+                ...options.steps
+                  .filter((step) => step.type === "external-operation")
+                  .map((step, index) => ({
+                    type: "external-operation",
+                    operation: step.operation,
+                    routeBefore: "#/payment",
+                    routeAfter: "#/payment",
+                    provenance: {
+                      guestOperationId: `guest-operation-${index + 1}`,
+                      adapterSessionId: "adapter-session-180",
+                      daemon: {
+                        source: "installed-daemon",
+                        orderNo: "ORDER-NO-180",
+                      },
+                      platform: { source: "ephemeral-platform" },
+                      serial: { source: "host-serial-adapter" },
+                      vision: { source: "installed-vision-adapter" },
                     },
-                  },
-                },
+                  })),
                 {
                   type: "checkpoint",
                   label: "continuous",
@@ -1023,7 +1016,6 @@ describe("simulated hardware serial acceptance evidence", () => {
       );
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
       assert.equal(report.cleanup.status, "passed");
-      assert.equal(report.cleanup.normal.acceptanceOverlayCdp, true);
       assert.equal(
         report.cleanup.normal.routeEvidence.settledRoute,
         "#/catalog",
@@ -1200,6 +1192,82 @@ describe("simulated hardware serial acceptance evidence", () => {
       JSON.stringify(evidence.diagnostics),
     );
     assert.deepEqual(evidence.diagnostics, []);
+  });
+
+  it("requires authoritative refund or manual-handling evidence for post-payment dispense failure", () => {
+    const input = completedSerialSaleEvidence();
+    const dispenseFailed = input.serialConformance.failureMatrix.find(
+      (entry) => entry.failureMode === "dispense-failed",
+    );
+
+    const passed = evaluateSimulatedHardwareSerialEvidence({
+      ...input,
+      requireFailureArtifacts: true,
+      failureArtifacts: {
+        "dispense-failed": {
+          saleComplete: {
+            simulatedHardwareSaleFlow: {
+              phase: "complete",
+              sale: {
+                orderId: dispenseFailed.orderId,
+                paymentId: dispenseFailed.paymentId,
+                vendingCommandId: dispenseFailed.vendingCommandId,
+                orderStatus: "manual_handling",
+                paymentStatus: "succeeded",
+                customerResult: "manual_handling",
+                dispenseSucceeded: false,
+              },
+              platformState: {
+                fulfillmentStatus: "dispense_failed",
+                stockMovementAccepted: false,
+                postSaleDispenseMovement: {
+                  status: "missing",
+                  movementId: null,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    assert.equal(passed.status, "passed", JSON.stringify(passed.diagnostics));
+
+    const failed = evaluateSimulatedHardwareSerialEvidence({
+      ...input,
+      requireFailureArtifacts: true,
+      failureArtifacts: {
+        "dispense-failed": {
+          saleComplete: {
+            simulatedHardwareSaleFlow: {
+              phase: "complete",
+              sale: {
+                orderId: dispenseFailed.orderId,
+                paymentId: dispenseFailed.paymentId,
+                vendingCommandId: dispenseFailed.vendingCommandId,
+                orderStatus: "fulfilled",
+                paymentStatus: "succeeded",
+                customerResult: "success",
+                dispenseSucceeded: true,
+              },
+              platformState: {
+                fulfillmentStatus: "dispensed",
+                stockMovementAccepted: true,
+                postSaleDispenseMovement: {
+                  status: "accepted",
+                  movementId: "MOVEMENT-ATTACKER",
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    assert.equal(failed.status, "failed");
+    assert.ok(
+      failed.diagnostics.some(
+        (diagnostic) => diagnostic.code === "serial_failure_authority_missing",
+      ),
+    );
   });
 
   it("rejects serial frames relabeled after sale completion", () => {
@@ -2155,7 +2223,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("requires the exact protected GitHub gate and runner identity before secret media can be opened", () => {
+  it("keeps factory personalization trust isolated from the active Windows gate", () => {
     const trusted = {
       GITHUB_ACTIONS: "true",
       GITHUB_EVENT_NAME: "workflow_dispatch",
@@ -2180,13 +2248,14 @@ describe("win10-vem-e2e reset planning", () => {
       "vem-factory-01",
     );
     const workflow = readFileSync(
-      ".github/workflows/factory-image-acceptance.yml",
+      ".github/workflows/vm-runtime-acceptance.yml",
       "utf8",
     );
-    assert.match(workflow, /environment: vem-factory-production/);
-    assert.match(workflow, /VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME/);
-    assert.match(workflow, /VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH/);
-    assert.doesNotMatch(workflow, /VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON/);
+    assert.doesNotMatch(workflow, /factory-image-acceptance/i);
+    assert.doesNotMatch(
+      workflow,
+      /VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME|VEM_FACTORY_IMAGE_ACCEPTANCE_INPUT_PATH/,
+    );
     for (const environment of [
       { ...trusted, VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: "" },
       { ...trusted, VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: "other-runner" },
@@ -4443,7 +4512,7 @@ if ($errors.Count -gt 0) {
     );
   });
 
-  it("plans VM runtime acceptance from an approved preclaim base", () => {
+  it("plans VM runtime acceptance from runtime-base and certificate SSH only", () => {
     const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
     try {
       const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
@@ -4476,7 +4545,7 @@ if ($errors.Count -gt 0) {
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
           "mqtt://127.0.0.1:1883",
-          "--factory-guest-endpoint-json",
+          "--runtime-guest-endpoint-json",
           JSON.stringify({
             transport: "testbed-runner-direct",
             protocol: "ssh",
@@ -4545,7 +4614,6 @@ if ($errors.Count -gt 0) {
       assert.deepEqual(
         plan.steps.map((step) => step.name),
         [
-          "approved preclaim base verification",
           "ephemeral platform setup",
           "runtime acceptance",
           "installed kiosk sale normal",
@@ -4556,27 +4624,35 @@ if ($errors.Count -gt 0) {
           "delayed pickup native audio live sale",
         ],
       );
-      assert.equal(plan.artifacts.source, "approved-preclaim-base");
-      assert.equal(plan.steps[0].mode, "factory-preclaim-verify");
-      assert.equal(commandArg(plan.steps[0].command, "--remote"), undefined);
+      assert.equal(plan.artifacts.source, "runtime-base");
+      const runtimeStep = plan.steps.find(
+        (step) => step.name === "runtime acceptance",
+      );
+      const normalSaleStep = plan.steps.find(
+        (step) => step.name === "installed kiosk sale normal",
+      );
+      const scannerSaleStep = plan.steps.find(
+        (step) => step.name === "installed kiosk sale scanner payment-code",
+      );
+      const competitionSaleStep = plan.steps.find(
+        (step) => step.name === "installed kiosk sale route competition",
+      );
+      const ipcRecoverySaleStep = plan.steps.find(
+        (step) => step.name === "installed kiosk sale ipc recovery",
+      );
+      assert.equal(commandArg(runtimeStep.command, "--remote"), "YKDZ@10.91.2.10");
       assert.equal(
-        commandArg(plan.steps[0].command, "--factory-guest-endpoint-json"),
-        JSON.stringify({
-          transport: "testbed-runner-direct",
-          protocol: "ssh",
-          host: "10.91.2.10",
-          port: 22,
-          reachability: "discovered",
-        }),
+        commandArg(runtimeStep.command, "--runtime-guest-endpoint-json"),
+        undefined,
       );
       assert.equal(
-        commandArg(plan.steps[0].command, "--ssh-host-key-alias"),
+        commandArg(runtimeStep.command, "--ssh-host-key-alias"),
         "vem-runtime-run-181",
       );
-      assert.equal(plan.steps[1].command[0], "pnpm");
-      assert.deepEqual(plan.steps[1].cwd, "apps/service-api");
+      assert.equal(plan.steps[0].command[0], "pnpm");
+      assert.deepEqual(plan.steps[0].cwd, "apps/service-api");
       assert.ok(
-        plan.steps[1].command.includes("--allow-ephemeral-target"),
+        plan.steps[0].command.includes("--allow-ephemeral-target"),
         "ephemeral setup must carry explicit safety flags",
       );
       assert.equal(
@@ -4586,21 +4662,26 @@ if ($errors.Count -gt 0) {
         true,
       );
       assert.ok(
-        plan.steps[1].command.includes("--allow-mock-payment"),
+        plan.steps[0].command.includes("--allow-mock-payment"),
         "ephemeral setup must carry explicit mock-payment acknowledgement",
       );
-      assert.equal(plan.steps[3].mode, "installed-kiosk-sale");
       assert.equal(
-        commandArg(plan.steps[2].command, "--ephemeral-platform-evidence"),
+        commandArg(runtimeStep.command, "--ephemeral-platform-evidence"),
         plan.artifacts.ephemeralPlatformEvidence,
       );
-      assert.equal(plan.steps[2].command.includes("--already-claimed"), false);
       assert.equal(
-        commandArg(plan.steps[5].command, "--ephemeral-platform-evidence"),
+        runtimeStep.command.includes("--already-claimed"),
+        false,
+      );
+      assert.equal(
+        commandArg(ipcRecoverySaleStep.command, "--ephemeral-platform-evidence"),
         plan.artifacts.ephemeralPlatformEvidence,
       );
-      assert.equal(plan.steps[5].command.includes("--already-claimed"), true);
-      for (const saleStep of [plan.steps[3], plan.steps[4]]) {
+      assert.equal(
+        ipcRecoverySaleStep.command.includes("--already-claimed"),
+        true,
+      );
+      for (const saleStep of [normalSaleStep, scannerSaleStep]) {
         assert.deepEqual(
           JSON.parse(
             commandArg(saleStep.command, "--maintenance-relay-session-json"),
@@ -4619,17 +4700,18 @@ if ($errors.Count -gt 0) {
         );
       }
       assert.equal(
-        plan.steps[3].ephemeralPlatformEvidence,
+        normalSaleStep.ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(
-        plan.steps[4].ephemeralPlatformEvidence,
+        scannerSaleStep.ephemeralPlatformEvidence,
         plan.artifacts.ephemeralPlatformEvidence,
       );
+      assert.equal(competitionSaleStep.mode, "installed-kiosk-sale");
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
       assert.deepEqual(plan.ci.requiredSecrets, []);
       assert.deepEqual(plan.ci.requiredCredentials, [
-        "approved-preclaim-base",
+        "runtime-base",
         "certificate-only-ssh",
       ]);
       assert.equal(
@@ -4663,7 +4745,7 @@ if ($errors.Count -gt 0) {
           "http://127.0.0.1:26849/api",
           "--ephemeral-mqtt-url",
           "mqtt://127.0.0.1:1883",
-          "--factory-guest-endpoint-json",
+          "--runtime-guest-endpoint-json",
           JSON.stringify({
             transport: "wireguard",
             protocol: "ssh",
@@ -6274,7 +6356,7 @@ if ($errors.Count -gt 0) {
     });
   });
 
-  it("fails runtime acceptance when approved preclaim evidence lacks the expected schema or kind", () => {
+  it("does not expose removed approved-preclaim readiness in runtime reports", () => {
     const plan = buildVmRuntimeAcceptancePlan({
       runId: "RUN-184",
       platformTarget: "ephemeral-run-184",
@@ -6285,45 +6367,12 @@ if ($errors.Count -gt 0) {
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     });
-
-    for (const parsed of [
-      { ok: true, kind: "factory-preclaim-verification" },
-      { ok: true, schemaVersion: "factory-preclaim-verification/v1" },
-      {
-        ok: true,
-        schemaVersion: "factory-preclaim-verification/v0",
-        kind: "factory-preclaim-verification",
-      },
-      {
-        ok: true,
-        schemaVersion: "factory-preclaim-verification/v1",
-        kind: "unexpected-preclaim-evidence",
-      },
-    ]) {
-      const report = buildVmRuntimeAcceptanceReport({
-        plan,
-        steps: [
-          {
-            ...plan.steps[0],
-            status: "passed",
-            parsed,
-            error: null,
-          },
-        ],
-      });
-
-      assert.deepEqual(report.finalReadiness.approvedPreclaimBase, {
-        status: "failed",
-        asserted: false,
-      });
-      assert.equal(report.preparationVerifierStatus, "failed");
-      assert.equal(report.ok, false);
-      assert.ok(
-        report.diagnostics.some(
-          (diagnostic) => diagnostic.code === "factory-preclaim-verify_invalid",
-        ),
-      );
-    }
+    const report = buildVmRuntimeAcceptanceReport({ plan, steps: [] });
+    assert.equal(report.preparationVerifierStatus, "not_asserted");
+    assert.equal(
+      Object.hasOwn(report.finalReadiness, "approvedPreclaimBase"),
+      false,
+    );
   });
 
   it("propagates run-scoped certificate SSH trust to every VM acceptance child command", () => {
@@ -6342,9 +6391,7 @@ if ($errors.Count -gt 0) {
       sshHostKeyAlias: "vem-runtime-run-183",
     });
     for (const step of plan.steps.filter((step) =>
-      ["approved preclaim base verification", "runtime acceptance"].includes(
-        step.name,
-      ),
+      ["runtime acceptance", "post-sale runtime acceptance"].includes(step.name),
     )) {
       assert.equal(commandArg(step.command, "--ssh-port"), "22022");
       assert.equal(
