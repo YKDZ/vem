@@ -510,8 +510,19 @@ $config = Get-Content -Raw (Join-Path $mediaRoot "baseline-config.json") | Conve
 ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
-& (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
-& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -VirtioGpuDriverPath (Join-Path $mediaRoot $config.virtioGpuDriverDirectory) -VirtioGpuDriverIdentityPath (Join-Path $mediaRoot $config.virtioGpuDriverIdentityFile) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+try {
+  & (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
+  & (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -VirtioGpuDriverPath (Join-Path $mediaRoot $config.virtioGpuDriverDirectory) -VirtioGpuDriverIdentityPath (Join-Path $mediaRoot $config.virtioGpuDriverIdentityFile) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+} catch {
+  @{
+    schemaVersion = "win10-kvm-bootstrap-failure/v1"
+    failedAt = (Get-Date).ToUniversalTime().ToString("o")
+    message = $_.Exception.Message
+    type = $_.Exception.GetType().FullName
+    stack = $_.ScriptStackTrace
+  } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 "C:\\ProgramData\\WindowsRuntimeBaseline\\bootstrap-failure.json"
+  throw
+}
 `;
 }
 

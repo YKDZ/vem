@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 # Direct physical SSH host preparation invokes this shared entrypoint with only
 # WebView2 and administrator-key inputs; it deliberately has no VM devices.
 $baselineRoot = "C:\ProgramData\WindowsRuntimeBaseline"
@@ -63,7 +64,19 @@ Invoke-WebRequest -UseBasicParsing -Uri $WebView2InstallerUri -OutFile $webView2
 $webView2 = Start-Process -FilePath $webView2Installer -ArgumentList "/silent", "/install" -Wait -PassThru
 if ($webView2.ExitCode -ne 0) { throw "WebView2 installer failed with exit code $($webView2.ExitCode)" }
 
-Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  try {
+    Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
+  } catch {
+    if ($attempt -eq 3) { throw }
+    Start-Sleep -Seconds 10
+    continue
+  }
+  $openSsh = Get-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0"
+  if ([string]$openSsh.State -eq "Installed") { break }
+  if ($attempt -eq 3) { throw "OpenSSH Server capability did not reach Installed state" }
+  Start-Sleep -Seconds 10
+}
 Set-BaselineService -Name "sshd"
 $administratorsKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
 Copy-Item -Force $AuthorizedKeysPath $administratorsKeys

@@ -2194,6 +2194,11 @@ await new Promise(() => setInterval(() => {}, 1_000));
         bootstrapScript(),
         /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
       );
+      assert.match(
+        bootstrapScript(),
+        /win10-kvm-bootstrap-failure\/v1/,
+      );
+      assert.match(bootstrapScript(), /bootstrap-failure\.json/);
       assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
       assert.deepEqual(commands[0], [
         "xorriso",
@@ -2288,6 +2293,9 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(shared, /W32Time/);
     assert.match(shared, /Stop-Service/);
     assert.match(shared, /OpenSSH\.Server/);
+    assert.match(shared, /\$ProgressPreference = "SilentlyContinue"/);
+    assert.match(shared, /for \(\$attempt = 1; \$attempt -le 3;/);
+    assert.match(shared, /did not reach Installed state/);
     assert.match(shared, /Direct physical SSH host preparation/);
     assert.doesNotMatch(
       shared,
