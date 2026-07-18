@@ -36,7 +36,14 @@ describe("VM runtime acceptance workflow", () => {
       (workflow.match(/flock "\$VEM_VM_HOST_LOCK_PATH"/g) ?? []).length,
       2,
     );
-    assert.equal((workflow.match(/toolchain: 1\.96\.0/g) ?? []).length, 2);
+    assert.equal(
+      (
+        workflow.match(
+          /RUSTUP_TOOLCHAIN: 1\.96\.0-x86_64-unknown-linux-gnu/g,
+        ) ?? []
+      ).length,
+      2,
+    );
     assert.doesNotMatch(
       workflow,
       /Acquire Host Global Lock|Release Host Global Lock/,
@@ -46,6 +53,17 @@ describe("VM runtime acceptance workflow", () => {
       /docker run|postgres:|mosquitto|win10-vem-e2e|build-windows-runtime-artifacts/,
     );
     assert.doesNotMatch(workflow, /2\.22|192\.168\.|118\.25\.|VPS|admin-ui/i);
+  });
+
+  it("uses the pre-provisioned host Rust toolchain without downloading it per run", () => {
+    assert.doesNotMatch(workflow, /dtolnay\/rust-toolchain/);
+    assert.match(
+      workflow,
+      /RUSTUP_TOOLCHAIN: 1\.96\.0-x86_64-unknown-linux-gnu/,
+    );
+    assert.match(workflow, /Verify cached host Rust toolchain/);
+    assert.match(workflow, /rustc 1\.96\.0/);
+    assert.match(workflow, /cargo 1\.96\.0/);
   });
 
   it("uploads only the bounded evidence bundle plus the clear-cache report without forbidden media", () => {
