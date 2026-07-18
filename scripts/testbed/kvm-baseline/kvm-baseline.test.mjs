@@ -511,6 +511,52 @@ await new Promise(() => setInterval(() => {}, 1_000));
 `;
 }
 
+function launchWindowCrashActivatorChildSource() {
+  return `
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const builder = await import(${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)});
+const linux = await import(${JSON.stringify(new URL("./linux-kvm-baseline.mjs", import.meta.url).href)});
+const [configPath, xvfbPath, viewerPath, statePath, crashRole] = process.argv.slice(2);
+const config = JSON.parse(readFileSync(configPath, "utf8"));
+const owner = await builder.createConstructionWorkspace(config, {
+  nextBuildId: () => "deadbeef",
+});
+const tracker = builder.createConstructionCommandTracker({ terminationGraceMs: 100 });
+const metadataPath = join(owner.systemStagingPath, linux.VNC_ACTIVATOR_METADATA_FILE);
+let launchIndex = 0;
+const startProcess = (...arguments_) => {
+  const handle = tracker.start(...arguments_);
+  launchIndex += 1;
+  const role = launchIndex === 1 ? "xvfb" : "viewer";
+  if (role === crashRole) {
+    process.kill(handle.child.pid, "SIGSTOP");
+    writeFileSync(statePath, JSON.stringify({ launchPid: handle.child.pid, metadataPath, owner, role }));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  }
+  return handle;
+};
+await linux.startHeadlessVncActivator({
+  domainName: owner.domainName,
+  libvirtUri: config.host.libvirtUri,
+  runCommand: async () => ({ stdout: ":29\\n", stderr: "" }),
+  startProcess,
+  commands: {
+    xvfb: process.execPath,
+    xvfbArguments: [xvfbPath],
+    viewer: process.execPath,
+    viewerArguments: [viewerPath],
+  },
+  environment: process.env,
+  metadataPath,
+  owner,
+  readinessDelayMs: 20,
+  termination: { termTimeoutMs: 100, killTimeoutMs: 500 },
+});
+writeFileSync(statePath, "unexpected completion");
+`;
+}
+
 function assertProcessIsNotRunning(pid) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -695,17 +741,21 @@ await new Promise(() => setInterval(() => {}, 1_000));
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v1");
       assert.deepEqual(metadata.owner, owner);
-      assert.equal(metadata.processes.xvfb.pid, xvfbPid);
-      assert.equal(metadata.processes.viewer.pid, viewerPid);
+      assert.notEqual(metadata.processes.xvfb.pid, xvfbPid);
+      assert.notEqual(metadata.processes.viewer.pid, viewerPid);
       for (const identity of Object.values(metadata.processes)) {
         assert.match(identity.startTimeTicks, /^\d+$/);
         assert.match(identity.executable, /^\//);
         assert.match(identity.commandLineSha256, /^[0-9a-f]{64}$/);
+        assert.doesNotThrow(() => process.kill(identity.pid, 0));
       }
       const stopStartedAt = Date.now();
       await activator.stop();
       assert.ok(Date.now() - stopStartedAt < 1_000);
       assert.equal(existsSync(metadataPath), false);
+      for (const identity of Object.values(metadata.processes)) {
+        assertProcessIsNotRunning(identity.pid);
+      }
       assert.throws(() => process.kill(xvfbPid, 0), /ESRCH/);
       assert.throws(() => process.kill(viewerPid, 0), /ESRCH/);
     } finally {
@@ -4020,8 +4070,11 @@ await writeFile(markerPath, "created");
     const viewerPath = join(root, "fake-viewer.mjs");
     const unrelatedPath = join(root, "unrelated.pid");
     const readyPath = join(root, "ready.json");
+    const xvfbTargetPath = join(root, "xvfb-target.pid");
+    const viewerTargetPath = join(root, "viewer-target.pid");
     let builderChild;
     let unrelated;
+    let targetPids = [];
     try {
       mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
       mkdirSync(dirname(config.storage.cacheDiskPath), { recursive: true });
@@ -4029,13 +4082,14 @@ await writeFile(markerPath, "created");
       writeFileSync(childPath, hardCrashActivatorChildSource());
       writeFileSync(
         xvfbPath,
-        'process.stdout.write("81\\n"); await new Promise(() => setInterval(() => {}, 1_000));\n',
+        'import { writeFileSync } from "node:fs"; writeFileSync(process.env.XVFB_TARGET_PATH, String(process.pid)); process.stdout.write("81\\n"); await new Promise(() => setInterval(() => {}, 1_000));\n',
       );
       writeFileSync(
         viewerPath,
         `
 import { writeFile } from "node:fs/promises";
 if (process.env.UNRELATED_PID_PATH) await writeFile(process.env.UNRELATED_PID_PATH, String(process.pid));
+if (process.env.VIEWER_TARGET_PATH) await writeFile(process.env.VIEWER_TARGET_PATH, String(process.pid));
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
       );
@@ -4046,7 +4100,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
       builderChild = spawn(
         process.execPath,
         [childPath, configPath, xvfbPath, viewerPath, readyPath],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        {
+          env: {
+            ...process.env,
+            VIEWER_TARGET_PATH: viewerTargetPath,
+            XVFB_TARGET_PATH: xvfbTargetPath,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       const deadline = Date.now() + 5_000;
       while (
@@ -4065,10 +4126,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
         (identity) => identity.pid,
       );
       const unrelatedPid = Number(readFileSync(unrelatedPath, "utf8"));
+      targetPids = [xvfbTargetPath, viewerTargetPath].map((path) =>
+        Number(readFileSync(path, "utf8")),
+      );
 
       builderChild.kill("SIGKILL");
       await once(builderChild, "exit");
-      for (const pid of activatorPids) {
+      for (const pid of [...activatorPids, ...targetPids]) {
         assert.doesNotThrow(() => process.kill(pid, 0));
       }
 
@@ -4081,7 +4145,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         },
       });
 
-      for (const pid of activatorPids) {
+      for (const pid of [...activatorPids, ...targetPids]) {
         assertProcessIsNotRunning(pid);
       }
       assert.doesNotThrow(() => process.kill(unrelatedPid, 0));
@@ -4097,8 +4161,277 @@ await new Promise(() => setInterval(() => {}, 1_000));
         unrelated.kill("SIGKILL");
         await once(unrelated, "exit");
       }
+      for (const pid of targetPids) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      }
       rmSync(root, { recursive: true, force: true });
     }
+    },
+  );
+
+  it(
+    "recovers an Xvfb launch stopped before durable identity publication without starting its target",
+    { timeout: 10_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-kvm-xvfb-launch-sigkill-"));
+      const config = buildConfig(root);
+      config.storage.cacheDiskPath = join(
+        root,
+        "cache",
+        "win10-runtime-cache.qcow2",
+      );
+      const configPath = join(root, "config.json");
+      const childPath = join(root, "launch-window-child.mjs");
+      const xvfbPath = join(root, "fake-xvfb.mjs");
+      const viewerPath = join(root, "fake-viewer.mjs");
+      const statePath = join(root, "launch-state.json");
+      const xvfbTargetPath = join(root, "xvfb-target.json");
+      const unrelatedPath = join(root, "unrelated.pid");
+      let builderChild;
+      let unrelated;
+      let launchPid;
+      try {
+        mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
+        mkdirSync(dirname(config.storage.cacheDiskPath), { recursive: true });
+        writeFileSync(configPath, JSON.stringify(config));
+        writeFileSync(childPath, launchWindowCrashActivatorChildSource());
+        writeFileSync(
+          xvfbPath,
+          `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.XVFB_TARGET_PATH, JSON.stringify({ pid: process.pid }));
+process.stdout.write("91\\n");
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+        );
+        writeFileSync(
+          viewerPath,
+          `
+import { writeFileSync } from "node:fs";
+if (process.env.UNRELATED_PID_PATH) writeFileSync(process.env.UNRELATED_PID_PATH, String(process.pid));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+        );
+        unrelated = spawn(process.execPath, [viewerPath], {
+          env: { ...process.env, UNRELATED_PID_PATH: unrelatedPath },
+          stdio: "ignore",
+        });
+        builderChild = spawn(
+          process.execPath,
+          [childPath, configPath, xvfbPath, viewerPath, statePath, "xvfb"],
+          {
+            env: { ...process.env, XVFB_TARGET_PATH: xvfbTargetPath },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        const deadline = Date.now() + 5_000;
+        while (
+          (!existsSync(statePath) || !existsSync(unrelatedPath)) &&
+          Date.now() < deadline
+        ) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        }
+        assert.equal(existsSync(statePath), true);
+        assert.equal(existsSync(unrelatedPath), true);
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        launchPid = state.launchPid;
+        assert.equal(existsSync(state.metadataPath), false);
+
+        builderChild.kill("SIGKILL");
+        await once(builderChild, "exit");
+        process.kill(launchPid, "SIGCONT");
+        const registrationDeadline = Date.now() + 2_000;
+        while (
+          !existsSync(state.metadataPath) &&
+          !existsSync(xvfbTargetPath) &&
+          Date.now() < registrationDeadline
+        ) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        }
+
+        const domains = new Set([state.owner.domainName]);
+        await recoverStaleConstructionDomains(config, {
+          runCommand: async (_command, args) => {
+            if (args[2] === "list") return { stdout: [...domains].join("\n") };
+            if (args[2] === "undefine") domains.delete(args[3]);
+            return { stdout: "" };
+          },
+        });
+
+        assertProcessIsNotRunning(launchPid);
+        assert.equal(existsSync(xvfbTargetPath), false);
+        assert.doesNotThrow(() =>
+          process.kill(Number(readFileSync(unrelatedPath, "utf8")), 0),
+        );
+        assert.equal(existsSync(state.owner.systemStagingPath), false);
+        assert.equal(existsSync(state.owner.cacheStagingPath), false);
+        assert.equal(domains.size, 0);
+      } finally {
+        if (
+          builderChild?.exitCode === null &&
+          builderChild.signalCode === null
+        ) {
+          builderChild.kill("SIGKILL");
+          await once(builderChild, "exit");
+        }
+        if (launchPid) {
+          try {
+            process.kill(launchPid, "SIGKILL");
+          } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+          }
+        }
+        if (unrelated?.exitCode === null && unrelated.signalCode === null) {
+          unrelated.kill("SIGKILL");
+          await once(unrelated, "exit");
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    "recovers a viewer launch stopped before durable identity publication without starting its target",
+    { timeout: 10_000 },
+    async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-kvm-viewer-launch-sigkill-"),
+      );
+      const config = buildConfig(root);
+      config.storage.cacheDiskPath = join(
+        root,
+        "cache",
+        "win10-runtime-cache.qcow2",
+      );
+      const configPath = join(root, "config.json");
+      const childPath = join(root, "launch-window-child.mjs");
+      const xvfbPath = join(root, "fake-xvfb.mjs");
+      const viewerPath = join(root, "fake-viewer.mjs");
+      const statePath = join(root, "launch-state.json");
+      const xvfbTargetPath = join(root, "xvfb-target.json");
+      const viewerTargetPath = join(root, "viewer-target.json");
+      const unrelatedPath = join(root, "unrelated.pid");
+      let builderChild;
+      let unrelated;
+      let launchPid;
+      let xvfbTargetPid;
+      try {
+        mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
+        mkdirSync(dirname(config.storage.cacheDiskPath), { recursive: true });
+        writeFileSync(configPath, JSON.stringify(config));
+        writeFileSync(childPath, launchWindowCrashActivatorChildSource());
+        writeFileSync(
+          xvfbPath,
+          `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.XVFB_TARGET_PATH, JSON.stringify({ pid: process.pid }));
+process.stdout.write("92\\n");
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+        );
+        writeFileSync(
+          viewerPath,
+          `
+import { writeFileSync } from "node:fs";
+if (process.env.UNRELATED_PID_PATH) writeFileSync(process.env.UNRELATED_PID_PATH, String(process.pid));
+if (process.env.VIEWER_TARGET_PATH) writeFileSync(process.env.VIEWER_TARGET_PATH, JSON.stringify({ pid: process.pid }));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+        );
+        unrelated = spawn(process.execPath, [viewerPath], {
+          env: { ...process.env, UNRELATED_PID_PATH: unrelatedPath },
+          stdio: "ignore",
+        });
+        builderChild = spawn(
+          process.execPath,
+          [childPath, configPath, xvfbPath, viewerPath, statePath, "viewer"],
+          {
+            env: {
+              ...process.env,
+              VIEWER_TARGET_PATH: viewerTargetPath,
+              XVFB_TARGET_PATH: xvfbTargetPath,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        const deadline = Date.now() + 5_000;
+        while (
+          (!existsSync(statePath) ||
+            !existsSync(unrelatedPath) ||
+            !existsSync(xvfbTargetPath)) &&
+          Date.now() < deadline
+        ) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        }
+        assert.equal(existsSync(statePath), true);
+        assert.equal(existsSync(unrelatedPath), true);
+        assert.equal(existsSync(xvfbTargetPath), true);
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        launchPid = state.launchPid;
+        xvfbTargetPid = JSON.parse(
+          readFileSync(xvfbTargetPath, "utf8"),
+        ).pid;
+        const beforeCrash = JSON.parse(
+          readFileSync(state.metadataPath, "utf8"),
+        );
+        assert.deepEqual(Object.keys(beforeCrash.processes), ["xvfb"]);
+
+        builderChild.kill("SIGKILL");
+        await once(builderChild, "exit");
+        process.kill(launchPid, "SIGCONT");
+        const registrationDeadline = Date.now() + 2_000;
+        while (Date.now() < registrationDeadline) {
+          const metadata = JSON.parse(
+            readFileSync(state.metadataPath, "utf8"),
+          );
+          if (metadata.processes.viewer) break;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        }
+
+        const domains = new Set([state.owner.domainName]);
+        await recoverStaleConstructionDomains(config, {
+          runCommand: async (_command, args) => {
+            if (args[2] === "list") return { stdout: [...domains].join("\n") };
+            if (args[2] === "undefine") domains.delete(args[3]);
+            return { stdout: "" };
+          },
+        });
+
+        assertProcessIsNotRunning(launchPid);
+        assertProcessIsNotRunning(xvfbTargetPid);
+        assert.equal(existsSync(viewerTargetPath), false);
+        assert.doesNotThrow(() =>
+          process.kill(Number(readFileSync(unrelatedPath, "utf8")), 0),
+        );
+        assert.equal(existsSync(state.owner.systemStagingPath), false);
+        assert.equal(existsSync(state.owner.cacheStagingPath), false);
+        assert.equal(domains.size, 0);
+      } finally {
+        if (
+          builderChild?.exitCode === null &&
+          builderChild.signalCode === null
+        ) {
+          builderChild.kill("SIGKILL");
+          await once(builderChild, "exit");
+        }
+        for (const pid of [launchPid, xvfbTargetPid]) {
+          if (!pid) continue;
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+          }
+        }
+        if (unrelated?.exitCode === null && unrelated.signalCode === null) {
+          unrelated.kill("SIGKILL");
+          await once(unrelated, "exit");
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
     },
   );
 

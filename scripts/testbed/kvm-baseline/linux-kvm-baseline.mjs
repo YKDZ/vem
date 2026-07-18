@@ -33,6 +33,82 @@ const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
 const CURRENT_MANIFEST_SCHEMA = "win10-kvm-baseline-current/v1";
 export const VNC_ACTIVATOR_METADATA_FILE = ".vnc-activator.json";
 const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v1";
+const VNC_LAUNCH_SUPERVISOR_READY =
+  "VEM_VNC_LAUNCH_SUPERVISOR_READY/v1";
+const VNC_LAUNCH_SUPERVISOR_SOURCE = String.raw`
+import { spawn } from "node:child_process";
+
+const module = await import(process.env.VEM_VNC_SUPERVISOR_MODULE);
+const registration = JSON.parse(
+  Buffer.from(
+    process.env.VEM_VNC_SUPERVISOR_REGISTRATION,
+    "base64",
+  ).toString("utf8"),
+);
+const target = JSON.parse(
+  Buffer.from(process.env.VEM_VNC_SUPERVISOR_TARGET, "base64").toString(
+    "utf8",
+  ),
+);
+const terminationGraceMs = Number(process.env.VEM_VNC_SUPERVISOR_GRACE_MS);
+await module.publishVncActivatorSupervisorIdentity({
+  ...registration,
+  pid: process.pid,
+});
+process.stdout.on("error", (error) => {
+  if (error.code !== "EPIPE") throw error;
+});
+process.stdout.write("VEM_VNC_LAUNCH_SUPERVISOR_READY/v1\n");
+
+let input = "";
+let targetChild = null;
+let stopping = false;
+const keepAlive = setInterval(() => {}, 1_000);
+const startRequested = new Promise((resolveStart) => {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    if (input.split(/\r?\n/, 1)[0] === "start") resolveStart();
+  });
+});
+
+const stop = async () => {
+  if (stopping) return;
+  stopping = true;
+  if (!targetChild) process.exit(0);
+  const targetExit = new Promise((resolveExit) =>
+    targetChild.once("exit", resolveExit),
+  );
+  if (targetChild.exitCode === null && targetChild.signalCode === null) {
+    targetChild.kill("SIGTERM");
+  }
+  const killTimer = setTimeout(() => {
+    if (targetChild.exitCode === null && targetChild.signalCode === null) {
+      targetChild.kill("SIGKILL");
+    }
+  }, terminationGraceMs);
+  await targetExit;
+  clearTimeout(killTimer);
+  process.exit(0);
+};
+process.on("SIGTERM", () => void stop());
+process.on("SIGINT", () => void stop());
+
+await startRequested;
+clearInterval(keepAlive);
+const targetEnvironment = { ...process.env };
+for (const key of Object.keys(targetEnvironment)) {
+  if (key.startsWith("VEM_VNC_SUPERVISOR_")) delete targetEnvironment[key];
+}
+targetChild = spawn(target.command, target.arguments, {
+  env: targetEnvironment,
+  stdio: ["ignore", "inherit", "inherit"],
+});
+targetChild.once("error", () => process.exit(1));
+targetChild.once("exit", (code, signal) => {
+  if (!stopping) process.exit(code ?? (signal ? 1 : 0));
+});
+`;
 const RELEASE_ARTIFACTS = Object.freeze({
   system: "system.qcow2",
   cache: "cache.qcow2",
@@ -616,6 +692,92 @@ export async function recoverHeadlessVncActivator({
   return { present: true, recovered: true };
 }
 
+export async function publishVncActivatorSupervisorIdentity({
+  metadataPath,
+  owner,
+  pid,
+  role,
+}) {
+  if (!["xvfb", "viewer"].includes(role)) {
+    throw new Error("VNC activator supervisor role is invalid");
+  }
+  const expectedMetadataPath = resolve(
+    string(owner?.systemStagingPath, "owner.systemStagingPath"),
+    VNC_ACTIVATOR_METADATA_FILE,
+  );
+  if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
+    throw new Error("VNC activator metadata must use its owned staging path");
+  }
+  let metadata = {
+    schemaVersion: VNC_ACTIVATOR_METADATA_SCHEMA,
+    owner,
+    processes: {},
+  };
+  try {
+    metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (
+    metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
+    !ownerMatches(metadata.owner, owner) ||
+    !metadata.processes ||
+    Object.keys(metadata.processes).some(
+      (observedRole) => !["xvfb", "viewer"].includes(observedRole),
+    ) ||
+    Object.values(metadata.processes).some(
+      (identity) => !processIdentityShape(identity),
+    ) ||
+    metadata.processes[role]
+  ) {
+    throw new Error("VNC activator metadata cannot register this supervisor");
+  }
+  const identity = await readLinuxProcessIdentity(pid);
+  await writeJsonAtomicallyDurably(metadataPath, {
+    ...metadata,
+    processes: { ...metadata.processes, [role]: identity },
+  });
+  return identity;
+}
+
+function encodedSupervisorValue(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+}
+
+async function registeredSupervisorIdentity(handle, metadataPath, role) {
+  const ready = await firstLine(handle.child.stdout, 10_000);
+  if (ready !== VNC_LAUNCH_SUPERVISOR_READY) {
+    throw new Error(`${role} launch supervisor did not register durably`);
+  }
+  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  const identity = metadata.processes?.[role];
+  if (
+    !processIdentityShape(identity) ||
+    identity.pid !== handle.child.pid ||
+    !(await processIdentityMatches(identity))
+  ) {
+    throw new Error(`${role} launch supervisor identity is invalid`);
+  }
+  return identity;
+}
+
+function releaseSupervisor(handle, timeoutMs = 2_000) {
+  return new Promise((resolveRelease, rejectRelease) => {
+    const timeout = setTimeout(
+      () => rejectRelease(new Error("VNC launch supervisor release timed out")),
+      timeoutMs,
+    );
+    handle.child.stdin.write("start\n", (error) => {
+      clearTimeout(timeout);
+      if (error) {
+        rejectRelease(error);
+        return;
+      }
+      resolveRelease();
+    });
+  });
+}
+
 async function stopProcess(handle, identity, termination) {
   if (!handle) return;
   const childExit = new Promise((resolveExit) => {
@@ -723,15 +885,29 @@ export async function startHeadlessVncActivator({
       }
     });
   };
-  const writeMetadata = () =>
-    writeJsonAtomicallyDurably(metadataPath, {
-      schemaVersion: VNC_ACTIVATOR_METADATA_SCHEMA,
-      owner,
-      processes: {
-        ...(xvfbIdentity ? { xvfb: xvfbIdentity } : {}),
-        ...(viewerIdentity ? { viewer: viewerIdentity } : {}),
+  const startSupervisor = (role, command, arguments_, targetEnvironment) =>
+    startProcess(
+      process.execPath,
+      ["--input-type=module", "--eval", VNC_LAUNCH_SUPERVISOR_SOURCE],
+      {
+        env: {
+          ...targetEnvironment,
+          VEM_VNC_SUPERVISOR_GRACE_MS: String(
+            Math.max(1, Math.floor((termination.termTimeoutMs ?? 2_000) / 2)),
+          ),
+          VEM_VNC_SUPERVISOR_MODULE: import.meta.url,
+          VEM_VNC_SUPERVISOR_REGISTRATION: encodedSupervisorValue({
+            metadataPath,
+            owner,
+            role,
+          }),
+          VEM_VNC_SUPERVISOR_TARGET: encodedSupervisorValue({
+            command,
+            arguments: arguments_,
+          }),
+        },
       },
-    });
+    );
   let stopPromise;
   const stop = () => {
     if (!stopPromise) {
@@ -746,7 +922,8 @@ export async function startHeadlessVncActivator({
   };
 
   try {
-    xvfb = startProcess(
+    xvfb = startSupervisor(
+      "xvfb",
       xvfbCommand,
       [
         ...(commands.xvfbArguments ?? []),
@@ -758,23 +935,33 @@ export async function startHeadlessVncActivator({
         "-nolisten",
         "tcp",
       ],
-      { env: environment },
+      environment,
     );
     monitor(xvfb, "Xvfb");
-    xvfbIdentity = await readLinuxProcessIdentity(xvfb.child.pid);
-    await writeMetadata();
-    const displayNumber = await firstLine(xvfb.child.stdout, 10_000);
+    xvfbIdentity = await registeredSupervisorIdentity(
+      xvfb,
+      metadataPath,
+      "xvfb",
+    );
+    const displayLine = firstLine(xvfb.child.stdout, 10_000);
+    await releaseSupervisor(xvfb);
+    const displayNumber = await displayLine;
     if (!/^\d+$/.test(displayNumber)) {
       throw new Error("Xvfb returned an invalid display number");
     }
-    viewer = startProcess(
+    viewer = startSupervisor(
+      "viewer",
       viewerCommand,
       [...(commands.viewerArguments ?? []), endpoint],
-      { env: { ...environment, DISPLAY: `:${displayNumber}` } },
+      { ...environment, DISPLAY: `:${displayNumber}` },
     );
     monitor(viewer, "gvncviewer");
-    viewerIdentity = await readLinuxProcessIdentity(viewer.child.pid);
-    await writeMetadata();
+    viewerIdentity = await registeredSupervisorIdentity(
+      viewer,
+      metadataPath,
+      "viewer",
+    );
+    await releaseSupervisor(viewer);
     await Promise.race([
       failure,
       new Promise((resolveReady) =>
