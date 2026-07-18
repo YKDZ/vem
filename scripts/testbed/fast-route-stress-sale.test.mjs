@@ -871,6 +871,10 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /mock-payment-create-gate\/arm/);
     assert.match(implementation, /mock-payment-create-gate\/status/);
     assert.match(implementation, /mock-payment-create-gate\/release/);
+    assert.match(
+      implementation,
+      /handoff\.commissioningSerialSession[\s\S]*commissioningSession \?\?[\s\S]*serial-sessions\/start/,
+    );
     assert.match(implementation, /release-f0/);
     assert.match(implementation, /platform-log/);
     assert.match(implementation, /snapshots:/);

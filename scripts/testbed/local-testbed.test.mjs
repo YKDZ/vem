@@ -1142,6 +1142,10 @@ describe("Windows D cache contract", () => {
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
+    const serialStart = guest.indexOf("$commissioningSerialSession = Start-TestbedCommissioningSerialSession");
+    const hardwareBinding = guest.indexOf("Initialize-TestbedHardwareBindings", serialStart);
+    assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
+    assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
     assert.match(
       guest,
       /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,

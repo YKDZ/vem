@@ -1753,7 +1753,10 @@ async function runFastRouteStressSale(options) {
     handoff = readJson(options.handoffPath, "handoff");
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
-    const saleCorrelationId = `sale-correlation://fast-route-${Date.now()}`;
+    const commissioningSession = handoff.commissioningSerialSession ?? null;
+    const saleCorrelationId =
+      commissioningSession?.saleCorrelationId ??
+      `sale-correlation://fast-route-${Date.now()}`;
     const steps = buildFastRouteStressScenarioSteps();
     createOrderGate = await armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
@@ -1761,6 +1764,23 @@ async function runFastRouteStressSale(options) {
       guestInput.hostControlPlane?.visionMockControlPort ??
         guestInput.visionMockControlPort,
     );
+    stage = "reuse-or-start-host-serial-session";
+    sessionStart =
+      commissioningSession ??
+      (await controlPlaneRequest(guestInput, "/v1/serial-sessions/start", {
+        runId,
+        machineCode,
+        saleCorrelationId,
+        targetIdentity: required(
+          guestInput.hostControlPlane?.targetIdentity,
+          "hostControlPlane.targetIdentity",
+        ),
+        runtimeBase: required(
+          guestInput.hostControlPlane?.runtimeBaseIdentity,
+          "hostControlPlane.runtimeBaseIdentity",
+        ),
+      }));
+    required(sessionStart.sessionId, "serial session id");
     stage = "connect-installed-tauri-cdp";
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
@@ -1786,24 +1806,6 @@ async function runFastRouteStressSale(options) {
         machineCode,
       })
     ).report;
-    stage = "start-host-serial-session";
-    sessionStart = await controlPlaneRequest(
-      guestInput,
-      "/v1/serial-sessions/start",
-      {
-        runId,
-        machineCode,
-        saleCorrelationId,
-        targetIdentity: required(
-          guestInput.hostControlPlane?.targetIdentity,
-          "hostControlPlane.targetIdentity",
-        ),
-        runtimeBase: required(
-          guestInput.hostControlPlane?.runtimeBaseIdentity,
-          "hostControlPlane.runtimeBaseIdentity",
-        ),
-      },
-    );
     checkpoints.push(
       await captureCheckpoint(client, "catalog", {
         screenshot: true,

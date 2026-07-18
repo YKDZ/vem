@@ -230,6 +230,23 @@ function Wait-RuntimeReady {
   throw "deployed production daemon did not become ready after claim: $lastError"
 }
 
+function Start-TestbedCommissioningSerialSession([object]$GuestInput) {
+  $controlPlane = $GuestInput.hostControlPlane
+  if ([string]::IsNullOrWhiteSpace([string]$controlPlane.endpoint) -or [string]::IsNullOrWhiteSpace([string]$controlPlane.token)) {
+    throw "guest input is missing host control plane credentials"
+  }
+  $body = [ordered]@{
+    runId = [string]$GuestInput.runId
+    machineCode = [string]$GuestInput.machineCode
+    saleCorrelationId = "sale-correlation://commissioning-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    targetIdentity = [string]$controlPlane.targetIdentity
+    runtimeBase = [string]$controlPlane.runtimeBaseIdentity
+  } | ConvertTo-Json -Compress
+  return Invoke-RestMethod -Method Post -Uri "$($controlPlane.endpoint)/v1/serial-sessions/start" `
+    -Headers @{ Authorization = "Bearer $($controlPlane.token)" } `
+    -ContentType "application/json" -Body $body -TimeoutSec 30
+}
+
 function Initialize-TestbedHardwareBindings {
   $readyPath = Join-Path $daemonDataRoot "daemon-ready.json"
   $ready = Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json
@@ -447,6 +464,8 @@ $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
 Write-TestbedPhase "claim-runtime"
 $claim = Invoke-Claim $guestInput
+Write-TestbedPhase "start-simulated-hardware"
+$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
 $runtimeReady = Wait-RuntimeReady
@@ -491,6 +510,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
   schemaVersion = "vem-installed-runtime-handoff/v1"
   machineCode = [string]$guestInput.machineCode
   claim = [ordered]@{ status = [string]$claim.status; machineCode = [string]$claim.machineCode }
+  commissioningSerialSession = $commissioningSerialSession
   daemon = [ordered]@{
     executablePath = $daemonEvidence.executablePath
     processId = $daemonEvidence.processId
