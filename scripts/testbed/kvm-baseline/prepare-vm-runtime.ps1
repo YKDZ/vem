@@ -523,7 +523,6 @@ function Get-BootIdentity {
 
 function Enable-InteractiveAutomaticLogon {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-  if ($InteractiveUser -cne "VEMKiosk") { throw "interactive display user must be VEMKiosk" }
   Set-ItemProperty -Path $winlogon -Name "DefaultUserName" -Value "VEMKiosk"
   Set-ItemProperty -Path $winlogon -Name "DefaultDomainName" -Value "."
   Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1"

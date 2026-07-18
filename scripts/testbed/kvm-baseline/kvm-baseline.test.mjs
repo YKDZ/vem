@@ -2685,7 +2685,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(
       runtime,
-      /InteractiveUser -cne "VEMKiosk"[\s\S]*DefaultUserName" -Value "VEMKiosk"/,
+      /DefaultUserName" -Value "VEMKiosk"/,
     );
     const rearmInteractiveDisplay = runtime.slice(
       runtime.indexOf("function Rearm-InteractiveDisplay"),
