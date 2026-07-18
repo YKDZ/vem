@@ -905,7 +905,7 @@ async fn run_hardware_health_watcher(
     }
 }
 
-async fn cache_daemon_events(
+pub(crate) async fn cache_daemon_events(
     mut events: broadcast::Receiver<DaemonEvent>,
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
@@ -954,9 +954,27 @@ async fn cache_daemon_events(
                     latest_diagnostic_payload,
                 };
             }
-            DaemonEvent::ScannerHealthChanged { snapshot, .. } => {
-                *status_cache.scanner.write().await =
-                    crate::events::scanner_health_snapshot_from_contract(snapshot)
+            DaemonEvent::ScannerHealthChanged {
+                runtime_generation,
+                snapshot,
+                ..
+            } => {
+                if let Some(context) = sale_start_context.as_ref() {
+                    let status_cache = status_cache.clone();
+                    let applied = context
+                        .scanner_runtime
+                        .apply_if_current_generation(runtime_generation, || async move {
+                            *status_cache.scanner.write().await =
+                                crate::events::scanner_health_snapshot_from_contract(snapshot);
+                        })
+                        .await;
+                    if !applied {
+                        continue;
+                    }
+                } else {
+                    *status_cache.scanner.write().await =
+                        crate::events::scanner_health_snapshot_from_contract(snapshot);
+                }
             }
             DaemonEvent::RuntimeReconfigureRequested { .. } => {
                 if let Some(shutdown) = runtime_shutdown.as_ref() {

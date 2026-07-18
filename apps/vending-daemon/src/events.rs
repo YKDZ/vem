@@ -29,6 +29,8 @@ pub enum DaemonEvent {
     ScannerHealthChanged {
         event_id: String,
         updated_at: String,
+        #[serde(skip)]
+        runtime_generation: u64,
         snapshot: ScannerRuntimeStatus,
     },
     ScannerCode {
@@ -145,11 +147,13 @@ mod tests {
         let event = DaemonEvent::ScannerHealthChanged {
             event_id: "evt-scanner".to_string(),
             updated_at: internal.updated_at.clone(),
+            runtime_generation: 1,
             snapshot: scanner_runtime_status_contract(&internal),
         };
 
         let value = serde_json::to_value(event).expect("event json");
         assert_eq!(value["type"], "scanner_health_changed");
+        assert!(value.get("runtimeGeneration").is_none());
         let snapshot: ScannerRuntimeStatus =
             serde_json::from_value(value["snapshot"].clone()).expect("generated scanner contract");
         assert_eq!(snapshot.code, "SCANNER_READY");

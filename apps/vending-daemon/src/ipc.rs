@@ -3170,6 +3170,35 @@ mod tests {
         })
     }
 
+    fn scanner_test_binding() -> LocalSerialRoleBinding {
+        LocalSerialRoleBinding {
+            identity: device_binding::StableSerialDeviceIdentity {
+                identity_key: "container:scanner-01".to_string(),
+                instance_id: Some("USB\\SCANNER-01".to_string()),
+                container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                hardware_ids: vec!["USB\\VID_1A86&PID_55D4".to_string()],
+                serial_number: Some("SCANNER-01".to_string()),
+            },
+            confirmed_at: "2026-07-17T00:00:00Z".to_string(),
+            confirmed_by: "field-operator".to_string(),
+            test_evidence_code: "SCANNER_READY".to_string(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_scanner_test_pty() -> (nix::pty::PtyMaster, String) {
+        use nix::{
+            fcntl::OFlag,
+            pty::{grantpt, posix_openpt, ptsname_r, unlockpt},
+        };
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open scanner pty");
+        grantpt(&master).expect("grant scanner pty");
+        unlockpt(&master).expect("unlock scanner pty");
+        let port = ptsname_r(&master).expect("scanner pty slave path");
+        (master, port)
+    }
+
     #[tokio::test]
     async fn clean_start_claim_persists_only_profile_cache_and_extracted_credentials() {
         let server = MockServer::start().await;
@@ -3308,18 +3337,7 @@ mod tests {
         ctx.runtime_sources
             .save_local_device_binding_if_revision(
                 LocalDeviceRole::Scanner,
-                LocalSerialRoleBinding {
-                    identity: device_binding::StableSerialDeviceIdentity {
-                        identity_key: "container:scanner-01".to_string(),
-                        instance_id: Some("USB\\SCANNER-01".to_string()),
-                        container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
-                        hardware_ids: vec!["USB\\VID_1A86&PID_55D4".to_string()],
-                        serial_number: Some("SCANNER-01".to_string()),
-                    },
-                    confirmed_at: "2026-07-17T00:00:00Z".to_string(),
-                    confirmed_by: "field-operator".to_string(),
-                    test_evidence_code: "SCANNER_READY".to_string(),
-                },
+                scanner_test_binding(),
                 &revision,
             )
             .await
@@ -3358,6 +3376,203 @@ mod tests {
             .expect("settings")
             .scanner_binding
             .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn queued_old_scanner_ready_cannot_cross_clear_and_new_generation_ready_is_accepted() {
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        tokio::fs::write(
+            temp.path().join("runtime-bootstrap.json"),
+            serde_json::json!({ "schemaVersion": 1, "provisioningApiBaseUrl": server.uri(), "hardwareModel": "vem-prod-24", "topology": { "identity": "vem-prod-24", "version": "v1" } }).to_string(),
+        )
+        .await
+        .expect("bootstrap");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+        let (_, revision) = ctx
+            .runtime_sources
+            .local_device_binding_snapshot(LocalDeviceRole::Scanner)
+            .await
+            .expect("initial binding snapshot");
+        ctx.runtime_sources
+            .save_local_device_binding_if_revision(
+                LocalDeviceRole::Scanner,
+                scanner_test_binding(),
+                &revision,
+            )
+            .await
+            .expect("save initial scanner binding");
+
+        let (_old_master, old_port) = open_scanner_test_pty();
+        let queued_old_events = ctx.events.subscribe();
+        ctx.scanner_runtime
+            .reconfigure(ScannerRuntimeConfig {
+                port_path: Some(old_port),
+                baud_rate: 9_600,
+                source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            })
+            .await
+            .expect("start old scanner runtime");
+
+        let response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/runtime-configuration/intents/hardware-bindings/scanner/clear")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("clear request"),
+            )
+            .await
+            .expect("clear response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let old_events_processed = CancellationToken::new();
+        let old_worker = tokio::spawn(crate::shutdown::cache_daemon_events(
+            queued_old_events,
+            ctx.ui.status_cache.clone(),
+            Some(old_events_processed.clone()),
+            Some(ctx.clone()),
+        ));
+        ctx.events
+            .send(DaemonEvent::RuntimeReconfigureRequested {
+                event_id: "old-generation-drained".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: "test_barrier".to_string(),
+                machine_code: None,
+            })
+            .expect("send old generation barrier");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            old_events_processed.cancelled(),
+        )
+        .await
+        .expect("old scanner events processed");
+
+        let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+        assert!(!scanner.online);
+        assert_eq!(scanner.code, "SCANNER_BINDING_CLEARED");
+        let (scanner_ready, scanner_message) = scanner_payment_readiness(&scanner);
+        assert!(!scanner_ready);
+        *ctx.ui.status_cache.hardware.write().await = vending_core::hardware::HardwareStatus {
+            adapter: "serial".to_string(),
+            online: true,
+            message: "controller ready".to_string(),
+            port_path: Some("COM5".to_string()),
+            resolution_source: Some("stable_usb_binding".to_string()),
+            bound_usb_identity: None,
+            candidates: vec![],
+        };
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        let capability = evaluate_sale_start_capability(
+            &SaleStartCapabilityObservation {
+                profile: profile_cache(&profile),
+                topology: crate::runtime_configuration::HardwareTopologyReadiness {
+                    ready: true,
+                    code: "HARDWARE_TOPOLOGY_READY".to_string(),
+                    message: "hardware topology ready".to_string(),
+                },
+                hardware: ctx.ui.status_cache.hardware.read().await.clone(),
+                whole_machine_locked: false,
+                has_saleable_slot: true,
+                mqtt_connected: true,
+                scanner_ready,
+                scanner_code: scanner.code.clone(),
+                scanner_message,
+                platform_default_option_key: Some("payment_code:alipay".to_string()),
+                platform_default_provider_code: Some("alipay".to_string()),
+                payment_options: vec![BackendPaymentOption {
+                    option_key: "payment_code:alipay".to_string(),
+                    provider_code: "alipay".to_string(),
+                    method: "payment_code".to_string(),
+                    display_name: "Payment code".to_string(),
+                    description: "Scan payment code".to_string(),
+                    icon: "scan".to_string(),
+                    recommended: true,
+                    disabled: false,
+                    disabled_reason: None,
+                }],
+            },
+            "scanner-generation-test".to_string(),
+            std::num::NonZeroU64::new(1).expect("non-zero revision"),
+            crate::state::store::now_iso(),
+        );
+        assert!(!capability.can_start_sale);
+        assert!(!capability.payment_options.ready);
+        assert_eq!(capability.payment_options.options.len(), 1);
+        assert!(!capability.payment_options.options[0].ready);
+        assert!(
+            local_payment_code_submit_guard(ctx.ui.status_cache.clone(), ctx.state.clone())()
+                .await
+                .is_err()
+        );
+        old_worker.abort();
+        let _ = old_worker.await;
+
+        let (_, revision) = ctx
+            .runtime_sources
+            .local_device_binding_snapshot(LocalDeviceRole::Scanner)
+            .await
+            .expect("cleared binding snapshot");
+        ctx.runtime_sources
+            .save_local_device_binding_if_revision(
+                LocalDeviceRole::Scanner,
+                scanner_test_binding(),
+                &revision,
+            )
+            .await
+            .expect("save rebound scanner binding");
+        let (_new_master, new_port) = open_scanner_test_pty();
+        let queued_new_events = ctx.events.subscribe();
+        ctx.scanner_runtime
+            .reconfigure(ScannerRuntimeConfig {
+                port_path: Some(new_port),
+                baud_rate: 9_600,
+                source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            })
+            .await
+            .expect("start rebound scanner runtime");
+
+        let new_events_processed = CancellationToken::new();
+        let new_worker = tokio::spawn(crate::shutdown::cache_daemon_events(
+            queued_new_events,
+            ctx.ui.status_cache.clone(),
+            Some(new_events_processed.clone()),
+            Some(ctx.clone()),
+        ));
+        ctx.events
+            .send(DaemonEvent::RuntimeReconfigureRequested {
+                event_id: "new-generation-drained".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: "test_barrier".to_string(),
+                machine_code: None,
+            })
+            .expect("send new generation barrier");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            new_events_processed.cancelled(),
+        )
+        .await
+        .expect("new scanner events processed");
+        let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+        assert!(scanner.online);
+        assert_eq!(scanner.code, "SCANNER_READY");
+
+        ctx.scanner_runtime
+            .stop()
+            .await
+            .expect("stop scanner runtime");
+        new_worker.abort();
+        let _ = new_worker.await;
     }
 
     #[test]

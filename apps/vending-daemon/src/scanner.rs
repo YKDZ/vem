@@ -1,4 +1,11 @@
 use crate::events::DaemonEvent;
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::{broadcast, mpsc};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::sync::CancellationToken;
@@ -15,6 +22,7 @@ pub struct ScannerRuntimeConfig {
 #[derive(Debug, Clone)]
 pub struct ScannerRuntime {
     config: ScannerRuntimeConfig,
+    runtime_generation: u64,
     shutdown: CancellationToken,
     tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     tx_events: broadcast::Sender<DaemonEvent>,
@@ -25,10 +33,12 @@ pub struct ScannerRuntimeController {
     tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     tx_events: broadcast::Sender<DaemonEvent>,
     state: std::sync::Arc<tokio::sync::Mutex<Option<RunningScannerRuntime>>>,
+    next_generation: Arc<AtomicU64>,
 }
 
 struct RunningScannerRuntime {
     config: ScannerRuntimeConfig,
+    generation: u64,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<Result<(), String>>,
 }
@@ -42,7 +52,31 @@ impl ScannerRuntimeController {
             tx_raw,
             tx_events,
             state: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            next_generation: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    pub async fn apply_if_current_generation<F, Fut>(&self, generation: u64, apply: F) -> bool
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        // Stop and reconfigure use this same lock, so generation validation and
+        // the cache update form one ordering boundary.
+        let state = self.state.lock().await;
+        if generation == 0
+            || state
+                .as_ref()
+                .is_none_or(|running| running.generation != generation)
+        {
+            return false;
+        }
+        apply().await;
+        true
+    }
+
+    fn allocate_runtime_generation(&self) -> u64 {
+        self.next_generation.fetch_add(1, Ordering::Relaxed)
     }
 
     pub async fn reconfigure(&self, config: ScannerRuntimeConfig) -> Result<(), String> {
@@ -91,14 +125,17 @@ impl ScannerRuntimeController {
             }
         }
         let shutdown = CancellationToken::new();
-        let runtime = ScannerRuntime::new(
+        let generation = self.allocate_runtime_generation();
+        let runtime = ScannerRuntime::with_generation(
             config.clone(),
+            generation,
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
         );
         *state = Some(RunningScannerRuntime {
             config,
+            generation,
             shutdown,
             task: tokio::spawn(runtime.run()),
         });
@@ -110,9 +147,11 @@ impl ScannerRuntimeController {
         config: &ScannerRuntimeConfig,
     ) -> Result<RunningScannerRuntime, String> {
         let shutdown = CancellationToken::new();
+        let generation = self.allocate_runtime_generation();
         let mut health_events = self.tx_events.subscribe();
-        let runtime = ScannerRuntime::new(
+        let runtime = ScannerRuntime::with_generation(
             config.clone(),
+            generation,
             self.tx_raw.clone(),
             self.tx_events.clone(),
             shutdown.clone(),
@@ -121,7 +160,11 @@ impl ScannerRuntimeController {
         let readiness = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 match health_events.recv().await {
-                    Ok(DaemonEvent::ScannerHealthChanged { snapshot, .. }) => {
+                    Ok(DaemonEvent::ScannerHealthChanged {
+                        runtime_generation,
+                        snapshot,
+                        ..
+                    }) if runtime_generation == generation => {
                         if snapshot.code == "SCANNER_READY" || snapshot.code == "SCANNER_DISABLED" {
                             return Ok(());
                         }
@@ -150,6 +193,7 @@ impl ScannerRuntimeController {
         }
         Ok(RunningScannerRuntime {
             config: config.clone(),
+            generation,
             shutdown,
             task,
         })
@@ -176,8 +220,19 @@ impl ScannerRuntime {
         tx_events: broadcast::Sender<DaemonEvent>,
         shutdown: CancellationToken,
     ) -> Self {
+        Self::with_generation(config, 1, tx_raw, tx_events, shutdown)
+    }
+
+    fn with_generation(
+        config: ScannerRuntimeConfig,
+        runtime_generation: u64,
+        tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+        tx_events: broadcast::Sender<DaemonEvent>,
+        shutdown: CancellationToken,
+    ) -> Self {
         Self {
             config,
+            runtime_generation,
             shutdown,
             tx_raw,
             tx_events,
@@ -281,6 +336,7 @@ impl ScannerRuntime {
         let _ = self.tx_events.send(DaemonEvent::ScannerHealthChanged {
             event_id: Uuid::new_v4().simple().to_string(),
             updated_at: snapshot.updated_at.clone(),
+            runtime_generation: self.runtime_generation,
             snapshot: crate::events::scanner_runtime_status_contract(&snapshot),
         });
     }
