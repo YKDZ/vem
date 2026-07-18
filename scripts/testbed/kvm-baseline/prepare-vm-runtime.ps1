@@ -426,6 +426,27 @@ function Remove-InteractiveDisplayPreparationTask {
   Unregister-ScheduledTask -TaskName $interactiveDisplayTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+function Test-SpiceGuestToolsResumeRemoved {
+  $runOnce = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+  $resume = Get-ItemPropertyValue -Path $runOnce -Name "VemResumeSpiceGuestToolsPreparation" -ErrorAction SilentlyContinue
+  return $null -eq $resume
+}
+
+function Test-RemainingAutomaticLogonDisabled {
+  $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+  return [string](Get-ItemPropertyValue -Path $winlogon -Name "AutoAdminLogon" -ErrorAction SilentlyContinue) -eq "0"
+}
+
+function Get-InteractiveDisplayCleanupStatus {
+  param([object] $Task)
+  if ($null -eq $Task) { $Task = Get-InteractiveDisplayTaskStatus }
+  return @{
+    taskRemoved = $null -eq $Task
+    spiceGuestToolsResumeRemoved = Test-SpiceGuestToolsResumeRemoved
+    automaticLogonDisabled = Test-RemainingAutomaticLogonDisabled
+  }
+}
+
 function Register-InteractiveDisplayPreparationTask {
   $scriptPath = "C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1"
   if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "VM preparation script is unavailable for interactive display preparation" }
@@ -452,23 +473,34 @@ function Test-InteractiveDisplayReport {
 }
 
 function Complete-InteractiveDisplayPreparation {
+  param([Parameter(Mandatory = $true)] [object] $Report)
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
-  Write-InteractiveDisplayPreparationState -Phase "complete" -Attempt $attempt
   Remove-InteractiveDisplayPreparationTask
   Remove-SpiceGuestToolsResume
   Disable-RemainingAutomaticLogon
+  $cleanup = Get-InteractiveDisplayCleanupStatus
+  if (-not $cleanup.taskRemoved -or -not $cleanup.spiceGuestToolsResumeRemoved -or -not $cleanup.automaticLogonDisabled) {
+    throw "interactive display completion cleanup is incomplete"
+  }
+  # The report is durable before the complete state commits it. A crash between
+  # these writes is intentionally non-accepting and will be re-armed by host.
+  Write-AtomicJson -Path $interactiveDisplayReportPath -Value $Report
+  Write-InteractiveDisplayPreparationState -Phase "complete" -Attempt $attempt
 }
 
-function Initialize-InteractiveDisplayPreparation {
+function Complete-InteractiveDisplayPreparationFromValidReport {
   $existingReport = $null
   if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
     try { $existingReport = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $existingReport = $null }
   }
-  if (Test-InteractiveDisplayReport -Report $existingReport) {
-    Complete-InteractiveDisplayPreparation
-    return
-  }
+  if (-not (Test-InteractiveDisplayReport -Report $existingReport)) { return $false }
+  Complete-InteractiveDisplayPreparation -Report $existingReport
+  return $true
+}
+
+function Initialize-InteractiveDisplayPreparation {
+  if (Complete-InteractiveDisplayPreparationFromValidReport) { return }
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt + 1 }
   Write-InteractiveDisplayPreparationState -Phase "waiting-for-logon" -Attempt $attempt
@@ -502,7 +534,7 @@ function Prepare-InteractiveDisplay {
     if ($primary.Width -ne $DesktopWidth -or $primary.Height -ne $DesktopHeight -or $scalePercent -ne $DesktopScalePercent) {
       throw "interactive autologon desktop did not apply $DesktopWidth x $DesktopHeight at $DesktopScalePercent percent scale"
     }
-    Write-AtomicJson -Path $interactiveDisplayReportPath -Value @{
+    $report = @{
       schemaVersion = "win10-kvm-interactive-display/v1"
       capturedAt = (Get-Date).ToUniversalTime().ToString("o")
       interactiveUser = $interactiveUser
@@ -510,7 +542,7 @@ function Prepare-InteractiveDisplay {
       desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
       qxlDisplayAdapter = $qxlDisplayAdapter.Name
     }
-    Complete-InteractiveDisplayPreparation
+    Complete-InteractiveDisplayPreparation -Report $report
   } catch {
     Write-InteractiveDisplayPreparationState -Phase "failed" -ErrorMessage $_.Exception.Message -Attempt $attempt
     throw
@@ -531,13 +563,18 @@ function Get-InteractiveDisplayPreparationStatus {
   $taskLogTail = if (Test-Path -LiteralPath $interactiveDisplayLogPath -PathType Leaf) {
     ((Get-Content -LiteralPath $interactiveDisplayLogPath -Tail 30 -ErrorAction SilentlyContinue) -join "`n")
   } else { $null }
+  $state = Read-InteractiveDisplayPreparationState
+  $task = Get-InteractiveDisplayTaskStatus
+  $cleanup = Get-InteractiveDisplayCleanupStatus -Task $task
   @{
     schemaVersion = "win10-kvm-interactive-display-status/v1"
     reportPresent = $null -ne $report
     reportValid = Test-InteractiveDisplayReport -Report $report
     reportError = $reportError
-    state = Read-InteractiveDisplayPreparationState
-    task = Get-InteractiveDisplayTaskStatus
+    state = $state
+    task = $task
+    cleanup = $cleanup
+    completionValid = (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.spiceGuestToolsResumeRemoved -and $cleanup.automaticLogonDisabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
     spiceGuestToolsInstallation = $spiceGuestToolsInstallation
@@ -546,16 +583,20 @@ function Get-InteractiveDisplayPreparationStatus {
 
 function Rearm-InteractiveDisplay {
   Install-SpiceGuestTools
-  $existingReport = $null
-  if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
-    try { $existingReport = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $existingReport = $null }
-  }
-  if (Test-InteractiveDisplayReport -Report $existingReport) {
-    Complete-InteractiveDisplayPreparation
+  if (Complete-InteractiveDisplayPreparationFromValidReport) {
+    Get-InteractiveDisplayPreparationStatus
     return
   }
   Initialize-InteractiveDisplayPreparation
+  if (Complete-InteractiveDisplayPreparationFromValidReport) {
+    Get-InteractiveDisplayPreparationStatus
+    return
+  }
   Enable-InteractiveAutomaticLogon
+  if (Complete-InteractiveDisplayPreparationFromValidReport) {
+    Get-InteractiveDisplayPreparationStatus
+    return
+  }
   Restart-Computer -Force
   throw "interactive display preparation re-arm did not restart Windows"
 }

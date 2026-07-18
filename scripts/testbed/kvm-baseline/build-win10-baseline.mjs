@@ -41,10 +41,13 @@ export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
 const INTERACTIVE_DISPLAY_REPORT_PATH =
   "C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json";
-const INTERACTIVE_DISPLAY_PREPARATION_TIMEOUT_MS = 20 * 60 * 1000;
+const GUEST_AVAILABILITY_TIMEOUT_MS = 60 * 60 * 1000;
+const INTERACTIVE_DISPLAY_STAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const INTERACTIVE_DISPLAY_POLL_INTERVAL_MS = 10 * 1000;
 const INTERACTIVE_DISPLAY_INITIAL_REARM_DELAY_MS = 60 * 1000;
 const INTERACTIVE_DISPLAY_MAX_REARM_ATTEMPTS = 2;
+const PREPARE_VM_RUNTIME_SCRIPT =
+  "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1";
 
 function parseArgs(argv) {
   const options = { execute: false };
@@ -385,16 +388,88 @@ function guestSshOptions(config, knownHostsPath) {
   ];
 }
 
-function powershellLiteral(value) {
+function powershellScriptLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function encodedPowerShellCommand(script) {
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+}
+
+function encodedPowerShellRequest(request) {
+  return Buffer.from(JSON.stringify(request), "utf8").toString("base64");
+}
+
+function prepareVmRuntimeCommand(request) {
+  const encodedRequest = encodedPowerShellRequest(request);
+  const bindings = [
+    "-Mode $request.Mode",
+    "-InteractiveUser $request.InteractiveUser",
+    "-DesktopWidth $request.DesktopWidth",
+    "-DesktopHeight $request.DesktopHeight",
+    "-DesktopScalePercent $request.DesktopScalePercent",
+  ];
+  if (request.SpiceGuestToolsInstallerPath !== undefined) {
+    bindings.splice(
+      2,
+      0,
+      "-SpiceGuestToolsInstallerPath $request.SpiceGuestToolsInstallerPath",
+    );
+  }
+  return encodedPowerShellCommand(
+    [
+      '$ErrorActionPreference = "Stop"',
+      `$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${encodedRequest}")) | ConvertFrom-Json`,
+      `& "${PREPARE_VM_RUNTIME_SCRIPT}" ${bindings.join(" ")}`,
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+    ].join("\r\n"),
+  );
+}
+
 function interactiveDisplayStatusCommand(config) {
-  return `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1 -Mode GetInteractiveDisplayPreparationStatus -InteractiveUser ${powershellLiteral(config.guest.sshUser)} -DesktopWidth 1080 -DesktopHeight 1920 -DesktopScalePercent ${config.guest.desktopScalePercent}`;
+  return prepareVmRuntimeCommand({
+    Mode: "GetInteractiveDisplayPreparationStatus",
+    InteractiveUser: config.guest.sshUser,
+    DesktopWidth: 1080,
+    DesktopHeight: 1920,
+    DesktopScalePercent: config.guest.desktopScalePercent,
+  });
 }
 
 function rearmInteractiveDisplayCommand(config) {
-  return `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1 -Mode RearmInteractiveDisplay -InteractiveUser ${powershellLiteral(config.guest.sshUser)} -SpiceGuestToolsInstallerPath ${powershellLiteral(`C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${SPICE_GUEST_TOOLS_INSTALLER_FILE}`)} -DesktopWidth 1080 -DesktopHeight 1920 -DesktopScalePercent ${config.guest.desktopScalePercent}`;
+  return prepareVmRuntimeCommand({
+    Mode: "RearmInteractiveDisplay",
+    InteractiveUser: config.guest.sshUser,
+    SpiceGuestToolsInstallerPath: `C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${SPICE_GUEST_TOOLS_INSTALLER_FILE}`,
+    DesktopWidth: 1080,
+    DesktopHeight: 1920,
+    DesktopScalePercent: config.guest.desktopScalePercent,
+  });
+}
+
+function verificationCommand({ config, runnerName, verificationPath }) {
+  const encodedRequest = encodedPowerShellRequest({
+    ExpectedWidth: 1080,
+    ExpectedHeight: 1920,
+    ExpectedScalePercent: config.guest.desktopScalePercent,
+    ExpectedInteractiveUser: config.guest.sshUser,
+    ExpectedRunnerUrl: config.runner.url,
+    ExpectedRunnerName: runnerName,
+    ExpectedAudioModel: "ich9",
+    ExpectedSerialRole: ["lower-controller", "scanner"],
+    ExpectedSerialUsbPort: [1, 2],
+    OutputPath: verificationPath,
+  });
+  return encodedPowerShellCommand(
+    [
+      '$ErrorActionPreference = "Stop"',
+      `$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${encodedRequest}")) | ConvertFrom-Json`,
+      '$runner = Get-Content -Raw -LiteralPath "C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json" | ConvertFrom-Json',
+      '& "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1" -ExpectedWidth $request.ExpectedWidth -ExpectedHeight $request.ExpectedHeight -ExpectedScalePercent $request.ExpectedScalePercent -ExpectedInteractiveUser $request.ExpectedInteractiveUser -ExpectedRunnerUrl $request.ExpectedRunnerUrl -ExpectedRunnerName $request.ExpectedRunnerName -ExpectedRunnerServiceName $runner.serviceName -ExpectedAudioModel $request.ExpectedAudioModel -ExpectedSerialRole @($request.ExpectedSerialRole) -ExpectedSerialUsbPort @($request.ExpectedSerialUsbPort) -OutputPath $request.OutputPath',
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+    ].join("\r\n"),
+  );
 }
 
 function validateInteractiveDisplayReport(report, config) {
@@ -441,21 +516,43 @@ function formatInteractiveDisplayDiagnostics(diagnostic) {
   const task = status.task ?? {};
   const state = status.state ?? {};
   const spice = status.spiceGuestToolsInstallation ?? {};
+  const cleanup = status.cleanup ?? {};
   const parts = [
     `report=${status.reportPresent === true ? "present" : "absent"}`,
     `reportValid=${status.reportValid === true}`,
+    `completionValid=${interactiveDisplayCompleted(status)}`,
     `phase=${state.phase ?? "unknown"}`,
     `task state=${task.state ?? "absent"}`,
     `lastTaskResult=${task.lastTaskResult ?? "unknown"}`,
+    `taskRemoved=${cleanup.taskRemoved === true}`,
+    `RunOnceRemoved=${cleanup.spiceGuestToolsResumeRemoved === true}`,
+    `AutoAdminLogonDisabled=${cleanup.automaticLogonDisabled === true}`,
     `spice phase=${spice.phase ?? "unknown"}`,
   ];
   if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
+  if (diagnostic.awaitingReboot) {
+    parts.push(
+      `awaiting reboot from=${diagnostic.awaitingReboot.bootIdentity ?? "unknown"} sshDown=${diagnostic.awaitingReboot.sshWentDown === true}`,
+    );
+  }
   if (status.taskLogTail) parts.push(`task log=${status.taskLogTail}`);
   return parts.join(", ");
 }
 
+function interactiveDisplayCompleted(status) {
+  return (
+    status?.reportValid === true &&
+    status.state?.phase === "complete" &&
+    status.task === null &&
+    status.cleanup?.taskRemoved === true &&
+    status.cleanup?.spiceGuestToolsResumeRemoved === true &&
+    status.cleanup?.automaticLogonDisabled === true
+  );
+}
+
 function shouldRearmInteractiveDisplay(status, sshReadyAt, now, delayMs) {
-  if (status.reportValid === true) return false;
+  if (interactiveDisplayCompleted(status)) return false;
+  if (status.reportValid === true) return true;
   if (status.state?.phase === "failed") return true;
   if (now - sshReadyAt < delayMs) return false;
   if (
@@ -473,7 +570,9 @@ export async function waitForInteractiveDisplayReport(
   domainName,
   stagingDirectory,
   {
+    displayStageTimeoutMs,
     discoverGuestAddress: findGuestAddress = discoverGuestAddress,
+    guestAvailabilityTimeoutMs = GUEST_AVAILABILITY_TIMEOUT_MS,
     initialRearmDelayMs = INTERACTIVE_DISPLAY_INITIAL_REARM_DELAY_MS,
     maxRearmAttempts = INTERACTIVE_DISPLAY_MAX_REARM_ATTEMPTS,
     now = () => Date.now(),
@@ -481,20 +580,41 @@ export async function waitForInteractiveDisplayReport(
     runCommand = run,
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    timeoutMs = INTERACTIVE_DISPLAY_PREPARATION_TIMEOUT_MS,
+    timeoutMs,
   } = {},
 ) {
   const localReport = join(stagingDirectory, "interactive-display-report.json");
   const knownHostsPath = join(stagingDirectory, "known_hosts");
-  const deadline = now() + timeoutMs;
+  const availabilityStartedAt = now();
+  const availabilityDeadline =
+    availabilityStartedAt + guestAvailabilityTimeoutMs;
+  const resolvedDisplayStageTimeoutMs =
+    displayStageTimeoutMs ?? timeoutMs ?? INTERACTIVE_DISPLAY_STAGE_TIMEOUT_MS;
   let rearmAttempts = 0;
   let sshReadyAt = null;
+  let displayStageStartedAt = null;
+  let displayStageDeadline = null;
+  let awaitingReboot = null;
   let diagnostic = { error: "SSH has not become available" };
 
-  while (now() < deadline) {
+  while (true) {
+    const currentTime = now();
+    if (currentTime >= availabilityDeadline) {
+      throw new Error(
+        `guest availability timed out after ${guestAvailabilityTimeoutMs} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
+      );
+    }
+    if (displayStageDeadline !== null && currentTime >= displayStageDeadline) {
+      throw new Error(
+        `interactive display preparation timed out: interactive display stage timed out after ${resolvedDisplayStageTimeoutMs} ms; first SSH readiness at ${displayStageStartedAt - availabilityStartedAt} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
+      );
+    }
     const address = await findGuestAddress(config, domainName);
     if (!address) {
-      diagnostic = { error: "guest has no discovered DHCP lease" };
+      diagnostic = {
+        error: "guest has no discovered DHCP lease",
+        awaitingReboot,
+      };
       await sleep(pollIntervalMs);
       continue;
     }
@@ -505,11 +625,20 @@ export async function waitForInteractiveDisplayReport(
       allowFailure: true,
     });
     if (ssh.failed) {
-      diagnostic = { error: "guest SSH is unavailable" };
+      if (awaitingReboot) awaitingReboot.sshWentDown = true;
+      diagnostic = {
+        error: "guest SSH is unavailable",
+        awaitingReboot,
+      };
       await sleep(pollIntervalMs);
       continue;
     }
     if (sshReadyAt === null) sshReadyAt = now();
+    if (displayStageStartedAt === null) {
+      displayStageStartedAt = sshReadyAt;
+      displayStageDeadline =
+        displayStageStartedAt + resolvedDisplayStageTimeoutMs;
+    }
 
     const statusResult = await runCommand(
       "ssh",
@@ -528,16 +657,35 @@ export async function waitForInteractiveDisplayReport(
       if (!status || typeof status !== "object") {
         throw new Error("status output is not a JSON object");
       }
-      diagnostic = { status };
+      diagnostic = { status, awaitingReboot };
     } catch (error) {
       diagnostic = {
         error: `invalid interactive display status: ${error.message}`,
+        awaitingReboot,
       };
       await sleep(pollIntervalMs);
       continue;
     }
 
-    if (status.reportValid === true) {
+    if (awaitingReboot) {
+      const bootIdentityChanged =
+        typeof awaitingReboot.bootIdentity === "string" &&
+        typeof status.currentBootIdentity === "string" &&
+        awaitingReboot.bootIdentity !== status.currentBootIdentity;
+      if (!awaitingReboot.sshWentDown && !bootIdentityChanged) {
+        diagnostic = {
+          status,
+          awaitingReboot,
+          error: "waiting for the requested reboot to become observable",
+        };
+        await sleep(pollIntervalMs);
+        continue;
+      }
+      awaitingReboot = null;
+      sshReadyAt = now();
+    }
+
+    if (interactiveDisplayCompleted(status)) {
       const reportCopy = await runCommand("scp", [
         ...sshOptions,
         `${target}:${INTERACTIVE_DISPLAY_REPORT_PATH.replaceAll("\\", "/")}`,
@@ -582,19 +730,37 @@ export async function waitForInteractiveDisplayReport(
         [...sshOptions, target, rearmInteractiveDisplayCommand(config)],
         { allowFailure: true },
       );
-      diagnostic = rearm.failed
-        ? {
-            status,
-            error: `interactive display re-arm ${rearmAttempts} did not complete over SSH`,
-          }
-        : { status };
+      let rearmCompletion = null;
+      if (!rearm.failed) {
+        try {
+          const response = readJsonWithBom(rearm.stdout ?? "");
+          if (interactiveDisplayCompleted(response)) rearmCompletion = response;
+        } catch {
+          // A reboot can close the SSH channel before PowerShell flushes JSON.
+        }
+      }
+      if (rearmCompletion) {
+        diagnostic = { status: rearmCompletion };
+      } else {
+        awaitingReboot = {
+          bootIdentity:
+            typeof status.currentBootIdentity === "string"
+              ? status.currentBootIdentity
+              : null,
+          sshWentDown: false,
+        };
+        sshReadyAt = null;
+        diagnostic = rearm.failed
+          ? {
+              status,
+              awaitingReboot,
+              error: `interactive display re-arm ${rearmAttempts} did not complete over SSH`,
+            }
+          : { status, awaitingReboot };
+      }
     }
     await sleep(pollIntervalMs);
   }
-
-  throw new Error(
-    `interactive display preparation timed out after ${timeoutMs} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
-  );
 }
 
 function xmlAttributeEquals(element, attribute, value) {
@@ -710,7 +876,7 @@ export async function waitForGuestVerification(
   const runnerScript = join(stagingDirectory, "register-runner.ps1");
   await writeFile(
     runnerScript,
-    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
+    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellScriptLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellScriptLiteral(token)} -RunnerName ${powershellScriptLiteral(runnerName)}\n`,
     { mode: 0o600 },
   );
   await runCommand("scp", [
@@ -726,7 +892,7 @@ export async function waitForGuestVerification(
   await runCommand("ssh", [
     ...sshOptions,
     target,
-    `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialUsbPort '1','2' -OutputPath ${powershellLiteral(verificationPath)}"`,
+    verificationCommand({ config, runnerName, verificationPath }),
   ]);
   await runCommand("scp", [
     ...sshOptions,
@@ -763,17 +929,81 @@ async function domainState(config) {
   return result.failed ? null : result.stdout.trim().toLowerCase();
 }
 
-async function destroyAndUndefine(config, domainName) {
-  await run(
+async function destroyAndUndefine(
+  config,
+  domainName,
+  { runCommand = run } = {},
+) {
+  await runCommand(
     "virsh",
     ["--connect", config.host.libvirtUri, "destroy", domainName],
     { allowFailure: true },
   );
-  await run(
+  await runCommand(
     "virsh",
     ["--connect", config.host.libvirtUri, "undefine", domainName],
     { allowFailure: true },
   );
+}
+
+function constructionCleanup({
+  cacheStagingDirectory,
+  config,
+  constructionDomain,
+  runCommand = run,
+  stagingDirectory,
+}) {
+  let cleanupPromise = null;
+  return () => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      await destroyAndUndefine(config, constructionDomain, { runCommand });
+      await rm(stagingDirectory, { recursive: true, force: true });
+      await rm(cacheStagingDirectory, { recursive: true, force: true });
+    })();
+    return cleanupPromise;
+  };
+}
+
+export async function runWithConstructionSignalCleanup({
+  cleanup,
+  exitOnSignal = false,
+  exitProcess = process.exit,
+  work,
+}) {
+  let cleanupPromise = null;
+  let termination = null;
+  let rejectTermination;
+  const cleanupOnce = () => {
+    if (!cleanupPromise) cleanupPromise = Promise.resolve().then(cleanup);
+    return cleanupPromise;
+  };
+  const terminated = new Promise((_, reject) => {
+    rejectTermination = reject;
+  });
+  const handleSignal = (signal) => {
+    if (termination) return;
+    termination = new Error(`construction build received ${signal}`);
+    void cleanupOnce().then(
+      () => {
+        if (exitOnSignal) {
+          exitProcess(signal === "SIGTERM" ? 143 : 130);
+          return;
+        }
+        rejectTermination(termination);
+      },
+      (error) => rejectTermination(error),
+    );
+  };
+  process.once("SIGTERM", handleSignal);
+  process.once("SIGINT", handleSignal);
+  try {
+    return await Promise.race([Promise.resolve().then(work), terminated]);
+  } finally {
+    process.off("SIGTERM", handleSignal);
+    process.off("SIGINT", handleSignal);
+    if (termination) await cleanupOnce();
+  }
 }
 
 export async function recoverStaleConstructionDomains(
@@ -862,7 +1092,7 @@ async function rollbackPublishedDefinition(config, previousRelease) {
 
 export async function buildWin10Baseline(
   config,
-  { sourceCommit, execute = false } = {},
+  { sourceCommit, execute = false, exitOnSignal = false } = {},
 ) {
   validateBaselineBuildConfig(config);
   if (execute) await recoverStaleConstructionDomains(config);
@@ -933,144 +1163,160 @@ export async function buildWin10Baseline(
   const stagedPath = join(stagingDirectory, "system.qcow2");
   const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
   const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
-  try {
-    await run("qemu-img", [
-      "create",
-      "-f",
-      "qcow2",
-      stagedPath,
-      `${config.storage.systemDiskGiB}G`,
-    ]);
-    if (publishedRelease) {
-      await run("qemu-img", [
-        "convert",
-        "-f",
-        "qcow2",
-        "-O",
-        "qcow2",
-        publishedRelease.cachePath,
-        stagedCachePath,
-      ]);
-    } else {
-      await run("qemu-img", [
-        "create",
-        "-f",
-        "qcow2",
-        stagedCachePath,
-        `${config.storage.cacheDiskGiB}G`,
-      ]);
-    }
-    const configurationIso = await createConfigurationMedia(
-      config,
-      stagingDirectory,
-    );
-    const constructionProfile = {
-      ...profile,
-      vmName: constructionDomain,
-      disks: {
-        ...profile.disks,
-        system: { ...profile.disks.system, path: stagedPath },
-        cache: { ...profile.disks.cache, path: stagedCachePath },
-      },
-    };
-    const constructionXmlPath = join(
-      stagingDirectory,
-      "construction-domain.xml",
-    );
-    await writeFile(
-      constructionXmlPath,
-      renderLibvirtDomainXml(constructionProfile, {
-        cdromPaths: [config.media.windowsIsoPath, configurationIso],
-      }),
-      { mode: 0o600 },
-    );
-    await run("virsh", [
-      "--connect",
-      config.host.libvirtUri,
-      "define",
-      constructionXmlPath,
-    ]);
-    await run("virsh", [
-      "--connect",
-      config.host.libvirtUri,
-      "start",
-      constructionDomain,
-    ]);
-    const verification = await waitForGuestVerification(
-      config,
-      constructionDomain,
-      stagingDirectory,
-    );
-    const virtualDevices = await verifyDefinedRuntimeDevicesForDomain(
-      config,
-      constructionDomain,
-      constructionProfile,
-    );
-    await shutdownGuestAndWait(config, constructionDomain, stagingDirectory);
-    await run("qemu-img", ["check", stagedPath]);
-    await run("qemu-img", ["check", stagedCachePath]);
-    await run("virsh", [
-      "--connect",
-      config.host.libvirtUri,
-      "undefine",
-      constructionDomain,
-    ]);
-    const nextReleaseId = `release-${randomUUID()}`;
-    const publishedProfile = runtimeProfileForPublishedRelease(
-      config,
-      nextReleaseId,
-    );
-    const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
-    await writeFile(finalXmlPath, renderLibvirtDomainXml(publishedProfile), {
-      mode: 0o600,
-    });
-    const diagnostic = {
-      schemaVersion: "win10-kvm-baseline-diagnostic/v1",
-      sourceCommit: sourceCommit ?? null,
-      verifiedAt: new Date().toISOString(),
-      profile: publishedProfile,
-      verification,
-      virtualDevices,
-    };
-    const stagedDiagnosticPath = join(stagingDirectory, "diagnostic.json");
-    await writeFile(
-      stagedDiagnosticPath,
-      `${JSON.stringify(diagnostic, null, 2)}\n`,
-      { mode: 0o600 },
-    );
-    const release = await publishVerifiedBaselineRelease({
-      config,
-      releaseId: nextReleaseId,
-      stagedSystemPath: stagedPath,
-      stagedCachePath,
-      stagedDomainXmlPath: finalXmlPath,
-      stagedDiagnosticPath,
-      profile: publishedProfile,
-      verified: verification.ok === true,
-      commitDefinition: async (candidateRelease) => {
-        await defineAndVerifyPublishedDomain(config, candidateRelease);
-      },
-      rollbackDefinition: async (previousRelease) => {
-        await rollbackPublishedDefinition(config, previousRelease);
-      },
-    });
-    return {
-      ...plan,
-      verification,
-      promoted: true,
-      publication: {
-        currentManifestPath:
-          baselinePublicationLayout(config).currentManifestPath,
-        releaseId: release.releaseId,
-      },
-    };
-  } catch (error) {
-    await destroyAndUndefine(config, constructionDomain);
-    throw error;
-  } finally {
-    await rm(stagingDirectory, { recursive: true, force: true });
-    await rm(cacheStagingDirectory, { recursive: true, force: true });
-  }
+  const cleanup = constructionCleanup({
+    config,
+    constructionDomain,
+    stagingDirectory,
+    cacheStagingDirectory,
+  });
+  return runWithConstructionSignalCleanup({
+    cleanup,
+    exitOnSignal,
+    work: async () => {
+      try {
+        await run("qemu-img", [
+          "create",
+          "-f",
+          "qcow2",
+          stagedPath,
+          `${config.storage.systemDiskGiB}G`,
+        ]);
+        if (publishedRelease) {
+          await run("qemu-img", [
+            "convert",
+            "-f",
+            "qcow2",
+            "-O",
+            "qcow2",
+            publishedRelease.cachePath,
+            stagedCachePath,
+          ]);
+        } else {
+          await run("qemu-img", [
+            "create",
+            "-f",
+            "qcow2",
+            stagedCachePath,
+            `${config.storage.cacheDiskGiB}G`,
+          ]);
+        }
+        const configurationIso = await createConfigurationMedia(
+          config,
+          stagingDirectory,
+        );
+        const constructionProfile = {
+          ...profile,
+          vmName: constructionDomain,
+          disks: {
+            ...profile.disks,
+            system: { ...profile.disks.system, path: stagedPath },
+            cache: { ...profile.disks.cache, path: stagedCachePath },
+          },
+        };
+        const constructionXmlPath = join(
+          stagingDirectory,
+          "construction-domain.xml",
+        );
+        await writeFile(
+          constructionXmlPath,
+          renderLibvirtDomainXml(constructionProfile, {
+            cdromPaths: [config.media.windowsIsoPath, configurationIso],
+          }),
+          { mode: 0o600 },
+        );
+        await run("virsh", [
+          "--connect",
+          config.host.libvirtUri,
+          "define",
+          constructionXmlPath,
+        ]);
+        await run("virsh", [
+          "--connect",
+          config.host.libvirtUri,
+          "start",
+          constructionDomain,
+        ]);
+        const verification = await waitForGuestVerification(
+          config,
+          constructionDomain,
+          stagingDirectory,
+        );
+        const virtualDevices = await verifyDefinedRuntimeDevicesForDomain(
+          config,
+          constructionDomain,
+          constructionProfile,
+        );
+        await shutdownGuestAndWait(
+          config,
+          constructionDomain,
+          stagingDirectory,
+        );
+        await run("qemu-img", ["check", stagedPath]);
+        await run("qemu-img", ["check", stagedCachePath]);
+        await run("virsh", [
+          "--connect",
+          config.host.libvirtUri,
+          "undefine",
+          constructionDomain,
+        ]);
+        const nextReleaseId = `release-${randomUUID()}`;
+        const publishedProfile = runtimeProfileForPublishedRelease(
+          config,
+          nextReleaseId,
+        );
+        const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
+        await writeFile(
+          finalXmlPath,
+          renderLibvirtDomainXml(publishedProfile),
+          {
+            mode: 0o600,
+          },
+        );
+        const diagnostic = {
+          schemaVersion: "win10-kvm-baseline-diagnostic/v1",
+          sourceCommit: sourceCommit ?? null,
+          verifiedAt: new Date().toISOString(),
+          profile: publishedProfile,
+          verification,
+          virtualDevices,
+        };
+        const stagedDiagnosticPath = join(stagingDirectory, "diagnostic.json");
+        await writeFile(
+          stagedDiagnosticPath,
+          `${JSON.stringify(diagnostic, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+        const release = await publishVerifiedBaselineRelease({
+          config,
+          releaseId: nextReleaseId,
+          stagedSystemPath: stagedPath,
+          stagedCachePath,
+          stagedDomainXmlPath: finalXmlPath,
+          stagedDiagnosticPath,
+          profile: publishedProfile,
+          verified: verification.ok === true,
+          commitDefinition: async (candidateRelease) => {
+            await defineAndVerifyPublishedDomain(config, candidateRelease);
+          },
+          rollbackDefinition: async (previousRelease) => {
+            await rollbackPublishedDefinition(config, previousRelease);
+          },
+        });
+        return {
+          ...plan,
+          verification,
+          promoted: true,
+          publication: {
+            currentManifestPath:
+              baselinePublicationLayout(config).currentManifestPath,
+            releaseId: release.releaseId,
+          },
+        };
+      } finally {
+        await cleanup();
+      }
+    },
+  });
 }
 
 async function main() {
@@ -1079,6 +1325,7 @@ async function main() {
   const result = await buildWin10Baseline(config, {
     sourceCommit: options["source-commit"],
     execute: options.execute,
+    exitOnSignal: true,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

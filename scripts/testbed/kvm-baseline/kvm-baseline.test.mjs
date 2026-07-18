@@ -23,7 +23,9 @@ import {
   recoverStaleConstructionDomains,
   renderUnattendedXml,
   SPICE_GUEST_TOOLS_INSTALLER_FILE,
+  runWithConstructionSignalCleanup,
   verifyDefinedRuntimeDevices,
+  waitForInteractiveDisplayReport,
   waitForGuestVerification,
 } from "./build-win10-baseline.mjs";
 import {
@@ -323,6 +325,92 @@ function expectedSigkillRelease(stage, hasPriorCurrent) {
       BASELINE_PUBLICATION_STAGES.indexOf("system-release-directory-published")
     ? "release-new-sigkill"
     : null;
+}
+
+function completedInteractiveDisplayStatus(bootIdentity = "boot-complete") {
+  return {
+    schemaVersion: "win10-kvm-interactive-display-status/v1",
+    reportPresent: true,
+    reportValid: true,
+    state: { phase: "complete" },
+    task: null,
+    cleanup: {
+      taskRemoved: true,
+      spiceGuestToolsResumeRemoved: true,
+      automaticLogonDisabled: true,
+    },
+    currentBootIdentity: bootIdentity,
+  };
+}
+
+function bindWindowsOpenSshPowerShellCommand(command) {
+  assert.doesNotMatch(command, /['"&|<>^`]/);
+  const argv = command.split(" ");
+  assert.deepEqual(argv.slice(0, -1), [
+    "powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+  ]);
+  assert.match(argv.at(-1), /^[A-Za-z0-9+/=]+$/);
+  const script = Buffer.from(argv.at(-1), "base64").toString("utf16le");
+  const request = /FromBase64String\("([A-Za-z0-9+/=]+)"\)/.exec(script);
+  assert.ok(
+    request,
+    "encoded script must bind its JSON request through Base64",
+  );
+  return {
+    argv,
+    script,
+    parameters: JSON.parse(Buffer.from(request[1], "base64").toString("utf8")),
+  };
+}
+
+function interactiveDisplayReport(config) {
+  return {
+    schemaVersion: "win10-kvm-interactive-display/v1",
+    interactiveUser: `KVM-BUILDER\\${config.guest.sshUser}`,
+    interactiveSessionId: 1,
+    desktop: {
+      width: 1080,
+      height: 1920,
+      scalePercent: config.guest.desktopScalePercent,
+    },
+    qxlDisplayAdapter: "Red Hat QXL controller",
+  };
+}
+
+function constructionSignalCleanupChildSource() {
+  return `
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { runWithConstructionSignalCleanup } from ${JSON.stringify(
+    new URL("./build-win10-baseline.mjs", import.meta.url).href,
+  )};
+
+const [domainName, domainPath, systemStagingPath, cacheStagingPath, receiptPath, readyPath] = process.argv.slice(2);
+await Promise.all([
+  mkdir(domainPath, { recursive: true }),
+  mkdir(systemStagingPath, { recursive: true }),
+  mkdir(cacheStagingPath, { recursive: true }),
+]);
+await runWithConstructionSignalCleanup({
+  cleanup: async () => {
+    await Promise.all([
+      rm(domainPath, { recursive: true, force: true }),
+      rm(systemStagingPath, { recursive: true, force: true }),
+      rm(cacheStagingPath, { recursive: true, force: true }),
+    ]);
+    await writeFile(receiptPath, JSON.stringify({ domainName, systemStagingPath, cacheStagingPath }));
+  },
+  exitOnSignal: true,
+  work: async () => {
+    await writeFile(readyPath, "ready");
+    await new Promise(() => setInterval(() => {}, 1_000));
+  },
+});
+`;
 }
 
 const REQUIRED_PRE_PHASE_KILL_STAGES = Object.freeze([
@@ -1674,7 +1762,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(builder, /qemu-img", \[\s*"convert"/);
     assert.match(builder, /publishVerifiedBaselineRelease/);
     assert.match(builder, /PrepareKvmGuest/);
-    assert.match(builder, /ExpectedSerialUsbPort '1','2'/);
+    assert.match(builder, /ExpectedSerialUsbPort: \[1, 2\]/);
     assert.match(builder, /actions-runner-win-x64\.zip/);
     assert.doesNotMatch(builder, /RunnerArchiveUri/);
     assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
@@ -1780,34 +1868,45 @@ describe("Linux KVM Windows baseline", () => {
             if (command === "ssh" && remoteCommand === "exit") return {};
             if (
               command === "ssh" &&
-              remoteCommand.includes("GetInteractiveDisplayPreparationStatus")
+              remoteCommand.includes("-EncodedCommand")
             ) {
-              return {
-                stdout: `${JSON.stringify(
-                  rearmed
-                    ? { reportValid: true, reportPresent: true }
-                    : {
-                        reportValid: false,
-                        reportPresent: false,
-                        state: { phase: "installing" },
-                        task: null,
-                        taskLogTail:
-                          "SPICE reboot resumed before the display task",
-                        currentBootIdentity: "boot-after-spice-restart",
-                        spiceGuestToolsInstallation: {
-                          phase: "installing",
-                          installBootIdentity: "boot-before-spice-restart",
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                return {
+                  stdout: `${JSON.stringify(
+                    rearmed
+                      ? completedInteractiveDisplayStatus(
+                          "boot-after-spice-restart",
+                        )
+                      : {
+                          reportValid: false,
+                          reportPresent: false,
+                          state: { phase: "installing" },
+                          task: null,
+                          taskLogTail:
+                            "SPICE reboot resumed before the display task",
+                          currentBootIdentity: "boot-after-spice-restart",
+                          spiceGuestToolsInstallation: {
+                            phase: "installing",
+                            installBootIdentity: "boot-before-spice-restart",
+                          },
                         },
-                      },
-                )}\n`,
-              };
-            }
-            if (
-              command === "ssh" &&
-              remoteCommand.includes("-Mode RearmInteractiveDisplay")
-            ) {
-              rearmed = true;
-              return {};
+                  )}\n`,
+                };
+              }
+              if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                rearmed = true;
+                return {
+                  stdout: `${JSON.stringify(
+                    completedInteractiveDisplayStatus(
+                      "boot-after-spice-restart",
+                    ),
+                  )}\n`,
+                };
+              }
             }
             if (command === "scp") {
               const source = args.at(-2) ?? "";
@@ -1836,7 +1935,9 @@ describe("Linux KVM Windows baseline", () => {
       const rearmIndex = invocations.findIndex(
         ({ command, args }) =>
           command === "ssh" &&
-          (args.at(-1) ?? "").includes("-Mode RearmInteractiveDisplay"),
+          (args.at(-1) ?? "").includes("-EncodedCommand") &&
+          bindWindowsOpenSshPowerShellCommand(args.at(-1)).parameters.Mode ===
+            "RearmInteractiveDisplay",
       );
       const interactiveReportIndex = invocations.findIndex(
         ({ command, args }) =>
@@ -1884,10 +1985,13 @@ describe("Linux KVM Windows baseline", () => {
               invocations.push({ command, args });
               const remoteCommand = args.at(-1) ?? "";
               if (command === "ssh" && remoteCommand === "exit") return {};
-              if (
-                command === "ssh" &&
-                remoteCommand.includes("GetInteractiveDisplayPreparationStatus")
-              ) {
+              if (command === "ssh" && remoteCommand !== "exit") {
+                const bound =
+                  bindWindowsOpenSshPowerShellCommand(remoteCommand);
+                assert.equal(
+                  bound.parameters.Mode,
+                  "GetInteractiveDisplayPreparationStatus",
+                );
                 return {
                   stdout:
                     '{"reportValid":false,"reportPresent":false,"state":{"phase":"running"},"task":{"state":"Running","lastTaskResult":267009},"taskLogTail":"display task is still waiting for the QXL desktop"}\n',
@@ -1914,6 +2018,744 @@ describe("Linux KVM Windows baseline", () => {
     } finally {
       rmSync(stagingDirectory, { recursive: true, force: true });
     }
+  });
+
+  it("binds Windows OpenSSH display commands through UTF-16LE Base64 without cmd quoting", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-encoded-display-command-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    config.guest.sshUser = "display user\\o'hara";
+    const commands = [];
+    try {
+      const result = await waitForInteractiveDisplayReport(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          runCommand: async (command, args) => {
+            if (command === "scp") {
+              writeFileSync(
+                args.at(-1),
+                JSON.stringify(interactiveDisplayReport(config)),
+              );
+              return {};
+            }
+            const remoteCommand = args.at(-1);
+            if (command === "ssh" && remoteCommand === "exit") return {};
+            if (command === "ssh") {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              commands.push(bound);
+              assert.equal(
+                bound.parameters.InteractiveUser,
+                "display user\\o'hara",
+              );
+              assert.equal(bound.parameters.DesktopWidth, 1080);
+              assert.equal(bound.parameters.DesktopHeight, 1920);
+              assert.equal(bound.parameters.DesktopScalePercent, 100);
+              assert.equal(
+                bound.parameters.Mode,
+                "GetInteractiveDisplayPreparationStatus",
+              );
+              return {
+                stdout: `${JSON.stringify(completedInteractiveDisplayStatus())}\n`,
+              };
+            }
+            throw new Error(`unexpected command: ${command}`);
+          },
+        },
+      );
+
+      assert.equal(result.target, "display user\\o'hara@192.0.2.44");
+      assert.equal(commands.length, 1);
+      assert.match(
+        commands[0].script,
+        /-InteractiveUser \$request\.InteractiveUser/,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("binds verifier ExpectedInteractiveUser through the encoded PowerShell request", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-encoded-verifier-command-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    config.guest.sshUser = "display user\\o'hara";
+    let verifier = null;
+    try {
+      const report = await waitForGuestVerification(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          runCommand: async (command, args) => {
+            const remoteCommand = args.at(-1) ?? "";
+            if (command === "ssh" && remoteCommand === "exit") return {};
+            if (
+              command === "ssh" &&
+              remoteCommand.includes("-EncodedCommand")
+            ) {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                return {
+                  stdout: `${JSON.stringify(completedInteractiveDisplayStatus())}\n`,
+                };
+              }
+              verifier = bound;
+              return {};
+            }
+            if (command === "scp") {
+              const source = args.at(-2) ?? "";
+              if (source.includes("interactive-display-report.json")) {
+                writeFileSync(
+                  args.at(-1),
+                  JSON.stringify(interactiveDisplayReport(config)),
+                );
+              }
+              if (source.includes("verification.json")) {
+                writeFileSync(args.at(-1), JSON.stringify({ ok: true }));
+              }
+              return {};
+            }
+            if (command === config.runner.registrationTokenProvider.command) {
+              return { stdout: "runner-token\n" };
+            }
+            return {};
+          },
+        },
+      );
+
+      assert.equal(report.ok, true);
+      assert.equal(
+        verifier.parameters.ExpectedInteractiveUser,
+        "display user\\o'hara",
+      );
+      assert.match(
+        verifier.script,
+        /-ExpectedInteractiveUser \$request\.ExpectedInteractiveUser/,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not accept a valid display report until the guest published complete cleanup", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-cleanup-commit-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    const invocations = [];
+    let statusPolls = 0;
+    let now = 0;
+    try {
+      await waitForInteractiveDisplayReport(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          initialRearmDelayMs: 0,
+          now: () => now,
+          pollIntervalMs: 1,
+          runCommand: async (command, args) => {
+            const remoteCommand = args.at(-1) ?? "";
+            invocations.push({ command, remoteCommand });
+            if (command === "ssh" && remoteCommand === "exit") return {};
+            if (command === "ssh") {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                statusPolls += 1;
+                return {
+                  stdout: `${JSON.stringify(
+                    statusPolls === 1
+                      ? {
+                          ...completedInteractiveDisplayStatus("boot-partial"),
+                          state: { phase: "running" },
+                          task: { state: "Running" },
+                          cleanup: {
+                            taskRemoved: false,
+                            spiceGuestToolsResumeRemoved: false,
+                            automaticLogonDisabled: false,
+                          },
+                        }
+                      : completedInteractiveDisplayStatus("boot-final"),
+                  )}\n`,
+                };
+              }
+              if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                assert.equal(
+                  bound.parameters.SpiceGuestToolsInstallerPath,
+                  "C:\\ProgramData\\WindowsRuntimeBaseline\\media\\spice-guest-tools-0.141.exe",
+                );
+                return {
+                  stdout: `${JSON.stringify({
+                    action: "completed",
+                    ...completedInteractiveDisplayStatus("boot-final"),
+                  })}\n`,
+                };
+              }
+            }
+            if (command === "scp") {
+              writeFileSync(
+                args.at(-1),
+                JSON.stringify(interactiveDisplayReport(config)),
+              );
+              return {};
+            }
+            throw new Error(`unexpected command: ${command}`);
+          },
+          sleep: async () => {
+            now += 1;
+          },
+          displayStageTimeoutMs: 20,
+          guestAvailabilityTimeoutMs: 20,
+        },
+      );
+
+      const rearmIndex = invocations.findIndex(
+        ({ command, remoteCommand }) =>
+          command === "ssh" &&
+          remoteCommand !== "exit" &&
+          bindWindowsOpenSshPowerShellCommand(remoteCommand).parameters.Mode ===
+            "RearmInteractiveDisplay",
+      );
+      const copyIndex = invocations.findIndex(
+        ({ command }) => command === "scp",
+      );
+      assert.ok(rearmIndex >= 0);
+      assert.ok(
+        copyIndex > rearmIndex,
+        "partial cleanup must be re-armed first",
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("requires every completed display status condition before accepting the report", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-completion-conditions-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    const incompleteStatuses = [
+      {
+        ...completedInteractiveDisplayStatus(),
+        state: { phase: "running" },
+      },
+      {
+        ...completedInteractiveDisplayStatus(),
+        task: { state: "Ready" },
+      },
+      {
+        ...completedInteractiveDisplayStatus(),
+        cleanup: {
+          taskRemoved: false,
+          spiceGuestToolsResumeRemoved: true,
+          automaticLogonDisabled: true,
+        },
+      },
+      {
+        ...completedInteractiveDisplayStatus(),
+        cleanup: {
+          taskRemoved: true,
+          spiceGuestToolsResumeRemoved: false,
+          automaticLogonDisabled: true,
+        },
+      },
+      {
+        ...completedInteractiveDisplayStatus(),
+        cleanup: {
+          taskRemoved: true,
+          spiceGuestToolsResumeRemoved: true,
+          automaticLogonDisabled: false,
+        },
+      },
+    ];
+    try {
+      for (const incomplete of incompleteStatuses) {
+        const invocations = [];
+        let statusPolls = 0;
+        let now = 0;
+        await waitForInteractiveDisplayReport(
+          config,
+          "win10-runtime-baseline-build-test",
+          stagingDirectory,
+          {
+            discoverGuestAddress: async () => "192.0.2.44",
+            initialRearmDelayMs: 0,
+            now: () => now,
+            pollIntervalMs: 1,
+            runCommand: async (command, args) => {
+              const remoteCommand = args.at(-1) ?? "";
+              invocations.push({ command, remoteCommand });
+              if (command === "ssh" && remoteCommand === "exit") return {};
+              if (command === "ssh") {
+                const bound =
+                  bindWindowsOpenSshPowerShellCommand(remoteCommand);
+                if (
+                  bound.parameters.Mode ===
+                  "GetInteractiveDisplayPreparationStatus"
+                ) {
+                  statusPolls += 1;
+                  return {
+                    stdout: `${JSON.stringify(
+                      statusPolls === 1
+                        ? incomplete
+                        : completedInteractiveDisplayStatus("boot-final"),
+                    )}\n`,
+                  };
+                }
+                if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                  return {
+                    stdout: `${JSON.stringify(
+                      completedInteractiveDisplayStatus("boot-final"),
+                    )}\n`,
+                  };
+                }
+              }
+              if (command === "scp") {
+                writeFileSync(
+                  args.at(-1),
+                  JSON.stringify(interactiveDisplayReport(config)),
+                );
+                return {};
+              }
+              throw new Error(`unexpected command: ${command}`);
+            },
+            sleep: async () => {
+              now += 1;
+            },
+            displayStageTimeoutMs: 20,
+            guestAvailabilityTimeoutMs: 20,
+          },
+        );
+        const rearmIndex = invocations.findIndex(
+          ({ command, remoteCommand }) =>
+            command === "ssh" &&
+            remoteCommand.includes("-EncodedCommand") &&
+            bindWindowsOpenSshPowerShellCommand(remoteCommand).parameters
+              .Mode === "RearmInteractiveDisplay",
+        );
+        const copyIndex = invocations.findIndex(
+          ({ command }) => command === "scp",
+        );
+        assert.ok(rearmIndex >= 0);
+        assert.ok(copyIndex > rearmIndex);
+      }
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for a reboot observation before accepting a post-rearm report or issuing another reboot", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-reboot-barrier-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    let sshProbes = 0;
+    let rearmAttempts = 0;
+    let statusPolls = 0;
+    let copiedBootIdentity = null;
+    try {
+      await waitForInteractiveDisplayReport(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          initialRearmDelayMs: 0,
+          maxRearmAttempts: 2,
+          now: () => now,
+          pollIntervalMs: 1,
+          runCommand: async (command, args) => {
+            const remoteCommand = args.at(-1) ?? "";
+            if (command === "ssh" && remoteCommand === "exit") {
+              sshProbes += 1;
+              return sshProbes === 3 ? { failed: true } : {};
+            }
+            if (command === "ssh") {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                rearmAttempts += 1;
+                return { failed: true };
+              }
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                statusPolls += 1;
+                return {
+                  stdout: `${JSON.stringify(
+                    statusPolls === 1
+                      ? {
+                          reportPresent: false,
+                          reportValid: false,
+                          state: { phase: "failed" },
+                          task: null,
+                          cleanup: {
+                            taskRemoved: false,
+                            spiceGuestToolsResumeRemoved: false,
+                            automaticLogonDisabled: false,
+                          },
+                          currentBootIdentity: "boot-before-rearm",
+                        }
+                      : completedInteractiveDisplayStatus(
+                          statusPolls === 2
+                            ? "boot-before-rearm"
+                            : "boot-after-rearm",
+                        ),
+                  )}\n`,
+                };
+              }
+            }
+            if (command === "scp") {
+              copiedBootIdentity =
+                statusPolls === 2 ? "boot-before-rearm" : "boot-after-rearm";
+              writeFileSync(
+                args.at(-1),
+                JSON.stringify(interactiveDisplayReport(config)),
+              );
+              return {};
+            }
+            throw new Error(`unexpected command: ${command}`);
+          },
+          sleep: async () => {
+            now += 1;
+          },
+          displayStageTimeoutMs: 20,
+          guestAvailabilityTimeoutMs: 20,
+        },
+      );
+
+      assert.equal(
+        rearmAttempts,
+        1,
+        "must not issue an immediate second reboot",
+      );
+      assert.equal(copiedBootIdentity, "boot-after-rearm");
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("resets the re-arm delay after an observed guest reboot", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-rearm-delay-reset-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    let sshProbes = 0;
+    let statusPolls = 0;
+    const rearmTimes = [];
+    try {
+      await waitForInteractiveDisplayReport(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          initialRearmDelayMs: 3,
+          maxRearmAttempts: 2,
+          now: () => now,
+          pollIntervalMs: 1,
+          runCommand: async (command, args) => {
+            const remoteCommand = args.at(-1) ?? "";
+            if (command === "ssh" && remoteCommand === "exit") {
+              sshProbes += 1;
+              return sshProbes === 2 ? { failed: true } : {};
+            }
+            if (command === "ssh") {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                rearmTimes.push(now);
+                return rearmTimes.length === 1
+                  ? { failed: true }
+                  : {
+                      stdout: `${JSON.stringify({
+                        action: "completed",
+                        ...completedInteractiveDisplayStatus("boot-final"),
+                      })}\n`,
+                    };
+              }
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                statusPolls += 1;
+                if (statusPolls === 1) {
+                  return {
+                    stdout: `${JSON.stringify({
+                      reportPresent: false,
+                      reportValid: false,
+                      state: { phase: "failed" },
+                      task: null,
+                      cleanup: {
+                        taskRemoved: false,
+                        spiceGuestToolsResumeRemoved: false,
+                        automaticLogonDisabled: false,
+                      },
+                      currentBootIdentity: "boot-before-rearm",
+                    })}\n`,
+                  };
+                }
+                if (rearmTimes.length === 2) {
+                  return {
+                    stdout: `${JSON.stringify(completedInteractiveDisplayStatus("boot-final"))}\n`,
+                  };
+                }
+                return {
+                  stdout: `${JSON.stringify({
+                    reportPresent: false,
+                    reportValid: false,
+                    state: { phase: "waiting-for-logon" },
+                    task: null,
+                    cleanup: {
+                      taskRemoved: false,
+                      spiceGuestToolsResumeRemoved: true,
+                      automaticLogonDisabled: false,
+                    },
+                    currentBootIdentity: "boot-after-rearm",
+                  })}\n`,
+                };
+              }
+            }
+            if (command === "scp") {
+              writeFileSync(
+                args.at(-1),
+                JSON.stringify(interactiveDisplayReport(config)),
+              );
+              return {};
+            }
+            throw new Error(`unexpected command: ${command}`);
+          },
+          sleep: async () => {
+            now += 1;
+          },
+          displayStageTimeoutMs: 30,
+          guestAvailabilityTimeoutMs: 30,
+        },
+      );
+
+      assert.equal(rearmTimes.length, 2);
+      assert.ok(
+        rearmTimes[1] - rearmTimes[0] >= 3,
+        "the second re-arm must wait from the post-reboot SSH readiness",
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("starts the display-stage deadline only after SSH first becomes ready", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-deadline-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    try {
+      await assert.rejects(
+        waitForInteractiveDisplayReport(
+          config,
+          "win10-runtime-baseline-build-test",
+          stagingDirectory,
+          {
+            discoverGuestAddress: async () => (now < 4 ? null : "192.0.2.44"),
+            maxRearmAttempts: 0,
+            now: () => now,
+            pollIntervalMs: 1,
+            runCommand: async (command, args) => {
+              const remoteCommand = args.at(-1) ?? "";
+              if (command === "ssh" && remoteCommand === "exit") return {};
+              if (command === "ssh") {
+                const bound =
+                  bindWindowsOpenSshPowerShellCommand(remoteCommand);
+                assert.equal(
+                  bound.parameters.Mode,
+                  "GetInteractiveDisplayPreparationStatus",
+                );
+                return {
+                  stdout: `${JSON.stringify({
+                    reportPresent: false,
+                    reportValid: false,
+                    state: { phase: "running" },
+                    task: { state: "Running", lastTaskResult: 267009 },
+                    cleanup: {
+                      taskRemoved: false,
+                      spiceGuestToolsResumeRemoved: false,
+                      automaticLogonDisabled: false,
+                    },
+                    currentBootIdentity: "boot-display",
+                  })}\n`,
+                };
+              }
+              throw new Error(`unexpected command: ${command}`);
+            },
+            sleep: async () => {
+              now += 1;
+            },
+            displayStageTimeoutMs: 2,
+            guestAvailabilityTimeoutMs: 10,
+          },
+        ),
+        /interactive display stage timed out after 2 ms[\s\S]*first SSH readiness at 4 ms/,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the 60-minute guest availability deadline before first SSH readiness", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-guest-availability-deadline-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    try {
+      await assert.rejects(
+        waitForInteractiveDisplayReport(
+          config,
+          "win10-runtime-baseline-build-test",
+          stagingDirectory,
+          {
+            discoverGuestAddress: async () => null,
+            now: () => now,
+            pollIntervalMs: 1,
+            sleep: async () => {
+              now = 60 * 60 * 1000;
+            },
+          },
+        ),
+        /guest availability timed out after 3600000 ms[\s\S]*no discovered DHCP lease/,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans the exact construction domain and both staging paths when its process receives SIGTERM", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-construction-sigterm-"));
+    const childPath = join(root, "construction-sigterm-child.mjs");
+    const domainName = "win10-runtime-baseline-build-sigterm";
+    const domainPath = join(root, domainName);
+    const systemStagingPath = join(root, "system-staging");
+    const cacheStagingPath = join(root, "cache-staging");
+    const receiptPath = join(root, "cleanup-receipt.json");
+    const readyPath = join(root, "ready");
+    try {
+      writeFileSync(childPath, constructionSignalCleanupChildSource());
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `
+            node "$1" "$2" "$3" "$4" "$5" "$6" "$7" &
+            child="$!"
+            for _ in $(seq 1 200); do
+              test -f "$7" && break
+              sleep 0.01
+            done
+            test -f "$7"
+            kill -TERM "$child"
+            wait "$child"
+          `,
+          "_",
+          childPath,
+          domainName,
+          domainPath,
+          systemStagingPath,
+          cacheStagingPath,
+          receiptPath,
+          readyPath,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status, 143, result.stderr);
+      assert.equal(existsSync(domainPath), false);
+      assert.equal(existsSync(systemStagingPath), false);
+      assert.equal(existsSync(cacheStagingPath), false);
+      assert.deepEqual(JSON.parse(readFileSync(receiptPath, "utf8")), {
+        domainName,
+        systemStagingPath,
+        cacheStagingPath,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rechecks guest completion after scheduling rearm and before a reboot", () => {
+    const runtime = readFileSync(
+      new URL("./prepare-vm-runtime.ps1", import.meta.url),
+      "utf8",
+    );
+    const rearm = runtime.slice(
+      runtime.indexOf("function Rearm-InteractiveDisplay"),
+      runtime.indexOf("function Prepare-KvmGuest"),
+    );
+    const completionChecks = [
+      ...rearm.matchAll(
+        /Complete-InteractiveDisplayPreparationFromValidReport/g,
+      ),
+    ];
+    assert.ok(completionChecks.length >= 2);
+    assert.ok(
+      completionChecks[1].index >
+        rearm.indexOf("Initialize-InteractiveDisplayPreparation"),
+    );
+    assert.ok(
+      completionChecks[1].index < rearm.indexOf("Restart-Computer -Force"),
+    );
+  });
+
+  it("publishes the final display report only after cleanup and commits complete state last", () => {
+    const runtime = readFileSync(
+      new URL("./prepare-vm-runtime.ps1", import.meta.url),
+      "utf8",
+    );
+    const completion = runtime.slice(
+      runtime.indexOf("function Complete-InteractiveDisplayPreparation {"),
+      runtime.indexOf(
+        "function Complete-InteractiveDisplayPreparationFromValidReport",
+      ),
+    );
+    assert.ok(
+      completion.indexOf("Remove-InteractiveDisplayPreparationTask") <
+        completion.indexOf(
+          "Write-AtomicJson -Path $interactiveDisplayReportPath",
+        ),
+    );
+    assert.ok(
+      completion.indexOf("Remove-SpiceGuestToolsResume") <
+        completion.indexOf(
+          "Write-AtomicJson -Path $interactiveDisplayReportPath",
+        ),
+    );
+    assert.ok(
+      completion.indexOf("Disable-RemainingAutomaticLogon") <
+        completion.indexOf(
+          "Write-AtomicJson -Path $interactiveDisplayReportPath",
+        ),
+    );
+    assert.ok(
+      completion.indexOf(
+        "Write-AtomicJson -Path $interactiveDisplayReportPath",
+      ) <
+        completion.indexOf(
+          'Write-InteractiveDisplayPreparationState -Phase "complete"',
+        ),
+    );
+    assert.match(runtime, /completionValid = \(Test-InteractiveDisplayReport/);
   });
 
   it("has an independent manual workflow that never uploads a baseline image", () => {
