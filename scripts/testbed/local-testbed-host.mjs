@@ -342,9 +342,9 @@ export function renderReconstructedDomainXml({
       "baseline C, overlay C, and persistent D paths must differ",
     );
   }
-  const expectedName = `<name>${xml(config.domainName)}</name>`;
-  if (countLiteral(templateXml, expectedName) !== 1) {
-    throw new Error("published domain XML does not name the configured domain");
+  const domainNames = [...templateXml.matchAll(/<name>[^<]+<\/name>/g)];
+  if (domainNames.length !== 1) {
+    throw new Error("published domain XML must contain exactly one domain name");
   }
   const baselineSource = `file="${xml(baseline)}"`;
   const cacheSource = `file="${xml(cache)}"`;
@@ -357,6 +357,10 @@ export function renderReconstructedDomainXml({
     );
   }
   let rendered = templateXml.replace(
+    domainNames[0][0],
+    `<name>${xml(config.domainName)}</name>`,
+  );
+  rendered = rendered.replace(
     baselineSource,
     `file="${xml(config.overlayPath)}"`,
   );

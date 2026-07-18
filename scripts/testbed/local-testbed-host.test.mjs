@@ -40,7 +40,7 @@ function config() {
 
 function baselineXml() {
   return `<domain type="kvm">
-  <name>win10-runtime-testbed</name>
+  <name>win10-runtime-baseline</name>
   <devices>
     <disk type="file" device="disk"><source file="${PATHS.baselineSystem}"/><target dev="sda" bus="sata"/></disk>
     <disk type="file" device="disk"><source file="${PATHS.cacheDisk}"/><target dev="sdb" bus="sata"/></disk>
@@ -122,6 +122,8 @@ describe("tracked local testbed host lifecycle", () => {
       cacheDisk: PATHS.cacheDisk,
     });
     assert.doesNotMatch(xml, new RegExp(PATHS.baselineSystem));
+    assert.doesNotMatch(xml, /<name>win10-runtime-baseline<\/name>/);
+    assert.match(xml, /<name>win10-runtime-testbed<\/name>/);
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));
     assert.match(xml, /filterref filter="vem-runtime-testbed-admission"/);
