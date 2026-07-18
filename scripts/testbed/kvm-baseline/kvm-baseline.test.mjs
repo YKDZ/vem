@@ -2685,6 +2685,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(
       runtime,
+      /function Test-InteractiveAutomaticLogonEnabled[\s\S]*configuredUser -ieq "VEMKiosk"/,
+    );
+    assert.match(
+      runtime,
       /DefaultUserName" -Value "VEMKiosk"/,
     );
     const rearmInteractiveDisplay = runtime.slice(

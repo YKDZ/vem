@@ -623,7 +623,7 @@ function Test-InteractiveAutomaticLogonEnabled {
   $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
   return (
     [string](Get-ItemPropertyValue -Path $winlogon -Name "AutoAdminLogon" -ErrorAction SilentlyContinue) -eq "1" -and
-    $configuredUser -match ("(^|\\)" + [regex]::Escape($InteractiveUser) + "$")
+    $configuredUser -ieq "VEMKiosk"
   )
 }
 
@@ -670,7 +670,7 @@ function Complete-InteractiveDisplayPreparation {
   Enable-InteractiveAutomaticLogon
   $cleanup = Get-InteractiveDisplayCleanupStatus
   if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonEnabled) {
-    throw "interactive display completion cleanup is incomplete"
+    throw "interactive display completion cleanup is incomplete: taskRemoved=$($cleanup.taskRemoved), automaticLogonEnabled=$($cleanup.automaticLogonEnabled)"
   }
   # The report is durable before the complete state commits it. A crash between
   # these writes is intentionally non-accepting and will be re-armed by host.
