@@ -6,6 +6,14 @@ const workflow = readFileSync(
   ".github/workflows/vm-runtime-acceptance.yml",
   "utf8",
 );
+const guestRunner = readFileSync(
+  "scripts/testbed/run-local-testbed-guest.ps1",
+  "utf8",
+);
+const orchestrator = readFileSync(
+  "scripts/testbed/full-workflow-orchestrator.mjs",
+  "utf8",
+);
 
 describe("VM runtime acceptance workflow", () => {
   it("has one latest-wins testbed concurrency group across all modes", () => {
@@ -44,6 +52,19 @@ describe("VM runtime acceptance workflow", () => {
     );
     assert.match(windows, /full-workflow-evidence-bundle/);
     assert.match(windows, /clear-cache-report\.json/);
+    assert.match(guestRunner, /foreach \(\$file in @\(\$manifest\.files\)\)/);
+    assert.match(guestRunner, /@\("\.json", "\.log", "\.txt", "\.png"\)/);
+    assert.match(
+      guestRunner,
+      /if \(\$Mode -ne "clear_cache"\) \{[\s\S]*New-BoundedEvidenceBundle/,
+    );
+    for (const artifactRoot of [
+      "scanner-payment-code-artifacts",
+      "ipc-recovery-artifacts",
+      "serial-fulfillment-error-artifacts",
+    ]) {
+      assert.match(orchestrator, new RegExp(artifactRoot));
+    }
     assert.match(windows, /retention-days: 7/);
     assert.doesNotMatch(windows, /\.(?:mp4|webm|avi|mov)\b/i);
     assert.doesNotMatch(
@@ -83,11 +104,11 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /GITHUB_SHA: \$\{\{ github\.sha \}\}/);
     assert.match(
       workflow,
-      /Collect Compact Runtime Acceptance Evidence Pass 1[\s\S]*if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,
+      /Collect Compact Runtime Acceptance Evidence Pass 1\n\s+if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,
     );
     assert.match(
       workflow,
-      /Collect Compact Runtime Acceptance Evidence Pass 1\n\s+if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,
+      /Collect Clear Cache Report Pass 1[\s\S]*clear-cache-report\.json/,
     );
   });
 

@@ -223,9 +223,10 @@ export function runFullWorkflowOrchestrator(options) {
     "full-workflow-evidence-manifest.json",
   );
   const evidenceManifest = buildFullWorkflowEvidenceManifest({
-    reportPaths: plan.tracks.map((track) => track.reportPath),
-    artifactRoots: plan.tracks.map((track) =>
-      join(
+    tracks: plan.tracks.map((track) => ({
+      key: track.key,
+      reportPath: track.reportPath,
+      artifactRoot: join(
         dirname(resolve(options.outPath)),
         {
           fast: "fast-route-stress-sale-artifacts",
@@ -236,7 +237,7 @@ export function runFullWorkflowOrchestrator(options) {
           visionTryOn: "vision-try-on-acceptance-artifacts",
         }[track.key],
       ),
-    ),
+    })),
   });
   writeJson(evidenceManifestPath, evidenceManifest);
   const aggregate = buildFullWorkflowAggregate({
