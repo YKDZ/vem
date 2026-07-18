@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, readFileSync } from "node:fs";
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -90,6 +90,7 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
 ]);
 const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
 const HOST_SIMULATOR_CACHE_DIRECTORY = "host-lower-controller-sim";
+const LOWER_CONTROLLER_SIM_CACHE_DIRECTORY_NAME = /^[a-f0-9]{64}$/;
 const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
   "Cargo.lock",
   "Cargo.toml",
@@ -562,6 +563,43 @@ export function lowerControllerSimCacheLayout(options, sourceDigest) {
   };
 }
 
+function isValidCacheDigest(value) {
+  return LOWER_CONTROLLER_SIM_CACHE_DIRECTORY_NAME.test(value);
+}
+
+async function removeOutdatedLowerControllerSimCaches({
+  layout,
+  stateRoot,
+  listDirectory = readdir,
+  removeDirectory = rm,
+}) {
+  const cacheRoot = join(
+    absolute(stateRoot, "stateRoot"),
+    HOST_SIMULATOR_CACHE_DIRECTORY,
+  );
+  try {
+    await access(cacheRoot, constants.F_OK);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  const entries = await listDirectory(cacheRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (typeof entry === "string") continue;
+    if (
+      !entry.isDirectory() ||
+      !isValidCacheDigest(entry.name) ||
+      entry.name === layout.sourceDigest
+    ) {
+      continue;
+    }
+    await removeDirectory(join(cacheRoot, entry.name), {
+      recursive: true,
+      force: true,
+    });
+  }
+}
+
 export async function ensureLowerControllerSimCached({
   options,
   sourceDigest,
@@ -586,10 +624,18 @@ export async function ensureLowerControllerSimCached({
       access(path, constants.R_OK)
         .then(() => true)
         .catch(() => false));
+  const pruneOldCaches = async () =>
+    removeOutdatedLowerControllerSimCaches({
+      layout,
+      stateRoot: options.stateRoot,
+      listDirectory: dependencies.listDirectory ?? readdir,
+      removeDirectory: dependencies.removeDirectory ?? rm,
+    });
   if (
     (await isExecutable(layout.binaryPath)) &&
     (await markerPresent(layout.successMarkerPath))
   ) {
+    await pruneOldCaches();
     return { ...layout, cache: "hit" };
   }
   const ensureDirectory = dependencies.ensureDirectory ?? mkdir;
@@ -614,6 +660,7 @@ export async function ensureLowerControllerSimCached({
     `${JSON.stringify({ sourceDigest: resolvedSourceDigest })}\n`,
     "utf8",
   );
+  await pruneOldCaches();
   return { ...layout, cache: "miss" };
 }
 

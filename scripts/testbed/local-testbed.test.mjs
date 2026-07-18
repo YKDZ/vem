@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
+  existsSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -931,6 +932,112 @@ describe("Windows D cache contract", () => {
       );
       assert.match(layout.binaryPath, /state\/host-lower-controller-sim\//);
       assert.doesNotMatch(layout.binaryPath, /192\.168\.2\.22/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes old host simulator cache digests while preserving current and non-cache entries", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-local-testbed-simulator-cache-prune-"),
+    );
+    try {
+      const parsedOptions = options(root);
+      const sourceDigest = "a".repeat(64);
+      const staleDigest = "b".repeat(64);
+      const laterStaleDigest = "c".repeat(64);
+      const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
+      const cacheRoot = dirname(layout.root);
+      mkdirSync(cacheRoot, { recursive: true });
+      mkdirSync(join(cacheRoot, staleDigest), { recursive: true });
+      mkdirSync(join(cacheRoot, sourceDigest), { recursive: true });
+      writeFileSync(join(cacheRoot, "not-a-cache"), "keep");
+      writeFileSync(join(cacheRoot, "123"), "keep");
+
+      let binaryPresent = false;
+      let markerPresent = false;
+      const commands = [];
+      const dependencies = {
+        ensureDirectory: async () => {},
+        isExecutable: async () => binaryPresent,
+        markerPresent: async () => markerPresent,
+        publishMarker: async () => {
+          markerPresent = true;
+        },
+        runCommand: async (command, args, commandOptions) => {
+          commands.push({ command, args, commandOptions });
+          binaryPresent = true;
+        },
+      };
+      await ensureLowerControllerSimCached({
+        options: parsedOptions,
+        sourceDigest,
+        dependencies,
+      });
+      assert.equal(existsSync(join(cacheRoot, staleDigest)), false);
+      assert.equal(existsSync(join(cacheRoot, sourceDigest)), true);
+      assert.equal(existsSync(join(cacheRoot, "not-a-cache")), true);
+      assert.equal(existsSync(join(cacheRoot, "123")), true);
+
+      mkdirSync(join(cacheRoot, laterStaleDigest), { recursive: true });
+      await ensureLowerControllerSimCached({
+        options: parsedOptions,
+        sourceDigest,
+        dependencies,
+      });
+      assert.equal(commands.length, 1);
+      assert.equal(existsSync(join(cacheRoot, laterStaleDigest)), false);
+      assert.equal(existsSync(join(cacheRoot, sourceDigest)), true);
+      assert.equal(existsSync(join(cacheRoot, "not-a-cache")), true);
+      assert.equal(existsSync(join(cacheRoot, "123")), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when outdated cache cleanup cannot be removed", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-local-testbed-simulator-cache-fail-closed-"),
+    );
+    try {
+      const parsedOptions = options(root);
+      const sourceDigest = "a".repeat(64);
+      const staleDigest = "b".repeat(64);
+      const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
+      const cacheRoot = dirname(layout.root);
+      const removed = [];
+      mkdirSync(cacheRoot, { recursive: true });
+      mkdirSync(join(cacheRoot, staleDigest), { recursive: true });
+      let binaryPresent = false;
+      let markerPresent = false;
+      await assert.rejects(
+        () =>
+          ensureLowerControllerSimCached({
+            options: parsedOptions,
+            sourceDigest,
+            dependencies: {
+              ensureDirectory: async () => {},
+              isExecutable: async () => binaryPresent,
+              markerPresent: async () => markerPresent,
+              publishMarker: async () => {
+                markerPresent = true;
+              },
+              runCommand: async () => {
+                binaryPresent = true;
+              },
+              listDirectory: async () => [
+                { name: staleDigest, isDirectory: () => true },
+                { name: sourceDigest, isDirectory: () => true },
+              ],
+              removeDirectory: async (path) => {
+                removed.push(path);
+                throw new Error("remove-failed");
+              },
+            },
+          }),
+        /remove-failed/,
+      );
+      assert.deepEqual(removed, [join(cacheRoot, staleDigest)]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
