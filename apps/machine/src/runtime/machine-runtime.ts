@@ -13,6 +13,11 @@ import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
+import {
+  createCustomerJourneyAudioRuntime,
+  type CustomerJourneyAudioRuntime,
+} from "./customer-journey-audio-runtime";
+
 const CAPABILITY_POLL_INTERVAL_MS = 15_000;
 const RECONCILIATION_ATTEMPTS = 3;
 const RECONCILIATION_INITIAL_DELAY_MS = 250;
@@ -23,6 +28,7 @@ type RuntimeCoordinator = {
   pollTimer: ReturnType<typeof globalThis.setInterval> | null;
   reconciliation: Promise<void> | null;
   reconciliationRetryTimer: ReturnType<typeof globalThis.setTimeout> | null;
+  journeyAudio: CustomerJourneyAudioRuntime | null;
 };
 
 const coordinators = new WeakMap<Pinia, RuntimeCoordinator>();
@@ -35,6 +41,7 @@ function coordinatorFor(pinia: Pinia): RuntimeCoordinator {
     pollTimer: null,
     reconciliation: null,
     reconciliationRetryTimer: null,
+    journeyAudio: null,
   };
   coordinators.set(pinia, coordinator);
   return coordinator;
@@ -168,10 +175,7 @@ async function reconcileAfterStreamReconnect(
       if (attempt + 1 >= RECONCILIATION_ATTEMPTS) return;
       // oxlint-disable-next-line no-await-in-loop -- bounded exponential backoff keeps the single coordinator from overlapping reconnect attempts.
       await reconciliationDelay(coordinator, retryDelayMs);
-      retryDelayMs = Math.min(
-        retryDelayMs * 2,
-        RECONCILIATION_MAX_DELAY_MS,
-      );
+      retryDelayMs = Math.min(retryDelayMs * 2, RECONCILIATION_MAX_DELAY_MS);
     }
   }
 }
@@ -201,6 +205,7 @@ export function startMachineRuntime(pinia: Pinia): void {
 
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
+  coordinator.journeyAudio = createCustomerJourneyAudioRuntime(pinia);
   void saleCapabilityStore.refresh();
   coordinator.subscription = daemonClient.subscribeEvents({
     onEvent: (event) => {
@@ -240,4 +245,19 @@ export function stopMachineRuntime(pinia: Pinia): void {
     coordinator.reconciliationRetryTimer = null;
   }
   coordinator.reconciliation = null;
+  const journeyAudio = coordinator.journeyAudio;
+  coordinator.journeyAudio = null;
+  void journeyAudio?.dispose();
+}
+
+export async function requestMachineAudioTestPlayback(
+  pinia: Pinia,
+  sourceUrl: string,
+  volume: number,
+): Promise<string | null> {
+  const journeyAudio = coordinatorFor(pinia).journeyAudio;
+  if (!journeyAudio) {
+    throw new Error("Machine runtime audio coordinator is not running");
+  }
+  return await journeyAudio.requestTestPlayback(sourceUrl, volume);
 }

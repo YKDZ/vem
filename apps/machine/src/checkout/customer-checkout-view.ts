@@ -92,44 +92,6 @@ export type CustomerCheckoutResultView = {
   returnPolicy: CustomerCheckoutReturnPolicy;
 };
 
-export type CustomerEventObservationPhase =
-  | "none"
-  | "awaiting_payment"
-  | "dispensing"
-  | "success_result"
-  | "payment_failed_result"
-  | "payment_expired_result"
-  | "dispense_failed_result"
-  | "refund_pending_result"
-  | "refund_completed_result"
-  | "manual_handling_result"
-  | "closed_result";
-
-export type CustomerEventPickupCue =
-  | "outlet_opened"
-  | "waiting"
-  | "warning"
-  | "urgent"
-  | "completed";
-
-export type CustomerEventJourneyFact =
-  | "payment_requested"
-  | "payment_failure"
-  | "dispense_started"
-  | "dispense_succeeded"
-  | "dispense_failure"
-  | "refund_in_progress"
-  | "refund_resolved"
-  | "manual_support_required";
-
-export type CustomerEventObservation = {
-  phase: CustomerEventObservationPhase;
-  orderCredential: string | null;
-  journeyFact: CustomerEventJourneyFact | null;
-  pickupCue: CustomerEventPickupCue | null;
-  restored: boolean;
-};
-
 export type CustomerCheckoutView =
   | {
       stage: "none";
@@ -139,7 +101,6 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: null;
       restored: boolean;
-      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "payment";
@@ -149,7 +110,6 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: null;
       restored: boolean;
-      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "dispensing";
@@ -159,7 +119,6 @@ export type CustomerCheckoutView =
       dispensing: CustomerCheckoutDispensingView;
       result: null;
       restored: boolean;
-      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "result";
@@ -169,7 +128,6 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: CustomerCheckoutResultView;
       restored: boolean;
-      customerEventObservation: CustomerEventObservation;
     };
 
 export type CustomerCheckoutReadinessContext = {
@@ -429,89 +387,6 @@ function dispensingPickupReminder(
   };
 }
 
-function pickupCueForReminder(
-  reminder: CustomerCheckoutDispensingView["pickupReminder"],
-): CustomerEventPickupCue | null {
-  switch (reminder?.stage) {
-    case null:
-    case undefined:
-      return null;
-    case "outlet_opened":
-      return "outlet_opened";
-    case "pickup_waiting":
-      return "waiting";
-    case "pickup_completed":
-      return "completed";
-    case "pickup_timeout_warning":
-      return reminder.urgency === "urgent" || (reminder.warningNo ?? 0) >= 2
-        ? "urgent"
-        : "warning";
-    default:
-      return null;
-  }
-}
-
-function customerEventPhaseForResult(
-  resultKind: CheckoutResultKind,
-): CustomerEventObservationPhase {
-  switch (resultKind) {
-    case "success":
-      return "success_result";
-    case "payment_failed":
-      return "payment_failed_result";
-    case "payment_expired":
-      return "payment_expired_result";
-    case "dispense_failed":
-      return "dispense_failed_result";
-    case "refund_pending":
-      return "refund_pending_result";
-    case "refunded":
-      return "refund_completed_result";
-    case "manual_handling":
-      return "manual_handling_result";
-    case "closed":
-      return "closed_result";
-  }
-}
-
-function customerEventJourneyFactForResult(
-  resultKind: CheckoutResultKind,
-): CustomerEventJourneyFact | null {
-  switch (resultKind) {
-    case "success":
-      return "dispense_succeeded";
-    case "dispense_failed":
-      return "dispense_failure";
-    case "refund_pending":
-      return "refund_in_progress";
-    case "refunded":
-      return "refund_resolved";
-    case "manual_handling":
-      return "manual_support_required";
-    case "payment_failed":
-      return "payment_failure";
-    case "payment_expired":
-    case "closed":
-      return null;
-  }
-}
-
-function customerEventObservation(input: {
-  phase: CustomerEventObservationPhase;
-  orderCredential: string | null;
-  journeyFact?: CustomerEventJourneyFact | null;
-  pickupCue?: CustomerEventPickupCue | null;
-  restored: boolean;
-}): CustomerEventObservation {
-  return {
-    phase: input.phase,
-    orderCredential: input.orderCredential,
-    journeyFact: input.journeyFact ?? null,
-    pickupCue: input.pickupCue ?? null,
-    restored: input.restored,
-  };
-}
-
 export function projectCustomerCheckoutView(
   input: ProjectCustomerCheckoutViewInput,
 ): CustomerCheckoutView {
@@ -529,11 +404,6 @@ export function projectCustomerCheckoutView(
       dispensing: null,
       result: null,
       restored: input.restored,
-      customerEventObservation: customerEventObservation({
-        phase: "none",
-        orderCredential: null,
-        restored: input.restored,
-      }),
     };
   }
 
@@ -567,12 +437,6 @@ export function projectCustomerCheckoutView(
         cancelDisabledReason: disabledReason,
         display,
       },
-      customerEventObservation: customerEventObservation({
-        phase: "awaiting_payment",
-        orderCredential: transaction.orderNo,
-        journeyFact: "payment_requested",
-        restored: input.restored,
-      }),
     };
   }
 
@@ -589,13 +453,6 @@ export function projectCustomerCheckoutView(
       },
       result: null,
       restored: input.restored,
-      customerEventObservation: customerEventObservation({
-        phase: "dispensing",
-        orderCredential: transaction.orderNo,
-        journeyFact: "dispense_started",
-        pickupCue: pickupCueForReminder(pickupReminder),
-        restored: input.restored,
-      }),
     };
   }
 
@@ -619,12 +476,5 @@ export function projectCustomerCheckoutView(
           : exceptionalReturnPolicy(resultKind, input.readiness),
     },
     restored: input.restored,
-    customerEventObservation: customerEventObservation({
-      phase: customerEventPhaseForResult(resultKind),
-      orderCredential: transaction.orderNo,
-      journeyFact: customerEventJourneyFactForResult(resultKind),
-      pickupCue: resultKind === "success" ? "completed" : null,
-      restored: input.restored,
-    }),
   };
 }

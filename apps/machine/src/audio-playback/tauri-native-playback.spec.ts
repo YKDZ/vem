@@ -71,11 +71,12 @@ describe("Tauri native Machine Audio playback driver", () => {
 
   it("reports completion only after the matching native playback completion event", async () => {
     isTauriRuntimeMock.mockReturnValue(true);
-    let completionListener!: (event: {
-      payload: { requestId: string };
-    }) => void;
-    listenMock.mockImplementation(async (_event, listener) => {
-      completionListener = listener;
+    const listeners = new Map<
+      string,
+      (event: { payload: { requestId: string } }) => void
+    >();
+    listenMock.mockImplementation(async (eventName, listener) => {
+      listeners.set(eventName, listener);
       return vi.fn();
     });
     const diagnostics: string[] = [];
@@ -86,15 +87,48 @@ describe("Tauri native Machine Audio playback driver", () => {
     await playback.playLocal("/assets/payment-succeeded.wav");
 
     expect(diagnostics).toEqual(["requested", "started"]);
-    completionListener({ payload: { requestId: "another-request" } });
+    listeners.get("machine-audio-completed")?.({
+      payload: { requestId: "another-request" },
+    });
     expect(diagnostics).toEqual(["requested", "started"]);
 
     const firstCall = callTauriCommandMock.mock.calls[0];
     if (!firstCall) throw new Error("native playback command was not called");
     const requestId = (firstCall[1] as { requestId: string }).requestId;
-    completionListener({ payload: { requestId } });
+    listeners.get("machine-audio-completed")?.({ payload: { requestId } });
 
     expect(diagnostics).toEqual(["requested", "started", "completed"]);
+  });
+
+  it("reports a stopped terminal outcome only for the active native request", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+    const listeners = new Map<
+      string,
+      (event: { payload: { requestId: string; message?: string } }) => void
+    >();
+    listenMock.mockImplementation(async (eventName, listener) => {
+      listeners.set(eventName, listener);
+      return vi.fn();
+    });
+    const outcomes: string[] = [];
+    const driver = createTauriNativeMachineAudioPlaybackDriver();
+
+    await driver?.playLocal("/assets/payment-succeeded.wav", {
+      requestId: "native-stop-1",
+      volume: 0.7,
+      onTerminal: (outcome) => outcomes.push(outcome.status),
+    });
+    void driver?.stop();
+
+    listeners.get("machine-audio-stopped")?.({
+      payload: { requestId: "another-request" },
+    });
+    listeners.get("machine-audio-stopped")?.({
+      payload: { requestId: "native-stop-1" },
+    });
+
+    expect(outcomes).toEqual(["stopped"]);
+    expect(callTauriCommandMock).toHaveBeenCalledWith("stop_machine_audio");
   });
 
   it("automatically prefers native playback in Tauri with browser fallback available", async () => {

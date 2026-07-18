@@ -24,6 +24,13 @@ type MachineAudioPlaybackDriverPlayOptions = {
   requestId?: string;
   volume: number;
   onCompleted?: () => void;
+  onTerminal?: (outcome: {
+    status: Extract<
+      MachineAudioPlaybackStatus,
+      "completed" | "failed" | "stopped"
+    >;
+    message?: string | null;
+  }) => void;
 };
 
 export type MachineAudioPlaybackDriver = {
@@ -34,7 +41,7 @@ export type MachineAudioPlaybackDriver = {
     options?: MachineAudioPlaybackDriverPlayOptions,
   ): Promise<void>;
   /** Stops or cancels the driver's current pending or playing local audio. */
-  stop(): void;
+  stop(): void | Promise<void>;
 };
 
 export type BrowserMachineAudioElement = {
@@ -187,6 +194,17 @@ export function createMachineAudioPlayback(
             driver: input.driver.name,
           });
         },
+        onTerminal: (outcome) => {
+          if (activePlayback?.requestId !== input.requestId) return;
+          activePlayback = null;
+          recordDiagnostic({
+            requestId: input.requestId,
+            status: outcome.status,
+            sourceUrl: input.sourceUrl,
+            message: outcome.message,
+            driver: input.driver.name,
+          });
+        },
       });
       if (activePlayback?.requestId !== input.requestId) {
         return { started: false, error: null };
@@ -222,7 +240,7 @@ export function createMachineAudioPlayback(
   function stop(): void {
     const stoppedPlayback = activePlayback;
     if (!stoppedPlayback) return;
-    stoppedPlayback.driver.stop();
+    void stoppedPlayback.driver.stop();
     activePlayback = null;
     recordDiagnostic({
       requestId: stoppedPlayback.requestId,
@@ -307,7 +325,9 @@ export function createMockMachineAudioPlaybackDriver(
       }
     },
     stop(): void {
+      const stoppedPlayback = activePlayback;
       activePlayback = null;
+      stoppedPlayback?.onTerminal?.({ status: "stopped" });
       stops.push(new Date().toISOString());
     },
     completeActive,
@@ -318,7 +338,10 @@ export function createBrowserMachineAudioPlaybackDriver(
   options: BrowserMachineAudioPlaybackDriverOptions = {},
 ): MachineAudioPlaybackDriver {
   const audioFactory = options.audioFactory ?? defaultBrowserAudioFactory;
-  let activeAudio: BrowserMachineAudioElement | null = null;
+  let activeAudio: {
+    audio: BrowserMachineAudioElement;
+    options: MachineAudioPlaybackDriverPlayOptions | undefined;
+  } | null = null;
 
   return {
     name: "browser",
@@ -327,20 +350,31 @@ export function createBrowserMachineAudioPlaybackDriver(
       playOptions?: MachineAudioPlaybackDriverPlayOptions,
     ): Promise<void> {
       const audio = audioFactory(sourceUrl);
-      activeAudio = audio;
+      activeAudio = { audio, options: playOptions };
       audio.volume = playOptions?.volume ?? 1;
       audio.addEventListener("ended", () => {
-        if (activeAudio !== audio) return;
+        if (activeAudio?.audio !== audio) return;
         activeAudio = null;
         playOptions?.onCompleted?.();
+        playOptions?.onTerminal?.({ status: "completed" });
+      });
+      audio.addEventListener("error", () => {
+        if (activeAudio?.audio !== audio) return;
+        activeAudio = null;
+        playOptions?.onTerminal?.({
+          status: "failed",
+          message: "browser audio playback failed",
+        });
       });
       await audio.play();
     },
     stop(): void {
-      if (!activeAudio) return;
-      activeAudio.pause();
-      activeAudio.currentTime = 0;
+      const current = activeAudio;
+      if (!current) return;
       activeAudio = null;
+      current.audio.pause();
+      current.audio.currentTime = 0;
+      current.options?.onTerminal?.({ status: "stopped" });
     },
   };
 }
@@ -356,18 +390,30 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
   let activePlayback: {
     requestId: string;
     commandAccepted: boolean;
-    completed: boolean;
+    terminal: {
+      status: "completed" | "failed" | "stopped";
+      message?: string | null;
+    } | null;
     onCompleted?: () => void;
+    onTerminal?: MachineAudioPlaybackDriverPlayOptions["onTerminal"];
     unlisten: UnlistenFn | null;
+    stopRequested: boolean;
   } | null = null;
+  const terminalEvents = [
+    { eventName: "machine-audio-completed", status: "completed" },
+    { eventName: "machine-audio-failed", status: "failed" },
+    { eventName: "machine-audio-stopped", status: "stopped" },
+  ] as const;
 
-  function completeActivePlayback(
+  function finishActivePlayback(
     playback: NonNullable<typeof activePlayback>,
+    outcome: NonNullable<typeof activePlayback>["terminal"],
   ): void {
-    if (activePlayback !== playback) return;
+    if (!outcome || activePlayback !== playback) return;
     activePlayback = null;
     playback.unlisten?.();
-    playback.onCompleted?.();
+    if (outcome.status === "completed") playback.onCompleted?.();
+    playback.onTerminal?.(outcome);
   }
 
   return {
@@ -382,28 +428,44 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
       const playback = {
         requestId,
         commandAccepted: false,
-        completed: false,
+        terminal: null as {
+          status: "completed" | "failed" | "stopped";
+          message?: string | null;
+        } | null,
         onCompleted: playOptions?.onCompleted,
+        onTerminal: playOptions?.onTerminal,
         unlisten: null as UnlistenFn | null,
+        stopRequested: false,
       };
       activePlayback?.unlisten?.();
       activePlayback = playback;
       try {
-        const unlisten = await listen<{ requestId: string }>(
-          "machine-audio-completed",
-          (event) => {
-            if (
-              activePlayback !== playback ||
-              event.payload.requestId !== playback.requestId
-            ) {
-              return;
-            }
-            playback.completed = true;
-            if (playback.commandAccepted) {
-              completeActivePlayback(playback);
-            }
-          },
+        const unlistens = await Promise.all(
+          terminalEvents.map(
+            async ({ eventName, status }) =>
+              await listen<{ requestId: string; message?: string }>(
+                eventName,
+                (event) => {
+                  if (
+                    activePlayback !== playback ||
+                    event.payload.requestId !== playback.requestId
+                  ) {
+                    return;
+                  }
+                  playback.terminal = {
+                    status,
+                    message: event.payload.message ?? null,
+                  };
+                  if (playback.commandAccepted) {
+                    finishActivePlayback(playback, playback.terminal);
+                  }
+                },
+              ),
+          ),
         );
+        const unlisten = () => {
+          for (const stopListening of unlistens) stopListening();
+        };
         if (activePlayback !== playback) {
           unlisten();
           return;
@@ -416,12 +478,12 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
         });
         if (activePlayback !== playback) return;
         playback.commandAccepted = true;
-        if (playback.completed) {
+        if (playback.terminal) {
           setTimeout(() => {
-            completeActivePlayback(playback);
+            finishActivePlayback(playback, playback.terminal);
           }, 0);
         }
-      } catch (error) {
+      } catch (error: unknown) {
         if (activePlayback === playback) {
           activePlayback = null;
           playback.unlisten?.();
@@ -431,9 +493,16 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
     },
     stop(): void {
       const playback = activePlayback;
-      activePlayback = null;
-      playback?.unlisten?.();
-      void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
+      if (!playback || playback.stopRequested) return;
+      playback.stopRequested = true;
+      void callTauriCommand<void>("stop_machine_audio").catch(
+        (error: unknown) => {
+          finishActivePlayback(playback, {
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
     },
   };
 }

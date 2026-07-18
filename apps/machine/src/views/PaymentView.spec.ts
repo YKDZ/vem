@@ -242,13 +242,6 @@ describe("PaymentView", () => {
       },
       dispensing: null,
       result: null,
-      customerEventObservation: {
-        phase: "awaiting_payment",
-        orderCredential: "ORD-CANCEL-001",
-        journeyFact: "payment_requested",
-        pickupCue: null,
-        restored: false,
-      },
     };
     vi.spyOn(checkoutStore, "customerCheckoutView", "get").mockReturnValue(
       projectedView,

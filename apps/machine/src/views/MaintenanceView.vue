@@ -5,6 +5,7 @@ import {
   type PaymentProviderEnvironmentDiagnostic,
   type StockMaintenanceTask,
 } from "@vem/shared";
+import { getActivePinia, type Pinia } from "pinia";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 
 import type { DeviceBindingSnapshot } from "@/daemon/schemas";
@@ -13,12 +14,6 @@ import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import {
-  createMachineAudioPlayback,
-  createTauriNativeMachineAudioPlaybackDriver,
-  type MachineAudioPlayback,
-  type MachineAudioPlaybackDiagnostic,
-} from "@/audio-playback/machine-audio-playback";
 import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { recoverPersistedClaim } from "@/daemon/claim-recovery";
@@ -30,7 +25,7 @@ import {
   type VisionTryOnSession,
 } from "@/native/vision";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
-import { useAudioCueStore } from "@/stores/audio-cues";
+import { requestMachineAudioTestPlayback } from "@/runtime/machine-runtime";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
@@ -42,7 +37,6 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const catalogStore = useCatalogStore();
-const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
@@ -51,6 +45,11 @@ const remoteOpsStore = useRemoteOpsStore();
 const saleCapabilityStore = useSaleCapabilityStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const activePinia = getActivePinia();
+if (!activePinia) {
+  throw new Error("Local Operations requires an active Pinia instance");
+}
+const pinia: Pinia = activePinia;
 const { handleMaintenanceTap } = useMaintenanceEntry();
 const paymentEnvironmentDiagnostic =
   ref<PaymentProviderEnvironmentDiagnostic | null>(null);
@@ -180,36 +179,6 @@ const effectiveRuntimeConfigurationRows = computed(() => {
   ];
 });
 
-const latestAudioCueDiagnosticRows = computed(() => {
-  const diagnostic = audioCueStore.latestPlaybackDiagnostic;
-  if (!diagnostic) return [];
-  return [
-    {
-      label: "请求的提示含义",
-      value: audioCueMeaningLabel(diagnostic.cueKey),
-    },
-    {
-      label: "分类",
-      value: audioCueCategoryLabel(diagnostic.category),
-    },
-    {
-      label: "播放结果",
-      value: audioCueOutcomeLabel(diagnostic.outcome),
-    },
-    {
-      label: "抑制或丢弃原因",
-      value: diagnostic.message ?? "无",
-    },
-    {
-      label: "记录时间",
-      value: diagnostic.recordedAt,
-    },
-    {
-      label: "重复抑制订单键（仅调试）",
-      value: diagnostic.orderKey ?? "无",
-    },
-  ];
-});
 const naturalContextDiagnosticMessage = computed(() =>
   naturalContextStore.snapshot?.degraded || naturalContextStore.error
     ? naturalContextStore.operatorMessage
@@ -522,7 +491,6 @@ onMounted(async () => {
 onUnmounted(() => {
   maintenanceViewMounted = false;
   stopDiagnosticsAutoRefresh();
-  machineAudioTestPlayback.playback?.stop();
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -818,10 +786,8 @@ const stockTaskCanSubmit = computed(() => {
 const machineAudioTestPlayback = reactive({
   loading: false,
   message: null as string | null,
-  driver: "unknown",
-  diagnostic: null as MachineAudioPlaybackDiagnostic | null,
+  requestId: null as string | null,
   volume: machineStore.customerAudio.volume,
-  playback: null as MachineAudioPlayback | null,
 });
 
 type AudioPreferencePatch = Partial<
@@ -863,35 +829,22 @@ function audioVolumeFromInput(event: Event): number {
 }
 
 const latestMachineAudioTestPlaybackRows = computed(() => {
-  const diagnostic = machineAudioTestPlayback.diagnostic;
-  if (!diagnostic) {
-    return [
-      {
-        label: "播放状态",
-        value: "尚未记录测试播放诊断",
-      },
-    ];
-  }
   return [
     {
-      label: "播放状态",
-      value: machineAudioPlaybackStatusLabel(diagnostic.status),
+      label: "播放请求",
+      value: machineAudioTestPlayback.requestId ?? "尚未提交",
     },
     {
       label: "播放驱动",
-      value: diagnostic.driver,
+      value: "Machine Audio Coordinator",
     },
     {
       label: "播放音量",
       value: `${machineAudioVolumePercent(machineAudioTestPlayback.volume)}%`,
     },
     {
-      label: "降级诊断",
-      value: diagnostic.message ?? "无",
-    },
-    {
-      label: "记录时间",
-      value: diagnostic.recordedAt,
+      label: "输出路径",
+      value: "Windows 当前默认输出设备",
     },
   ];
 });
@@ -902,33 +855,16 @@ async function playMachineAudioTestPlayback(): Promise<void> {
   try {
     const volume = machineStore.customerAudio.volume;
     machineAudioTestPlayback.volume = volume;
-    const nativeDriver = createTauriNativeMachineAudioPlaybackDriver();
-    if (!nativeDriver) {
-      throw new Error("测试音频只能在已安装的 Windows Tauri 运行时播放");
-    }
-    const playback = createMachineAudioPlayback({
-      driver: nativeDriver,
+    const requestId = await requestMachineAudioTestPlayback(
+      pinia,
+      maintenanceTestToneUrl,
       volume,
-      onDiagnostic: (diagnostic) => {
-        machineAudioTestPlayback.diagnostic = diagnostic;
-        machineAudioTestPlayback.driver = diagnostic.driver;
-        if (diagnostic.status === "completed") {
-          machineAudioTestPlayback.message =
-            "Windows 默认输出设备已完成测试播放。";
-        }
-        if (diagnostic.status === "failed") {
-          machineAudioTestPlayback.message = diagnostic.message;
-        }
-      },
-    });
-    machineAudioTestPlayback.playback = playback;
-    const started = await playback.playLocal(maintenanceTestToneUrl);
-    machineAudioTestPlayback.diagnostic = playback.latestDiagnostic();
-    if (!started) {
-      throw new Error("Windows 默认输出设备未开始播放测试音频");
-    }
+    );
+    if (!requestId)
+      throw new Error("Machine Audio Coordinator 未接受测试播放请求");
+    machineAudioTestPlayback.requestId = requestId;
     machineAudioTestPlayback.message =
-      "Windows 默认输出设备已开始测试播放，等待完成结果。";
+      "测试播放已交给 Machine Audio Coordinator，等待终态记录。";
   } catch (error) {
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
@@ -1209,49 +1145,6 @@ async function runBlockerRecovery(code: string): Promise<void> {
     return;
   }
   await refreshDiagnostics();
-}
-
-function audioCueMeaningLabel(cueKey: string): string {
-  const labels: Record<string, string> = {
-    "presence.detected": "检测到顾客靠近",
-    "payment.succeeded": "支付成功",
-    "dispensing.started": "开始出货",
-    "dispense.succeeded": "出货成功",
-    "dispense.failed": "出货失败",
-    "refund.pending": "退款处理中",
-    "refund.completed": "退款完成",
-    "manual_handling.required": "需要人工处理",
-  };
-  return labels[cueKey] ?? cueKey;
-}
-
-function audioCueCategoryLabel(category: string): string {
-  const labels: Record<string, string> = {
-    presence: "来人音频提示",
-    transaction: "交易音频提示",
-  };
-  return labels[category] ?? category;
-}
-
-function audioCueOutcomeLabel(outcome: string): string {
-  const labels: Record<string, string> = {
-    played: "已播放",
-    completed: "已完成",
-    failed: "本地音频播放失败",
-    skipped: "已跳过",
-  };
-  return labels[outcome] ?? outcome;
-}
-
-function machineAudioPlaybackStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    requested: "已请求",
-    started: "已开始",
-    completed: "已完成",
-    failed: "失败",
-    stopped: "已停止",
-  };
-  return labels[status] ?? status;
 }
 
 function naturalContextDisplayStatus(): string {
@@ -2286,35 +2179,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
               class="rounded-xl bg-slate-950/35 p-3"
             >
               <dt class="text-xs font-semibold text-slate-400">机器音频提示</dt>
-              <dd class="mt-1 font-bold text-white">
-                {{ row.label }} · {{ row.value }}
-              </dd>
-            </div>
-          </dl>
-        </section>
-
-        <section
-          class="mt-5 border-t border-white/10 pt-4 text-left"
-          data-test="audio-cue-diagnostic"
-        >
-          <h3 class="text-sm font-semibold text-slate-200">
-            最新机器音频提示诊断
-          </h3>
-          <p
-            v-if="latestAudioCueDiagnosticRows.length === 0"
-            class="mt-2 text-sm text-slate-300"
-          >
-            尚未记录机器音频提示诊断。
-          </p>
-          <dl v-else class="mt-3 grid gap-3 md:grid-cols-2">
-            <div
-              v-for="row in latestAudioCueDiagnosticRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
-            >
-              <dt class="text-xs font-semibold text-slate-400">
-                {{ row.label }}
-              </dt>
               <dd class="mt-1 font-bold text-white">
                 {{ row.label }} · {{ row.value }}
               </dd>

@@ -362,13 +362,17 @@ describe("createMachineAudioPlayback", () => {
   });
 
   it("invokes the installed Tauri default-output command and observes its terminal event", async () => {
-    let completed:
-      | ((event: { payload: { requestId: string } }) => void)
-      | null = null;
+    const listeners = new Map<
+      string,
+      (event: { payload: { requestId: string } }) => void
+    >();
     const unlisten = vi.fn();
     nativeAudio.isTauriRuntime.mockReturnValue(true);
-    nativeAudio.listen.mockImplementation(async (_event, listener) => {
-      completed = listener as typeof completed;
+    nativeAudio.listen.mockImplementation(async (eventName, listener) => {
+      listeners.set(
+        eventName as string,
+        listener as (event: { payload: { requestId: string } }) => void,
+      );
       return unlisten;
     });
     nativeAudio.callTauriCommand.mockResolvedValue(undefined);
@@ -397,9 +401,7 @@ describe("createMachineAudioPlayback", () => {
       }),
     );
 
-    const completion = completed as unknown as
-      | ((event: { payload: { requestId: string } }) => void)
-      | null;
+    const completion = listeners.get("machine-audio-completed");
     if (!completion)
       throw new Error("native completion listener was not installed");
     completion({ payload: { requestId: requestId ?? "missing" } });
@@ -409,7 +411,7 @@ describe("createMachineAudioPlayback", () => {
       driver: "native",
       sourceUrl: "/assets/maintenance-test-tone.wav",
     });
-    expect(unlisten).toHaveBeenCalledOnce();
+    expect(unlisten).toHaveBeenCalledTimes(3);
   });
 
   it("falls back when native playback is unavailable", async () => {

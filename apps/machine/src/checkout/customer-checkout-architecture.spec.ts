@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -98,37 +98,40 @@ describe("customer checkout projection architecture", () => {
     expect(resultView).not.toContain("useConnectivityStore");
   });
 
-  it("keeps transaction customer event sources on projection-owned observations", () => {
-    const customerEventSources = readSource(
+  it("keeps customer journey audio on the transition projector and coordinator", () => {
+    for (const path of [
+      "src/customer-events/events.ts",
+      "src/composables/useCustomerEvents.ts",
       "src/composables/useCustomerEventSources.ts",
-    );
-
-    expect(customerEventSources).toContain("customerEventObservation");
-    expect(customerEventSources).not.toContain("TransactionSnapshot");
-    expect(customerEventSources).not.toMatch(/\bnextAction\b/);
-    expect(customerEventSources).not.toMatch(/\bwait_payment\b/);
-    expect(customerEventSources).not.toMatch(/\bdispense_failed_result\b/);
-    expect(customerEventSources).not.toMatch(/\brefund_pending_result\b/);
-    expect(customerEventSources).not.toMatch(/\bmanual_handling_result\b/);
-  });
-
-  it("keeps customer event sources and machine audio cues decoupled from daemon and hardware notifications", () => {
-    const customerEventSources = readSource(
-      "src/composables/useCustomerEventSources.ts",
-    );
-    const audioCueConsumer = readSource(
+      "src/stores/audio-cues.ts",
+      "src/audio-cues/browser-playback.ts",
       "src/audio-cues/customer-audio-consumer.ts",
-    );
-    const browserPlayback = readSource("src/audio-cues/browser-playback.ts");
-
-    for (const source of [
-      customerEventSources,
-      audioCueConsumer,
-      browserPlayback,
     ]) {
-      expect(daemonEventConsumptionOffenders(source)).toEqual([]);
-      expect(source).not.toMatch(/\bF0\b|\bF1\b|\bF2\b|\bE5\b|\bE6\b/);
+      expect(existsSync(`${machineRoot}/${path}`)).toBe(false);
     }
+
+    for (const path of machineSourceFiles()) {
+      if (path.endsWith(".spec.ts")) continue;
+      const source = readSource(path);
+      expect(source).not.toMatch(/\bCustomerExperienceEvent\b/);
+      expect(source).not.toMatch(/\buseCustomerEvents\b/);
+      expect(source).not.toMatch(/\buseCustomerEventSources\b/);
+      expect(source).not.toMatch(/\buseAudioCueStore\b/);
+      expect(source).not.toMatch(/\bemitCustomerEvent\b/);
+      expect(source).not.toMatch(/\.requestCue\s*\(/);
+    }
+
+    const runtime = readSource("src/runtime/customer-journey-audio-runtime.ts");
+    const projector = readSource(
+      "src/customer-journey/transition-projector.ts",
+    );
+    const coordinator = readSource(
+      "src/audio-coordinator/audio-coordinator.ts",
+    );
+    expect(daemonEventConsumptionOffenders(runtime)).toEqual([]);
+    expect(projector).toContain("pickup.warning");
+    expect(projector).toContain("pickup.urgent");
+    expect(coordinator).toContain("onTerminal");
   });
 
   it("detects direct daemon event-stream consumption in customer checkout surfaces", () => {

@@ -2,7 +2,6 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
-import { installCustomerAudioCueConsumer } from "./audio-cues/customer-audio-consumer";
 import { installKioskBrowserGuards } from "./kiosk-browser-guards";
 import { router } from "./router";
 import { installTransactionRouteAuthority } from "./router/transaction-route-authority";
@@ -26,7 +25,6 @@ async function bootstrap(): Promise<void> {
   app.use(pinia);
   installTransactionRouteAuthority(router, pinia);
   app.use(router);
-  installCustomerAudioCueConsumer();
 
   await router.isReady();
   app.mount("#app");

@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { getActivePinia } from "pinia";
-import { computed, onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
 import TouchKeyboard from "@/components/TouchKeyboard.vue";
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
-import { installCustomerEventSources } from "@/composables/useCustomerEventSources";
 import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
@@ -21,9 +20,6 @@ const route = useRoute();
 const pinia = getActivePinia();
 if (!pinia)
   throw new Error("Machine runtime requires an active Pinia instance");
-const cleanupCustomerEventSources = installCustomerEventSources({
-  routeName: computed(() => route.name),
-});
 const cleanupActiveTransactionSync = installActiveTransactionSync();
 installPresenceDepartureNavigation();
 installActiveUiDebugRuntimeScenario();
@@ -32,7 +28,6 @@ installInstalledKioskSaleRouteObserver(router);
 onUnmounted(() => {
   stopMachineRuntime(pinia);
   cleanupActiveTransactionSync();
-  cleanupCustomerEventSources();
 });
 
 function isDevDirectRouteAllowed(): boolean {

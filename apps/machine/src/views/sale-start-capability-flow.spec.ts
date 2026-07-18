@@ -80,7 +80,6 @@ vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
 
-import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { TransactionSnapshot } from "@/daemon/schemas";
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
 import type {
@@ -88,7 +87,6 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
-import { onCustomerEvent } from "@/composables/useCustomerEvents";
 import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -109,7 +107,6 @@ let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 let propertyRestorers: Array<() => void> = [];
-let customerExperienceEventCleanups: Array<() => void> = [];
 let capabilityRevision = 0;
 
 beforeEach(() => {
@@ -179,9 +176,6 @@ beforeEach(() => {
 afterEach(() => {
   resetCustomerPresenceSessionForTests();
   unmountMountedView();
-  for (const cleanup of customerExperienceEventCleanups.splice(0).reverse()) {
-    cleanup();
-  }
   vi.useRealTimers();
   vi.restoreAllMocks();
   for (const restore of propertyRestorers.splice(0).reverse()) {
@@ -196,15 +190,6 @@ function unmountMountedView(): void {
   }
   mountedApp = null;
   document.body.innerHTML = "";
-}
-
-function recordCustomerExperienceEvents(): CustomerExperienceEvent[] {
-  const observed: CustomerExperienceEvent[] = [];
-  const cleanup = onCustomerEvent((event) => {
-    observed.push(event);
-  });
-  customerExperienceEventCleanups.push(cleanup);
-  return observed;
 }
 
 function requireElement<T extends Element>(
@@ -1089,9 +1074,8 @@ describe("sale-start capability UI flow", () => {
     expectRecognitionDetailsHidden(host);
   });
 
-  it("emits product selected through the customer experience event bus when a sale-ready product is explicitly selected", async () => {
+  it("records a selected product when a sale-ready product is explicitly selected", async () => {
     const item = makeCatalogItem();
-    const observed = recordCustomerExperienceEvents();
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
@@ -1109,11 +1093,13 @@ describe("sale-start capability UI flow", () => {
     await nextTick();
 
     expect(routerPushMock).toHaveBeenCalledWith({ name: "checkout" });
-    expect(observed).toEqual([{ type: "product.selected" }]);
-    expect("orderKey" in observed[0]).toBe(false);
+    expect(useCheckoutStore().selectedItem?.catalogKey).toBe(item.catalogKey);
+    expect(useCheckoutStore().checkoutAttemptIdempotencyKey).toEqual(
+      expect.any(String),
+    );
   });
 
-  it("does not emit product selected for passive catalog navigation, restored detail routes, or variant adjustment", async () => {
+  it("does not select a product for passive catalog navigation, restored detail routes, or variant adjustment", async () => {
     const item = makeCatalogItem();
     const secondVariant: MachineCatalogItem = {
       ...item,
@@ -1124,7 +1110,6 @@ describe("sale-start capability UI flow", () => {
       size: "L",
       color: "白色",
     };
-    const observed = recordCustomerExperienceEvents();
     useCatalogStore().applySnapshot({
       items: [item, secondVariant],
       source: "local_stock",
@@ -1176,14 +1161,12 @@ describe("sale-start capability UI flow", () => {
       name: "product-detail",
       params: { catalogKey: item.catalogKey },
     });
-    expect(observed).toEqual([]);
 
     unmountMountedView();
     routeParams.catalogKey = item.catalogKey;
     host = await mountView(ProductDetailView);
 
     expect(host.textContent).toContain("基础短袖");
-    expect(observed).toEqual([]);
 
     const sizeLButton = requireButtonByText(host, "L", "exact");
     expect(sizeLButton.disabled).toBe(false);
@@ -1195,10 +1178,9 @@ describe("sale-start capability UI flow", () => {
     await nextTick();
 
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(observed).toEqual([]);
   });
 
-  it("does not emit product selected for non-sale-ready product interactions", async () => {
+  it("does not select a non-sale-ready product", async () => {
     const item: MachineCatalogItem = {
       ...makeCatalogItem(),
       physicalStock: 0,
@@ -1215,7 +1197,6 @@ describe("sale-start capability UI flow", () => {
         },
       ],
     };
-    const observed = recordCustomerExperienceEvents();
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
@@ -1233,7 +1214,6 @@ describe("sale-start capability UI flow", () => {
 
     expect(routerPushMock).not.toHaveBeenCalledWith("/checkout");
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(observed).toEqual([]);
   });
 
   it("shows routed product detail try-on entry only for the selected variant silhouette", async () => {

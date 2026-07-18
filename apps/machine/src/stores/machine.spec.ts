@@ -3,7 +3,6 @@ import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useAudioCueStore } from "./audio-cues";
 import { useMachineStore } from "./machine";
 
 beforeEach(() => {
@@ -25,17 +24,12 @@ describe("useMachineStore", () => {
       },
     } as EffectiveMachineRuntimeConfiguration);
 
-    const request = useAudioCueStore().requestCue({
-      category: "presence",
-      cueKey: "presence.detected",
-      requestedAt: "2026-06-29T07:00:00.000Z",
+    expect(machineStore.customerAudio).toEqual({
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: false,
     });
-    expect(request).toMatchObject({
-      category: "presence",
-      cueKey: "presence.detected",
-    });
-    expect(useAudioCueStore()).not.toHaveProperty("settings");
-    expect(useAudioCueStore()).not.toHaveProperty("applySettings");
 
     machineStore.applyEffectiveRuntimeConfiguration({
       experience: {
@@ -47,12 +41,7 @@ describe("useMachineStore", () => {
         },
       },
     } as EffectiveMachineRuntimeConfiguration);
-    expect(
-      useAudioCueStore().requestCue({
-        category: "transaction",
-        cueKey: "payment.succeeded",
-      }),
-    ).toBeNull();
+    expect(machineStore.customerAudio.cuesEnabled).toBe(false);
   });
 
   it("does not expose a generic mutable machine configuration action", () => {

@@ -136,7 +136,7 @@ describe("Customer Checkout View Projection", () => {
     });
   });
 
-  it("exposes customer journey facts for event observation without raw next action", () => {
+  it("keeps checkout projection free of customer-audio observation state", () => {
     const payment = projectCustomerCheckoutView({
       transaction: awaitingPaymentTransaction(),
       nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
@@ -167,33 +167,9 @@ describe("Customer Checkout View Projection", () => {
       restored: false,
     });
 
-    expect(payment.customerEventObservation).toEqual({
-      phase: "awaiting_payment",
-      orderCredential: "ORD-PAYMENT-001",
-      journeyFact: "payment_requested",
-      pickupCue: null,
-      restored: true,
-    });
-    expect(dispensing.customerEventObservation).toEqual({
-      phase: "dispensing",
-      orderCredential: "ORD-DISPENSING-001",
-      journeyFact: "dispense_started",
-      pickupCue: "urgent",
-      restored: false,
-    });
-    expect(refunded.customerEventObservation).toEqual({
-      phase: "refund_completed_result",
-      orderCredential: "ORD-REFUNDED-001",
-      journeyFact: "refund_resolved",
-      pickupCue: null,
-      restored: false,
-    });
-    expect(
-      Object.prototype.hasOwnProperty.call(
-        dispensing.customerEventObservation,
-        "nextAction",
-      ),
-    ).toBe(false);
+    for (const view of [payment, dispensing, refunded]) {
+      expect(view).not.toHaveProperty("customerEventObservation");
+    }
   });
 
   it("projects in-flight payment-code attempts as not cancelable", () => {
@@ -412,7 +388,6 @@ describe("Customer Checkout View Projection", () => {
     });
 
     expect(view.dispensing?.pickupReminder).toBeNull();
-    expect(view.customerEventObservation.pickupCue).toBeNull();
   });
 
   it("projects successful terminal snapshots to success result with sale-ready return policy", () => {

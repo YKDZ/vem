@@ -1,0 +1,355 @@
+import { describe, expect, it } from "vitest";
+
+import { createCustomerJourneyTransitionProjector } from "./transition-projector";
+
+describe("Customer Journey Transition Projector", () => {
+  it("emits a payment transition once when polling only changes timestamps", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    projector.project({ transaction: null });
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-100",
+          nextAction: "wait_payment",
+          updatedAt: "2026-07-18T08:00:00.000Z",
+          vending: null,
+        },
+      }),
+    ).toMatchObject([
+      {
+        transitionId: "transaction:ORDER-100:payment-prompt",
+        kind: "payment.prompt",
+      },
+    ]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-100",
+          nextAction: "wait_payment",
+          updatedAt: "2026-07-18T08:00:01.000Z",
+          vending: null,
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("uses a restored transaction as baseline without replaying it", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-RESTORED",
+          nextAction: "wait_payment",
+          updatedAt: "2026-07-18T08:00:00.000Z",
+          vending: null,
+          restored: true,
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-RESTORED",
+          nextAction: "wait_payment",
+          updatedAt: "2026-07-18T08:01:00.000Z",
+          vending: null,
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-RESTORED",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:02:00.000Z",
+          vending: null,
+        },
+      }),
+    ).toMatchObject([
+      { kind: "payment.succeeded" },
+      { kind: "dispensing.started" },
+    ]);
+  });
+
+  it("projects F0, ordinal E5, F1, and F2 from daemon pickup facts without UI timers", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    projector.project({ transaction: null });
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:00.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "outlet_opened",
+              level: "info",
+              warningNo: null,
+              reportedAt: "2026-07-18T08:00:00.000Z",
+            },
+          },
+        },
+      }),
+    ).toMatchObject([
+      { kind: "payment.succeeded" },
+      { kind: "dispensing.started" },
+      { kind: "pickup.outlet_opened" },
+    ]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:10.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "pickup_timeout_warning",
+              level: "warning",
+              warningNo: 1,
+              reportedAt: "2026-07-18T08:00:10.000Z",
+            },
+          },
+        },
+      }),
+    ).toMatchObject([{ kind: "pickup.warning" }]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:25.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "pickup_timeout_warning",
+              level: "urgent",
+              warningNo: 2,
+              reportedAt: "2026-07-18T08:00:25.000Z",
+            },
+          },
+        },
+      }),
+    ).toMatchObject([{ kind: "pickup.urgent" }]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:30.000Z",
+          vending: { status: "dispensing", pickupReminder: null },
+        },
+      }),
+    ).toMatchObject([{ kind: "pickup.resetting" }]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-PICKUP",
+          nextAction: "success",
+          updatedAt: "2026-07-18T08:00:31.000Z",
+          vending: { status: "succeeded", pickupReminder: null },
+        },
+      }),
+    ).toMatchObject([
+      { kind: "pickup.completed" },
+      { kind: "dispense.succeeded" },
+    ]);
+  });
+
+  it("projects payment, refund, and manual handling outcomes from transaction facts", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    projector.project({ transaction: null });
+
+    const failed = projector.project({
+      transaction: {
+        orderNo: "ORDER-FAILED",
+        nextAction: "payment_failed",
+        updatedAt: "2026-07-18T08:03:00.000Z",
+        vending: null,
+      },
+    });
+    expect(failed).toMatchObject([{ kind: "payment.failed" }]);
+
+    const refundPending = projector.project({
+      transaction: {
+        orderNo: "ORDER-REFUND",
+        nextAction: "refund_pending",
+        updatedAt: "2026-07-18T08:04:00.000Z",
+        vending: null,
+      },
+    });
+    expect(refundPending).toMatchObject([
+      { kind: "payment.succeeded" },
+      { kind: "refund.pending" },
+    ]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-REFUND",
+          nextAction: "refunded",
+          updatedAt: "2026-07-18T08:05:00.000Z",
+          vending: null,
+        },
+      }),
+    ).toMatchObject([{ kind: "refund.completed" }]);
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-MANUAL",
+          nextAction: "manual_handling",
+          updatedAt: "2026-07-18T08:06:00.000Z",
+          vending: null,
+        },
+      }),
+    ).toMatchObject([
+      { kind: "payment.succeeded" },
+      { kind: "manual_handling.required" },
+    ]);
+  });
+
+  it.each([
+    ["success", "dispense.succeeded"],
+    ["payment_failed", "payment.failed"],
+    ["payment_expired", "payment.failed"],
+    ["dispense_failed", "dispense.failed"],
+    ["refund_pending", "refund.pending"],
+    ["refunded", "refund.completed"],
+    ["manual_handling", "manual_handling.required"],
+  ] as const)(
+    "projects %s as %s from the transaction protocol",
+    (nextAction, kind) => {
+      const projector = createCustomerJourneyTransitionProjector();
+      const transitions = projector.project({
+        transaction: {
+          orderNo: `ORDER-${nextAction}`,
+          nextAction,
+          updatedAt: "2026-07-18T08:10:00.000Z",
+          vending: null,
+        },
+      });
+
+      expect(transitions).toContainEqual(expect.objectContaining({ kind }));
+    },
+  );
+
+  it.each([
+    [
+      "single-person Vision presence",
+      {
+        vision: {
+          personPresent: true,
+          occupancyState: "single" as const,
+          lastSeenAt: "2026-07-18T08:11:00.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:11:00.000Z",
+        },
+      },
+      "presence.welcome",
+    ],
+    [
+      "crowd Vision presence",
+      {
+        vision: {
+          personPresent: true,
+          occupancyState: "multiple" as const,
+          lastSeenAt: "2026-07-18T08:12:00.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:12:00.000Z",
+        },
+      },
+      "privacy.crowd_detected",
+    ],
+    [
+      "Vision departure",
+      {
+        vision: {
+          personPresent: false,
+          occupancyState: "none" as const,
+          lastSeenAt: "2026-07-18T08:13:00.000Z",
+          departedAt: "2026-07-18T08:13:01.000Z",
+          lastChangedAt: "2026-07-18T08:13:01.000Z",
+        },
+      },
+      "presence.departed",
+    ],
+  ])("projects %s as a stable source transition", (_label, facts, kind) => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const first = projector.project(facts);
+    const repeated = projector.project(facts);
+
+    expect(first).toContainEqual(expect.objectContaining({ kind }));
+    expect(repeated).toEqual([]);
+  });
+
+  it("remembers a restored touchscreen fact without replaying it", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const facts = {
+      touchscreen: {
+        personPresent: true,
+        source: "local_interaction" as const,
+        lastInteractionAt: "2026-07-18T08:14:00.000Z",
+        restored: true,
+      },
+    };
+
+    expect(projector.project(facts)).toEqual([]);
+    expect(
+      projector.project({
+        touchscreen: { ...facts.touchscreen, restored: false },
+      }),
+    ).toEqual([]);
+  });
+
+  it("remembers a restored Vision fact without replaying it", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const facts = {
+      vision: {
+        personPresent: true,
+        occupancyState: "single" as const,
+        lastSeenAt: "2026-07-18T08:15:00.000Z",
+        departedAt: null,
+        lastChangedAt: "2026-07-18T08:15:00.000Z",
+        restored: true,
+      },
+    };
+
+    expect(projector.project(facts)).toEqual([]);
+    expect(
+      projector.project({ vision: { ...facts.vision, restored: false } }),
+    ).toEqual([]);
+  });
+
+  it("remembers a restored product selection without replaying it", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const facts = {
+      selectedProduct: {
+        selectionId: "selection-restored",
+        productId: "product-1",
+        category: "袜子",
+        selectedAt: "2026-07-18T08:16:00.000Z",
+        restored: true,
+      },
+    };
+
+    expect(projector.project(facts)).toEqual([]);
+    expect(
+      projector.project({
+        selectedProduct: { ...facts.selectedProduct, restored: false },
+      }),
+    ).toEqual([]);
+  });
+});

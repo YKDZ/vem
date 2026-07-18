@@ -61,10 +61,6 @@ vi.mock("@/composables/useVisionRecommendations", () => ({
   useVisionRecommendations: () => undefined,
 }));
 
-vi.mock("@/composables/useCustomerEvents", () => ({
-  emitCustomerEvent: vi.fn(),
-}));
-
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     createOrder: createOrderMock,

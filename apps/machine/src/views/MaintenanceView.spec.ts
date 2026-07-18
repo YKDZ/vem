@@ -872,7 +872,7 @@ describe("Local Operations", () => {
     await flush();
 
     expect(host.textContent).toContain(
-      "测试音频只能在已安装的 Windows Tauri 运行时播放",
+      "Machine runtime audio coordinator is not running",
     );
     expect(host.textContent).not.toContain(
       "Windows 默认输出设备已开始测试播放",
