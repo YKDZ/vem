@@ -634,6 +634,7 @@ describe("supported API seeding", () => {
       ),
     );
     const calls = [];
+    const uploads = [];
     const request = async (_base, path, input = {}) => {
       calls.push({ path, ...input });
       if (path === "/auth/login") return { accessToken: "admin-token" };
@@ -654,13 +655,32 @@ describe("supported API seeding", () => {
         return { id: "mock-provider", status: "enabled" };
       throw new Error(`unexpected path: ${path}`);
     };
+    const upload = async (_base, path, input = {}) => {
+      uploads.push({ path, ...input });
+      return {
+        id: "550e8400-e29b-41d4-a716-446655440125",
+        publicUrl:
+          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        contentType: "image/png",
+      };
+    };
     const result = await seedThroughSupportedApis({
       baseUrl: "http://127.0.0.1:26849/api",
       fixture,
       hostPrivateAddress: "10.0.0.15",
       request,
+      upload,
     });
     assert.equal(result.machine.code, "VEM-TESTBED-LOCAL");
+    assert.equal(uploads.length, 1);
+    assert.deepEqual(uploads[0], {
+      path: "/media-assets/try-on-silhouettes",
+      token: "admin-token",
+      fileName: "local-testbed-try-on-silhouette.png",
+      contentType: "image/png",
+      buffer: uploads[0].buffer,
+    });
+    assert.ok(Buffer.isBuffer(uploads[0].buffer));
     assert.equal(calls.filter((call) => call.path === "/products").length, 44);
     assert.deepEqual(
       calls.find((call) => call.path === "/payments/providers/mock-provider"),
@@ -686,6 +706,17 @@ describe("supported API seeding", () => {
         (call) => call.path === "/inventories" && call.body.onHandQty === 3,
       ),
     );
+    const tshirtVariantCalls = calls.filter(
+      (call) =>
+        call.path === "/product-variants" &&
+        call.body.tryOnSilhouetteMediaAssetId ===
+          "550e8400-e29b-41d4-a716-446655440125",
+    );
+    assert.equal(tshirtVariantCalls.length, 14);
+    assert.deepEqual(result.visionAcceptance, {
+      tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+      tryOnCategoryKey: "tshirts",
+    });
     assert.doesNotMatch(JSON.stringify(calls), /channel-policy/);
   });
 });
@@ -738,6 +769,23 @@ describe("Windows D cache contract", () => {
       guest.indexOf('if ($Mode -eq "clear_cache")') <
         guest.indexOf("Require-Path $GuestInputPath"),
     );
+  });
+
+  it("installs the real Vision artifact and runs the independent try-on acceptance only in full mode", () => {
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(guest, /function Write-RecordedVisionSiteConfiguration/);
+    assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
+    assert.match(guest, /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/);
+    assert.match(guest, /Install-VisionMainArtifact/);
+    assert.match(guest, /vision-try-on-acceptance\.mjs --mode full/);
+    assert.match(
+      guest,
+      /if \(\$Mode -eq "full"\) \{\s+Invoke-FullVisionTryOnAcceptance \$GuestInputPath \$HandoffPath \$visionTryOnOutPath\s+\}/s,
+    );
+    assert.doesNotMatch(guest, /\b(factory|iso)\b/i);
   });
 });
 

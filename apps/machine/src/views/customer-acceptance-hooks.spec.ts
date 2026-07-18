@@ -170,6 +170,10 @@ describe("customer acceptance hooks", () => {
     applySaleCapability();
 
     const host = await mountView(CatalogView);
+    const page = host.querySelector('[data-test="catalog-page"]');
+    expect(page?.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
     const category = host.querySelector(
       '[data-test="catalog-category"][data-category-key="socks"]',
     );
@@ -185,6 +189,8 @@ describe("customer acceptance hooks", () => {
     expect(product?.getAttribute("data-slot-id")).toBe(item.slotId);
     expect(product?.getAttribute("data-slot-code")).toBe(item.slotCode);
     expect(product?.getAttribute("data-variant-id")).toBe(item.variantId);
+    expect(product?.getAttribute("data-preferred-variant-id")).toBe("");
+    expect(product?.getAttribute("data-recommendation-score")).toBe("0");
   });
 
   it("exposes product buy identity attrs", async () => {

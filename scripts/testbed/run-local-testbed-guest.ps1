@@ -121,6 +121,56 @@ function Get-CdpProcessBinding([int]$MachineProcessId) {
   return [ordered]@{ listenerProcessId = $listenerProcessId; machineAncestorProcessId = $ancestor }
 }
 
+function Write-RecordedVisionSiteConfiguration([string]$Path) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+  @{
+    schemaVersion = "vending-vision-site-config/v1"
+    host = "127.0.0.1"
+    port = 7892
+    allowed_origins = @(
+      "http://tauri.localhost",
+      "https://tauri.localhost",
+      "http://127.0.0.1:7892"
+    )
+    cameras = @{
+      top = @{
+        source = "recorded_video"
+        role = "presence"
+        video_path = "recorded-video/top.mp4"
+      }
+      front = @{
+        source = "recorded_video"
+        role = "profile_tryon"
+        video_path = "recorded-video/front.mp4"
+      }
+    }
+  } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding utf8
+}
+
+function Invoke-FullVisionTryOnAcceptance(
+  [string]$GuestInputPath,
+  [string]$HandoffPath,
+  [string]$OutPath
+) {
+  $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
+  Import-Module $visionModulePath -Force
+  $visionCacheRoot = Join-Path $cacheRoot "vision-main"
+  $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
+  Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
+  $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+  $visionInstallation = Install-VisionMainArtifact `
+    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
+    -FixtureArchive ([string]$visionCache.fixtureArchive) `
+    -Commit ([string]$visionCache.commit) `
+    -SiteConfigurationPath $visionSiteConfigurationSourcePath `
+    -ProbeTimeoutSeconds 60
+  if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
+    throw "installed Vision commit does not match the resolved cached commit"
+  }
+  node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath
+  if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
+}
+
 if ($Mode -eq "clear_cache") {
   Clear-DeclaredCaches
   [Console]::Out.WriteLine('{"ok":true,"mode":"clear_cache","cacheCleared":true}')
@@ -212,6 +262,7 @@ $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
+[string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"
   machineCode = [string]$input.machineCode
@@ -248,5 +299,11 @@ node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handof
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
 node scripts/testbed/fast-route-stress-sale.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $fastRouteOutPath
 if ($LASTEXITCODE -ne 0) { throw "fast route stress sale failed" }
+if ($Mode -eq "full") {
+  Invoke-FullVisionTryOnAcceptance $GuestInputPath $HandoffPath $visionTryOnOutPath
+}
 Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
 Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
+if ($Mode -eq "full") {
+  Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
+}

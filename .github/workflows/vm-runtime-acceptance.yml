@@ -66,6 +66,9 @@ jobs:
           persist-credentials: false
       - name: Build Deploy Claim And Test
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VISION_GITHUB_TOKEN: ${{ github.token }}
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
       - name: Collect Compact Fast Sale Evidence
@@ -77,5 +80,16 @@ jobs:
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Collect Compact Vision Experience Evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-vision-try-on-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
           if-no-files-found: warn
           retention-days: 7

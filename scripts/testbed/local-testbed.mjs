@@ -691,6 +691,42 @@ async function requestJson(baseUrl, path, options = {}) {
   return payload.data;
 }
 
+const TESTBED_TRY_ON_SILHOUETTE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAACACAYAAABMXPacAAAAlUlEQVR4nO3QQREAIAzAsIF/z0NGHjQKej07s/OxqwO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAaoAO0BugArQE6QGuADtAeUzUCf0J2cKoAAAAASUVORK5CYII=";
+
+function testbedTryOnSilhouetteAsset() {
+  return {
+    fileName: "local-testbed-try-on-silhouette.png",
+    contentType: "image/png",
+    buffer: Buffer.from(TESTBED_TRY_ON_SILHOUETTE_PNG_BASE64, "base64"),
+  };
+}
+
+function supportsTryOnAcceptance(entry) {
+  return entry.category === "T恤";
+}
+
+async function uploadMultipartFile(baseUrl, path, options) {
+  const form = new FormData();
+  form.set(
+    "file",
+    new Blob([options.buffer], { type: options.contentType }),
+    options.fileName,
+  );
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+    },
+    body: form,
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(`POST ${path} failed: ${JSON.stringify(payload)}`);
+  }
+  return payload.data;
+}
+
 async function waitForApi(baseUrl) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
@@ -727,6 +763,7 @@ export async function seedThroughSupportedApis({
   fixture,
   hostPrivateAddress,
   request = requestJson,
+  upload = uploadMultipartFile,
 }) {
   const login = await request(baseUrl, "/auth/login", {
     method: "POST",
@@ -736,6 +773,14 @@ export async function seedThroughSupportedApis({
     },
   });
   const token = login.accessToken;
+  const tryOnSilhouetteAsset = await upload(
+    baseUrl,
+    "/media-assets/try-on-silhouettes",
+    {
+      token,
+      ...testbedTryOnSilhouetteAsset(),
+    },
+  );
   const products = [];
   for (const [index, entry] of fixture.products.entries()) {
     const product = await request(baseUrl, "/products", {
@@ -760,6 +805,9 @@ export async function seedThroughSupportedApis({
           fixture.slots.find((slot) => slot.sourceRow === entry.sourceRow)
             ?.priceCents ?? 5900,
         status: "active",
+        tryOnSilhouetteMediaAssetId: supportsTryOnAcceptance(entry)
+          ? tryOnSilhouetteAsset.id
+          : null,
       },
     });
     products.push({ ...entry, product, variant });
@@ -858,6 +906,10 @@ export async function seedThroughSupportedApis({
     planogramVersion,
     apiBaseUrl: baseUrl,
     mqttUrl: `mqtt://${hostPrivateAddress}:18883`,
+    visionAcceptance: {
+      tryOnSilhouetteAssetId: tryOnSilhouetteAsset.id,
+      tryOnCategoryKey: "tshirts",
+    },
     slots: seededSlots.map(({ slot, inventory }) => ({
       slotCode: slot.slotCode,
       inventoryId: inventory.id,
@@ -1001,6 +1053,7 @@ async function reconstruct(options) {
     machineCode: seeded.machine.code,
     planogramVersion: seeded.planogramVersion,
     interactiveUser: contract.testbed.guest.user,
+    visionAcceptance: seeded.visionAcceptance,
   };
   await writeFile(
     join(options.stateRoot, "guest-input.json"),

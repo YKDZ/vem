@@ -351,6 +351,7 @@ onUnmounted(() => {
       class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
       :class="presenceClass"
       data-test="catalog-page"
+      :data-vision-recommendation-active="currentProfile?.value ? 'true' : 'false'"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -561,6 +562,7 @@ onUnmounted(() => {
       :class="presenceClass"
       data-test="catalog-page"
       :data-category-key="selectedTopCategoryKey"
+      :data-vision-recommendation-active="currentProfile?.value ? 'true' : 'false'"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -680,6 +682,8 @@ onUnmounted(() => {
                 :data-slot-id="product.item.slotId"
                 :data-slot-code="product.item.slotCode"
                 :data-variant-id="product.item.variantId"
+                :data-preferred-variant-id="product.preferredVariantId ?? ''"
+                :data-recommendation-score="product.recommendationScore"
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">
