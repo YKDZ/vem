@@ -11,6 +11,8 @@ import {
   validateSaleAudioCaptureReport,
 } from "./sale-audio-capture-host-adapter.mjs";
 
+process.env.VEM_TEST_ALLOW_JSON_PTY_FIXTURE = "1";
+
 const runtime = {
   processId: 42,
   executablePath: "C:\\VEM\\bringup\\machine.exe",
@@ -198,9 +200,11 @@ describe("capture-sale-audio host adapter extension", () => {
         {
           environment: {
             ...process.env,
+            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
             VEM_VM_HOST_AUDIO_CAPTURE_MODE: "file",
             VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: wavPath,
             VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: journalPath,
+            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
           },
         },
       );
@@ -265,9 +269,11 @@ describe("capture-sale-audio host adapter extension", () => {
         {
           environment: {
             ...process.env,
+            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
             VEM_VM_HOST_AUDIO_CAPTURE_MODE: "file",
             VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: wavPath,
             VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: journalPath,
+            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
           },
         },
       );
