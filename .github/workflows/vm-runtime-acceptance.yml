@@ -45,6 +45,11 @@ jobs:
             \( -name '*.qcow2' -o -name '*.json' -o -name '*.xml' \) \
             -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -k3 || true
           cat /opt/vem/runtime-baseline/images/win10-runtime-baseline.qcow2.current.json || true
+          cat /opt/vem/runtime-baseline/images/.vem-win10-runtime-baseline.cache-staging-e0f13c47/.construction-owner.json || true
+          find /opt /var/lib/libvirt/images -xdev -type f \
+            \( -name '*.qcow2' -o -name '*.qcow' -o -name '*.img' \) \
+            -size +1G -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -nr | head -40 || true
+          ps -eo pid,ppid,lstart,args | rg 'kvm|qemu|runtime-baseline|pnpm|node|cargo' | tail -80 || true
           df -h /opt || true
           tail -n 120 "/var/log/libvirt/qemu/${domain}.log" || true
 
