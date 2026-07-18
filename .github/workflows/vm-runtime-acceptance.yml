@@ -25,16 +25,18 @@ permissions:
   contents: read
 
 jobs:
-  initialize-testbed-known-hosts:
+  inspect-published-testbed-contract:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Initialize testbed known-hosts contract file
+      - name: Inspect published testbed contract
         run: |
           set -euo pipefail
-          install -d -m 700 /opt/vem/runtime-testbed
-          touch /opt/vem/runtime-testbed/known_hosts
-          chmod 600 /opt/vem/runtime-testbed/known_hosts
+          manifest=/opt/vem/runtime-baseline/images/win10-runtime-baseline.qcow2.current.json
+          jq '{releaseId,profileVmName:.profile.vmName,testbed}' "$manifest"
+          xml="$(jq -r .artifacts.domainXmlPath "$manifest")"
+          grep -E '<name>|source file=' "$xml"
+          jq '{vm,testbed}' /opt/vem/runtime-baseline/config.6225f6a6.json
 
   build-windows-runtime:
     name: Build Current Windows Runtime
