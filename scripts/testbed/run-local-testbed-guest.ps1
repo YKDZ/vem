@@ -226,6 +226,35 @@ function Wait-RuntimeReady {
   throw "deployed production daemon did not become ready after claim: $lastError"
 }
 
+function Initialize-TestbedHardwareBindings {
+  $readyPath = Join-Path $daemonDataRoot "daemon-ready.json"
+  $ready = Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json
+  $baseUrl = $ready.healthzUrl -replace '/healthz$', ''
+  $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+  foreach ($role in @("lower_controller", "scanner")) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $lastError = $null
+    do {
+      $snapshot = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 5
+      $binding = @($snapshot.roles | Where-Object { $_.role -eq $role })[0]
+      if ($binding.ready) { break }
+      foreach ($candidate in @($binding.candidates)) {
+        try {
+          $identityKey = [string]$candidate.identity.identityKey
+          $test = Invoke-RestMethod -Method Post -Uri "$baseUrl/v1/hardware-bindings/$role/test" -Headers $headers -ContentType "application/json" -Body (@{ identityKey = $identityKey } | ConvertTo-Json -Compress) -TimeoutSec 10
+          if (-not $test.result.success) { continue }
+          Invoke-RestMethod -Method Post -Uri "$baseUrl/v1/runtime-configuration/intents/hardware-bindings/$role/confirm" -Headers $headers -ContentType "application/json" -Body (@{ identityKey = $identityKey; testEvidenceToken = [string]$test.testEvidenceToken } | ConvertTo-Json -Compress) -TimeoutSec 10 | Out-Null
+          break
+        } catch { $lastError = $_ }
+      }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $snapshot = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 5
+    $binding = @($snapshot.roles | Where-Object { $_.role -eq $role })[0]
+    if (-not $binding.ready) { throw "testbed $role binding did not become ready: $lastError" }
+  }
+}
+
 function Wait-InstalledTauriTarget {
   $deadline = [DateTime]::UtcNow.AddMinutes(1)
   do {
@@ -414,6 +443,8 @@ $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
 Write-TestbedPhase "claim-runtime"
 $claim = Invoke-Claim $guestInput
+Write-TestbedPhase "bind-simulated-hardware"
+Initialize-TestbedHardwareBindings
 $runtimeReady = Wait-RuntimeReady
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
 if ($daemonEvidence.processId -ne $daemonProcess.Id -or $daemonEvidence.commandLine -notmatch '(?i)(?:^|\s)--console(?:\s|$)') {

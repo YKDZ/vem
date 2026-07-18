@@ -1236,6 +1236,9 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /installed-ipc-recovery\.json/);
+    assert.match(guest, /function Initialize-TestbedHardwareBindings/);
+    assert.match(guest, /\/v1\/hardware-bindings\/\$role\/test/);
+    assert.match(guest, /\/v1\/runtime-configuration\/intents\/hardware-bindings\/\$role\/confirm/);
     assert.match(guest, /serial-fulfillment-error\.json/);
     assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /scanner-payment-code\.json/);
