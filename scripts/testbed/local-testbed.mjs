@@ -1120,7 +1120,6 @@ async function reconstruct(options) {
     },
     fastSale: {
       paymentOptionKey: "mock:mock",
-      createOrderGate,
     },
     claimCode: seeded.claim.claimCode,
     machineCode: seeded.machine.code,

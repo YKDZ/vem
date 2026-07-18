@@ -31,9 +31,34 @@ function validEvidence() {
     renderedSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1" },
     liveSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1", vendingCommandId: "command-1" },
     createOrderGate: {
+      controlPlane: "mock-payment-create-gate",
+      armedAt: "2026-07-18T03:59:59.800Z",
       paymentNo: "PAY-1",
       pendingObservedAt: "2026-07-18T03:59:59.900Z",
       releasedAt: "2026-07-18T04:00:00.200Z",
+    },
+    saleStartCapability: {
+      revision: 7,
+      canStartSale: true,
+      paymentOptions: {
+        options: [
+          {
+            optionKey: "mock:mock",
+            providerCode: "mock",
+            method: "mock",
+            ready: true,
+            disabledReason: null,
+          },
+        ],
+      },
+    },
+    uiViewport: {
+      innerWidth: 1080,
+      innerHeight: 1920,
+      documentClientWidth: 1080,
+      documentClientHeight: 1920,
+      visualViewportWidth: 1080,
+      visualViewportHeight: 1920,
     },
     platform: {
       baseline: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: baselineRaw },
@@ -75,6 +100,19 @@ function validEvidence() {
       fromRoute: "#/checkout",
       finalRoute: "#/checkout",
       at: "2026-07-18T04:00:00.100Z",
+    }, {
+      type: "transaction_surface",
+      id: 2,
+      at: "2026-07-18T04:00:01.000Z",
+      recordedAt: "2026-07-18T04:00:01.000Z",
+      route: "#/result/success",
+      stage: "result",
+      orderId: "order-1",
+      paymentId: "payment-1",
+      orderNo: "ORD-1",
+      commandId: "command-1",
+      resultKind: "success",
+      resultDisplayIntent: "success",
     }],
     mqttMessages: [{
       topic: "vem/machines/VEM-TESTBED-LOCAL/commands/dispense",
@@ -181,6 +219,13 @@ describe("fast route stress sale tracer", () => {
     assert.equal(summary.slotCode, "R2C5");
     assert.equal(summary.platformStockDeltaAfterF2, -1);
     assert.equal(summary.daemonStockDeltaAfterF2, -1);
+    assert.equal(summary.saleStartCapabilityRevision, 7);
+    assert.deepEqual(summary.uiViewport, { width: 1080, height: 1920 });
+    assert.deepEqual(summary.runtimeTraceCorrelation.rawFrames, [
+      { parsedOpcode: "F0", rawFrameHex: "55F0" },
+      { parsedOpcode: "F1", rawFrameHex: "55F1" },
+      { parsedOpcode: "F2", rawFrameHex: "55F2" },
+    ]);
   });
 
   it("fails closed when raw serial direction/order is inferred from semantic event names", () => {
@@ -211,6 +256,24 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("fails closed when the installed UI viewport is not exact 1080x1920 portrait", () => {
+    const evidence = validEvidence();
+    evidence.uiViewport.innerHeight = 1080;
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /installed UI viewport must be exactly 1080x1920/,
+    );
+  });
+
+  it("fails closed when sale-start-capability does not expose the ready mock option", () => {
+    const evidence = validEvidence();
+    evidence.saleStartCapability.paymentOptions.options = [];
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /sale-start-capability must expose a ready mock:mock payment option/,
+    );
+  });
+
   it("fails closed when Vision departure has no accepted installed-runtime delivery or guarded trace", () => {
     const evidence = validEvidence();
     evidence.visionDelivery.connectedRuntimeClients = 0;
@@ -237,6 +300,17 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /Vision departure must occur while payment creation is explicitly pending/,
+    );
+  });
+
+  it("fails closed when the runtime trace has no correlated result surface", () => {
+    const evidence = validEvidence();
+    evidence.runtimeTrace = evidence.runtimeTrace.filter(
+      (entry) => entry.type !== "transaction_surface",
+    );
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /runtime trace must expose a correlated result surface/,
     );
   });
 
@@ -304,6 +378,7 @@ describe("fast route stress sale tracer", () => {
         daemonStdout: { ref: "/tmp/fast-route/daemon-stdout.tail.log" },
         daemonStderr: { ref: "/tmp/fast-route/daemon-stderr.tail.log" },
         platform: { ref: "/tmp/fast-route/platform-service-api.log" },
+        platformError: "journalctl exited with 1: stdout was empty",
         simulator: "/tmp/fast-route/simulator.log",
       },
     });
@@ -324,6 +399,10 @@ describe("fast route stress sale tracer", () => {
     assert.deepEqual(report.logs.platform, {
       ref: "/tmp/fast-route/platform-service-api.log",
     });
+    assert.equal(
+      report.logs.platformError,
+      "journalctl exited with 1: stdout was empty",
+    );
     assert.equal(report.logs.simulator, "/tmp/fast-route/simulator.log");
     assert.deepEqual(report.logs.failureScreenshots, [
       "/tmp/fast-route/failure-before-f0.png",
@@ -340,6 +419,9 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /mock:mock/);
     assert.match(implementation, /payments\/mock\/\$\{encodeURIComponent\(paymentNo\)\}\/complete/);
     assert.match(implementation, /vision\/control\/departure/);
+    assert.match(implementation, /mock-payment-create-gate\/arm/);
+    assert.match(implementation, /mock-payment-create-gate\/status/);
+    assert.match(implementation, /mock-payment-create-gate\/release/);
     assert.match(implementation, /release-f0/);
     assert.match(implementation, /platform-log/);
     assert.match(implementation, /snapshots:/);
@@ -350,6 +432,12 @@ describe("fast route stress sale tracer", () => {
       implementation,
       /did not release port 7892 after SIGTERM/,
     );
+    assert.match(implementation, /installed UI viewport must be exactly 1080x1920/);
+    assert.match(
+      implementation,
+      /sale-start-capability must expose a ready mock:mock payment option/,
+    );
+    assert.doesNotMatch(implementation, /fastSale\.createOrderGate\.statePath/);
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
     assert.doesNotMatch(implementation, /factory-route-competition/);

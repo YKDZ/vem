@@ -9,17 +9,22 @@ import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
   getSaleViewMock,
+  installedMachineRuntimeTraceMock,
   routeParams,
+  runtimeTraceRecordMock,
   routerReplaceMock,
   submitMachineNavigationIntentMock,
 } = vi.hoisted(() => ({
   getSaleViewMock: vi.fn(),
+  installedMachineRuntimeTraceMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
+  runtimeTraceRecordMock: vi.fn(),
   routerReplaceMock: vi.fn(),
   submitMachineNavigationIntentMock: vi.fn(),
 }));
 
 vi.mock("@/router/transaction-route-authority", () => ({
+  installedMachineRuntimeTrace: installedMachineRuntimeTraceMock,
   submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 
@@ -52,6 +57,7 @@ function terminalDispenseFailedTransaction(): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-FAILED-001",
+    paymentId: "550e8400-e29b-41d4-a716-446655440011",
     productSummary: null,
     paymentNo: "PAY-001",
     paymentMethod: "payment_code",
@@ -61,6 +67,7 @@ function terminalDispenseFailedTransaction(): TransactionSnapshot {
     orderStatus: "dispense_failed",
     totalAmountCents: 4900,
     vending: {
+      commandId: "550e8400-e29b-41d4-a716-446655440012",
       commandNo: "CMD-001",
       status: "failed",
       lastError: "lower controller reported pickup platform blocked",
@@ -243,6 +250,9 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
   capabilityRevision = 0;
+  installedMachineRuntimeTraceMock.mockReturnValue({
+    record: runtimeTraceRecordMock,
+  });
   submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
     if (intent.type === "transaction.dismiss") {
       useCheckoutStore().dismissCurrentTerminalTransaction();
@@ -302,6 +312,30 @@ describe("ResultView", () => {
     });
     expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
     expect(host.textContent).not.toContain("等待人工处理");
+  });
+
+  it("records one correlated transaction result surface in the runtime trace", async () => {
+    window.location.hash = "#/result/success";
+    routeParams.kind = "success";
+    const transaction = successfulTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+    applyCapability(true);
+
+    await mountView();
+
+    expect(runtimeTraceRecordMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "transaction_surface",
+        route: "#/result/success",
+        stage: "result",
+        orderId: transaction.orderId,
+        paymentId: transaction.paymentId,
+        orderNo: transaction.orderNo,
+        commandId: transaction.vending?.commandId ?? null,
+        resultKind: "success",
+        resultDisplayIntent: "success",
+      }),
+    );
   });
 
   it("does not create an autonomous result dismissal while readiness is pending", async () => {

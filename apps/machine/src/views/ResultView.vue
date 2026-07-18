@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import type {
   CustomerCheckoutResultDetailIntent,
@@ -12,7 +12,10 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
+import {
+  installedMachineRuntimeTrace,
+  submitMachineNavigationIntent,
+} from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
@@ -129,6 +132,7 @@ const AUTO_RETURN_SECONDS = 8;
 const autoReturnRemainingSeconds = ref<number | null>(null);
 let returningToCatalog = false;
 let autoReturnTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let lastRuntimeTraceCorrelationKey: string | null = null;
 
 function stopAutoReturn(): void {
   if (autoReturnTimer !== null) {
@@ -184,6 +188,38 @@ async function backToCatalog(): Promise<void> {
     });
   }
 }
+
+watch(
+  () => {
+    if (!projectedResult.value) return null;
+    return {
+      route: window.location.hash || "#/result",
+      stage: "result" as const,
+      orderId: checkoutStore.transaction?.orderId ?? null,
+      paymentId: checkoutStore.transaction?.paymentId ?? null,
+      orderNo: checkoutStore.transaction?.orderNo ?? null,
+      commandId: checkoutStore.transaction?.vending?.commandId ?? null,
+      resultKind: kind.value,
+      resultDisplayIntent: displayIntent.value,
+    };
+  },
+  (surface) => {
+    if (!surface) {
+      lastRuntimeTraceCorrelationKey = null;
+      return;
+    }
+    const trace = installedMachineRuntimeTrace();
+    if (!trace) return;
+    const key = JSON.stringify(surface);
+    if (key === lastRuntimeTraceCorrelationKey) return;
+    lastRuntimeTraceCorrelationKey = key;
+    trace.record({
+      type: "transaction_surface",
+      ...surface,
+    });
+  },
+  { immediate: true },
+);
 
 onMounted(() => {
   if (saleCapabilityStore.hasAcceptedCapability) startAutoReturn();

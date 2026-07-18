@@ -44,13 +44,33 @@ export type MachineRuntimeAudioTraceEntry = {
   message: string | null;
 };
 
+export type MachineRuntimeTransactionSurfaceTraceEntry = {
+  type: "transaction_surface";
+  id: number;
+  at: string;
+  recordedAt: string;
+  route: string;
+  stage: "payment" | "dispensing" | "result";
+  orderId: string | null;
+  paymentId: string | null;
+  orderNo: string | null;
+  commandId: string | null;
+  resultKind: string | null;
+  resultDisplayIntent: string | null;
+};
+
 export type MachineRuntimeTraceEntry =
   | MachineRuntimeNavigationTraceRecord
-  | MachineRuntimeAudioTraceEntry;
+  | MachineRuntimeAudioTraceEntry
+  | MachineRuntimeTransactionSurfaceTraceEntry;
+
+type MachineRuntimeRecordedEntry =
+  | MachineRuntimeAudioTraceEntry
+  | MachineRuntimeTransactionSurfaceTraceEntry;
 
 export type MachineRuntimeTrace = {
   record(
-    entry: Omit<MachineRuntimeAudioTraceEntry, "id" | "at" | "recordedAt"> & {
+    entry: Omit<MachineRuntimeRecordedEntry, "id" | "at" | "recordedAt"> & {
       recordedAt?: string;
     },
   ): void;

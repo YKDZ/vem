@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -260,6 +259,74 @@ function runnerTempRoot(stateRoot) {
   return path;
 }
 
+export function mockPaymentCreateGatePaths(stateRoot) {
+  const statePath = join(resolve(stateRoot), "mock-payment-create-gate.json");
+  return {
+    statePath,
+    pendingPath: `${statePath}.pending.json`,
+  };
+}
+
+function writeMockPaymentCreateGateState(stateRoot, value) {
+  const gate = mockPaymentCreateGatePaths(stateRoot);
+  mkdirSync(dirname(gate.statePath), { recursive: true });
+  writeFileSync(gate.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  return gate;
+}
+
+function readOptionalJsonFile(path) {
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function armMockPaymentCreateGate(server) {
+  writeMockPaymentCreateGateState(server.options.stateRoot, { state: "hold" });
+  return {
+    armedAt: new Date().toISOString(),
+    state: "hold",
+  };
+}
+
+function readMockPaymentCreateGateStatus(server) {
+  const gate = mockPaymentCreateGatePaths(server.options.stateRoot);
+  const state = readOptionalJsonFile(gate.statePath);
+  const pending = readOptionalJsonFile(gate.pendingPath);
+  return {
+    state:
+      state && typeof state.state === "string" ? String(state.state) : "open",
+    pending:
+      pending &&
+      pending.state === "pending" &&
+      typeof pending.paymentNo === "string" &&
+      typeof pending.observedAt === "string"
+        ? {
+            state: "pending",
+            paymentNo: pending.paymentNo,
+            observedAt: pending.observedAt,
+          }
+        : null,
+  };
+}
+
+function releaseMockPaymentCreateGate(server, input) {
+  writeMockPaymentCreateGateState(server.options.stateRoot, {
+    state: "release",
+    paymentNo: required(input.paymentNo, "paymentNo"),
+  });
+  return {
+    releasedAt: new Date().toISOString(),
+    state: "release",
+  };
+}
+
+function openMockPaymentCreateGate(server) {
+  writeMockPaymentCreateGateState(server.options.stateRoot, { state: "open" });
+  return {
+    openedAt: new Date().toISOString(),
+    state: "open",
+  };
+}
+
 function writeProtectedTempFile(root, prefix, contents) {
   const directory = mkdtempSync(join(root, `${prefix}-`));
   const path = join(directory, `${prefix}.txt`);
@@ -432,18 +499,27 @@ function collectPlatformLog(server, input) {
     ],
     { encoding: "utf8" },
   );
-  const log = String(result.stdout || result.stderr || "").slice(-64 * 1024);
-  if (result.status !== 0 && log.trim() === "") {
-    throw new Error("journalctl failed to collect local testbed Service API log");
+  const stdout = String(result.stdout ?? "");
+  const boundedStdout = stdout.slice(-64 * 1024);
+  const stderr = String(result.stderr ?? "").slice(-8 * 1024);
+  if (result.status !== 0) {
+    throw new Error(
+      `journalctl exited with ${result.status}: ${
+        boundedStdout.trim() || stderr.trim() || "stdout was empty"
+      }`,
+    );
+  }
+  if (boundedStdout.trim() === "") {
+    throw new Error("journalctl returned empty stdout");
   }
   const session = input.sessionId ? requireSession(server, input.sessionId) : null;
   const paths = session ? adapterSessionPaths(session) : null;
   const logPath = paths ? join(paths.directory, "platform-service-api.log") : null;
-  if (logPath) writeFileSync(logPath, log, { mode: 0o600 });
+  if (logPath) writeFileSync(logPath, boundedStdout, { mode: 0o600 });
   return {
     unit: "vem-local-testbed-service-api.service",
     lineCount,
-    log,
+    log: boundedStdout,
     reference: logPath,
   };
 }
@@ -721,6 +797,37 @@ export function createHostSerialControlPlane(options) {
         jsonResponse(response, 200, {
           ok: true,
           report: await executePlatformQuery(serverState, await readRequestBody(request)),
+        });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/arm") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...armMockPaymentCreateGate(serverState),
+        });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/status") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...readMockPaymentCreateGateStatus(serverState),
+        });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/release") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...releaseMockPaymentCreateGate(
+            serverState,
+            await readRequestBody(request),
+          ),
+        });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/open") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...openMockPaymentCreateGate(serverState),
         });
         return;
       }

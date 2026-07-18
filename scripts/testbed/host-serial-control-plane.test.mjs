@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,8 @@ import { describe, it } from "node:test";
 import {
   buildMqttTopic,
   buildSerialOperationCommand,
+  createHostSerialControlPlane,
+  mockPaymentCreateGatePaths,
   parseHostSerialControlPlaneArgs,
   waitForRawSerialFrame,
 } from "./host-serial-control-plane.mjs";
@@ -103,6 +106,99 @@ describe("host serial control plane", () => {
       command.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO,
       "delayed-pickup",
     );
+  });
+
+  it("arms, polls, releases, and reopens the mock payment create gate through the host control plane API", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-host-control-plane-"));
+    const controlPlane = createHostSerialControlPlane({
+      workspace: "/workspaces/vem",
+      stateRoot: root,
+      bind: "127.0.0.1",
+      port: 0,
+      token: "control-plane-token",
+    });
+    const server = controlPlane.listen();
+    try {
+      if (!server.listening) {
+        await once(server, "listening");
+      }
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const headers = {
+        authorization: "Bearer control-plane-token",
+        "content-type": "application/json",
+      };
+
+      const arm = await fetch(`${baseUrl}/v1/mock-payment-create-gate/arm`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      }).then((response) => response.json());
+      assert.equal(arm.ok, true);
+      assert.equal(arm.state, "hold");
+
+      const gate = mockPaymentCreateGatePaths(root);
+      const armedState = JSON.parse(readFileSync(gate.statePath, "utf8"));
+      assert.deepEqual(armedState, { state: "hold" });
+
+      writeFileSync(
+        gate.pendingPath,
+        `${JSON.stringify({
+          state: "pending",
+          paymentNo: "PAY-1",
+          observedAt: "2026-07-18T05:00:00.000Z",
+        })}\n`,
+      );
+      const status = await fetch(
+        `${baseUrl}/v1/mock-payment-create-gate/status`,
+        {
+          method: "POST",
+          headers,
+          body: "{}",
+        },
+      ).then((response) => response.json());
+      assert.equal(status.ok, true);
+      assert.deepEqual(status.pending, {
+        state: "pending",
+        paymentNo: "PAY-1",
+        observedAt: "2026-07-18T05:00:00.000Z",
+      });
+
+      const release = await fetch(
+        `${baseUrl}/v1/mock-payment-create-gate/release`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ paymentNo: "PAY-1" }),
+        },
+      ).then((response) => response.json());
+      assert.equal(release.ok, true);
+      assert.equal(release.state, "release");
+      assert.deepEqual(JSON.parse(readFileSync(gate.statePath, "utf8")), {
+        state: "release",
+        paymentNo: "PAY-1",
+      });
+
+      const open = await fetch(`${baseUrl}/v1/mock-payment-create-gate/open`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      }).then((response) => response.json());
+      assert.equal(open.ok, true);
+      assert.equal(open.state, "open");
+      assert.deepEqual(JSON.parse(readFileSync(gate.statePath, "utf8")), {
+        state: "open",
+      });
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("uses the repo-owned adapter wrapper and local mosquitto topic capture", () => {

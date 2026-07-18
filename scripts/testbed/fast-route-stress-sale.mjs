@@ -3,13 +3,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   activateVisibleSelector,
   captureCheckpoint,
-  captureDomIdentity,
   CdpClient,
   dispatchPhysicalInput,
   discoverMachineUiTarget,
@@ -21,11 +20,6 @@ import {
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
-const PLATFORM_LOG_REFERENCE = Object.freeze({
-  unit: "vem-local-testbed-service-api",
-  command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
-});
-
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -124,64 +118,53 @@ export async function dispatchRepeatedPaymentTouch(client, firstActivation) {
   return { originalPoint: { x: originalPoint.x, y: originalPoint.y }, input };
 }
 
-function createOrderGatePaths(guestInput) {
-  const gate = guestInput?.fastSale?.createOrderGate;
+async function armCreateOrderGate(guestInput) {
+  const armed = await controlPlaneRequest(
+    guestInput,
+    "/v1/mock-payment-create-gate/arm",
+  );
   return {
-    statePath: required(gate?.statePath, "fastSale.createOrderGate.statePath"),
-    pendingPath: required(
-      gate?.pendingPath,
-      "fastSale.createOrderGate.pendingPath",
-    ),
+    controlPlane: "mock-payment-create-gate",
+    armedAt: armed.armedAt,
   };
 }
 
-function readJsonFile(path, label) {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw new Error(
-      `${label} is unreadable at ${path}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function writeGateState(path, value) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
-}
-
-function armCreateOrderGate(guestInput) {
-  const gate = createOrderGatePaths(guestInput);
-  writeGateState(gate.statePath, { state: "hold" });
-  return gate;
-}
-
-async function waitForCreateOrderGatePending(gate, timeoutMs = 30_000) {
+async function waitForCreateOrderGatePending(guestInput, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   do {
     try {
-      const pending = readJsonFile(
-        gate.pendingPath,
-        "mock create-order pending marker",
+      const status = await controlPlaneRequest(
+        guestInput,
+        "/v1/mock-payment-create-gate/status",
       );
-      if (pending?.state === "pending" && typeof pending.paymentNo === "string") {
+      const pending = status?.pending;
+      if (
+        pending?.state === "pending" &&
+        typeof pending.paymentNo === "string" &&
+        typeof pending.observedAt === "string"
+      ) {
         return pending;
       }
     } catch {}
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    await sleep(25);
   } while (Date.now() < deadline);
   throw new Error("mock create-order gate did not observe a pending payment creation");
 }
 
-function releaseCreateOrderGate(gate, paymentNo) {
-  writeGateState(gate.statePath, { state: "release", paymentNo });
+async function releaseCreateOrderGate(guestInput, paymentNo) {
+  const released = await controlPlaneRequest(
+    guestInput,
+    "/v1/mock-payment-create-gate/release",
+    { paymentNo },
+  );
   return {
-    statePath: gate.statePath,
     paymentNo,
-    releasedAt: new Date().toISOString(),
+    releasedAt: released.releasedAt,
   };
+}
+
+async function openCreateOrderGate(guestInput) {
+  return await controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open");
 }
 
 function rows(raw, key) {
@@ -252,6 +235,8 @@ function compactEvidenceForReport(evidence, summary) {
     renderedSale: evidence.renderedSale,
     liveSale: evidence.liveSale,
     createOrderGate: evidence.createOrderGate,
+    saleStartCapability: evidence.saleStartCapability,
+    uiViewport: evidence.uiViewport,
     visionDelivery: evidence.visionDelivery,
     platform: {
       baseline: compactPlatformBoundary(evidence.platform?.baseline, summary),
@@ -421,6 +406,42 @@ export function validateFastRouteStressSaleEvidence(input) {
   ) {
     throw new Error("raw inbound serial protocol must expose exact production 55 F0/F1/F2 frames");
   }
+  const uiViewport = input.uiViewport ?? {};
+  if (
+    uiViewport.innerWidth !== 1080 ||
+    uiViewport.innerHeight !== 1920 ||
+    uiViewport.documentClientWidth !== 1080 ||
+    uiViewport.documentClientHeight !== 1920
+  ) {
+    throw new Error("installed UI viewport must be exactly 1080x1920");
+  }
+  const saleStartCapability = input.saleStartCapability ?? {};
+  if (
+    !Number.isInteger(saleStartCapability.revision) ||
+    saleStartCapability.revision < 1
+  ) {
+    throw new Error("sale-start-capability must expose a positive revision");
+  }
+  if (saleStartCapability.canStartSale !== true) {
+    throw new Error("sale-start-capability must allow the fast sale to start");
+  }
+  const mockOption = Array.isArray(saleStartCapability.paymentOptions?.options)
+    ? saleStartCapability.paymentOptions.options.find(
+        (option) =>
+          option?.optionKey === "mock:mock" &&
+          option?.providerCode === "mock" &&
+          option?.method === "mock",
+      )
+    : null;
+  if (
+    !mockOption ||
+    mockOption.ready !== true ||
+    mockOption.disabledReason !== null
+  ) {
+    throw new Error(
+      "sale-start-capability must expose a ready mock:mock payment option",
+    );
+  }
   const vendBytes = protocolFrames[0].bytes;
   if (vendBytes[1] !== daemonBefore.layerNo || vendBytes[2] !== daemonBefore.cellNo) {
     throw new Error("outbound serial vend frame must correlate the slot coordinates");
@@ -484,6 +505,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   if (spontaneousCatalog) throw new Error("runtime returned spontaneously to Catalog");
   const result = input.ui?.afterF2?.result;
   if (
+    input.ui?.afterF2?.route !== "#/result/success" ||
     result?.kind !== "success" ||
     result.orderId !== order.id ||
     result.paymentId !== payment.id ||
@@ -491,6 +513,21 @@ export function validateFastRouteStressSaleEvidence(input) {
     result.commandId !== command.id
   ) {
     throw new Error("successful UI result must correlate order, payment, and command after inbound F2");
+  }
+  const correlatedResultTrace = runtimeTrace.find(
+    (entry) =>
+      entry?.type === "transaction_surface" &&
+      entry?.stage === "result" &&
+      entry?.route === "#/result/success" &&
+      entry?.orderId === order.id &&
+      entry?.paymentId === payment.id &&
+      entry?.commandId === command.id &&
+      entry?.resultKind === "success",
+  );
+  if (!correlatedResultTrace) {
+    throw new Error(
+      "runtime trace must expose a correlated result surface for order, payment, and command",
+    );
   }
   return {
     machineCode,
@@ -511,6 +548,27 @@ export function validateFastRouteStressSaleEvidence(input) {
     movementId: movement.id,
     visionEventId: vision.eventId,
     guardedNavigationReason: guardedDeparture.reasonCode,
+    saleStartCapabilityRevision: saleStartCapability.revision,
+    mockPaymentOptionKey: mockOption.optionKey,
+    uiViewport: {
+      width: uiViewport.innerWidth,
+      height: uiViewport.innerHeight,
+    },
+    runtimeTraceCorrelation: {
+      traceEntryId: correlatedResultTrace.id,
+      stage: correlatedResultTrace.stage,
+      route: correlatedResultTrace.route,
+      orderId: correlatedResultTrace.orderId,
+      paymentId: correlatedResultTrace.paymentId,
+      commandId: correlatedResultTrace.commandId,
+      resultKind: correlatedResultTrace.resultKind,
+      rawFrames: protocolFrames
+        .filter((frame) => ["F0", "F1", "F2"].includes(frame.parsedOpcode))
+        .map((frame) => ({
+          parsedOpcode: frame.parsedOpcode,
+          rawFrameHex: frame.rawFrameHex,
+        })),
+    },
     createOrderGateObservedAt: createOrderGate.pendingObservedAt,
     createOrderGateReleasedAt: createOrderGate.releasedAt,
   };
@@ -586,12 +644,49 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
-async function waitForResultRoute(client, timeoutMs = 60_000) {
-  return waitForRoute(client, /^#\/(dispensing|result)/, { timeoutMs, pollMs: 250 });
+async function waitForSuccessfulResultSurface(
+  client,
+  expected,
+  timeoutMs = 60_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = await readUiBoundary(client).catch(() => null);
+    if (
+      last?.route === "#/result/success" &&
+      last?.result?.kind === "success" &&
+      last.result.orderId === expected.orderId &&
+      last.result.paymentId === expected.paymentId &&
+      last.result.orderNo === expected.orderNo &&
+      last.result.commandId === expected.commandId
+    ) {
+      return last;
+    }
+    await sleep(250);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `timed out waiting for #/result/success with correlated order/payment/command: ${JSON.stringify(last)}`,
+  );
 }
 
 async function readRuntimeTrace(client) {
   return evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []");
+}
+
+async function readInstalledUiViewport(client) {
+  return evaluateExpression(
+    client,
+    `(() => ({
+      route: location.hash,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      documentClientWidth: document.documentElement.clientWidth,
+      documentClientHeight: document.documentElement.clientHeight,
+      visualViewportWidth: window.visualViewport?.width ?? null,
+      visualViewportHeight: window.visualViewport?.height ?? null
+    }))()`,
+  );
 }
 
 async function readRenderedPaymentSurface(client) {
@@ -765,6 +860,7 @@ export function buildFastRouteStressSaleFailureReport(input) {
       daemonStdout: input.logs?.daemonStdout ?? null,
       daemonStderr: input.logs?.daemonStderr ?? null,
       platform: input.logs?.platform ?? null,
+      platformError: input.logs?.platformError ?? null,
       simulator: input.logs?.simulator ?? null,
       failureScreenshots: (input.checkpoints ?? [])
         .map((checkpoint) => checkpoint?.screenshot?.ref)
@@ -902,6 +998,8 @@ async function runFastRouteStressSale(options) {
   let clientReady = false;
   let sessionStart = null;
   let liveSale = null;
+  let saleStartCapability = null;
+  let uiViewport = null;
   let baselineSaleView = null;
   let baselinePlatform = null;
   let beforeF0SaleView = null;
@@ -921,7 +1019,7 @@ async function runFastRouteStressSale(options) {
     const machineCode = required(guestInput.machineCode, "machineCode");
     const saleCorrelationId = `sale-correlation://fast-route-${Date.now()}`;
     const steps = buildFastRouteStressScenarioSteps();
-    createOrderGate = armCreateOrderGate(guestInput);
+    createOrderGate = await armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
       guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort,
@@ -939,6 +1037,8 @@ async function runFastRouteStressSale(options) {
     clientReady = true;
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     stage = "snapshot-baseline";
+    uiViewport = await readInstalledUiViewport(client);
+    saleStartCapability = await daemonGet(handoff, "/v1/sale-start-capability");
     baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
     baselinePlatform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
@@ -990,13 +1090,13 @@ async function runFastRouteStressSale(options) {
     );
     assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
     stage = "wait-create-order-pending-boundary";
-    const pendingCreate = await waitForCreateOrderGatePending(createOrderGate);
+    const pendingCreate = await waitForCreateOrderGatePending(guestInput);
     stage = "vision-departure-during-create-order";
     const visionDelivery = await dispatchVisionDeparture(guestInput);
     const secondSubmit = await dispatchRepeatedPaymentTouch(client, firstSubmit);
     assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
-    const releasedCreateOrderGate = releaseCreateOrderGate(
-      createOrderGate,
+    const releasedCreateOrderGate = await releaseCreateOrderGate(
+      guestInput,
       pendingCreate.paymentNo,
     );
     await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
@@ -1090,7 +1190,16 @@ async function runFastRouteStressSale(options) {
       `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
     );
     stage = "wait-success-result";
-    const resultRoute = await waitForResultRoute(client, 60_000);
+    const resultSurface = await waitForSuccessfulResultSurface(
+      client,
+      {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        orderNo: renderedSale.orderNo,
+        commandId: liveSale.vendingCommandId,
+      },
+      60_000,
+    );
     checkpoints.push(
       await captureCheckpoint(client, "result", {
         screenshot: true,
@@ -1107,7 +1216,7 @@ async function runFastRouteStressSale(options) {
       },
       rows(afterF1Platform.raw, "movements").length,
     );
-    const afterF2Ui = await readUiBoundary(client);
+    const afterF2Ui = resultSurface;
     const runtimeTrace = await readRuntimeTrace(client);
     const platformLog = await collectPlatformLog(
       guestInput,
@@ -1119,12 +1228,14 @@ async function runFastRouteStressSale(options) {
       machineCode,
       runtimeTrace,
       createOrderGate: {
-        statePath: createOrderGate.statePath,
-        pendingPath: createOrderGate.pendingPath,
+        controlPlane: createOrderGate.controlPlane,
+        armedAt: createOrderGate.armedAt,
         paymentNo: pendingCreate.paymentNo,
         pendingObservedAt: pendingCreate.observedAt,
         releasedAt: releasedCreateOrderGate.releasedAt,
       },
+      saleStartCapability,
+      uiViewport,
       visionDelivery,
       renderedSale,
       liveSale,
@@ -1178,7 +1289,7 @@ async function runFastRouteStressSale(options) {
       mode: options.mode,
       runId,
       machineCode,
-      resultRoute: resultRoute.route,
+      resultRoute: resultSurface.route,
       controlPlaneSessionId: sessionStart.sessionId,
       renderedSale,
       liveSale,
@@ -1238,7 +1349,12 @@ async function runFastRouteStressSale(options) {
           guestInput,
           sessionStart.sessionId,
           options.outPath,
-        ).catch(() => null)
+        ).catch((platformError) => ({
+          error:
+            platformError instanceof Error
+              ? platformError.message
+              : String(platformError),
+        }))
       : null;
     const hostEvidence = guestInput && sessionStart
       ? await controlPlaneRequest(
@@ -1287,16 +1403,15 @@ async function runFastRouteStressSale(options) {
           "daemon-stderr",
         ),
         platform: platformLog?.artifact ?? null,
+        platformError: platformLog?.error ?? null,
         simulator: hostEvidence?.references?.simulatorLog ?? null,
       },
     });
     writeReport(options.outPath, report);
     throw error;
   } finally {
-    if (createOrderGate) {
-      try {
-        writeGateState(createOrderGate.statePath, { state: "open" });
-      } catch {}
+    if (guestInput && createOrderGate) {
+      await openCreateOrderGate(guestInput).catch(() => null);
     }
     await client?.close().catch(() => undefined);
     await shutdownControlledVisionMock(vision?.child).catch(() => undefined);

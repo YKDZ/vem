@@ -96,4 +96,35 @@ describe("Machine Runtime Trace", () => {
       }),
     ]);
   });
+
+  it("records correlated transaction result surfaces alongside navigation and audio entries", () => {
+    const trace = createMachineRuntimeTrace();
+    trace.record({
+      type: "transaction_surface",
+      route: "#/result/success",
+      stage: "result",
+      orderId: "order-1",
+      paymentId: "payment-1",
+      orderNo: "ORD-1",
+      commandId: "command-1",
+      resultKind: "success",
+      resultDisplayIntent: "success",
+      recordedAt: "2026-07-18T08:31:00.000Z",
+    });
+
+    expect(trace.entries()).toEqual([
+      expect.objectContaining({
+        id: 1,
+        type: "transaction_surface",
+        route: "#/result/success",
+        stage: "result",
+        orderId: "order-1",
+        paymentId: "payment-1",
+        orderNo: "ORD-1",
+        commandId: "command-1",
+        resultKind: "success",
+        resultDisplayIntent: "success",
+      }),
+    ]);
+  });
 });

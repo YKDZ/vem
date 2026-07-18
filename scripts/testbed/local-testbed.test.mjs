@@ -520,6 +520,10 @@ describe("local testbed orchestration", () => {
         "utf8",
       );
       assert.match(implementation, /hostControlPlane:/);
+      assert.doesNotMatch(
+        implementation,
+        /fastSale:\s*\{[\s\S]*createOrderGate/s,
+      );
       assert.match(implementation, /targetIdentity:/);
       assert.match(implementation, /runtimeBaseIdentity:/);
       assert.match(implementation, /26851/);
