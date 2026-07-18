@@ -34,6 +34,8 @@ $nodeNamespace = "node-$nodeVersion"
 $pnpmNamespace = "pnpm-$pnpmVersion"
 $turboNamespace = "turbo-$turboVersion"
 $rustNamespace = "rust-1.96.0"
+$nodeArchiveUri = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"
+$nodeArchiveSha256 = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
 $ftdiVcpDriverUri = "https://github.com/YKDZ/vem/releases/download/runtime-testbed-assets-v1/ftdi-cdm-2.12.36.20-win-x64.zip"
 $ftdiVcpDriverSha256 = "11fc404c0cb8d173567f400783a3a60642b0d0bc1d4c3bbad64ab96e0bfd43de"
 
@@ -401,13 +403,38 @@ public static class VemMediaSmoke {
   [void][Runtime.InteropServices.Marshal]::ReleaseComObject($filterGraph)
 }
 
+function Install-PinnedNodeJs {
+  $archivePath = Join-Path $env:TEMP "node-v$nodeVersion-win-x64.zip"
+  $extractRoot = Join-Path $env:TEMP "node-v$nodeVersion-win-x64"
+  $sourceRoot = Join-Path $extractRoot "node-v$nodeVersion-win-x64"
+  $installRoot = "C:\Program Files\nodejs"
+  Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $nodeArchiveUri -OutFile $archivePath
+    if ((Get-Sha256 -Path $archivePath) -cne $nodeArchiveSha256) {
+      throw "Node.js archive hash does not match version $nodeVersion"
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $extractRoot)
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot "node.exe") -PathType Leaf)) {
+      throw "Node.js archive does not contain node.exe"
+    }
+    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $sourceRoot -Destination $installRoot
+  } finally {
+    Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Install-Toolchain {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   Set-ExecutionPolicy Bypass -Scope Process -Force
   Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
   Refresh-ProcessPath
   Invoke-NativeWithRetry -FilePath "choco.exe" -ArgumentList @("install", "-y", "git", "rustup.install", "visualstudio2022buildtools", "visualstudio2022-workload-vctools") -Description "Windows build toolchain installation"
-  Invoke-NativeWithRetry -FilePath "choco.exe" -ArgumentList @("install", "-y", "nodejs-lts", "--version=24.16.0") -Description "pinned Node.js installation"
+  Install-PinnedNodeJs
   Refresh-ProcessPath
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("enable") -Description "Corepack enable"
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("prepare", "pnpm@11.9.0", "--activate") -Description "pinned pnpm activation"

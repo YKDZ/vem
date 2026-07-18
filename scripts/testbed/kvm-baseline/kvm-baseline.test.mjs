@@ -2730,7 +2730,16 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /RUSTUP_HOME = "\$toolchainRoot\\rustup\\\$rustNamespace"/,
     );
     assert.doesNotMatch(runtime, /RUSTUP_HOME = "D:/);
-    assert.match(runtime, /nodejs-lts", "--version=24\.16\.0"/);
+    assert.match(
+      runtime,
+      /node-v24\.16\.0-win-x64\.zip[\s\S]*edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56/,
+    );
+    assert.match(
+      runtime,
+      /function Install-PinnedNodeJs[\s\S]*Get-Sha256/,
+    );
+    assert.match(runtime, /\$installRoot = "C:\\Program Files\\nodejs"/);
+    assert.doesNotMatch(runtime, /choco\.exe[^\r\n]*nodejs-lts/);
     assert.match(
       runtime,
       /corepack\.cmd" -ArgumentList @\("prepare", "pnpm@11\.9\.0", "--activate"\)/,
