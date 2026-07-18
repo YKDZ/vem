@@ -184,7 +184,7 @@ describe("installed production runtime smoke", () => {
       guest,
       /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,
     );
-    assert.match(guest, /\$input\.interactiveUser/);
+    assert.match(guest, /\$guestInput\.interactiveUser/);
     assert.doesNotMatch(
       guest,
       /test:e2e:real-daemon|playwright|vite|fake[_ -]?platform|simulatedHardwareSaleFlow/i,

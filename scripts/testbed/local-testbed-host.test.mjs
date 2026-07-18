@@ -390,5 +390,18 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(clearProxy.input, /\$proxyLines = @\(\)/);
     assert.match(clearProxy.input, /Where-Object \{ \$_ -notmatch/);
     assert.doesNotMatch(clearProxy.input, /HTTP_PROXY=|HTTPS_PROXY=|NO_PROXY=/);
+
+    const dynamicRegistration = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-18",
+      runnerRegistration: {
+        adminToken: "runner-admin-token",
+        repository: "example/runtime",
+      },
+    }).at(-1);
+    assert.match(dynamicRegistration.input, /actions\/runners\/registration-token/);
+    assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
+    assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
   });
 });

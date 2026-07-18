@@ -750,6 +750,27 @@ describe("local testbed orchestration", () => {
         https: "",
         noProxy: "",
       });
+
+      const withRegistration = parseOptions(
+        [
+          "reconstruct", "--mode", "fast", "--run-id", "run-16",
+          "--workspace", root, "--state-root", join(root, "state"),
+          "--baseline-contract", join(root, "baseline.json"),
+          "--host-private-address", "10.0.0.15", "--out", join(root, "out.json"),
+        ],
+        {
+          observeNetworkInterfaces: observedNetworkInterfaces,
+          environment: {
+            VEM_RUNNER_ADMIN_TOKEN: "runner-admin-token",
+            VEM_RUNNER_REPOSITORY: "example/runtime",
+          },
+        },
+      );
+      const registrationAdmission = buildReconstructionPlan(withRegistration, value).at(-1);
+      assert.deepEqual(registrationAdmission.args.slice(-4), [
+        "--runner-admin-token", "runner-admin-token",
+        "--runner-repository", "example/runtime",
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

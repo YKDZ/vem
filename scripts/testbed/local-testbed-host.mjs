@@ -244,8 +244,20 @@ $proof | ConvertTo-Json -Compress
 `;
 }
 
-function runnerAdmissionAssertion(runnerProxy) {
+function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
+  const registrationSetup = runnerRegistration
+    ? `$existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
+$existingServices | Stop-Service -Force -ErrorAction SilentlyContinue
+Get-Process -Name 'Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+$existingServices | ForEach-Object { & sc.exe delete $_.Name | Out-Null }
+Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue
+$registration = Invoke-RestMethod -Method Post -Uri ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)} -Headers @{ Authorization = ${quotePowerShell(`Bearer ${runnerRegistration.adminToken}`)}; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+& (Join-Path $runnerRoot 'config.cmd') --unattended --url ${quotePowerShell(`https://github.com/${runnerRegistration.repository}`)} --token ([string]$registration.token) --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
+if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
+`
+    : "";
   const proxyLines = runnerProxy?.configured
     ? [
         `HTTP_PROXY=${runnerProxy.http}`,
@@ -264,11 +276,11 @@ $preservedLines = @($existingLines | Where-Object { $_ -notmatch '^(HTTP_PROXY|H
 $runnerRoot = 'C:\\actions-runner'
 $environmentPath = 'C:\\actions-runner\\.env'
 $serviceIdentityPath = Join-Path $runnerRoot '.service'
-if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
+Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
+${registrationSetup}if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
-Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
 ${updateEnvironment}$diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
@@ -525,6 +537,7 @@ export function buildHostAdmissionPlan({
   guestInputPath,
   runId,
   runnerProxy = { configured: false },
+  runnerRegistration = null,
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -555,7 +568,7 @@ export function buildHostAdmissionPlan({
       type: "restart-runner-and-await-listener",
       command: "ssh",
       args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
-      input: runnerAdmissionAssertion(runnerProxy),
+      input: runnerAdmissionAssertion(runnerProxy, runnerRegistration),
     },
   ];
 }
@@ -819,6 +832,13 @@ export function parseHostOptions(args) {
             noProxy: optionalOptionOrEmpty(args, "runner-no-proxy") ?? "",
           }
         : { configured: false },
+      runnerRegistration:
+        option(args, "runner-admin-token") && option(args, "runner-repository")
+          ? {
+              adminToken: option(args, "runner-admin-token"),
+              repository: option(args, "runner-repository"),
+            }
+          : null,
     };
   }
   return {

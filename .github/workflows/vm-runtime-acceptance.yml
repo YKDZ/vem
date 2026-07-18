@@ -43,6 +43,8 @@ jobs:
       VEM_RUNNER_HTTP_PROXY: ${{ vars.VEM_RUNNER_HTTP_PROXY }}
       VEM_RUNNER_HTTPS_PROXY: ${{ vars.VEM_RUNNER_HTTPS_PROXY }}
       VEM_RUNNER_NO_PROXY: ${{ vars.VEM_RUNNER_NO_PROXY }}
+      VEM_RUNNER_ADMIN_TOKEN: ${{ secrets.VEM_RUNNER_ADMIN_TOKEN }}
+      VEM_RUNNER_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Add cached Rust toolchain to PATH
         run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
@@ -168,6 +170,8 @@ jobs:
           VEM_RUNNER_HTTP_PROXY: ${{ vars.VEM_RUNNER_HTTP_PROXY }}
           VEM_RUNNER_HTTPS_PROXY: ${{ vars.VEM_RUNNER_HTTPS_PROXY }}
           VEM_RUNNER_NO_PROXY: ${{ vars.VEM_RUNNER_NO_PROXY }}
+          VEM_RUNNER_ADMIN_TOKEN: ${{ secrets.VEM_RUNNER_ADMIN_TOKEN }}
+          VEM_RUNNER_REPOSITORY: ${{ github.repository }}
 
   run-inside-windows-pass-2:
     name: Build Deploy And Test Inside Windows Pass 2
