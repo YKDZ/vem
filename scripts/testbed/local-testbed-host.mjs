@@ -372,11 +372,6 @@ export function renderReconstructedDomainXml({
       "published domain XML must have one unfiltered network interface",
     );
   }
-  const filteredInterface = interfaces[0][0].replace(
-    "</interface>",
-    `<filterref filter="${xml(config.admissionFilterName)}"/></interface>`,
-  );
-  rendered = rendered.replace(interfaces[0][0], filteredInterface);
   return rendered;
 }
 
@@ -417,20 +412,11 @@ export function buildHostReconstructionPlan({
     },
     { type: "publish-overlay", from: pendingOverlay, to: config.overlayPath },
     {
-      type: "write-admission-gate",
-      path: config.admissionFilterXmlPath,
-      content: renderAdmissionFilterXml(config),
-    },
-    {
       type: "write-runtime-domain",
       path: config.runtimeXmlPath,
       template,
       baselineSystem: baseline,
       cacheDisk: cache,
-    },
-    {
-      type: "define-admission-gate",
-      ...virsh(config, "nwfilter-define", config.admissionFilterXmlPath),
     },
     {
       type: "define-domain",
@@ -476,15 +462,6 @@ export function buildHostAdmissionPlan({
           ),
         )}`,
       ),
-    },
-    {
-      type: "write-admitted-filter",
-      path: config.admissionFilterXmlPath,
-      content: renderAdmissionFilterXml(config, true),
-    },
-    {
-      type: "open-runner-egress",
-      ...virsh(config, "nwfilter-define", config.admissionFilterXmlPath),
     },
   ];
 }
@@ -595,8 +572,6 @@ async function executeReconstruction(options) {
       await run(step.command, step.args);
     } else if (step.type === "publish-overlay") {
       await rename(step.from, step.to);
-    } else if (step.type === "write-admission-gate") {
-      await writeFile(step.path, step.content, "utf8");
     } else if (step.type === "write-runtime-domain") {
       await writeFile(step.path, runtimeXml, "utf8");
     } else if (step.type === "wait-ssh") {
@@ -633,14 +608,11 @@ export async function executeHostAdmissionPlan(
   {
     runCommand = run,
     runCaptureCommand = runCapture,
-    writeText = writeFile,
   } = {},
 ) {
   let displayAdmissionProof = null;
   for (const step of plan) {
-    if (step.type === "write-admitted-filter") {
-      await writeText(step.path, step.content, "utf8");
-    } else if (step.type === "assert-interactive-display") {
+    if (step.type === "assert-interactive-display") {
       const output = await runCaptureCommand(step.command, step.args);
       displayAdmissionProof = validateDisplayAdmissionProof(
         parseJsonLine(output.stdout, "interactive display admission proof"),

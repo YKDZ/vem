@@ -126,7 +126,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(xml, /<name>win10-runtime-testbed<\/name>/);
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));
-    assert.match(xml, /filterref filter="vem-runtime-testbed-admission"/);
+    assert.doesNotMatch(xml, /filterref/);
   });
 
   it("does not admit the runner until the exact guest input is proven staged", async () => {
@@ -137,12 +137,11 @@ describe("tracked local testbed host lifecycle", () => {
     });
     assert.equal(plan[0].type, "assert-guest-input");
     assert.equal(plan[1].type, "assert-interactive-display");
-    assert.equal(plan[2].type, "write-admitted-filter");
     assert.equal(
       plan[0].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
-    assert.equal(plan.at(-1).type, "open-runner-egress");
+    assert.equal(plan.at(-1).type, "assert-interactive-display");
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
@@ -150,14 +149,13 @@ describe("tracked local testbed host lifecycle", () => {
           operations.push(command);
           throw new Error("guest input missing");
         },
-        writeText: async () => operations.push("write-filter"),
       }),
       /guest input missing/,
     );
     assert.deepEqual(operations, ["ssh"]);
   });
 
-  it("requires exact 1080x1920 proof before opening runner egress", async () => {
+  it("requires exact 1080x1920 proof before scheduling the runner", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -182,14 +180,8 @@ describe("tracked local testbed host lifecycle", () => {
           })}\n`,
         };
       },
-      writeText: async () => operations.push("write-filter"),
     });
     assert.equal(result.displayAdmissionProof.widthPx, 1080);
-    assert.deepEqual(operations, [
-      "ssh",
-      "ssh",
-      "write-filter",
-      "virsh",
-    ]);
+    assert.deepEqual(operations, ["ssh", "ssh"]);
   });
 });
