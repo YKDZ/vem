@@ -339,7 +339,15 @@ function run(command, args, { allowFailure = false } = {}) {
         stderr: error.stderr ?? "",
         failed: true,
       };
-    throw new Error(`${command} failed: ${error.stderr || error.message}`);
+    const diagnostics = [
+      error.code !== undefined ? `exit=${error.code}` : null,
+      error.stdout ? `stdout:\n${error.stdout}` : null,
+      error.stderr ? `stderr:\n${error.stderr}` : null,
+      !error.stdout && !error.stderr ? error.message : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    throw new Error(`${command} failed:\n${diagnostics}`);
   });
 }
 

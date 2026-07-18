@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 $cacheRoot = "D:\runtime-cache\v1"
 $toolchainRoot = "C:\ProgramData\VEM\Toolchains"
 $runnerRoot = "C:\actions-runner"
