@@ -403,5 +403,25 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(dynamicRegistration.input, /actions\/runners\/registration-token/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
+
+    const proxiedRegistration = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-19",
+      runnerProxy: {
+        configured: true,
+        http: "http://proxy.example.test:8080",
+        https: "http://proxy.example.test:8080",
+        noProxy: "localhost,127.0.0.1",
+      },
+      runnerRegistration: {
+        adminToken: "runner-admin-token",
+        repository: "example/runtime",
+      },
+    }).at(-1);
+    assert.match(
+      proxiedRegistration.input,
+      /\$env:HTTPS_PROXY = 'http:\/\/proxy\.example\.test:8080'.*Invoke-RestMethod/s,
+    );
   });
 });

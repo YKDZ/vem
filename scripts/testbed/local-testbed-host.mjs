@@ -246,8 +246,22 @@ $proof | ConvertTo-Json -Compress
 
 function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
+  const registrationProxySetup = runnerProxy?.configured
+    ? [
+        ["HTTP_PROXY", runnerProxy.http],
+        ["HTTPS_PROXY", runnerProxy.https],
+        ["NO_PROXY", runnerProxy.noProxy],
+      ]
+        .filter(([, value]) => value)
+        .map(
+          ([name, value]) =>
+            `$env:${name} = ${quotePowerShell(value)}`,
+        )
+        .join("\n")
+    : "";
   const registrationSetup = runnerRegistration
-    ? `$existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
+    ? `${registrationProxySetup}
+$existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
 Get-Process -Name 'RunnerService','Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $existingServices | ForEach-Object { & sc.exe stop $_.Name | Out-Null; & sc.exe delete $_.Name | Out-Null }
 Start-Sleep -Seconds 1
