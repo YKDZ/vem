@@ -388,6 +388,23 @@ function fixture(root) {
         minimumDurationMs: 100,
         minimumDistinctNonSilentSampleMagnitudes: 2,
       },
+      provenance: {
+        domain: {
+          libvirtUri: "qemu:///system",
+          domainName: "win10-runtime-testbed",
+          state: "running",
+          model: "ich9",
+          audioId: 1,
+        },
+        wav: {
+          path: "/var/lib/vem-testbed/win10-runtime-testbed.wav",
+          device: 2049,
+          inode: 4097,
+          startOffset: 44,
+          endOffset: 96_044,
+          capturedByteLength: 96_000,
+        },
+      },
     },
     evidence: [audioEvidence, serialEvidence],
   };
