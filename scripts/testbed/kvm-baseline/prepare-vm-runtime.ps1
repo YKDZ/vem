@@ -263,7 +263,8 @@ function Get-CacheDisk {
 function Initialize-CacheDisk {
   Move-OpticalVolumesOffD
   $disk = Get-CacheDisk
-  Set-Disk -Number $disk.Number -IsOffline $false -IsReadOnly $false -ErrorAction Stop
+  Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop
+  Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop
   $disk = Get-Disk -Number $disk.Number -ErrorAction Stop
   if ($disk.PartitionStyle -eq "RAW") {
     Initialize-Disk -Number $disk.Number -PartitionStyle GPT -ErrorAction Stop | Out-Null
