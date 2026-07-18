@@ -4,8 +4,10 @@ import { describe, it } from "node:test";
 
 import {
   assertNoAttemptOrDuplicatePayment,
+  combineCleanupError,
   parseScannerPaymentCodeGuestArgs,
   scannerFrameBytes,
+  runCleanupStep,
   validateSuccessfulOutcome,
 } from "./scanner-payment-code-guest-full.mjs";
 
@@ -100,5 +102,39 @@ describe("scanner payment-code guest full", () => {
     assert.deepEqual(scannerFrameBytes(expected), expected);
     assert.throws(() => scannerFrameBytes("621234567890123456"));
     assert.throws(() => scannerFrameBytes("6212\r\n3456\r\n"));
+  });
+
+  it("fails closed when cleanup abort fails and preserves the primary error", async () => {
+    const primary = new Error("main failed");
+    let cleanup;
+    await assert.rejects(async () => {
+      await runCleanupStep("abort serial session", async () => {
+        throw new Error("abort endpoint down");
+      });
+    });
+    try {
+      await runCleanupStep("abort serial session", async () => {
+        throw new Error("abort endpoint down");
+      });
+    } catch (error) {
+      cleanup = error;
+    }
+    const combined = combineCleanupError(primary, [cleanup]);
+    assert.equal(combined instanceof AggregateError, true);
+    assert.equal(combined.errors[0], primary);
+    assert.match(combined.message, /main failed/);
+    assert.match(combined.message, /abort serial session failed/);
+  });
+
+  it("contains fail-closed final abort cleanup", () => {
+    const source = readFileSync(
+      new URL("./scanner-payment-code-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(source, /runCleanupStep\("abort serial session"/);
+    assert.match(source, /serial session abort did not confirm inactive state/);
+    assert.match(source, /combineCleanupError/);
+    assert.match(source, /cleanup failed:/);
   });
 });

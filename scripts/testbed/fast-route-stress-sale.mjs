@@ -20,6 +20,7 @@ import {
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
+const CLEANUP_TIMEOUT_MS = 10_000;
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -1092,6 +1093,52 @@ function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: String(error.stack ?? "").slice(0, 16 * 1024),
+    };
+  }
+  return { name: "Error", message: String(error) };
+}
+
+function cleanupTimeout(label, timeoutMs) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+export async function runCleanupStep(label, action, timeoutMs = CLEANUP_TIMEOUT_MS) {
+  try {
+    const detail = await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+    return { label, ok: true, detail };
+  } catch (error) {
+    const wrapped = new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    wrapped.cause = error;
+    wrapped.cleanupLabel = label;
+    throw wrapped;
+  }
+}
+
+export function combineCleanupError(primaryError, cleanupErrors) {
+  if (cleanupErrors.length === 0) return primaryError;
+  if (primaryError) {
+    return new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  return new AggregateError(
+    cleanupErrors,
+    `cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+  );
+}
+
 export function buildFastRouteStressSaleFailureReport(input) {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
@@ -1125,6 +1172,8 @@ export function buildFastRouteStressSaleFailureReport(input) {
     },
     hostEvidence: input.hostEvidence ?? null,
     checkpoints: input.checkpoints ?? [],
+    cleanup: input.cleanup ?? [],
+    cleanupError: input.cleanupError ?? null,
     logs: {
       daemonStdout: input.logs?.daemonStdout ?? null,
       daemonStderr: input.logs?.daemonStderr ?? null,
@@ -1299,6 +1348,9 @@ async function runFastRouteStressSale(options) {
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
   let createOrderGate = null;
+  let successReport = null;
+  let failureReport = null;
+  let primaryError = null;
   try {
     guestInput = readJson(options.guestInputPath, "guest input");
     handoff = readJson(options.handoffPath, "handoff");
@@ -1599,7 +1651,7 @@ async function runFastRouteStressSale(options) {
         idempotencyCheck: true,
       },
     );
-    const report = {
+    successReport = {
       schemaVersion: "vem-fast-route-stress-sale/v2",
       ok: true,
       mode: options.mode,
@@ -1646,9 +1698,8 @@ async function runFastRouteStressSale(options) {
         })),
       },
     };
-    writeReport(options.outPath, report);
-    return report;
   } catch (error) {
+    primaryError = error instanceof Error ? error : new Error(String(error));
     const failureCheckpoints = [...checkpoints];
     if (clientReady) {
       const failure = await captureCheckpoint(client, `failure-${stage}`, {
@@ -1689,7 +1740,7 @@ async function runFastRouteStressSale(options) {
     const report = buildFastRouteStressSaleFailureReport({
       mode: options.mode,
       stage,
-      error,
+      error: primaryError,
       controlPlaneSessionId: sessionStart?.sessionId ?? null,
       liveSale,
       runtimeTrace,
@@ -1725,15 +1776,133 @@ async function runFastRouteStressSale(options) {
         simulator: hostEvidence?.references?.simulatorLog ?? null,
       },
     });
-    writeReport(options.outPath, report);
-    throw error;
-  } finally {
-    if (guestInput && createOrderGate) {
-      await openCreateOrderGate(guestInput).catch(() => null);
-    }
-    await client?.close().catch(() => undefined);
-    await shutdownControlledVisionMock(vision?.child).catch(() => undefined);
+    failureReport = report;
   }
+
+  const cleanup = [];
+  const cleanupErrors = [];
+  if (guestInput && createOrderGate) {
+    try {
+      cleanup.push(
+        await runCleanupStep("reopen payment create gate", async () => {
+          const opened = await openCreateOrderGate(guestInput);
+          const status = await controlPlaneRequest(
+            guestInput,
+            "/v1/mock-payment-create-gate/status",
+          );
+          if (opened?.state !== "open" || status?.state !== "open" || status?.pending !== null) {
+            throw new Error("payment create gate did not return to open with no pending payment");
+          }
+          return { opened, status };
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "reopen payment create gate",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  if (guestInput && sessionStart?.sessionId) {
+    try {
+      cleanup.push(
+        await runCleanupStep("abort serial session", async () => {
+          const result = await controlPlaneRequest(
+            guestInput,
+            `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+          );
+          if (result?.aborted !== true) {
+            throw new Error("serial session abort did not confirm inactive state");
+          }
+          return result;
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "abort serial session",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  if (client) {
+    try {
+      cleanup.push(
+        await runCleanupStep("close CDP client", async () => {
+          await client.close();
+          return { closed: true };
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "close CDP client",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  try {
+    cleanup.push(
+      await runCleanupStep("stop controlled vision mock", async () => {
+        await shutdownControlledVisionMock(vision?.child);
+        return { stopped: true, port: 7892 };
+      }),
+    );
+  } catch (error) {
+    cleanupErrors.push(error);
+    cleanup.push({
+      label: error.cleanupLabel ?? "stop controlled vision mock",
+      ok: false,
+      error: serializeError(error),
+    });
+  }
+
+  if (successReport) successReport.cleanup = cleanup;
+  if (failureReport) {
+    failureReport.cleanup = cleanup;
+  }
+  const finalError = combineCleanupError(primaryError, cleanupErrors);
+  if (finalError) {
+    if (!failureReport) {
+      failureReport = buildFastRouteStressSaleFailureReport({
+        mode: options.mode,
+        stage: "cleanup",
+        error: finalError,
+        controlPlaneSessionId: sessionStart?.sessionId ?? null,
+        liveSale,
+        runtimeTrace: [],
+        snapshots: {
+          platform: {
+            baseline: baselinePlatform,
+            beforeF0: beforeF0Platform,
+            afterF1BeforeF2: afterF1Platform,
+            afterF2: afterF2Platform,
+          },
+          daemon: {
+            baseline: baselineSaleView,
+            beforeF0: beforeF0SaleView,
+            afterF1BeforeF2: afterF1SaleView,
+            afterF2: afterF2SaleView,
+          },
+        },
+        hostEvidence: successReport,
+        checkpoints,
+        cleanup,
+        cleanupError: serializeError(finalError),
+      });
+    } else {
+      failureReport.cleanupError = serializeError(finalError);
+    }
+    writeReport(options.outPath, failureReport);
+    throw finalError;
+  }
+
+  writeReport(options.outPath, successReport);
+  return successReport;
 }
 
 async function main() {

@@ -5,8 +5,10 @@ import { describe, it } from "node:test";
 import {
   buildFastRouteStressSaleFailureReport,
   buildFastRouteStressScenarioSteps,
+  combineCleanupError,
   dispatchRepeatedPaymentTouch,
   parseFastRouteStressSaleArgs,
+  runCleanupStep,
   shutdownControlledVisionMock,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
@@ -666,5 +668,47 @@ describe("fast route stress sale tracer", () => {
 
   it("exports an explicit controlled vision mock shutdown path", () => {
     assert.equal(typeof shutdownControlledVisionMock, "function");
+  });
+
+  it("aggregates cleanup failures without dropping the primary error", async () => {
+    const primary = new Error("sale flow failed");
+    let cleanup;
+    await assert.rejects(async () => {
+      await runCleanupStep("reopen payment create gate", async () => {
+        throw new Error("gate status unavailable");
+      });
+    });
+    try {
+      await runCleanupStep("reopen payment create gate", async () => {
+        throw new Error("gate status unavailable");
+      });
+    } catch (error) {
+      cleanup = error;
+    }
+    const combined = combineCleanupError(primary, [cleanup]);
+    assert.equal(combined instanceof AggregateError, true);
+    assert.equal(combined.errors[0], primary);
+    assert.match(combined.message, /sale flow failed/);
+    assert.match(combined.message, /reopen payment create gate failed/);
+  });
+
+  it("contains fail-closed cleanup for gate reopen, serial abort, and vision shutdown", () => {
+    const implementation = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(implementation, /runCleanupStep\("reopen payment create gate"/);
+    assert.match(implementation, /mock-payment-create-gate\/status/);
+    assert.match(
+      implementation,
+      /payment create gate did not return to open with no pending payment/,
+    );
+    assert.match(implementation, /runCleanupStep\("abort serial session"/);
+    assert.match(
+      implementation,
+      /serial session abort did not confirm inactive state/,
+    );
+    assert.match(implementation, /runCleanupStep\("stop controlled vision mock"/);
   });
 });

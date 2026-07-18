@@ -26,6 +26,7 @@ const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from(
   "621234567890123456",
   "utf8",
 );
+const CLEANUP_TIMEOUT_MS = 10_000;
 
 export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
   const bytes = Buffer.isBuffer(value)
@@ -80,6 +81,98 @@ function readJson(path, label) {
 function writeJson(path, value) {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: String(error.stack ?? "").slice(0, 16 * 1024),
+    };
+  }
+  return { name: "Error", message: String(error) };
+}
+
+function cleanupTimeout(label, timeoutMs) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+export async function runCleanupStep(label, action, timeoutMs = CLEANUP_TIMEOUT_MS) {
+  try {
+    const detail = await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+    return { label, ok: true, detail };
+  } catch (error) {
+    const wrapped = new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    wrapped.cause = error;
+    wrapped.cleanupLabel = label;
+    throw wrapped;
+  }
+}
+
+export function combineCleanupError(primaryError, cleanupErrors) {
+  if (cleanupErrors.length === 0) return primaryError;
+  if (primaryError) {
+    return new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  return new AggregateError(
+    cleanupErrors,
+    `cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+  );
+}
+
+async function finalizeScannerCleanup({ guestInput, sessionStart, client }) {
+  const cleanup = [];
+  const cleanupErrors = [];
+  if (sessionStart?.sessionId) {
+    try {
+      cleanup.push(
+        await runCleanupStep("abort serial session", async () => {
+          const result = await controlPlaneRequest(
+            guestInput,
+            `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+          );
+          if (result?.aborted !== true) {
+            throw new Error("serial session abort did not confirm inactive state");
+          }
+          return result;
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "abort serial session",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  if (client) {
+    try {
+      cleanup.push(
+        await runCleanupStep("close CDP client", async () => {
+          await client.close();
+          return { closed: true };
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "close CDP client",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  return { cleanup, cleanupErrors };
 }
 
 function rows(raw, key) {
@@ -517,9 +610,10 @@ export async function runScannerPaymentCodeGuest(options) {
   let client = null;
   let sessionStart = null;
   let scannerEventCapture = null;
-  let failure = null;
-  let cleanup = null;
   let stage = "connect";
+  let successReport = null;
+  let failureReport = null;
+  let primaryError = null;
   try {
     guestInput = readJson(options.guestInputPath, "guest input");
     handoff = readJson(options.handoffPath, "handoff");
@@ -721,7 +815,7 @@ export async function runScannerPaymentCodeGuest(options) {
       },
     );
 
-    const report = {
+    successReport = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
       ok: true,
       mode: options.mode,
@@ -777,21 +871,20 @@ export async function runScannerPaymentCodeGuest(options) {
       serial: sessionEvidence,
       runtimeTrace,
     };
-    writeJson(options.outPath, report);
-    return report;
   } catch (error) {
-    failure = {
+    primaryError = error instanceof Error ? error : new Error(String(error));
+    failureReport = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
       ok: false,
       stage,
-      error: error instanceof Error ? error.message : String(error),
+      error: serializeError(primaryError),
       evidence: { checkpoints },
     };
     if (guestInput) {
       const runId = guestInput.runId;
       const machineCode = guestInput.machineCode;
       if (runId && machineCode) {
-        failure.evidence.platform = await queryPlatform(
+        failureReport.evidence.platform = await queryPlatform(
           guestInput,
           runId,
           machineCode,
@@ -799,20 +892,20 @@ export async function runScannerPaymentCodeGuest(options) {
         ).catch((captureError) => ({ error: String(captureError) }));
       }
       if (sessionStart?.sessionId) {
-        failure.evidence.serial = await controlPlaneRequest(
+        failureReport.evidence.serial = await controlPlaneRequest(
           guestInput,
           `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
         ).catch((captureError) => ({ error: String(captureError) }));
       }
     }
     if (handoff) {
-      failure.evidence.daemon = await daemonGet(
+      failureReport.evidence.daemon = await daemonGet(
         handoff,
         "/v1/transactions/current",
       ).catch((captureError) => ({ error: String(captureError) }));
     }
     if (client) {
-      failure.evidence.ui = await readUiBoundary(client).catch(
+      failureReport.evidence.ui = await readUiBoundary(client).catch(
         (captureError) => ({ error: String(captureError) }),
       );
       checkpoints.push(
@@ -826,30 +919,38 @@ export async function runScannerPaymentCodeGuest(options) {
         }).catch((captureError) => ({ error: String(captureError) })),
       );
     }
-    if (guestInput && sessionStart?.sessionId) {
-      failure.cleanup = await controlPlaneRequest(
-        guestInput,
-        `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-      ).catch((cleanupError) => ({ error: String(cleanupError) }));
-    }
-    writeJson(options.outPath, failure);
-    throw error;
-  } finally {
-    try {
-      if (sessionStart?.sessionId) {
-        cleanup = await controlPlaneRequest(
-          guestInput,
-          `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-        ).catch((error) => ({
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
-    } finally {
-      scannerEventCapture?.close();
-      await client?.close().catch(() => undefined);
-    }
-    if (failure) writeJson(options.outPath, { ...failure, cleanup });
   }
+
+  const { cleanup, cleanupErrors } = await finalizeScannerCleanup({
+    guestInput,
+    sessionStart,
+    client,
+  });
+  if (successReport) successReport.cleanup = cleanup;
+  if (failureReport) failureReport.cleanup = cleanup;
+  const finalError = combineCleanupError(primaryError, cleanupErrors);
+  if (finalError) {
+    if (!failureReport) {
+      failureReport = {
+        schemaVersion: "vem-scanner-payment-code-guest-full/v1",
+        ok: false,
+        stage: "cleanup",
+        error: serializeError(finalError),
+        evidence: {
+          checkpoints,
+          report: successReport,
+        },
+        cleanup,
+      };
+    } else {
+      failureReport.cleanupError = serializeError(finalError);
+    }
+    writeJson(options.outPath, failureReport);
+    throw finalError;
+  }
+
+  writeJson(options.outPath, successReport);
+  return successReport;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

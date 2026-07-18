@@ -1,6 +1,18 @@
+// @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createApp, defineComponent, nextTick } from "vue";
+import { createMemoryHistory, createRouter } from "vue-router";
 
+import {
+  installPresenceDepartureNavigation,
+  resetCustomerPresenceSessionForTests,
+} from "@/composables/usePresenceInteraction";
+import {
+  installTransactionRouteAuthority,
+  machineRuntimeTrace,
+} from "@/router/transaction-route-authority";
+import { useCheckoutStore } from "@/stores/checkout";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 type RuntimeEventHandlers = {
@@ -59,6 +71,9 @@ import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { startMachineRuntime, stopMachineRuntime } from "./machine-runtime";
 
 let pinia: ReturnType<typeof createPinia>;
+let disposeRouteAuthority: (() => void) | null = null;
+let presenceRuntime: ReturnType<typeof createApp> | null = null;
+let presenceHost: HTMLDivElement | null = null;
 
 function noCurrentTransaction() {
   return {
@@ -82,6 +97,25 @@ function noCurrentTransaction() {
     errorMessage: null,
     operatorHint: null,
     updatedAt: "2026-07-17T00:00:00.000Z",
+  };
+}
+
+function activePaymentTransaction() {
+  return {
+    ...noCurrentTransaction(),
+    orderId: "550e8400-e29b-41d4-a716-446655440012",
+    orderNo: "ORD-RUNTIME-VISION-001",
+    paymentId: "550e8400-e29b-41d4-a716-446655440013",
+    paymentNo: "PAY-RUNTIME-VISION-001",
+    paymentMethod: "qr_code" as const,
+    paymentProvider: "alipay" as const,
+    paymentUrl: "https://pay.example/runtime-vision",
+    paymentStatus: "pending" as const,
+    orderStatus: "pending_payment" as const,
+    totalAmountCents: 4900,
+    nextAction: "wait_payment" as const,
+    expiresAt: "2099-06-30T08:15:00.000Z",
+    updatedAt: "2026-07-18T08:00:00.000Z",
   };
 }
 
@@ -121,6 +155,13 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  presenceRuntime?.unmount();
+  presenceRuntime = null;
+  presenceHost?.remove();
+  presenceHost = null;
+  resetCustomerPresenceSessionForTests();
+  disposeRouteAuthority?.();
+  disposeRouteAuthority = null;
   await stopMachineRuntime(pinia);
   vi.useRealTimers();
 });
@@ -171,6 +212,105 @@ describe("Machine runtime coordinator", () => {
     await stopMachineRuntime(pinia);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the active order projection after a live Vision departure", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+      ],
+    });
+    disposeRouteAuthority = installTransactionRouteAuthority(router, pinia);
+    useCheckoutStore(pinia).applyTransaction(activePaymentTransaction());
+    await router.push("/payment");
+
+    presenceHost = document.createElement("div");
+    document.body.appendChild(presenceHost);
+    presenceRuntime = createApp(
+      defineComponent({
+        setup() {
+          installPresenceDepartureNavigation();
+          return () => null;
+        },
+      }),
+    );
+    presenceRuntime.use(pinia);
+    presenceRuntime.mount(presenceHost);
+
+    startMachineRuntime(pinia);
+    const subscription = subscribeEventsMock.mock.calls[0];
+    if (!subscription)
+      throw new Error("runtime did not create an event subscription");
+    const [handlers] = subscription;
+
+    handlers.onEvent({
+      type: "vision_changed",
+      eventId: "daemon-vision-present-001",
+      updatedAt: "2026-07-18T08:00:01.000Z",
+      enabled: true,
+      online: true,
+      message: "Vision presence observed",
+      latestDiagnosticPayload: {
+        type: "vision.presence_status",
+        payload: {
+          source: "top",
+          eventId: "VISION-PRESENT-001",
+          state: "approach",
+          reason: "person_present_but_not_close",
+          detectedAt: "2026-07-18T08:00:01.000Z",
+          personPresent: true,
+          closeNow: false,
+          close: false,
+          closeTrigger: null,
+          proximity: { present: true },
+        },
+      },
+    });
+    await nextTick();
+
+    handlers.onEvent({
+      type: "vision_changed",
+      eventId: "daemon-vision-departure-001",
+      updatedAt: "2026-07-18T08:00:02.000Z",
+      enabled: true,
+      online: true,
+      message: "Vision departure observed",
+      latestDiagnosticPayload: {
+        type: "vision.person_departed",
+        payload: {
+          source: "top",
+          eventId: "VISION-DEPARTURE-001",
+          detectedAt: "2026-07-18T08:00:02.000Z",
+          lastSeenAt: "2026-07-18T08:00:01.000Z",
+          reason: "left_frame",
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+      expect(machineRuntimeTrace()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "navigation",
+            intentType: "presence.departed",
+            sourceEventId: "VISION-DEPARTURE-001",
+            decision: "rejected",
+            reasonCode: "active_transaction_route",
+            transactionOrderNo: "ORD-RUNTIME-VISION-001",
+          }),
+          expect.objectContaining({
+            type: "navigation",
+            intentType: "transaction.projection",
+            decision: "accepted",
+            transactionOrderNo: "ORD-RUNTIME-VISION-001",
+            reasonCode: expect.stringMatching(/^transaction_projection/),
+          }),
+        ]),
+      );
+    });
   });
 
   it("reconciles only after the replacement event stream opens", async () => {

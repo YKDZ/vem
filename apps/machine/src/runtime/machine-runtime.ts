@@ -3,7 +3,10 @@ import type { Pinia } from "pinia";
 import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
-import { installedMachineRuntimeTrace } from "@/router/transaction-route-authority";
+import {
+  installedMachineRuntimeTrace,
+  submitMachineNavigationIntent,
+} from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -31,6 +34,7 @@ type RuntimeCoordinator = {
   reconciliationRetryTimer: ReturnType<typeof globalThis.setTimeout> | null;
   journeyAudio: CustomerJourneyAudioRuntime | null;
   teardown: Promise<void> | null;
+  lastVisionDepartureEventId: string | null;
 };
 
 const coordinators = new WeakMap<Pinia, RuntimeCoordinator>();
@@ -45,12 +49,39 @@ function coordinatorFor(pinia: Pinia): RuntimeCoordinator {
     reconciliationRetryTimer: null,
     journeyAudio: null,
     teardown: null,
+    lastVisionDepartureEventId: null,
   };
   coordinators.set(pinia, coordinator);
   return coordinator;
 }
 
-function dispatchDaemonEvent(pinia: Pinia, event: DaemonEvent): void {
+function refreshProjectionAfterVisionDeparture(
+  checkoutStore: ReturnType<typeof useCheckoutStore>,
+  eventId: string,
+  coordinator: RuntimeCoordinator,
+): void {
+  if (coordinator.lastVisionDepartureEventId === eventId) return;
+  coordinator.lastVisionDepartureEventId = eventId;
+
+  const orderNo = checkoutStore.customerCheckoutView.orderCredential;
+  if (!orderNo) return;
+
+  void checkoutStore.refreshCurrentTransaction().then((outcome) => {
+    if (
+      outcome.status !== "refreshed" ||
+      checkoutStore.customerCheckoutView.orderCredential !== orderNo
+    ) {
+      return;
+    }
+    void submitMachineNavigationIntent({ type: "transaction.projection" });
+  });
+}
+
+function dispatchDaemonEvent(
+  pinia: Pinia,
+  event: DaemonEvent,
+  coordinator: RuntimeCoordinator,
+): void {
   const machineStore = useMachineStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
   const catalogStore = useCatalogStore(pinia);
@@ -96,6 +127,18 @@ function dispatchDaemonEvent(pinia: Pinia, event: DaemonEvent): void {
       updatedAt: event.updatedAt,
       latestDiagnosticPayload: event.latestDiagnosticPayload ?? null,
     });
+    const presence = visionStore.presence;
+    if (
+      presence.source === "person_departed" &&
+      !presence.personPresent &&
+      presence.eventId
+    ) {
+      refreshProjectionAfterVisionDeparture(
+        checkoutStore,
+        presence.eventId,
+        coordinator,
+      );
+    }
     return;
   }
   if (event.type === "transaction_changed") {
@@ -218,7 +261,7 @@ export function startMachineRuntime(pinia: Pinia): void {
   void saleCapabilityStore.refresh();
   coordinator.subscription = daemonClient.subscribeEvents({
     onEvent: (event) => {
-      dispatchDaemonEvent(pinia, event);
+      dispatchDaemonEvent(pinia, event, coordinator);
     },
     onUnknownEvent: (event) => {
       recordUnknownDaemonEvent(pinia, event);
