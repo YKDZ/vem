@@ -34,6 +34,10 @@ function Require-Path([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "missing required testbed input: $Path" }
 }
 
+function Write-TestbedPhase([string]$Name) {
+  Write-Output "::vem-testbed-phase::$Name"
+}
+
 function Get-TestbedSccache {
   $version = "0.16.0"
   $toolRoot = Join-Path $cacheRoot "sccache\bin\$version"
@@ -354,6 +358,7 @@ foreach ($pair in @{
 }.GetEnumerator()) { Assert-DeclaredCachePath $pair.Value $pair.Key }
 $pnpm = "C:\Program Files\nodejs\pnpm.cmd"
 Require-Path $pnpm
+Write-TestbedPhase "dependencies"
 & $pnpm config set store-dir $env:PNPM_STORE_PATH --location global
 if ($LASTEXITCODE -ne 0) { throw "pnpm store configuration failed" }
 if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnpm store-dir did not resolve to D: cache" }
@@ -361,9 +366,11 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
+Write-TestbedPhase "machine-build"
 & $pnpm --filter machine exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
 if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
 $null = & $sccache --zero-stats
+Write-TestbedPhase "daemon-build"
 cargo build -p vending-daemon --release
 if ($LASTEXITCODE -ne 0) { throw "vending daemon build failed" }
 $sccacheStats = (& $sccache --show-stats | Out-String)
@@ -375,6 +382,7 @@ $webViewLoaderSource = Join-Path $env:CARGO_TARGET_DIR "release\WebView2Loader.d
 Require-Path $daemonSource
 Require-Path $machineSource
 Require-Path $webViewLoaderSource
+Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
 $machinePath = Join-Path $deploymentRoot "machine.exe"
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
@@ -387,6 +395,7 @@ Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force 
 $daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
 $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
+Write-TestbedPhase "claim-runtime"
 $claim = Invoke-Claim $input
 $runtimeReady = Wait-RuntimeReady
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
@@ -408,6 +417,7 @@ $machineAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /c `"$
 $machinePrincipal = New-ScheduledTaskPrincipal -UserId ([string]$input.interactiveUser) -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $machineTaskName -Action $machineAction -Principal $machinePrincipal -Force | Out-Null
 Start-ScheduledTask -TaskName $machineTaskName
+Write-TestbedPhase "wait-installed-ui"
 $target = Wait-InstalledTauriTarget
 $machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $machinePath
 $expectedInteractiveUser = ([string]$input.interactiveUser -split '\\')[-1]
@@ -457,6 +467,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
   }
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $handoffPath -Encoding utf8
 
+Write-TestbedPhase "installed-smoke"
 node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
 Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
@@ -474,6 +485,7 @@ if ($Mode -eq "full") {
 $workflowFailure = $null
 $bundleFailure = $null
 try {
+  Write-TestbedPhase "acceptance-tracks"
   node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
   if ($LASTEXITCODE -ne 0) { $workflowFailure = "local testbed workflow aggregate failed" }
 } catch {
