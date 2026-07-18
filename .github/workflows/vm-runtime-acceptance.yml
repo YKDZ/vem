@@ -40,7 +40,7 @@ jobs:
           token_command="$(jq -r .runner.registrationTokenProvider.command "$config")"
           mapfile -t token_arguments < <(jq -r '.runner.registrationTokenProvider.arguments[]?' "$config")
           token="$("$token_command" "${token_arguments[@]}")"
-          runner_name="forest-win10-runtime-debug"
+          runner_name="forest-win10-runtime-debug-2"
           labels="$(jq -r '.runner.labels | join(",")' "$config")"
           chmod 600 "$key"
           ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
