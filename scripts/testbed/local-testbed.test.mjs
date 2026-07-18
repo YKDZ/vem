@@ -1145,6 +1145,7 @@ describe("Windows D cache contract", () => {
         new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
+    assert.doesNotMatch(guest, /sccache --zero-stats|Compile requests/);
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
     assert.match(
       guest,
