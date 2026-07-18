@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +19,8 @@ import {
 } from "./machine-ui-cdp-driver.mjs";
 
 const MODES = new Set(["full"]);
+const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
+const VISION_RUNTIME_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const VISION_SITE_CONFIGURATION_PATH = "C:\\ProgramData\\VEM\\vision\\site.json";
 const VISION_INSTALLED_RECORD_PATH =
   "C:\\ProgramData\\VEM\\vision\\installed.json";
@@ -63,6 +66,12 @@ function readJson(path, label) {
   } catch (error) {
     throw new Error(`${label} is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function fileSha256(path) {
+  return createHash("sha256")
+    .update(readFileSync(localPath(path)))
+    .digest("hex");
 }
 
 function writeReport(outPath, report) {
@@ -112,6 +121,10 @@ function compactRuntimeTrace(trace, maxEntries = 96) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
 
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
 function daemonBaseUrl(handoff) {
   const healthzUrl = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
@@ -159,6 +172,380 @@ function isVisionProtocolTimestamp(value) {
     typeof value === "string" &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)
   );
+}
+
+function requiredObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value;
+}
+
+function positiveNumber(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number`);
+  }
+  return value;
+}
+
+function visionFixtureExpectedResultsPath(commit) {
+  return `${VISION_FIXTURE_ROOT}\\${commit}\\recorded-video\\expected-results.json`;
+}
+
+function normalizedExpectedProtocolEvent(
+  value,
+  label,
+  expectedType,
+  expectedSource,
+) {
+  const event = requiredObject(value, `${label} expected result`);
+  const type = required(
+    typeof event.type === "string" ? event.type : expectedType,
+    `${label} type`,
+  );
+  const source = required(
+    typeof event.source === "string" ? event.source : expectedSource,
+    `${label} source`,
+  );
+  const detectedAt = required(
+    typeof event.detectedAt === "string"
+      ? event.detectedAt
+      : event.payload?.detectedAt,
+    `${label} detectedAt`,
+  );
+  if (type !== expectedType) {
+    throw new Error(`${label} type must be ${expectedType}`);
+  }
+  if (!isVisionProtocolTimestamp(detectedAt)) {
+    throw new Error(`${label} detectedAt must be an ISO UTC timestamp`);
+  }
+  return { type, source, detectedAt };
+}
+
+export function normalizeVisionExpectedResults(raw) {
+  const fixture = requiredObject(raw, "Vision expected-results fixture");
+  const protocol = requiredObject(
+    fixture.protocol ?? fixture.machineProtocol ?? fixture.expectedProtocol,
+    "expected protocol block",
+  );
+  const recommendation = requiredObject(
+    fixture.recommendation ?? fixture.catalogRecommendation,
+    "expected recommendation block",
+  );
+  const tryOn = requiredObject(
+    fixture.tryOn ?? fixture.try_on ?? fixture.tryOnPreview,
+    "expected try-on block",
+  );
+  const capabilities = Array.isArray(protocol.ready?.capabilities)
+    ? protocol.ready.capabilities.map((value) =>
+        required(String(value), "ready capability"),
+      )
+    : [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "try_on_session",
+      ];
+  const orderedCatalogKeys = recommendation.orderedCatalogKeys;
+  if (
+    !Array.isArray(orderedCatalogKeys) ||
+    orderedCatalogKeys.length < 1 ||
+    orderedCatalogKeys.some(
+      (value) => typeof value !== "string" || value.trim() === "",
+    )
+  ) {
+    throw new Error(
+      "expected recommendation orderedCatalogKeys must be a non-empty string array",
+    );
+  }
+  return {
+    schemaVersion:
+      typeof fixture.schemaVersion === "string" ? fixture.schemaVersion : null,
+    protocol: {
+      ready: {
+        protocol: required(
+          protocol.ready?.protocol ?? "vem.vision.v1",
+          "expected ready protocol",
+        ),
+        capabilities,
+      },
+      presence: normalizedExpectedProtocolEvent(
+        protocol.presence,
+        "presence",
+        "vision.presence_status",
+        "top",
+      ),
+      profile: normalizedExpectedProtocolEvent(
+        protocol.profile,
+        "profile",
+        "vision.profile_result",
+        "front",
+      ),
+      departure: normalizedExpectedProtocolEvent(
+        protocol.departure,
+        "departure",
+        "vision.person_departed",
+        "top",
+      ),
+    },
+    recommendation: {
+      orderedCatalogKeys: orderedCatalogKeys.map((value) =>
+        required(value, "expected ordered catalog key"),
+      ),
+      selectedCatalogKey: required(
+        recommendation.selectedCatalogKey ??
+          recommendation.topCatalogKey ??
+          orderedCatalogKeys[0],
+        "expected selected catalogKey",
+      ),
+      selectedVariantId: required(
+        recommendation.selectedVariantId,
+        "expected selected variantId",
+      ),
+      minimumScore: positiveNumber(
+        recommendation.minimumScore ?? recommendation.score ?? 0.01,
+        "expected recommendation minimumScore",
+      ),
+    },
+    tryOn: {
+      silhouettePathFragment: required(
+        tryOn.silhouettePathFragment ?? "/api/media-assets/",
+        "expected try-on silhouette path fragment",
+      ),
+      previewPathPrefix: required(
+        tryOn.previewPathPrefix ?? "http://127.0.0.1:7892/try-on/",
+        "expected try-on preview path prefix",
+      ),
+      selectedCatalogKey: required(
+        tryOn.selectedCatalogKey ??
+          recommendation.selectedCatalogKey ??
+          orderedCatalogKeys[0],
+        "expected try-on selected catalogKey",
+      ),
+      selectedVariantId: required(
+        tryOn.selectedVariantId ?? recommendation.selectedVariantId,
+        "expected try-on selected variantId",
+      ),
+    },
+  };
+}
+
+export function compareObservedVisionProtocolToExpected({
+  expectedResults,
+  protocolEvidence,
+}) {
+  const expected = normalizeVisionExpectedResults(expectedResults);
+  const summary = validateVisionProtocolEvidence(protocolEvidence);
+  if (summary.healthStatus !== "ok") {
+    throw new Error("Vision happy-path protocol evidence must report health status ok");
+  }
+  if (
+    protocolEvidence.ready?.protocol !== expected.protocol.ready.protocol ||
+    !expected.protocol.ready.capabilities.every((capability) =>
+      summary.capabilities.includes(capability),
+    )
+  ) {
+    throw new Error("Vision ready handshake does not match expected-results capabilities");
+  }
+  const observed = [
+    {
+      label: "presence",
+      type: protocolEvidence.presence.type,
+      source: protocolEvidence.presence.payload?.source ?? "top",
+      detectedAt: protocolEvidence.presence.payload?.detectedAt,
+    },
+    {
+      label: "profile",
+      type: protocolEvidence.profile.type,
+      source: protocolEvidence.profile.payload?.source ?? "front",
+      detectedAt: protocolEvidence.profile.payload?.detectedAt,
+    },
+    {
+      label: "departure",
+      type: protocolEvidence.departure.type,
+      source: protocolEvidence.departure.payload?.source ?? "top",
+      detectedAt: protocolEvidence.departure.payload?.detectedAt,
+    },
+  ];
+  const expectedSequence = [
+    expected.protocol.presence,
+    expected.protocol.profile,
+    expected.protocol.departure,
+  ];
+  for (let index = 0; index < observed.length; index += 1) {
+    const actual = observed[index];
+    const expectedEvent = expectedSequence[index];
+    if (
+      actual.type !== expectedEvent.type ||
+      actual.source !== expectedEvent.source ||
+      actual.detectedAt !== expectedEvent.detectedAt
+    ) {
+      throw new Error(
+        `${actual.label} does not match expected-results ${expectedEvent.source} source/timestamp`,
+      );
+    }
+  }
+  const chronology = [
+    protocolEvidence.ready.timestamp,
+    protocolEvidence.presence.payload.detectedAt,
+    protocolEvidence.profile.payload.detectedAt,
+    protocolEvidence.departure.payload.detectedAt,
+  ];
+  for (let index = 1; index < chronology.length; index += 1) {
+    if (Date.parse(chronology[index - 1]) >= Date.parse(chronology[index])) {
+      throw new Error("Vision protocol chronology is not strictly increasing");
+    }
+  }
+  return {
+    ...summary,
+    expectedSchemaVersion: expected.schemaVersion,
+    expectedSequence,
+  };
+}
+
+export function validateRecommendationProjection({
+  beforeProducts,
+  afterProducts,
+  pageText,
+  expectedResults,
+}) {
+  const expected = normalizeVisionExpectedResults(expectedResults);
+  const beforeCatalogKeys = beforeProducts.map((product) => product.catalogKey);
+  const afterCatalogKeys = afterProducts.map((product) => product.catalogKey);
+  assert.deepEqual(
+    afterCatalogKeys,
+    expected.recommendation.orderedCatalogKeys,
+    "catalog recommendation order must match expected-results",
+  );
+  if (beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")) {
+    throw new Error("catalog recommendation order did not actually change");
+  }
+  const selected = afterProducts[0];
+  if (!selected) {
+    throw new Error("catalog recommendation did not expose any product");
+  }
+  if (selected.catalogKey !== expected.recommendation.selectedCatalogKey) {
+    throw new Error("top recommended catalog item does not match expected-results");
+  }
+  if (selected.preferredVariantId !== expected.recommendation.selectedVariantId) {
+    throw new Error("recommended variant does not match expected-results");
+  }
+  if (selected.recommendationScore < expected.recommendation.minimumScore) {
+    throw new Error("recommended score did not exceed the expected threshold");
+  }
+  const leakage = JSON.stringify({ pageText, afterProducts });
+  for (const disallowed of [
+    "identity",
+    "faceEmbedding",
+    "rawImageBase64",
+    "ageRange",
+    "gender",
+  ]) {
+    if (leakage.includes(disallowed)) {
+      throw new Error(`catalog recommendation leaked identity field ${disallowed}`);
+    }
+  }
+  return {
+    beforeCatalogKeys,
+    afterCatalogKeys,
+    selectedCatalogKey: selected.catalogKey,
+    selectedVariantId: selected.preferredVariantId,
+    selectedScore: selected.recommendationScore,
+  };
+}
+
+export function validateTryOnPresentation({
+  selectedProduct,
+  tryOnState,
+  mjpegEvidence,
+  expectedResults,
+}) {
+  const expected = normalizeVisionExpectedResults(expectedResults);
+  if (selectedProduct.catalogKey !== expected.tryOn.selectedCatalogKey) {
+    throw new Error("selected product catalogKey does not match expected try-on binding");
+  }
+  if (selectedProduct.variantId !== expected.tryOn.selectedVariantId) {
+    throw new Error("selected product variantId does not match expected try-on binding");
+  }
+  if (tryOnState.route !== `#/products/${selectedProduct.catalogKey}/try-on?variantId=${selectedProduct.variantId}` &&
+      !String(tryOnState.route ?? "").includes("/try-on")) {
+    throw new Error("try-on route is not bound to the selected catalog item");
+  }
+  if (
+    typeof tryOnState.previewUrl !== "string" ||
+    !tryOnState.previewUrl.startsWith(expected.tryOn.previewPathPrefix)
+  ) {
+    throw new Error("try-on preview URL is not bound to the expected loopback session");
+  }
+  if (
+    typeof tryOnState.silhouetteUrl !== "string" ||
+    !tryOnState.silhouetteUrl.includes(expected.tryOn.silhouettePathFragment)
+  ) {
+    throw new Error("try-on silhouette URL is not bound to the selected variant");
+  }
+  if (
+    typeof mjpegEvidence.contentType !== "string" ||
+    !/^multipart\/x-mixed-replace|^image\/jpeg/i.test(mjpegEvidence.contentType)
+  ) {
+    throw new Error("try-on preview did not return MJPEG/JPEG content");
+  }
+  if (mjpegEvidence.frameByteLength < 64) {
+    throw new Error("try-on preview did not deliver a decodable frame");
+  }
+  if (mjpegEvidence.width < 1 || mjpegEvidence.height < 1) {
+    throw new Error("try-on preview frame did not decode to pixels");
+  }
+  if (mjpegEvidence.nonEmptyPixelCount < 1) {
+    throw new Error("try-on preview frame decoded but contained no visible pixels");
+  }
+  return {
+    sessionId: mjpegEvidence.sessionId,
+    contentType: mjpegEvidence.contentType,
+    width: mjpegEvidence.width,
+    height: mjpegEvidence.height,
+    nonEmptyPixelCount: mjpegEvidence.nonEmptyPixelCount,
+  };
+}
+
+export function validateVisionInstalledBinding(binding) {
+  const facts = requiredObject(binding, "Vision installed binding");
+  if (facts.installedRecord?.schemaVersion !== "vem-vision-installed/v1") {
+    throw new Error("Vision installed record schema is invalid");
+  }
+  if (!/^[a-f0-9]{40}$/.test(String(facts.installedRecord.commit ?? ""))) {
+    throw new Error("Vision installed record commit is invalid");
+  }
+  if (facts.installedRecord.appDirectory !== "C:\\VEM\\vision\\app") {
+    throw new Error("Vision installed record appDirectory drifted");
+  }
+  if (facts.installedRecord.runtime !== "vending-vision.exe") {
+    throw new Error("Vision installed record runtime drifted");
+  }
+  if (facts.installedRecord.runtimeWorkDirectory !== VISION_RUNTIME_WORK_DIRECTORY) {
+    throw new Error("Vision installed record runtime work directory drifted");
+  }
+  if (facts.executablePath !== VISION_ENTRYPOINT_PATH) {
+    throw new Error("Vision listener is not bound to the fixed installed executable");
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(facts.executableSha256 ?? ""))) {
+    throw new Error("Vision executable hash is invalid");
+  }
+  if (
+    !Number.isInteger(facts.processId) ||
+    facts.processId < 1 ||
+    facts.listenerProcessId !== facts.processId ||
+    facts.listenerOwnerCount !== 1
+  ) {
+    throw new Error("Vision loopback listener must resolve to exactly one installed process");
+  }
+  return {
+    installedCommit: facts.installedRecord.commit,
+    executablePath: facts.executablePath,
+    executableSha256: facts.executableSha256,
+    processId: facts.processId,
+    listenerProcessId: facts.listenerProcessId,
+    listenerOwnerCount: facts.listenerOwnerCount,
+  };
 }
 
 export function parseVisionTryOnAcceptanceArgs(args) {
@@ -421,6 +808,83 @@ async function readCatalogRecommendationState(client) {
   );
 }
 
+async function readCatalogProducts(client) {
+  return evaluateExpression(
+    client,
+    `(() => {
+      const page = document.querySelector("[data-test='catalog-page']");
+      const products = Array.from(
+        document.querySelectorAll("[data-test='catalog-product']"),
+      ).map((element) => ({
+        catalogKey: element.getAttribute("data-catalog-key") ?? "",
+        variantId: element.getAttribute("data-variant-id") ?? "",
+        preferredVariantId:
+          element.getAttribute("data-preferred-variant-id") ?? "",
+        recommendationScore: Number(
+          element.getAttribute("data-recommendation-score") ?? "0",
+        ),
+        visibleText: element.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      }));
+      return {
+        route: location.hash,
+        recommendationActive:
+          page?.getAttribute("data-vision-recommendation-active") ?? "false",
+        pageText: page?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+        products,
+      };
+    })()`,
+  );
+}
+
+async function waitForCatalogProducts(client, timeoutMs = 30_000) {
+  return waitForCondition(
+    "catalog products",
+    async () => {
+      const state = await readCatalogProducts(client);
+      return {
+        ok:
+          state?.route === "#/catalog" &&
+          Array.isArray(state?.products) &&
+          state.products.length > 0,
+        value: state,
+      };
+    },
+    timeoutMs,
+    250,
+  );
+}
+
+async function waitForCatalogRecommendationProjection(
+  client,
+  baselineOrder,
+  timeoutMs = 90_000,
+) {
+  return waitForCondition(
+    "catalog recommendation projection",
+    async () => {
+      const state = await readCatalogProducts(client);
+      const currentOrder = Array.isArray(state?.products)
+        ? state.products.map((product) => product.catalogKey)
+        : [];
+      return {
+        ok:
+          state?.route === "#/catalog" &&
+          state?.recommendationActive === "true" &&
+          currentOrder.length > 0 &&
+          currentOrder.join("\n") !== baselineOrder.join("\n") &&
+          state.products.some(
+            (product) =>
+              Number.isFinite(product.recommendationScore) &&
+              product.recommendationScore > 0,
+          ),
+        value: state,
+      };
+    },
+    timeoutMs,
+    500,
+  );
+}
+
 async function waitForCatalogRecommendation(client, timeoutMs = 90_000) {
   return waitForCondition(
     "catalog recommendation",
@@ -490,6 +954,58 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
   );
 }
 
+async function collectVisionInstalledBinding() {
+  const installedRecord = readJson(
+    VISION_INSTALLED_RECORD_PATH,
+    "installed Vision record",
+  );
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
+    "if ($listener.Count -ne 1) { throw \"Vision must have exactly one 127.0.0.1:7892 listener\" }",
+    "$pid = [int]$listener[0].OwningProcess",
+    "$process = Get-Process -Id $pid -ErrorAction Stop",
+    "$path = [string]$process.Path",
+    "[Console]::Out.Write((@{ processId = $pid; listenerProcessId = $pid; listenerOwnerCount = $listener.Count; executablePath = $path } | ConvertTo-Json -Compress))",
+  ].join("; ");
+  const runtimeBinding = await new Promise((resolvePromise, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) {
+        try {
+          resolvePromise(JSON.parse(stdout));
+        } catch (error) {
+          reject(error);
+        }
+      } else {
+        reject(
+          new Error(
+            `pwsh exited with ${code ?? "signal"} while collecting Vision binding: ${stderr || stdout}`,
+          ),
+        );
+      }
+    });
+  });
+  return {
+    installedRecord,
+    ...runtimeBinding,
+    executableSha256: fileSha256(VISION_ENTRYPOINT_PATH),
+  };
+}
+
 async function stopVisionRuntime() {
   const command = [
     "$ErrorActionPreference = 'Stop'",
@@ -506,6 +1022,68 @@ async function stopVisionRuntime() {
       else reject(new Error(`pwsh exited with ${code ?? "signal"} while stopping Vision runtime`));
     });
   });
+}
+
+async function waitForVisionPortRelease(timeoutMs = 20_000) {
+  await waitForCondition(
+    "Vision port release",
+    async () => {
+      try {
+        await fetchJson("http://127.0.0.1:7892/health");
+        return { ok: false, value: { listening: true } };
+      } catch {
+        return { ok: true, value: { listening: false } };
+      }
+    },
+    timeoutMs,
+    500,
+  );
+}
+
+async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
+  const child = spawn(
+    process.execPath,
+    ["--conditions=vem-source", "--import", "tsx", "apps/vision-mock/src/server.ts"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        VISION_MOCK_PORT: "7892",
+        VISION_MOCK_PATH: "/ws",
+        VISION_MOCK_SCENARIO: scenario,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  child.stdout.resume();
+  child.stderr.resume();
+  await waitForCondition(
+    `vision mock scenario ${scenario}`,
+    async () => {
+      try {
+        const health = await fetchJson("http://127.0.0.1:7892/health");
+        return {
+          ok: health?.mockScenario === scenario && health?.status === "ok",
+          value: health,
+        };
+      } catch (error) {
+        return { ok: false, value: { error: String(error) } };
+      }
+    },
+    timeoutMs,
+    500,
+  );
+  return child;
+}
+
+async function stopVisionChild(child) {
+  if (!child) return;
+  child.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolvePromise) => child.once("exit", resolvePromise)),
+    sleep(10_000),
+  ]);
+  await waitForVisionPortRelease(10_000).catch(() => undefined);
 }
 
 async function waitForVisionDegradation(handoff, timeoutMs = 45_000) {
@@ -531,6 +1109,26 @@ async function waitForVisionDegradation(handoff, timeoutMs = 45_000) {
   );
 }
 
+async function waitForVisionOnline(handoff, timeoutMs = 45_000) {
+  return waitForCondition(
+    "vision online",
+    async () => {
+      const [visionStatus, saleCapability] = await Promise.all([
+        daemonGet(handoff, "/v1/vision/status").catch(() => null),
+        daemonGet(handoff, "/v1/sale-start-capability").catch(() => null),
+      ]);
+      return {
+        ok:
+          visionStatus?.online === true &&
+          saleCapability?.canStartSale === true,
+        value: { visionStatus, saleCapability },
+      };
+    },
+    timeoutMs,
+    1_000,
+  );
+}
+
 async function waitForTryOnButtonDisabled(client, timeoutMs = 30_000) {
   return waitForCondition(
     "try-on degradation button state",
@@ -546,17 +1144,156 @@ async function waitForTryOnButtonDisabled(client, timeoutMs = 30_000) {
   );
 }
 
+async function waitForTryOnButtonEnabled(client, timeoutMs = 30_000) {
+  return waitForCondition(
+    "try-on available button state",
+    async () => {
+      const state = await readProductDetailState(client);
+      return {
+        ok:
+          state?.tryOnPresent === true &&
+          state?.tryOnDisabled === false &&
+          state?.buyDisabled === false,
+        value: state,
+      };
+    },
+    timeoutMs,
+    500,
+  );
+}
+
+async function waitForTryOnFailure(client, timeoutMs = 30_000) {
+  return waitForCondition(
+    "try-on failure surface",
+    async () => {
+      const state = await evaluateExpression(
+        client,
+        `(() => {
+          const error = document.querySelector("[data-test='try-on-error']");
+          const preview = document.querySelector("[data-test='try-on-preview']");
+          return {
+            route: location.hash,
+            errorText: error?.textContent?.replace(/\\s+/g, " ").trim() ?? null,
+            previewUrl: preview?.getAttribute("src") ?? null,
+          };
+        })()`,
+      );
+      return {
+        ok:
+          String(state?.route ?? "").includes("/try-on") &&
+          typeof state?.errorText === "string" &&
+          state.errorText.length > 0,
+        value: state,
+      };
+    },
+    timeoutMs,
+    500,
+  );
+}
+
+async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
+  return waitForCondition(
+    "decoded MJPEG frame",
+    async () => {
+      const result = await evaluateExpression(
+        client,
+        `(async () => {
+          try {
+            const response = await fetch(${JSON.stringify(previewUrl)});
+            if (!response.ok || !response.body) {
+              return { ok: false, reason: "http", status: response.status };
+            }
+            const reader = response.body.getReader();
+            const chunks = [];
+            let total = 0;
+            const maxBytes = 512 * 1024;
+            while (total < maxBytes) {
+              const { done, value } = await reader.read();
+              if (done || !value) break;
+              chunks.push(value);
+              total += value.byteLength;
+              let jpeg = null;
+              const merged = new Uint8Array(total);
+              let offset = 0;
+              for (const chunk of chunks) {
+                merged.set(chunk, offset);
+                offset += chunk.byteLength;
+              }
+              let start = -1;
+              for (let i = 0; i < merged.length - 1; i += 1) {
+                if (merged[i] === 0xff && merged[i + 1] === 0xd8) { start = i; break; }
+              }
+              if (start >= 0) {
+                for (let i = start + 2; i < merged.length - 1; i += 1) {
+                  if (merged[i] === 0xff && merged[i + 1] === 0xd9) {
+                    jpeg = merged.slice(start, i + 2);
+                    break;
+                  }
+                }
+              }
+              if (!jpeg) continue;
+              const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+              const canvas = document.createElement("canvas");
+              canvas.width = bitmap.width;
+              canvas.height = bitmap.height;
+              const context = canvas.getContext("2d");
+              if (!context) {
+                return { ok: false, reason: "context" };
+              }
+              context.drawImage(bitmap, 0, 0);
+              const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
+              let nonEmptyPixelCount = 0;
+              for (let i = 0; i < imageData.length; i += 4) {
+                if (
+                  imageData[i] !== 0 ||
+                  imageData[i + 1] !== 0 ||
+                  imageData[i + 2] !== 0 ||
+                  imageData[i + 3] !== 0
+                ) {
+                  nonEmptyPixelCount += 1;
+                  if (nonEmptyPixelCount >= 8) break;
+                }
+              }
+              return {
+                ok: true,
+                contentType: response.headers.get("content-type"),
+                frameByteLength: jpeg.byteLength,
+                width: canvas.width,
+                height: canvas.height,
+                nonEmptyPixelCount,
+                sessionId: ${JSON.stringify(previewUrl)}.split("/").pop()?.replace(/\\.mjpeg$/i, "") ?? null,
+              };
+            }
+            return { ok: false, reason: "no-jpeg" };
+          } catch (error) {
+            return { ok: false, reason: String(error) };
+          }
+        })()`,
+      );
+      return { ok: result?.ok === true, value: result };
+    },
+    timeoutMs,
+    500,
+  );
+}
+
 async function runVisionTryOnAcceptance(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
   const handoff = readJson(options.handoffPath, "handoff");
   const sink = screenshotSink(options.outPath);
   let client = null;
+  let injectedVisionMock = null;
   const checkpoints = [];
   let stage = "connect-installed-tauri-cdp";
   try {
-    const installedRecord = readJson(
-      VISION_INSTALLED_RECORD_PATH,
-      "installed Vision record",
+    const installedBinding = await collectVisionInstalledBinding();
+    const installedBindingSummary =
+      validateVisionInstalledBinding(installedBinding);
+    const expectedResults = normalizeVisionExpectedResults(
+      readJson(
+        visionFixtureExpectedResultsPath(installedBindingSummary.installedCommit),
+        "Vision expected-results fixture",
+      ),
     );
     const siteConfiguration = readJson(
       VISION_SITE_CONFIGURATION_PATH,
@@ -573,14 +1310,34 @@ async function runVisionTryOnAcceptance(options) {
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
+    stage = "open-tshirt-category-baseline";
+    await activateVisibleSelector(
+      client,
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    const baselineCatalogProjection = await waitForCatalogProducts(client);
+
     stage = "collect-vision-protocol";
     const protocolEvidence = await collectVisionProtocolEvidence({
       machineCode: guestInput.machineCode,
     });
-    const protocolSummary = validateVisionProtocolEvidence(protocolEvidence);
+    const protocolSummary = compareObservedVisionProtocolToExpected({
+      expectedResults,
+      protocolEvidence,
+    });
 
-    stage = "wait-catalog-recommendation";
-    const catalogRecommendation = await waitForCatalogRecommendation(client);
+    stage = "wait-catalog-recommendation-projection";
+    const catalogRecommendation = await waitForCatalogRecommendationProjection(
+      client,
+      baselineCatalogProjection.products.map((product) => product.catalogKey),
+    );
+    const recommendationSummary = validateRecommendationProjection({
+      beforeProducts: baselineCatalogProjection.products,
+      afterProducts: catalogRecommendation.products,
+      pageText: catalogRecommendation.pageText,
+      expectedResults,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "catalog-recommendation", {
         screenshot: true,
@@ -588,14 +1345,28 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    stage = "open-tshirt-product";
+    stage = "open-expected-recommended-product";
     await activateVisibleSelector(
       client,
-      '[data-test="catalog-category"][data-category-key="tshirts"]',
-      { kind: "touch", timeoutMs: 30_000 },
+      `[data-test="catalog-product"][data-catalog-key="${recommendationSummary.selectedCatalogKey}"]`,
+      {
+        kind: "touch",
+        timeoutMs: 30_000,
+      },
     );
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await activateVisibleSelector(client, '[data-test="catalog-product"]', {
+    await waitForRoute(client, /^#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const productDetail = await readProductDetailState(client);
+    assert.equal(productDetail?.catalogKey, recommendationSummary.selectedCatalogKey);
+    assert.equal(productDetail?.variantId, recommendationSummary.selectedVariantId);
+    assert.equal(productDetail?.tryOnPresent, true);
+    assert.equal(productDetail?.tryOnDisabled, false);
+    assert.equal(productDetail?.buyDisabled, false);
+
+    stage = "open-try-on";
+    await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
       kind: "touch",
       timeoutMs: 30_000,
     });
@@ -603,20 +1374,24 @@ async function runVisionTryOnAcceptance(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const productDetail = await readProductDetailState(client);
-    assert.equal(productDetail?.tryOnPresent, true);
-    assert.equal(productDetail?.tryOnDisabled, false);
-
-    stage = "open-try-on";
-    await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
     await waitForRoute(client, /^#\/products\/.+\/try-on/, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
     const tryOnSurface = await waitForTryOnSurface(client, 60_000);
+    const mjpegEvidence = await readMjpegFrameEvidence(
+      client,
+      tryOnSurface.previewUrl,
+    );
+    const tryOnSummary = validateTryOnPresentation({
+      selectedProduct: {
+        catalogKey: recommendationSummary.selectedCatalogKey,
+        variantId: recommendationSummary.selectedVariantId,
+      },
+      tryOnState: tryOnSurface,
+      mjpegEvidence,
+      expectedResults,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "try-on-preview", {
         screenshot: true,
@@ -642,13 +1417,15 @@ async function runVisionTryOnAcceptance(options) {
       throw new Error("sale start capability must remain available before degradation");
     }
 
-    stage = "stop-vision-runtime";
+    stage = "stop-real-vision-runtime";
     await stopVisionRuntime();
+    await waitForVisionPortRelease();
     const degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
     const degradedProductDetail = await waitForTryOnButtonDisabled(
       client,
       30_000,
     );
+    assert.equal(degradedProductDetail?.buyDisabled, false);
     checkpoints.push(
       await captureCheckpoint(client, "vision-degraded-product", {
         screenshot: true,
@@ -656,7 +1433,42 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    stage = "prove-sale-survives-degradation";
+    stage = "inject-online-try-on-failure";
+    injectedVisionMock = await startVisionMockScenario(
+      "try_on_unavailable_start",
+    );
+    const onlineMockDaemon = await waitForVisionOnline(handoff, 45_000);
+    const restoredProductDetail = await waitForTryOnButtonEnabled(client, 30_000);
+    await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, /^#\/products\/.+\/try-on/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const tryOnFailure = await waitForTryOnFailure(client, 30_000);
+    checkpoints.push(
+      await captureCheckpoint(client, "try-on-degraded", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+    await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, /^#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const degradedTryOnProductDetail = await waitForTryOnButtonDisabled(
+      client,
+      30_000,
+    );
+    assert.equal(degradedTryOnProductDetail?.buyDisabled, false);
+
+    stage = "prove-sale-survives-experience-degradation";
     await activateVisibleSelector(client, '[data-test="product-buy"]', {
       kind: "touch",
       timeoutMs: 30_000,
@@ -676,9 +1488,11 @@ async function runVisionTryOnAcceptance(options) {
       mode: options.mode,
       machineCode: guestInput.machineCode,
       visionInstall: {
-        installedRecord,
+        installedRecord: installedBinding.installedRecord,
+        installedBinding: installedBindingSummary,
         siteConfiguration,
         fixtureRoot: VISION_FIXTURE_ROOT,
+        expectedResults,
       },
       health: {
         daemon: {
@@ -687,6 +1501,7 @@ async function runVisionTryOnAcceptance(options) {
           visionStatus: degradedDaemon.visionStatus,
           saleCapabilityBeforeDegradation: capabilityBeforeDegradation,
           saleCapabilityAfterDegradation: degradedDaemon.saleCapability,
+          onlineTryOnFailure: onlineMockDaemon,
         },
         vision: {
           protocolSummary,
@@ -695,10 +1510,26 @@ async function runVisionTryOnAcceptance(options) {
       },
       ui: {
         catalogRecommendation,
+        recommendationSummary,
         productDetail,
         tryOnSurface,
+        tryOnSummary,
         degradedProductDetail,
+        restoredProductDetail,
+        degradedTryOnProductDetail,
+        tryOnFailure,
         finalRoute: "#/checkout",
+      },
+      degradations: {
+        visionDown: {
+          experienceCapabilityDegraded: true,
+          saleStartStillAvailable: degradedDaemon.saleCapability?.canStartSale === true,
+        },
+        tryOnUnavailableWhileVisionOnline: {
+          experienceCapabilityDegraded: true,
+          saleStartStillAvailable: onlineMockDaemon.saleCapability?.canStartSale === true,
+          visionOnline: onlineMockDaemon.visionStatus?.online === true,
+        },
       },
       runtimeTrace: compactRuntimeTrace(runtimeTrace),
       checkpoints,
@@ -766,6 +1597,7 @@ async function runVisionTryOnAcceptance(options) {
     writeReport(options.outPath, report);
     throw error;
   } finally {
+    await stopVisionChild(injectedVisionMock).catch(() => undefined);
     await client?.close().catch(() => undefined);
   }
 }

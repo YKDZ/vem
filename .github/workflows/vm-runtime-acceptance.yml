@@ -93,3 +93,12 @@ jobs:
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
           if-no-files-found: warn
           retention-days: 7
+      - name: Collect Full Workflow Track Summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-full-workflow-tracks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
+          if-no-files-found: warn
+          retention-days: 7

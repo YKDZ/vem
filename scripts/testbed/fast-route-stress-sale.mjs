@@ -665,6 +665,10 @@ function writeTextArtifact(outPath, label, text) {
   return { ref: destination, byteLength: Buffer.byteLength(String(text ?? ""), "utf8") };
 }
 
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
 export function buildFastRouteStressSaleFailureReport(input) {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
@@ -767,13 +771,37 @@ async function ensureControlledVisionMock(controlPort) {
   while (Date.now() < deadline) {
     try {
       await fetchJson(healthUrl);
-      return { child, started: true };
+      const status = await fetchJson(
+        `http://127.0.0.1:${controlPort}/control/status`,
+      );
+      if (status.scenario === "controlled") {
+        return { child, started: true };
+      }
     } catch {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+      await sleep(500);
     }
   }
-  child.kill("SIGTERM");
+  await shutdownControlledVisionMock(child);
   throw new Error("controlled vision mock did not become ready");
+}
+
+export async function shutdownControlledVisionMock(child, timeoutMs = 10_000) {
+  if (!child) return;
+  child.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolvePromise) => child.once("exit", resolvePromise)),
+    sleep(timeoutMs),
+  ]);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fetchJson("http://127.0.0.1:7892/health");
+      await sleep(250);
+    } catch {
+      return;
+    }
+  }
+  throw new Error("controlled vision mock did not release port 7892 after SIGTERM");
 }
 
 async function dispatchVisionDeparture(guestInput) {
@@ -1183,7 +1211,7 @@ async function runFastRouteStressSale(options) {
     throw error;
   } finally {
     await client?.close().catch(() => undefined);
-    vision?.child?.kill("SIGTERM");
+    await shutdownControlledVisionMock(vision?.child).catch(() => undefined);
   }
 }
 

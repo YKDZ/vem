@@ -40,6 +40,7 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(windows, /fast-route-stress-sale-artifacts/);
     assert.match(windows, /vision-try-on-acceptance\.json/);
     assert.match(windows, /vision-try-on-acceptance-artifacts/);
+    assert.match(windows, /full-workflow-tracks\.json/);
     assert.match(windows, /retention-days: 7/);
     assert.doesNotMatch(windows, /\.(?:mp4|webm|avi|mov)\b/i);
   });

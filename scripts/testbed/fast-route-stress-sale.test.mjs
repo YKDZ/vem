@@ -7,6 +7,7 @@ import {
   buildFastRouteStressScenarioSteps,
   dispatchRepeatedPaymentTouch,
   parseFastRouteStressSaleArgs,
+  shutdownControlledVisionMock,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -340,8 +341,18 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /platform-log/);
     assert.match(implementation, /snapshots:/);
     assert.match(implementation, /--import", "tsx", "apps\/vision-mock\/src\/server\.ts/);
+    assert.match(implementation, /control\/status/);
+    assert.match(implementation, /shutdownControlledVisionMock/);
+    assert.match(
+      implementation,
+      /did not release port 7892 after SIGTERM/,
+    );
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
     assert.doesNotMatch(implementation, /factory-route-competition/);
+  });
+
+  it("exports an explicit controlled vision mock shutdown path", () => {
+    assert.equal(typeof shutdownControlledVisionMock, "function");
   });
 });

@@ -781,9 +781,15 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/);
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(guest, /vision-try-on-acceptance\.mjs --mode full/);
+    assert.match(guest, /full-workflow-tracks\.json/);
+    assert.match(guest, /\$trackFailures = \[System\.Collections\.Generic\.List\[object\]\]::new\(\)/);
+    assert.match(guest, /\$trackSummary = \[ordered\]@\{/);
+    assert.match(guest, /track = "fast"/);
+    assert.match(guest, /track = "vision"/);
+    assert.match(guest, /if \(\$trackFailures\.Count -gt 0\) \{/);
     assert.match(
       guest,
-      /if \(\$Mode -eq "full"\) \{\s+Invoke-FullVisionTryOnAcceptance \$GuestInputPath \$HandoffPath \$visionTryOnOutPath\s+\}/s,
+      /if \(\$Mode -eq "full"\) \{[\s\S]*Invoke-FullVisionTryOnAcceptance \$GuestInputPath \$HandoffPath \$visionTryOnOutPath[\s\S]*\}/s,
     );
     assert.doesNotMatch(guest, /\b(factory|iso)\b/i);
   });

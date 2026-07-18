@@ -263,6 +263,7 @@ $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
 [string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
+[string]$workflowSummaryOutPath = Join-Path $handoffRoot "full-workflow-tracks.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"
   machineCode = [string]$input.machineCode
@@ -297,13 +298,53 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 
 node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
-node scripts/testbed/fast-route-stress-sale.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $fastRouteOutPath
-if ($LASTEXITCODE -ne 0) { throw "fast route stress sale failed" }
-if ($Mode -eq "full") {
-  Invoke-FullVisionTryOnAcceptance $GuestInputPath $HandoffPath $visionTryOnOutPath
+$trackFailures = [System.Collections.Generic.List[object]]::new()
+$trackSummary = [ordered]@{
+  schemaVersion = "vem-local-testbed-full-workflow/v1"
+  mode = $Mode
+  ok = $true
+  tracks = [ordered]@{
+    fast = $null
+    vision = $null
+  }
+  failures = @()
 }
-Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
-Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
+
+try {
+  node scripts/testbed/fast-route-stress-sale.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $fastRouteOutPath
+  if ($LASTEXITCODE -ne 0) { throw "fast route stress sale failed" }
+} catch {
+  $trackFailures.Add([ordered]@{ track = "fast"; message = $_.Exception.Message }) | Out-Null
+} finally {
+  if (Test-Path -LiteralPath $fastRouteOutPath) {
+    $trackSummary.tracks.fast = Get-Content -Raw -LiteralPath $fastRouteOutPath | ConvertFrom-Json
+  }
+}
+
 if ($Mode -eq "full") {
-  Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
+  try {
+    Invoke-FullVisionTryOnAcceptance $GuestInputPath $HandoffPath $visionTryOnOutPath
+  } catch {
+    $trackFailures.Add([ordered]@{ track = "vision"; message = $_.Exception.Message }) | Out-Null
+  } finally {
+    if (Test-Path -LiteralPath $visionTryOnOutPath) {
+      $trackSummary.tracks.vision = Get-Content -Raw -LiteralPath $visionTryOnOutPath | ConvertFrom-Json
+    }
+  }
+}
+$trackSummary.ok = ($trackFailures.Count -eq 0)
+$trackSummary.failures = @($trackFailures)
+$trackSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workflowSummaryOutPath -Encoding utf8
+Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
+if (Test-Path -LiteralPath $fastRouteOutPath) {
+  Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
+}
+if ($Mode -eq "full") {
+  if (Test-Path -LiteralPath $visionTryOnOutPath) {
+    Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
+  }
+}
+Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output
+if ($trackFailures.Count -gt 0) {
+  throw "local testbed workflow tracks failed: $((@($trackFailures | ForEach-Object { "" + $_.track + "=" + $_.message }) -join '; '))"
 }
