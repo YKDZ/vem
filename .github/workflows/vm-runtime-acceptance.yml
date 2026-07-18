@@ -28,6 +28,7 @@ jobs:
       mode: ${{ steps.testbed.outputs.mode }}
     env:
       TESTBED_MODE: ${{ inputs.mode || 'full' }}
+      GITHUB_SHA: ${{ github.sha }}
       VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
       VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
       VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
@@ -69,6 +70,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VISION_GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
       - name: Collect Compact Runtime Acceptance Evidence Pass 1
@@ -79,19 +81,18 @@ jobs:
           path: |
             C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
             C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
+            C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-manifest.json
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
             C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\serial-fulfillment-error.json
+            C:\ProgramData\VEM\runtime\testbed\installed-ipc-recovery.json
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\screenshots\*.png
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   reconstruct-local-testbed-pass-2:
@@ -120,6 +121,7 @@ jobs:
             --host-private-address "$VEM_LOCAL_TESTBED_HOST_ADDRESS" \
             --out "$RUNNER_TEMP/vem-local-testbed-reconstruction-pass-2.json"
         env:
+          GITHUB_SHA: ${{ github.sha }}
           VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
           VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
           VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
@@ -140,6 +142,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VISION_GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode 'full'
       - name: Collect Compact Runtime Acceptance Evidence Pass 2
@@ -150,19 +153,18 @@ jobs:
           path: |
             C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
             C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
+            C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-manifest.json
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
-            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
             C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\serial-fulfillment-error.json
+            C:\ProgramData\VEM\runtime\testbed\installed-ipc-recovery.json
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
-            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\screenshots\*.png
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   full-workflow-stability-gate:

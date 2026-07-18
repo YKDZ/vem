@@ -1,9 +1,25 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+
+const RETAINED_CACHE_CONTRACT = Object.freeze([
+  "D:\\runtime-cache\\v1\\pnpm-store",
+  "D:\\runtime-cache\\v1\\cargo-home",
+  "D:\\runtime-cache\\v1\\target",
+  "D:\\runtime-cache\\v1\\sccache",
+  "D:\\runtime-cache\\v1\\turbo",
+]);
+const REQUIRED_EXECUTION_ORDER = Object.freeze([
+  "fast",
+  "delayedPickup",
+  "scanner",
+  "ipcRecovery",
+  "fulfillmentFailure",
+  "visionTryOn",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -21,7 +37,7 @@ function option(args, name) {
 function loadReport(path, label) {
   try {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    if (value?.schemaVersion !== "vem-local-testbed-full-workflow/v2") {
+    if (value?.schemaVersion !== "vem-local-testbed-full-workflow/v3") {
       throw new Error("unexpected schema version");
     }
     return value;
@@ -41,7 +57,17 @@ export function buildStabilityGateReport({
 } = {}) {
   const passA = loadReport(passAPath, "passA");
   const passB = loadReport(passBPath, "passB");
-  const tracks = ["standardSale", "audio", "scanner", "vision", "tryOn", "error"];
+  const tracks = [
+    "standardSale",
+    "ipcRecovery",
+    "fulfillmentFailure",
+    "audio",
+    "scanner",
+    "vision",
+    "tryOn",
+    "evidence",
+    "error",
+  ];
   const gateFailures = [];
   if (passA.mode !== "full" || passB.mode !== "full") {
     gateFailures.push("stability gate requires two full workflow passes");
@@ -56,29 +82,94 @@ export function buildStabilityGateReport({
       gateFailures.push(`pass B ${key} status is not passed`);
     }
   }
+  const identities = { passA: passA.identity, passB: passB.identity };
+  for (const [label, identity] of Object.entries(identities)) {
+    if (identity?.githubSha !== commit)
+      gateFailures.push(`${label} GITHUB_SHA does not match gate commit`);
+    if (
+      typeof identity?.baseline?.releaseId !== "string" ||
+      identity.baseline.releaseId.trim() === ""
+    ) {
+      gateFailures.push(`${label} baseline release is missing`);
+    }
+    if (!/^sha256:[a-f0-9]{64}$/.test(identity?.baseline?.digest ?? "")) {
+      gateFailures.push(`${label} baseline digest is invalid`);
+    }
+    if (
+      !/^runtime-base:\/\/sha256\/[a-f0-9]{64}$/.test(
+        identity?.runtimeBase ?? "",
+      )
+    ) {
+      gateFailures.push(`${label} runtime-base is invalid`);
+    }
+    if (
+      !/^reconstruction:\/\/sha256\/[a-f0-9]{64}$/.test(
+        identity?.reconstructionId ?? "",
+      )
+    ) {
+      gateFailures.push(`${label} reconstruction ID is invalid`);
+    }
+    if (
+      JSON.stringify(identity?.retainedCaches) !==
+      JSON.stringify(RETAINED_CACHE_CONTRACT)
+    ) {
+      gateFailures.push(`${label} retained-cache contract drifted`);
+    }
+    if (
+      JSON.stringify(
+        passA.execution?.executedTracks?.map((track) => track.key),
+      ) !== JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
+      label === "passA"
+    ) {
+      gateFailures.push(
+        "pass A execution order is not fast -> delayed audio -> scanner -> IPC recovery -> fulfillment failure -> Vision",
+      );
+    }
+    if (
+      JSON.stringify(
+        passB.execution?.executedTracks?.map((track) => track.key),
+      ) !== JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
+      label === "passB"
+    ) {
+      gateFailures.push(
+        "pass B execution order is not fast -> delayed audio -> scanner -> IPC recovery -> fulfillment failure -> Vision",
+      );
+    }
+  }
+  if (
+    passA.identity?.baseline?.releaseId !== passB.identity?.baseline?.releaseId
+  )
+    gateFailures.push("baseline release differs between passes");
+  if (passA.identity?.baseline?.digest !== passB.identity?.baseline?.digest)
+    gateFailures.push("baseline digest differs between passes");
+  if (passA.identity?.runtimeBase !== passB.identity?.runtimeBase)
+    gateFailures.push("runtime-base differs between passes");
+  if (passA.identity?.reconstructionId === passB.identity?.reconstructionId)
+    gateFailures.push("two passes reused one reconstruction ID");
+  if (
+    JSON.stringify(passA.identity?.retainedCaches) !==
+    JSON.stringify(passB.identity?.retainedCaches)
+  )
+    gateFailures.push("retained-cache contract differs between passes");
   return {
-    schemaVersion: "vem-local-testbed-stability-gate/v1",
+    schemaVersion: "vem-local-testbed-stability-gate/v2",
     commit: required(commit, "commit"),
     ok: gateFailures.length === 0,
     declaredStateReconstruction: {
       systemDrive: "reconstructed C:",
       platform: "reconstructed ephemeral platform state",
-      retainedCaches: [
-        "D:\\runtime-cache\\v1\\pnpm-store",
-        "D:\\runtime-cache\\v1\\cargo-home",
-        "D:\\runtime-cache\\v1\\target",
-        "D:\\runtime-cache\\v1\\sccache",
-        "D:\\runtime-cache\\v1\\turbo",
-      ],
+      retainedCaches: RETAINED_CACHE_CONTRACT,
     },
     passes: {
       passA: {
         ok: passA.ok,
         failures: passA.failures ?? [],
+        identity: passA.identity ?? null,
       },
       passB: {
         ok: passB.ok,
         failures: passB.failures ?? [],
+        identity: passB.identity ?? null,
       },
     },
     gateFailures,

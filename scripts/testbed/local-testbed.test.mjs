@@ -556,7 +556,10 @@ describe("local testbed orchestration", () => {
   it("builds the persistent headless VNC activator unit around the tracked host script", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
-      const plan = buildHeadlessVncActivatorUnitPlan(options(root), contract(root));
+      const plan = buildHeadlessVncActivatorUnitPlan(
+        options(root),
+        contract(root),
+      );
       const rendered = plan.map(
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
@@ -907,9 +910,13 @@ describe("Windows D cache contract", () => {
     );
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
+    assert.match(guest, /installed-ipc-recovery\.json/);
+    assert.match(guest, /serial-fulfillment-error\.json/);
     assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /scanner-payment-code\.json/);
     assert.match(guest, /full-workflow-tracks\.json/);
+    assert.match(orchestrator, /installed-ipc-recovery-guest-full\.mjs/);
+    assert.match(orchestrator, /serial-fulfillment-error-guest-full\.mjs/);
     assert.match(
       orchestrator,
       /scanner-payment-code-guest-full\.mjs[\s\S]*"--mode",[\s\S]*"full"/,

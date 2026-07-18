@@ -1039,10 +1039,24 @@ async function runDelayedPickupGuestFull(options) {
     });
     primaryError = combineCleanupError(primaryError, cleanupFailures);
   }
+  if (report.errors.cleanup.length > 0) {
+    const cleanupFailure = new Error(
+      `delayed pickup native audio cleanup failed: ${report.errors.cleanup.join("; ")}`,
+    );
+    primaryError = primaryError
+      ? new AggregateError(
+          [primaryError, cleanupFailure],
+          cleanupFailure.message,
+        )
+      : cleanupFailure;
+    report.ok = false;
+    report.status = "failed";
+  }
   if (primaryError) {
     report.error = formatError(primaryError);
     report.errors.primary =
-      primaryError instanceof AggregateError && primaryError.errors[0] instanceof Error
+      primaryError instanceof AggregateError &&
+      primaryError.errors[0] instanceof Error
         ? formatError(primaryError.errors[0])
         : formatError(primaryError);
     report.controlPlaneSessionId = sessionStart?.sessionId ?? null;

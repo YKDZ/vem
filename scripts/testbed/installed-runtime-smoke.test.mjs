@@ -176,8 +176,10 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /C:\\VEM\\bringup/);
     assert.match(guest, /vending-daemon\.exe.*--console/s);
     assert.match(guest, /installed-runtime-smoke\.mjs/);
-    assert.match(guest, /fast-route-stress-sale\.mjs/);
-    assert.match(guest, /scanner-payment-code-guest-full\.mjs/);
+    assert.match(guest, /full-workflow-orchestrator\.mjs/);
+    assert.match(guest, /installed-ipc-recovery\.json/);
+    assert.match(guest, /serial-fulfillment-error\.json/);
+    assert.match(guest, /scanner-payment-code\.json/);
     assert.match(
       guest,
       /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,

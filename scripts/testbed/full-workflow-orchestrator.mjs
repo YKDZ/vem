@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { buildFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
 import { buildFullWorkflowAggregate } from "./full-workflow-validator.mjs";
 
 function required(value, label) {
@@ -57,16 +58,34 @@ function jsonIfPresent(path) {
   }
 }
 
+function workflowIdentity(guestInputPath) {
+  const input = jsonIfPresent(guestInputPath);
+  return input?.workflowIdentity ?? null;
+}
+
 function writeJson(path, value) {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-export function buildWorkflowTrackCommands({ mode, guestInputPath, handoffPath, outPath }) {
+export function buildWorkflowTrackCommands({
+  mode,
+  guestInputPath,
+  handoffPath,
+  outPath,
+}) {
   const root = dirname(resolve(outPath));
   const fastReportPath = join(root, "fast-route-stress-sale.json");
+  const ipcRecoveryReportPath = join(root, "installed-ipc-recovery.json");
+  const fulfillmentFailureReportPath = join(
+    root,
+    "serial-fulfillment-error.json",
+  );
   const scannerReportPath = join(root, "scanner-payment-code.json");
-  const delayedPickupReportPath = join(root, "delayed-pickup-native-audio.json");
+  const delayedPickupReportPath = join(
+    root,
+    "delayed-pickup-native-audio.json",
+  );
   const visionTryOnReportPath = join(root, "vision-try-on-acceptance.json");
   const tracks = [
     {
@@ -89,6 +108,22 @@ export function buildWorkflowTrackCommands({ mode, guestInputPath, handoffPath, 
   if (mode === "full") {
     tracks.push(
       {
+        key: "delayedPickup",
+        reportPath: delayedPickupReportPath,
+        command: [
+          process.execPath,
+          "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
+          "--mode",
+          "full",
+          "--guest-input",
+          guestInputPath,
+          "--handoff",
+          handoffPath,
+          "--out",
+          delayedPickupReportPath,
+        ],
+      },
+      {
         key: "scanner",
         reportPath: scannerReportPath,
         command: [
@@ -105,11 +140,11 @@ export function buildWorkflowTrackCommands({ mode, guestInputPath, handoffPath, 
         ],
       },
       {
-        key: "delayedPickup",
-        reportPath: delayedPickupReportPath,
+        key: "ipcRecovery",
+        reportPath: ipcRecoveryReportPath,
         command: [
           process.execPath,
-          "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
+          "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
           "--mode",
           "full",
           "--guest-input",
@@ -117,7 +152,23 @@ export function buildWorkflowTrackCommands({ mode, guestInputPath, handoffPath, 
           "--handoff",
           handoffPath,
           "--out",
-          delayedPickupReportPath,
+          ipcRecoveryReportPath,
+        ],
+      },
+      {
+        key: "fulfillmentFailure",
+        reportPath: fulfillmentFailureReportPath,
+        command: [
+          process.execPath,
+          "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
+          "--mode",
+          "full",
+          "--guest-input",
+          guestInputPath,
+          "--handoff",
+          handoffPath,
+          "--out",
+          fulfillmentFailureReportPath,
         ],
       },
       {
@@ -141,6 +192,8 @@ export function buildWorkflowTrackCommands({ mode, guestInputPath, handoffPath, 
   }
   return {
     fastReportPath,
+    ipcRecoveryReportPath,
+    fulfillmentFailureReportPath,
     scannerReportPath,
     delayedPickupReportPath,
     visionTryOnReportPath,
@@ -165,13 +218,38 @@ export function runFullWorkflowOrchestrator(options) {
           : (result.stderr || result.stdout).trim().slice(-16 * 1024) || null,
     });
   }
+  const evidenceManifestPath = join(
+    dirname(resolve(options.outPath)),
+    "full-workflow-evidence-manifest.json",
+  );
+  const evidenceManifest = buildFullWorkflowEvidenceManifest({
+    reportPaths: plan.tracks.map((track) => track.reportPath),
+    artifactRoots: plan.tracks.map((track) =>
+      join(
+        dirname(resolve(options.outPath)),
+        {
+          fast: "fast-route-stress-sale-artifacts",
+          delayedPickup: "delayed-pickup-native-audio-artifacts",
+          scanner: "scanner-payment-code-artifacts",
+          ipcRecovery: "ipc-recovery-artifacts",
+          fulfillmentFailure: "serial-fulfillment-error-artifacts",
+          visionTryOn: "vision-try-on-acceptance-artifacts",
+        }[track.key],
+      ),
+    ),
+  });
+  writeJson(evidenceManifestPath, evidenceManifest);
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,
     fastReportPath: plan.fastReportPath,
+    ipcRecoveryReportPath: plan.ipcRecoveryReportPath,
+    fulfillmentFailureReportPath: plan.fulfillmentFailureReportPath,
     scannerReportPath: plan.scannerReportPath,
     delayedPickupReportPath: plan.delayedPickupReportPath,
     visionTryOnReportPath: plan.visionTryOnReportPath,
+    identity: workflowIdentity(options.guestInputPath),
     executedTracks,
+    evidenceManifestPath,
   });
   writeJson(options.outPath, aggregate);
   return aggregate;

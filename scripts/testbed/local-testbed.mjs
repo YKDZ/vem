@@ -33,6 +33,13 @@ const GUEST_SMOKE_PATH =
 const GUEST_VISION_MOCK_CONTROL_PORT = 7893;
 const HOST_CONTROL_PLANE_PORT = 26851;
 const MODES = new Set(["fast", "full", "clear_cache"]);
+const RETAINED_CACHE_CONTRACT = Object.freeze([
+  "D:\\runtime-cache\\v1\\pnpm-store",
+  "D:\\runtime-cache\\v1\\cargo-home",
+  "D:\\runtime-cache\\v1\\target",
+  "D:\\runtime-cache\\v1\\sccache",
+  "D:\\runtime-cache\\v1\\turbo",
+]);
 const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "NODE_ENV",
   "DATABASE_URL",
@@ -327,6 +334,24 @@ function runtimeBaseIdentity(contract) {
 
 function runtimeTargetIdentity(contract) {
   return `vm-target://${String(contract.releaseId).toLowerCase()}`;
+}
+
+function baselineContractDigest(contract) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+}
+
+function workflowIdentity(options, contract) {
+  const baselineDigest = baselineContractDigest(contract);
+  const runtimeBase = runtimeBaseIdentity(contract);
+  return {
+    githubSha: process.env.GITHUB_SHA ?? null,
+    baseline: { releaseId: contract.releaseId, digest: baselineDigest },
+    runtimeBase,
+    reconstructionId: `reconstruction://sha256/${createHash("sha256")
+      .update(`${options.runId}\n${baselineDigest}\n${runtimeBase}`)
+      .digest("hex")}`,
+    retainedCaches: [...RETAINED_CACHE_CONTRACT],
+  };
 }
 
 function parseJsonLine(stdout, label) {
@@ -1116,11 +1141,13 @@ async function reconstruct(options) {
     "utf8",
   );
   const plan = buildReconstructionPlan(options, contract);
+  const identity = workflowIdentity(options, contract);
   if (options.dryRun)
     return {
       schemaVersion: "vem-local-testbed-reconstruction/v1",
       dryRun: true,
       mode: options.mode,
+      workflowIdentity: identity,
       plan,
     };
   await stopServiceApiUnit(options);
@@ -1179,6 +1206,7 @@ async function reconstruct(options) {
         hardwareModel: "vem-prod-24",
         topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
       },
+      workflowIdentity: identity,
       hostControlPlane: {
         endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
         token: createHash("sha256")
@@ -1215,6 +1243,7 @@ async function reconstruct(options) {
       schemaVersion: "vem-local-testbed-reconstruction/v1",
       mode: options.mode,
       runId: options.runId,
+      workflowIdentity: identity,
       services: SERVICE_NAMES,
       fixture: {
         source: fixture.source,

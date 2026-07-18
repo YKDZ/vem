@@ -262,6 +262,8 @@ $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
+[string]$ipcRecoveryOutPath = Join-Path $handoffRoot "installed-ipc-recovery.json"
+[string]$fulfillmentFailureOutPath = Join-Path $handoffRoot "serial-fulfillment-error.json"
 [string]$scannerPaymentCodeOutPath = Join-Path $handoffRoot "scanner-payment-code.json"
 [string]$delayedPickupOutPath = Join-Path $handoffRoot "delayed-pickup-native-audio.json"
 [string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
@@ -310,6 +312,12 @@ if (Test-Path -LiteralPath $fastRouteOutPath) {
   Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
 }
 if ($Mode -eq "full") {
+  if (Test-Path -LiteralPath $ipcRecoveryOutPath) {
+    Get-Content -Raw -LiteralPath $ipcRecoveryOutPath | Write-Output
+  }
+  if (Test-Path -LiteralPath $fulfillmentFailureOutPath) {
+    Get-Content -Raw -LiteralPath $fulfillmentFailureOutPath | Write-Output
+  }
   if (Test-Path -LiteralPath $scannerPaymentCodeOutPath) {
     Get-Content -Raw -LiteralPath $scannerPaymentCodeOutPath | Write-Output
   }
