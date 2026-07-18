@@ -392,8 +392,17 @@ function Register-Runner {
   Push-Location $runnerRoot
   try {
     Invoke-Native -FilePath ".\config.cmd" -ArgumentList @("--unattended", "--url", $RunnerUrl, "--token", $RunnerRegistrationToken, "--name", $RunnerName, "--labels", ($RunnerLabels -join ","), "--work", $runnerWorkRoot, "--runasservice") -Description "actions runner registration"
-    $services = @(Get-Service -ErrorAction Stop | Where-Object { $_.Name -like "actions.runner*" })
-    if ($services.Count -ne 1) { throw "expected exactly one actions runner service after registration" }
+    $serviceIdentityPath = Join-Path $runnerRoot ".service"
+    if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw "actions runner service identity is unavailable after registration" }
+    $serviceName = (Get-Content -Raw -LiteralPath $serviceIdentityPath).Trim()
+    if ($serviceName -notlike "actions.runner.*") { throw "actions runner service identity is invalid" }
+    $service = $null
+    $serviceDeadline = (Get-Date).AddSeconds(30)
+    while ($null -eq $service -and (Get-Date) -lt $serviceDeadline) {
+      $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+      if ($null -eq $service) { Start-Sleep -Milliseconds 250 }
+    }
+    if ($null -eq $service) { throw "registered actions runner service did not become observable" }
     $runnerConfiguration = Get-Content -Raw -LiteralPath (Join-Path $runnerRoot ".runner") | ConvertFrom-Json
     if ($runnerConfiguration.agentName -ne $RunnerName) { throw "actions runner configuration name does not match registration input" }
     $configuredUrl = [string]$runnerConfiguration.gitHubUrl
@@ -404,7 +413,7 @@ function Register-Runner {
       runnerUrl = $RunnerUrl
       runnerName = $RunnerName
       runnerLabels = @($RunnerLabels)
-      serviceName = $services[0].Name
+      serviceName = $service.Name
       runnerRoot = $runnerRoot
       runnerWorkRoot = $runnerWorkRoot
       cacheRoot = $cacheRoot
