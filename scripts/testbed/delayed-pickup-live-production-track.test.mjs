@@ -7,6 +7,10 @@ import {
   delayedPickupIssue16ControlPlaneContract,
   startDelayedPickupLiveProductionTrack,
 } from "./delayed-pickup-live-production-track.mjs";
+import {
+  combineCleanupError,
+  runCleanupStep,
+} from "./delayed-pickup-native-audio-guest-full.mjs";
 import { buildVmRuntimeAcceptancePlan } from "./win10-vem-e2e.mjs";
 
 const sale = {
@@ -383,6 +387,158 @@ describe("delayed pickup live production track", () => {
       const samplesAtClose = failedSampleCount;
       await new Promise((resolve) => setTimeout(resolve, 75));
       assert.equal(failedSampleCount, samplesAtClose);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for guest cleanup errors and preserves the primary error first", async () => {
+    const primary = new Error("primary live sale failure");
+    let cleanup = null;
+    try {
+      await runCleanupStep("live-track-close", async () => {
+        throw new Error("sidecar tunnel still open");
+      });
+    } catch (error) {
+      cleanup = error;
+    }
+    assert.ok(cleanup instanceof Error);
+    const combined = combineCleanupError(primary, [cleanup]);
+    assert.equal(combined instanceof AggregateError, true);
+    assert.equal(combined.errors[0], primary);
+    assert.match(combined.message, /primary live sale failure/);
+    assert.match(combined.message, /live-track-close failed: sidecar tunnel still open/);
+  });
+
+  it("fails closed when live track close rejects and includes surviving process/session evidence", async () => {
+    const root = makeTempDir("vem-delayed-live-close");
+    try {
+      const track = await startDelayedPickupLiveProductionTrack(
+        {
+          outputRoot: root,
+          ...sale,
+          targetIdentity: "vm-target://runtime-testbed",
+          remote: {
+            remote: "operator@runtime.test",
+            identity: "/tmp/id",
+            certificate: "/tmp/id-cert.pub",
+          },
+          async captureDaemon(stage) {
+            return {
+              stage,
+              capturedAt: "2026-07-18T08:00:00.100Z",
+              binding: null,
+              transaction: {},
+              saleView: { items: [] },
+            };
+          },
+          async queryPlatform() {
+            return {
+              schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+              source: "authoritative_ephemeral_platform_database",
+              capturedAt: "2026-07-18T08:00:00.200Z",
+              scope: {
+                runId: sale.runId,
+                machineCode: "MACHINE-17",
+                machineId: "44444444-4444-4444-8444-444444444444",
+              },
+              raw: {
+                orders: [],
+                orderItems: [],
+                payments: [],
+                reservations: [],
+                commands: [],
+                movements: [],
+              },
+            };
+          },
+        },
+        {
+          async openSidecar() {
+            return {
+              endpoint: "http://127.0.0.1:9222",
+              async close() {
+                throw new Error("ssh tunnel still forwarding");
+              },
+            };
+          },
+          async discoverTarget() {
+            return {
+              id: "target-live-17",
+              webSocketDebuggerUrl:
+                "ws://127.0.0.1:9222/devtools/page/target-live-17",
+            };
+          },
+          createClient() {
+            return {
+              async connect() {},
+              async observeIdentity() {
+                return {
+                  targetId: "target-live-17",
+                  sessionId:
+                    "cdp-connection:33333333-3333-4333-8333-333333333333",
+                  connectedAt: "2026-07-18T08:00:00.000Z",
+                };
+              },
+              async close() {
+                throw new Error("cdp websocket close stalled");
+              },
+            };
+          },
+          async enableRuntime() {},
+          async inspectRuntime() {
+            return {
+              machine: {
+                processId: 42,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+                sessionId: 7,
+                principal: "FIELD\\InteractiveUser",
+              },
+              cdpListener: {
+                machineAncestorProcessId: 42,
+                sessionId: 7,
+                principal: "FIELD\\InteractiveUser",
+              },
+            };
+          },
+          async readMachineSample() {
+            return {
+              observedAt: "2026-07-18T08:00:00.300Z",
+              route: "#/catalog",
+              surface: "catalog",
+              runtimeTrace: [],
+            };
+          },
+          async startAudioCapture() {
+            return {
+              captureSession: {
+                captureSessionId: "sale-audio-session:run-17-live",
+                startOperationReference: "vm-operation:run-17-live",
+                startedAt: "2026-07-18T08:00:00.400Z",
+              },
+            };
+          },
+          async stopAudioCapture() {
+            return { result: "succeeded" };
+          },
+          async cancelAudioCapture() {
+            return { cancelled: true };
+          },
+        },
+      );
+      await assert.rejects(
+        track.close(),
+        (error) => {
+          assert.equal(error instanceof AggregateError, true);
+          assert.match(error.message, /live production track cleanup failed/);
+          assert.match(error.message, /CDP client close failed/);
+          assert.match(error.message, /CDP sidecar close failed/);
+          assert.match(error.message, /surviving process\/session evidence/);
+          assert.match(error.message, /\"processId\":42/);
+          assert.match(error.message, /\"sessionId\":7/);
+          return true;
+        },
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

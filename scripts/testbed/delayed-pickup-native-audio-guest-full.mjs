@@ -28,6 +28,7 @@ import {
 const MODES = new Set(["full"]);
 const DEFAULT_SCANNER_CODE = "6901234567892";
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
+const CLEANUP_TIMEOUT_MS = 10_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -436,6 +437,44 @@ function issue17EvidenceIndex({
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function cleanupTimeout(label, timeoutMs) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+export async function runCleanupStep(
+  label,
+  action,
+  timeoutMs = CLEANUP_TIMEOUT_MS,
+) {
+  try {
+    return await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+  } catch (error) {
+    const wrapped = new Error(`${label} failed: ${formatError(error)}`);
+    wrapped.cause = error;
+    wrapped.cleanupLabel = label;
+    throw wrapped;
+  }
+}
+
+export function combineCleanupError(primaryError, cleanupErrors) {
+  if (cleanupErrors.length === 0) return primaryError;
+  if (primaryError) {
+    return new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  return new AggregateError(
+    cleanupErrors,
+    `cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+  );
 }
 
 async function runDelayedPickupGuestFull(options) {
@@ -879,6 +918,7 @@ async function runDelayedPickupGuestFull(options) {
   } finally {
     const collectionErrors = report.errors.collection;
     const cleanupErrors = report.errors.cleanup;
+    const cleanupFailures = [];
     const collectBestEffort = async (label, callback) => {
       try {
         await withinDeadline(callback, "collection");
@@ -944,14 +984,15 @@ async function runDelayedPickupGuestFull(options) {
       uiSnapshotPath,
       screenshotRefs,
     });
-    const cleanupBestEffort = async (label, callback) => {
+    const cleanupFailClosed = async (label, callback) => {
       try {
-        await withinDeadline(callback, "cleanup");
+        await runCleanupStep(label, callback);
       } catch (error) {
         cleanupErrors.push(`${label}: ${formatError(error)}`);
+        cleanupFailures.push(error);
       }
     };
-    await cleanupBestEffort("serial-session", async () => {
+    await cleanupFailClosed("serial-session", async () => {
       if (!sessionStart || sessionStopped) return;
       if (liveSale) {
         await controlPlaneRequest(
@@ -976,16 +1017,16 @@ async function runDelayedPickupGuestFull(options) {
         );
       }
     });
-    await cleanupBestEffort("audio-capture", async () => {
+    await cleanupFailClosed("audio-capture", async () => {
       if (liveEvidence?.audioStop) return;
       await controlPlaneRequest(guestInput, "/v1/audio-captures/cancel", {
         operationId: audioOperationId,
       });
     });
-    await cleanupBestEffort("live-track-close", async () => {
+    await cleanupFailClosed("live-track-close", async () => {
       await delayedTrack?.close();
     });
-    await cleanupBestEffort("ui-client-close", async () => {
+    await cleanupFailClosed("ui-client-close", async () => {
       await client?.close();
     });
     await collectBestEffort("audio-diagnostics", async () => {
@@ -996,10 +1037,14 @@ async function runDelayedPickupGuestFull(options) {
       );
       writeJson(audioDiagnosticsPath, diagnostics);
     });
+    primaryError = combineCleanupError(primaryError, cleanupFailures);
   }
   if (primaryError) {
     report.error = formatError(primaryError);
-    report.errors.primary = formatError(primaryError);
+    report.errors.primary =
+      primaryError instanceof AggregateError && primaryError.errors[0] instanceof Error
+        ? formatError(primaryError.errors[0])
+        : formatError(primaryError);
     report.controlPlaneSessionId = sessionStart?.sessionId ?? null;
   } else {
     report.errors.primary = null;

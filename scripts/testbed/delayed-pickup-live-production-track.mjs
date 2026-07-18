@@ -16,6 +16,7 @@ import {
 } from "./machine-ui-cdp-driver.mjs";
 
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
+const CLOSE_TIMEOUT_MS = 10_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0)
@@ -83,6 +84,116 @@ function normalizeObservedFrameHex(frame) {
 
 function sleep(milliseconds) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+}
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function cleanupTimeout(label, timeoutMs) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+async function runCloseStep(label, action, timeoutMs = CLOSE_TIMEOUT_MS) {
+  try {
+    return await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+  } catch (error) {
+    const wrapped = new Error(`${label} failed: ${formatError(error)}`);
+    wrapped.cause = error;
+    wrapped.cleanupLabel = label;
+    throw wrapped;
+  }
+}
+
+async function captureSurvivingRuntimeEvidence({
+  runtime,
+  client,
+  sidecar,
+  inspectRuntime,
+}) {
+  const evidence = {
+    capturedAt: new Date().toISOString(),
+    runtime: runtime ? { ...runtime } : null,
+    sidecarEndpoint: sidecar?.endpoint ?? null,
+    processSessionInspection: null,
+    cdpIdentity: null,
+  };
+  if (typeof inspectRuntime === "function") {
+    try {
+      evidence.processSessionInspection = await Promise.race([
+        inspectRuntime(),
+        cleanupTimeout("process/session evidence", 2_000),
+      ]);
+    } catch (error) {
+      evidence.processSessionInspection = {
+        error: formatError(error),
+      };
+    }
+  }
+  if (client && typeof client.observeIdentity === "function") {
+    try {
+      evidence.cdpIdentity = await Promise.race([
+        client.observeIdentity({ timeoutMs: 2_000 }),
+        cleanupTimeout("cdp identity evidence", 2_000),
+      ]);
+    } catch (error) {
+      evidence.cdpIdentity = {
+        error: formatError(error),
+      };
+    }
+  }
+  return evidence;
+}
+
+async function closeResourcesOrThrow({
+  machineCapture,
+  cancelAudio,
+  client,
+  sidecar,
+  runtime,
+  inspectRuntime,
+}) {
+  const cleanupFailures = [];
+  const settleStep = async (label, action) => {
+    try {
+      await runCloseStep(label, action);
+    } catch (error) {
+      const evidence = await captureSurvivingRuntimeEvidence({
+        runtime,
+        client,
+        sidecar,
+        inspectRuntime,
+      });
+      error.message = `${error.message}; surviving process/session evidence: ${JSON.stringify(evidence)}`;
+      error.survivingEvidence = evidence;
+      cleanupFailures.push(error);
+    }
+  };
+  await Promise.all([
+    settleStep("machine capture cancel", async () => {
+      await machineCapture?.cancel();
+    }),
+    settleStep("audio capture cancel", async () => {
+      await cancelAudio();
+    }),
+    settleStep("CDP client close", async () => {
+      await client?.close();
+    }),
+    settleStep("CDP sidecar close", async () => {
+      await sidecar.close();
+    }),
+  ]);
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(
+      cleanupFailures,
+      `live production track cleanup failed: ${cleanupFailures.map((error) => error.message).join("; ")}`,
+    );
+  }
 }
 
 function daemonF1Ready(daemon, binding) {
@@ -196,6 +307,8 @@ export async function startDelayedPickupLiveProductionTrack(
     dependencies.stopAudioCapture ?? options.stopAudioCapture;
   const cancelAudioCapture =
     dependencies.cancelAudioCapture ?? options.cancelAudioCapture;
+  const inspectRuntimeNow =
+    dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime;
   if (
     typeof captureDaemon !== "function" ||
     typeof queryPlatform !== "function" ||
@@ -297,7 +410,7 @@ export async function startDelayedPickupLiveProductionTrack(
     machineCapture = await startDelayedPickupMachineEvidenceCapture({
       client,
       inspectRuntime: () =>
-        (dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime)({
+        inspectRuntimeNow({
           remote: options.remote.remote,
           sshPort: options.remote.sshPort,
           identityFile: options.remote.identity,
@@ -401,46 +514,76 @@ export async function startDelayedPickupLiveProductionTrack(
         };
       },
       async close() {
-        const cleanup = [
-          machineCapture?.cancel(),
-          !audioStopped && !audioCancelled && audioStart
-            ? cancelAudioCapture({
-                baseBinding: { ...baseBinding },
-                runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
-                targetIdentity: options.targetIdentity,
-                evidenceDirectory,
-                outPath: paths.audioStop,
-                audioStart,
-              }).finally(() => {
-                audioCancelled = true;
-              })
-            : Promise.resolve(),
-        ];
-        await Promise.allSettled([
-          ...cleanup,
-          client?.close(),
-          sidecar.close(),
-        ]);
+        await closeResourcesOrThrow({
+          machineCapture,
+          runtime: machineCapture?.runtime ?? runtime,
+          client,
+          sidecar,
+          inspectRuntime: async () =>
+            inspectRuntimeNow({
+              remote: options.remote.remote,
+              sshPort: options.remote.sshPort,
+              identityFile: options.remote.identity,
+              certificateFile: options.remote.certificate,
+              sshKnownHostsPath: options.remote.sshKnownHostsPath,
+              sshHostKeyAlias: options.remote.sshHostKeyAlias,
+              sshArgs: ["-o", "ProxyCommand=none"],
+              remoteCdpPort: 9222,
+              expectedMachinePath: MACHINE_PATH,
+            }),
+          cancelAudio: async () => {
+            if (audioStopped || audioCancelled || !audioStart) return;
+            await cancelAudioCapture({
+              baseBinding: { ...baseBinding },
+              runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
+              targetIdentity: options.targetIdentity,
+              evidenceDirectory,
+              outPath: paths.audioStop,
+              audioStart,
+            });
+            audioCancelled = true;
+          },
+        });
       },
     };
   } catch (error) {
-    await Promise.allSettled([
-      machineCapture?.cancel(),
-      !audioStopped && !audioCancelled && audioStart
-        ? cancelAudioCapture({
+    try {
+      await closeResourcesOrThrow({
+        machineCapture,
+        runtime: machineCapture?.runtime ?? null,
+        client,
+        sidecar,
+        inspectRuntime: async () =>
+          inspectRuntimeNow({
+            remote: options.remote.remote,
+            sshPort: options.remote.sshPort,
+            identityFile: options.remote.identity,
+            certificateFile: options.remote.certificate,
+            sshKnownHostsPath: options.remote.sshKnownHostsPath,
+            sshHostKeyAlias: options.remote.sshHostKeyAlias,
+            sshArgs: ["-o", "ProxyCommand=none"],
+            remoteCdpPort: 9222,
+            expectedMachinePath: MACHINE_PATH,
+          }),
+        cancelAudio: async () => {
+          if (audioStopped || audioCancelled || !audioStart) return;
+          await cancelAudioCapture({
             baseBinding: { ...baseBinding },
             runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
             targetIdentity: options.targetIdentity,
             evidenceDirectory,
             outPath: paths.audioStop,
             audioStart,
-          }).finally(() => {
-            audioCancelled = true;
-          })
-        : Promise.resolve(),
-      client?.close(),
-      sidecar.close(),
-    ]);
+          });
+          audioCancelled = true;
+        },
+      });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `${formatError(error)}; ${formatError(cleanupError)}`,
+      );
+    }
     throw error;
   }
 }
