@@ -228,15 +228,23 @@ impl ScannerRuntime {
         shutdown: CancellationToken,
         payment_code_scan_armer: PaymentCodeScanArmer,
     ) -> Self {
-        Self::with_generation(config, 1, tx_raw, tx_events, shutdown)
+        Self::with_generation(
+            config,
+            1,
+            tx_raw,
+            tx_events,
+            shutdown,
+            payment_code_scan_armer,
+        )
     }
 
     fn with_generation(
         config: ScannerRuntimeConfig,
         runtime_generation: u64,
-        tx_raw: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+        tx_raw: mpsc::Sender<ArmedPaymentCode>,
         tx_events: broadcast::Sender<DaemonEvent>,
         shutdown: CancellationToken,
+        payment_code_scan_armer: PaymentCodeScanArmer,
     ) -> Self {
         Self {
             config,

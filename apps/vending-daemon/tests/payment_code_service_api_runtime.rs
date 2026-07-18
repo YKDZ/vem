@@ -112,7 +112,7 @@ async fn pty_scanner_watcher_submits_only_current_frames_to_the_real_service_api
         let guard_entered = guard_entered.clone();
         let guard_release = guard_release.clone();
         let guard_blocks_once = guard_blocks_once.clone();
-        Arc::new(move || {
+        Arc::new(move |_| {
             let guard_entered = guard_entered.clone();
             let guard_release = guard_release.clone();
             let should_block = guard_blocks_once.swap(false, Ordering::SeqCst);

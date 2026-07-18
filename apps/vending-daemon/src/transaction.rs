@@ -30,8 +30,13 @@ struct CheckoutCreationRecovery {
     idempotency_key: String,
 }
 
-pub type PaymentCodeSubmitGuard =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+pub type PaymentCodeSubmitGuard = Arc<
+    dyn Fn(
+            Option<vending_core::scanner::ScannerHealthSnapshot>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A scanner arm belongs to one current payment-code checkout attempt. The
 /// scanner supplies its capture timestamp, so queued bytes from before a new
@@ -541,42 +546,6 @@ impl TransactionStateMachine {
         Ok(current)
     }
 
-    pub async fn mark_mock_payment(
-        &self,
-        order_no: &str,
-        succeed: bool,
-    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
-        self.clear_payment_code_scan_arm().await;
-        let machine_code = self
-            .machine_code
-            .as_deref()
-            .ok_or_else(|| "machine code is required".to_string())?;
-
-        self.backend.mark_mock_payment(order_no, succeed).await?;
-        let status_json = self
-            .backend
-            .get_order_status(machine_code, order_no)
-            .await?;
-        {
-            let _mutation = self.state.lock_transaction_mutation().await;
-            self.state
-                .apply_backend_order_status(order_no, status_json)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-
-        let current = self
-            .state
-            .current_transaction_snapshot()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "current transaction missing after mock payment".to_string())?;
-
-        self.sync_payment_code_scan_arm(Some(&current)).await;
-        self.emit_transaction_changed(order_no, &current);
-        Ok(current)
-    }
-
     async fn refresh_platform_stock_after_order_refusal(&self, machine_code: &str) {
         let Ok(snapshot) = self.backend.get_stock_snapshot(machine_code).await else {
             return;
@@ -612,7 +581,7 @@ impl TransactionStateMachine {
             self.clear_payment_code_scan_arm().await;
         }
         if let Some(guard) = &self.payment_code_submit_guard {
-            guard().await?;
+            guard(scanner_health.clone()).await?;
         }
 
         // The guard may await local readiness while cancel/replacement wins in
@@ -1642,7 +1611,7 @@ mod tests {
             Some("M-1".to_string()),
             events_tx,
         )
-        .with_payment_code_submit_guard(Arc::new(|| {
+        .with_payment_code_submit_guard(Arc::new(|_| {
             Box::pin(async {
                 Err("MACHINE_NOT_READY_FOR_PAYMENT_CODE: lower controller unavailable".to_string())
             })

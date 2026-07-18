@@ -1363,7 +1363,7 @@ pub(crate) fn local_payment_code_submit_guard(
     cache: RuntimeStatusCache,
     state: LocalStateStore,
 ) -> crate::transaction::PaymentCodeSubmitGuard {
-    Arc::new(move || {
+    Arc::new(move |scanner_evidence| {
         let cache = cache.clone();
         let state = state.clone();
         Box::pin(async move {
@@ -1385,10 +1385,19 @@ pub(crate) fn local_payment_code_submit_guard(
                         .to_string(),
                 );
             }
-            // ScannerRuntime validates readiness at the serial frame boundary
-            // and carries that immutable evidence with the armed frame. A
-            // second cache read here can race a post-scan disconnect.
-            Ok(())
+            // A completed serial frame carries readiness captured at its final
+            // byte. Direct submissions have no such evidence and must use the
+            // current cache instead.
+            let scanner = match scanner_evidence {
+                Some(scanner) => scanner,
+                None => cache.scanner.read().await.clone(),
+            };
+            let (ready, message) = scanner_payment_readiness(&scanner);
+            if ready {
+                Ok(())
+            } else {
+                Err(message)
+            }
         })
     })
 }
@@ -3512,7 +3521,7 @@ mod tests {
         assert_eq!(capability.payment_options.options.len(), 1);
         assert!(!capability.payment_options.options[0].ready);
         assert!(
-            local_payment_code_submit_guard(ctx.ui.status_cache.clone(), ctx.state.clone())()
+            local_payment_code_submit_guard(ctx.ui.status_cache.clone(), ctx.state.clone())(None)
                 .await
                 .is_err()
         );
