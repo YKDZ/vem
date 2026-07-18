@@ -25,6 +25,24 @@ permissions:
   contents: read
 
 jobs:
+  inspect-runtime-testbed:
+    if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
+    runs-on: [self-hosted, Linux, X64, vem-runtime]
+    steps:
+      - name: Inspect VM network and SSH readiness
+        shell: bash
+        run: |
+          set -uo pipefail
+          domain=vem-win10-runtime-testbed
+          virsh domstate "$domain" || true
+          virsh domiflist "$domain" || true
+          virsh domifaddr "$domain" --source lease || true
+          virsh net-dhcp-leases default || true
+          virsh dumpxml "$domain" | sed -n '/<interface/,/<\/interface>/p' || true
+          ss -ltnp 'sport = :22' || true
+          timeout 3 bash -c '</dev/tcp/192.168.122.50/22' && echo guest-ssh-open || echo guest-ssh-closed
+          tail -n 120 "/var/log/libvirt/qemu/${domain}.log" || true
+
   compare-cargo-download-paths:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
