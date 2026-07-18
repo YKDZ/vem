@@ -26,7 +26,7 @@ const ACTIVATOR_SERVICE_OWNER_SCHEMA =
   "vem-local-testbed-headless-vnc-activator-owner/v1";
 const POWERSHELL_STDIN_COMMAND =
   'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"';
-const RUNNER_ADMISSION_TIMEOUT_SECONDS = 45;
+const RUNNER_ADMISSION_TIMEOUT_SECONDS = 180;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
