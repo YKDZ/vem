@@ -2579,6 +2579,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
       prepareKvmGuest,
       /Install-VirtioGpuDisplayDriver -DriverRoot \$VirtioGpuDriverPath/,
     );
+    assert.match(prepareKvmGuest, /Install-FtdiVirtualComPortDriver/);
+    assert.match(runtime, /CDM-v2\.12\.36\.20-WHQL-Certified\.zip/);
+    assert.match(
+      runtime,
+      /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf[\s\S]*VID_0403&PID_6001/,
+    );
     assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
     assert.doesNotMatch(
       prepareKvmGuest,
@@ -2771,6 +2777,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(verify, /\$turboVersion = "2\.10\.0"/);
     assert.match(verify, /exactToolchainVersions/);
     assert.match(verify, /executablesOnSystemDisk/);
+    assert.match(verify, /\.source -notlike "C:\\\*"/);
     assert.match(
       verify,
       /CARGO_HOME = "\$toolchainRoot\\cargo\\\$rustNamespace"/,

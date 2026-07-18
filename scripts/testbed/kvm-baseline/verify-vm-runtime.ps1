@@ -241,7 +241,7 @@ $machinePathsExact = @($expectedMachinePaths.GetEnumerator() | Where-Object {
   $machinePaths[$_.Key] -cne $_.Value
 }).Count -eq 0
 $executablesOnSystemDisk = @($tools | Where-Object {
-  $_.available -and $_.source -notlike "C:\\*"
+  $_.available -and $_.source -notlike "C:\*"
 }).Count -eq 0
 $cargoRegistryLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARGO_HOME "registry") -Force -ErrorAction SilentlyContinue
 $cargoGitLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARGO_HOME "git") -Force -ErrorAction SilentlyContinue

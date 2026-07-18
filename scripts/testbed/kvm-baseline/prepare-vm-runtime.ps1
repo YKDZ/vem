@@ -34,6 +34,7 @@ $nodeNamespace = "node-$nodeVersion"
 $pnpmNamespace = "pnpm-$pnpmVersion"
 $turboNamespace = "turbo-$turboVersion"
 $rustNamespace = "rust-1.96.0"
+$ftdiVcpDriverUri = "https://ftdichip.com/wp-content/uploads/2025/03/CDM-v2.12.36.20-WHQL-Certified.zip"
 
 function Get-CachePaths {
   return @{
@@ -199,6 +200,38 @@ function Install-VirtioGpuDisplayDriver {
     Start-Sleep -Seconds 2
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "signed VirtIO GPU driver did not bind to a healthy display adapter"
+}
+
+function Install-FtdiVirtualComPortDriver {
+  $driverRoot = Join-Path $env:TEMP "vem-ftdi-vcp-2.12.36.20"
+  $archivePath = "$driverRoot.zip"
+  Remove-Item -LiteralPath $driverRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+  Invoke-WebRequest -UseBasicParsing -Uri $ftdiVcpDriverUri -OutFile $archivePath
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $driverRoot)
+  $driverInfs = @(Get-ChildItem -LiteralPath $driverRoot -Recurse -File -Filter "*.inf" | Where-Object {
+    $_.Name -in @("ftdibus.inf", "ftdiport.inf")
+  })
+  if ($driverInfs.Count -ne 2) { throw "FTDI VCP driver payload must contain the bus and port INF files" }
+  foreach ($driverInf in $driverInfs) {
+    & "pnputil.exe" @("/add-driver", $driverInf.FullName, "/install")
+    if ($LASTEXITCODE -notin @(0, 259, 3010)) {
+      throw "FTDI VCP driver installation failed with exit code $LASTEXITCODE"
+    }
+  }
+  Remove-Item -LiteralPath $driverRoot -Recurse -Force
+  Remove-Item -LiteralPath $archivePath -Force
+
+  $deadline = [DateTime]::UtcNow.AddMinutes(1)
+  do {
+    $serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue | Where-Object {
+      $_.PNPDeviceID -match "VID_0403&PID_6001"
+    })
+    if ($serialPorts.Count -eq 2) { return }
+    Start-Sleep -Seconds 2
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "the two FTDI virtual COM ports did not become available"
 }
 
 function Test-VirtioGpuDriverBinding {
@@ -741,6 +774,7 @@ function Rearm-InteractiveDisplay {
 
 function Prepare-KvmGuest {
   Install-VirtioGpuDisplayDriver -DriverRoot $VirtioGpuDriverPath -IdentityPath $VirtioGpuDriverIdentityPath
+  Install-FtdiVirtualComPortDriver
   Initialize-InteractiveDisplayPreparation
 }
 
