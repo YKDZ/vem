@@ -383,7 +383,11 @@ function Register-Runner {
   }
   if (-not (Test-Path -LiteralPath $RunnerArchivePath -PathType Leaf)) { throw "RunnerArchivePath is unavailable" }
   $archive = (Resolve-Path -LiteralPath $RunnerArchivePath -ErrorAction Stop).Path
-  Expand-Archive -Force -Path $archive -DestinationPath $runnerRoot
+  if (Test-Path -LiteralPath $runnerRoot) {
+    Remove-Item -LiteralPath $runnerRoot -Recurse -Force
+  }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $runnerRoot)
   Push-Location $runnerRoot
   try {
     Invoke-Native -FilePath ".\config.cmd" -ArgumentList @("--unattended", "--url", $RunnerUrl, "--token", $RunnerRegistrationToken, "--name", $RunnerName, "--labels", ($RunnerLabels -join ","), "--work", $runnerWorkRoot, "--runasservice") -Description "actions runner registration"

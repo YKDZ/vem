@@ -2311,6 +2311,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.doesNotMatch(shared, /SpiceGuestTools|QXL|actions-runner/i);
     assert.match(runtime, /PrepareKvmGuest/);
+    assert.match(runtime, /System\.IO\.Compression\.ZipFile/);
+    assert.doesNotMatch(runtime, /Expand-Archive/);
     assert.match(runtime, /PrepareInteractiveDisplay/);
     assert.match(runtime, /RearmInteractiveDisplay/);
     assert.match(runtime, /GetInteractiveDisplayPreparationStatus/);
