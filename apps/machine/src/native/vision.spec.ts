@@ -6,6 +6,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  isVisionTryOnCapabilityDegraded,
   openVisionTryOnSession,
   parseVisionTryOnPreviewUrl,
   subscribeVisionProfiles,
@@ -253,6 +254,28 @@ describe("vision native browser fallback - try-on sessions", () => {
     expect(() =>
       parseVisionTryOnPreviewUrl("https://vision.example/try-on/session.mjpeg"),
     ).toThrow();
+  });
+
+  it("classifies try_on_unavailable during the handshake as degraded", async () => {
+    const url = await startVisionMock("try_on_unavailable_handshake");
+
+    const error = await openVisionTryOnSession({ url }).catch(
+      (reason: unknown) => reason,
+    );
+
+    expect(isVisionTryOnCapabilityDegraded(error)).toBe(true);
+    expect(error).toMatchObject({ name: "VisionTryOnUnavailableError" });
+  });
+
+  it("classifies try_on_unavailable after session start as degraded", async () => {
+    const url = await startVisionMock("try_on_unavailable_start");
+
+    const error = await openVisionTryOnSession({ url }).catch(
+      (reason: unknown) => reason,
+    );
+
+    expect(isVisionTryOnCapabilityDegraded(error)).toBe(true);
+    expect(error).toMatchObject({ name: "VisionTryOnUnavailableError" });
   });
 });
 

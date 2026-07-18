@@ -1766,6 +1766,45 @@ describe("sale-start capability UI flow", () => {
     ).toContain("虚拟试穿预览启动失败");
   });
 
+  it("disables try-on after a classified protocol failure while preserving purchase", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    openVisionTryOnSessionMock.mockRejectedValue(
+      new Error("vision try_on_unavailable: front camera unavailable"),
+    );
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+
+    await mountView(VirtualTryOnView);
+    await vi.waitFor(() => {
+      expect(useVisionStore().isTryOnCapabilityDegraded).toBe(true);
+    });
+
+    unmountMountedView();
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+    const host = await mountView(ProductDetailView);
+    expect(
+      requireElement<HTMLButtonElement>(host, '[data-test="try-on-entry"]')
+        .disabled,
+    ).toBe(true);
+    expect(
+      requireElement<HTMLButtonElement>(host, '[data-test="product-buy"]')
+        .disabled,
+    ).toBe(false);
+  });
+
   it("keeps product detail and checkout usable after try-on camera failure without sending frame data", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {

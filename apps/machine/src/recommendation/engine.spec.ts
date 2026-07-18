@@ -211,6 +211,31 @@ describe("choosePreferredVariant", () => {
     );
   });
 
+  it("ignores a sold-out exact profile match in favor of the sale-ready fallback", () => {
+    const recommendation = recommendVariant(
+      [
+        {
+          ...variants[2],
+          variantId: "l-blue-sold-out",
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        },
+        variants[0],
+      ],
+      {
+        personPresent: true,
+        heightCm: 178,
+        bodyType: "regular",
+        upperColor: "蓝",
+      },
+    );
+
+    expect(recommendation).toMatchObject({
+      variant: { variantId: "m-white" },
+      score: 0,
+    });
+  });
+
   it("uses the first variant when no variant is saleable", () => {
     const soldOutVariants = variants.map((variant) => ({
       ...variant,

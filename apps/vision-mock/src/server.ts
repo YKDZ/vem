@@ -20,6 +20,8 @@ export const MOCK_VISION_SCENARIOS = [
   "departure_after_presence",
   "disconnect_once",
   "camera_unavailable",
+  "try_on_unavailable_handshake",
+  "try_on_unavailable_start",
 ] as const;
 
 export type MockVisionScenario = (typeof MOCK_VISION_SCENARIOS)[number];
@@ -328,6 +330,17 @@ function handleClientRawMessage(
 
   switch (message.type) {
     case "vision.hello":
+      if (options.scenario === "try_on_unavailable_handshake") {
+        sendServerMessage(
+          socket,
+          createErrorMessage({
+            code: "try_on_unavailable",
+            message: "模拟试穿握手不可用",
+            retryable: true,
+          }),
+        );
+        return;
+      }
       sendServerMessage(socket, createReadyMessage());
       if (
         options.scenario === "disconnect_once" &&
@@ -348,6 +361,17 @@ function handleClientRawMessage(
       sendServerMessage(socket, createPongMessage());
       return;
     case "vision.try_on.start":
+      if (options.scenario === "try_on_unavailable_start") {
+        sendServerMessage(
+          socket,
+          createErrorMessage({
+            code: "try_on_unavailable",
+            message: "模拟试穿启动不可用",
+            retryable: true,
+          }),
+        );
+        return;
+      }
       sendServerMessage(
         socket,
         createTryOnStartedMessage(message.payload.sessionId),

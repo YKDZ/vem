@@ -70,16 +70,21 @@ export function recommendVariant(
 ): VariantRecommendation {
   const fallback = defaultVariant(variants);
   if (!fallback) return { variant: null, score: 0 };
+  const saleableVariants = variants.filter(variantIsSaleable);
+  if (saleableVariants.length === 0) {
+    return { variant: fallback, score: 0 };
+  }
 
   const inferredSize = inferSize(
     profile?.heightCm ?? undefined,
     profile?.bodyType,
   );
   const hasSizeMatch = Boolean(
-    inferredSize && variants.some((variant) => variant.size === inferredSize),
+    inferredSize &&
+    saleableVariants.some((variant) => variant.size === inferredSize),
   );
   const size = hasSizeMatch ? inferredSize : fallback.size;
-  const sizePool = variants.filter((variant) => variant.size === size);
+  const sizePool = saleableVariants.filter((variant) => variant.size === size);
   const scopedFallback = defaultVariant(sizePool) ?? fallback;
   const colorMatch = sizePool.find((variant) =>
     matchesColor(variant, profile?.upperColor),

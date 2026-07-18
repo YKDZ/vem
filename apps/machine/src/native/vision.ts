@@ -263,21 +263,28 @@ async function nextServerMessage(
   });
 }
 
+class VisionTryOnUnavailableError extends Error {
+  constructor(message: string) {
+    super(`${TRY_ON_UNAVAILABLE_PREFIX} ${message}`);
+    this.name = "VisionTryOnUnavailableError";
+  }
+}
+
+function tryOnUnavailableError(message: string): Error {
+  return new VisionTryOnUnavailableError(message);
+}
+
 function errorFromVisionMessage(message: VisionErrorMessage): Error {
+  if (message.payload.code === "try_on_unavailable") {
+    return tryOnUnavailableError(message.payload.message);
+  }
   return new Error(
     `vision ${message.payload.code}: ${message.payload.message}`,
   );
 }
 
-function tryOnUnavailableError(message: string): Error {
-  return new Error(`${TRY_ON_UNAVAILABLE_PREFIX} ${message}`);
-}
-
 export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.startsWith(TRY_ON_UNAVAILABLE_PREFIX)
-  );
+  return error instanceof VisionTryOnUnavailableError;
 }
 
 export function parseVisionTryOnPreviewUrl(value: unknown): string {
