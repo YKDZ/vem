@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+Set-Location -LiteralPath $repoRoot
 $cacheRoot = "D:\runtime-cache\v1"
 $runtimeRoot = "C:\ProgramData\VEM"
 $daemonDataRoot = Join-Path $runtimeRoot "vending-daemon"

@@ -1125,6 +1125,10 @@ describe("Windows D cache contract", () => {
       guest,
       /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,
     );
+    assert.match(
+      guest,
+      /Join-Path \$PSScriptRoot "\.\.\\\.\."[\s\S]*Set-Location -LiteralPath \$repoRoot/,
+    );
     for (const required of [
       "$env:CARGO_HOME",
       "$env:RUSTC_WRAPPER",
