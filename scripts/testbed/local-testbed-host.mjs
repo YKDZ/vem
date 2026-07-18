@@ -24,8 +24,6 @@ const PORTRAIT_HEIGHT_PX = 1920;
 const DISPLAY_PROOF_SCHEMA = "vem-local-testbed-display-admission-proof/v1";
 const ACTIVATOR_SERVICE_OWNER_SCHEMA =
   "vem-local-testbed-headless-vnc-activator-owner/v1";
-const POWERSHELL_STDIN_COMMAND =
-  'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"';
 const RUNNER_ADMISSION_TIMEOUT_SECONDS = 180;
 const DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS = 20_000;
 const DOMAIN_ACPI_SHUTDOWN_POLL_MS = 1_000;
@@ -170,6 +168,10 @@ function sshArgs(config, remoteCommand) {
 
 function quotePowerShell(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function encodedPowerShellCommand(script) {
+  return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
 }
 
 function guestInputAssertion(path, runId) {
@@ -557,12 +559,23 @@ export function buildHostAdmissionPlan({
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
   const expectedRunId = required(runId, "runId");
   const assertion = guestInputAssertion(path, expectedRunId);
+  const displayAssertion = interactiveDisplayAssertion(
+    config.ssh.user,
+    PORTRAIT_WIDTH_PX,
+    PORTRAIT_HEIGHT_PX,
+  );
+  const runnerAssertion = runnerAdmissionAssertion(
+    runnerProxy,
+    runnerRegistrationToken,
+    runnerRemovalToken,
+  );
   return [
     {
       type: "assert-guest-input",
       path,
       command: "ssh",
-      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
+      args: sshArgs(config, encodedPowerShellCommand(assertion)),
+      encodedPowerShell: true,
       input: assertion,
     },
     {
@@ -571,22 +584,16 @@ export function buildHostAdmissionPlan({
       expectedUser: config.ssh.user,
       expectedWidth: PORTRAIT_WIDTH_PX,
       expectedHeight: PORTRAIT_HEIGHT_PX,
-      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
-      input: interactiveDisplayAssertion(
-        config.ssh.user,
-        PORTRAIT_WIDTH_PX,
-        PORTRAIT_HEIGHT_PX,
-      ),
+      args: sshArgs(config, encodedPowerShellCommand(displayAssertion)),
+      encodedPowerShell: true,
+      input: displayAssertion,
     },
     {
       type: "restart-runner-and-await-listener",
       command: "ssh",
-      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
-      input: runnerAdmissionAssertion(
-        runnerProxy,
-        runnerRegistrationToken,
-        runnerRemovalToken,
-      ),
+      args: sshArgs(config, encodedPowerShellCommand(runnerAssertion)),
+      encodedPowerShell: true,
+      input: runnerAssertion,
     },
   ];
 }
@@ -751,6 +758,7 @@ export async function executeHostAdmissionPlan(
       const output = await runCaptureCommand(
         step.command,
         step.args,
+        step.encodedPowerShell ? undefined : step.input,
         step.input,
       );
       displayAdmissionProof = validateDisplayAdmissionProof(
@@ -765,6 +773,7 @@ export async function executeHostAdmissionPlan(
       const output = await runCaptureCommand(
         step.command,
         step.args,
+        step.encodedPowerShell ? undefined : step.input,
         step.input,
       );
       runnerAdmission = parseJsonLine(output.stdout, "runner admission");
@@ -787,7 +796,12 @@ export async function executeHostAdmissionPlan(
         throw new Error("runner admission emitted an invalid listener marker");
       }
     } else {
-      await runCommand(step.command, step.args, step.input);
+      await runCommand(
+        step.command,
+        step.args,
+        step.encodedPowerShell ? undefined : step.input,
+        step.input,
+      );
     }
   }
   return { displayAdmissionProof, runnerAdmission };

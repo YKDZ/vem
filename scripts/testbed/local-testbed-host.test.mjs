@@ -210,17 +210,11 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
-    assert.equal(
-      plan[0].args.at(-1),
-      'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
-    );
+    assert.match(plan[0].args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
     assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
     assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
     assert.doesNotMatch(plan[0].input, /\$input\s*=/);
-    assert.equal(
-      plan[1].args.at(-1),
-      'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
-    );
+    assert.match(plan[1].args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
     assert.match(plan[1].input, /interactive-display-report\.json/);
     assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
     assert.equal(plan[1].type, "assert-interactive-display");
@@ -233,12 +227,9 @@ describe("tracked local testbed host lifecycle", () => {
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
-        runCommand: async (command, args, input) => {
+        runCommand: async (command, args, _stdin, input) => {
           operations.push(command);
-          assert.equal(
-            args.at(-1),
-            'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
-          );
+          assert.match(args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
           assert.match(input, /guest input/);
           throw new Error("guest input missing");
         },
@@ -259,12 +250,9 @@ describe("tracked local testbed host lifecycle", () => {
       runCommand: async (command) => {
         operations.push(command);
       },
-      runCaptureCommand: async (command, args, input) => {
+      runCaptureCommand: async (command, args, _stdin, input) => {
         operations.push(command);
-        assert.equal(
-          args.at(-1),
-          'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
-        );
+        assert.match(args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
         if (!input.includes("interactive-display-report")) {
           return {
             stdout: `${JSON.stringify({
@@ -324,7 +312,7 @@ describe("tracked local testbed host lifecycle", () => {
 
     const result = await executeHostAdmissionPlan(plan, {
       runCommand: async () => {},
-      runCaptureCommand: async (_command, _args, input) => {
+      runCaptureCommand: async (_command, _args, _stdin, input) => {
         if (input.includes("interactive-display-report")) {
           return {
             stdout: `${JSON.stringify({
@@ -350,7 +338,7 @@ describe("tracked local testbed host lifecycle", () => {
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
         runCommand: async () => {},
-        runCaptureCommand: async (_command, _args, input) => {
+        runCaptureCommand: async (_command, _args, _stdin, input) => {
           if (input.includes("interactive-display-report")) {
             return {
               stdout: `${JSON.stringify({
