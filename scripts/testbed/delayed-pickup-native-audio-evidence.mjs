@@ -198,7 +198,7 @@ export function analyzeDelayedPickupControllerFrames(
       diagnostics.push(diagnostic("serial_frame_integrity_invalid", { index }));
       return;
     }
-    if (frame?.direction === "host_to_guest") {
+    if (frame?.direction === "guest_to_host") {
       if (
         frame?.role === "upper-controller" &&
         validDispenseCommand(bytesHex) &&
@@ -215,7 +215,7 @@ export function analyzeDelayedPickupControllerFrames(
       return;
     }
     if (
-      frame?.direction !== "guest_to_host" ||
+      frame?.direction !== "host_to_guest" ||
       frame?.role !== "lower-controller" ||
       !validLowerFrameStructure(bytesHex)
     ) {
@@ -240,7 +240,7 @@ export function analyzeDelayedPickupControllerFrames(
       atMs < previousAt
     )
       diagnostics.push(diagnostic("controller_frame_order_invalid", { index }));
-    if (frame.direction !== "guest_to_host")
+    if (frame.direction !== "host_to_guest")
       diagnostics.push(
         diagnostic("controller_frame_direction_invalid", { index }),
       );

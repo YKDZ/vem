@@ -360,10 +360,7 @@ where
     loop {
         ticker.tick().await;
         let frame = current_state(&state).await.status_frame();
-        send_frame(&writer, frame).await?;
-        if frame == LowerFrame::IdleHeartbeat {
-            journal_initial_health(&options)?;
-        }
+        send_and_journal_controller_frame(&writer, frame, &options).await?;
     }
 }
 
@@ -596,8 +593,8 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 1 -> E5");
-            journal_controller_frame(&options, LowerFrame::PickupTimeout)?;
-            send_frame(&writer, LowerFrame::PickupTimeout).await?;
+            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options)
+                .await?;
 
             sleep_after_delta(
                 options.pickup_warning_1_after,
@@ -608,8 +605,8 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 2 -> E5");
-            journal_controller_frame(&options, LowerFrame::PickupTimeout)?;
-            send_frame(&writer, LowerFrame::PickupTimeout).await?;
+            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options)
+                .await?;
 
             sleep_after_delta(
                 options.pickup_warning_2_after,
@@ -663,7 +660,6 @@ where
     )
     .await?;
     set_state(&state, ControllerState::Resetting).await;
-    journal_controller_frame(&options, LowerFrame::ResetHeartbeat)?;
     sleep(options.reset_duration).await;
     if current_state(&state).await != ControllerState::Resetting {
         return Ok(());
@@ -873,9 +869,10 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     for index in 0..count {
-        send_frame(writer, frame).await?;
         if index == 0 {
-            journal_controller_frame(options, frame)?;
+            send_and_journal_controller_frame(writer, frame, options).await?;
+        } else {
+            send_frame(writer, frame).await?;
         }
         if index + 1 < count {
             sleep(interval).await;
@@ -891,6 +888,19 @@ where
     let mut writer = writer.lock().await;
     writer.write_all(&frame.protocol_bytes()).await?;
     writer.flush().await?;
+    Ok(())
+}
+
+async fn send_and_journal_controller_frame<W>(
+    writer: &SharedWriter<W>,
+    frame: LowerFrame,
+    options: &SimulatorOptions,
+) -> Result<(), SimulatorError>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    send_frame(writer, frame).await?;
+    journal_controller_frame(options, frame)?;
     Ok(())
 }
 
@@ -966,17 +976,6 @@ fn journal_controller_frame(options: &SimulatorOptions, frame: LowerFrame) -> io
         parsed_opcode,
         &frame.protocol_bytes(),
     )
-}
-
-fn journal_initial_health(options: &SimulatorOptions) -> io::Result<()> {
-    if let Some(path) = &options.frame_journal_path {
-        if path.exists()
-            && std::fs::read_to_string(path)?.contains("\"parsedOpcode\":\"00\"")
-        {
-            return Ok(());
-        }
-    }
-    journal_controller_frame(options, LowerFrame::IdleHeartbeat)
 }
 
 async fn wait_for_release(path: Option<&Path>) {

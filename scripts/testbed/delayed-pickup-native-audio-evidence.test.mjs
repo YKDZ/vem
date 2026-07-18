@@ -33,7 +33,7 @@ function frame(sequence, offset, code) {
   return {
     sequence,
     role: "lower-controller",
-    direction: "guest_to_host",
+    direction: "host_to_guest",
     bytesHex,
     capturedAt: new Date(
       Date.parse("2026-07-18T08:00:00.000Z") + offset,
@@ -48,7 +48,7 @@ function dispenseFrame() {
   return {
     sequence: 1,
     role: "upper-controller",
-    direction: "host_to_guest",
+    direction: "guest_to_host",
     bytesHex,
     capturedAt: "2026-07-18T07:59:59.900Z",
     digest: `sha256:${createHash("sha256").update(Buffer.from(bytesHex, "hex")).digest("hex")}`,

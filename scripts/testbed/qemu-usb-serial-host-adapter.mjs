@@ -35,13 +35,6 @@ export const QEMU_USB_SERIAL_ADAPTER_IDENTITY = `vm-host-adapter://repo-qemu-usb
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
-const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
-const SALE_AUDIO_THRESHOLD = Object.freeze({
-  minimumPeakAbsoluteSample: 512,
-  minimumNonSilentFrames: 4_800,
-  minimumDurationMs: 100,
-  minimumDistinctNonSilentSampleMagnitudes: 2,
-});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -248,109 +241,6 @@ function stateRoot() {
   return root;
 }
 
-function saleAudioStatePaths(captureSessionId) {
-  const path = join(
-    stateRoot(),
-    "sale-audio-captures",
-    sha256(captureSessionId),
-  );
-  return {
-    directory: path,
-    statePath: join(path, "state.json"),
-  };
-}
-
-function writeSaleAudioState(state) {
-  const paths = saleAudioStatePaths(state.captureSession.captureSessionId);
-  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
-  writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
-    mode: 0o600,
-  });
-}
-
-function readSaleAudioState(captureSessionId) {
-  const paths = saleAudioStatePaths(captureSessionId);
-  if (!existsSync(paths.statePath)) {
-    throw new Error("sale audio capture session was not found");
-  }
-  return JSON.parse(readFileSync(paths.statePath, "utf8"));
-}
-
-function evidenceRoot() {
-  const path = resolve(
-    required(
-      process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR,
-      "VEM_VM_HOST_EVIDENCE_EXPORT_DIR",
-    ),
-  );
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  return path;
-}
-
-function saleAudioEvidence(role, bytes, extension) {
-  const digest = sha256(bytes);
-  const fileName = `${digest}.${extension}`;
-  const entry = {
-    role,
-    identity: `factory-evidence://sha256/${digest}`,
-    digest: `sha256:${digest}`,
-    fileName,
-  };
-  writeFileSync(join(evidenceRoot(), fileName), bytes, { mode: 0o600 });
-  return entry;
-}
-
-function wavFormat(bytes) {
-  if (
-    bytes.length < 44 ||
-    bytes.subarray(0, 4).toString("ascii") !== "RIFF" ||
-    bytes.subarray(8, 12).toString("ascii") !== "WAVE" ||
-    bytes.subarray(12, 16).toString("ascii") !== "fmt " ||
-    bytes.readUInt16LE(20) !== 1 ||
-    bytes.subarray(36, 40).toString("ascii") !== "data"
-  )
-    throw new Error("QEMU default audio sink must be a PCM WAV file");
-  const channels = bytes.readUInt16LE(22);
-  const sampleRateHz = bytes.readUInt32LE(24);
-  const bitsPerSample = bytes.readUInt16LE(34);
-  if (channels < 1 || sampleRateHz < 8_000 || bitsPerSample !== 16)
-    throw new Error("QEMU default audio sink must be signed 16-bit PCM");
-  return { channels, sampleRateHz, bitsPerSample, dataOffset: 44 };
-}
-
-function writeCapturedPcmWav(pcm, { sampleRateHz, channels }) {
-  const blockAlign = channels * 2;
-  if (pcm.length === 0 || pcm.length % blockAlign !== 0)
-    throw new Error("continuous QEMU audio capture has no complete PCM frames");
-  const bytes = Buffer.alloc(44 + pcm.length);
-  bytes.write("RIFF", 0, "ascii");
-  bytes.writeUInt32LE(bytes.length - 8, 4);
-  bytes.write("WAVE", 8, "ascii");
-  bytes.write("fmt ", 12, "ascii");
-  bytes.writeUInt32LE(16, 16);
-  bytes.writeUInt16LE(1, 20);
-  bytes.writeUInt16LE(channels, 22);
-  bytes.writeUInt32LE(sampleRateHz, 24);
-  bytes.writeUInt32LE(sampleRateHz * blockAlign, 28);
-  bytes.writeUInt16LE(blockAlign, 32);
-  bytes.writeUInt16LE(16, 34);
-  bytes.write("data", 36, "ascii");
-  bytes.writeUInt32LE(pcm.length, 40);
-  pcm.copy(bytes, 44);
-  return bytes;
-}
-
-function captureWorkerPaths(captureSessionId) {
-  const directory = saleAudioStatePaths(captureSessionId).directory;
-  return {
-    directory,
-    pcmPath: join(directory, "qemu-default-output.pcm"),
-    readyPath: join(directory, "capture-ready.json"),
-    stopPath: join(directory, "capture-stop"),
-    donePath: join(directory, "capture-done.json"),
-  };
-}
-
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -372,22 +262,6 @@ function processAlive(pid) {
     if (error.code === "ESRCH") return false;
     throw error;
   }
-}
-
-function terminateCaptureWorker(state) {
-  const pid = state.captureWorker?.pid;
-  if (!Number.isInteger(pid) || pid < 1 || !processAlive(pid)) return;
-  writeFileSync(state.captureWorker.stopPath, "stop\n", { mode: 0o600 });
-  const deadline = Date.now() + 2_000;
-  while (processAlive(pid) && Date.now() < deadline) sleep(25);
-  if (processAlive(pid)) {
-    process.kill(pid, "SIGTERM");
-    const termDeadline = Date.now() + 2_000;
-    while (processAlive(pid) && Date.now() < termDeadline) sleep(25);
-  }
-  if (processAlive(pid)) process.kill(pid, "SIGKILL");
-  if (processAlive(pid))
-    throw new Error("QEMU audio capture worker did not terminate");
 }
 
 function terminateProcessGroup(pid, label, graceMs = 2_000) {
@@ -691,240 +565,6 @@ export function readRawSerialJournal(path) {
   return records;
 }
 
-function normalizedSaleAudioBinding(request) {
-  return {
-    runId: request.runId,
-    lifecycleReference: request.lifecycleReference,
-    transactionId: request.transactionId,
-    saleCorrelationId: request.sale.saleCorrelationId,
-    orderId: request.sale.orderId,
-    orderNo: request.sale.orderNo,
-    commandId: request.sale.commandId,
-    commandNo: request.sale.commandNo,
-  };
-}
-
-function buildSaleAudioFrameCapture(binding, rawFrames) {
-  const frames = rawFrames
-    .filter((frame) =>
-      ["VEND", "F0", "E5", "F1", "AF", "F2"].includes(frame.parsedOpcode),
-    )
-    .map((frame, index) => {
-      if (
-        typeof frame.capturedAt !== "string" ||
-        !Number.isFinite(Date.parse(frame.capturedAt))
-      ) {
-        throw new Error("raw serial journal is missing frame timestamps");
-      }
-      const bytesHex = frame.rawFrameHex.toLowerCase();
-      return {
-        sequence: index + 1,
-        role:
-          frame.direction === "daemon-to-controller"
-            ? "upper-controller"
-            : "lower-controller",
-        direction:
-          frame.direction === "daemon-to-controller"
-            ? "host_to_guest"
-            : "guest_to_host",
-        bytesHex,
-        capturedAt: frame.capturedAt,
-        digest: `sha256:${sha256(Buffer.from(bytesHex, "hex"))}`,
-        binding: { ...binding },
-      };
-    });
-  const opcodes = frames.map((frame) => frame.bytesHex.slice(2).toUpperCase());
-  if (
-    !opcodes.includes("F0") ||
-    !opcodes.includes("F1") ||
-    !opcodes.includes("F2") ||
-    !frames.some((frame) => frame.role === "upper-controller")
-  ) {
-    throw new Error(
-      "raw serial journal does not contain one complete delayed-pickup sale",
-    );
-  }
-  return {
-    schemaVersion: "host-production-serial-frame-capture/v1",
-    binding: { ...binding },
-    frames,
-  };
-}
-
-function startSaleAudioCapture(request) {
-  const captureSession = {
-    captureSessionId: `sale-audio-session://sha256-${sha256(request.operationReference)}`,
-    startOperationReference: request.operationReference,
-    startedAt: new Date().toISOString(),
-  };
-  const sourcePath = qemuDefaultAudioSinkPath();
-  const worker = captureWorkerPaths(captureSession.captureSessionId);
-  if (!existsSync(sourcePath))
-    throw new Error(
-      "QEMU default audio sink does not exist before capture start",
-    );
-  const child = spawn(
-    process.execPath,
-    [
-      SELF_PATH,
-      "--capture-worker",
-      "--source",
-      sourcePath,
-      "--pcm",
-      worker.pcmPath,
-      "--ready",
-      worker.readyPath,
-      "--stop",
-      worker.stopPath,
-      "--done",
-      worker.donePath,
-    ],
-    { detached: true, stdio: ["ignore", "ignore", "ignore"] },
-  );
-  child.unref();
-  if (!Number.isInteger(child.pid))
-    throw new Error("QEMU default audio capture worker did not start");
-  waitForFile(worker.readyPath, 3_000, "QEMU default audio capture worker");
-  const format = JSON.parse(readFileSync(worker.readyPath, "utf8"));
-  writeSaleAudioState({
-    request,
-    captureSession,
-    journalPath: resolve(
-      required(
-        process.env.VEM_VM_HOST_AUDIO_SERIAL_JOURNAL,
-        "VEM_VM_HOST_AUDIO_SERIAL_JOURNAL",
-      ),
-    ),
-    audioSourcePath: sourcePath,
-    audioFormat: format,
-    captureWorker: { pid: child.pid, ...worker },
-    status: "started",
-  });
-  return {
-    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
-    kind: "vm-sale-audio-capture-report",
-    result: "succeeded",
-    adapter: {
-      identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
-      version: QEMU_USB_SERIAL_ADAPTER_VERSION,
-    },
-    request,
-    captureSession,
-    capture: null,
-    evidence: [],
-  };
-}
-
-function stopSaleAudioCapture(request) {
-  const state = readSaleAudioState(request.captureSession.captureSessionId);
-  if (
-    state.captureSession.startOperationReference !==
-      request.captureSession.startOperationReference ||
-    state.captureSession.startedAt !== request.captureSession.startedAt
-  ) {
-    throw new Error("sale audio capture session binding is invalid");
-  }
-  terminateCaptureWorker(state);
-  const binding = normalizedSaleAudioBinding(request);
-  const serialCapture = buildSaleAudioFrameCapture(
-    binding,
-    readRawSerialJournal(state.journalPath),
-  );
-  if (!existsSync(state.captureWorker.donePath))
-    throw new Error("QEMU default audio capture worker did not finalize PCM");
-  const workerResult = JSON.parse(
-    readFileSync(state.captureWorker.donePath, "utf8"),
-  );
-  if (workerResult.failure)
-    throw new Error(
-      `QEMU default audio capture failed: ${workerResult.failure}`,
-    );
-  const completedAt = new Date().toISOString();
-  const wavBytes = writeCapturedPcmWav(
-    readFileSync(state.captureWorker.pcmPath),
-    state.audioFormat,
-  );
-  const waveform = inspectWavPcm(wavBytes, SALE_AUDIO_THRESHOLD);
-  if (!waveform.ok)
-    throw new Error("Windows default output capture is silent or malformed");
-  const serialBytes = Buffer.from(`${JSON.stringify(serialCapture)}\n`);
-  const audioEvidence = saleAudioEvidence(
-    "sale-default-audio-capture",
-    wavBytes,
-    "wav",
-  );
-  const serialEvidence = saleAudioEvidence(
-    "sale-serial-frame-capture",
-    serialBytes,
-    "json",
-  );
-  state.status = "stopped";
-  state.stopRequest = request;
-  state.stopCompletedAt = completedAt;
-  state.evidence = {
-    audio: audioEvidence,
-    serial: serialEvidence,
-  };
-  writeSaleAudioState(state);
-  return {
-    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
-    kind: "vm-sale-audio-capture-report",
-    result: "succeeded",
-    adapter: {
-      identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
-      version: QEMU_USB_SERIAL_ADAPTER_VERSION,
-    },
-    request,
-    captureSession: state.captureSession,
-    capture: {
-      source: "windows_default_output",
-      binding,
-      startedAt: state.captureSession.startedAt,
-      completedAt,
-      audioArtifact: audioEvidence.identity,
-      serialArtifact: serialEvidence.identity,
-      threshold: { ...SALE_AUDIO_THRESHOLD },
-    },
-    evidence: [audioEvidence, serialEvidence],
-  };
-}
-
-function cancelSaleAudioCapture(request) {
-  const state = readSaleAudioState(request.captureSession.captureSessionId);
-  if (state.status === "stopped" || state.status === "cancelled") {
-    return {
-      schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
-      kind: "vm-sale-audio-capture-report",
-      result: "succeeded",
-      adapter: {
-        identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
-        version: QEMU_USB_SERIAL_ADAPTER_VERSION,
-      },
-      request,
-      captureSession: state.captureSession,
-      capture: null,
-      evidence: [],
-    };
-  }
-  terminateCaptureWorker(state);
-  state.status = "cancelled";
-  state.cancelledAt = new Date().toISOString();
-  writeSaleAudioState(state);
-  return {
-    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
-    kind: "vm-sale-audio-capture-report",
-    result: "succeeded",
-    adapter: {
-      identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
-      version: QEMU_USB_SERIAL_ADAPTER_VERSION,
-    },
-    request,
-    captureSession: state.captureSession,
-    capture: null,
-    evidence: [],
-  };
-}
-
 function capturedFrame(raw, sequence) {
   const bytes = Buffer.from(raw.rawFrameHex, "hex");
   return {
@@ -1044,14 +684,11 @@ function semanticRecords(request, state, rawFrames) {
   });
 }
 
-function stopSession(request) {
+async function stopSession(request) {
   const state = readState(request.serialSession.serialSessionId);
   state.cleanupAttemptCount += 1;
   if (state.active) {
-    terminateProcessGroup(state.simulatorPid, "lower-controller simulator");
-  }
-  if (state.ptyCapturePid) {
-    terminateProcessGroup(state.ptyCapturePid, "QEMU PTY capture bridge");
+    await terminateProcessGroup(state.simulatorPid);
   }
   state.active = false;
   writeState(state);
@@ -1186,20 +823,9 @@ export async function runQemuUsbSerialAdapter(args = process.argv.slice(2)) {
   verifyImmutableEntry();
   const requestPath = option(args, "request");
   const reportPath = option(args, "report");
-  const requestPayload = JSON.parse(readFileSync(requestPath, "utf8"));
-  if (process.env.VEM_VM_HOST_ADAPTER_EXTENSION === SALE_AUDIO_EXTENSION) {
-    const request = validateSaleAudioCaptureRequest(requestPayload);
-    const report =
-      request.phase === "start"
-        ? startSaleAudioCapture(request)
-        : request.phase === "stop"
-          ? stopSaleAudioCapture(request)
-          : cancelSaleAudioCapture(request);
-    mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { mode: 0o600 });
-    return report;
-  }
-  const request = validateVmHostAdapterRequest(requestPayload);
+  const request = validateVmHostAdapterRequest(
+    JSON.parse(readFileSync(requestPath, "utf8")),
+  );
   let state;
   let rawFrames = [];
   if (request.operation === "start-serial-session") {
@@ -1212,7 +838,7 @@ export async function runQemuUsbSerialAdapter(args = process.argv.slice(2)) {
     state = readState(request.serialSession.serialSessionId);
     rawFrames = readRawSerialJournal(state.journalPath);
   } else if (request.operation === "stop-serial-session") {
-    state = stopSession(request);
+    state = await stopSession(request);
   } else {
     throw new Error(
       `repo QEMU USB serial adapter does not implement ${request.operation}`,
@@ -1224,59 +850,8 @@ export async function runQemuUsbSerialAdapter(args = process.argv.slice(2)) {
   return report;
 }
 
-function workerOption(args, name) {
-  const index = args.indexOf(`--${name}`);
-  const value = index === -1 ? null : args[index + 1];
-  if (!value) throw new Error(`capture worker --${name} is required`);
-  return resolve(value);
-}
-
-async function runQemuAudioCaptureWorker(args) {
-  const sourcePath = workerOption(args, "source");
-  const pcmPath = workerOption(args, "pcm");
-  const readyPath = workerOption(args, "ready");
-  const stopPath = workerOption(args, "stop");
-  const donePath = workerOption(args, "done");
-  mkdirSync(dirname(pcmPath), { recursive: true, mode: 0o700 });
-  const header = readFileSync(sourcePath);
-  const format = wavFormat(header);
-  let cursor = Math.max(format.dataOffset, statSync(sourcePath).size);
-  writeFileSync(pcmPath, Buffer.alloc(0), { mode: 0o600 });
-  writeFileSync(readyPath, `${JSON.stringify(format)}\n`, { mode: 0o600 });
-  const copyNewPcm = () => {
-    const bytes = readFileSync(sourcePath);
-    if (bytes.length < cursor) {
-      throw new Error("QEMU default audio sink was truncated during capture");
-    }
-    if (bytes.length > cursor) {
-      appendFileSync(pcmPath, bytes.subarray(cursor));
-      cursor = bytes.length;
-    }
-  };
-  let failure = null;
-  try {
-    while (!existsSync(stopPath)) {
-      copyNewPcm();
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
-    }
-    copyNewPcm();
-  } catch (error) {
-    failure = error instanceof Error ? error.message : String(error);
-  } finally {
-    writeFileSync(
-      donePath,
-      `${JSON.stringify({ completedAt: new Date().toISOString(), failure })}\n`,
-      { mode: 0o600 },
-    );
-  }
-  if (failure) throw new Error(failure);
-}
-
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const runner = process.argv.includes("--capture-worker")
-    ? runQemuAudioCaptureWorker(process.argv.slice(2))
-    : runQemuUsbSerialAdapter();
-  runner.catch((error) => {
+  runQemuUsbSerialAdapter().catch((error) => {
     console.error(
       error instanceof Error ? error.message : "QEMU USB serial adapter failed",
     );

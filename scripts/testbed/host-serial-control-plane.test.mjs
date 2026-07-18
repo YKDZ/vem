@@ -45,6 +45,33 @@ function makeTempDir(prefix) {
   return path;
 }
 
+function wavWithTone(frameCount = 48_000, sampleRate = 48_000, channels = 2) {
+  const blockAlign = channels * 2;
+  const data = Buffer.alloc(frameCount * blockAlign);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const sample = frame % 8 < 2 ? 1_024 : frame % 8 < 4 ? 2_048 : 0;
+    for (let channel = 0; channel < channels; channel += 1) {
+      data.writeInt16LE(sample, frame * blockAlign + channel * 2);
+    }
+  }
+  const bytes = Buffer.alloc(44 + data.length);
+  bytes.write("RIFF", 0, "ascii");
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVE", 8, "ascii");
+  bytes.write("fmt ", 12, "ascii");
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(channels, 22);
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate * blockAlign, 28);
+  bytes.writeUInt16LE(blockAlign, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36, "ascii");
+  bytes.writeUInt32LE(data.length, 40);
+  data.copy(bytes, 44);
+  return bytes;
+}
+
 async function requestJson(baseUrl, token, path, body = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -564,8 +591,8 @@ describe("host serial control plane", () => {
       VEM_VM_HOST_ADAPTER_STATE_ROOT:
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
       VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
-      VEM_VM_HOST_AUDIO_CAPTURE_SOURCE:
-        process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE,
+      VEM_VM_HOST_AUDIO_CAPTURE_MODE: process.env.VEM_VM_HOST_AUDIO_CAPTURE_MODE,
+      VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH,
     };
     const domainXml = `<domain type="kvm"><devices>
       <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
@@ -611,7 +638,8 @@ describe("host serial control plane", () => {
       process.env.VEM_VM_HOST_ADAPTER_DOMAIN = "win10-runtime-testbed";
       process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT = join(stateRoot, "adapter");
       process.env.VEM_LOWER_CONTROLLER_SIM = join(bin, "lower-controller-sim");
-      process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE = audioSinkPath;
+      process.env.VEM_VM_HOST_AUDIO_CAPTURE_MODE = "file";
+      process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH = join(root, "captured.wav");
       controlPlane = createHostSerialControlPlane({
         workspace,
         stateRoot,
@@ -716,13 +744,8 @@ describe("host serial control plane", () => {
             cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
           },
         },
-      );
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
-      const pcm = Buffer.alloc(19_200);
-      for (let offset = 0; offset < pcm.length; offset += 2)
-        pcm.writeInt16LE(1_024, offset);
-      appendFileSync(audioSinkPath, pcm);
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
+      });
+      writeFileSync(process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH, wavWithTone());
       const stopped = await requestJson(
         baseUrl,
         token,
@@ -831,8 +854,10 @@ describe("host serial control plane", () => {
         `/v1/serial-sessions/${session.sessionId}/abort`,
       );
     } finally {
-      controlPlane?.close();
-      server?.close();
+      if (controlPlane) await controlPlane.close();
+      else if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
       for (const [name, value] of Object.entries(previousEnvironment)) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;

@@ -270,40 +270,6 @@ export const daemonIpcDeviceBindingActivationSchema = z
   })
   .strict();
 
-export const daemonIpcAudioOutputObservationSchema = z
-  .object({
-    endpointId: z.string().trim().min(1).max(512),
-    friendlyName: z.string().trim().min(1).max(512),
-    isDefault: z.boolean(),
-  })
-  .strict();
-
-export const daemonIpcAudioOutputBindingSchema = z
-  .object({
-    endpointId: z.string().trim().min(1).max(512),
-    friendlyName: z.string().trim().min(1).max(512).nullable(),
-    confirmedHeardAt: z.iso.datetime({ offset: true }),
-    confirmedObservationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  })
-  .strict();
-
-export const daemonIpcAudioOutputBindingSnapshotSchema = z
-  .object({
-    binding: daemonIpcAudioOutputBindingSchema.nullable(),
-    currentObservation: daemonIpcAudioOutputObservationSchema.nullable(),
-    observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-    candidates: z.array(daemonIpcAudioOutputObservationSchema),
-    ready: z.boolean(),
-    code: z.enum([
-      "AUDIO_OUTPUT_BINDING_READY",
-      "AUDIO_OUTPUT_BINDING_REMOVED",
-      "AUDIO_OUTPUT_BINDING_REQUIRED",
-      "AUDIO_OUTPUT_ENUMERATION_UNAVAILABLE",
-    ]),
-    message: z.string(),
-  })
-  .strict();
-
 const daemonIpcAudioCueSettingsSchema = z
   .object({
     enabled: z.boolean(),
@@ -318,7 +284,6 @@ const daemonIpcAudioCueSettingsSchema = z
 
 export const daemonIpcAudioOutputTestRequestSchema = z
   .object({
-    endpointId: z.string().trim().min(1).max(512),
     audioCueSettings: daemonIpcAudioCueSettingsSchema,
     machineAudioVolume: z.number().positive().max(1),
     challenge: z
@@ -330,7 +295,7 @@ export const daemonIpcAudioOutputTestRequestSchema = z
 
 export const daemonIpcAudioOutputTestResponseSchema = z
   .object({
-    endpointId: z.string().trim().min(1).max(512),
+    outputModel: z.literal("windows_default"),
     testEvidenceToken: z.uuid(),
     testEvidenceExpiresAt: z.iso.datetime({ offset: true }),
     observationRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -347,17 +312,12 @@ export const daemonIpcAudioOutputTestResponseSchema = z
 
 export const daemonIpcAudioOutputConfirmRequestSchema = z
   .object({
-    endpointId: z.string().trim().min(1).max(512),
     testEvidenceToken: z.uuid(),
     heard: z.literal(true),
     audioCueSettings: daemonIpcAudioCueSettingsSchema,
     machineAudioVolume: z.number().positive().max(1),
   })
   .strict();
-
-export type DaemonIpcAudioOutputBindingSnapshot = z.infer<
-  typeof daemonIpcAudioOutputBindingSnapshotSchema
->;
 export type DaemonIpcAudioOutputTestRequest = z.infer<
   typeof daemonIpcAudioOutputTestRequestSchema
 >;

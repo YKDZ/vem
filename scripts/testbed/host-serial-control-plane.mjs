@@ -24,7 +24,10 @@ import {
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
 } from "./qemu-usb-serial-host-adapter.mjs";
-import { runSaleAudioCaptureHostAdapterCli } from "./sale-audio-capture-host-adapter.mjs";
+import {
+  abortSaleAudioCaptureSession,
+  executeSaleAudioCaptureHostAdapter,
+} from "./sale-audio-capture-host-adapter.mjs";
 
 const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
 const PLATFORM_DATABASE_URL =
@@ -89,6 +92,10 @@ function runtimeBinding(runtime) {
     cdpTargetId: required(runtime.cdpTargetId, "runtime.cdpTargetId"),
     cdpSessionId: required(runtime.cdpSessionId, "runtime.cdpSessionId"),
   };
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 export function parseHostSerialControlPlaneArgs(args) {
@@ -444,6 +451,42 @@ function runnerTempRoot(stateRoot) {
   return path;
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Number.isInteger(pid) && processAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  return !Number.isInteger(pid) || !processAlive(pid);
+}
+
+async function terminateProcessGroup(pid) {
+  if (!Number.isInteger(pid)) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (await waitForProcessExit(pid)) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (!(await waitForProcessExit(pid, 2_000))) {
+    throw new Error("lower-controller simulator did not exit");
+  }
+}
+
 export { paymentMockCreateGatePaths as mockPaymentCreateGatePaths } from "./mock-payment-create-gate.mjs";
 
 function armMockPaymentCreateGate(server) {
@@ -774,16 +817,18 @@ async function startAudioCapture(server, input) {
     targetIdentity: required(input.targetIdentity, "targetIdentity"),
     transactionId: required(input.transactionId, "transactionId"),
   };
-  const startReport = await runSaleAudioCaptureHostAdapterCli(
-    audioStartArgs({
-      input: startInput,
-      outPath,
-      evidenceDirectory,
-      runtime,
-    }),
+  const startReport = await server.dependencies.executeSaleAudioCapture(
     {
-      environment: audioCaptureEnvironment(session),
+      phase: "start",
+      runId: startInput.runId,
+      lifecycleReference: startInput.lifecycleReference,
+      targetIdentity: startInput.targetIdentity,
+      transactionId: startInput.transactionId,
+      runtime: cloneJson(runtime),
+      evidenceDirectory,
+      outPath,
     },
+    { environment: audioCaptureEnvironment(session) },
   );
   server.audioCaptures.set(audioCaptureId, {
     id: audioCaptureId,
@@ -815,17 +860,29 @@ async function stopAudioCapture(server, input) {
   }
   const session = requireSession(server, capture.sessionId);
   const outPath = join(session.dir, "audio-capture-stop.json");
-  capture.stopReport = await runSaleAudioCaptureHostAdapterCli(
-    audioStopArgs({
-      capture,
-      input,
-      outPath,
-      evidenceDirectory: capture.evidenceDirectory,
-      runtime: capture.runtime,
-    }),
+  capture.stopReport = await server.dependencies.executeSaleAudioCapture(
     {
-      environment: audioCaptureEnvironment(session),
+      phase: "stop",
+      runId: capture.startInput.runId,
+      lifecycleReference: capture.startInput.lifecycleReference,
+      targetIdentity: capture.startInput.targetIdentity,
+      transactionId: capture.startInput.transactionId,
+      runtime: cloneJson(capture.runtime),
+      captureSessionId: capture.startReport.captureSession.captureSessionId,
+      startOperationReference:
+        capture.startReport.captureSession.startOperationReference,
+      captureStartedAt: capture.startReport.captureSession.startedAt,
+      sale: {
+        saleCorrelationId: required(input.saleCorrelationId, "saleCorrelationId"),
+        orderId: required(input.orderId, "orderId"),
+        orderNo: required(input.orderNo, "orderNo"),
+        commandId: required(input.commandId, "commandId"),
+        commandNo: required(input.commandNo, "commandNo"),
+      },
+      evidenceDirectory: capture.evidenceDirectory,
+      outPath,
     },
+    { environment: audioCaptureEnvironment(session) },
   );
   return {
     audioCaptureId: capture.id,
@@ -844,15 +901,12 @@ async function cancelAudioCapture(server, input) {
     };
   }
   if (!capture.cancelledAt) {
-    const session = requireSession(server, capture.sessionId);
-    await runSaleAudioCaptureHostAdapterCli(
-      audioCancelArgs({
-        capture,
-        outPath: join(session.dir, "audio-capture-cancel.json"),
+    await abortSaleAudioCaptureSession(
+      {
+        captureSessionId: capture.startReport.captureSession.captureSessionId,
         evidenceDirectory: capture.evidenceDirectory,
-        runtime: capture.runtime,
-      }),
-      { environment: audioCaptureEnvironment(session), timeoutMs: 10_000 },
+      },
+      { environment: audioCaptureEnvironment(requireSession(server, capture.sessionId)) },
     );
     capture.cancelledAt = new Date().toISOString();
   }
@@ -909,17 +963,13 @@ function observeResultBoundary(server, input) {
   return { entry, entries: session.productionTrace.validate() };
 }
 
-function abortSession(server, input) {
+async function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
   if (existsSync(paths.statePath)) {
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
     if (state.active && Number.isInteger(state.simulatorPid)) {
-      try {
-        process.kill(-state.simulatorPid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
+      await terminateProcessGroup(state.simulatorPid);
       state.active = false;
       state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
       writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
@@ -1160,15 +1210,17 @@ function authorize(request, token) {
   return request.headers.authorization === `Bearer ${token}`;
 }
 
-export function createHostSerialControlPlane(options) {
+export function createHostSerialControlPlane(options, dependencies = {}) {
   const sessions = new Map();
   const audioCaptures = new Map();
-  const audioCapturesByOperation = new Map();
   const serverState = {
     options,
     sessions,
     audioCaptures,
-    audioCapturesByOperation,
+    dependencies: {
+      executeSaleAudioCapture:
+        dependencies.executeSaleAudioCapture ?? executeSaleAudioCaptureHostAdapter,
+    },
   };
   const server = createServer(async (request, response) => {
     try {
@@ -1276,7 +1328,7 @@ export function createHostSerialControlPlane(options) {
         /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|observe-payment|observe-result|platform-log|evidence|abort|collect|stop))?$/,
       );
       const audioCaptureMatch = request.url?.match(
-        /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|diagnostics)$/,
+        /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
       );
       if (!sessionMatch && !audioCaptureMatch) {
         jsonResponse(response, 404, { ok: false, error: "not_found" });
@@ -1292,7 +1344,7 @@ export function createHostSerialControlPlane(options) {
           });
           return;
         }
-        if (request.method === "POST" && action === "cancel") {
+        if (request.method === "POST" && (action === "cancel" || action === "abort")) {
           jsonResponse(response, 200, {
             ok: true,
             ...(await cancelAudioCapture(serverState, body)),
@@ -1388,7 +1440,7 @@ export function createHostSerialControlPlane(options) {
         jsonResponse(response, 200, {
           ok: true,
           sessionId,
-          ...abortSession(serverState, body),
+          ...(await abortSession(serverState, body)),
         });
         return;
       }
@@ -1423,11 +1475,36 @@ export function createHostSerialControlPlane(options) {
       server.listen(options.port, options.bind);
       return server;
     },
-    close() {
+    async close() {
+      for (const capture of audioCaptures.values()) {
+        if (!capture.stopReport && !capture.cancelledAt) {
+          try {
+            await abortSaleAudioCaptureSession(
+              {
+                captureSessionId: capture.startReport.captureSession.captureSessionId,
+                evidenceDirectory: capture.evidenceDirectory,
+              },
+              {
+                environment: audioCaptureEnvironment(
+                  requireSession(serverState, capture.sessionId),
+                ),
+              },
+            );
+          } catch {}
+        }
+      }
       for (const session of sessions.values()) {
+        try {
+          await abortSession(serverState, { sessionId: session.id });
+        } catch {}
         session.mqttCapture?.stop();
       }
-      server.close();
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
     },
   };
 }

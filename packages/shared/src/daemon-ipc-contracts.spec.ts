@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
-  daemonIpcAudioOutputBindingSnapshotSchema,
   daemonIpcAudioOutputConfirmRequestSchema,
   daemonIpcAudioOutputTestRequestSchema,
+  daemonIpcAudioOutputTestResponseSchema,
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
   daemonIpcDeviceBindingSnapshotSchema,
@@ -260,37 +260,8 @@ describe("Daemon IPC Contract Area", () => {
     });
   });
 
-  it("keeps stable audio endpoint identity distinct from friendly names", () => {
-    const snapshot = daemonIpcAudioOutputBindingSnapshotSchema.parse({
-      binding: null,
-      currentObservation: null,
-      observationRevision: `sha256:${"a".repeat(64)}`,
-      candidates: [
-        {
-          endpointId: "wasapi:endpoint-1",
-          friendlyName: "USB Speaker",
-          isDefault: true,
-        },
-        {
-          endpointId: "wasapi:endpoint-2",
-          friendlyName: "USB Speaker",
-          isDefault: false,
-        },
-      ],
-      ready: false,
-      code: "AUDIO_OUTPUT_BINDING_REQUIRED",
-      message: "binding required",
-    });
-
-    expect(snapshot.candidates.map(({ endpointId }) => endpointId)).toEqual([
-      "wasapi:endpoint-1",
-      "wasapi:endpoint-2",
-    ]);
-  });
-
   it("does not accept client-authored native playback evidence for audio tests", () => {
     const proposedSettings = {
-      endpointId: "wasapi:endpoint-1",
       audioCueSettings: {
         enabled: true,
         categories: { presence: true, transaction: true },
@@ -305,7 +276,7 @@ describe("Daemon IPC Contract Area", () => {
         ...proposedSettings,
         nativePlaybackEvidence: {
           driver: "native",
-          endpointId: "wasapi:endpoint-1",
+          outputModel: "windows_default",
           sourceNonSilent: true,
         },
       }),
@@ -325,6 +296,18 @@ describe("Daemon IPC Contract Area", () => {
         confirmedAt: "2026-07-15T00:00:00Z",
       }),
     ).toThrow();
+    expect(
+      daemonIpcAudioOutputTestResponseSchema.parse({
+        outputModel: "windows_default",
+        testEvidenceToken: "11111111-2222-4333-8444-555555555555",
+        testEvidenceExpiresAt: "2026-07-18T08:10:00.000Z",
+        observationRevision: `sha256:${"a".repeat(64)}`,
+        observationGeneration: 4,
+        configRevision: `sha256:${"b".repeat(64)}`,
+        configGeneration: 7,
+        proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
+      }),
+    ).toMatchObject({ outputModel: "windows_default" });
   });
 
   it("publishes the strict Checkout Flow Action vocabulary", () => {

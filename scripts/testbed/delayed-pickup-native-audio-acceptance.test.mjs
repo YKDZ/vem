@@ -269,7 +269,7 @@ function fixture(root) {
     {
       sequence: 1,
       role: "upper-controller",
-      direction: "host_to_guest",
+      direction: "guest_to_host",
       bytesHex: commandBytes,
       capturedAt: "2026-07-18T07:59:59.900Z",
       digest: `sha256:${createHash("sha256").update(Buffer.from(commandBytes, "hex")).digest("hex")}`,
@@ -280,7 +280,7 @@ function fixture(root) {
       return {
         sequence: index + 2,
         role: "lower-controller",
-        direction: "guest_to_host",
+        direction: "host_to_guest",
         bytesHex,
         capturedAt: new Date(base + offset).toISOString(),
         digest: `sha256:${createHash("sha256").update(Buffer.from(bytesHex, "hex")).digest("hex")}`,

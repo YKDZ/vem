@@ -3,16 +3,17 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { inspectWavPcm } from "./default-audio-evidence.mjs";
+import { readRawSerialJournal } from "./qemu-usb-serial-host-adapter.mjs";
 
 export const SALE_AUDIO_CAPTURE_SCHEMA_VERSION =
   "vm-sale-audio-capture-request/v1";
@@ -27,6 +28,12 @@ const UUID =
 const TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const URI_ID =
   /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[A-Za-z0-9][A-Za-z0-9._:/-]{1,254}$/;
+const SALE_AUDIO_THRESHOLD = Object.freeze({
+  minimumPeakAbsoluteSample: 512,
+  minimumNonSilentFrames: 4_800,
+  minimumDurationMs: 100,
+  minimumDistinctNonSilentSampleMagnitudes: 2,
+});
 
 function requiredString(value, name) {
   if (typeof value !== "string" || value.trim() === "")
@@ -85,6 +92,11 @@ function parseOptions(argv) {
     index += 1;
   }
   return options;
+}
+
+function writeReport(out, report) {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
 }
 
 function runtimeBinding(options) {
@@ -302,6 +314,345 @@ function validateEvidence(entry, role, extension) {
     throw new Error(`${role} evidence binding is invalid`);
 }
 
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function sessionStatePath(evidenceDirectory, captureSessionId) {
+  return join(
+    resolve(requiredString(evidenceDirectory, "evidenceDirectory")),
+    `.capture-session-${sha256(captureSessionId)}.json`,
+  );
+}
+
+function writeSessionState(evidenceDirectory, captureSessionId, state) {
+  const path = sessionStatePath(evidenceDirectory, captureSessionId);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+function readSessionState(evidenceDirectory, captureSessionId) {
+  const path = sessionStatePath(evidenceDirectory, captureSessionId);
+  if (!existsSync(path)) throw new Error("sale audio capture session was not found");
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function evidenceEntry(directory, role, bytes, extension) {
+  const digest = sha256(bytes);
+  const fileName = `${digest}.${extension}`;
+  const entry = {
+    role,
+    identity: `factory-evidence://sha256/${digest}`,
+    digest: `sha256:${digest}`,
+    fileName,
+  };
+  writeFileSync(join(directory, fileName), bytes, { mode: 0o600 });
+  return entry;
+}
+
+function normalizedSaleAudioBinding(request) {
+  return {
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    transactionId: request.transactionId,
+    saleCorrelationId: request.sale.saleCorrelationId,
+    orderId: request.sale.orderId,
+    orderNo: request.sale.orderNo,
+    commandId: request.sale.commandId,
+    commandNo: request.sale.commandNo,
+  };
+}
+
+function buildSaleAudioFrameCapture(binding, rawFrames) {
+  const frames = rawFrames
+    .filter((frame) =>
+      ["VEND", "F0", "E5", "F1", "AF", "F2"].includes(frame.parsedOpcode),
+    )
+    .map((frame, index) => {
+      const bytesHex = frame.rawFrameHex.toLowerCase();
+      return {
+        sequence: index + 1,
+        role:
+          frame.direction === "daemon-to-controller"
+            ? "upper-controller"
+            : "lower-controller",
+        direction:
+          frame.direction === "daemon-to-controller"
+            ? "guest_to_host"
+            : "host_to_guest",
+        bytesHex,
+        capturedAt: frame.capturedAt ?? null,
+        digest: `sha256:${sha256(Buffer.from(bytesHex, "hex"))}`,
+        binding: { ...binding },
+      };
+    });
+  const opcodes = frames.map((frame) => frame.bytesHex.slice(2).toUpperCase());
+  if (
+    !opcodes.includes("F0") ||
+    !opcodes.includes("F1") ||
+    !opcodes.includes("F2") ||
+    !frames.some((frame) => frame.role === "upper-controller")
+  ) {
+    throw new Error("raw serial journal does not contain one complete delayed-pickup sale");
+  }
+  return {
+    schemaVersion: "host-production-serial-frame-capture/v1",
+    binding: { ...binding },
+    frames,
+  };
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (processAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  return !processAlive(pid);
+}
+
+async function stopProcessGroup(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (await waitForProcessExit(pid)) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (!(await waitForProcessExit(pid, 2_000))) {
+    throw new Error("audio capture backend did not exit");
+  }
+}
+
+function defaultBackendFactory(environment = process.env) {
+  const explicitMode = environment.VEM_VM_HOST_AUDIO_CAPTURE_MODE?.trim();
+  if (explicitMode === "pipewire") {
+    return createPipeWireBackend(environment);
+  }
+  if (explicitMode === "file" || environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH) {
+    return createFileBackend(environment);
+  }
+  throw new Error(
+    "audio capture backend is not configured; set VEM_VM_HOST_AUDIO_CAPTURE_MODE=file or pipewire",
+  );
+}
+
+function createFileBackend(environment) {
+  const wavPath = resolve(
+    requiredString(
+      environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH,
+      "VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH",
+    ),
+  );
+  return {
+    async start() {
+      if (existsSync(wavPath)) unlinkSync(wavPath);
+      return { kind: "file", wavPath };
+    },
+    async stop(state) {
+      if (!existsSync(state.wavPath)) {
+        throw new Error("configured audio capture WAV was not produced");
+      }
+      return {
+        bytes: readFileSync(state.wavPath),
+        completedAt: new Date().toISOString(),
+      };
+    },
+    async abort() {},
+  };
+}
+
+function createPipeWireBackend(environment) {
+  const wavPath = resolve(
+    environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH ??
+      join(
+        resolve(environment.RUNNER_TEMP ?? tmpdir()),
+        `vem-default-audio-${randomBytes(8).toString("hex")}.wav`,
+      ),
+  );
+  const executable =
+    environment.VEM_VM_HOST_AUDIO_PIPEWIRE_RECORD_BIN?.trim() || "pw-record";
+  const target = environment.VEM_VM_HOST_AUDIO_PIPEWIRE_TARGET?.trim();
+  return {
+    async start() {
+      if (existsSync(wavPath)) unlinkSync(wavPath);
+      const args = [];
+      if (target) args.push("--target", target);
+      args.push("--rate", "48000", "--channels", "2", wavPath);
+      const child = spawn(executable, args, {
+        detached: true,
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      });
+      child.unref();
+      return {
+        kind: "pipewire",
+        wavPath,
+        processId: child.pid ?? null,
+      };
+    },
+    async stop(state) {
+      await stopProcessGroup(state.processId);
+      if (!existsSync(state.wavPath)) {
+        throw new Error("PipeWire capture did not produce a WAV artifact");
+      }
+      return {
+        bytes: readFileSync(state.wavPath),
+        completedAt: new Date().toISOString(),
+      };
+    },
+    async abort(state) {
+      await stopProcessGroup(state.processId);
+    },
+  };
+}
+
+async function executeAdapterOperation(
+  request,
+  {
+    environment = process.env,
+    evidenceDirectory,
+    backendFactory = defaultBackendFactory,
+  } = {},
+) {
+  const exportDirectory = resolve(
+    requiredString(evidenceDirectory, "evidenceDirectory"),
+  );
+  mkdirSync(exportDirectory, { recursive: true, mode: 0o700 });
+  if (request.phase === "start") {
+    const captureSession = {
+      captureSessionId: `sale-audio-session://sha256-${sha256(request.operationReference)}`,
+      startOperationReference: request.operationReference,
+      startedAt: new Date().toISOString(),
+    };
+    const backend = await backendFactory(environment).start({
+      request,
+      evidenceDirectory: exportDirectory,
+      captureSession,
+    });
+    writeSessionState(exportDirectory, captureSession.captureSessionId, {
+      request,
+      captureSession,
+      rawSerialJournalPath: resolve(
+        requiredString(
+          environment.VEM_VM_HOST_AUDIO_SERIAL_JOURNAL,
+          "VEM_VM_HOST_AUDIO_SERIAL_JOURNAL",
+        ),
+      ),
+      backend,
+      status: "started",
+    });
+    return {
+      schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
+      kind: "vm-sale-audio-capture-report",
+      result: "succeeded",
+      adapter: {
+        identity: "vm-host-adapter://sale-audio-capture",
+        version: "1.0.0",
+      },
+      request,
+      captureSession,
+      capture: null,
+      evidence: [],
+    };
+  }
+
+  const state = readSessionState(
+    exportDirectory,
+    request.captureSession.captureSessionId,
+  );
+  if (
+    JSON.stringify(state.captureSession) !== JSON.stringify(request.captureSession)
+  ) {
+    throw new Error("sale audio capture session binding is invalid");
+  }
+  const backend = backendFactory(environment);
+  const stopped = await backend.stop(state.backend, {
+    request,
+    evidenceDirectory: exportDirectory,
+    state,
+  });
+  const binding = normalizedSaleAudioBinding(request);
+  const serialCapture = buildSaleAudioFrameCapture(
+    binding,
+    readRawSerialJournal(state.rawSerialJournalPath),
+  );
+  const inspection = inspectWavPcm(stopped.bytes, SALE_AUDIO_THRESHOLD);
+  if (!inspection.ok || inspection.kind !== "passed") {
+    throw new Error("sale default-audio WAV is silent or malformed");
+  }
+  const audioEvidence = evidenceEntry(
+    exportDirectory,
+    "sale-default-audio-capture",
+    stopped.bytes,
+    "wav",
+  );
+  const serialEvidence = evidenceEntry(
+    exportDirectory,
+    "sale-serial-frame-capture",
+    Buffer.from(`${JSON.stringify(serialCapture)}\n`),
+    "json",
+  );
+  writeSessionState(exportDirectory, request.captureSession.captureSessionId, {
+    ...state,
+    status: "stopped",
+    completedAt: stopped.completedAt,
+  });
+  return {
+    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
+    kind: "vm-sale-audio-capture-report",
+    result: "succeeded",
+    adapter: {
+      identity: "vm-host-adapter://sale-audio-capture",
+      version: "1.0.0",
+    },
+    request,
+    captureSession: state.captureSession,
+    capture: {
+      source: "windows_default_output",
+      binding,
+      startedAt: state.captureSession.startedAt,
+      completedAt: stopped.completedAt,
+      audioArtifact: audioEvidence.identity,
+      serialArtifact: serialEvidence.identity,
+      threshold: { ...SALE_AUDIO_THRESHOLD },
+    },
+    evidence: [audioEvidence, serialEvidence],
+  };
+}
+
+export async function abortSaleAudioCaptureSession(
+  { captureSessionId, evidenceDirectory },
+  { environment = process.env, backendFactory = defaultBackendFactory } = {},
+) {
+  const state = readSessionState(evidenceDirectory, captureSessionId);
+  if (state.status !== "started") return { aborted: false, alreadyStopped: true };
+  await backendFactory(environment).abort(state.backend, {
+    evidenceDirectory,
+    state,
+  });
+  writeSessionState(evidenceDirectory, captureSessionId, {
+    ...state,
+    status: "aborted",
+    abortedAt: new Date().toISOString(),
+  });
+  return { aborted: true };
+}
+
 export function validateSaleAudioCaptureReport(report, requestInput) {
   const request = validateSaleAudioCaptureRequest(requestInput);
   exactKeys(
@@ -465,106 +816,59 @@ export function inspectCompletedSaleAudioCapture({
   return inspection;
 }
 
-function invokeAdapter(
-  request,
-  { environment = process.env, timeoutMs = 600_000, evidenceDirectory } = {},
-) {
-  const executable = requiredString(
-    environment.VEM_VM_HOST_ADAPTER,
-    "VEM_VM_HOST_ADAPTER",
-  );
-  const root = mkdtempSync(
-    join(resolve(environment.RUNNER_TEMP ?? tmpdir()), "vem-sale-audio-"),
-  );
-  const requestPath = join(root, "request.json");
-  const reportPath = join(root, "report.json");
-  const exportDirectory = resolve(
-    requiredString(evidenceDirectory, "--evidence-dir"),
-  );
-  mkdirSync(exportDirectory, { recursive: true, mode: 0o700 });
-  writeFileSync(requestPath, `${JSON.stringify(request, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(
-      executable,
-      ["--request", requestPath, "--report", reportPath],
-      {
-        cwd: process.cwd(),
-        env: {
-          ...environment,
-          VEM_VM_HOST_ADAPTER_EXTENSION: "capture-sale-audio/v1",
-          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: exportDirectory,
-        },
-        stdio: ["ignore", "ignore", "pipe"],
-        windowsHide: true,
-      },
-    );
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk}`.slice(-4096);
-    });
-    let settled = false;
-    const terminate = () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null)
-          child.kill("SIGKILL");
-      }, 2_000).unref();
-    };
-    const timer = setTimeout(terminate, timeoutMs);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      rmSync(root, { recursive: true, force: true });
-      reject(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      try {
-        if (code !== 0)
-          throw new Error(
-            `capture-sale-audio adapter failed: ${stderr || `exit ${code}`}`,
-          );
-        resolvePromise(JSON.parse(readFileSync(reportPath, "utf8")));
-      } catch (error) {
-        reject(error);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    });
-  });
-}
-
 export async function runSaleAudioCaptureHostAdapterCli(
   argv,
   dependencies = {},
 ) {
   const options = parseOptions(argv);
+  return executeSaleAudioCaptureHostAdapter(
+    {
+      phase: options["capture-phase"],
+      runId: options["run-id"],
+      lifecycleReference: options["lifecycle-reference"],
+      targetIdentity: options["target-identity"],
+      transactionId: options["transaction-id"],
+      runtime: runtimeBinding(options),
+      captureSessionId: options["capture-session-id"],
+      startOperationReference: options["start-operation-reference"],
+      captureStartedAt: options["capture-started-at"],
+      sale: options["capture-phase"] === "stop" ? saleBinding(options) : null,
+      evidenceDirectory: options["evidence-dir"],
+      outPath: requiredString(options.out, "--out"),
+    },
+    dependencies,
+  );
+}
+
+export async function executeSaleAudioCaptureHostAdapter(
+  options,
+  dependencies = {},
+) {
   const request = createSaleAudioCaptureRequest({
-    phase: options["capture-phase"],
-    runId: options["run-id"],
-    lifecycleReference: options["lifecycle-reference"],
-    targetIdentity: options["target-identity"],
-    transactionId: options["transaction-id"],
-    runtime: runtimeBinding(options),
-    captureSessionId: options["capture-session-id"],
-    startOperationReference: options["start-operation-reference"],
-    captureStartedAt: options["capture-started-at"],
-    sale: options["capture-phase"] === "stop" ? saleBinding(options) : null,
+    phase: options.phase,
+    runId: options.runId,
+    lifecycleReference: options.lifecycleReference,
+    targetIdentity: options.targetIdentity,
+    transactionId: options.transactionId,
+    runtime: options.runtime,
+    captureSessionId: options.captureSessionId,
+    startOperationReference: options.startOperationReference,
+    captureStartedAt: options.captureStartedAt,
+    sale: options.phase === "stop" ? options.sale : null,
   });
-  const invoke = dependencies.invokeAdapter ?? invokeAdapter;
+  const invoke = dependencies.invokeAdapter ?? executeAdapterOperation;
   const report = validateSaleAudioCaptureReport(
     await invoke(request, {
       environment: dependencies.environment ?? process.env,
-      timeoutMs: dependencies.timeoutMs,
-      evidenceDirectory: options["evidence-dir"],
+      evidenceDirectory: requiredString(
+        options.evidenceDirectory,
+        "evidenceDirectory",
+      ),
+      backendFactory: dependencies.backendFactory,
     }),
     request,
   );
-  const out = requiredString(options.out, "--out");
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  writeReport(requiredString(options.outPath, "outPath"), report);
   return report;
 }
 
