@@ -469,6 +469,7 @@ function transactionSnapshot(
 
 function applySensitiveVisionProfile(): void {
   useVisionStore().applyLatestProfileResult({
+    source: "front",
     eventId: "vision-event-001",
     detectedAt: "2026-06-12T10:20:30.000Z",
     profile: {
@@ -481,6 +482,7 @@ function applySensitiveVisionProfile(): void {
     quality: {
       overall: "good",
       warnings: ["light glare"],
+      profileUsable: true,
     },
   });
 }
@@ -1010,6 +1012,7 @@ describe("sale-start capability UI flow", () => {
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
+        source: "front",
         eventId: "vision-recommendation-001",
         detectedAt: "2026-07-18T10:00:00.000Z",
         occupancy: { state: "single", confidence: 0.94 },
@@ -1049,6 +1052,7 @@ describe("sale-start capability UI flow", () => {
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
+        source: "front",
         eventId: "vision-recommendation-low-confidence",
         detectedAt: "2026-07-18T10:00:01.000Z",
         occupancy: { state: "single", confidence: 0.3 },
@@ -1059,7 +1063,7 @@ describe("sale-start capability UI flow", () => {
           upperColor: "蓝",
           confidence: 0.3,
         },
-        quality: { overall: "poor", warnings: [] },
+        quality: { overall: "poor", warnings: [], profileUsable: false },
       } as Parameters<
         NonNullable<typeof latestVisionHandlers>["onProfile"]
       >[0]),
@@ -1104,6 +1108,7 @@ describe("sale-start capability UI flow", () => {
 
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
+        source: "front",
         eventId: "presence-before-refresh",
         detectedAt: "2026-07-14T00:00:00.000Z",
         profile: {
@@ -1116,7 +1121,7 @@ describe("sale-start capability UI flow", () => {
           upperColor: "black",
           confidence: 0.9,
         },
-        quality: { overall: "good", warnings: [] },
+        quality: { overall: "good", warnings: [], profileUsable: true },
       } as Parameters<
         NonNullable<typeof latestVisionHandlers>["onProfile"]
       >[0]),
@@ -1147,6 +1152,7 @@ describe("sale-start capability UI flow", () => {
     expect(latestVisionHandlers).toBeTruthy();
     await Promise.resolve(
       latestVisionHandlers?.onProfile({
+        source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-06-12T10:20:30.000Z",
         profile: {
@@ -1162,6 +1168,7 @@ describe("sale-start capability UI flow", () => {
         quality: {
           overall: "good",
           warnings: ["light glare"],
+          profileUsable: true,
         },
       } as Parameters<
         NonNullable<typeof latestVisionHandlers>["onProfile"]

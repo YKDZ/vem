@@ -29,6 +29,7 @@ function profilePayload(
   confidence = 0.91,
 ): VisionProfileResultPayload {
   return {
+    source: "front",
     eventId,
     detectedAt: "2026-06-12T10:20:30.000Z",
     profile: {
@@ -40,6 +41,7 @@ function profilePayload(
     quality: {
       overall: "good",
       warnings: [],
+      profileUsable: true,
     },
   };
 }
@@ -96,6 +98,7 @@ describe("useVisionRecommendations", () => {
     ) => void | Promise<void>;
     await Promise.resolve(
       emitProfile({
+        source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-06-12T10:20:30.000Z",
         profile: {
@@ -114,6 +117,7 @@ describe("useVisionRecommendations", () => {
         quality: {
           overall: "good",
           warnings: ["light glare"],
+          profileUsable: true,
         },
       } as VisionProfileResultPayload),
     );
@@ -230,6 +234,7 @@ describe("useVisionRecommendations", () => {
     ) => void | Promise<void>;
     await Promise.resolve(
       emitProfile({
+        source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-06-12T10:20:30.000Z",
         profile: {
@@ -241,6 +246,7 @@ describe("useVisionRecommendations", () => {
         quality: {
           overall: "good",
           warnings: [],
+          profileUsable: true,
         },
       }),
     );
@@ -294,6 +300,7 @@ describe("useVisionRecommendations", () => {
 
     await Promise.resolve(
       emitPresenceStatus({
+        source: "top",
         eventId: "VISION-PRESENCE-EVENT-001",
         state: "approach",
         reason: "person_present_but_not_close",
@@ -365,6 +372,7 @@ describe("useVisionRecommendations", () => {
 
     await Promise.resolve(
       emitPersonDeparted({
+        source: "top",
         eventId: "VISION-DEPARTURE-001",
         detectedAt: "2026-06-29T10:05:00.000Z",
         lastSeenAt: "2026-06-29T10:04:55.000Z",

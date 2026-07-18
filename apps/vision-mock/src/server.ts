@@ -102,6 +102,7 @@ function createResultMessage(): VisionServerMessage {
     ...baseEnvelope("result"),
     type: "vision.profile_result",
     payload: {
+      source: "front",
       eventId: messageId("event"),
       detectedAt,
       occupancy: {
@@ -136,6 +137,7 @@ function createPresenceMessage(
   const detectedAt = nowIso();
   const personPresent = state !== "empty";
   const payload = {
+    source: "top",
     eventId: messageId("presence-event"),
     state,
     detectedAt,
@@ -168,6 +170,7 @@ function createPersonDepartedMessage(
 ): VisionServerMessage {
   const detectedAt = nowIso();
   const payload = {
+    source: "top",
     eventId: messageId("departure-event"),
     detectedAt,
     lastSeenAt,

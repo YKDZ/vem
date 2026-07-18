@@ -143,6 +143,7 @@ function successfulTransaction(): TransactionSnapshot {
 
 function applySensitiveVisionProfile(): void {
   useVisionStore().applyLatestProfileResult({
+    source: "front",
     eventId: "vision-event-001",
     detectedAt: "2026-06-12T10:20:30.000Z",
     profile: {
@@ -155,6 +156,7 @@ function applySensitiveVisionProfile(): void {
     quality: {
       overall: "good",
       warnings: ["light glare"],
+      profileUsable: true,
     },
   });
 }

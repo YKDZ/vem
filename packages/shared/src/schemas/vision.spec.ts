@@ -117,6 +117,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
+        source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-05-29T12:00:00.000Z",
         profile: {
@@ -128,6 +129,7 @@ describe("vision protocol schemas", () => {
         quality: {
           overall: "good",
           warnings: [],
+          profileUsable: true,
         },
       },
     });
@@ -142,6 +144,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.presence_status",
       payload: {
+        source: "top",
         eventId: "presence-event-001",
         state: "approach",
         reason: "person_present_but_not_close",
@@ -169,6 +172,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.presence_status",
       payload: {
+        source: "top",
         eventId: "presence-event-multiple",
         state: "approach",
         reason: "multiple_people_present",
@@ -193,6 +197,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.person_departed",
       payload: {
+        source: "top",
         eventId: "departure-event-001",
         detectedAt: "2026-06-29T10:03:30.000Z",
         lastSeenAt: "2026-06-29T10:03:10.000Z",
@@ -211,6 +216,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
+        source: "front",
         eventId: "vision-event-multiple",
         detectedAt: "2026-06-29T10:00:00.000Z",
         occupancy: {
@@ -243,6 +249,7 @@ describe("vision protocol schemas", () => {
         ...BASE_ENVELOPE,
         type: "vision.presence_status",
         payload: {
+          source: "top",
           eventId: "presence-event-001",
           state: "empty",
           detectedAt: "2026-06-29T10:00:00.000Z",
@@ -256,6 +263,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
+        source: "front",
         eventId: "vision-event-raw",
         detectedAt: "2026-05-29T12:00:00.000Z",
         profile: {
@@ -273,6 +281,7 @@ describe("vision protocol schemas", () => {
         quality: {
           overall: "good",
           warnings: [],
+          profileUsable: true,
         },
       },
     });
@@ -293,6 +302,7 @@ describe("vision protocol schemas", () => {
         ...BASE_ENVELOPE,
         type: "vision.profile_result",
         payload: {
+          source: "front",
           eventId: "vision-event-001",
           detectedAt: "2026-05-29T12:00:00.000Z",
           profile: {
@@ -302,6 +312,7 @@ describe("vision protocol schemas", () => {
           quality: {
             overall: "good",
             warnings: [],
+            profileUsable: true,
           },
         },
       }),
@@ -313,6 +324,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
+        source: "front",
         eventId: "vision-event-002",
         detectedAt: "2026-06-03T12:00:00.000Z",
         profile: {
@@ -326,6 +338,7 @@ describe("vision protocol schemas", () => {
         quality: {
           overall: "low_confidence",
           warnings: ["image_too_dark"],
+          profileUsable: false,
         },
       },
     });
@@ -341,6 +354,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
+        source: "front",
         eventId: "vision-event-003",
         detectedAt: "2026-06-11T09:43:59.000Z",
         profile: {
@@ -355,6 +369,7 @@ describe("vision protocol schemas", () => {
         quality: {
           overall: "fair",
           warnings: ["partial_body"],
+          profileUsable: true,
         },
       },
     });

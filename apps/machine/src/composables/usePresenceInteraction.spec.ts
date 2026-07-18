@@ -21,6 +21,7 @@ function emitPresenceStatus(input: {
   occupancyState?: "single" | "multiple" | "unknown" | "none";
 }): void {
   useVisionStore().applyPresenceStatus({
+    source: "top",
     eventId: input.eventId,
     state: input.personPresent ? "approach" : "empty",
     reason: input.personPresent ? "person_present_but_not_close" : "no_person",
@@ -87,6 +88,7 @@ describe("usePresenceInteraction", () => {
     const presence = await mountPresence();
 
     useVisionStore().applyLatestProfileResult({
+      source: "front",
       eventId: "VISION-PRESENCE-001",
       detectedAt: "2026-06-27T10:00:00.000Z",
       profile: {
@@ -95,7 +97,7 @@ describe("usePresenceInteraction", () => {
         bodyType: "regular",
         confidence: 0.91,
       },
-      quality: { overall: "good", warnings: [] },
+      quality: { overall: "good", warnings: [], profileUsable: true },
     });
     await nextTick();
 
@@ -117,6 +119,7 @@ describe("usePresenceInteraction", () => {
     });
     await nextTick();
     useVisionStore().applyPersonDeparted({
+      source: "top",
       eventId: "VISION-DEPARTURE-EVENT-001",
       detectedAt: "2026-06-29T10:00:08.000Z",
       lastSeenAt: "2026-06-29T10:00:06.000Z",

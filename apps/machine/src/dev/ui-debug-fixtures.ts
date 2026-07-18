@@ -671,6 +671,7 @@ const vision: VisionStatus = {
   latestDiagnosticPayload: {
     type: "vision.profile_result",
     payload: {
+      source: "front",
       eventId: "UI-DEBUG-VISION-001",
       detectedAt: UPDATED_AT,
       profile: {
@@ -680,6 +681,7 @@ const vision: VisionStatus = {
       quality: {
         overall: "good",
         warnings: [],
+        profileUsable: true,
       },
     },
   },

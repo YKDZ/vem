@@ -218,6 +218,10 @@ function normalizeUrlPath(value, label) {
   }
 }
 
+function catalogKeyForProductId(productId, label = "seeded try-on productId") {
+  return `product:${required(productId, label)}`;
+}
+
 export function normalizeSeededVisionAcceptance(raw) {
   const input =
     raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -255,6 +259,31 @@ export function normalizeSeededVisionAcceptance(raw) {
       input.selectedSilhouettePublicUrl ?? input.tryOnSilhouettePublicUrl,
     ),
     seededTryOnVariants,
+  };
+}
+
+function resolveSelectedSeededEntry(
+  runtimeExpectation,
+  selectedVariantId,
+  label = "selected variantId",
+) {
+  const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
+  const variantId = required(selectedVariantId, label);
+  const matches = runtime.seededTryOnVariants.filter(
+    (entry) => entry.variantId === variantId,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `${label} must uniquely match exactly one seeded try-on entry`,
+    );
+  }
+  const entry = matches[0];
+  return {
+    ...entry,
+    catalogKey: catalogKeyForProductId(
+      entry.productId,
+      `${label} seeded productId`,
+    ),
   };
 }
 
@@ -412,19 +441,28 @@ export function compareObservedVisionProtocolToExpected({
     {
       label: "presence",
       type: protocolEvidence.presence.type,
-      source: protocolEvidence.presence.payload?.source ?? "top",
+      source: required(
+        protocolEvidence.presence.payload?.source,
+        "presence runtime source",
+      ),
       detectedAt: protocolEvidence.presence.payload?.detectedAt,
     },
     {
       label: "profile",
       type: protocolEvidence.profile.type,
-      source: protocolEvidence.profile.payload?.source ?? "front",
+      source: required(
+        protocolEvidence.profile.payload?.source,
+        "profile runtime source",
+      ),
       detectedAt: protocolEvidence.profile.payload?.detectedAt,
     },
     {
       label: "departure",
       type: protocolEvidence.departure.type,
-      source: protocolEvidence.departure.payload?.source ?? "top",
+      source: required(
+        protocolEvidence.departure.payload?.source,
+        "departure runtime source",
+      ),
       detectedAt: protocolEvidence.departure.payload?.detectedAt,
     },
   ];
@@ -516,6 +554,14 @@ export function validateRecommendationProjection({
   if (!selected) {
     throw new Error("catalog recommendation did not expose any product");
   }
+  const seededSelection =
+    runtime.seededTryOnVariants.length > 0
+      ? resolveSelectedSeededEntry(
+          runtime,
+          selected.preferredVariantId,
+          "recommended variantId",
+        )
+      : null;
   if (
     runtime.selectedCatalogKey &&
     selected.catalogKey !== runtime.selectedCatalogKey
@@ -529,13 +575,12 @@ export function validateRecommendationProjection({
     throw new Error("recommended variant does not match seeded runtime expectation");
   }
   if (
-    !runtime.selectedVariantId &&
-    runtime.seededTryOnVariants.length > 0 &&
-    !runtime.seededTryOnVariants.some(
-      (variant) => variant.variantId === selected.preferredVariantId,
-    )
+    seededSelection &&
+    selected.catalogKey !== seededSelection.catalogKey
   ) {
-    throw new Error("recommended variant is not part of the seeded try-on runtime identity set");
+    throw new Error(
+      "recommended catalogKey does not match the seeded productId for the selected variantId",
+    );
   }
   if (selected.recommendationScore < expected.recommendation.minimumScore) {
     throw new Error("recommended score did not exceed the expected threshold");
@@ -561,6 +606,7 @@ export function validateRecommendationProjection({
     selectedCatalogKey: selected.catalogKey,
     selectedVariantId: selected.preferredVariantId,
     selectedScore: selected.recommendationScore,
+    seededSelection,
   };
 }
 
@@ -574,6 +620,14 @@ export function validateTryOnPresentation({
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
+  const seededSelection =
+    runtime.seededTryOnVariants.length > 0
+      ? resolveSelectedSeededEntry(
+          runtime,
+          selectedProduct.variantId,
+          "selected product variantId",
+        )
+      : null;
   if (
     runtime.selectedCatalogKey &&
     selectedProduct.catalogKey !== runtime.selectedCatalogKey
@@ -587,16 +641,15 @@ export function validateTryOnPresentation({
     throw new Error("selected product variantId does not match seeded try-on binding");
   }
   if (
-    !runtime.selectedVariantId &&
-    runtime.seededTryOnVariants.length > 0 &&
-    !runtime.seededTryOnVariants.some(
-      (variant) => variant.variantId === selectedProduct.variantId,
-    )
+    seededSelection &&
+    selectedProduct.catalogKey !== seededSelection.catalogKey
   ) {
-    throw new Error("selected product variantId is not part of the seeded try-on runtime identity set");
+    throw new Error(
+      "selected product catalogKey does not match the seeded productId for the selected variantId",
+    );
   }
-  if (tryOnState.route !== `#/products/${selectedProduct.catalogKey}/try-on?variantId=${selectedProduct.variantId}` &&
-      !String(tryOnState.route ?? "").includes("/try-on")) {
+  const expectedRoute = `#/products/${selectedProduct.catalogKey}/try-on?variantId=${selectedProduct.variantId}`;
+  if (tryOnState.route !== expectedRoute) {
     throw new Error("try-on route is not bound to the selected catalog item");
   }
   if (
@@ -611,21 +664,27 @@ export function validateTryOnPresentation({
   ) {
     throw new Error("try-on silhouette URL is not bound to the selected variant");
   }
-  if (runtime.tryOnSilhouetteAssetId) {
-    const expectedPath = `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`;
-    if (!normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl").startsWith(expectedPath)) {
-      throw new Error("try-on silhouette URL is not bound to the seeded media asset");
-    }
-  } else if (runtime.tryOnSilhouettePublicUrl) {
-    if (
-      normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
-      normalizeUrlPath(
-        runtime.tryOnSilhouettePublicUrl,
+  const expectedSilhouettePath = seededSelection?.silhouettePublicUrl
+    ? normalizeUrlPath(
+        seededSelection.silhouettePublicUrl,
         "seeded try-on silhouette publicUrl",
       )
-    ) {
-      throw new Error("try-on silhouette URL is not bound to the seeded media asset");
-    }
+    : seededSelection?.silhouetteAssetId
+      ? `/api/media-assets/${seededSelection.silhouetteAssetId}/content`
+      : runtime.tryOnSilhouettePublicUrl
+        ? normalizeUrlPath(
+            runtime.tryOnSilhouettePublicUrl,
+            "seeded try-on silhouette publicUrl",
+          )
+        : runtime.tryOnSilhouetteAssetId
+          ? `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`
+          : null;
+  if (
+    expectedSilhouettePath &&
+    normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
+      expectedSilhouettePath
+  ) {
+    throw new Error("try-on silhouette URL is not bound to the seeded media asset");
   }
   if (
     !silhouetteEvidence ||
@@ -634,6 +693,17 @@ export function validateTryOnPresentation({
     !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
   ) {
     throw new Error("try-on silhouette did not return a successful image response");
+  }
+  if (
+    expectedSilhouettePath &&
+    normalizeUrlPath(
+      silhouetteEvidence.finalUrl,
+      "try-on silhouette finalUrl",
+    ) !== expectedSilhouettePath
+  ) {
+    throw new Error(
+      "try-on silhouette redirect finalUrl drifted from the seeded media asset",
+    );
   }
   if (
     tryOnState.silhouetteLoaded !== true ||
@@ -871,6 +941,7 @@ export function validateVisionProtocolEvidence(evidence) {
   if (
     presence.type !== "vision.presence_status" ||
     presence.payload?.personPresent !== true ||
+    presence.payload?.source !== "top" ||
     !isVisionProtocolTimestamp(presence.payload?.detectedAt)
   ) {
     throw new Error("vision presence evidence is invalid");
@@ -879,7 +950,8 @@ export function validateVisionProtocolEvidence(evidence) {
   if (
     profile.type !== "vision.profile_result" ||
     profile.payload?.profile?.personPresent !== true ||
-    profile.payload?.quality?.profileUsable === false ||
+    profile.payload?.source !== "front" ||
+    profile.payload?.quality?.profileUsable !== true ||
     !isVisionProtocolTimestamp(profile.payload?.detectedAt)
   ) {
     throw new Error("vision profile evidence is invalid");
@@ -887,6 +959,7 @@ export function validateVisionProtocolEvidence(evidence) {
   const departure = evidence?.departure ?? {};
   if (
     departure.type !== "vision.person_departed" ||
+    departure.payload?.source !== "top" ||
     !isVisionProtocolTimestamp(departure.payload?.detectedAt)
   ) {
     throw new Error("vision departure evidence is invalid");
@@ -902,7 +975,7 @@ export function validateVisionProtocolEvidence(evidence) {
     presenceDetectedAt: presence.payload.detectedAt,
     profileDetectedAt: profile.payload.detectedAt,
     departureDetectedAt: departure.payload.detectedAt,
-    profileUsable: profile.payload.quality?.profileUsable !== false,
+    profileUsable: true,
   };
 }
 
@@ -1261,7 +1334,23 @@ export async function waitForVisionPortRelease(
   );
 }
 
-async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
+async function terminateVisionChild(child, timeoutMs = 10_000) {
+  if (!child) return;
+  child.kill("SIGTERM");
+  if (child.exitCode === null && child.signalCode === null) {
+    await Promise.race([
+      new Promise((resolvePromise) => child.once("exit", resolvePromise)),
+      sleep(timeoutMs).then(() => {
+        throw new Error("vision mock did not exit after SIGTERM");
+      }),
+    ]);
+  }
+}
+
+export async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
+  const portWasAvailable = (
+    await probeLoopbackPortRelease(7892, "127.0.0.1")
+  ).released;
   const child = spawn(
     process.execPath,
     ["--conditions=vem-source", "--import", "tsx", "apps/vision-mock/src/server.ts"],
@@ -1278,23 +1367,61 @@ async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
   );
   child.stdout.resume();
   child.stderr.resume();
-  await waitForCondition(
-    `vision mock scenario ${scenario}`,
-    async () => {
-      try {
-        const health = await fetchJson("http://127.0.0.1:7892/health");
-        return {
-          ok: health?.mockScenario === scenario && health?.status === "ok",
-          value: health,
-        };
-      } catch (error) {
-        return { ok: false, value: { error: String(error) } };
+  try {
+    await waitForCondition(
+      `vision mock scenario ${scenario}`,
+      async () => {
+        if (child.exitCode !== null) {
+          return {
+            ok: false,
+            value: {
+              error: `vision mock exited early with code ${child.exitCode}`,
+            },
+          };
+        }
+        if (child.signalCode !== null) {
+          return {
+            ok: false,
+            value: {
+              error: `vision mock exited early with signal ${child.signalCode}`,
+            },
+          };
+        }
+        try {
+          const health = await fetchJson("http://127.0.0.1:7892/health");
+          return {
+            ok: health?.mockScenario === scenario && health?.status === "ok",
+            value: health,
+          };
+        } catch (error) {
+          return { ok: false, value: { error: String(error) } };
+        }
+      },
+      timeoutMs,
+      500,
+    );
+    return child;
+  } catch (error) {
+    let startupError = error instanceof Error ? error : new Error(String(error));
+    try {
+      await terminateVisionChild(child, timeoutMs);
+      if (portWasAvailable) {
+        await waitForVisionPortRelease(timeoutMs, {
+          port: 7892,
+          host: "127.0.0.1",
+        });
       }
-    },
-    timeoutMs,
-    500,
-  );
-  return child;
+    } catch (cleanupError) {
+      startupError = combineCleanupFailure(
+        startupError,
+        cleanupError instanceof Error
+          ? cleanupError
+          : new Error(String(cleanupError)),
+        "vision mock startup cleanup",
+      );
+    }
+    throw startupError;
+  }
 }
 
 export async function stopVisionChild(
@@ -1302,15 +1429,7 @@ export async function stopVisionChild(
   { timeoutMs = 10_000, port = 7892, host = "127.0.0.1" } = {},
 ) {
   if (!child) return;
-  child.kill("SIGTERM");
-  if (child.exitCode === null && child.signalCode === null) {
-    await Promise.race([
-      new Promise((resolvePromise) => child.once("exit", resolvePromise)),
-      sleep(timeoutMs).then(() => {
-        throw new Error("vision mock did not exit after SIGTERM");
-      }),
-    ]);
-  }
+  await terminateVisionChild(child, timeoutMs);
   await waitForVisionPortRelease(timeoutMs, { port, host });
 }
 

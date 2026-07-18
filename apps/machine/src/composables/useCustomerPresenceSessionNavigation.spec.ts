@@ -21,6 +21,7 @@ import {
 
 function emitPresence(personPresent: boolean, detectedAt: string): void {
   useVisionStore().applyPresenceStatus({
+    source: "top",
     eventId: `VISION-PRESENCE-${personPresent ? "PRESENT" : "EMPTY"}`,
     state: personPresent ? "approach" : "empty",
     reason: personPresent ? "person_present_but_not_close" : "no_person",
@@ -71,6 +72,7 @@ describe("customer presence navigation", () => {
     emitPresence(true, "2026-06-30T08:00:00.000Z");
     await nextTick();
     useVisionStore().applyPersonDeparted({
+      source: "top",
       eventId: "VISION-DEPARTURE-001",
       detectedAt: "2026-06-30T08:00:05.000Z",
       lastSeenAt: "2026-06-30T08:00:04.000Z",

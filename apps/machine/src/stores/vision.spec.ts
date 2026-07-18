@@ -18,16 +18,18 @@ vi.mock("@/daemon/client", () => ({
 
 function profilePayload(): VisionProfileResultPayload {
   return {
+    source: "front",
     eventId: "VISION-PRESENCE-001",
     detectedAt: "2026-06-27T10:00:00.000Z",
     occupancy: { state: "single", confidence: 0.88 },
     profile: { personPresent: true, confidence: 0.91 },
-    quality: { overall: "good", warnings: [] },
+    quality: { overall: "good", warnings: [], profileUsable: true },
   };
 }
 
 function presencePayload(personPresent = true): VisionPresenceStatusPayload {
   return {
+    source: "top",
     eventId: `VISION-PRESENCE-${personPresent ? "present" : "empty"}`,
     state: personPresent ? "approach" : "empty",
     reason: personPresent ? "person_present_but_not_close" : "no_person",
@@ -46,6 +48,7 @@ function presencePayload(personPresent = true): VisionPresenceStatusPayload {
 
 function departurePayload(): VisionPersonDepartedPayload {
   return {
+    source: "top",
     eventId: "VISION-DEPARTURE-001",
     detectedAt: "2026-06-29T10:05:00.000Z",
     lastSeenAt: "2026-06-29T10:04:55.000Z",

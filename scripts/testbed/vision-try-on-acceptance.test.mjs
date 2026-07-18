@@ -10,6 +10,7 @@ import {
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
+  startVisionMockScenario,
   stopVisionChild,
   validateRecommendationProjection,
   validateTryOnPresentation,
@@ -130,6 +131,7 @@ describe("vision try-on acceptance script", () => {
       presence: {
         type: "vision.presence_status",
         payload: {
+          source: "top",
           detectedAt: "2026-07-18T00:00:01.000Z",
           personPresent: true,
         },
@@ -137,6 +139,7 @@ describe("vision try-on acceptance script", () => {
       profile: {
         type: "vision.profile_result",
         payload: {
+          source: "front",
           detectedAt: "2026-07-18T00:00:02.000Z",
           profile: { personPresent: true },
           quality: { profileUsable: true },
@@ -145,6 +148,7 @@ describe("vision try-on acceptance script", () => {
       departure: {
         type: "vision.person_departed",
         payload: {
+          source: "top",
           detectedAt: "2026-07-18T00:00:03.000Z",
         },
       },
@@ -179,6 +183,59 @@ describe("vision try-on acceptance script", () => {
           departure: {},
         }),
       /vision health evidence is invalid/,
+    );
+    assert.throws(
+      () =>
+        validateVisionProtocolEvidence({
+          health: {
+            status: "ok",
+            protocol: "vem.vision.v1",
+            modelReady: true,
+            cameraReady: true,
+          },
+          ready: {
+            protocol: "vem.vision.v1",
+            type: "vision.ready",
+            messageId: "ready-1",
+            timestamp: "2026-07-18T00:00:00.000Z",
+            payload: {
+              serverName: "vem-vision-runtime",
+              serverVersion: "1.2.3",
+              modelReady: true,
+              cameraReady: true,
+              capabilities: [
+                "profile_push",
+                "presence_status",
+                "person_departed",
+                "try_on_session",
+              ],
+            },
+          },
+          presence: {
+            type: "vision.presence_status",
+            payload: {
+              detectedAt: "2026-07-18T00:00:01.000Z",
+              personPresent: true,
+            },
+          },
+          profile: {
+            type: "vision.profile_result",
+            payload: {
+              source: "front",
+              detectedAt: "2026-07-18T00:00:02.000Z",
+              profile: { personPresent: true },
+              quality: {},
+            },
+          },
+          departure: {
+            type: "vision.person_departed",
+            payload: {
+              source: "top",
+              detectedAt: "2026-07-18T00:00:03.000Z",
+            },
+          },
+        }),
+      /vision presence evidence is invalid/,
     );
   });
 
@@ -363,7 +420,7 @@ describe("vision try-on acceptance script", () => {
             },
           },
         }),
-      /presence does not match expected-results/,
+      /vision presence evidence is invalid/,
     );
     assert.throws(
       () =>
@@ -459,12 +516,13 @@ describe("vision try-on acceptance script", () => {
       runtimeExpectation: {
         selectedVariantId: "variant-l",
         seededTryOnVariants: [
-          { variantId: "variant-l" },
-          { variantId: "variant-m" },
+          { productId: "L", variantId: "variant-l" },
+          { productId: "M", variantId: "variant-m" },
         ],
       },
     });
     assert.equal(summary.selectedVariantId, "variant-l");
+    assert.equal(summary.seededSelection.catalogKey, "product:L");
     assert.throws(
       () =>
         validateRecommendationProjection({
@@ -485,10 +543,10 @@ describe("vision try-on acceptance script", () => {
           pageText: "推荐商品",
           expectedResults: baseExpectedResults(),
           runtimeExpectation: {
-            seededTryOnVariants: [{ variantId: "variant-l" }],
+            seededTryOnVariants: [{ productId: "L", variantId: "variant-l" }],
           },
         }),
-      /runtime identity set/,
+      /must uniquely match exactly one seeded try-on entry/,
     );
     assert.throws(
       () =>
@@ -511,6 +569,31 @@ describe("vision try-on acceptance script", () => {
           expectedResults: baseExpectedResults(),
         }),
       /did not actually change|leaked identity field/,
+    );
+    assert.throws(
+      () =>
+        validateRecommendationProjection({
+          beforeProducts: [
+            {
+              catalogKey: "product:M",
+              preferredVariantId: "",
+              recommendationScore: 0,
+            },
+          ],
+          afterProducts: [
+            {
+              catalogKey: "product:X",
+              preferredVariantId: "variant-l",
+              recommendationScore: 0.9,
+            },
+          ],
+          pageText: "推荐商品",
+          expectedResults: baseExpectedResults(),
+          runtimeExpectation: {
+            seededTryOnVariants: [{ productId: "L", variantId: "variant-l" }],
+          },
+        }),
+      /catalogKey does not match the seeded productId/,
     );
   });
 
@@ -541,6 +624,8 @@ describe("vision try-on acceptance script", () => {
         ok: true,
         httpStatus: 200,
         contentType: "image/png",
+        finalUrl:
+          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       },
       expectedResults: baseExpectedResults(),
       runtimeExpectation: {
@@ -548,7 +633,15 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-        seededTryOnVariants: [{ variantId: "variant-l" }],
+        seededTryOnVariants: [
+          {
+            productId: "L",
+            variantId: "variant-l",
+            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            silhouettePublicUrl:
+              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+          },
+        ],
       },
     });
     assert.equal(summary.sessionId, "try-on-session-001");
@@ -582,15 +675,71 @@ describe("vision try-on acceptance script", () => {
             ok: true,
             httpStatus: 200,
             contentType: "image/png",
+            finalUrl:
+              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
           },
           expectedResults: baseExpectedResults(),
           runtimeExpectation: {
             selectedVariantId: "variant-l",
             tryOnSilhouetteAssetId:
               "550e8400-e29b-41d4-a716-446655440125",
+            seededTryOnVariants: [
+              {
+                productId: "L",
+                variantId: "variant-l",
+                silhouetteAssetId:
+                  "550e8400-e29b-41d4-a716-446655440125",
+              },
+            ],
           },
         }),
       /remained fully black/,
+    );
+    assert.throws(
+      () =>
+        validateTryOnPresentation({
+          selectedProduct: {
+            catalogKey: "product:L",
+            variantId: "variant-l",
+          },
+          tryOnState: {
+            route: "#/products/product:L/try-on?variantId=variant-l",
+            previewUrl:
+              "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
+            silhouetteUrl:
+              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            silhouetteLoaded: true,
+            silhouetteNaturalWidth: 640,
+            silhouetteNaturalHeight: 1280,
+          },
+          mjpegEvidence: {
+            contentType: "multipart/x-mixed-replace; boundary=frame",
+            frameByteLength: 512,
+            width: 640,
+            height: 480,
+            nonBlackPixelCount: 12,
+            sessionId: "try-on-session-001",
+          },
+          silhouetteEvidence: {
+            ok: true,
+            httpStatus: 200,
+            contentType: "image/png",
+            finalUrl:
+              "http://127.0.0.1:26849/api/media-assets/DIFFERENT/content",
+          },
+          expectedResults: baseExpectedResults(),
+          runtimeExpectation: {
+            seededTryOnVariants: [
+              {
+                productId: "L",
+                variantId: "variant-l",
+                silhouettePublicUrl:
+                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+              },
+            ],
+          },
+        }),
+      /redirect finalUrl drifted/,
     );
   });
 
@@ -674,5 +823,36 @@ setInterval(() => {}, 1000);`,
     assert.equal(combined.errors[1], cleanup);
     assert.match(combined.message, /business failed/);
     assert.match(combined.message, /cleanup failed/);
+  });
+
+  it("shuts down a failed mock child when 7892 is already occupied", async () => {
+    const occupier = spawn(process.execPath, [
+      "-e",
+      `const http = require("node:http");
+const server = http.createServer((_req, res) => {
+  if (_req.url === "/health") {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ status: "ok", mockScenario: "success" }));
+    return;
+  }
+  res.end("ok");
+});
+server.listen(7892, "127.0.0.1");
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+setInterval(() => {}, 1000);`,
+    ]);
+    try {
+      await assert.rejects(
+        startVisionMockScenario("try_on_unavailable_start", 1_000),
+        /vision mock scenario try_on_unavailable_start did not become true/,
+      );
+    } finally {
+      await stopVisionChild(occupier, {
+        port: 7892,
+        host: "127.0.0.1",
+        timeoutMs: 5_000,
+      });
+    }
+    await waitForVisionPortRelease(2_000, { port: 7892, host: "127.0.0.1" });
   });
 });

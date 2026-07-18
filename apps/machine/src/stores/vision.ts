@@ -303,8 +303,7 @@ function profileResultUsable(
   ) {
     return false;
   }
-  if (payload.quality.profileUsable === false) return false;
-  return true;
+  return payload.quality.profileUsable === true;
 }
 
 function profileNotUsableReason(
@@ -319,7 +318,7 @@ function profileNotUsableReason(
   ) {
     return "low_confidence";
   }
-  if (payload.quality.profileUsable === false) return "unknown";
+  if (payload.quality.profileUsable !== true) return "unknown";
   return null;
 }
 
