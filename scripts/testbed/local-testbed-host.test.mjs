@@ -134,6 +134,8 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan[2].type, "write-admitted-filter");
     assert.equal(
       plan[0].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -151,5 +153,41 @@ describe("tracked local testbed host lifecycle", () => {
       /guest input missing/,
     );
     assert.deepEqual(operations, ["ssh"]);
+  });
+
+  it("requires exact 1080x1920 proof before opening runner egress", async () => {
+    const plan = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-15",
+    });
+    const operations = [];
+    const result = await executeHostAdmissionPlan(plan, {
+      runCommand: async (command) => {
+        operations.push(command);
+      },
+      runCaptureCommand: async (command) => {
+        operations.push(command);
+        return {
+          stdout: `${JSON.stringify({
+            schemaVersion: "vem-local-testbed-display-admission-proof/v1",
+            status: "passed",
+            widthPx: 1080,
+            heightPx: 1920,
+            sessionUser: "baseline",
+            sessionId: 2,
+            source: "enum_display_settings",
+          })}\n`,
+        };
+      },
+      writeText: async () => operations.push("write-filter"),
+    });
+    assert.equal(result.displayAdmissionProof.widthPx, 1080);
+    assert.deepEqual(operations, [
+      "ssh",
+      "ssh",
+      "write-filter",
+      "virsh",
+    ]);
   });
 });

@@ -18,6 +18,7 @@ import {
   runtimeProfileForPublishedRelease,
 } from "./kvm-baseline/linux-kvm-baseline.mjs";
 import {
+  buildHeadlessVncActivatorUnitPlan,
   buildHostLocalServiceApiEnvironment,
   buildMigrationEnvironment,
   buildHostControlPlaneUnitPlan,
@@ -550,6 +551,34 @@ describe("local testbed orchestration", () => {
     }
   });
 
+  it("builds the persistent headless VNC activator unit around the tracked host script", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const plan = buildHeadlessVncActivatorUnitPlan(options(root), contract(root));
+      const rendered = plan.map(
+        (step) => `${step.command} ${step.args.join(" ")}`,
+      );
+      assert.match(
+        rendered.at(-1),
+        /local-testbed-host\.mjs headless-vnc-activator/,
+      );
+      assert.match(
+        rendered.at(-1),
+        /--unit=vem-local-testbed-headless-vnc-activator/,
+      );
+      assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
+      assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
+      assert.match(
+        rendered.at(-1),
+        new RegExp(
+          `--state-root ${join(root, "state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+        ),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("replaces fixed host state and C overlay before admitting the Windows runner", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
@@ -625,6 +654,18 @@ describe("local testbed orchestration", () => {
         /interactiveUser:\s*contract\.testbed\.guest\.user/,
       );
       assert.match(implementation, /installed-runtime-handoff\.json/);
+      assert.match(
+        implementation,
+        /await stopHeadlessVncActivatorUnit\(options, contract\)/,
+      );
+      assert.match(
+        implementation,
+        /await startHeadlessVncActivatorUnit\(options, contract\)/,
+      );
+      assert.match(
+        implementation,
+        /displayLifecycle:[\s\S]*headlessVncActivatorUnit/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

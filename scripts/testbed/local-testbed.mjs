@@ -25,6 +25,7 @@ const VOLUME_NAMES = Object.freeze({
 });
 const SERVICE_API_UNIT = "vem-local-testbed-service-api";
 const HOST_CONTROL_PLANE_UNIT = "vem-local-testbed-host-control-plane";
+const HEADLESS_VNC_ACTIVATOR_UNIT = "vem-local-testbed-headless-vnc-activator";
 const GUEST_HANDOFF_PATH =
   "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json";
 const GUEST_SMOKE_PATH =
@@ -328,6 +329,19 @@ function runtimeTargetIdentity(contract) {
   return `vm-target://${String(contract.releaseId).toLowerCase()}`;
 }
 
+function parseJsonLine(stdout, label) {
+  const trimmed = String(stdout ?? "").trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${label} did not emit JSON`);
+  }
+  const lastLine = trimmed.split(/\r?\n/).at(-1);
+  try {
+    return JSON.parse(lastLine);
+  } catch {
+    throw new Error(`${label} emitted malformed JSON`);
+  }
+}
+
 function renderPublishedCommand(command, options, contract) {
   const guest = contract.testbed.guest;
   const replacements = {
@@ -608,6 +622,39 @@ export function buildHostControlPlaneUnitPlan(options, contract) {
       String(HOST_CONTROL_PLANE_PORT),
       "--token",
       token,
+    ]),
+  ];
+}
+
+function baselineLibvirtUri(contract) {
+  const command = contract?.testbed?.reconstructCommand;
+  const index = Array.isArray(command) ? command.indexOf("--libvirt-uri") : -1;
+  return required(index >= 0 ? command[index + 1] : null, "baseline libvirt uri");
+}
+
+export function buildHeadlessVncActivatorUnitPlan(options, contract) {
+  const unit = `${HEADLESS_VNC_ACTIVATOR_UNIT}.service`;
+  return [
+    commandLine("sudo", ["systemctl", "stop", unit]),
+    commandLine("sudo", ["systemctl", "reset-failed", unit]),
+    commandLine("sudo", [
+      "systemd-run",
+      `--unit=${HEADLESS_VNC_ACTIVATOR_UNIT}`,
+      "--collect",
+      "--property=Type=simple",
+      "--property=Restart=no",
+      "--property=StandardOutput=journal",
+      "--property=StandardError=journal",
+      `--property=WorkingDirectory=${options.workspace}`,
+      process.execPath,
+      join(options.workspace, "scripts/testbed/local-testbed-host.mjs"),
+      "headless-vnc-activator",
+      "--libvirt-uri",
+      baselineLibvirtUri(contract),
+      "--domain-name",
+      baselineDomainName(contract),
+      "--state-root",
+      options.stateRoot,
     ]),
   ];
 }
@@ -1016,6 +1063,21 @@ async function startHostControlPlaneUnit(options, contract) {
   await run(start.command, start.args, { cwd: options.workspace });
 }
 
+async function stopHeadlessVncActivatorUnit(options, contract) {
+  const [stop, reset] = buildHeadlessVncActivatorUnitPlan(options, contract);
+  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
+  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
+}
+
+async function startHeadlessVncActivatorUnit(options, contract) {
+  const start = buildHeadlessVncActivatorUnitPlan(options, contract).at(-1);
+  await run(start.command, start.args, { cwd: options.workspace });
+}
+
 async function reconstruct(options) {
   const [contract, fixture] = await Promise.all([
     readFile(options.baselineContract, "utf8")
@@ -1056,6 +1118,7 @@ async function reconstruct(options) {
     };
   await stopServiceApiUnit(options);
   await stopHostControlPlaneUnit(options, contract);
+  await stopHeadlessVncActivatorUnit(options, contract);
   await run(
     "docker",
     ["rm", "-f", SERVICE_NAMES.postgres, SERVICE_NAMES.mqtt],
@@ -1066,91 +1129,48 @@ async function reconstruct(options) {
     ["volume", "rm", "-f", VOLUME_NAMES.postgres, VOLUME_NAMES.mqtt],
     { stdio: "ignore" },
   ).catch(() => undefined);
-  await run(plan[2].command, plan[2].args, { cwd: options.workspace });
-  for (const step of plan.slice(3, 10))
-    await run(step.command, step.args, {
+  try {
+    const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
       cwd: options.workspace,
-      env: step.env,
     });
-  await waitForPostgres();
-  await startServiceApiUnit(options);
-  const apiBaseUrl = "http://127.0.0.1:26849/api";
-  try {
-    await waitForApi(apiBaseUrl);
-  } catch (error) {
-    throw await serviceApiFailure(error);
-  }
-  await startHostControlPlaneUnit(options, contract);
-  let seeded;
-  try {
-    seeded = await seedThroughSupportedApis({
-      baseUrl: apiBaseUrl,
-      fixture,
-      hostPrivateAddress: options.hostPrivateAddress,
-    });
-  } catch (error) {
-    throw await serviceApiFailure(error);
-  }
-  const guestInput = {
-    schemaVersion: "vem-local-testbed-guest-input/v1",
-    runId: options.runId,
-    mode: options.mode,
-    runtimeBootstrap: {
-      schemaVersion: 1,
-      provisioningApiBaseUrl: `http://${options.hostPrivateAddress}:26849/api`,
-      hardwareModel: "vem-prod-24",
-      topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
-    },
-    hostControlPlane: {
-      endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
-      token: createHash("sha256")
-        .update(
-          `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
-        )
-        .digest("hex"),
-      runtimeBaseIdentity: runtimeBaseIdentity(contract),
-      targetIdentity: runtimeTargetIdentity(contract),
-      visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
-    },
-    fastSale: {
-      paymentOptionKey: "mock:mock",
-    },
-    claimCode: seeded.claim.claimCode,
-    machineCode: seeded.machine.code,
-    planogramVersion: seeded.planogramVersion,
-    interactiveUser: contract.testbed.guest.user,
-    visionAcceptance: seeded.visionAcceptance,
-  };
-  await writeFile(
-    join(options.stateRoot, "guest-input.json"),
-    `${JSON.stringify(guestInput, null, 2)}\n`,
-    "utf8",
-  );
-  for (const step of plan.slice(10, -1))
-    await run(step.command, step.args, { cwd: options.workspace });
-  const admitRunner = plan.at(-1);
-  await run(admitRunner.command, admitRunner.args, { cwd: options.workspace });
-  const result = {
-    schemaVersion: "vem-local-testbed-reconstruction/v1",
-    mode: options.mode,
-    runId: options.runId,
-    services: SERVICE_NAMES,
-    fixture: {
-      source: fixture.source,
-      productCount: fixture.products.length,
-      slots: seeded.slots,
-    },
-    guestInput: {
-      machineCode: seeded.machine.code,
-      planogramVersion: seeded.planogramVersion,
-      bootstrapPath: contract.testbed.guest.stagingPath,
-    },
-    runtimeTestbed: {
-      hostPrivateAddress: options.hostPrivateAddress,
-      platform: {
-        apiBaseUrl,
-        databaseUrl:
-          "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+    const reconstructHostResult = parseJsonLine(
+      reconstructHost.stdout,
+      "host reconstruction",
+    );
+    await startHeadlessVncActivatorUnit(options, contract);
+    for (const step of plan.slice(3, 10))
+      await run(step.command, step.args, {
+        cwd: options.workspace,
+        env: step.env,
+      });
+    await waitForPostgres();
+    await startServiceApiUnit(options);
+    const apiBaseUrl = "http://127.0.0.1:26849/api";
+    try {
+      await waitForApi(apiBaseUrl);
+    } catch (error) {
+      throw await serviceApiFailure(error);
+    }
+    await startHostControlPlaneUnit(options, contract);
+    let seeded;
+    try {
+      seeded = await seedThroughSupportedApis({
+        baseUrl: apiBaseUrl,
+        fixture,
+        hostPrivateAddress: options.hostPrivateAddress,
+      });
+    } catch (error) {
+      throw await serviceApiFailure(error);
+    }
+    const guestInput = {
+      schemaVersion: "vem-local-testbed-guest-input/v1",
+      runId: options.runId,
+      mode: options.mode,
+      runtimeBootstrap: {
+        schemaVersion: 1,
+        provisioningApiBaseUrl: `http://${options.hostPrivateAddress}:26849/api`,
+        hardwareModel: "vem-prod-24",
+        topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
       },
       hostControlPlane: {
         endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
@@ -1159,28 +1179,93 @@ async function reconstruct(options) {
             `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
           )
           .digest("hex"),
+        runtimeBaseIdentity: runtimeBaseIdentity(contract),
         targetIdentity: runtimeTargetIdentity(contract),
-      },
-      guest: {
-        remote: `${contract.testbed.guest.user}@${contract.testbed.guest.host}`,
-        host: contract.testbed.guest.host,
-        user: contract.testbed.guest.user,
-        identityFile: contract.testbed.guest.identityFile,
-        knownHostsFile: contract.testbed.guest.knownHostsFile,
-        handoffPath: GUEST_HANDOFF_PATH,
-        smokePath: GUEST_SMOKE_PATH,
         visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
       },
-      runtimeBaseIdentity: runtimeBaseIdentity(contract),
-      targetIdentity: runtimeTargetIdentity(contract),
-    },
-  };
-  await writeFile(
-    join(options.stateRoot, "reconstruction.json"),
-    `${JSON.stringify(result, null, 2)}\n`,
-    "utf8",
-  );
-  return result;
+      fastSale: {
+        paymentOptionKey: "mock:mock",
+      },
+      claimCode: seeded.claim.claimCode,
+      machineCode: seeded.machine.code,
+      planogramVersion: seeded.planogramVersion,
+      interactiveUser: contract.testbed.guest.user,
+      visionAcceptance: seeded.visionAcceptance,
+    };
+    await writeFile(
+      join(options.stateRoot, "guest-input.json"),
+      `${JSON.stringify(guestInput, null, 2)}\n`,
+      "utf8",
+    );
+    for (const step of plan.slice(10, -1))
+      await run(step.command, step.args, { cwd: options.workspace });
+    const admitRunner = plan.at(-1);
+    const admitHost = await runCapture(admitRunner.command, admitRunner.args, {
+      cwd: options.workspace,
+    });
+    const admitHostResult = parseJsonLine(admitHost.stdout, "host admission");
+    const result = {
+      schemaVersion: "vem-local-testbed-reconstruction/v1",
+      mode: options.mode,
+      runId: options.runId,
+      services: SERVICE_NAMES,
+      fixture: {
+        source: fixture.source,
+        productCount: fixture.products.length,
+        slots: seeded.slots,
+      },
+      guestInput: {
+        machineCode: seeded.machine.code,
+        planogramVersion: seeded.planogramVersion,
+        bootstrapPath: contract.testbed.guest.stagingPath,
+      },
+      runtimeTestbed: {
+        hostPrivateAddress: options.hostPrivateAddress,
+        platform: {
+          apiBaseUrl,
+          databaseUrl:
+            "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+        },
+        hostControlPlane: {
+          endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
+          token: createHash("sha256")
+            .update(
+              `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
+            )
+            .digest("hex"),
+          targetIdentity: runtimeTargetIdentity(contract),
+        },
+        guest: {
+          remote: `${contract.testbed.guest.user}@${contract.testbed.guest.host}`,
+          host: contract.testbed.guest.host,
+          user: contract.testbed.guest.user,
+          identityFile: contract.testbed.guest.identityFile,
+          knownHostsFile: contract.testbed.guest.knownHostsFile,
+          handoffPath: GUEST_HANDOFF_PATH,
+          smokePath: GUEST_SMOKE_PATH,
+          visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
+        },
+        runtimeBaseIdentity: runtimeBaseIdentity(contract),
+        targetIdentity: runtimeTargetIdentity(contract),
+        displayLifecycle: {
+          headlessVncActivatorUnit: `${HEADLESS_VNC_ACTIVATOR_UNIT}.service`,
+          reconstruct: reconstructHostResult,
+          admission: admitHostResult,
+        },
+      },
+    };
+    await writeFile(
+      join(options.stateRoot, "reconstruction.json"),
+      `${JSON.stringify(result, null, 2)}\n`,
+      "utf8",
+    );
+    return result;
+  } catch (error) {
+    await stopHeadlessVncActivatorUnit(options, contract).catch(
+      () => undefined,
+    );
+    throw error;
+  }
 }
 
 async function main() {

@@ -10,8 +10,20 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import {
+  recoverHeadlessVncActivator,
+  startHeadlessVncActivator,
+  VNC_ACTIVATOR_METADATA_FILE,
+} from "./kvm-baseline/linux-kvm-baseline.mjs";
+
+const PORTRAIT_WIDTH_PX = 1080;
+const PORTRAIT_HEIGHT_PX = 1920;
+const DISPLAY_PROOF_SCHEMA = "vem-local-testbed-display-admission-proof/v1";
+const ACTIVATOR_SERVICE_OWNER_SCHEMA =
+  "vem-local-testbed-headless-vnc-activator-owner/v1";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -157,6 +169,138 @@ $input = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 if ($input.schemaVersion -ne 'vem-local-testbed-guest-input/v1') { throw 'guest input schema is invalid' }
 if ($input.runId -ne ${quotePowerShell(runId)}) { throw 'guest input run does not match' }
 `;
+}
+
+function interactiveDisplayAssertion(expectedUser, width, height) {
+  return `$ErrorActionPreference = 'Stop'
+function Convert-QuserSessionLine([string]$Line) {
+  if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+  $match = [regex]::Match($Line, '^\\s*>?\\s*(?<user>\\S+)\\s+(?:(?<sessionName>\\S+)\\s+)?(?<id>\\d+)\\s+(?<state>\\S+)')
+  if (-not $match.Success) { return $null }
+  $user = [string]$match.Groups["user"].Value
+  if ($user.Contains('\\')) { $user = $user.Split('\\')[-1] }
+  [pscustomobject]@{
+    user = $user
+    sessionName = if ($match.Groups["sessionName"].Success) { [string]$match.Groups["sessionName"].Value } else { $null }
+    sessionId = [int]$match.Groups["id"].Value
+    state = [string]$match.Groups["state"].Value
+  }
+}
+function Test-ExpectedInteractiveSession($Session, [string]$User) {
+  if ($null -eq $Session) { return $false }
+  $state = ([string]$Session.state).Trim().ToLowerInvariant()
+  $sessionName = ([string]$Session.sessionName).Trim().ToLowerInvariant()
+  return (
+    [string]$Session.user -ieq $User -and
+    ($state -eq 'active' -or (
+      $sessionName -eq 'console' -and
+      $state -ne 'disc' -and
+      $state -ne 'disconnected' -and
+      $state -ne 'listen'
+    ))
+  )
+}
+function Get-CurrentDesktopScreenDimensions {
+  if ($null -eq ('VemDisplaySettings' -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+public struct VemDevMode {
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+  public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+  public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+  public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+  public short dmLogPixels;
+  public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency, dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+}
+public static class VemDisplaySettings {
+  public const int ENUM_CURRENT_SETTINGS = -1;
+  [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref VemDevMode devMode);
+}
+"@ -ErrorAction Stop
+  }
+  $mode = New-Object VemDevMode
+  $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([VemDevMode])
+  if (-not [VemDisplaySettings]::EnumDisplaySettings($null, [VemDisplaySettings]::ENUM_CURRENT_SETTINGS, [ref]$mode)) {
+    throw 'interactive desktop dimensions were not available'
+  }
+  [pscustomobject]@{
+    widthPx = [int]$mode.dmPelsWidth
+    heightPx = [int]$mode.dmPelsHeight
+    source = 'enum_display_settings'
+  }
+}
+$expectedUser = ${quotePowerShell(expectedUser)}
+$lines = @(quser 2>$null | Select-Object -Skip 1)
+$sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } | Where-Object { $null -ne $_ })
+$session = @($sessions | Where-Object { Test-ExpectedInteractiveSession $_ $expectedUser } | Select-Object -First 1)
+if ($session.Count -eq 0) { throw "interactive session for $expectedUser was not observed" }
+$screen = Get-CurrentDesktopScreenDimensions
+$proof = [ordered]@{
+  schemaVersion = ${quotePowerShell(DISPLAY_PROOF_SCHEMA)}
+  status = if ($screen.widthPx -eq ${width} -and $screen.heightPx -eq ${height}) { 'passed' } else { 'failed' }
+  expectedWidthPx = ${width}
+  expectedHeightPx = ${height}
+  widthPx = [int]$screen.widthPx
+  heightPx = [int]$screen.heightPx
+  sessionUser = [string]$session[0].user
+  sessionId = [int]$session[0].sessionId
+  source = [string]$screen.source
+  observedAt = (Get-Date).ToUniversalTime().ToString('o')
+}
+if ($proof.status -ne 'passed') {
+  throw ('interactive desktop display baseline is {0}x{1}, expected ${width}x${height}' -f $proof.widthPx, $proof.heightPx)
+}
+$proof | ConvertTo-Json -Compress
+`;
+}
+
+function parseJsonLine(stdout, label) {
+  const trimmed = String(stdout ?? "").trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${label} did not emit JSON`);
+  }
+  const lastLine = trimmed.split(/\r?\n/).at(-1);
+  try {
+    return JSON.parse(lastLine);
+  } catch {
+    throw new Error(`${label} emitted malformed JSON`);
+  }
+}
+
+function validateDisplayAdmissionProof(
+  proof,
+  { expectedUser, width = PORTRAIT_WIDTH_PX, height = PORTRAIT_HEIGHT_PX } = {},
+) {
+  if (!proof || typeof proof !== "object" || Array.isArray(proof)) {
+    throw new Error("interactive display admission proof is invalid");
+  }
+  if (
+    proof.schemaVersion !== DISPLAY_PROOF_SCHEMA ||
+    proof.status !== "passed" ||
+    proof.widthPx !== width ||
+    proof.heightPx !== height ||
+    String(proof.sessionUser ?? "").toLowerCase() !==
+      String(expectedUser).toLowerCase()
+  ) {
+    throw new Error(
+      `interactive display admission proof must pass at exactly ${width}x${height} for ${expectedUser}`,
+    );
+  }
+  return proof;
+}
+
+function headlessVncActivatorOwner(stateRoot, domainName) {
+  const systemStagingPath = absolute(stateRoot, "stateRoot");
+  return {
+    schemaVersion: ACTIVATOR_SERVICE_OWNER_SCHEMA,
+    purpose: "local-testbed-runtime",
+    domainName: required(domainName, "domainName"),
+    systemStagingPath: join(systemStagingPath, "headless-vnc-activator"),
+  };
 }
 
 export function renderAdmissionFilterXml(configInput, admitted = false) {
@@ -313,6 +457,23 @@ export function buildHostAdmissionPlan({
       ),
     },
     {
+      type: "assert-interactive-display",
+      command: "ssh",
+      expectedUser: config.ssh.user,
+      expectedWidth: PORTRAIT_WIDTH_PX,
+      expectedHeight: PORTRAIT_HEIGHT_PX,
+      args: sshArgs(
+        config,
+        `powershell -NoProfile -NonInteractive -EncodedCommand ${encodedPowerShell(
+          interactiveDisplayAssertion(
+            config.ssh.user,
+            PORTRAIT_WIDTH_PX,
+            PORTRAIT_HEIGHT_PX,
+          ),
+        )}`,
+      ),
+    },
+    {
       type: "write-admitted-filter",
       path: config.admissionFilterXmlPath,
       content: renderAdmissionFilterXml(config, true),
@@ -452,33 +613,62 @@ async function executeReconstruction(options) {
 
 async function executeAdmission(options) {
   const plan = buildHostAdmissionPlan(options);
-  await executeHostAdmissionPlan(plan);
+  const { displayAdmissionProof } = await executeHostAdmissionPlan(plan);
   return {
     action: "admit",
     runId: options.runId,
     domainName: options.config.domainName,
     guestInputPath: options.guestInputPath,
     runnerAdmitted: true,
+    displayAdmissionProof,
   };
 }
 
 export async function executeHostAdmissionPlan(
   plan,
-  { runCommand = run, writeText = writeFile } = {},
+  {
+    runCommand = run,
+    runCaptureCommand = runCapture,
+    writeText = writeFile,
+  } = {},
 ) {
+  let displayAdmissionProof = null;
   for (const step of plan) {
     if (step.type === "write-admitted-filter") {
       await writeText(step.path, step.content, "utf8");
+    } else if (step.type === "assert-interactive-display") {
+      const output = await runCaptureCommand(step.command, step.args);
+      displayAdmissionProof = validateDisplayAdmissionProof(
+        parseJsonLine(output.stdout, "interactive display admission proof"),
+        {
+          expectedUser: step.expectedUser,
+          width: step.expectedWidth,
+          height: step.expectedHeight,
+        },
+      );
     } else {
       await runCommand(step.command, step.args);
     }
   }
+  return { displayAdmissionProof };
 }
 
 export function parseHostOptions(args) {
   const action = args[0];
-  if (action !== "reconstruct" && action !== "admit") {
-    throw new Error("action must be reconstruct or admit");
+  if (
+    action !== "reconstruct" &&
+    action !== "admit" &&
+    action !== "headless-vnc-activator"
+  ) {
+    throw new Error("action must be reconstruct, admit, or headless-vnc-activator");
+  }
+  if (action === "headless-vnc-activator") {
+    return {
+      action,
+      libvirtUri: required(option(args, "libvirt-uri"), "libvirtUri"),
+      domainName: required(option(args, "domain-name"), "domainName"),
+      stateRoot: absolute(option(args, "state-root"), "stateRoot"),
+    };
   }
   const config = validateConfig({
     libvirtUri: option(args, "libvirt-uri"),
@@ -519,12 +709,102 @@ export function parseHostOptions(args) {
   };
 }
 
+function startProcess(command, args, options = {}) {
+  const child = spawn(command, args, {
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  const completion = new Promise((resolvePromise, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`${command} exited with ${code ?? "signal"}`));
+    });
+  });
+  return { child, completion };
+}
+
+async function executeHeadlessVncActivatorService(options) {
+  const owner = headlessVncActivatorOwner(options.stateRoot, options.domainName);
+  const metadataPath = join(owner.systemStagingPath, VNC_ACTIVATOR_METADATA_FILE);
+  await mkdir(owner.systemStagingPath, { recursive: true });
+  const recovered = await recoverHeadlessVncActivator({
+    metadataPath,
+    owner,
+  });
+  if (!recovered.recovered) {
+    throw new Error("headless VNC activator metadata could not be recovered");
+  }
+  await rm(owner.systemStagingPath, { recursive: true, force: true });
+  await mkdir(owner.systemStagingPath, { recursive: true });
+  let stopping = false;
+  let resolveStop;
+  const stopSignal = new Promise((resolvePromise) => {
+    resolveStop = resolvePromise;
+  });
+  const onSignal = () => {
+    stopping = true;
+    resolveStop();
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(signal, onSignal);
+  }
+  let activator;
+  try {
+    activator = await startHeadlessVncActivator({
+      domainName: options.domainName,
+      libvirtUri: options.libvirtUri,
+      metadataPath,
+      owner,
+      runCommand: runCapture,
+      startProcess,
+      commands: {
+        width: PORTRAIT_WIDTH_PX,
+        height: PORTRAIT_HEIGHT_PX,
+      },
+    });
+    process.stdout.write(
+      `${JSON.stringify({
+        action: "headless-vnc-activator",
+        domainName: options.domainName,
+        endpoint: activator.endpoint,
+        owner,
+      })}\n`,
+    );
+    await Promise.race([
+      stopSignal,
+      activator.failure.then((error) => {
+        throw error;
+      }),
+    ]);
+  } finally {
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+      process.removeListener(signal, onSignal);
+    }
+    if (activator) {
+      await activator.stop().catch((error) => {
+        if (!stopping) throw error;
+      });
+    }
+    await rm(owner.systemStagingPath, { recursive: true, force: true });
+  }
+  return {
+    action: "headless-vnc-activator",
+    domainName: options.domainName,
+    stopped: true,
+  };
+}
+
 async function main() {
   const options = parseHostOptions(process.argv.slice(2));
   const result =
     options.action === "reconstruct"
       ? await executeReconstruction(options)
-      : await executeAdmission(options);
+      : options.action === "admit"
+        ? await executeAdmission(options)
+        : await executeHeadlessVncActivatorService(options);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
