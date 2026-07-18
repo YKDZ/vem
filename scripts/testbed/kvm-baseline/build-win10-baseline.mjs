@@ -1814,7 +1814,8 @@ async function buildWin10BaselineImpl(
           nextReleaseId,
         );
         const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
-        const publishedDomainUuid = await existingPublishedDomainUuid(config);
+        const publishedDomainUuid =
+          (await existingPublishedDomainUuid(config)) ?? randomUUID();
         await writeFile(
           finalXmlPath,
           renderLibvirtDomainXml(publishedProfile, {
