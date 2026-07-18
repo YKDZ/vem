@@ -253,12 +253,14 @@ function runnerAdmissionAssertion(
   const registrationSetup = runnerRegistrationToken
     ? `& (Join-Path $runnerRoot 'config.cmd') remove --token ${quotePowerShell(runnerRemovalToken)}
 if ($LASTEXITCODE -ne 0) { throw "actions runner removal failed with exit code $LASTEXITCODE" }
+Set-RunnerAdmissionPhase 'removed-old-runner'
 $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
 $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
 if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
+Set-RunnerAdmissionPhase 'configured-new-runner'
 $registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$registeredRunner.agentName -ne 'forest-win10-runtime-current') { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
 `
@@ -281,8 +283,12 @@ $preservedLines = @($existingLines | Where-Object { $_ -notmatch '^(HTTP_PROXY|H
 $runnerRoot = 'C:\\actions-runner'
 $environmentPath = 'C:\\actions-runner\\.env'
 $serviceIdentityPath = Join-Path $runnerRoot '.service'
+$phasePath = 'C:\\ProgramData\\VEM\\testbed\\runner-admission-phase.txt'
+function Set-RunnerAdmissionPhase([string]$Phase) { [System.IO.File]::WriteAllText($phasePath, $Phase, [System.Text.UTF8Encoding]::new($false)) }
+Set-RunnerAdmissionPhase 'started'
 Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
-${registrationSetup}if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
+${registrationSetup}Set-RunnerAdmissionPhase 'identity-ready'
+if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
@@ -291,6 +297,7 @@ $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
 Restart-Service -Name $service.Name -Force -ErrorAction Stop
 $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
+Set-RunnerAdmissionPhase 'waiting-listener'
 $deadline = (Get-Date).ToUniversalTime().AddSeconds(${RUNNER_ADMISSION_TIMEOUT_SECONDS})
 $latestTail = ''
 while ((Get-Date).ToUniversalTime() -lt $deadline) {
@@ -307,6 +314,7 @@ while ((Get-Date).ToUniversalTime() -lt $deadline) {
     if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
     $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected|A session for this runner already exists')
     if ($marker.Success) {
+      Set-RunnerAdmissionPhase 'listener-ready'
       [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name; diagnosticOffset = $offset } | ConvertTo-Json -Compress
       exit 0
     }
