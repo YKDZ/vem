@@ -263,8 +263,8 @@ async fn validate_preclaim_platform_health_response(
             NetworkEvidenceStatus::Ready,
             "Continue with machine claim. MQTT is verified separately from the machine's own broker connection.",
         )],
-        operator_guidance:
-            "已验证平台 API；本机网络和 MQTT 会作为独立证据显示，可以继续领取机器。".to_string(),
+        operator_guidance: "已验证平台 API；本机网络和 MQTT 会作为独立证据显示，可以继续领取机器。"
+            .to_string(),
         updated_at: crate::state::store::now_iso(),
     }
 }
@@ -1049,7 +1049,8 @@ fn observed_windows_wifi_response(
                 pending_local_address_diagnostic(),
                 pending_local_default_route_diagnostic(),
             ],
-            "Wi-Fi 身份验证失败。请核对密码；此结果来自 Windows WLAN 原生 reason code。".to_string(),
+            "Wi-Fi 身份验证失败。请核对密码；此结果来自 Windows WLAN 原生 reason code。"
+                .to_string(),
         ),
         WlanAssociationState::AssociationFailed(reason_code) => (
             NetworkSetupStatus::Failed,
@@ -1058,7 +1059,9 @@ fn observed_windows_wifi_response(
                     "local_adapter",
                     "error",
                     "WIFI_ASSOCIATION_FAILED",
-                    format!("Windows could not associate the requested SSID (reason code {reason_code})"),
+                    format!(
+                        "Windows could not associate the requested SSID (reason code {reason_code})"
+                    ),
                     NetworkEvidenceSource::LocalAdapter,
                     NetworkEvidenceStatus::Failed,
                     "Check SSID visibility, radio signal and access-point policy, then retry.",
@@ -1085,81 +1088,77 @@ fn observed_windows_wifi_response(
             ],
             "等待 Wi-Fi 关联超时。请检查信号和接入点状态后重试。".to_string(),
         ),
-        WlanAssociationState::Associated if !observation.local_address_ready => {
-            (
-                NetworkSetupStatus::Failed,
-                vec![
-                    associated_adapter_diagnostic(),
-                    diagnostic_with_evidence(
-                        "local_address",
-                        "error",
-                        "LOCAL_ADDRESS_UNAVAILABLE",
-                        "The requested SSID is associated but its adapter has no usable IPv4 or IPv6 address",
-                        NetworkEvidenceSource::LocalAddress,
-                        NetworkEvidenceStatus::Failed,
-                        "Check DHCP, VLAN assignment or static address configuration on this Wi-Fi network.",
-                    ),
-                    pending_local_default_route_diagnostic(),
-                ],
-                "Wi-Fi 已关联，但该无线网卡未取得可用 IPv4/IPv6 地址。请检查 DHCP 或 VLAN 后重试。".to_string(),
-            )
-        }
-        WlanAssociationState::Associated if !observation.default_route_ready => {
-            (
-                NetworkSetupStatus::Failed,
-                vec![
-                    associated_adapter_diagnostic(),
-                    local_address_ready_diagnostic(),
-                    diagnostic_with_evidence(
-                        "local_default_route",
-                        "error",
-                        "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
-                        "The requested SSID adapter has an address but no usable default route",
-                        NetworkEvidenceSource::LocalDefaultRoute,
-                        NetworkEvidenceStatus::Failed,
-                        "Check the Wi-Fi gateway/DHCP router option and retry; routes on VPN or virtual adapters do not satisfy this check.",
-                    ),
-                ],
-                "Wi-Fi 已关联且已取得地址，但该无线网卡没有默认路由。请检查网关或 DHCP 路由选项。".to_string(),
-            )
-        }
-        WlanAssociationState::Associated => {
-            (
-                NetworkSetupStatus::Connected,
-                vec![
-                    associated_adapter_diagnostic(),
-                    local_address_ready_diagnostic(),
-                    diagnostic_with_evidence(
-                        "local_default_route",
-                        "ok",
-                        "LOCAL_DEFAULT_ROUTE_READY",
-                        "The requested SSID adapter owns a usable default route",
-                        NetworkEvidenceSource::LocalDefaultRoute,
-                        NetworkEvidenceStatus::Ready,
-                        "Continue to verify Platform API and MQTT independently.",
-                    ),
-                    diagnostic_with_evidence(
-                        "provisioning_endpoint",
-                        "unknown",
-                        "PLATFORM_API_PENDING",
-                        "Platform API reachability must be verified separately",
-                        NetworkEvidenceSource::PlatformApi,
-                        NetworkEvidenceStatus::Pending,
-                        "Run the Platform API probe after local network readiness succeeds.",
-                    ),
-                    diagnostic_with_evidence(
-                        "mqtt",
-                        "unknown",
-                        "MQTT_BROKER_NOT_PROVISIONED",
-                        "A machine-specific MQTT broker is not provisioned during pre-claim setup",
-                        NetworkEvidenceSource::MqttBroker,
-                        NetworkEvidenceStatus::NotConfigured,
-                        "Complete machine claim before checking the machine's own MQTT CONNACK.",
-                    ),
-                ],
-                "已确认所选 Wi-Fi 的关联、地址和默认路由；平台 API 与 MQTT 会独立验证。".to_string(),
-            )
-        }
+        WlanAssociationState::Associated if !observation.local_address_ready => (
+            NetworkSetupStatus::Failed,
+            vec![
+                associated_adapter_diagnostic(),
+                diagnostic_with_evidence(
+                    "local_address",
+                    "error",
+                    "LOCAL_ADDRESS_UNAVAILABLE",
+                    "The requested SSID is associated but its adapter has no usable IPv4 or IPv6 address",
+                    NetworkEvidenceSource::LocalAddress,
+                    NetworkEvidenceStatus::Failed,
+                    "Check DHCP, VLAN assignment or static address configuration on this Wi-Fi network.",
+                ),
+                pending_local_default_route_diagnostic(),
+            ],
+            "Wi-Fi 已关联，但该无线网卡未取得可用 IPv4/IPv6 地址。请检查 DHCP 或 VLAN 后重试。"
+                .to_string(),
+        ),
+        WlanAssociationState::Associated if !observation.default_route_ready => (
+            NetworkSetupStatus::Failed,
+            vec![
+                associated_adapter_diagnostic(),
+                local_address_ready_diagnostic(),
+                diagnostic_with_evidence(
+                    "local_default_route",
+                    "error",
+                    "LOCAL_DEFAULT_ROUTE_UNAVAILABLE",
+                    "The requested SSID adapter has an address but no usable default route",
+                    NetworkEvidenceSource::LocalDefaultRoute,
+                    NetworkEvidenceStatus::Failed,
+                    "Check the Wi-Fi gateway/DHCP router option and retry; routes on VPN or virtual adapters do not satisfy this check.",
+                ),
+            ],
+            "Wi-Fi 已关联且已取得地址，但该无线网卡没有默认路由。请检查网关或 DHCP 路由选项。"
+                .to_string(),
+        ),
+        WlanAssociationState::Associated => (
+            NetworkSetupStatus::Connected,
+            vec![
+                associated_adapter_diagnostic(),
+                local_address_ready_diagnostic(),
+                diagnostic_with_evidence(
+                    "local_default_route",
+                    "ok",
+                    "LOCAL_DEFAULT_ROUTE_READY",
+                    "The requested SSID adapter owns a usable default route",
+                    NetworkEvidenceSource::LocalDefaultRoute,
+                    NetworkEvidenceStatus::Ready,
+                    "Continue to verify Platform API and MQTT independently.",
+                ),
+                diagnostic_with_evidence(
+                    "provisioning_endpoint",
+                    "unknown",
+                    "PLATFORM_API_PENDING",
+                    "Platform API reachability must be verified separately",
+                    NetworkEvidenceSource::PlatformApi,
+                    NetworkEvidenceStatus::Pending,
+                    "Run the Platform API probe after local network readiness succeeds.",
+                ),
+                diagnostic_with_evidence(
+                    "mqtt",
+                    "unknown",
+                    "MQTT_BROKER_NOT_PROVISIONED",
+                    "A machine-specific MQTT broker is not provisioned during pre-claim setup",
+                    NetworkEvidenceSource::MqttBroker,
+                    NetworkEvidenceStatus::NotConfigured,
+                    "Complete machine claim before checking the machine's own MQTT CONNACK.",
+                ),
+            ],
+            "已确认所选 Wi-Fi 的关联、地址和默认路由；平台 API 与 MQTT 会独立验证。".to_string(),
+        ),
     };
 
     NetworkSettingsResponse {

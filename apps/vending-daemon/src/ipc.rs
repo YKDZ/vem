@@ -7,31 +7,31 @@ use std::{
 };
 
 use axum::{
-    Router,
     extract::{
-        Path as AxumPath, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
+        Path as AxumPath, Query, State, WebSocketUpgrade,
     },
     http::{
-        HeaderMap, Method, StatusCode,
         header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
+        HeaderMap, Method, StatusCode,
     },
     response::{IntoResponse, Json},
     routing::{get, post},
+    Router,
 };
 use sha2::Digest;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
     device_binding::{self, DeviceRoleRuntimeReadiness, LocalDeviceRole, LocalSerialRoleBinding},
-    events::{DaemonEvent, scanner_runtime_status_contract},
+    events::{scanner_runtime_status_contract, DaemonEvent},
     hardware::HardwareSupervisor,
     local_runtime_settings::{
-        AudioPreferences, LocalRuntimeSettings, ScannerProtocolParameters,
-        effective_scanner_protocol,
+        effective_scanner_protocol, AudioPreferences, LocalRuntimeSettings,
+        ScannerProtocolParameters,
     },
     logs,
     natural_context::MachineNaturalContextSnapshot,
@@ -43,11 +43,11 @@ use crate::{
     runtime_configuration::RuntimeSources,
     scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     state::{
-        LocalStateStore,
         store::{
-            MachinePlanogramInput, OUTBOX_MAX_EVENTS, PhysicalStockAttestationInput,
-            StockMaintenanceBatchInput, StockMovementInput,
+            MachinePlanogramInput, PhysicalStockAttestationInput, StockMaintenanceBatchInput,
+            StockMovementInput, OUTBOX_MAX_EVENTS,
         },
+        LocalStateStore,
     },
     transaction::TransactionStateMachine,
 };
@@ -1175,9 +1175,94 @@ fn capability_fingerprint(snapshot: &daemon_ipc_contracts::SaleStartCapabilitySn
     .expect("capability snapshot is serializable")
 }
 
+async fn apply_fail_closed_cached_facts(
+    ctx: &IpcContext,
+    mut snapshot: daemon_ipc_contracts::SaleStartCapabilitySnapshot,
+) -> daemon_ipc_contracts::SaleStartCapabilitySnapshot {
+    let mqtt_connected = ctx.ui.status_cache.sync.read().await.mqtt_connected;
+    if !mqtt_connected
+        && !snapshot
+            .blockers
+            .iter()
+            .any(|reason| reason.code == "MQTT_UNAVAILABLE")
+    {
+        snapshot.blockers.push(capability_reason(
+            "MQTT_UNAVAILABLE",
+            "sync",
+            "network-authorized sale synchronization is unavailable",
+        ));
+    }
+
+    let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+    let (scanner_ready, scanner_message) = scanner_payment_readiness(&scanner);
+    if !scanner_ready {
+        for option in &mut snapshot.payment_options.options {
+            if option.method == "payment_code" {
+                option.ready = false;
+                option.disabled_reason = Some(scanner_message.clone());
+            }
+        }
+        snapshot
+            .degradations
+            .retain(|reason| reason.component != "scanner");
+        if snapshot
+            .payment_options
+            .options
+            .iter()
+            .any(|option| option.method == "payment_code")
+        {
+            snapshot.degradations.push(capability_degradation(
+                scanner.code,
+                "scanner",
+                scanner_message,
+            ));
+        }
+    }
+
+    let payment_ready = snapshot
+        .payment_options
+        .options
+        .iter()
+        .any(|option| option.ready);
+    snapshot.payment_options.ready = payment_ready;
+    snapshot.payment_options.default_option_key = snapshot
+        .payment_options
+        .default_option_key
+        .as_deref()
+        .and_then(|key| {
+            snapshot
+                .payment_options
+                .options
+                .iter()
+                .find(|option| option.option_key == key && option.ready)
+        })
+        .or_else(|| {
+            snapshot
+                .payment_options
+                .options
+                .iter()
+                .find(|option| option.ready)
+        })
+        .map(|option| option.option_key.clone());
+    if !payment_ready
+        && !snapshot
+            .blockers
+            .iter()
+            .any(|reason| reason.code == "NO_PAYMENT_OPTIONS")
+    {
+        snapshot.blockers.push(capability_reason(
+            "NO_PAYMENT_OPTIONS",
+            "payment_options",
+            "no profile-supported payment option is ready",
+        ));
+    }
+    snapshot.can_start_sale = snapshot.blockers.is_empty();
+    snapshot
+}
+
 async fn sale_start_capability_snapshot(
     ctx: &IpcContext,
-    _force_refresh: bool,
+    require_fresh_observation: bool,
 ) -> Result<daemon_ipc_contracts::SaleStartCapabilitySnapshot, String> {
     let mut state = ctx.ui.status_cache.sale_start_state.lock().await;
     let observation = observe_sale_start_capability(ctx).await;
@@ -1189,6 +1274,9 @@ async fn sale_start_capability_snapshot(
             crate::state::store::now_iso(),
         ),
         Err(error) => {
+            if require_fresh_observation {
+                return Err(error);
+            }
             let Some(mut stale) = state.last_accepted.clone() else {
                 return Err(error);
             };
@@ -1200,7 +1288,7 @@ async fn sale_start_capability_snapshot(
                 "sale_start_capability",
                 error,
             ));
-            stale
+            apply_fail_closed_cached_facts(ctx, stale).await
         }
     };
     let fingerprint = capability_fingerprint(&provisional);
@@ -1239,7 +1327,7 @@ pub(crate) async fn refresh_sale_start_capability(ctx: &IpcContext) {
 }
 
 pub(crate) async fn invalidate_sale_start_capability(ctx: &IpcContext) {
-    let _ = sale_start_capability_snapshot(ctx, true).await;
+    let _ = sale_start_capability_snapshot(ctx, false).await;
 }
 
 fn scanner_payment_readiness(
@@ -1299,7 +1387,11 @@ pub(crate) fn local_payment_code_submit_guard(
             }
             let scanner = cache.scanner.read().await.clone();
             let (ready, message) = scanner_payment_readiness(&scanner);
-            if ready { Ok(()) } else { Err(message) }
+            if ready {
+                Ok(())
+            } else {
+                Err(message)
+            }
         })
     })
 }
@@ -1362,7 +1454,9 @@ async fn create_order(
             "quantity must be exactly 1 for lower controller protocol v1",
         );
     }
-    let capability = match sale_start_capability_snapshot(&ctx, false).await {
+    // A display read may retain the last accepted snapshot while it updates,
+    // but creating an order must observe every authoritative input now.
+    let capability = match sale_start_capability_snapshot(&ctx, true).await {
         Ok(value) => value,
         Err(error) => {
             return error_response(
@@ -2491,7 +2585,7 @@ async fn clear_runtime_binding(
     if let Err(safety) = require_binding_mutation_safe(&ctx).await {
         return binding_mutation_safety_response(safety);
     }
-    let (previous, revision) = match ctx
+    let (_previous, revision) = match ctx
         .runtime_sources
         .local_device_binding_snapshot(role)
         .await
@@ -2505,12 +2599,37 @@ async fn clear_runtime_binding(
             );
         }
     };
-    let _ = previous;
+    if role == LocalDeviceRole::Scanner {
+        *ctx.ui.status_cache.scanner.write().await = scanner_health(
+            "SCANNER_BINDING_CLEARING",
+            "scanner binding is being cleared",
+        );
+        invalidate_sale_start_capability(&ctx).await;
+        if let Err(error) = ctx.scanner_runtime.stop().await {
+            *ctx.ui.status_cache.scanner.write().await = scanner_health(
+                "SCANNER_STOP_FAILED",
+                &format!("scanner binding was not cleared because stop failed: {error}"),
+            );
+            invalidate_sale_start_capability(&ctx).await;
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "scanner_binding_stop_failed",
+                error,
+            );
+        }
+    }
     if let Err(error) = ctx
         .runtime_sources
         .restore_local_device_binding_if_revision(role, None, &revision)
         .await
     {
+        if role == LocalDeviceRole::Scanner {
+            *ctx.ui.status_cache.scanner.write().await = scanner_health(
+                "SCANNER_BINDING_CLEAR_PERSIST_FAILED",
+                "scanner binding remains configured but its runtime is stopped",
+            );
+            invalidate_sale_start_capability(&ctx).await;
+        }
         return error_response(
             StatusCode::CONFLICT,
             "device_binding_persist_conflict",
@@ -2525,7 +2644,8 @@ async fn clear_runtime_binding(
             *ctx.ui.status_cache.hardware.write().await = ctx.hardware.self_check().await;
         }
         LocalDeviceRole::Scanner => {
-            let _ = ctx.scanner_runtime.stop().await;
+            *ctx.ui.status_cache.scanner.write().await =
+                scanner_health("SCANNER_BINDING_CLEARED", "scanner binding cleared");
         }
     }
     invalidate_sale_start_capability(&ctx).await;
@@ -2987,8 +3107,8 @@ mod tests {
     };
     use tower::ServiceExt;
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
         matchers::{body_json, method, path},
+        Mock, MockServer, ResponseTemplate,
     };
 
     use super::*;
@@ -3156,14 +3276,88 @@ mod tests {
             .await
             .expect("clear response");
         assert_eq!(cleared.status(), StatusCode::OK);
-        assert!(
-            ctx.runtime_sources
-                .load_local_runtime_settings()
-                .await
-                .expect("settings")
-                .scanner_protocol
-                .is_none()
-        );
+        assert!(ctx
+            .runtime_sources
+            .load_local_runtime_settings()
+            .await
+            .expect("settings")
+            .scanner_protocol
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn clearing_scanner_binding_immediately_replaces_scanner_ready_status() {
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        tokio::fs::write(
+            temp.path().join("runtime-bootstrap.json"),
+            serde_json::json!({ "schemaVersion": 1, "provisioningApiBaseUrl": server.uri(), "hardwareModel": "vem-prod-24", "topology": { "identity": "vem-prod-24", "version": "v1" } }).to_string(),
+        )
+        .await
+        .expect("bootstrap");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+        let (_, revision) = ctx
+            .runtime_sources
+            .local_device_binding_snapshot(LocalDeviceRole::Scanner)
+            .await
+            .expect("binding snapshot");
+        ctx.runtime_sources
+            .save_local_device_binding_if_revision(
+                LocalDeviceRole::Scanner,
+                LocalSerialRoleBinding {
+                    identity: device_binding::StableSerialDeviceIdentity {
+                        identity_key: "container:scanner-01".to_string(),
+                        instance_id: Some("USB\\SCANNER-01".to_string()),
+                        container_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+                        hardware_ids: vec!["USB\\VID_1A86&PID_55D4".to_string()],
+                        serial_number: Some("SCANNER-01".to_string()),
+                    },
+                    confirmed_at: "2026-07-17T00:00:00Z".to_string(),
+                    confirmed_by: "field-operator".to_string(),
+                    test_evidence_code: "SCANNER_READY".to_string(),
+                },
+                &revision,
+            )
+            .await
+            .expect("save scanner binding");
+        *ctx.ui.status_cache.scanner.write().await = vending_core::scanner::ScannerHealthSnapshot {
+            online: true,
+            adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+            port: Some("COM6".to_string()),
+            level: vending_core::health::HealthLevel::Ok,
+            code: "SCANNER_READY".to_string(),
+            message: "scanner ready".to_string(),
+            updated_at: crate::state::store::now_iso(),
+        };
+
+        let response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/runtime-configuration/intents/hardware-bindings/scanner/clear")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("clear request"),
+            )
+            .await
+            .expect("clear response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let scanner = ctx.ui.status_cache.scanner.read().await;
+        assert!(!scanner.online);
+        assert_eq!(scanner.code, "SCANNER_BINDING_CLEARED");
+        drop(scanner);
+        assert!(ctx
+            .runtime_sources
+            .load_local_runtime_settings()
+            .await
+            .expect("settings")
+            .scanner_binding
+            .is_none());
     }
 
     #[test]
@@ -3386,22 +3580,79 @@ mod tests {
             DaemonEvent::SaleStartCapabilityChanged { revision, .. } if revision == blocked.revision.get()
         ));
 
+        let mut scanner = ctx.ui.status_cache.scanner.write().await;
+        scanner.online = true;
+        scanner.code = "SCANNER_READY".to_string();
+        scanner.message = "scanner ready".to_string();
+        scanner.updated_at = crate::state::store::now_iso();
+        drop(scanner);
+        let restored = sale_start_capability_snapshot(&ctx, false)
+            .await
+            .expect("restored capability");
+        assert!(restored.can_start_sale);
+
         Mock::given(method("GET"))
             .and(path("/machine-orders/payment-options"))
             .respond_with(ResponseTemplate::new(503))
             .with_priority(1)
             .mount(&server)
             .await;
+        ctx.ui.status_cache.scanner.write().await.online = false;
         let stale = sale_start_capability_snapshot(&ctx, false)
             .await
             .expect("last accepted stale capability");
         assert_eq!(stale.generation.to_string(), generation);
-        assert!(stale.revision.get() > blocked.revision.get());
-        assert!(
-            stale
-                .degradations
-                .iter()
-                .any(|reason| reason.code == "CAPABILITY_STALE")
+        assert!(stale.revision.get() > restored.revision.get());
+        assert!(!stale.can_start_sale);
+        assert!(stale
+            .payment_options
+            .options
+            .iter()
+            .all(|option| option.method != "payment_code" || !option.ready));
+        assert!(stale
+            .degradations
+            .iter()
+            .any(|reason| reason.code == "CAPABILITY_STALE"));
+
+        let stale_order = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/intents/create-order")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "inventoryId": "550e8400-e29b-41d4-a716-446655440012",
+                            "quantity": 1,
+                            "planogramVersion": "PLAN-CAPABILITY",
+                            "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                            "slotCode": "A1",
+                            "paymentMethod": "payment_code",
+                            "paymentProviderCode": "alipay",
+                            "profileSnapshot": null,
+                            "idempotencyKey": "CAPABILITY-STALE-REJECTED"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("stale create order request"),
+            )
+            .await
+            .expect("stale create order response");
+        let stale_order_status = stale_order.status();
+        let stale_order_body = axum::body::to_bytes(stale_order.into_body(), usize::MAX)
+            .await
+            .expect("stale create order body");
+        assert_eq!(
+            stale_order_status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            String::from_utf8_lossy(&stale_order_body)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&stale_order_body)
+                .expect("stale create order json")["code"],
+            "create_order_blocked"
         );
 
         let restarted_cache =

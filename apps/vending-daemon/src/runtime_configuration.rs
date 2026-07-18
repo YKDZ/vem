@@ -1,8 +1,8 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
 };
 
@@ -16,11 +16,11 @@ use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use crate::{
     device_binding::{LocalDeviceRole, LocalSerialRoleBinding},
     local_runtime_settings::LocalRuntimeSettingsStore,
-    provisioning::{MachineProvisioningProfile, validate_machine_provisioning_profile},
+    provisioning::{validate_machine_provisioning_profile, MachineProvisioningProfile},
     secret::{
-        MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT, MQTT_PASSWORD_ACCOUNT,
-        MQTT_PASSWORD_ROLLBACK_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
-        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT, SecretStore,
+        SecretStore, MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT,
+        MQTT_PASSWORD_ACCOUNT, MQTT_PASSWORD_ROLLBACK_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
     },
 };
 
@@ -845,8 +845,25 @@ async fn read_optional_json(
 }
 
 pub(crate) async fn remove_optional_file(path: &Path) -> Result<(), String> {
+    if !fs::try_exists(path)
+        .await
+        .map_err(|error| format!("inspect {} failed: {error}", path.display()))?
+    {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "runtime configuration path has no parent".to_string())?;
+    let directory_sync = crate::platform_fs::prepare_directory_sync(parent)
+        .await
+        .map_err(|error| format!("prepare runtime configuration directory sync failed: {error}"))?;
     match fs::remove_file(path).await {
-        Ok(()) => sync_runtime_configuration_parent(path).await,
+        Ok(()) => directory_sync.sync().await.map_err(|error| {
+            format!(
+                "removed {} but could not durably sync its parent directory: {error}",
+                path.display()
+            )
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("remove {} failed: {error}", path.display())),
     }
@@ -859,6 +876,9 @@ pub(crate) async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<()
     fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("create runtime configuration dir failed: {error}"))?;
+    let directory_sync = crate::platform_fs::prepare_directory_sync(parent)
+        .await
+        .map_err(|error| format!("prepare runtime configuration directory sync failed: {error}"))?;
     let staged = path.with_extension("json.tmp");
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -877,20 +897,12 @@ pub(crate) async fn write_atomic_bytes(path: &Path, payload: &[u8]) -> Result<()
     fs::rename(&staged, path)
         .await
         .map_err(|error| format!("commit runtime configuration failed: {error}"))?;
-    sync_runtime_configuration_directory(parent).await
-}
-
-async fn sync_runtime_configuration_parent(path: &Path) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "runtime configuration path has no parent".to_string())?;
-    sync_runtime_configuration_directory(parent).await
-}
-
-async fn sync_runtime_configuration_directory(path: &Path) -> Result<(), String> {
-    crate::platform_fs::sync_directory(path)
-        .await
-        .map_err(|error| format!("sync runtime configuration directory failed: {error}"))
+    directory_sync.sync().await.map_err(|error| {
+        format!(
+            "committed runtime configuration at {} but could not durably sync its parent directory: {error}",
+            path.display()
+        )
+    })
 }
 
 async fn credential_snapshot(

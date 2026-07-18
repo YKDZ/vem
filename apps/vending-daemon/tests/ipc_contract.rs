@@ -1,11 +1,11 @@
 mod support;
 
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{extract::State, routing::post, Json, Router};
 use reqwest::StatusCode;
 use support::process::DaemonHarness;
 use tokio_tungstenite::connect_async;
@@ -220,17 +220,15 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
             .expect("profile cache");
     assert!(profile_cache.contains("MACHINE-CLAIM-IPC"));
     assert!(!profile_cache.contains("machine-secret-claim-000000000000000"));
-    assert!(
-        tokio::fs::try_exists(
-            daemon
-                .data_dir
-                .parent()
-                .expect("runtime root")
-                .join("secrets/machine_secret.dpapi"),
-        )
-        .await
-        .expect("secret path")
-    );
+    assert!(tokio::fs::try_exists(
+        daemon
+            .data_dir
+            .parent()
+            .expect("runtime root")
+            .join("secrets/machine_secret.dpapi"),
+    )
+    .await
+    .expect("secret path"));
     assert!(
         !tokio::fs::try_exists(daemon.data_dir.join("config/local-settings.json"))
             .await

@@ -1186,11 +1186,9 @@ mod tests {
             "DEVICE_IDENTITY_NOT_BINDABLE"
         );
         assert_eq!(snapshot.discovery_diagnostics[0].current_port, "COM8");
-        assert!(
-            snapshot.discovery_diagnostics[0]
-                .message
-                .contains("physical USB")
-        );
+        assert!(snapshot.discovery_diagnostics[0]
+            .message
+            .contains("physical USB"));
     }
 
     #[test]

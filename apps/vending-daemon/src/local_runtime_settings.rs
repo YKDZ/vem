@@ -339,11 +339,9 @@ mod tests {
         let restarted = LocalRuntimeSettingsStore::new(data_dir);
         let settings = restarted.load().await.expect("restart load");
         assert!(settings.scanner_binding.is_none());
-        assert!(
-            !fs::try_exists(restarted.path())
-                .await
-                .expect("settings path state")
-        );
+        assert!(!fs::try_exists(restarted.path())
+            .await
+            .expect("settings path state"));
     }
 
     #[test]

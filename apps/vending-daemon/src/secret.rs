@@ -110,6 +110,9 @@ async fn write_secret_file_durable(
     label: &str,
 ) -> Result<(), String> {
     let temp_path = path.with_extension("tmp");
+    let directory_sync = crate::platform_fs::prepare_directory_sync(dir)
+        .await
+        .map_err(|error| format!("prepare {label} directory sync failed: {error}"))?;
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -128,21 +131,49 @@ async fn write_secret_file_durable(
     tokio::fs::rename(&temp_path, path)
         .await
         .map_err(|error| format!("replace {label} failed: {error}"))?;
-    harden_machine_protected_file_permissions(path).await?;
-    sync_secret_directory(dir, label).await
+    directory_sync.sync().await.map_err(|error| {
+        format!("replaced {label} but could not durably sync its directory: {error}")
+    })
 }
 
-async fn sync_secret_directory(dir: &Path, label: &str) -> Result<(), String> {
-    crate::platform_fs::sync_directory(dir)
+async fn remove_secret_file_durable(dir: &Path, path: &Path, label: &str) -> Result<(), String> {
+    if !tokio::fs::try_exists(path)
         .await
-        .map_err(|error| format!("sync {label} directory failed: {error}"))
+        .map_err(|error| format!("inspect {label} failed: {error}"))?
+    {
+        return Ok(());
+    }
+    let directory_sync = crate::platform_fs::prepare_directory_sync(dir)
+        .await
+        .map_err(|error| format!("prepare {label} directory sync failed: {error}"))?;
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => directory_sync.sync().await.map_err(|error| {
+            format!("removed {label} but could not durably sync its directory: {error}")
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove {label} failed: {error}")),
+    }
 }
 
-async fn sync_secret_parent_directory(dir: &Path, label: &str) -> Result<(), String> {
+async fn remove_secret_directory_durable(dir: &Path, label: &str) -> Result<(), String> {
+    if !tokio::fs::try_exists(dir)
+        .await
+        .map_err(|error| format!("inspect {label} directory failed: {error}"))?
+    {
+        return Ok(());
+    }
     let parent = dir
         .parent()
         .ok_or_else(|| format!("{label} directory has no parent"))?;
-    sync_secret_directory(parent, label).await
+    let directory_sync = crate::platform_fs::prepare_directory_sync(parent)
+        .await
+        .map_err(|error| format!("prepare {label} parent directory sync failed: {error}"))?;
+    tokio::fs::remove_dir_all(dir)
+        .await
+        .map_err(|error| format!("clear {label} failed: {error}"))?;
+    directory_sync.sync().await.map_err(|error| {
+        format!("cleared {label} but could not durably sync its parent directory: {error}")
+    })
 }
 
 impl ProtectedLocalSecretStore {
@@ -292,21 +323,13 @@ impl SecretStore for FileSecretStore {
             .await
             .map_err(|error| format!("create file secret dir failed: {error}"))?;
         if value.is_empty() {
-            match tokio::fs::remove_file(path).await {
-                Ok(()) => return sync_secret_directory(&self.dir, "file secret").await,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(format!("remove file secret failed: {error}")),
-            }
+            return remove_secret_file_durable(&self.dir, &path, "file secret").await;
         }
         write_secret_file_durable(&self.dir, &path, value.as_bytes(), "file secret").await
     }
 
     async fn clear_all(&self) -> Result<(), String> {
-        match tokio::fs::remove_dir_all(&self.dir).await {
-            Ok(()) => sync_secret_parent_directory(&self.dir, "file secret").await,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("clear file secrets failed: {error}")),
-        }
+        remove_secret_directory_durable(&self.dir, "file secrets").await
     }
 
     async fn status(&self) -> Result<SecretStoreStatus, String> {
@@ -348,11 +371,7 @@ impl SecretStore for ProtectedLocalSecretStore {
             .await
             .map_err(|error| format!("create protected local secret dir failed: {error}"))?;
         if value.is_empty() {
-            match tokio::fs::remove_file(path).await {
-                Ok(()) => return sync_secret_directory(&self.dir, "protected local secret").await,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(format!("remove protected local secret failed: {error}")),
-            }
+            return remove_secret_file_durable(&self.dir, &path, "protected local secret").await;
         }
         let blob = protect_secret_blob(value)
             .await
@@ -361,11 +380,7 @@ impl SecretStore for ProtectedLocalSecretStore {
     }
 
     async fn clear_all(&self) -> Result<(), String> {
-        match tokio::fs::remove_dir_all(&self.dir).await {
-            Ok(()) => sync_secret_parent_directory(&self.dir, "protected local secret").await,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("clear protected local secrets failed: {error}")),
-        }
+        remove_secret_directory_durable(&self.dir, "protected local secrets").await
     }
 
     async fn status(&self) -> Result<SecretStoreStatus, String> {
@@ -449,7 +464,7 @@ Set-Acl -LiteralPath $path -AclObject $acl"#
 
 #[cfg(any(windows, test))]
 fn windows_secret_acl_command() -> Vec<String> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     let script = windows_secret_acl_script();
     let utf16le = script
@@ -487,7 +502,7 @@ fn protected_secret_protection_name() -> &'static str {
 
 #[cfg(not(windows))]
 async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
+    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 
     let encoded: Vec<u8> = value.as_bytes().iter().map(|byte| byte ^ 0xA5).collect();
     Ok(format!(
@@ -499,7 +514,7 @@ async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(not(windows))]
 async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
+    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 
     let text =
         String::from_utf8(blob).map_err(|error| format!("decode test blob failed: {error}"))?;
@@ -540,8 +555,8 @@ pub(crate) fn protect_machine_local_bytes_blocking(value: &[u8]) -> Result<Vec<u
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
         Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
-            CryptProtectData,
+            CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
+            CRYPT_INTEGER_BLOB,
         },
     };
 
@@ -583,7 +598,7 @@ pub(crate) fn unprotect_machine_local_bytes_blocking(blob: &[u8]) -> Result<Vec<
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
         Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+            CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
         },
     };
 
@@ -753,12 +768,10 @@ mod tests {
                 .as_deref(),
             Some("test-signing")
         );
-        assert!(
-            store
-                .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "x")
-                .await
-                .is_err()
-        );
+        assert!(store
+            .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "x")
+            .await
+            .is_err());
         // SAFETY: tests mutate process env in a scoped way.
         unsafe {
             std::env::remove_var("VEM_MQTT_SIGNING_SECRET");
@@ -785,13 +798,11 @@ mod tests {
             .write_secret(MACHINE_SECRET_ACCOUNT, "")
             .await
             .unwrap();
-        assert!(
-            store
-                .read_secret(MACHINE_SECRET_ACCOUNT)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(store
+            .read_secret(MACHINE_SECRET_ACCOUNT)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -856,13 +867,11 @@ mod tests {
         assert!(!status.machine_secret_configured);
         assert!(!status.mqtt_signing_secret_configured);
         assert!(!status.mqtt_password_configured);
-        assert!(
-            store
-                .read_secret(MACHINE_SECRET_ACCOUNT)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(store
+            .read_secret(MACHINE_SECRET_ACCOUNT)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

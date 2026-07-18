@@ -17,7 +17,7 @@ use crate::{
     events::DaemonEvent,
     hardware::HardwareSupervisor,
     ipc::{self, IpcContext},
-    local_runtime_settings::{LocalRuntimeSettings, effective_scanner_protocol},
+    local_runtime_settings::{effective_scanner_protocol, LocalRuntimeSettings},
     mqtt::MqttSyncRuntime,
     provisioning,
     runtime::{DaemonRuntime, RuntimeStartInput},
@@ -25,11 +25,11 @@ use crate::{
     scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     secret,
     state::{
-        LocalStateStore,
         store::{MachinePlanogramInput, MachinePlanogramSlotInput},
+        LocalStateStore,
     },
     stock_upload::StockMovementUploadRuntime,
-    transaction::{TransactionStateMachine, is_active_transaction},
+    transaction::{is_active_transaction, TransactionStateMachine},
     vision::VisionSupervisor,
 };
 
@@ -915,9 +915,11 @@ async fn cache_daemon_events(
         let event = match events.recv().await {
             Ok(event) => event,
             Err(broadcast::error::RecvError::Lagged(_)) => {
-                // A lagged receiver has lost individual invalidations. One
-                // One immediate recomputation coalesces the lost burst into
-                // current facts before this receiver accepts the next event.
+                // A bounded broadcast receiver no longer knows which MQTT or
+                // scanner transition it missed. Do not recompute sale-start
+                // capability from the old cache; it must fail closed until a
+                // new authoritative runtime event reconstructs each fact.
+                fail_closed_event_cache_after_lag(&status_cache).await;
                 if let Some(context) = sale_start_context.as_ref() {
                     ipc::invalidate_sale_start_capability(context).await;
                 }
@@ -969,6 +971,20 @@ async fn cache_daemon_events(
             }
         }
     }
+}
+
+async fn fail_closed_event_cache_after_lag(status_cache: &ipc::RuntimeStatusCache) {
+    {
+        let mut sync = status_cache.sync.write().await;
+        sync.mqtt_connected = false;
+        sync.last_error =
+            Some("daemon event cache lagged; awaiting MQTT runtime state".to_string());
+        sync.last_heartbeat_at = Some(crate::state::store::now_iso());
+    }
+    *status_cache.scanner.write().await = scanner_unavailable(
+        "SCANNER_EVENT_STREAM_LAGGED",
+        "daemon event cache lagged; awaiting scanner runtime state",
+    );
 }
 
 fn sale_start_capability_input_changed(event: &DaemonEvent) -> bool {
@@ -1028,8 +1044,8 @@ mod tests {
 
     use tokio::sync::broadcast;
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
+        Mock, MockServer, ResponseTemplate,
     };
 
     use super::{
@@ -1095,8 +1111,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_refresh_changes_only_for_new_profile_content_and_retains_it_when_refresh_degrades()
-     {
+    async fn lagged_cache_fails_closed_when_the_latest_mqtt_transition_was_dropped() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let cache = RuntimeStatusCache::new(None, state).await;
+        cache.sync.write().await.mqtt_connected = true;
+        *cache.scanner.write().await =
+            super::scanner_unavailable("SCANNER_READY", "scanner was previously ready");
+        let (sender, receiver) = broadcast::channel(64);
+        sender
+            .send(DaemonEvent::MqttChanged {
+                event_id: "dropped-disconnect".to_string(),
+                updated_at: "2026-07-17T00:00:01Z".to_string(),
+                connected: false,
+                last_error: Some("connection lost".to_string()),
+            })
+            .expect("receiver remains subscribed");
+        for sequence in 0..65 {
+            sender
+                .send(DaemonEvent::RemoteOpResult {
+                    event_id: format!("unrelated-{sequence}"),
+                    updated_at: "2026-07-17T00:00:02Z".to_string(),
+                    op_id: format!("operation-{sequence}"),
+                    status: "completed".to_string(),
+                })
+                .expect("receiver remains subscribed");
+        }
+
+        let worker = tokio::spawn(cache_daemon_events(receiver, cache.clone(), None, None));
+        drop(sender);
+        tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+            .await
+            .expect("lagged cache should keep receiving")
+            .expect("cache task join")
+            .expect("cache result");
+
+        let sync = cache.sync.read().await;
+        assert!(!sync.mqtt_connected);
+        assert_eq!(
+            sync.last_error.as_deref(),
+            Some("daemon event cache lagged; awaiting MQTT runtime state")
+        );
+        drop(sync);
+        let scanner = cache.scanner.read().await;
+        assert!(!scanner.online);
+        assert_eq!(scanner.code, "SCANNER_EVENT_STREAM_LAGGED");
+    }
+
+    #[tokio::test]
+    async fn production_refresh_changes_only_for_new_profile_content_and_retains_it_when_refresh_degrades(
+    ) {
         let temp = tempfile::tempdir().expect("temp");
         let data_dir = temp.path().join("VEM").join("vending-daemon");
         tokio::fs::create_dir_all(temp.path().join("VEM"))
