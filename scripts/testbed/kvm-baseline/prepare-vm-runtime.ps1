@@ -521,12 +521,6 @@ function Get-BootIdentity {
   return (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString("o")
 }
 
-function Disable-RemainingAutomaticLogon {
-  $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-  Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
-  Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "0"
-}
-
 function Enable-InteractiveAutomaticLogon {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
   $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
@@ -535,7 +529,7 @@ function Enable-InteractiveAutomaticLogon {
     throw "Windows autologon user does not match interactive display user"
   }
   Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1"
-  Set-ItemProperty -Path $winlogon -Name "AutoLogonCount" -Type DWord -Value 1
+  Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 }
 
 function Set-ClientDisplayMode {
@@ -627,9 +621,13 @@ function Remove-InteractiveDisplayPreparationTask {
   Unregister-ScheduledTask -TaskName $interactiveDisplayTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-function Test-RemainingAutomaticLogonDisabled {
+function Test-InteractiveAutomaticLogonEnabled {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-  return [string](Get-ItemPropertyValue -Path $winlogon -Name "AutoAdminLogon" -ErrorAction SilentlyContinue) -eq "0"
+  $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
+  return (
+    [string](Get-ItemPropertyValue -Path $winlogon -Name "AutoAdminLogon" -ErrorAction SilentlyContinue) -eq "1" -and
+    $configuredUser -match ("(^|\\)" + [regex]::Escape($InteractiveUser) + "$")
+  )
 }
 
 function Get-InteractiveDisplayCleanupStatus {
@@ -637,7 +635,7 @@ function Get-InteractiveDisplayCleanupStatus {
   if ($null -eq $Task) { $Task = Get-InteractiveDisplayTaskStatus }
   return @{
     taskRemoved = $null -eq $Task
-    automaticLogonDisabled = Test-RemainingAutomaticLogonDisabled
+    automaticLogonEnabled = Test-InteractiveAutomaticLogonEnabled
   }
 }
 
@@ -672,9 +670,8 @@ function Complete-InteractiveDisplayPreparation {
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Remove-InteractiveDisplayPreparationTask
-  Disable-RemainingAutomaticLogon
   $cleanup = Get-InteractiveDisplayCleanupStatus
-  if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonDisabled) {
+  if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonEnabled) {
     throw "interactive display completion cleanup is incomplete"
   }
   # The report is durable before the complete state commits it. A crash between
@@ -773,7 +770,7 @@ function Get-InteractiveDisplayPreparationStatus {
     cleanup = $cleanup
     guestStageFailure = $guestStageFailure
     driverBindingValid = $driverBindingValid
-    completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonDisabled
+    completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonEnabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
   } | ConvertTo-Json -Depth 6

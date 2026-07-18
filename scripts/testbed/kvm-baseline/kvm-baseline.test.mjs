@@ -360,7 +360,7 @@ function completedInteractiveDisplayStatus(bootIdentity = "boot-complete") {
     task: null,
     cleanup: {
       taskRemoved: true,
-      automaticLogonDisabled: true,
+      automaticLogonEnabled: true,
     },
     currentBootIdentity: bootIdentity,
   };
@@ -2630,7 +2630,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
     assert.doesNotMatch(
       prepareKvmGuest,
-      /Set-ClientDisplayMode|Disable-RemainingAutomaticLogon|Install-SpiceGuestTools/,
+      /Set-ClientDisplayMode|Enable-InteractiveAutomaticLogon|Install-SpiceGuestTools/,
       "KVM preparation must not fake display state from the bootstrap or SSH session",
     );
     const prepareInteractiveDisplay = runtime.slice(
@@ -2679,7 +2679,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /Complete-InteractiveDisplayPreparation/,
     );
     assert.match(runtime, /Remove-InteractiveDisplayPreparationTask/);
-    assert.match(runtime, /Disable-RemainingAutomaticLogon/);
+    assert.match(
+      runtime,
+      /function Enable-InteractiveAutomaticLogon[\s\S]*AutoAdminLogon[\s\S]*Remove-ItemProperty[^\n]+AutoLogonCount/,
+    );
     const rearmInteractiveDisplay = runtime.slice(
       runtime.indexOf("function Rearm-InteractiveDisplay"),
       runtime.indexOf("function Prepare-KvmGuest"),
@@ -3312,7 +3315,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                           task: { state: "Running" },
                           cleanup: {
                             taskRemoved: false,
-                            automaticLogonDisabled: false,
+                            automaticLogonEnabled: false,
                           },
                         }
                       : completedInteractiveDisplayStatus("boot-final"),
@@ -3383,14 +3386,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
         ...completedInteractiveDisplayStatus(),
         cleanup: {
           taskRemoved: false,
-          automaticLogonDisabled: true,
+          automaticLogonEnabled: true,
         },
       },
       {
         ...completedInteractiveDisplayStatus(),
         cleanup: {
           taskRemoved: true,
-          automaticLogonDisabled: false,
+          automaticLogonEnabled: false,
         },
       },
     ];
@@ -3518,7 +3521,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                         task: null,
                         cleanup: {
                           taskRemoved: false,
-                          automaticLogonDisabled: false,
+                          automaticLogonEnabled: false,
                         },
                         currentBootIdentity: "boot-before-rearm",
                       }
@@ -3604,7 +3607,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                         task: null,
                         cleanup: {
                           taskRemoved: false,
-                          automaticLogonDisabled: false,
+                          automaticLogonEnabled: false,
                         },
                         currentBootIdentity: null,
                       }
@@ -3616,7 +3619,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                           task: null,
                           cleanup: {
                             taskRemoved: false,
-                            automaticLogonDisabled: false,
+                            automaticLogonEnabled: false,
                           },
                           currentBootIdentity: "boot-before-rearm",
                         }
@@ -3701,7 +3704,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                       task: null,
                       cleanup: {
                         taskRemoved: false,
-                        automaticLogonDisabled: false,
+                        automaticLogonEnabled: false,
                       },
                       currentBootIdentity: "boot-before-rearm",
                     })}\n`,
@@ -3720,7 +3723,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     task: null,
                     cleanup: {
                       taskRemoved: false,
-                      automaticLogonDisabled: false,
+                      automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-after-rearm",
                   })}\n`,
@@ -3789,7 +3792,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     task: { state: "Running", lastTaskResult: 267009 },
                     cleanup: {
                       taskRemoved: false,
-                      automaticLogonDisabled: false,
+                      automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-display",
                   })}\n`,
@@ -3849,7 +3852,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     task: { state: "Running" },
                     cleanup: {
                       taskRemoved: false,
-                      automaticLogonDisabled: false,
+                      automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-display",
                   })}\n`,
@@ -4175,7 +4178,7 @@ await writeFile(markerPath, "created");
         ),
     );
     assert.ok(
-      completion.indexOf("Disable-RemainingAutomaticLogon") <
+      completion.indexOf("Get-InteractiveDisplayCleanupStatus") <
         completion.indexOf(
           "Write-AtomicJson -Path $interactiveDisplayReportPath",
         ),

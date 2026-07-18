@@ -888,7 +888,7 @@ function formatInteractiveDisplayDiagnostics(diagnostic) {
     `task state=${task.state ?? "absent"}`,
     `lastTaskResult=${task.lastTaskResult ?? "unknown"}`,
     `taskRemoved=${cleanup.taskRemoved === true}`,
-    `AutoAdminLogonDisabled=${cleanup.automaticLogonDisabled === true}`,
+    `AutoAdminLogonEnabled=${cleanup.automaticLogonEnabled === true}`,
   ];
   if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
   if (diagnostic.awaitingReboot) {
@@ -906,7 +906,7 @@ function interactiveDisplayCompleted(status) {
     status.state?.phase === "complete" &&
     status.task === null &&
     status.cleanup?.taskRemoved === true &&
-    status.cleanup?.automaticLogonDisabled === true
+    status.cleanup?.automaticLogonEnabled === true
   );
 }
 
