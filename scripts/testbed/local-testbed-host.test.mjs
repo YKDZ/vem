@@ -396,17 +396,10 @@ describe("tracked local testbed host lifecycle", () => {
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-18",
       runnerRegistrationToken: "runner-registration-token",
+      runnerRemovalToken: "runner-removal-token",
     }).at(-1);
     assert.doesNotMatch(dynamicRegistration.input, /curl\.exe|actions\/runners\/registration-token/);
-    assert.match(dynamicRegistration.input, /\$existingServiceNames/);
-    assert.doesNotMatch(dynamicRegistration.input, /\$existingServices =/);
-    assert.match(dynamicRegistration.input, /taskkill\.exe \/F \/T \/IM RunnerService\.exe/);
-    assert.doesNotMatch(dynamicRegistration.input, /Stop-Process/);
-    assert.match(
-      dynamicRegistration.input,
-      /\$ErrorActionPreference = 'SilentlyContinue'.*\$ErrorActionPreference = \$savedErrorActionPreference/s,
-    );
-    assert.doesNotMatch(dynamicRegistration.input, /sc\.exe stop/);
+    assert.match(dynamicRegistration.input, /config\.cmd'\) remove --token 'runner-removal-token'/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
     assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);
@@ -423,6 +416,7 @@ describe("tracked local testbed host lifecycle", () => {
         noProxy: "localhost,127.0.0.1",
       },
       runnerRegistrationToken: "runner-registration-token",
+      runnerRemovalToken: "runner-removal-token",
     }).at(-1);
     assert.match(
       proxiedRegistration.input,

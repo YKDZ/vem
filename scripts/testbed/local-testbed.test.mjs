@@ -762,12 +762,14 @@ describe("local testbed orchestration", () => {
           observeNetworkInterfaces: observedNetworkInterfaces,
           environment: {
             VEM_RUNNER_REGISTRATION_TOKEN: "runner-registration-token",
+            VEM_RUNNER_REMOVAL_TOKEN: "runner-removal-token",
           },
         },
       );
       const registrationAdmission = buildReconstructionPlan(withRegistration, value).at(-1);
-      assert.deepEqual(registrationAdmission.args.slice(-2), [
+      assert.deepEqual(registrationAdmission.args.slice(-4), [
         "--runner-registration-token", "runner-registration-token",
+        "--runner-removal-token", "runner-removal-token",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

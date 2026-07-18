@@ -244,18 +244,15 @@ $proof | ConvertTo-Json -Compress
 `;
 }
 
-function runnerAdmissionAssertion(runnerProxy, runnerRegistrationToken) {
+function runnerAdmissionAssertion(
+  runnerProxy,
+  runnerRegistrationToken,
+  runnerRemovalToken,
+) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
   const registrationSetup = runnerRegistrationToken
-    ? `$existingServiceNames = @((Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue).Name)
-$existingServiceNames | ForEach-Object { & sc.exe delete $_ | Out-Null }
-$savedErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = 'SilentlyContinue'
-& taskkill.exe /F /T /IM RunnerService.exe 2>$null | Out-Null
-& taskkill.exe /F /T /IM Runner.Listener.exe 2>$null | Out-Null
-& taskkill.exe /F /T /IM Runner.Worker.exe 2>$null | Out-Null
-$ErrorActionPreference = $savedErrorActionPreference
-Start-Sleep -Seconds 1
+    ? `& (Join-Path $runnerRoot 'config.cmd') remove --token ${quotePowerShell(runnerRemovalToken)}
+if ($LASTEXITCODE -ne 0) { throw "actions runner removal failed with exit code $LASTEXITCODE" }
 $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
 $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
@@ -546,6 +543,7 @@ export function buildHostAdmissionPlan({
   runId,
   runnerProxy = { configured: false },
   runnerRegistrationToken = null,
+  runnerRemovalToken = null,
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -576,7 +574,11 @@ export function buildHostAdmissionPlan({
       type: "restart-runner-and-await-listener",
       command: "ssh",
       args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
-      input: runnerAdmissionAssertion(runnerProxy, runnerRegistrationToken),
+      input: runnerAdmissionAssertion(
+        runnerProxy,
+        runnerRegistrationToken,
+        runnerRemovalToken,
+      ),
     },
   ];
 }
@@ -842,6 +844,7 @@ export function parseHostOptions(args) {
         : { configured: false },
       runnerRegistrationToken:
         option(args, "runner-registration-token"),
+      runnerRemovalToken: option(args, "runner-removal-token"),
     };
   }
   return {

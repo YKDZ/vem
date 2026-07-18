@@ -66,6 +66,12 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
           echo "VEM_RUNNER_REGISTRATION_TOKEN=$(jq -r '.token' <<<"$response")" >> "$GITHUB_ENV"
+          response="$(curl --fail --silent --show-error --retry 3 --request POST \
+            --header "Authorization: Bearer $RUNNER_ADMIN_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/remove-token")"
+          echo "VEM_RUNNER_REMOVAL_TOKEN=$(jq -r '.token' <<<"$response")" >> "$GITHUB_ENV"
       - id: testbed
         name: Reconstruct C Drive And Local Platform
         run: |
@@ -164,6 +170,12 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
           echo "VEM_RUNNER_REGISTRATION_TOKEN=$(jq -r '.token' <<<"$response")" >> "$GITHUB_ENV"
+          response="$(curl --fail --silent --show-error --retry 3 --request POST \
+            --header "Authorization: Bearer $RUNNER_ADMIN_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/remove-token")"
+          echo "VEM_RUNNER_REMOVAL_TOKEN=$(jq -r '.token' <<<"$response")" >> "$GITHUB_ENV"
       - name: Reconstruct C Drive And Local Platform Again
         run: |
           set -euo pipefail
