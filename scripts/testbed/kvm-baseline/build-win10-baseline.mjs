@@ -1206,7 +1206,17 @@ export async function waitForGuestVerification(
   const preparationScript = join(stagingDirectory, "prepare-toolchain.ps1");
   await writeFile(
     preparationScript,
-    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain\n`,
+    `$ProgressPreference = "SilentlyContinue"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain
+$stageExitCode = $LASTEXITCODE
+if ($stageExitCode -ne 0) {
+  $failurePath = 'C:\\ProgramData\\WindowsRuntimeBaseline\\guest-stage-failure.json'
+  if (Test-Path -LiteralPath $failurePath) {
+    [Console]::Error.WriteLine((Get-Content -Raw -LiteralPath $failurePath))
+  }
+  exit $stageExitCode
+}
+`,
     { mode: 0o600 },
   );
   await runCommand("scp", [
