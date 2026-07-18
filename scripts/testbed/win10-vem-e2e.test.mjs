@@ -371,7 +371,7 @@ function projectFactoryRuntimeBoundary(profile) {
       "-ExpectedKioskUser",
       "VemKiosk",
       "-ExpectedMaintenanceUser",
-      isProduction ? "Admin" : "YKDZ",
+      "Admin",
       "-ExpectedAutoLogonUser",
       "VemKiosk",
       "-ExpectedKioskShell",
@@ -714,7 +714,7 @@ describe("simulated hardware serial acceptance evidence", () => {
           platform_target: "ephemeral-run-180",
           ephemeral_platform_evidence: join(root, "ephemeral-platform.json"),
           runtime_acceptance_report: runtimeReport,
-          remote: "YKDZ@vm.example.test",
+          remote: "Admin@vm.example.test",
           identity: join(root, "identity"),
           certificate: join(root, "identity-cert.pub"),
           adapter: FAKE_VM_HOST_ADAPTER,
@@ -1697,7 +1697,7 @@ describe("factory acceptance cancellation cleanup", () => {
       const cleanup = cleanupFactoryAcceptanceStaging(
         {
           mode: "clean-base-factory-acceptance",
-          remote: "YKDZ@testbed.invalid",
+          remote: "Admin@testbed.invalid",
           identity: "/tmp/maintenance-key",
           certificate: "/tmp/maintenance-cert.pub",
         },
@@ -1727,7 +1727,7 @@ describe("factory acceptance cancellation cleanup", () => {
           cleanupFactoryAcceptanceStaging(
             {
               mode: "clean-base-factory-acceptance",
-              remote: "YKDZ@testbed.invalid",
+              remote: "Admin@testbed.invalid",
               identity: "/tmp/maintenance-key",
             },
             { localTempDirectory: root },
@@ -2089,7 +2089,7 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
         widthPx: 1080,
         heightPx: 1920,
       },
-      sshReachability: { status: "passed", remote: "YKDZ@clean-base" },
+      sshReachability: { status: "passed", remote: "Admin@clean-base" },
       tailscaleDefaultAbsent: {
         status: "passed",
         name: "win10-vem-clean-base",
@@ -2379,7 +2379,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.equal(
       findActiveKioskSession([
         {
-          user: "YKDZ",
+          user: "Admin",
           sessionId: 0,
           state: "Active",
           source: "ssh_service_session",
@@ -2664,8 +2664,8 @@ describe("win10-vem-e2e reset planning", () => {
       "VEM_AUTOLOGON_PASSWORD",
     ]);
     assert.equal(plan.arguments.KioskUser, "VEMKiosk");
-    assert.equal(plan.arguments.MaintenanceUser, "YKDZ");
-    assert.equal(plan.arguments.RunAsUser, "YKDZ");
+    assert.equal(plan.arguments.MaintenanceUser, "Admin");
+    assert.equal(plan.arguments.RunAsUser, "Admin");
     assert.equal(plan.arguments.VisionWorkingDirectory, "C:\\VEM\\vision\\app");
     assert.equal(plan.arguments.KioskPassword, "$env:VEM_KIOSK_PASSWORD");
     assert.equal(
@@ -2778,7 +2778,7 @@ describe("win10-vem-e2e reset planning", () => {
       "OpenSSH",
       "Controlled Maintenance Ingress configuration",
       "WebView2",
-      "YKDZ maintenance account",
+      "Admin maintenance account",
       "base networking",
     ]);
 
@@ -2791,7 +2791,7 @@ describe("win10-vem-e2e reset planning", () => {
       "C:\\Program Files\\Tailscale",
       "C:\\Program Files\\OpenSSH",
       "C:\\Program Files (x86)\\Microsoft\\EdgeWebView",
-      "C:\\Users\\YKDZ",
+      "C:\\Users\\Admin",
       "C:\\ProgramData\\Tailscale",
       "C:\\ProgramData\\ssh",
     ];
@@ -2866,7 +2866,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /runtimeAcceptanceFactsSubset/);
     assert.doesNotMatch(script, /Remove-Item -LiteralPath 'C:\\Windows/);
     assert.doesNotMatch(script, /Remove-LocalUser/);
-    assert.doesNotMatch(script, /Remove-Item -LiteralPath 'C:\\Users\\YKDZ/);
+    assert.doesNotMatch(script, /Remove-Item -LiteralPath 'C:\\Users\\Admin/);
     assert.doesNotMatch(
       script,
       /Remove-Item -LiteralPath 'C:\\ProgramData\\Tailscale/,
@@ -3066,8 +3066,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /'VEM_MAINTENANCE_PASSWORD'/);
     assert.match(script, /'VEM_AUTOLOGON_PASSWORD'/);
     assert.match(script, /'KioskUser' = 'VEMKiosk'/);
-    assert.match(script, /'MaintenanceUser' = 'YKDZ'/);
-    assert.match(script, /'RunAsUser' = 'YKDZ'/);
+    assert.match(script, /'MaintenanceUser' = 'Admin'/);
+    assert.match(script, /'RunAsUser' = 'Admin'/);
     assert.match(script, /'KioskPassword' = \$env:VEM_KIOSK_PASSWORD/);
     assert.match(
       script,
@@ -4561,7 +4561,7 @@ if ($errors.Count -gt 0) {
           "--maintenance-endpoint-policy-json",
           JSON.stringify(maintenanceEndpointPolicy),
           "--expected-testbed-user",
-          "YKDZ",
+          "Admin",
           "--ssh-known-hosts-path",
           "/tmp/vem-runtime-known-hosts",
           "--ssh-host-key-alias",
@@ -4643,7 +4643,7 @@ if ($errors.Count -gt 0) {
       const ipcRecoverySaleStep = plan.steps.find(
         (step) => step.name === "installed kiosk sale ipc recovery",
       );
-      assert.equal(commandArg(runtimeStep.command, "--remote"), "YKDZ@10.91.2.10");
+      assert.equal(commandArg(runtimeStep.command, "--remote"), "Admin@10.91.2.10");
       assert.equal(
         commandArg(runtimeStep.command, "--runtime-guest-endpoint-json"),
         undefined,
@@ -4759,7 +4759,7 @@ if ($errors.Count -gt 0) {
           "--maintenance-relay-session-json",
           JSON.stringify(maintenanceRelaySession),
           "--expected-testbed-user",
-          "YKDZ",
+          "Admin",
           "--ssh-known-hosts-path",
           "/tmp/vem-runtime-known-hosts",
           "--ssh-host-key-alias",
@@ -5294,9 +5294,9 @@ if ($errors.Count -gt 0) {
       platformTarget: "vem-vps",
       machineCode: "VEM-TESTBED-WINVM-01",
       remoteSupportScriptRoot:
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-clean-base-support",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-clean-base-support",
       remoteUploadedArtifactRoot:
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-clean-base-support\\input-artifacts",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-clean-base-support\\input-artifacts",
       daemonArtifactSha256: "a".repeat(64),
       machineUiArtifactSha256: "b".repeat(64),
     });
@@ -7022,7 +7022,7 @@ if ($errors.Count -gt 0) {
       ],
       [
         (facts) => {
-          facts.startupBringup.startupCommands[0].runAsUser = "YKDZ";
+          facts.startupBringup.startupCommands[0].runAsUser = "Admin";
         },
         "machine_ui_startup_command_user_mismatch",
       ],
@@ -7289,7 +7289,7 @@ if ($errors.Count -gt 0) {
       ...CERTIFICATE_SSH_ARGS,
       "-o",
       "ProxyCommand=none",
-      "YKDZ@controlled-maintenance-ingress.local",
+      "Admin@controlled-maintenance-ingress.local",
     ]);
     assert.deepEqual(
       buildSshCommand({
@@ -7311,7 +7311,7 @@ if ($errors.Count -gt 0) {
     assert.deepEqual(
       buildScpCommand(
         "/tmp/run.ps1",
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
         CERTIFICATE_SSH_OPTIONS,
       ),
       [
@@ -7321,7 +7321,7 @@ if ($errors.Count -gt 0) {
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
-        "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
+        "Admin@controlled-maintenance-ingress.local:C:/Users/Admin/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
   });
@@ -7356,20 +7356,20 @@ if ($errors.Count -gt 0) {
     );
     assert.equal(
       buildRemotePowerShellCommand(
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
       ),
-      "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1'\"",
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1'\"",
     );
     assert.doesNotMatch(
       buildRemotePowerShellCommand(
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
       ),
       /EncodedCommand/,
     );
     assert.deepEqual(
       buildScpCommand(
         "/tmp/run.ps1",
-        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
         CERTIFICATE_SSH_OPTIONS,
       ),
       [
@@ -7379,7 +7379,7 @@ if ($errors.Count -gt 0) {
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
-        "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
+        "Admin@controlled-maintenance-ingress.local:C:/Users/Admin/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
   });

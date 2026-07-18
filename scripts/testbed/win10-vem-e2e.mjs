@@ -58,7 +58,7 @@ const PROTECTED_PATH_PREFIXES = [
   "C:\\Program Files\\Tailscale",
   "C:\\Program Files\\OpenSSH",
   "C:\\Program Files (x86)\\Microsoft\\EdgeWebView",
-  "C:\\Users\\YKDZ",
+  "C:\\Users\\Admin",
   "C:\\ProgramData\\Tailscale",
   "C:\\ProgramData\\ssh",
 ];
@@ -282,7 +282,7 @@ const EXPECTED_VISION_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const EXPECTED_VISION_ENTRYPOINT = "C:\\VEM\\vision\\app\\vending-vision.exe";
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
-const DEFAULT_CONTROLLED_MAINTENANCE_USER = "YKDZ";
+const DEFAULT_CONTROLLED_MAINTENANCE_USER = "Admin";
 const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
   "controlled-maintenance-ingress.local";
 const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_CONTROLLED_MAINTENANCE_USER}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
@@ -315,8 +315,8 @@ export function buildBringUpPlan(options = {}) {
     ],
     arguments: {
       KioskUser: "VEMKiosk",
-      MaintenanceUser: "YKDZ",
-      RunAsUser: "YKDZ",
+      MaintenanceUser: "Admin",
+      RunAsUser: "Admin",
       AutoLogonDomain: "$env:COMPUTERNAME",
       BringupDir: "C:\\VEM\\bringup",
       DaemonExe: "C:\\VEM\\bringup\\vending-daemon.exe",
@@ -1593,7 +1593,7 @@ export function buildResetPlan() {
       "OpenSSH",
       "Controlled Maintenance Ingress configuration",
       "WebView2",
-      "YKDZ maintenance account",
+      "Admin maintenance account",
       "base networking",
     ],
   };
@@ -1911,7 +1911,7 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
       options.platformMqttUrl,
     ].join(" ");
     if (
-      /YKDZ|testbed|simulator|shared-password|test-ca|test-peer|118\.25\.104\.160/iu.test(
+      /testbed|simulator|shared-password|test-ca|test-peer|118\.25\.104\.160/iu.test(
         productionInputs,
       )
     ) {
@@ -1953,7 +1953,7 @@ export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
   });
   return {
     runtimeImageProfile,
-    maintenanceUser: runtimeImageProfile === "production" ? "Admin" : "YKDZ",
+    maintenanceUser: "Admin",
     hardwareMode:
       runtimeImageProfile === "production" ? "production" : "simulated",
     openSshPackageSha256: packageInputs[0].hash,
@@ -5533,8 +5533,7 @@ export function buildRemotePowerShellScript(options = {}) {
   const cleanBaseVisionConfigurationSourcePath = String(
     options.visionConfigurationSourcePath ?? "",
   );
-  const cleanBaseMaintenanceUser =
-    cleanBaseRuntimeImageProfile === "production" ? "Admin" : "YKDZ";
+  const cleanBaseMaintenanceUser = "Admin";
   const cleanBaseHardwareMode =
     cleanBaseRuntimeImageProfile === "production" ? "production" : "simulated";
   const cleanBaseSnapshot = cleanBasePlan?.cleanBase.snapshot ?? "";
@@ -9432,7 +9431,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
     user = [ordered]@{
       current = [string]$identity.Name
       isAdmin = Test-LocalAdmin
-      maintenance = Get-LocalUserEvidence "YKDZ"
+      maintenance = Get-LocalUserEvidence "Admin"
       kiosk = Get-LocalUserEvidence "VEMKiosk"
     }
     access = [ordered]@{
@@ -9613,7 +9612,7 @@ function factoryAcceptanceRemoteStagingPaths(options = {}) {
   const remoteTempRoot =
     options.mode === "clean-base-factory-acceptance"
       ? "C:\\Windows\\Temp"
-      : "C:\\Users\\YKDZ\\AppData\\Local\\Temp";
+      : "C:\\Users\\Admin\\AppData\\Local\\Temp";
   const remoteSupportScriptRoot = `${remoteTempRoot}\\vem-factory-acceptance-staging`;
   return {
     remoteTempRoot,
@@ -10160,7 +10159,7 @@ Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acc
 Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer YKDZ, platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
+Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
