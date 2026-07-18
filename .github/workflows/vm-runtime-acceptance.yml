@@ -25,24 +25,30 @@ permissions:
   contents: read
 
 jobs:
-  inspect-host-runtime:
+  resume-prepared-debug-vm:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Inspect VM runtime state without changing host services
+      - name: Stop redundant rebuild and resume prepared debug VM
         run: |
           set -euo pipefail
-          hostname
-          date -Is
-          df -h /opt /
-          virsh list --all
-          ps -eo pid,etimes,cmd | grep -E 'build-win10-baseline|qemu-system' | grep -v grep || true
-          find /opt/vem/runtime-baseline -maxdepth 3 -type f -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n' | sort | tail -80
-          for path in /opt/vem/runtime-baseline/build-final.exit /opt/vem/runtime-baseline/build-final.log; do
-            if test -f "$path"; then
-              echo "--- $path ---"
-              tail -120 "$path"
-            fi
+          builder="$(virsh list --name | grep '^vem-win10-runtime-baseline-build-' || true)"
+          for pid in $(pgrep -f '^node build-win10-baseline\.mjs ' || true); do
+            kill -TERM "$pid"
+          done
+          sleep 3
+          if test -n "$builder"; then
+            virsh destroy "$builder" || true
+            virsh undefine "$builder" || true
+          fi
+          domain=vem-win10-runtime-toolchain-debug
+          virsh destroy "$domain" || true
+          virsh undefine "$domain" || true
+          virsh define /opt/vem/runtime-baseline/checkpoints/last-debug/debug-domain.xml
+          virsh start "$domain"
+          for attempt in $(seq 1 30); do
+            virsh domifaddr "$domain" --source lease || true
+            sleep 2
           done
 
   build-windows-runtime:
