@@ -3,6 +3,7 @@ import type { Pinia } from "pinia";
 import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
+import { installedMachineRuntimeTrace } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -12,7 +13,6 @@ import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
-import { installedMachineRuntimeTrace } from "@/router/transaction-route-authority";
 
 import {
   createCustomerJourneyAudioRuntime,
@@ -30,6 +30,7 @@ type RuntimeCoordinator = {
   reconciliation: Promise<void> | null;
   reconciliationRetryTimer: ReturnType<typeof globalThis.setTimeout> | null;
   journeyAudio: CustomerJourneyAudioRuntime | null;
+  teardown: Promise<void> | null;
 };
 
 const coordinators = new WeakMap<Pinia, RuntimeCoordinator>();
@@ -43,6 +44,7 @@ function coordinatorFor(pinia: Pinia): RuntimeCoordinator {
     reconciliation: null,
     reconciliationRetryTimer: null,
     journeyAudio: null,
+    teardown: null,
   };
   coordinators.set(pinia, coordinator);
   return coordinator;
@@ -203,6 +205,9 @@ function recordUnknownDaemonEvent(
 export function startMachineRuntime(pinia: Pinia): void {
   const coordinator = coordinatorFor(pinia);
   if (coordinator.subscription) return;
+  if (coordinator.teardown) {
+    throw new Error("Machine runtime teardown is still in progress");
+  }
 
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
@@ -235,9 +240,11 @@ export function startMachineRuntime(pinia: Pinia): void {
   }, CAPABILITY_POLL_INTERVAL_MS);
 }
 
-export function stopMachineRuntime(pinia: Pinia): void {
+// oxlint-disable-next-line typescript/promise-function-async -- repeated production teardown callers must share one completion promise.
+export function stopMachineRuntime(pinia: Pinia): Promise<void> {
   const coordinator = coordinators.get(pinia);
-  if (!coordinator) return;
+  if (!coordinator) return Promise.resolve();
+  if (coordinator.teardown) return coordinator.teardown;
   coordinator.subscription?.close();
   coordinator.subscription = null;
   if (coordinator.pollTimer !== null) {
@@ -251,7 +258,14 @@ export function stopMachineRuntime(pinia: Pinia): void {
   coordinator.reconciliation = null;
   const journeyAudio = coordinator.journeyAudio;
   coordinator.journeyAudio = null;
-  void journeyAudio?.dispose();
+  const teardown = journeyAudio?.dispose() ?? Promise.resolve();
+  const teardownPromise = teardown.finally(() => {
+    if (coordinator.teardown === teardownPromise) {
+      coordinator.teardown = null;
+    }
+  });
+  coordinator.teardown = teardownPromise;
+  return teardownPromise;
 }
 
 export async function requestMachineAudioTestPlayback(

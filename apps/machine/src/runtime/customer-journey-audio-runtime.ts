@@ -2,18 +2,16 @@ import type { Pinia } from "pinia";
 
 import { effectScope, watch } from "vue";
 
+import type { MachineRuntimeTrace } from "@/runtime/machine-runtime-trace";
+
 import {
-  createAudioCoordinator,
+  createCustomerJourneyAudioCoordinator,
   type AudioCoordinator,
 } from "@/audio-coordinator/audio-coordinator";
 import {
   mapCustomerJourneyAudioPresentation,
   type CustomerAudioPresentationContext,
 } from "@/audio-coordinator/customer-audio-presentation";
-import {
-  createBrowserMachineAudioPlaybackDriver,
-  createTauriNativeMachineAudioPlaybackDriver,
-} from "@/audio-playback/machine-audio-playback";
 import { getCustomerPresenceSession } from "@/composables/usePresenceInteraction";
 import {
   createCustomerJourneyTransitionProjector,
@@ -23,7 +21,6 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
-import type { MachineRuntimeTrace } from "@/runtime/machine-runtime-trace";
 
 export type CustomerJourneyAudioRuntime = {
   requestTestPlayback(
@@ -40,10 +37,7 @@ export function createCustomerJourneyAudioRuntime(
 ): CustomerJourneyAudioRuntime {
   const scope = effectScope();
   const projector = createCustomerJourneyTransitionProjector();
-  const coordinator = createAudioCoordinator({
-    driver:
-      createTauriNativeMachineAudioPlaybackDriver() ??
-      createBrowserMachineAudioPlaybackDriver(),
+  const coordinator = createCustomerJourneyAudioCoordinator({
     preferences: () => useMachineStore(pinia).customerAudio,
     mapTransition: (transition) =>
       mapCustomerJourneyAudioPresentation(

@@ -87,41 +87,35 @@ export type CustomerJourneyFacts = {
 
 export type CustomerJourneyTransitionProjector = {
   project(facts: CustomerJourneyFacts): CustomerJourneyTransition[];
+  memoryUsage(): CustomerJourneyTransitionProjectorMemoryUsage;
 };
 
-const TRANSITION_MEMORY_LIMIT = 256;
+export type CustomerJourneyTransitionProjectorMemoryUsage = {
+  transactionOrders: number;
+  pickupSeenOrders: number;
+  maxTransactionOrders: number;
+};
+
+const TRANSACTION_ORDER_MEMORY_LIMIT = 32;
 
 export function createCustomerJourneyTransitionProjector(): CustomerJourneyTransitionProjector {
-  const emittedTransitionIds = new Set<string>();
-  const pickupSeenByOrder = new Map<string, boolean>();
   const semanticEdges = createSemanticEdgeMemory();
+  const transactionEdges = createTransactionEdgeMemory();
 
   return {
     project(facts) {
-      const candidates = projectCandidates(
-        facts,
-        pickupSeenByOrder,
-        semanticEdges,
+      return projectCandidates(facts, semanticEdges, transactionEdges).filter(
+        (candidate) => !candidateRestored(candidate, facts),
       );
-      const transitions: CustomerJourneyTransition[] = [];
-      for (const candidate of candidates) {
-        if (candidateRestored(candidate, facts)) {
-          rememberTransition(emittedTransitionIds, candidate.transitionId);
-          continue;
-        }
-        if (emittedTransitionIds.has(candidate.transitionId)) continue;
-        rememberTransition(emittedTransitionIds, candidate.transitionId);
-        transitions.push(candidate);
-      }
-      return transitions;
     },
+    memoryUsage: () => transactionEdges.memoryUsage(),
   };
 }
 
 function projectCandidates(
   facts: CustomerJourneyFacts,
-  pickupSeenByOrder: Map<string, boolean>,
   semanticEdges: SemanticEdgeMemory,
+  transactionEdges: TransactionEdgeMemory,
 ): CustomerJourneyTransition[] {
   const candidates: CustomerJourneyTransition[] = [];
   const touchscreen = facts.touchscreen;
@@ -175,7 +169,10 @@ function projectCandidates(
   }
 
   const selectedProduct = facts.selectedProduct;
-  if (selectedProduct) {
+  const selectedProductChanged = semanticEdges.observeProduct(
+    selectedProduct?.selectionId ?? null,
+  );
+  if (selectedProduct && selectedProductChanged) {
     candidates.push(
       transition({
         transitionId: `product:${selectedProduct.selectionId}`,
@@ -191,9 +188,14 @@ function projectCandidates(
   if (!transaction?.orderNo || !transaction.nextAction) return candidates;
 
   const orderNo = transaction.orderNo;
+  if (transaction.nextAction === "closed") {
+    transactionEdges.clear(orderNo);
+    return candidates;
+  }
+  const transactionCandidates: CustomerJourneyTransition[] = [];
   const occurredAt = transaction.updatedAt;
   if (transaction.nextAction === "wait_payment") {
-    candidates.push(
+    transactionCandidates.push(
       transactionTransition(
         orderNo,
         "payment-prompt",
@@ -203,7 +205,7 @@ function projectCandidates(
     );
   }
   if (paymentSucceededAction(transaction.nextAction)) {
-    candidates.push(
+    transactionCandidates.push(
       transactionTransition(
         orderNo,
         "payment-succeeded",
@@ -213,7 +215,7 @@ function projectCandidates(
     );
   }
   if (transaction.nextAction === "dispensing") {
-    candidates.push(
+    transactionCandidates.push(
       transactionTransition(
         orderNo,
         "dispensing-started",
@@ -225,10 +227,10 @@ function projectCandidates(
 
   const reminder = transaction.vending?.pickupReminder ?? null;
   if (reminder) {
-    pickupSeenByOrder.set(orderNo, true);
+    transactionEdges.markPickupSeen(orderNo);
     switch (reminder.stage) {
       case "outlet_opened":
-        candidates.push(
+        transactionCandidates.push(
           transactionTransition(
             orderNo,
             "pickup-outlet-opened",
@@ -238,7 +240,7 @@ function projectCandidates(
         );
         break;
       case "pickup_waiting":
-        candidates.push(
+        transactionCandidates.push(
           transactionTransition(
             orderNo,
             "pickup-waiting",
@@ -250,8 +252,8 @@ function projectCandidates(
       case "pickup_timeout_warning": {
         const urgent =
           reminder.level === "urgent" || (reminder.warningNo ?? 0) >= 2;
-        const warningNo = urgent ? Math.max(reminder.warningNo ?? 2, 2) : 1;
-        candidates.push(
+        const warningNo = urgent ? 2 : 1;
+        transactionCandidates.push(
           transactionTransition(
             orderNo,
             `pickup-warning-${warningNo}`,
@@ -262,7 +264,7 @@ function projectCandidates(
         break;
       }
       case "pickup_completed":
-        candidates.push(
+        transactionCandidates.push(
           transactionTransition(
             orderNo,
             "pickup-completed",
@@ -277,9 +279,9 @@ function projectCandidates(
     }
   } else if (
     transaction.nextAction === "dispensing" &&
-    pickupSeenByOrder.get(orderNo) === true
+    transactionEdges.hasPickupSeen(orderNo)
   ) {
-    candidates.push(
+    transactionCandidates.push(
       transactionTransition(
         orderNo,
         "pickup-resetting",
@@ -291,7 +293,7 @@ function projectCandidates(
 
   switch (transaction.nextAction) {
     case "success":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "pickup-completed",
@@ -299,7 +301,7 @@ function projectCandidates(
           occurredAt,
         ),
       );
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "dispense-succeeded",
@@ -310,7 +312,7 @@ function projectCandidates(
       break;
     case "payment_failed":
     case "payment_expired":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "payment-failed",
@@ -320,7 +322,7 @@ function projectCandidates(
       );
       break;
     case "dispense_failed":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "dispense-failed",
@@ -330,7 +332,7 @@ function projectCandidates(
       );
       break;
     case "refund_pending":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "refund-pending",
@@ -340,7 +342,7 @@ function projectCandidates(
       );
       break;
     case "refunded":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "refund-completed",
@@ -350,7 +352,7 @@ function projectCandidates(
       );
       break;
     case "manual_handling":
-      candidates.push(
+      transactionCandidates.push(
         transactionTransition(
           orderNo,
           "manual-handling",
@@ -359,13 +361,17 @@ function projectCandidates(
         ),
       );
       break;
-    case "closed":
     case "dispensing":
     case "wait_payment":
       break;
     default:
       break;
   }
+  candidates.push(
+    ...transactionCandidates.filter((candidate) =>
+      transactionEdges.claim(orderNo, candidate.transitionId),
+    ),
+  );
   return candidates;
 }
 
@@ -377,6 +383,7 @@ type SemanticEdgeMemory = {
   nextTouchscreenTransitionId(): string;
   observeVision(profile: VisionProfile, departureObserved: boolean): VisionEdge;
   nextVisionTransitionId(edge: Exclude<VisionEdge, null>): string;
+  observeProduct(selectionId: string | null): boolean;
 };
 
 function createSemanticEdgeMemory(): SemanticEdgeMemory {
@@ -385,6 +392,7 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
   let visionProfile: VisionProfile = "absent";
   let departureObserved = false;
   let visionEpoch = 0;
+  let selectedProductId: string | null = null;
 
   return {
     observeTouchscreen(active) {
@@ -422,6 +430,72 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
     },
     nextVisionTransitionId(edge) {
       return `vision:presence-${visionEpoch}:${edge}`;
+    },
+    observeProduct(selectionId) {
+      const selected =
+        selectionId !== null && selectionId !== selectedProductId;
+      selectedProductId = selectionId;
+      return selected;
+    },
+  };
+}
+
+type TransactionEdgeState = {
+  levels: Set<string>;
+  pickupSeen: boolean;
+};
+
+type TransactionEdgeMemory = {
+  claim(orderNo: string, level: string): boolean;
+  markPickupSeen(orderNo: string): void;
+  hasPickupSeen(orderNo: string): boolean;
+  clear(orderNo: string): void;
+  memoryUsage(): CustomerJourneyTransitionProjectorMemoryUsage;
+};
+
+function createTransactionEdgeMemory(): TransactionEdgeMemory {
+  const orders = new Map<string, TransactionEdgeState>();
+
+  function stateFor(orderNo: string): TransactionEdgeState {
+    const existing = orders.get(orderNo);
+    if (existing) {
+      orders.delete(orderNo);
+      orders.set(orderNo, existing);
+      return existing;
+    }
+    const state = { levels: new Set<string>(), pickupSeen: false };
+    orders.set(orderNo, state);
+    if (orders.size > TRANSACTION_ORDER_MEMORY_LIMIT) {
+      const oldestOrderNo = orders.keys().next().value;
+      if (oldestOrderNo) orders.delete(oldestOrderNo);
+    }
+    return state;
+  }
+
+  return {
+    claim(orderNo, level) {
+      const state = stateFor(orderNo);
+      if (state.levels.has(level)) return false;
+      state.levels.add(level);
+      return true;
+    },
+    markPickupSeen(orderNo) {
+      stateFor(orderNo).pickupSeen = true;
+    },
+    hasPickupSeen(orderNo) {
+      return stateFor(orderNo).pickupSeen;
+    },
+    clear(orderNo) {
+      orders.delete(orderNo);
+    },
+    memoryUsage() {
+      return {
+        transactionOrders: orders.size,
+        pickupSeenOrders: [...orders.values()].filter(
+          (state) => state.pickupSeen,
+        ).length,
+        maxTransactionOrders: TRANSACTION_ORDER_MEMORY_LIMIT,
+      };
     },
   };
 }
@@ -491,11 +565,4 @@ function transition(
     occurredAt: input.occurredAt,
     productCategory: input.productCategory ?? null,
   };
-}
-
-function rememberTransition(memory: Set<string>, transitionId: string): void {
-  memory.add(transitionId);
-  if (memory.size <= TRANSITION_MEMORY_LIMIT) return;
-  const oldest = memory.values().next().value;
-  if (oldest) memory.delete(oldest);
 }

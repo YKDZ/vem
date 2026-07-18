@@ -50,6 +50,29 @@ function machineSourceFiles(directory = `${machineRoot}/src`): string[] {
   });
 }
 
+const audioBoundaryAllowlist = new Set([
+  "src/audio-coordinator/audio-coordinator.ts",
+  "src/audio-playback/machine-audio-playback.ts",
+]);
+
+function directAudioBoundaryOffenders(path: string, source: string): string[] {
+  if (audioBoundaryAllowlist.has(path)) return [];
+  return [
+    [/\bnew\s+Audio\s*\(/, "new Audio"],
+    [/\.playLocal\s*\(/, "playLocal"],
+    [
+      /callTauriCommand\s*<[^>]*>\s*\(\s*["'](?:play|stop)_machine_audio["']/,
+      "native audio command",
+    ],
+    [
+      /create(?:Browser|TauriNative)MachineAudioPlaybackDriver\s*\(/,
+      "playback driver",
+    ],
+  ].flatMap(([pattern, label]) =>
+    (pattern as RegExp).test(source) ? [label as string] : [],
+  );
+}
+
 describe("customer checkout projection architecture", () => {
   it("keeps removed current transaction models out of the checkout store", () => {
     const checkoutStore = readSource("src/stores/checkout.ts");
@@ -135,32 +158,20 @@ describe("customer checkout projection architecture", () => {
   });
 
   it("forbids page and runtime callers from bypassing the audio coordinator boundary", () => {
-    const audioBoundaryAllowlist = new Set([
-      "src/audio-coordinator/audio-coordinator.ts",
-      "src/audio-playback/machine-audio-playback.ts",
-      "src/runtime/customer-journey-audio-runtime.ts",
-    ]);
     for (const path of machineSourceFiles()) {
-      if (path.endsWith(".spec.ts") || audioBoundaryAllowlist.has(path)) {
-        continue;
-      }
-      const source = readSource(path);
-      const offenders = [
-        [/\bnew\s+Audio\s*\(/, "new Audio"],
-        [/\.playLocal\s*\(/, "playLocal"],
-        [
-          /callTauriCommand\s*<[^>]*>\s*\(\s*["'](?:play|stop)_machine_audio["']/,
-          "native audio command",
-        ],
-        [
-          /create(?:Browser|TauriNative)MachineAudioPlaybackDriver\s*\(/,
-          "playback driver",
-        ],
-      ].flatMap(([pattern, label]) =>
-        (pattern as RegExp).test(source) ? [label as string] : [],
-      );
+      if (path.endsWith(".spec.ts")) continue;
+      const offenders = directAudioBoundaryOffenders(path, readSource(path));
       expect({ path, offenders }).toEqual({ path, offenders: [] });
     }
+  });
+
+  it("rejects injected direct playback in the journey runtime module", () => {
+    expect(
+      directAudioBoundaryOffenders(
+        "src/runtime/customer-journey-audio-runtime.ts",
+        "await driver.playLocal('/audio/injected.mp3')",
+      ),
+    ).toEqual(["playLocal"]);
   });
 
   it("detects direct daemon event-stream consumption in customer checkout surfaces", () => {

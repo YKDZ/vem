@@ -25,9 +25,9 @@ installPresenceDepartureNavigation();
 installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 
-onUnmounted(() => {
-  stopMachineRuntime(pinia);
+onUnmounted(async () => {
   cleanupActiveTransactionSync();
+  await stopMachineRuntime(pinia);
 });
 
 function isDevDirectRouteAllowed(): boolean {

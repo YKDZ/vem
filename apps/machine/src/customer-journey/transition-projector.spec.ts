@@ -421,4 +421,97 @@ describe("Customer Journey Transition Projector", () => {
       }),
     ).toEqual([]);
   });
+
+  it("does not replay persistent transaction or product states after 256 unrelated identities", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const persistentTransaction = {
+      orderNo: "ORDER-PERSISTENT",
+      nextAction: "wait_payment" as const,
+      updatedAt: "2026-07-18T09:00:00.000Z",
+      vending: null,
+    };
+    expect(
+      projector.project({ transaction: persistentTransaction }),
+    ).toContainEqual(expect.objectContaining({ kind: "payment.prompt" }));
+
+    for (let index = 0; index < 300; index += 1) {
+      const transitions = projector.project({
+        selectedProduct: {
+          selectionId: `selection-${index}`,
+          productId: `product-${index}`,
+          category: "袜子",
+          selectedAt: null,
+        },
+        transaction: persistentTransaction,
+      });
+      expect(transitions).not.toContainEqual(
+        expect.objectContaining({ kind: "payment.prompt" }),
+      );
+    }
+
+    const persistentProduct = {
+      selectionId: "selection-persistent",
+      productId: "product-persistent",
+      category: "袜子",
+      selectedAt: null,
+    };
+    expect(
+      projector.project({ selectedProduct: persistentProduct }),
+    ).toContainEqual(expect.objectContaining({ kind: "product.selected" }));
+    for (let index = 0; index < 300; index += 1) {
+      const transitions = projector.project({
+        selectedProduct: persistentProduct,
+        transaction: {
+          orderNo: `ORDER-UNRELATED-${index}`,
+          nextAction: "wait_payment",
+          updatedAt: "2026-07-18T09:01:00.000Z",
+          vending: null,
+        },
+      });
+      expect(transitions).not.toContainEqual(
+        expect.objectContaining({ kind: "product.selected" }),
+      );
+    }
+  });
+
+  it("bounds per-order transition and pickup memory and clears closed orders", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    for (let index = 0; index < 40; index += 1) {
+      projector.project({
+        transaction: {
+          orderNo: `ORDER-MEMORY-${index}`,
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T09:05:00.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "outlet_opened",
+              level: "info",
+              warningNo: null,
+              reportedAt: "2026-07-18T09:05:00.000Z",
+            },
+          },
+        },
+      });
+    }
+
+    expect(projector.memoryUsage()).toEqual({
+      transactionOrders: 32,
+      pickupSeenOrders: 32,
+      maxTransactionOrders: 32,
+    });
+    projector.project({
+      transaction: {
+        orderNo: "ORDER-MEMORY-39",
+        nextAction: "closed",
+        updatedAt: "2026-07-18T09:06:00.000Z",
+        vending: null,
+      },
+    });
+    expect(projector.memoryUsage()).toEqual({
+      transactionOrders: 31,
+      pickupSeenOrders: 31,
+      maxTransactionOrders: 32,
+    });
+  });
 });

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CustomerJourneyTransition } from "@/customer-journey/transition-projector";
+import type { MachineRuntimeAudioTraceEntry } from "@/runtime/machine-runtime-trace";
 
 import {
   createAudioCoordinator,
   type AudioCoordinatorPlaybackDriver,
 } from "./audio-coordinator";
-import type { MachineRuntimeAudioTraceEntry } from "@/runtime/machine-runtime-trace";
 
 function transition(
   transitionId: string,
@@ -436,12 +436,79 @@ describe("Audio Coordinator", () => {
     const stopActive = terminal as
       | ((outcome: { status: "completed" | "failed" | "stopped" }) => void)
       | null;
-    if (!stopActive) throw new Error("mock playback did not retain terminal callback");
+    if (!stopActive)
+      throw new Error("mock playback did not retain terminal callback");
     stopActive({ status: "stopped" });
     await vi.waitFor(() => {
       expect(driver.playLocal).toHaveBeenCalledTimes(2);
     });
     expect(coordinator.activeRequest()?.requestId).toBe(testRequestId);
+  });
+
+  it("joins priority interruption and disposal on the same terminal outcome", async () => {
+    let terminal:
+      | ((outcome: { status: "completed" | "failed" | "stopped" }) => void)
+      | null = null;
+    let resolveStop: (() => void) | null = null;
+    const stopWait = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        terminal = (outcome) => options?.onTerminal?.(outcome);
+      }),
+      stop: vi.fn(() => stopWait),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: (item) => ({
+        sourceUrl: `/audio/${item.transitionId}.mp3`,
+        priority: item.transitionId === "low" ? 10 : 100,
+      }),
+    });
+
+    await coordinator.accept([transition("low")]);
+    const interrupting = coordinator.accept([transition("high")]);
+    await vi.waitFor(() => {
+      expect(driver.stop).toHaveBeenCalledOnce();
+    });
+    const disposing = coordinator.dispose();
+    expect(coordinator.dispose()).toBe(disposing);
+    await vi.waitFor(() => {
+      expect(driver.stop).toHaveBeenCalledTimes(2);
+    });
+    let disposalSettled = false;
+    void disposing.then(() => {
+      disposalSettled = true;
+    });
+    await Promise.resolve();
+    expect(disposalSettled).toBe(false);
+
+    const finish = terminal as
+      | ((outcome: { status: "completed" | "failed" | "stopped" }) => void)
+      | null;
+    if (!finish)
+      throw new Error("mock playback did not retain terminal callback");
+    finish({ status: "stopped" });
+    const releaseStop = resolveStop as (() => void) | null;
+    if (!releaseStop) throw new Error("mock stop wait was not installed");
+    releaseStop();
+    await Promise.all([interrupting, disposing]);
+
+    expect(driver.playLocal).toHaveBeenCalledOnce();
+    expect(
+      coordinator.trace().filter((entry) => entry.type === "audio_terminal"),
+    ).toEqual([
+      expect.objectContaining({ transitionId: "low", outcome: "stopped" }),
+      expect.objectContaining({ transitionId: "high", outcome: "stopped" }),
+    ]);
   });
 
   it("terminalizes an interrupted request as failed when the stop command fails", async () => {

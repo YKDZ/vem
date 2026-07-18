@@ -18,6 +18,8 @@ const {
   getSyncStatusMock,
   getCurrentTransactionMock,
   subscribeEventsMock,
+  createJourneyAudioRuntimeMock,
+  disposeJourneyAudioMock,
 } = vi.hoisted(() => {
   return {
     initializeMock: vi.fn(),
@@ -30,6 +32,8 @@ const {
     subscribeEventsMock: vi.fn<
       (handlers: RuntimeEventHandlers) => { close(): void }
     >(() => ({ close: vi.fn() })),
+    createJourneyAudioRuntimeMock: vi.fn(),
+    disposeJourneyAudioMock: vi.fn(),
   };
 });
 
@@ -44,6 +48,10 @@ vi.mock("@/daemon/client", () => ({
     getCurrentTransaction: getCurrentTransactionMock,
     subscribeEvents: subscribeEventsMock,
   },
+}));
+
+vi.mock("./customer-journey-audio-runtime", () => ({
+  createCustomerJourneyAudioRuntime: createJourneyAudioRuntimeMock,
 }));
 
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
@@ -104,14 +112,46 @@ beforeEach(() => {
     lastError: null,
   });
   getCurrentTransactionMock.mockResolvedValue(noCurrentTransaction());
+  disposeJourneyAudioMock.mockResolvedValue(undefined);
+  createJourneyAudioRuntimeMock.mockReturnValue({
+    requestTestPlayback: vi.fn(),
+    trace: vi.fn(() => []),
+    dispose: disposeJourneyAudioMock,
+  });
 });
 
-afterEach(() => {
-  stopMachineRuntime(pinia);
+afterEach(async () => {
+  await stopMachineRuntime(pinia);
   vi.useRealTimers();
 });
 
 describe("Machine runtime coordinator", () => {
+  it("exposes production teardown that settles only after audio disposal", async () => {
+    let resolveAudioDisposal: (() => void) | null = null;
+    disposeJourneyAudioMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveAudioDisposal = resolve;
+        }),
+    );
+    startMachineRuntime(pinia);
+
+    const teardown = stopMachineRuntime(pinia);
+    expect(stopMachineRuntime(pinia)).toBe(teardown);
+    let teardownSettled = false;
+    void teardown.then(() => {
+      teardownSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(teardownSettled).toBe(false);
+    const finishDisposal = resolveAudioDisposal as (() => void) | null;
+    if (!finishDisposal) throw new Error("audio disposal did not start");
+    finishDisposal();
+    await teardown;
+    expect(teardownSettled).toBe(true);
+  });
+
   it("owns one initial read, one shared event subscription, and one fallback poll", async () => {
     vi.useFakeTimers();
     getSaleStartCapabilityMock
@@ -128,7 +168,7 @@ describe("Machine runtime coordinator", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
 
-    stopMachineRuntime(pinia);
+    await stopMachineRuntime(pinia);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
   });
@@ -165,9 +205,7 @@ describe("Machine runtime coordinator", () => {
 
     handlers.onStale();
     await Promise.resolve();
-    expect(useSaleCapabilityStore().orderingKey).toBe(
-      "machine-test-daemon:2",
-    );
+    expect(useSaleCapabilityStore().orderingKey).toBe("machine-test-daemon:2");
 
     handlers.onReconnect?.();
     await vi.waitFor(() => {
@@ -200,9 +238,7 @@ describe("Machine runtime coordinator", () => {
 
     await vi.advanceTimersByTimeAsync(250);
     expect(initializeMock).toHaveBeenCalledTimes(2);
-    expect(useSaleCapabilityStore().orderingKey).toBe(
-      "machine-test-daemon:2",
-    );
+    expect(useSaleCapabilityStore().orderingKey).toBe("machine-test-daemon:2");
   });
 
   it("retries reconnect reconciliation when only sale capability refresh resolves stale data", async () => {
@@ -232,9 +268,7 @@ describe("Machine runtime coordinator", () => {
     await vi.advanceTimersByTimeAsync(250);
 
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(3);
-    expect(useSaleCapabilityStore().orderingKey).toBe(
-      "machine-test-daemon:2",
-    );
+    expect(useSaleCapabilityStore().orderingKey).toBe("machine-test-daemon:2");
   });
 
   it("retries reconnect reconciliation when only current transaction refresh resolves null", async () => {
@@ -266,9 +300,7 @@ describe("Machine runtime coordinator", () => {
     await vi.advanceTimersByTimeAsync(250);
 
     expect(getCurrentTransactionMock).toHaveBeenCalledTimes(2);
-    expect(useSaleCapabilityStore().orderingKey).toBe(
-      "machine-test-daemon:3",
-    );
+    expect(useSaleCapabilityStore().orderingKey).toBe("machine-test-daemon:3");
   });
 
   it("bounds retries when sale capability refresh keeps resolving stale data", async () => {

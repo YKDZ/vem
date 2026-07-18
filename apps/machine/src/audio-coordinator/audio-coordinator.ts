@@ -1,6 +1,10 @@
 import type { CustomerJourneyTransition } from "@/customer-journey/transition-projector";
 
 import {
+  createBrowserMachineAudioPlaybackDriver,
+  createTauriNativeMachineAudioPlaybackDriver,
+} from "@/audio-playback/machine-audio-playback";
+import {
   createMachineRuntimeTrace,
   type MachineRuntimeTrace,
   type MachineRuntimeTraceEntry,
@@ -70,6 +74,11 @@ type AudioCoordinatorOptions = {
   maxQueueSize?: number;
 };
 
+type CustomerJourneyAudioCoordinatorOptions = Omit<
+  AudioCoordinatorOptions,
+  "driver"
+>;
+
 const DEFAULT_QUEUE_SIZE = 8;
 const DEDUPLICATION_LIMIT = 256;
 
@@ -85,6 +94,7 @@ export function createAudioCoordinator(
   let active: QueuedAudioRequest | null = null;
   let stoppingActive = false;
   let disposed = false;
+  let disposalPromise: Promise<void> | null = null;
 
   async function accept(
     transitions: readonly CustomerJourneyTransition[],
@@ -259,7 +269,7 @@ export function createAudioCoordinator(
     });
   }
 
-  async function dispose(): Promise<void> {
+  async function performDispose(): Promise<void> {
     disposed = true;
     const request = active;
     if (request) {
@@ -280,6 +290,12 @@ export function createAudioCoordinator(
     }
   }
 
+  // oxlint-disable-next-line typescript/promise-function-async -- every disposer must receive the exact shared teardown promise.
+  function dispose(): Promise<void> {
+    disposalPromise ??= performDispose();
+    return disposalPromise;
+  }
+
   return {
     accept,
     requestTestPlayback,
@@ -288,6 +304,17 @@ export function createAudioCoordinator(
     trace: () => trace.entries(),
     dispose,
   };
+}
+
+export function createCustomerJourneyAudioCoordinator(
+  options: CustomerJourneyAudioCoordinatorOptions,
+): AudioCoordinator {
+  return createAudioCoordinator({
+    ...options,
+    driver:
+      createTauriNativeMachineAudioPlaybackDriver() ??
+      createBrowserMachineAudioPlaybackDriver(),
+  });
 }
 
 function preferencesAllow(

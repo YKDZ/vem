@@ -134,6 +134,45 @@ describe("Tauri native Machine Audio playback driver", () => {
     });
   });
 
+  it("lets every idempotent stop caller join the same native terminal wait", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+    const listeners = new Map<
+      string,
+      (event: { payload: { requestId: string; message?: string } }) => void
+    >();
+    listenMock.mockImplementation(async (eventName, listener) => {
+      listeners.set(eventName, listener);
+      return vi.fn();
+    });
+    const driver = createTauriNativeMachineAudioPlaybackDriver();
+    await driver?.playLocal("/assets/payment-succeeded.wav", {
+      requestId: "native-stop-join",
+      volume: 0.7,
+    });
+
+    const firstStop = driver?.stop();
+    const secondStop = driver?.stop();
+    expect(secondStop).toBe(firstStop);
+    let secondSettled = false;
+    void Promise.resolve(secondStop).then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(secondSettled).toBe(false);
+    expect(
+      callTauriCommandMock.mock.calls.filter(
+        ([command]) => command === "stop_machine_audio",
+      ),
+    ).toHaveLength(1);
+
+    listeners.get("machine-audio-stopped")?.({
+      payload: { requestId: "native-stop-join" },
+    });
+    await Promise.all([firstStop, secondStop]);
+    expect(secondSettled).toBe(true);
+  });
+
   it("waits for the matching native terminal event when stop races command acceptance", async () => {
     isTauriRuntimeMock.mockReturnValue(true);
     const listeners = new Map<
