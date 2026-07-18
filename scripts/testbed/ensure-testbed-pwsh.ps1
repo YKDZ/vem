@@ -11,8 +11,11 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
   Remove-Item -LiteralPath $pending -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $pending | Out-Null
   try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/PowerShell/PowerShell/releases/download/v$version/PowerShell-$version-win-x64.zip" -OutFile $archive
+    $url = "https://github.com/PowerShell/PowerShell/releases/download/v$version/PowerShell-$version-win-x64.zip"
+    & curl.exe --fail --location --retry 3 --output $archive $url
+    if ($LASTEXITCODE -ne 0) {
+      throw "PowerShell download failed with curl exit code $LASTEXITCODE"
+    }
     Expand-Archive -LiteralPath $archive -DestinationPath $pending -Force
     if (-not (Test-Path -LiteralPath (Join-Path $pending "pwsh.exe") -PathType Leaf)) {
       throw "PowerShell archive did not contain pwsh.exe"
