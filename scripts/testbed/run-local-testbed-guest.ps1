@@ -382,7 +382,11 @@ if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
 
 $daemonSource = Join-Path $env:CARGO_TARGET_DIR "release\vending-daemon.exe"
 $machineSource = Join-Path $env:CARGO_TARGET_DIR "release\machine.exe"
-$webViewLoaderSource = Join-Path $env:CARGO_TARGET_DIR "release\WebView2Loader.dll"
+$cargoMetadata = (& cargo metadata --format-version 1 --locked | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0) { throw "Cargo metadata was unavailable after the Windows build" }
+$webViewPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "webview2-com-sys" })
+if ($webViewPackages.Count -ne 1) { throw "expected exactly one resolved webview2-com-sys package" }
+$webViewLoaderSource = Join-Path (Split-Path -Parent ([string]$webViewPackages[0].manifest_path)) "x64\WebView2Loader.dll"
 Require-Path $daemonSource
 Require-Path $machineSource
 Require-Path $webViewLoaderSource
