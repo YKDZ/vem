@@ -17,6 +17,11 @@ $env:Path = @($machinePath, $userPath, $env:Path) |
   Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
   Select-Object -Unique |
   Join-String -Separator ";"
+$proxyBypass = @("localhost", "127.0.0.1", "::1") + @(
+  ([string]$env:NO_PROXY -split ",")
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+$env:NO_PROXY = $proxyBypass -join ","
+$env:no_proxy = $env:NO_PROXY
 $declaredCachePaths = @(
   (Join-Path $cacheRoot "pnpm-store"),
   (Join-Path $cacheRoot "cargo-home"),
@@ -382,7 +387,7 @@ if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
 
 $daemonSource = Join-Path $env:CARGO_TARGET_DIR "release\vending-daemon.exe"
 $machineSource = Join-Path $env:CARGO_TARGET_DIR "release\machine.exe"
-$cargoMetadata = (& cargo metadata --format-version 1 --locked | ConvertFrom-Json)
+$cargoMetadata = (& cargo metadata --format-version 1 --locked --offline | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) { throw "Cargo metadata was unavailable after the Windows build" }
 $webViewPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "webview2-com-sys" })
 if ($webViewPackages.Count -ne 1) { throw "expected exactly one resolved webview2-com-sys package" }

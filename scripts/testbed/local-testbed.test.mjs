@@ -1148,9 +1148,11 @@ describe("Windows D cache contract", () => {
     assert.doesNotMatch(guest, /sccache --zero-stats|Compile requests/);
     assert.match(
       guest,
-      /cargo metadata --format-version 1 --locked[\s\S]*webview2-com-sys[\s\S]*x64\\WebView2Loader\.dll/,
+      /cargo metadata --format-version 1 --locked --offline[\s\S]*webview2-com-sys[\s\S]*x64\\WebView2Loader\.dll/,
     );
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
+    assert.match(guest, /proxyBypass = @\("localhost", "127\.0\.0\.1", "::1"\)/);
+    assert.match(guest, /\$env:no_proxy = \$env:NO_PROXY/);
     assert.match(
       guest,
       /--filter machine exec tauri build --config src-tauri\/tauri\.windows\.conf\.json --no-bundle/,
