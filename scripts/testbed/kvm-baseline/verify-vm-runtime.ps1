@@ -7,6 +7,7 @@ param(
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerUrl,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerName,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerServiceName,
+  [Parameter(Mandatory = $true)] [ValidatePattern("^[0-9a-f]{64}$")] [string] $ExpectedVirtioGpuDriverPackageSha256,
   [Parameter(Mandatory = $true)] [ValidateSet("ich9")] [string] $ExpectedAudioModel,
   [Parameter(Mandatory = $true)] [string[]] $ExpectedSerialRole,
   [Parameter(Mandatory = $true)] [int[]] $ExpectedSerialUsbPort,
@@ -26,6 +27,8 @@ $turboNamespace = "turbo-2.10.0"
 $nodeNamespace = "node-24.16.0"
 $interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-report.json"
 $runnerRegistrationPath = Join-Path $baselineRoot "runner-registration.json"
+$virtioGpuDriverBindingPath = Join-Path $baselineRoot "virtio-gpu-driver-binding.json"
+$virtioGpuDriverRoot = Join-Path $baselineRoot "media\virtio-gpu-driver"
 if (-not (Test-Path -LiteralPath $interactiveDisplayReportPath)) { throw "interactive autologon display report is unavailable" }
 $interactiveDisplay = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json
 if ($interactiveDisplay.schemaVersion -ne "win10-kvm-interactive-display/v1") { throw "interactive display report schema is invalid" }
@@ -47,6 +50,67 @@ $runnerConfiguration = Get-Content -Raw -LiteralPath $runnerConfigurationPath | 
 $runnerConfigurationUrl = [string]$runnerConfiguration.gitHubUrl
 if ([string]::IsNullOrWhiteSpace($runnerConfigurationUrl)) { $runnerConfigurationUrl = [string]$runnerConfiguration.serverUrl }
 $runnerService = Get-Service -Name $ExpectedRunnerServiceName -ErrorAction SilentlyContinue
+
+function Get-Sha256 {
+  param([string] $Path)
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+}
+
+function Get-VerifiedVirtioGpuDriverBinding {
+  if (-not (Test-Path -LiteralPath $virtioGpuDriverBindingPath -PathType Leaf)) { throw "VirtIO GPU driver binding evidence is unavailable" }
+  $binding = Get-Content -Raw -LiteralPath $virtioGpuDriverBindingPath | ConvertFrom-Json
+  if ($binding.schemaVersion -ne "win10-kvm-virtio-gpu-driver-binding/v1" -or [string]$binding.packageSha256 -cne $ExpectedVirtioGpuDriverPackageSha256) {
+    throw "VirtIO GPU driver binding package identity does not match the published payload"
+  }
+  $files = @($binding.files | Sort-Object path)
+  if ($files.Count -lt 3 -or @($files.path | Select-Object -Unique).Count -ne $files.Count) { throw "VirtIO GPU driver binding file identity is invalid" }
+  $identityText = New-Object Text.StringBuilder
+  foreach ($file in $files) {
+    if ([string]$file.path -notmatch "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$" -or [string]$file.sha256 -notmatch "^[0-9a-f]{64}$") { throw "VirtIO GPU driver binding file identity is invalid" }
+    $mediaPath = Join-Path $virtioGpuDriverRoot ([string]$file.path).Replace("/", "\")
+    if (-not (Test-Path -LiteralPath $mediaPath -PathType Leaf) -or (Get-Sha256 -Path $mediaPath) -cne [string]$file.sha256) {
+      throw "VirtIO GPU driver media no longer matches the published package identity"
+    }
+    [void]$identityText.Append([string]$file.path).Append([char]0).Append([string]$file.sha256).Append("`n")
+  }
+  foreach ($catalog in @(Get-ChildItem -LiteralPath $virtioGpuDriverRoot -Recurse -File -Filter "*.cat" -ErrorAction Stop)) {
+    if ((Get-AuthenticodeSignature -LiteralPath $catalog.FullName).Status -ne "Valid") { throw "VirtIO GPU driver catalog signature is no longer valid" }
+  }
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $packageHash = -join ($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($identityText.ToString())) | ForEach-Object { $_.ToString("x2") })
+  } finally {
+    $sha256.Dispose()
+  }
+  if ($packageHash -cne $ExpectedVirtioGpuDriverPackageSha256) { throw "VirtIO GPU driver binding aggregate identity is invalid" }
+
+  $adapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+    Where-Object { $_.Status -eq "OK" -and $_.ConfigManagerErrorCode -eq 0 -and $_.PNPDeviceID -ceq [string]$binding.pnpDeviceId } |
+    Select-Object -First 1
+  if ($null -eq $adapter) { throw "the exact VirtIO GPU PnP device is not healthy and active" }
+  $signedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.DeviceID -ceq [string]$binding.pnpDeviceId -and
+      $_.IsSigned -eq $true -and
+      $_.InfName -ceq [string]$binding.infName -and
+      $_.DriverProviderName -ceq [string]$binding.provider -and
+      $_.DriverVersion -ceq [string]$binding.version -and
+      $_.Signer -ceq [string]$binding.signer
+    } |
+    Select-Object -First 1
+  if ($null -eq $signedDriver) { throw "the bound VirtIO GPU signed-driver identity changed after preparation" }
+  $driverPackage = Get-WindowsDriver -Online -Driver $signedDriver.InfName -ErrorAction Stop
+  $driverStoreRoot = Split-Path -Parent ([string]$driverPackage.OriginalFileName)
+  foreach ($file in $files) {
+    $storePath = Join-Path $driverStoreRoot ([string]$file.path).Replace("/", "\")
+    if (-not (Test-Path -LiteralPath $storePath -PathType Leaf) -or (Get-Sha256 -Path $storePath) -cne [string]$file.sha256) {
+      throw "the bound VirtIO GPU DriverStore package differs from the supplied payload"
+    }
+  }
+  return $binding
+}
+
+$virtioGpuDriverBinding = Get-VerifiedVirtioGpuDriverBinding
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $webView2 = Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients", "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients" -ErrorAction SilentlyContinue |
   Get-ItemProperty -ErrorAction SilentlyContinue |
@@ -135,6 +199,7 @@ $checks = @{
   toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0 -and $exactToolchainVersions -and $machinePathsExact -and $executablesOnSystemDisk -and $cargoDownloadCachesOnD
   WebView2 = $null -ne $webView2
   displayAdapter = $null -ne $displayAdapter -and -not [string]::IsNullOrWhiteSpace([string]$interactiveDisplay.displayAdapter)
+  displayDriverBinding = $null -ne $virtioGpuDriverBinding
   Audio = $ExpectedAudioModel -ceq "ich9" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $hdaAudioDevices.Count -eq 1
   Serial = $serialPorts.Count -eq $ExpectedSerialRole.Count -and $serialRoleDevices.Count -eq $ExpectedSerialRole.Count -and $remainingSerialPorts.Count -eq 0
   cacheDisk = $cacheWritable
@@ -145,7 +210,7 @@ $report = @{
   checks = $checks
   desktop = @{ width = $interactiveDisplay.desktop.width; height = $interactiveDisplay.desktop.height; scalePercent = $interactiveDisplay.desktop.scalePercent; interactiveUser = $interactiveDisplay.interactiveUser; interactiveSessionId = $interactiveDisplay.interactiveSessionId; source = "interactive-autologon-report" }
   runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
-  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
+  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; displayDriverBinding = $virtioGpuDriverBinding; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   toolchain = @{ commands = $tools; expectedMachinePaths = $expectedMachinePaths; machinePaths = $machinePaths; exactVersions = $exactToolchainVersions; executablesOnSystemDisk = $executablesOnSystemDisk; cargoDownloadCachesOnD = $cargoDownloadCachesOnD }
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null

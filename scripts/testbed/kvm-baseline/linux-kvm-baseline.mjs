@@ -6,6 +6,7 @@ import {
   open,
   readdir,
   readFile,
+  readlink,
   rename,
   rm,
   stat,
@@ -30,6 +31,8 @@ const REQUIRED_COMMANDS = [
 
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
 const CURRENT_MANIFEST_SCHEMA = "win10-kvm-baseline-current/v1";
+export const VNC_ACTIVATOR_METADATA_FILE = ".vnc-activator.json";
+const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v1";
 const RELEASE_ARTIFACTS = Object.freeze({
   system: "system.qcow2",
   cache: "cache.qcow2",
@@ -87,6 +90,26 @@ function absolutePath(value, label) {
     throw new Error(`${label} must be a canonical absolute Unix path`);
   }
   return path;
+}
+
+function absoluteWindowsPath(value, label) {
+  const path = string(value, label);
+  if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
+    throw new Error(`${label} must be an absolute Windows path`);
+  }
+  return path;
+}
+
+function commandArray(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some((part) => typeof part !== "string" || part.trim() === "")
+  ) {
+    throw new Error(`${label} must be a non-empty command array`);
+  }
+  absolutePath(value[0], `${label}[0]`);
+  return value;
 }
 
 function hostnameOrAddress(value, label) {
@@ -258,6 +281,16 @@ export function validateBaselineBuildConfig(input) {
     );
   }
   string(runner.name, "runner.name");
+  const testbed = object(config.testbed, "testbed");
+  commandArray(testbed.reconstructCommand, "testbed.reconstructCommand");
+  commandArray(testbed.admitRunnerCommand, "testbed.admitRunnerCommand");
+  const testbedGuest = object(testbed.guest, "testbed.guest");
+  hostnameOrAddress(testbedGuest.host, "testbed.guest.host");
+  string(testbedGuest.user, "testbed.guest.user");
+  absolutePath(testbedGuest.identityFile, "testbed.guest.identityFile");
+  absolutePath(testbedGuest.knownHostsFile, "testbed.guest.knownHostsFile");
+  absoluteWindowsPath(testbedGuest.stagingPath, "testbed.guest.stagingPath");
+  absoluteWindowsPath(testbedGuest.cacheRoot, "testbed.guest.cacheRoot");
   return config;
 }
 
@@ -425,25 +458,207 @@ function firstLine(stream, timeoutMs) {
   });
 }
 
-function processFailure(handle, label) {
-  return handle.completion.then(
-    () => {
-      throw new Error(`${label} exited before VNC activation`);
-    },
-    (error) => {
-      throw new Error(
-        `${label} failed before VNC activation: ${error.message}`,
-      );
-    },
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+function settlesWithin(promise, timeoutMs) {
+  return new Promise((resolveWait) => {
+    const timeout = setTimeout(() => resolveWait(false), timeoutMs);
+    void promise.then(
+      () => {
+        clearTimeout(timeout);
+        resolveWait(true);
+      },
+      () => {
+        clearTimeout(timeout);
+        resolveWait(true);
+      },
+    );
+  });
+}
+
+function processStartTime(statValue) {
+  const closingName = statValue.lastIndexOf(")");
+  if (closingName < 0) throw new Error("Linux process stat is malformed");
+  const fields = statValue.slice(closingName + 2).trim().split(/\s+/);
+  const startTimeTicks = fields[19];
+  if (!/^\d+$/.test(startTimeTicks ?? "")) {
+    throw new Error("Linux process start time is unavailable");
+  }
+  return startTimeTicks;
+}
+
+export async function readLinuxProcessIdentity(pid) {
+  if (!Number.isInteger(pid) || pid < 1) {
+    throw new Error("process PID must be a positive integer");
+  }
+  const procRoot = `/proc/${pid}`;
+  const [statValue, executable, commandLine] = await Promise.all([
+    readFile(`${procRoot}/stat`, "utf8"),
+    readlink(`${procRoot}/exe`),
+    readFile(`${procRoot}/cmdline`),
+  ]);
+  return {
+    pid,
+    startTimeTicks: processStartTime(statValue),
+    executable,
+    commandLineSha256: createHash("sha256").update(commandLine).digest("hex"),
+  };
+}
+
+function processIdentityShape(identity) {
+  return (
+    identity &&
+    Number.isInteger(identity.pid) &&
+    identity.pid > 0 &&
+    /^\d+$/.test(identity.startTimeTicks ?? "") &&
+    typeof identity.executable === "string" &&
+    isAbsolute(identity.executable) &&
+    /^[0-9a-f]{64}$/.test(identity.commandLineSha256 ?? "")
   );
 }
 
-async function stopProcess(handle) {
-  if (!handle) return;
-  if (handle.child.exitCode === null && handle.child.signalCode === null) {
-    handle.child.kill("SIGTERM");
+async function processIdentityMatches(identity) {
+  if (!processIdentityShape(identity)) return false;
+  try {
+    const observed = await readLinuxProcessIdentity(identity.pid);
+    return (
+      observed.startTimeTicks === identity.startTimeTicks &&
+      observed.executable === identity.executable &&
+      observed.commandLineSha256 === identity.commandLineSha256
+    );
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ESRCH") return false;
+    throw error;
   }
-  await handle.completion.catch(() => undefined);
+}
+
+async function waitForProcessIdentityExit(identity, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await processIdentityMatches(identity))) return true;
+    await delay(25);
+  }
+  return !(await processIdentityMatches(identity));
+}
+
+export async function terminateExactProcessIdentity(
+  identity,
+  { killTimeoutMs = 2_000, termTimeoutMs = 2_000 } = {},
+) {
+  if (!(await processIdentityMatches(identity))) return false;
+  try {
+    process.kill(identity.pid, "SIGTERM");
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+  if (await waitForProcessIdentityExit(identity, termTimeoutMs)) return true;
+  if (!(await processIdentityMatches(identity))) return true;
+  try {
+    process.kill(identity.pid, "SIGKILL");
+  } catch (error) {
+    if (error.code === "ESRCH") return true;
+    throw error;
+  }
+  if (!(await waitForProcessIdentityExit(identity, killTimeoutMs))) {
+    throw new Error(`process ${identity.pid} survived SIGKILL`);
+  }
+  return true;
+}
+
+function ownerMatches(observed, expected) {
+  return (
+    observed &&
+    typeof observed === "object" &&
+    !Array.isArray(observed) &&
+    Object.keys(observed).length === Object.keys(expected).length &&
+    Object.keys(expected).every((key) => observed[key] === expected[key])
+  );
+}
+
+async function removeActivatorMetadata(metadataPath) {
+  await rm(metadataPath, { force: true });
+  await fsyncDirectory(dirname(metadataPath));
+}
+
+export async function recoverHeadlessVncActivator({
+  metadataPath,
+  owner,
+  termination = {},
+}) {
+  let metadata;
+  try {
+    metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return { present: false, recovered: true };
+    return { present: true, recovered: false };
+  }
+  if (
+    metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
+    !ownerMatches(metadata.owner, owner) ||
+    !metadata.processes ||
+    Object.keys(metadata.processes).some(
+      (role) => !["xvfb", "viewer"].includes(role),
+    ) ||
+    Object.values(metadata.processes).some(
+      (identity) => !processIdentityShape(identity),
+    )
+  ) {
+    return { present: true, recovered: false };
+  }
+  for (const role of ["viewer", "xvfb"]) {
+    const identity = metadata.processes[role];
+    if (identity) await terminateExactProcessIdentity(identity, termination);
+  }
+  await removeActivatorMetadata(metadataPath);
+  return { present: true, recovered: true };
+}
+
+async function stopProcess(handle, identity, termination) {
+  if (!handle) return;
+  const childExit = new Promise((resolveExit) => {
+    if (handle.child.exitCode !== null || handle.child.signalCode !== null) {
+      resolveExit();
+      return;
+    }
+    handle.child.once("exit", resolveExit);
+    handle.child.once("error", resolveExit);
+  });
+  if (identity) {
+    await terminateExactProcessIdentity(identity, termination);
+    const exitTimeoutMs = termination.killTimeoutMs ?? 2_000;
+    const exited = await settlesWithin(childExit, exitTimeoutMs);
+    if (
+      !exited &&
+      handle.child.exitCode === null &&
+      handle.child.signalCode === null
+    ) {
+      throw new Error(`child ${handle.child.pid} exit was not observed`);
+    }
+  } else {
+    if (handle.child.exitCode === null && handle.child.signalCode === null) {
+      handle.child.kill("SIGTERM");
+    }
+    const termTimeoutMs = termination.termTimeoutMs ?? 2_000;
+    const exitedAfterTerm = await settlesWithin(childExit, termTimeoutMs);
+    if (
+      !exitedAfterTerm &&
+      handle.child.exitCode === null &&
+      handle.child.signalCode === null
+    ) {
+      handle.child.kill("SIGKILL");
+    }
+    const killTimeoutMs = termination.killTimeoutMs ?? 2_000;
+    if (!exitedAfterTerm && !(await settlesWithin(childExit, killTimeoutMs))) {
+      throw new Error(`child ${handle.child.pid} did not exit after SIGKILL`);
+    }
+  }
+  handle.child.stdin?.destroy();
+  handle.child.stdout?.destroy();
+  handle.child.stderr?.destroy();
+  void handle.completion.catch(() => undefined);
 }
 
 export async function startHeadlessVncActivator({
@@ -451,9 +666,12 @@ export async function startHeadlessVncActivator({
   domainName,
   environment = process.env,
   libvirtUri,
+  metadataPath,
+  owner,
   readinessDelayMs = 500,
   runCommand,
   startProcess,
+  termination = {},
 }) {
   string(domainName, "domainName");
   string(libvirtUri, "libvirtUri");
@@ -462,6 +680,13 @@ export async function startHeadlessVncActivator({
   }
   if (typeof startProcess !== "function") {
     throw new Error("startProcess must be a function");
+  }
+  const expectedMetadataPath = resolve(
+    string(owner?.systemStagingPath, "owner.systemStagingPath"),
+    VNC_ACTIVATOR_METADATA_FILE,
+  );
+  if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
+    throw new Error("VNC activator metadata must use its owned staging path");
   }
   const display = await runCommand("virsh", [
     "--connect",
@@ -476,12 +701,46 @@ export async function startHeadlessVncActivator({
   const viewerCommand = commands.viewer ?? "gvncviewer";
   let xvfb;
   let viewer;
+  let xvfbIdentity;
+  let viewerIdentity;
+  let stopping = false;
+  let rejectFailure;
+  const failure = new Promise((_, reject) => {
+    rejectFailure = reject;
+  });
+  void failure.catch(() => undefined);
+  const monitor = (handle, label) => {
+    handle.child.once("exit", () => {
+      if (!stopping) {
+        rejectFailure(new Error(`${label} exited during VNC activation`));
+      }
+    });
+    handle.child.once("error", (error) => {
+      if (!stopping) {
+        rejectFailure(
+          new Error(`${label} failed during VNC activation: ${error.message}`),
+        );
+      }
+    });
+  };
+  const writeMetadata = () =>
+    writeJsonAtomicallyDurably(metadataPath, {
+      schemaVersion: VNC_ACTIVATOR_METADATA_SCHEMA,
+      owner,
+      processes: {
+        ...(xvfbIdentity ? { xvfb: xvfbIdentity } : {}),
+        ...(viewerIdentity ? { viewer: viewerIdentity } : {}),
+      },
+    });
   let stopPromise;
   const stop = () => {
     if (!stopPromise) {
-      stopPromise = Promise.all([stopProcess(viewer), stopProcess(xvfb)]).then(
-        () => undefined,
-      );
+      stopping = true;
+      stopPromise = (async () => {
+        await stopProcess(viewer, viewerIdentity, termination);
+        await stopProcess(xvfb, xvfbIdentity, termination);
+        await removeActivatorMetadata(metadataPath);
+      })();
     }
     return stopPromise;
   };
@@ -501,6 +760,9 @@ export async function startHeadlessVncActivator({
       ],
       { env: environment },
     );
+    monitor(xvfb, "Xvfb");
+    xvfbIdentity = await readLinuxProcessIdentity(xvfb.child.pid);
+    await writeMetadata();
     const displayNumber = await firstLine(xvfb.child.stdout, 10_000);
     if (!/^\d+$/.test(displayNumber)) {
       throw new Error("Xvfb returned an invalid display number");
@@ -510,13 +772,22 @@ export async function startHeadlessVncActivator({
       [...(commands.viewerArguments ?? []), endpoint],
       { env: { ...environment, DISPLAY: `:${displayNumber}` } },
     );
+    monitor(viewer, "gvncviewer");
+    viewerIdentity = await readLinuxProcessIdentity(viewer.child.pid);
+    await writeMetadata();
     await Promise.race([
-      processFailure(viewer, "gvncviewer"),
+      failure,
       new Promise((resolveReady) =>
         setTimeout(resolveReady, readinessDelayMs),
       ),
     ]);
-    return { endpoint, stop };
+    return {
+      endpoint,
+      failure,
+      runWhileActive: (work) =>
+        Promise.race([Promise.resolve().then(work), failure]),
+      stop,
+    };
   } catch (error) {
     await stop();
     throw error;
@@ -617,6 +888,8 @@ function currentManifest(config, paths) {
       domainXmlPath: paths.domainXmlPath,
       diagnosticPath: paths.diagnosticPath,
     },
+    profile: runtimeProfileForPublishedRelease(config, paths.releaseId),
+    testbed: config.testbed,
   };
 }
 

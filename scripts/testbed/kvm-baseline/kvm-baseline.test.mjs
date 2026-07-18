@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -22,6 +23,7 @@ import {
   bootstrapScript,
   constructionCleanup,
   createConstructionCommandTracker,
+  createConstructionWorkspace,
   createConfigurationMedia,
   guestConfigurationFor,
   recoverStaleConstructionDomains,
@@ -102,6 +104,26 @@ function buildConfig(root) {
         arguments: ["--repository", "example/runtime"],
       },
       name: "win10-runtime-baseline-runner",
+    },
+    testbed: {
+      reconstructCommand: [
+        join(root, "bin", "reconstruct-runtime"),
+        "--run-id",
+        "{runId}",
+      ],
+      admitRunnerCommand: [
+        join(root, "bin", "admit-runtime-runner"),
+        "--run-id",
+        "{runId}",
+      ],
+      guest: {
+        host: "win10-runtime.example.test",
+        user: "baseline",
+        identityFile: join(root, "secrets", "administrator-private-key"),
+        knownHostsFile: join(root, "ssh", "known_hosts"),
+        stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+        cacheRoot: "D:\\runtime-cache\\v1",
+      },
     },
   };
 }
@@ -455,6 +477,50 @@ await runWithConstructionSignalCleanup({
 `;
 }
 
+function hardCrashActivatorChildSource() {
+  return `
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+const builder = await import(${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)});
+const linux = await import(${JSON.stringify(new URL("./linux-kvm-baseline.mjs", import.meta.url).href)});
+const [configPath, xvfbPath, viewerPath, readyPath] = process.argv.slice(2);
+const config = JSON.parse(await readFile(configPath, "utf8"));
+const owner = await builder.createConstructionWorkspace(config, {
+  nextBuildId: () => "deadbeef",
+});
+const tracker = builder.createConstructionCommandTracker({ terminationGraceMs: 100 });
+const metadataPath = join(owner.systemStagingPath, linux.VNC_ACTIVATOR_METADATA_FILE);
+await linux.startHeadlessVncActivator({
+  domainName: owner.domainName,
+  libvirtUri: config.host.libvirtUri,
+  runCommand: async () => ({ stdout: ":19\\n", stderr: "" }),
+  startProcess: tracker.start,
+  commands: {
+    xvfb: process.execPath,
+    xvfbArguments: [xvfbPath],
+    viewer: process.execPath,
+    viewerArguments: [viewerPath],
+  },
+  metadataPath,
+  owner,
+  readinessDelayMs: 20,
+  termination: { termTimeoutMs: 100, killTimeoutMs: 500 },
+});
+await writeFile(readyPath, JSON.stringify({ metadataPath, owner }));
+await new Promise(() => setInterval(() => {}, 1_000));
+`;
+}
+
+function assertProcessIsNotRunning(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closingName = stat.lastIndexOf(")");
+    assert.equal(stat.slice(closingName + 2).split(/\s+/, 1)[0], "Z");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
 const REQUIRED_PRE_PHASE_KILL_STAGES = Object.freeze([
   "cache-release-directory-renamed",
   "system-release-directory-renamed",
@@ -533,12 +599,23 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
-  it("activates the dynamic loopback VNC display with tracked headless children and stops both", async () => {
+  it(
+    "activates the dynamic loopback VNC display with tracked headless children and stops both",
+    { timeout: 3_000 },
+    async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-activator-"));
     const xvfbPath = join(root, "fake-xvfb.mjs");
     const viewerPath = join(root, "fake-gvncviewer.mjs");
     const xvfbPidPath = join(root, "xvfb.pid");
     const viewerStatePath = join(root, "viewer.json");
+    const metadataPath = join(root, ".vnc-activator.json");
+    const owner = {
+      schemaVersion: "win10-kvm-construction-owner/v1",
+      buildId: "deadbeef",
+      domainName: "win10-runtime-baseline-build-deadbeef",
+      systemStagingPath: root,
+    };
+    let activator;
     try {
       writeFileSync(
         xvfbPath,
@@ -546,6 +623,7 @@ describe("Linux KVM Windows baseline", () => {
 import { writeFileSync } from "node:fs";
 writeFileSync(process.env.FAKE_XVFB_PID, String(process.pid));
 process.stdout.write("73\\n");
+process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
       );
@@ -558,19 +636,24 @@ writeFileSync(process.env.FAKE_VIEWER_STATE, JSON.stringify({
   endpoint: process.argv[2],
   display: process.env.DISPLAY,
 }));
+process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
       );
       const tracker = createConstructionCommandTracker();
       const commands = [];
-      const activator = await startHeadlessVncActivator({
+      const startProcessWithStalledCompletion = (...arguments_) => {
+        const handle = tracker.start(...arguments_);
+        return { ...handle, completion: new Promise(() => {}) };
+      };
+      activator = await startHeadlessVncActivator({
         domainName: "win10-runtime-baseline-build-deadbeef",
         libvirtUri: "qemu:///system",
         runCommand: async (command, args) => {
           commands.push([command, args]);
           return { stdout: "127.0.0.1:9\n", stderr: "" };
         },
-        startProcess: tracker.start,
+        startProcess: startProcessWithStalledCompletion,
         commands: {
           xvfb: process.execPath,
           xvfbArguments: [xvfbPath],
@@ -582,7 +665,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
           FAKE_XVFB_PID: xvfbPidPath,
           FAKE_VIEWER_STATE: viewerStatePath,
         },
+        metadataPath,
+        owner,
         readinessDelayMs: 25,
+        termination: { termTimeoutMs: 25, killTimeoutMs: 500 },
       });
 
       assert.deepEqual(commands, [
@@ -606,20 +692,45 @@ await new Promise(() => setInterval(() => {}, 1_000));
       const viewerPid = JSON.parse(
         readFileSync(viewerStatePath, "utf8"),
       ).pid;
+      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+      assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v1");
+      assert.deepEqual(metadata.owner, owner);
+      assert.equal(metadata.processes.xvfb.pid, xvfbPid);
+      assert.equal(metadata.processes.viewer.pid, viewerPid);
+      for (const identity of Object.values(metadata.processes)) {
+        assert.match(identity.startTimeTicks, /^\d+$/);
+        assert.match(identity.executable, /^\//);
+        assert.match(identity.commandLineSha256, /^[0-9a-f]{64}$/);
+      }
+      const stopStartedAt = Date.now();
       await activator.stop();
+      assert.ok(Date.now() - stopStartedAt < 1_000);
+      assert.equal(existsSync(metadataPath), false);
       assert.throws(() => process.kill(xvfbPid, 0), /ESRCH/);
       assert.throws(() => process.kill(viewerPid, 0), /ESRCH/);
     } finally {
+      await activator?.stop();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
-  it("aborts and awaits both tracked VNC activator children", async () => {
+  it(
+    "aborts and awaits both tracked VNC activator children",
+    { timeout: 3_000 },
+    async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-cancel-"));
     const xvfbPath = join(root, "fake-xvfb.mjs");
     const viewerPath = join(root, "fake-gvncviewer.mjs");
     const xvfbPidPath = join(root, "xvfb.pid");
     const viewerStatePath = join(root, "viewer.json");
+    const metadataPath = join(root, ".vnc-activator.json");
+    const owner = {
+      schemaVersion: "win10-kvm-construction-owner/v1",
+      buildId: "cafebabe",
+      domainName: "win10-runtime-baseline-build-cafebabe",
+      systemStagingPath: root,
+    };
     try {
       writeFileSync(
         xvfbPath,
@@ -627,6 +738,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
 import { writeFileSync } from "node:fs";
 writeFileSync(process.env.FAKE_XVFB_PID, String(process.pid));
 process.stdout.write("74\\n");
+process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
       );
@@ -635,10 +747,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
         `
 import { writeFileSync } from "node:fs";
 writeFileSync(process.env.FAKE_VIEWER_STATE, JSON.stringify({ pid: process.pid }));
+process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
       );
-      const tracker = createConstructionCommandTracker();
+      const tracker = createConstructionCommandTracker({
+        terminationGraceMs: 25,
+      });
       const activator = await startHeadlessVncActivator({
         domainName: "win10-runtime-baseline-build-cafebabe",
         libvirtUri: "qemu:///system",
@@ -655,7 +770,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
           FAKE_XVFB_PID: xvfbPidPath,
           FAKE_VIEWER_STATE: viewerStatePath,
         },
+        metadataPath,
+        owner,
         readinessDelayMs: 25,
+        termination: { termTimeoutMs: 25, killTimeoutMs: 500 },
       });
       const xvfbPid = Number(readFileSync(xvfbPidPath, "utf8"));
       const viewerPid = JSON.parse(
@@ -669,7 +787,70 @@ await new Promise(() => setInterval(() => {}, 1_000));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
+
+  it(
+    "fails active construction promptly when a VNC activator child exits later",
+    { timeout: 3_000 },
+    async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-late-exit-"));
+    const xvfbPath = join(root, "fake-xvfb.mjs");
+    const viewerPath = join(root, "fake-gvncviewer.mjs");
+    const metadataPath = join(root, ".vnc-activator.json");
+    const owner = {
+      schemaVersion: "win10-kvm-construction-owner/v1",
+      buildId: "0123abcd",
+      domainName: "win10-runtime-baseline-build-0123abcd",
+      systemStagingPath: root,
+    };
+    let activator;
+    try {
+      writeFileSync(
+        xvfbPath,
+        'process.stdout.write("75\\n"); await new Promise(() => setInterval(() => {}, 1_000));\n',
+      );
+      writeFileSync(
+        viewerPath,
+        "await new Promise((resolve) => setTimeout(resolve, 75));\n",
+      );
+      const tracker = createConstructionCommandTracker();
+      const startProcessWithStalledCompletion = (...arguments_) => {
+        const handle = tracker.start(...arguments_);
+        if (
+          arguments_[0] !== process.execPath ||
+          arguments_[1][0] !== viewerPath
+        ) {
+          return handle;
+        }
+        return { ...handle, completion: new Promise(() => {}) };
+      };
+      activator = await startHeadlessVncActivator({
+        domainName: owner.domainName,
+        libvirtUri: "qemu:///system",
+        runCommand: async () => ({ stdout: ":13\n", stderr: "" }),
+        startProcess: startProcessWithStalledCompletion,
+        commands: {
+          xvfb: process.execPath,
+          xvfbArguments: [xvfbPath],
+          viewer: process.execPath,
+          viewerArguments: [viewerPath],
+        },
+        metadataPath,
+        owner,
+        readinessDelayMs: 20,
+      });
+
+      await assert.rejects(
+        activator.runWhileActive(() => new Promise(() => {})),
+        /gvncviewer exited during VNC activation/,
+      );
+    } finally {
+      await activator?.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+    },
+  );
 
   it("verifies the defined ICH9 audio device and exact USB-port serial role mapping", () => {
     const profile = createRuntimeProfile({
@@ -750,7 +931,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
   });
 
-  it("requires caller-owned identity, storage, media, network, and runner inputs", () => {
+  it("requires caller-owned identity, storage, media, network, runner, and testbed inputs", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-"));
     try {
       const config = buildConfig(root);
@@ -789,6 +970,64 @@ await new Promise(() => setInterval(() => {}, 1_000));
         () => validateBaselineBuildConfig(invalidRunnerArchiveHash),
         /media\.runnerArchiveSha256/,
       );
+
+      const missingTestbed = buildConfig(root);
+      delete missingTestbed.testbed;
+      assert.throws(
+        () => validateBaselineBuildConfig(missingTestbed),
+        /testbed must be an object/,
+      );
+
+      const relativeTestbedIdentity = buildConfig(root);
+      relativeTestbedIdentity.testbed.guest.identityFile = "guest-key";
+      assert.throws(
+        () => validateBaselineBuildConfig(relativeTestbedIdentity),
+        /testbed\.guest\.identityFile must be a canonical absolute Unix path/,
+      );
+
+      const invalidReconstructCommand = buildConfig(root);
+      invalidReconstructCommand.testbed.reconstructCommand = [""];
+      assert.throws(
+        () => validateBaselineBuildConfig(invalidReconstructCommand),
+        /testbed\.reconstructCommand must be a non-empty command array/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes the Issue15 testbed binding in the existing current manifest", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-testbed-binding-"));
+    try {
+      const config = buildConfig(root);
+      await publishRelease(config, "release-testbed-binding", "binding");
+      const current = JSON.parse(
+        readFileSync(
+          baselinePublicationLayout(config).currentManifestPath,
+          "utf8",
+        ),
+      );
+
+      assert.equal(current.schemaVersion, "win10-kvm-baseline-current/v1");
+      assert.deepEqual(current.testbed, config.testbed);
+      assert.equal(
+        current.profile.disks.system.path,
+        current.artifacts.systemPath,
+      );
+      assert.equal(
+        current.profile.disks.cache.path,
+        current.artifacts.cachePath,
+      );
+      assert.deepEqual(current.profile.display, {
+        width: 1080,
+        height: 1920,
+        scalePercent: 100,
+        videoMemoryKiB: 65_536,
+      });
+      assert.equal(
+        current.artifacts.domainXmlPath.endsWith("/runtime-profile.xml"),
+        true,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -801,6 +1040,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
       webView2InstallerUri: config.media.webView2InstallerUri,
       runnerArchiveFile: "actions-runner-win-x64.zip",
       virtioGpuDriverDirectory: "virtio-gpu-driver",
+      virtioGpuDriverIdentityFile: "virtio-gpu-driver-identity.json",
       interactiveUser: config.guest.sshUser,
       display: { width: 1080, height: 1920, scalePercent: 100 },
     });
@@ -1790,7 +2030,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         .digest("hex");
       const commands = [];
       const stagingDirectory = join(root, "staging");
-      await createConfigurationMedia(config, stagingDirectory, {
+      const configurationMedia = await createConfigurationMedia(config, stagingDirectory, {
         runCommand: async (...command) => {
           commands.push(command);
           const [program, args] = command;
@@ -1809,6 +2049,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         webView2InstallerUri: config.media.webView2InstallerUri,
         runnerArchiveFile: "actions-runner-win-x64.zip",
         virtioGpuDriverDirectory: "virtio-gpu-driver",
+        virtioGpuDriverIdentityFile: "virtio-gpu-driver-identity.json",
         interactiveUser: config.guest.sshUser,
         display: { width: 1080, height: 1920, scalePercent: 100 },
       });
@@ -1821,9 +2062,20 @@ await new Promise(() => setInterval(() => {}, 1_000));
         readdirSync(join(mediaRoot, "virtio-gpu-driver")).sort(),
         ["viogpudo.cat", "viogpudo.inf", "viogpudo.sys"],
       );
+      const driverIdentity = JSON.parse(
+        readFileSync(
+          join(mediaRoot, "virtio-gpu-driver-identity.json"),
+          "utf8",
+        ),
+      );
+      assert.deepEqual(
+        configurationMedia.virtioGpuDriverIdentity,
+        driverIdentity,
+      );
+      assert.match(driverIdentity.packageSha256, /^[0-9a-f]{64}$/);
       assert.match(
         bootstrapScript(),
-        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest -VirtioGpuDriverPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverDirectory\)/,
+        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest -VirtioGpuDriverPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverDirectory\) -VirtioGpuDriverIdentityPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverIdentityFile\)/,
       );
       assert.doesNotMatch(bootstrapScript(), /SpiceGuestToolsInstallerPath/);
       assert.match(
@@ -1857,6 +2109,39 @@ await new Promise(() => setInterval(() => {}, 1_000));
         }),
         /runnerArchivePath SHA-256 does not match/,
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes signed viogpudo releases with the same INF basename by package content", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-viogpudo-identity-"));
+    const first = join(root, "first");
+    const second = join(root, "second");
+    try {
+      for (const directory of [first, second]) {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "viogpudo.inf"), "same inf name");
+        writeFileSync(join(directory, "viogpudo.cat"), "signed catalog");
+      }
+      writeFileSync(join(first, "viogpudo.sys"), "release one");
+      writeFileSync(join(second, "viogpudo.sys"), "release two");
+      const { createVirtioGpuDriverPackageIdentity } = await import(
+        "./build-win10-baseline.mjs"
+      );
+
+      const firstIdentity = await createVirtioGpuDriverPackageIdentity(first);
+      const secondIdentity =
+        await createVirtioGpuDriverPackageIdentity(second);
+      assert.deepEqual(
+        firstIdentity.files.map(({ path }) => path),
+        secondIdentity.files.map(({ path }) => path),
+      );
+      assert.notEqual(
+        firstIdentity.packageSha256,
+        secondIdentity.packageSha256,
+      );
+      assert.match(firstIdentity.packageSha256, /^[0-9a-f]{64}$/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1934,6 +2219,11 @@ await new Promise(() => setInterval(() => {}, 1_000));
       runtime,
       /Get-WindowsDriver -Online -Driver \$signedDriver\.InfName[\s\S]*OriginalFileName[\s\S]*\$driverInf\.Name/,
     );
+    assert.match(
+      runtime,
+      /packageSha256[\s\S]*Get-Sha256[\s\S]*driverStoreRoot/,
+    );
+    assert.match(runtime, /virtio-gpu-driver-binding\.json/);
     assert.doesNotMatch(
       runtime,
       /\/subdirs|\/add-driver[^\r\n]*\*\.inf|testsigning|nointegritychecks/i,
@@ -2071,6 +2361,15 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /FilterGraph/);
     assert.match(verify, /interactive-display-report\.json/);
     assert.match(verify, /displayAdapter/);
+    assert.match(verify, /ExpectedVirtioGpuDriverPackageSha256/);
+    assert.match(
+      verify,
+      /binding\.packageSha256[\s\S]*ExpectedVirtioGpuDriverPackageSha256[\s\S]*Get-WindowsDriver[\s\S]*driverStoreRoot/,
+    );
+    assert.match(
+      verify,
+      /PNPDeviceID -ceq \[string\]\$binding\.pnpDeviceId/,
+    );
     assert.match(
       verify,
       /Where-Object \{ \$_.Status -eq "OK" -and -not \[string\]::IsNullOrWhiteSpace\(\$_.Name\) \}/,
@@ -2107,6 +2406,11 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(builder, /publishVerifiedBaselineRelease/);
     assert.match(builder, /PrepareKvmGuest/);
     assert.match(builder, /startHeadlessVncActivator/);
+    assert.match(
+      builder,
+      /metadataPath: join\(\s*stagingDirectory,\s*VNC_ACTIVATOR_METADATA_FILE/,
+    );
+    assert.match(builder, /vncActivator\.runWhileActive/);
     assert.match(builder, /ExpectedSerialUsbPort: \[1, 2\]/);
     assert.match(builder, /actions-runner-win-x64\.zip/);
     assert.doesNotMatch(builder, /RunnerArchiveUri/);
@@ -2204,6 +2508,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         stagingDirectory,
         {
           discoverGuestAddress: async () => "192.0.2.44",
+          expectedVirtioGpuDriverPackageSha256: "a".repeat(64),
           initialRearmDelayMs: 0,
           now: () => now,
           pollIntervalMs: 1,
@@ -2319,6 +2624,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
           stagingDirectory,
           {
             discoverGuestAddress: async () => "192.0.2.44",
+            expectedVirtioGpuDriverPackageSha256: "a".repeat(64),
             maxRearmAttempts: 0,
             now: () => now,
             pollIntervalMs: 1,
@@ -2433,6 +2739,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         stagingDirectory,
         {
           discoverGuestAddress: async () => "192.0.2.44",
+          expectedVirtioGpuDriverPackageSha256: "b".repeat(64),
           runCommand: async (command, args) => {
             const remoteCommand = args.at(-1) ?? "";
             if (command === "ssh" && remoteCommand === "exit") return {};
@@ -2477,6 +2784,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
       assert.equal(
         verifier.parameters.ExpectedInteractiveUser,
         "display user\\o'hara",
+      );
+      assert.equal(
+        verifier.parameters.ExpectedVirtioGpuDriverPackageSha256,
+        "b".repeat(64),
       );
       assert.match(
         verifier.script,
@@ -3415,7 +3726,7 @@ await writeFile(markerPath, "created");
     );
   });
 
-  it("uses the same latest-wins concurrency group and caller-owned host lock for baseline and acceptance", () => {
+  it("uses the same latest-wins concurrency group while baseline owns its host lock", () => {
     const baselineWorkflow = readFileSync(
       ".github/workflows/build-win10-kvm-baseline.yml",
       "utf8",
@@ -3426,20 +3737,10 @@ await writeFile(markerPath, "created");
     );
     assert.match(baselineWorkflow, /group: vem-windows-runtime-testbed/);
     assert.match(acceptanceWorkflow, /group: vem-windows-runtime-testbed/);
-    assert.match(acceptanceWorkflow, /VEM_VM_HOST_LOCK_PATH/);
-    assert.match(acceptanceWorkflow, /Acquire Host Global Lock/);
-    assert.match(acceptanceWorkflow, /Release Host Global Lock/);
-    for (const workflow of [baselineWorkflow, acceptanceWorkflow]) {
-      assert.match(workflow, /flock -n/);
-      assert.doesNotMatch(workflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);
-      assert.doesNotMatch(workflow, /rm -rf -- "\$VEM_VM_HOST_LOCK_PATH"/);
-    }
-    assert.match(acceptanceWorkflow, /setsid flock -n/);
-    assert.match(acceptanceWorkflow, /VEM_VM_HOST_LOCK_PGID/);
-    assert.match(
-      acceptanceWorkflow,
-      /kill -TERM -- "-\$VEM_VM_HOST_LOCK_PGID"/,
-    );
+    assert.match(baselineWorkflow, /VEM_VM_HOST_LOCK_PATH/);
+    assert.match(baselineWorkflow, /flock -n/);
+    assert.doesNotMatch(baselineWorkflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);
+    assert.doesNotMatch(baselineWorkflow, /rm -rf -- "\$VEM_VM_HOST_LOCK_PATH"/);
   });
 
   it("terminates the lock holder process group and releases its flock within five seconds", () => {
@@ -3701,6 +4002,105 @@ await writeFile(markerPath, "created");
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it(
+    "recovers exact durable activator children after builder SIGKILL without touching unrelated processes",
+    { timeout: 10_000 },
+    async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-activator-sigkill-"));
+    const config = buildConfig(root);
+    config.storage.cacheDiskPath = join(
+      root,
+      "cache",
+      "win10-runtime-cache.qcow2",
+    );
+    const configPath = join(root, "config.json");
+    const childPath = join(root, "hard-crash-child.mjs");
+    const xvfbPath = join(root, "fake-xvfb.mjs");
+    const viewerPath = join(root, "fake-viewer.mjs");
+    const unrelatedPath = join(root, "unrelated.pid");
+    const readyPath = join(root, "ready.json");
+    let builderChild;
+    let unrelated;
+    try {
+      mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
+      mkdirSync(dirname(config.storage.cacheDiskPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(config));
+      writeFileSync(childPath, hardCrashActivatorChildSource());
+      writeFileSync(
+        xvfbPath,
+        'process.stdout.write("81\\n"); await new Promise(() => setInterval(() => {}, 1_000));\n',
+      );
+      writeFileSync(
+        viewerPath,
+        `
+import { writeFile } from "node:fs/promises";
+if (process.env.UNRELATED_PID_PATH) await writeFile(process.env.UNRELATED_PID_PATH, String(process.pid));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      unrelated = spawn(process.execPath, [viewerPath], {
+        env: { ...process.env, UNRELATED_PID_PATH: unrelatedPath },
+        stdio: "ignore",
+      });
+      builderChild = spawn(
+        process.execPath,
+        [childPath, configPath, xvfbPath, viewerPath, readyPath],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const deadline = Date.now() + 5_000;
+      while (
+        (!existsSync(readyPath) || !existsSync(unrelatedPath)) &&
+        Date.now() < deadline
+      ) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      }
+      assert.equal(existsSync(readyPath), true);
+      assert.equal(existsSync(unrelatedPath), true);
+      const { metadataPath, owner } = JSON.parse(
+        readFileSync(readyPath, "utf8"),
+      );
+      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+      const activatorPids = Object.values(metadata.processes).map(
+        (identity) => identity.pid,
+      );
+      const unrelatedPid = Number(readFileSync(unrelatedPath, "utf8"));
+
+      builderChild.kill("SIGKILL");
+      await once(builderChild, "exit");
+      for (const pid of activatorPids) {
+        assert.doesNotThrow(() => process.kill(pid, 0));
+      }
+
+      const domains = new Set([owner.domainName]);
+      await recoverStaleConstructionDomains(config, {
+        runCommand: async (_command, args) => {
+          if (args[2] === "list") return { stdout: [...domains].join("\n") };
+          if (args[2] === "undefine") domains.delete(args[3]);
+          return { stdout: "" };
+        },
+      });
+
+      for (const pid of activatorPids) {
+        assertProcessIsNotRunning(pid);
+      }
+      assert.doesNotThrow(() => process.kill(unrelatedPid, 0));
+      assert.equal(existsSync(owner.systemStagingPath), false);
+      assert.equal(existsSync(owner.cacheStagingPath), false);
+      assert.equal(domains.size, 0);
+    } finally {
+      if (builderChild?.exitCode === null && builderChild.signalCode === null) {
+        builderChild.kill("SIGKILL");
+        await once(builderChild, "exit");
+      }
+      if (unrelated?.exitCode === null && unrelated.signalCode === null) {
+        unrelated.kill("SIGKILL");
+        await once(unrelated, "exit");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+    },
+  );
 
   it("preserves an unowned cache staging collision while allocating a new build identity", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-workspace-collision-"));

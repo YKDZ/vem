@@ -6,6 +6,7 @@ param(
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
   [string] $VirtioGpuDriverPath,
+  [string] $VirtioGpuDriverIdentityPath,
   [string] $InteractiveUser,
   [int] $DesktopWidth = 1080,
   [int] $DesktopHeight = 1920,
@@ -22,6 +23,7 @@ $interactiveDisplayTaskName = "VemPrepareInteractiveDisplay"
 $interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-report.json"
 $interactiveDisplayStatePath = Join-Path $baselineRoot "interactive-display-preparation.json"
 $interactiveDisplayLogPath = Join-Path $baselineRoot "interactive-display-preparation.log"
+$virtioGpuDriverBindingPath = Join-Path $baselineRoot "virtio-gpu-driver-binding.json"
 $nodeVersion = "24.16.0"
 $pnpmVersion = "11.9.0"
 $turboVersion = "2.10.0"
@@ -53,11 +55,54 @@ function Invoke-Native {
   if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
 }
 
+function Get-Sha256 {
+  param([string] $Path)
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+}
+
+function Get-VirtioGpuPackageIdentity {
+  param([string] $DriverRoot, [string] $IdentityPath)
+  if (-not (Test-Path -LiteralPath $IdentityPath -PathType Leaf)) { throw "VirtIO GPU driver identity is unavailable" }
+  $identity = Get-Content -Raw -LiteralPath $IdentityPath | ConvertFrom-Json
+  if ($identity.schemaVersion -ne "win10-kvm-virtio-gpu-driver-package/v1" -or $identity.sourceDirectory -cne "viogpudo/w10/amd64" -or [string]$identity.packageSha256 -notmatch "^[0-9a-f]{64}$") {
+    throw "VirtIO GPU driver package identity is invalid"
+  }
+  $root = (Resolve-Path -LiteralPath $DriverRoot -ErrorAction Stop).Path.TrimEnd("\")
+  $expectedFiles = @($identity.files | Sort-Object path)
+  if ($expectedFiles.Count -lt 3 -or @($expectedFiles.path | Select-Object -Unique).Count -ne $expectedFiles.Count) {
+    throw "VirtIO GPU driver package file identity is invalid"
+  }
+  $actualFiles = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction Stop | ForEach-Object {
+    $_.FullName.Substring($root.Length + 1).Replace("\", "/")
+  } | Sort-Object)
+  if ($actualFiles.Count -ne $expectedFiles.Count -or (Compare-Object -CaseSensitive $actualFiles @($expectedFiles.path)).Count -ne 0) {
+    throw "VirtIO GPU driver payload files do not match package identity"
+  }
+  $identityText = New-Object Text.StringBuilder
+  foreach ($file in $expectedFiles) {
+    if ([string]$file.path -notmatch "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$" -or [string]$file.sha256 -notmatch "^[0-9a-f]{64}$") {
+      throw "VirtIO GPU driver package file identity is invalid"
+    }
+    $path = Join-Path $root ([string]$file.path).Replace("/", "\")
+    if ((Get-Sha256 -Path $path) -cne [string]$file.sha256) { throw "VirtIO GPU driver payload hash does not match package identity" }
+    [void]$identityText.Append([string]$file.path).Append([char]0).Append([string]$file.sha256).Append("`n")
+  }
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $packageHash = -join ($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($identityText.ToString())) | ForEach-Object { $_.ToString("x2") })
+  } finally {
+    $sha256.Dispose()
+  }
+  if ($packageHash -cne [string]$identity.packageSha256) { throw "VirtIO GPU driver aggregate identity does not match package files" }
+  return $identity
+}
+
 function Install-VirtioGpuDisplayDriver {
-  param([string] $DriverRoot)
+  param([string] $DriverRoot, [string] $IdentityPath)
   if ([string]::IsNullOrWhiteSpace($DriverRoot) -or -not (Test-Path -LiteralPath $DriverRoot -PathType Container)) {
     throw "VirtIO GPU driver payload is unavailable"
   }
+  $identity = Get-VirtioGpuPackageIdentity -DriverRoot $DriverRoot -IdentityPath $IdentityPath
   $driverInfFiles = @(Get-ChildItem -LiteralPath $DriverRoot -File -Filter "*.inf" -ErrorAction Stop)
   if ($driverInfFiles.Count -ne 1) { throw "VirtIO GPU driver payload must contain exactly one INF" }
   $driverInf = $driverInfFiles[0]
@@ -85,7 +130,30 @@ function Install-VirtioGpuDisplayDriver {
         Select-Object -First 1
       if ($null -ne $signedDriver -and -not [string]::IsNullOrWhiteSpace([string]$signedDriver.InfName)) {
         $driverPackage = Get-WindowsDriver -Online -Driver $signedDriver.InfName -ErrorAction SilentlyContinue
-        if ($null -ne $driverPackage -and (Split-Path -Leaf ([string]$driverPackage.OriginalFileName)) -ieq $driverInf.Name) { return }
+        if ($null -ne $driverPackage -and (Split-Path -Leaf ([string]$driverPackage.OriginalFileName)) -ieq $driverInf.Name) {
+          $driverStoreRoot = Split-Path -Parent ([string]$driverPackage.OriginalFileName)
+          $storeMatches = $true
+          foreach ($file in @($identity.files)) {
+            $storePath = Join-Path $driverStoreRoot ([string]$file.path).Replace("/", "\")
+            if (-not (Test-Path -LiteralPath $storePath -PathType Leaf) -or (Get-Sha256 -Path $storePath) -cne [string]$file.sha256) {
+              $storeMatches = $false
+              break
+            }
+          }
+          if ($storeMatches) {
+            Write-AtomicJson -Path $virtioGpuDriverBindingPath -Value @{
+              schemaVersion = "win10-kvm-virtio-gpu-driver-binding/v1"
+              packageSha256 = [string]$identity.packageSha256
+              files = @($identity.files)
+              pnpDeviceId = [string]$adapter.PNPDeviceID
+              infName = [string]$signedDriver.InfName
+              provider = [string]$signedDriver.DriverProviderName
+              version = [string]$signedDriver.DriverVersion
+              signer = [string]$signedDriver.Signer
+            }
+            return
+          }
+        }
       }
     }
     Start-Sleep -Seconds 2
@@ -548,7 +616,7 @@ function Rearm-InteractiveDisplay {
 }
 
 function Prepare-KvmGuest {
-  Install-VirtioGpuDisplayDriver -DriverRoot $VirtioGpuDriverPath
+  Install-VirtioGpuDisplayDriver -DriverRoot $VirtioGpuDriverPath -IdentityPath $VirtioGpuDriverIdentityPath
   Initialize-InteractiveDisplayPreparation
 }
 

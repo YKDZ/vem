@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { constants } from "node:fs";
 import {
@@ -18,7 +18,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { availableParallelism, hostname, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 import { renderLibvirtDomainXml } from "./libvirt-runtime-profile.mjs";
 import {
@@ -30,11 +30,13 @@ import {
   parseGuestAddress,
   publishVerifiedBaselineRelease,
   readJsonWithBom,
+  recoverHeadlessVncActivator,
   recoverPublishedBaseline,
   runtimeProfileForConfig,
   runtimeProfileForPublishedRelease,
   startHeadlessVncActivator,
   validateBaselineBuildConfig,
+  VNC_ACTIVATOR_METADATA_FILE,
 } from "./linux-kvm-baseline.mjs";
 
 const BASELINE_ROOT = new URL(".", import.meta.url);
@@ -42,6 +44,8 @@ const CONSTRUCTION_OWNER_FILE = ".construction-owner.json";
 const CONSTRUCTION_OWNER_SCHEMA = "win10-kvm-construction-owner/v1";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
 export const VIRTIO_GPU_DRIVER_DIRECTORY = "virtio-gpu-driver";
+export const VIRTIO_GPU_DRIVER_IDENTITY_FILE =
+  "virtio-gpu-driver-identity.json";
 const INTERACTIVE_DISPLAY_REPORT_PATH =
   "C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json";
 const GUEST_AVAILABILITY_TIMEOUT_MS = 60 * 60 * 1000;
@@ -193,6 +197,11 @@ async function reclaimConstructionWorkspace(config, buildId) {
     isOwnedConstructionDirectory(owner.cacheStagingPath, owner),
   ]);
   if (!systemOwned || !cacheOwned) return false;
+  const activator = await recoverHeadlessVncActivator({
+    metadataPath: join(owner.systemStagingPath, VNC_ACTIVATOR_METADATA_FILE),
+    owner,
+  });
+  if (!activator.recovered) return false;
   await Promise.all([
     rm(owner.systemStagingPath, { recursive: true, force: true }),
     rm(owner.cacheStagingPath, { recursive: true, force: true }),
@@ -223,7 +232,9 @@ function startExecFile(command, args, options = {}) {
   return { child, completion };
 }
 
-export function createConstructionCommandTracker() {
+export function createConstructionCommandTracker({
+  terminationGraceMs = 2_000,
+} = {}) {
   const inFlight = new Map();
   let abortError = null;
   let abortPromise = null;
@@ -235,7 +246,7 @@ export function createConstructionCommandTracker() {
   ) => {
     if (abortError && !allowAfterAbort) throw abortError;
     const invocation = startExecFile(command, args, options);
-    inFlight.set(invocation.child, invocation.completion);
+    inFlight.set(invocation.child, invocation);
     void invocation.completion.then(
       () => inFlight.delete(invocation.child),
       () => inFlight.delete(invocation.child),
@@ -266,15 +277,48 @@ export function createConstructionCommandTracker() {
   const abortAndWait = () => {
     if (abortPromise) return abortPromise;
     abortError = new Error("construction command execution was aborted");
-    const pending = [...inFlight.entries()];
-    for (const [child] of pending) {
+    const pending = [...inFlight.values()];
+    const terminate = async ({ child, completion }) => {
+      const exited = new Promise((resolveExit) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolveExit();
+          return;
+        }
+        child.once("exit", resolveExit);
+        child.once("error", resolveExit);
+      });
+      const awaitExitWithinGrace = () =>
+        new Promise((resolveWait) => {
+          const timeout = setTimeout(
+            () => resolveWait(false),
+            terminationGraceMs,
+          );
+          void exited.then(() => {
+            clearTimeout(timeout);
+            resolveWait(true);
+          });
+        });
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
       }
-    }
-    abortPromise = Promise.allSettled(
-      pending.map(([, completion]) => completion),
-    ).then(() => undefined);
+      const exitedAfterTerm = await awaitExitWithinGrace();
+      if (
+        !exitedAfterTerm &&
+        child.exitCode === null &&
+        child.signalCode === null
+      ) {
+        child.kill("SIGKILL");
+      }
+      if (!exitedAfterTerm && !(await awaitExitWithinGrace())) {
+        throw new Error(`child ${child.pid} did not exit`);
+      }
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      inFlight.delete(child);
+      void completion.catch(() => undefined);
+    };
+    abortPromise = Promise.all(pending.map(terminate)).then(() => undefined);
     return abortPromise;
   };
 
@@ -461,7 +505,7 @@ ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
 & (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
-& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -VirtioGpuDriverPath (Join-Path $mediaRoot $config.virtioGpuDriverDirectory) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -VirtioGpuDriverPath (Join-Path $mediaRoot $config.virtioGpuDriverDirectory) -VirtioGpuDriverIdentityPath (Join-Path $mediaRoot $config.virtioGpuDriverIdentityFile) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
@@ -470,12 +514,66 @@ export function guestConfigurationFor(config) {
     webView2InstallerUri: config.media.webView2InstallerUri,
     runnerArchiveFile: RUNNER_ARCHIVE_FILE,
     virtioGpuDriverDirectory: VIRTIO_GPU_DRIVER_DIRECTORY,
+    virtioGpuDriverIdentityFile: VIRTIO_GPU_DRIVER_IDENTITY_FILE,
     interactiveUser: config.guest.sshUser,
     display: {
       width: 1080,
       height: 1920,
       scalePercent: config.guest.desktopScalePercent,
     },
+  };
+}
+
+async function payloadFiles(root, directory = root) {
+  const files = [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await payloadFiles(root, path)));
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error("VirtIO GPU driver payload must contain only files");
+    }
+    files.push({
+      path: relative(root, path).split(sep).join("/"),
+      absolutePath: path,
+    });
+  }
+  return files;
+}
+
+export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
+  const files = await payloadFiles(driverRoot);
+  for (const extension of [".inf", ".cat", ".sys"]) {
+    if (!files.some(({ path }) => path.toLowerCase().endsWith(extension))) {
+      throw new Error(
+        `VirtIO GPU driver payload is missing a signed ${extension} file`,
+      );
+    }
+  }
+  const identityFiles = [];
+  for (const file of files) {
+    const sha256 = createHash("sha256")
+      .update(await readFile(file.absolutePath))
+      .digest("hex");
+    identityFiles.push({ path: file.path, sha256 });
+  }
+  const packageSha256 = createHash("sha256")
+    .update(
+      identityFiles
+        .map(({ path, sha256 }) => `${path}\0${sha256}\n`)
+        .join(""),
+      "utf8",
+    )
+    .digest("hex");
+  return {
+    schemaVersion: "win10-kvm-virtio-gpu-driver-package/v1",
+    sourceDirectory: "viogpudo/w10/amd64",
+    packageSha256,
+    files: identityFiles,
   };
 }
 
@@ -501,21 +599,13 @@ export async function createConfigurationMedia(
     "/viogpudo/w10/amd64",
     virtioGpuDriverRoot,
   ]);
-  const driverPayload = await readdir(virtioGpuDriverRoot, {
-    withFileTypes: true,
-  });
-  for (const extension of [".inf", ".cat", ".sys"]) {
-    if (
-      !driverPayload.some(
-        (entry) =>
-          entry.isFile() && entry.name.toLowerCase().endsWith(extension),
-      )
-    ) {
-      throw new Error(
-        `VirtIO GPU driver payload is missing a signed ${extension} file`,
-      );
-    }
-  }
+  const virtioGpuDriverIdentity =
+    await createVirtioGpuDriverPackageIdentity(virtioGpuDriverRoot);
+  await writeFile(
+    join(mediaRoot, VIRTIO_GPU_DRIVER_IDENTITY_FILE),
+    `${JSON.stringify(virtioGpuDriverIdentity, null, 2)}\n`,
+    { mode: 0o600 },
+  );
   for (const name of [
     "shared-guest-preparation.ps1",
     "prepare-vm-runtime.ps1",
@@ -568,7 +658,7 @@ export async function createConfigurationMedia(
     isoPath,
     mediaRoot,
   ]);
-  return isoPath;
+  return { isoPath, virtioGpuDriverIdentity };
 }
 
 async function discoverGuestAddress(config, domainName) {
@@ -667,7 +757,12 @@ function rearmInteractiveDisplayCommand(config) {
   });
 }
 
-function verificationCommand({ config, runnerName, verificationPath }) {
+function verificationCommand({
+  config,
+  expectedVirtioGpuDriverPackageSha256,
+  runnerName,
+  verificationPath,
+}) {
   const encodedRequest = encodedPowerShellRequest({
     ExpectedWidth: 1080,
     ExpectedHeight: 1920,
@@ -675,6 +770,8 @@ function verificationCommand({ config, runnerName, verificationPath }) {
     ExpectedInteractiveUser: config.guest.sshUser,
     ExpectedRunnerUrl: config.runner.url,
     ExpectedRunnerName: runnerName,
+    ExpectedVirtioGpuDriverPackageSha256:
+      expectedVirtioGpuDriverPackageSha256,
     ExpectedAudioModel: "ich9",
     ExpectedSerialRole: ["lower-controller", "scanner"],
     ExpectedSerialUsbPort: [1, 2],
@@ -685,7 +782,7 @@ function verificationCommand({ config, runnerName, verificationPath }) {
       '$ErrorActionPreference = "Stop"',
       `$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${encodedRequest}")) | ConvertFrom-Json`,
       '$runner = Get-Content -Raw -LiteralPath "C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json" | ConvertFrom-Json',
-      '& "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1" -ExpectedWidth $request.ExpectedWidth -ExpectedHeight $request.ExpectedHeight -ExpectedScalePercent $request.ExpectedScalePercent -ExpectedInteractiveUser $request.ExpectedInteractiveUser -ExpectedRunnerUrl $request.ExpectedRunnerUrl -ExpectedRunnerName $request.ExpectedRunnerName -ExpectedRunnerServiceName $runner.serviceName -ExpectedAudioModel $request.ExpectedAudioModel -ExpectedSerialRole @($request.ExpectedSerialRole) -ExpectedSerialUsbPort @($request.ExpectedSerialUsbPort) -OutputPath $request.OutputPath',
+      '& "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1" -ExpectedWidth $request.ExpectedWidth -ExpectedHeight $request.ExpectedHeight -ExpectedScalePercent $request.ExpectedScalePercent -ExpectedInteractiveUser $request.ExpectedInteractiveUser -ExpectedRunnerUrl $request.ExpectedRunnerUrl -ExpectedRunnerName $request.ExpectedRunnerName -ExpectedRunnerServiceName $runner.serviceName -ExpectedVirtioGpuDriverPackageSha256 $request.ExpectedVirtioGpuDriverPackageSha256 -ExpectedAudioModel $request.ExpectedAudioModel -ExpectedSerialRole @($request.ExpectedSerialRole) -ExpectedSerialUsbPort @($request.ExpectedSerialUsbPort) -OutputPath $request.OutputPath',
       "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
     ].join("\r\n"),
   );
@@ -1054,6 +1151,11 @@ export async function waitForGuestVerification(
     "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
   const localReport = join(stagingDirectory, "verification.json");
   const runCommand = dependencies.runCommand ?? run;
+  const expectedVirtioGpuDriverPackageSha256 =
+    dependencies.expectedVirtioGpuDriverPackageSha256;
+  if (!/^[0-9a-f]{64}$/.test(expectedVirtioGpuDriverPackageSha256 ?? "")) {
+    throw new Error("expected VirtIO GPU driver package identity is required");
+  }
   const interactiveDisplay = await waitForInteractiveDisplayReport(
     config,
     domainName,
@@ -1098,7 +1200,12 @@ export async function waitForGuestVerification(
   await runCommand("ssh", [
     ...sshOptions,
     target,
-    verificationCommand({ config, runnerName, verificationPath }),
+    verificationCommand({
+      config,
+      expectedVirtioGpuDriverPackageSha256,
+      runnerName,
+      verificationPath,
+    }),
   ]);
   await runCommand("scp", [
     ...sshOptions,
@@ -1461,7 +1568,7 @@ async function buildWin10BaselineImpl(
             `${config.storage.cacheDiskGiB}G`,
           ]);
         }
-        const configurationIso = await createConfigurationMedia(
+        const configurationMedia = await createConfigurationMedia(
           config,
           stagingDirectory,
         );
@@ -1481,7 +1588,10 @@ async function buildWin10BaselineImpl(
         await writeFile(
           constructionXmlPath,
           renderLibvirtDomainXml(constructionProfile, {
-            cdromPaths: [config.media.windowsIsoPath, configurationIso],
+            cdromPaths: [
+              config.media.windowsIsoPath,
+              configurationMedia.isoPath,
+            ],
           }),
           { mode: 0o600 },
         );
@@ -1506,17 +1616,29 @@ async function buildWin10BaselineImpl(
             width: profile.display.width,
             height: profile.display.height,
           },
+          metadataPath: join(
+            stagingDirectory,
+            VNC_ACTIVATOR_METADATA_FILE,
+          ),
+          owner: construction,
         });
-        const verification = await waitForGuestVerification(
-          config,
-          constructionDomain,
-          stagingDirectory,
-        );
-        const virtualDevices = await verifyDefinedRuntimeDevicesForDomain(
-          config,
-          constructionDomain,
-          constructionProfile,
-        );
+        const { verification, virtualDevices } =
+          await vncActivator.runWhileActive(async () => ({
+            verification: await waitForGuestVerification(
+              config,
+              constructionDomain,
+              stagingDirectory,
+              {
+                expectedVirtioGpuDriverPackageSha256:
+                  configurationMedia.virtioGpuDriverIdentity.packageSha256,
+              },
+            ),
+            virtualDevices: await verifyDefinedRuntimeDevicesForDomain(
+              config,
+              constructionDomain,
+              constructionProfile,
+            ),
+          }));
         await vncActivator.stop();
         vncActivator = null;
         await shutdownGuestAndWait(
