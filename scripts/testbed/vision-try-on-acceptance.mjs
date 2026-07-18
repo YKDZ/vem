@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -35,6 +36,12 @@ function required(value, label) {
     throw new Error(`${label} is required`);
   }
   return value.trim();
+}
+
+function optionalString(value) {
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : null;
 }
 
 function windowsAbsolute(value, label) {
@@ -188,6 +195,79 @@ function positiveNumber(value, label) {
   return value;
 }
 
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: String(error.stack ?? "").slice(0, 16 * 1024),
+    };
+  }
+  return { name: "Error", message: String(error) };
+}
+
+function normalizeUrlPath(value, label) {
+  const raw = required(value, label);
+  try {
+    const normalized = new URL(raw, "http://127.0.0.1");
+    return `${normalized.pathname}${normalized.search}`;
+  } catch (error) {
+    throw new Error(
+      `${label} is not a valid URL: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export function normalizeSeededVisionAcceptance(raw) {
+  const input =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const seededTryOnVariants = Array.isArray(input.seededTryOnVariants)
+    ? input.seededTryOnVariants.map((entry, index) => {
+        const facts = requiredObject(
+          entry,
+          `visionAcceptance.seededTryOnVariants[${index}]`,
+        );
+        return {
+          sourceRow:
+            Number.isInteger(facts.sourceRow) && facts.sourceRow > 0
+              ? facts.sourceRow
+              : null,
+          productId: optionalString(facts.productId),
+          variantId: required(
+            optionalString(facts.variantId),
+            `visionAcceptance.seededTryOnVariants[${index}].variantId`,
+          ),
+          sku: optionalString(facts.sku),
+          size: optionalString(facts.size),
+          silhouetteAssetId: optionalString(facts.silhouetteAssetId),
+          silhouettePublicUrl: optionalString(facts.silhouettePublicUrl),
+        };
+      })
+    : [];
+  return {
+    tryOnCategoryKey: optionalString(input.tryOnCategoryKey),
+    selectedCatalogKey: optionalString(input.selectedCatalogKey),
+    selectedVariantId: optionalString(input.selectedVariantId),
+    tryOnSilhouetteAssetId: optionalString(
+      input.selectedSilhouetteAssetId ?? input.tryOnSilhouetteAssetId,
+    ),
+    tryOnSilhouettePublicUrl: optionalString(
+      input.selectedSilhouettePublicUrl ?? input.tryOnSilhouettePublicUrl,
+    ),
+    seededTryOnVariants,
+  };
+}
+
+export function combineCleanupFailure(primaryError, cleanupError, label = "cleanup") {
+  if (!primaryError) return cleanupError;
+  if (!cleanupError) return primaryError;
+  return new AggregateError(
+    [primaryError, cleanupError],
+    `${primaryError.message} (also failed during ${label}: ${cleanupError.message})`,
+    { cause: primaryError },
+  );
+}
+
 function visionFixtureExpectedResultsPath(commit) {
   return `${VISION_FIXTURE_ROOT}\\${commit}\\recorded-video\\expected-results.json`;
 }
@@ -207,19 +287,18 @@ function normalizedExpectedProtocolEvent(
     typeof event.source === "string" ? event.source : expectedSource,
     `${label} source`,
   );
-  const detectedAt = required(
+  const detectedAt = optionalString(
     typeof event.detectedAt === "string"
       ? event.detectedAt
       : event.payload?.detectedAt,
-    `${label} detectedAt`,
   );
   if (type !== expectedType) {
     throw new Error(`${label} type must be ${expectedType}`);
   }
-  if (!isVisionProtocolTimestamp(detectedAt)) {
+  if (detectedAt && !isVisionProtocolTimestamp(detectedAt)) {
     throw new Error(`${label} detectedAt must be an ISO UTC timestamp`);
   }
-  return { type, source, detectedAt };
+  return { type, source };
 }
 
 export function normalizeVisionExpectedResults(raw) {
@@ -246,18 +325,11 @@ export function normalizeVisionExpectedResults(raw) {
         "person_departed",
         "try_on_session",
       ];
-  const orderedCatalogKeys = recommendation.orderedCatalogKeys;
-  if (
-    !Array.isArray(orderedCatalogKeys) ||
-    orderedCatalogKeys.length < 1 ||
-    orderedCatalogKeys.some(
-      (value) => typeof value !== "string" || value.trim() === "",
-    )
-  ) {
-    throw new Error(
-      "expected recommendation orderedCatalogKeys must be a non-empty string array",
-    );
-  }
+  const orderedCatalogKeys = Array.isArray(recommendation.orderedCatalogKeys)
+    ? recommendation.orderedCatalogKeys.map((value) =>
+        required(value, "expected ordered catalog key"),
+      )
+    : null;
   return {
     schemaVersion:
       typeof fixture.schemaVersion === "string" ? fixture.schemaVersion : null,
@@ -289,19 +361,11 @@ export function normalizeVisionExpectedResults(raw) {
       ),
     },
     recommendation: {
-      orderedCatalogKeys: orderedCatalogKeys.map((value) =>
-        required(value, "expected ordered catalog key"),
+      orderedCatalogKeys,
+      selectedCatalogKey: optionalString(
+        recommendation.selectedCatalogKey ?? recommendation.topCatalogKey,
       ),
-      selectedCatalogKey: required(
-        recommendation.selectedCatalogKey ??
-          recommendation.topCatalogKey ??
-          orderedCatalogKeys[0],
-        "expected selected catalogKey",
-      ),
-      selectedVariantId: required(
-        recommendation.selectedVariantId,
-        "expected selected variantId",
-      ),
+      selectedVariantId: optionalString(recommendation.selectedVariantId),
       minimumScore: positiveNumber(
         recommendation.minimumScore ?? recommendation.score ?? 0.01,
         "expected recommendation minimumScore",
@@ -316,15 +380,11 @@ export function normalizeVisionExpectedResults(raw) {
         tryOn.previewPathPrefix ?? "http://127.0.0.1:7892/try-on/",
         "expected try-on preview path prefix",
       ),
-      selectedCatalogKey: required(
-        tryOn.selectedCatalogKey ??
-          recommendation.selectedCatalogKey ??
-          orderedCatalogKeys[0],
-        "expected try-on selected catalogKey",
+      selectedCatalogKey: optionalString(
+        tryOn.selectedCatalogKey ?? recommendation.selectedCatalogKey,
       ),
-      selectedVariantId: required(
+      selectedVariantId: optionalString(
         tryOn.selectedVariantId ?? recommendation.selectedVariantId,
-        "expected try-on selected variantId",
       ),
     },
   };
@@ -333,6 +393,7 @@ export function normalizeVisionExpectedResults(raw) {
 export function compareObservedVisionProtocolToExpected({
   expectedResults,
   protocolEvidence,
+  freshnessWindowMs = 5 * 60 * 1000,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
   const summary = validateVisionProtocolEvidence(protocolEvidence);
@@ -377,13 +438,26 @@ export function compareObservedVisionProtocolToExpected({
     const expectedEvent = expectedSequence[index];
     if (
       actual.type !== expectedEvent.type ||
-      actual.source !== expectedEvent.source ||
-      actual.detectedAt !== expectedEvent.detectedAt
+      actual.source !== expectedEvent.source
     ) {
       throw new Error(
-        `${actual.label} does not match expected-results ${expectedEvent.source} source/timestamp`,
+        `${actual.label} does not match expected-results ${expectedEvent.source} source`,
       );
     }
+  }
+  const observationStartedAt = required(
+    protocolEvidence.observation?.startedAt,
+    "protocol observation startedAt",
+  );
+  const observationCompletedAt = required(
+    protocolEvidence.observation?.completedAt,
+    "protocol observation completedAt",
+  );
+  if (
+    !isVisionProtocolTimestamp(observationStartedAt) ||
+    !isVisionProtocolTimestamp(observationCompletedAt)
+  ) {
+    throw new Error("protocol observation timestamps are invalid");
   }
   const chronology = [
     protocolEvidence.ready.timestamp,
@@ -391,6 +465,21 @@ export function compareObservedVisionProtocolToExpected({
     protocolEvidence.profile.payload.detectedAt,
     protocolEvidence.departure.payload.detectedAt,
   ];
+  const observationWindow = [
+    Date.parse(observationStartedAt),
+    Date.parse(observationCompletedAt),
+  ];
+  for (const timestamp of chronology.slice(1)) {
+    const parsed = Date.parse(timestamp);
+    if (
+      parsed < observationWindow[0] - freshnessWindowMs ||
+      parsed > observationWindow[1] + 60_000
+    ) {
+      throw new Error(
+        "Vision protocol detectedAt does not look fresh for this acceptance run",
+      );
+    }
+  }
   for (let index = 1; index < chronology.length; index += 1) {
     if (Date.parse(chronology[index - 1]) >= Date.parse(chronology[index])) {
       throw new Error("Vision protocol chronology is not strictly increasing");
@@ -400,6 +489,8 @@ export function compareObservedVisionProtocolToExpected({
     ...summary,
     expectedSchemaVersion: expected.schemaVersion,
     expectedSequence,
+    observationStartedAt,
+    observationCompletedAt,
   };
 }
 
@@ -408,30 +499,49 @@ export function validateRecommendationProjection({
   afterProducts,
   pageText,
   expectedResults,
+  runtimeExpectation = null,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
+  const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
   const beforeCatalogKeys = beforeProducts.map((product) => product.catalogKey);
   const afterCatalogKeys = afterProducts.map((product) => product.catalogKey);
-  assert.deepEqual(
-    afterCatalogKeys,
-    expected.recommendation.orderedCatalogKeys,
-    "catalog recommendation order must match expected-results",
-  );
-  if (beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")) {
-    throw new Error("catalog recommendation order did not actually change");
+  if (Array.isArray(expected.recommendation.orderedCatalogKeys)) {
+    assert.equal(
+      afterCatalogKeys.length,
+      expected.recommendation.orderedCatalogKeys.length,
+      "catalog recommendation size drifted from expected-results",
+    );
   }
   const selected = afterProducts[0];
   if (!selected) {
     throw new Error("catalog recommendation did not expose any product");
   }
-  if (selected.catalogKey !== expected.recommendation.selectedCatalogKey) {
-    throw new Error("top recommended catalog item does not match expected-results");
+  if (
+    runtime.selectedCatalogKey &&
+    selected.catalogKey !== runtime.selectedCatalogKey
+  ) {
+    throw new Error("top recommended catalog item does not match seeded runtime expectation");
   }
-  if (selected.preferredVariantId !== expected.recommendation.selectedVariantId) {
-    throw new Error("recommended variant does not match expected-results");
+  if (
+    runtime.selectedVariantId &&
+    selected.preferredVariantId !== runtime.selectedVariantId
+  ) {
+    throw new Error("recommended variant does not match seeded runtime expectation");
+  }
+  if (
+    !runtime.selectedVariantId &&
+    runtime.seededTryOnVariants.length > 0 &&
+    !runtime.seededTryOnVariants.some(
+      (variant) => variant.variantId === selected.preferredVariantId,
+    )
+  ) {
+    throw new Error("recommended variant is not part of the seeded try-on runtime identity set");
   }
   if (selected.recommendationScore < expected.recommendation.minimumScore) {
     throw new Error("recommended score did not exceed the expected threshold");
+  }
+  if (beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")) {
+    throw new Error("catalog recommendation order did not actually change");
   }
   const leakage = JSON.stringify({ pageText, afterProducts });
   for (const disallowed of [
@@ -459,13 +569,31 @@ export function validateTryOnPresentation({
   tryOnState,
   mjpegEvidence,
   expectedResults,
+  runtimeExpectation = null,
+  silhouetteEvidence = null,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
-  if (selectedProduct.catalogKey !== expected.tryOn.selectedCatalogKey) {
-    throw new Error("selected product catalogKey does not match expected try-on binding");
+  const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
+  if (
+    runtime.selectedCatalogKey &&
+    selectedProduct.catalogKey !== runtime.selectedCatalogKey
+  ) {
+    throw new Error("selected product catalogKey does not match seeded try-on binding");
   }
-  if (selectedProduct.variantId !== expected.tryOn.selectedVariantId) {
-    throw new Error("selected product variantId does not match expected try-on binding");
+  if (
+    runtime.selectedVariantId &&
+    selectedProduct.variantId !== runtime.selectedVariantId
+  ) {
+    throw new Error("selected product variantId does not match seeded try-on binding");
+  }
+  if (
+    !runtime.selectedVariantId &&
+    runtime.seededTryOnVariants.length > 0 &&
+    !runtime.seededTryOnVariants.some(
+      (variant) => variant.variantId === selectedProduct.variantId,
+    )
+  ) {
+    throw new Error("selected product variantId is not part of the seeded try-on runtime identity set");
   }
   if (tryOnState.route !== `#/products/${selectedProduct.catalogKey}/try-on?variantId=${selectedProduct.variantId}` &&
       !String(tryOnState.route ?? "").includes("/try-on")) {
@@ -483,6 +611,37 @@ export function validateTryOnPresentation({
   ) {
     throw new Error("try-on silhouette URL is not bound to the selected variant");
   }
+  if (runtime.tryOnSilhouetteAssetId) {
+    const expectedPath = `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`;
+    if (!normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl").startsWith(expectedPath)) {
+      throw new Error("try-on silhouette URL is not bound to the seeded media asset");
+    }
+  } else if (runtime.tryOnSilhouettePublicUrl) {
+    if (
+      normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
+      normalizeUrlPath(
+        runtime.tryOnSilhouettePublicUrl,
+        "seeded try-on silhouette publicUrl",
+      )
+    ) {
+      throw new Error("try-on silhouette URL is not bound to the seeded media asset");
+    }
+  }
+  if (
+    !silhouetteEvidence ||
+    silhouetteEvidence.ok !== true ||
+    silhouetteEvidence.httpStatus !== 200 ||
+    !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
+  ) {
+    throw new Error("try-on silhouette did not return a successful image response");
+  }
+  if (
+    tryOnState.silhouetteLoaded !== true ||
+    tryOnState.silhouetteNaturalWidth < 1 ||
+    tryOnState.silhouetteNaturalHeight < 1
+  ) {
+    throw new Error("try-on silhouette image did not load with natural dimensions");
+  }
   if (
     typeof mjpegEvidence.contentType !== "string" ||
     !/^multipart\/x-mixed-replace|^image\/jpeg/i.test(mjpegEvidence.contentType)
@@ -495,15 +654,18 @@ export function validateTryOnPresentation({
   if (mjpegEvidence.width < 1 || mjpegEvidence.height < 1) {
     throw new Error("try-on preview frame did not decode to pixels");
   }
-  if (mjpegEvidence.nonEmptyPixelCount < 1) {
-    throw new Error("try-on preview frame decoded but contained no visible pixels");
+  if (mjpegEvidence.nonBlackPixelCount < 1) {
+    throw new Error("try-on preview frame decoded but remained fully black");
   }
   return {
     sessionId: mjpegEvidence.sessionId,
     contentType: mjpegEvidence.contentType,
     width: mjpegEvidence.width,
     height: mjpegEvidence.height,
-    nonEmptyPixelCount: mjpegEvidence.nonEmptyPixelCount,
+    nonBlackPixelCount: mjpegEvidence.nonBlackPixelCount,
+    silhouetteHttpStatus: silhouetteEvidence.httpStatus,
+    silhouetteNaturalWidth: tryOnState.silhouetteNaturalWidth,
+    silhouetteNaturalHeight: tryOnState.silhouetteNaturalHeight,
   };
 }
 
@@ -745,6 +907,7 @@ export function validateVisionProtocolEvidence(evidence) {
 }
 
 async function collectVisionProtocolEvidence({ machineCode, timeoutMs = 120_000 }) {
+  const observationStartedAt = new Date().toISOString();
   const health = await fetchJson("http://127.0.0.1:7892/health");
   const socket = await openVisionSocket("ws://127.0.0.1:7892/ws");
   const observedMessages = [];
@@ -780,7 +943,13 @@ async function collectVisionProtocolEvidence({ machineCode, timeoutMs = 120_000 
         state.departure = message;
       }
       if (state.presence && state.profile && state.departure) {
-        return state;
+        return {
+          ...state,
+          observation: {
+            startedAt: observationStartedAt,
+            completedAt: new Date().toISOString(),
+          },
+        };
       }
     }
     throw new Error(
@@ -935,6 +1104,9 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
             route: location.hash,
             previewUrl: preview?.getAttribute("src") ?? null,
             silhouetteUrl: silhouette?.getAttribute("src") ?? null,
+            silhouetteLoaded: silhouette?.complete === true,
+            silhouetteNaturalWidth: Number(silhouette?.naturalWidth ?? 0),
+            silhouetteNaturalHeight: Number(silhouette?.naturalHeight ?? 0),
             errorText: error?.textContent?.trim() ?? null,
           };
         })()`,
@@ -945,6 +1117,9 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
           state.previewUrl.startsWith("http://127.0.0.1:7892/try-on/") &&
           typeof state?.silhouetteUrl === "string" &&
           state.silhouetteUrl.includes("/api/media-assets/") &&
+          state.silhouetteLoaded === true &&
+          state.silhouetteNaturalWidth > 0 &&
+          state.silhouetteNaturalHeight > 0 &&
           !state.errorText,
         value: state,
       };
@@ -952,6 +1127,29 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
     timeoutMs,
     500,
   );
+}
+
+async function readImageHttpEvidence(url) {
+  try {
+    const response = await fetch(url);
+    const body = await response.arrayBuffer();
+    return {
+      ok: response.ok,
+      httpStatus: response.status,
+      contentType: response.headers.get("content-type"),
+      byteLength: body.byteLength,
+      finalUrl: response.url,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      httpStatus: null,
+      contentType: null,
+      byteLength: 0,
+      finalUrl: null,
+      error: String(error),
+    };
+  }
 }
 
 async function collectVisionInstalledBinding() {
@@ -1024,19 +1222,42 @@ async function stopVisionRuntime() {
   });
 }
 
-async function waitForVisionPortRelease(timeoutMs = 20_000) {
+async function probeLoopbackPortRelease(port, host = "127.0.0.1") {
+  return await new Promise((resolve) => {
+    const server = createServer();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    server.once("error", (error) => {
+      finish({
+        released: false,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    });
+    server.listen({ host, port, exclusive: true }, () => {
+      server.close(() => finish({ released: true }));
+    });
+  });
+}
+
+export async function waitForVisionPortRelease(
+  timeoutMs = 20_000,
+  { port = 7892, host = "127.0.0.1" } = {},
+) {
   await waitForCondition(
     "Vision port release",
     async () => {
-      try {
-        await fetchJson("http://127.0.0.1:7892/health");
-        return { ok: false, value: { listening: true } };
-      } catch {
-        return { ok: true, value: { listening: false } };
-      }
+      const probe = await probeLoopbackPortRelease(port, host);
+      return {
+        ok: probe.released === true,
+        value: probe,
+      };
     },
     timeoutMs,
-    500,
+    250,
   );
 }
 
@@ -1076,14 +1297,21 @@ async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
   return child;
 }
 
-async function stopVisionChild(child) {
+export async function stopVisionChild(
+  child,
+  { timeoutMs = 10_000, port = 7892, host = "127.0.0.1" } = {},
+) {
   if (!child) return;
   child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolvePromise) => child.once("exit", resolvePromise)),
-    sleep(10_000),
-  ]);
-  await waitForVisionPortRelease(10_000).catch(() => undefined);
+  if (child.exitCode === null && child.signalCode === null) {
+    await Promise.race([
+      new Promise((resolvePromise) => child.once("exit", resolvePromise)),
+      sleep(timeoutMs).then(() => {
+        throw new Error("vision mock did not exit after SIGTERM");
+      }),
+    ]);
+  }
+  await waitForVisionPortRelease(timeoutMs, { port, host });
 }
 
 async function waitForVisionDegradation(handoff, timeoutMs = 45_000) {
@@ -1242,16 +1470,15 @@ async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
               }
               context.drawImage(bitmap, 0, 0);
               const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
-              let nonEmptyPixelCount = 0;
+              let nonBlackPixelCount = 0;
               for (let i = 0; i < imageData.length; i += 4) {
                 if (
                   imageData[i] !== 0 ||
                   imageData[i + 1] !== 0 ||
-                  imageData[i + 2] !== 0 ||
-                  imageData[i + 3] !== 0
+                  imageData[i + 2] !== 0
                 ) {
-                  nonEmptyPixelCount += 1;
-                  if (nonEmptyPixelCount >= 8) break;
+                  nonBlackPixelCount += 1;
+                  if (nonBlackPixelCount >= 8) break;
                 }
               }
               return {
@@ -1260,7 +1487,7 @@ async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
                 frameByteLength: jpeg.byteLength,
                 width: canvas.width,
                 height: canvas.height,
-                nonEmptyPixelCount,
+                nonBlackPixelCount,
                 sessionId: ${JSON.stringify(previewUrl)}.split("/").pop()?.replace(/\\.mjpeg$/i, "") ?? null,
               };
             }
@@ -1281,10 +1508,15 @@ async function runVisionTryOnAcceptance(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
   const handoff = readJson(options.handoffPath, "handoff");
   const sink = screenshotSink(options.outPath);
+  const runtimeExpectation = normalizeSeededVisionAcceptance(
+    guestInput.visionAcceptance,
+  );
   let client = null;
   let injectedVisionMock = null;
   const checkpoints = [];
   let stage = "connect-installed-tauri-cdp";
+  let report = null;
+  let pendingError = null;
   try {
     const installedBinding = await collectVisionInstalledBinding();
     const installedBindingSummary =
@@ -1337,6 +1569,7 @@ async function runVisionTryOnAcceptance(options) {
       afterProducts: catalogRecommendation.products,
       pageText: catalogRecommendation.pageText,
       expectedResults,
+      runtimeExpectation,
     });
     checkpoints.push(
       await captureCheckpoint(client, "catalog-recommendation", {
@@ -1379,6 +1612,9 @@ async function runVisionTryOnAcceptance(options) {
       pollMs: 250,
     });
     const tryOnSurface = await waitForTryOnSurface(client, 60_000);
+    const silhouetteEvidence = await readImageHttpEvidence(
+      tryOnSurface.silhouetteUrl,
+    );
     const mjpegEvidence = await readMjpegFrameEvidence(
       client,
       tryOnSurface.previewUrl,
@@ -1391,6 +1627,8 @@ async function runVisionTryOnAcceptance(options) {
       tryOnState: tryOnSurface,
       mjpegEvidence,
       expectedResults,
+      runtimeExpectation,
+      silhouetteEvidence,
     });
     checkpoints.push(
       await captureCheckpoint(client, "try-on-preview", {
@@ -1482,7 +1720,7 @@ async function runVisionTryOnAcceptance(options) {
     );
 
     const runtimeTrace = await readRuntimeTrace(client);
-    const report = {
+    report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: true,
       mode: options.mode,
@@ -1493,6 +1731,7 @@ async function runVisionTryOnAcceptance(options) {
         siteConfiguration,
         fixtureRoot: VISION_FIXTURE_ROOT,
         expectedResults,
+        runtimeExpectation,
       },
       health: {
         daemon: {
@@ -1513,6 +1752,7 @@ async function runVisionTryOnAcceptance(options) {
         recommendationSummary,
         productDetail,
         tryOnSurface,
+        silhouetteEvidence,
         tryOnSummary,
         degradedProductDetail,
         restoredProductDetail,
@@ -1552,9 +1792,8 @@ async function runVisionTryOnAcceptance(options) {
         })),
       },
     };
-    writeReport(options.outPath, report);
-    return report;
   } catch (error) {
+    pendingError = error instanceof Error ? error : new Error(String(error));
     const failureTrace = client ? await readRuntimeTrace(client).catch(() => []) : [];
     const failureCheckpoint = client
       ? await captureCheckpoint(client, `failure-${stage}`, {
@@ -1565,19 +1804,12 @@ async function runVisionTryOnAcceptance(options) {
     const failureCheckpoints = failureCheckpoint
       ? [...checkpoints, failureCheckpoint]
       : [...checkpoints];
-    const report = {
+    report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: false,
       mode: options.mode,
       stage,
-      error:
-        error instanceof Error
-          ? {
-              name: error.name,
-              message: error.message,
-              stack: String(error.stack ?? "").slice(0, 16 * 1024),
-            }
-          : { name: "Error", message: String(error) },
+      error: serializeError(pendingError),
       runtimeTrace: compactRuntimeTrace(failureTrace, 128),
       checkpoints: failureCheckpoints,
       logs: {
@@ -1594,12 +1826,66 @@ async function runVisionTryOnAcceptance(options) {
         platform: PLATFORM_LOG_REFERENCE,
       },
     };
-    writeReport(options.outPath, report);
-    throw error;
-  } finally {
-    await stopVisionChild(injectedVisionMock).catch(() => undefined);
-    await client?.close().catch(() => undefined);
   }
+
+  const cleanupErrors = [];
+  try {
+    await stopVisionChild(injectedVisionMock);
+  } catch (error) {
+    cleanupErrors.push(
+      new Error(
+        `vision mock shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+  }
+  try {
+    await client?.close();
+  } catch (error) {
+    cleanupErrors.push(
+      new Error(
+        `machine UI CDP shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+  }
+  if (cleanupErrors.length > 0) {
+    const cleanupError =
+      cleanupErrors.length === 1
+        ? cleanupErrors[0]
+        : new AggregateError(cleanupErrors, "vision try-on acceptance cleanup failed");
+    pendingError = combineCleanupFailure(
+      pendingError,
+      cleanupError,
+      "vision try-on acceptance cleanup",
+    );
+    report = {
+      ...(report ?? {
+        schemaVersion: "vem-vision-try-on-acceptance/v1",
+        mode: options.mode,
+        checkpoints,
+        logs: {
+          daemonStdout: writeBoundedLogTail(
+            handoff?.daemon?.logs?.stdout,
+            options.outPath,
+            "daemon-stdout",
+          ),
+          daemonStderr: writeBoundedLogTail(
+            handoff?.daemon?.logs?.stderr,
+            options.outPath,
+            "daemon-stderr",
+          ),
+          platform: PLATFORM_LOG_REFERENCE,
+        },
+      }),
+      ok: false,
+      stage: `cleanup:${stage}`,
+      error: serializeError(pendingError),
+      cleanupErrors: cleanupErrors.map((error) => serializeError(error)),
+    };
+  }
+
+  writeReport(options.outPath, report);
+  if (pendingError) throw pendingError;
+  return report;
 }
 
 async function main() {

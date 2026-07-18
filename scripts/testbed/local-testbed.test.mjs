@@ -752,8 +752,25 @@ describe("supported API seeding", () => {
     assert.equal(tshirtVariantCalls.length, 14);
     assert.deepEqual(result.visionAcceptance, {
       tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+      tryOnSilhouettePublicUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       tryOnCategoryKey: "tshirts",
+      seededTryOnVariants: result.visionAcceptance.seededTryOnVariants,
     });
+    assert.equal(result.visionAcceptance.seededTryOnVariants.length, 14);
+    for (const entry of result.visionAcceptance.seededTryOnVariants) {
+      assert.match(entry.variantId, /^variant-\d+$/);
+      assert.match(entry.productId, /^product-\d+$/);
+      assert.match(entry.sku, /^TSC-LOCAL-\d{3}$/);
+      assert.equal(
+        entry.silhouetteAssetId,
+        "550e8400-e29b-41d4-a716-446655440125",
+      );
+      assert.equal(
+        entry.silhouettePublicUrl,
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      );
+    }
     assert.doesNotMatch(JSON.stringify(calls), /channel-policy/);
   });
 });

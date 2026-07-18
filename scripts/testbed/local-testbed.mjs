@@ -949,6 +949,17 @@ export async function seedThroughSupportedApis({
     token,
     body: { purpose: "first_claim" },
   });
+  const seededTryOnVariants = products
+    .filter((entry) => supportsTryOnAcceptance(entry))
+    .map((entry) => ({
+      sourceRow: entry.sourceRow,
+      productId: entry.product.id,
+      variantId: entry.variant.id,
+      sku: entry.variant.sku,
+      size: entry.size,
+      silhouetteAssetId: tryOnSilhouetteAsset.id,
+      silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
+    }));
   return {
     machine,
     claim,
@@ -957,7 +968,9 @@ export async function seedThroughSupportedApis({
     mqttUrl: `mqtt://${hostPrivateAddress}:18883`,
     visionAcceptance: {
       tryOnSilhouetteAssetId: tryOnSilhouetteAsset.id,
+      tryOnSilhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
       tryOnCategoryKey: "tshirts",
+      seededTryOnVariants,
     },
     slots: seededSlots.map(({ slot, inventory }) => ({
       slotCode: slot.slotCode,
