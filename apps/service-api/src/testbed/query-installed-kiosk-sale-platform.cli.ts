@@ -49,6 +49,8 @@ type PlatformRawRecords = {
     orderNo: string;
     machineId: string;
     status: string;
+    paymentState: string;
+    fulfillmentState: string;
   }>;
   orderItems: Array<{
     id: string;
@@ -56,6 +58,7 @@ type PlatformRawRecords = {
     inventoryId: string;
     slotId: string;
     quantity: number;
+    fulfillmentStatus: string;
   }>;
   payments: Array<{
     id: string;
@@ -89,6 +92,7 @@ type PlatformRawRecords = {
     machineId: string;
     orderItemId: string | null;
     slotId: string;
+    commandKind: string;
     status: string;
   }>;
   movements: Array<{
@@ -228,6 +232,8 @@ export async function queryInstalledKioskSalePlatform(
             orderNo: orders.orderNo,
             machineId: orders.machineId,
             status: orders.status,
+            paymentState: orders.paymentState,
+            fulfillmentState: orders.fulfillmentState,
           })
           .from(orders)
           .where(eq(orders.machineId, machine.id));
@@ -250,6 +256,7 @@ export async function queryInstalledKioskSalePlatform(
                     inventoryId: orderItems.inventoryId,
                     slotId: orderItems.slotId,
                     quantity: orderItems.quantity,
+                    fulfillmentStatus: orderItems.fulfillmentStatus,
                   })
                   .from(orderItems)
                   .where(inArray(orderItems.orderId, orderIds)),
@@ -295,6 +302,7 @@ export async function queryInstalledKioskSalePlatform(
                     machineId: vendingCommands.machineId,
                     orderItemId: vendingCommands.orderItemId,
                     slotId: vendingCommands.slotId,
+                    commandKind: vendingCommands.commandKind,
                     status: vendingCommands.status,
                   })
                   .from(vendingCommands)

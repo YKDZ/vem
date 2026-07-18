@@ -221,6 +221,39 @@ function compactRuntimeTrace(trace, maxEntries = 64) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
 
+function traceBoundary(entries, label) {
+  if (!Array.isArray(entries)) {
+    throw new Error(
+      `${label} requires an installed Machine Runtime Trace array`,
+    );
+  }
+  return {
+    source: "installed_machine_runtime_trace_cdp",
+    entryCount: entries.length,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function traceEntriesAfterBoundary(entries, boundary, label) {
+  if (
+    boundary?.source !== "installed_machine_runtime_trace_cdp" ||
+    !Number.isInteger(boundary?.entryCount) ||
+    boundary.entryCount < 0 ||
+    boundary.entryCount > entries.length ||
+    !Number.isFinite(Date.parse(boundary?.capturedAt))
+  ) {
+    throw new Error(
+      `${label} must retain an installed-CDP trace entry boundary and capture timestamp`,
+    );
+  }
+  return entries.slice(boundary.entryCount);
+}
+
+function isCatalogRoute(route) {
+  if (typeof route !== "string") return false;
+  return route.replace(/^#/, "") === "/catalog";
+}
+
 function compactPlatformBoundary(report, summary) {
   const raw = report?.raw ?? {};
   return {
@@ -261,6 +294,8 @@ function compactEvidenceForReport(evidence, summary) {
     renderedSale: evidence.renderedSale,
     liveSale: evidence.liveSale,
     createOrderGate: evidence.createOrderGate,
+    noCatalogTraceBoundary: evidence.noCatalogTraceBoundary,
+    repeatedPaymentTouch: evidence.repeatedPaymentTouch,
     saleStartCapability: evidence.saleStartCapability,
     uiViewport: evidence.uiViewport,
     visionDelivery: evidence.visionDelivery,
@@ -306,6 +341,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   const afterF2 = input.platform?.afterF2?.raw ?? {};
   const rendered = input.renderedSale ?? {};
   const live = input.liveSale ?? {};
+  const createOrderGate = input.createOrderGate ?? {};
   const machineCode = required(input.machineCode, "machineCode");
   const order = exactlyOne(
     deltaRows(baseline, afterF1, "orders"),
@@ -379,6 +415,19 @@ export function validateFastRouteStressSaleEvidence(input) {
       "authoritative platform payment and command facts must bind the same sale before host raw F0",
     );
   }
+  if (
+    beforeF0Payment.paymentNo !==
+    required(createOrderGate.paymentNo, "create-order gate paymentNo")
+  ) {
+    throw new Error(
+      "authoritative pre-F0 paymentNo must match the create-order gate paymentNo",
+    );
+  }
+  if (!new Set(["authorized", "succeeded"]).has(beforeF0Payment.status)) {
+    throw new Error(
+      "authoritative pre-F0 payment must be authorized or succeeded",
+    );
+  }
   const identity = {
     inventoryId: orderItem.inventoryId,
     slotId: orderItem.slotId,
@@ -443,6 +492,19 @@ export function validateFastRouteStressSaleEvidence(input) {
   ) {
     throw new Error(
       "platform movement must correlate order, command, item, inventory, and slot",
+    );
+  }
+  const afterF2Order = matchingRowById(afterF2, "orders", order.id);
+  const afterF2Command = matchingRowById(afterF2, "commands", command.id);
+  if (
+    afterF2Order?.status !== "fulfilled" ||
+    afterF2Order?.paymentState !== "paid" ||
+    afterF2Order?.fulfillmentState !== "dispensed" ||
+    afterF2Command?.commandKind !== "dispatch" ||
+    afterF2Command?.status !== "succeeded"
+  ) {
+    throw new Error(
+      "authoritative post-F2 order and dispatch command must be fulfilled, paid, dispensed, and succeeded",
     );
   }
   const mqtt = exactlyOne(
@@ -614,7 +676,6 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   if (!input.serial?.sessionId)
     throw new Error("serial session identity is required");
-  const createOrderGate = input.createOrderGate ?? {};
   const gateObservedAt = Date.parse(createOrderGate.pendingObservedAt);
   const gateReleasedAt = Date.parse(createOrderGate.releasedAt);
   if (
@@ -655,6 +716,39 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const runtimeTrace = machineRuntimeTrace.entries;
+  const noCatalogTrace = traceEntriesAfterBoundary(
+    runtimeTrace,
+    input.noCatalogTraceBoundary,
+    "no-Catalog trace boundary",
+  );
+  const repeatedTouchTrace = traceEntriesAfterBoundary(
+    runtimeTrace,
+    input.repeatedPaymentTouch?.preDispatchTraceBoundary,
+    "repeated payment touch pre-dispatch trace boundary",
+  );
+  const repeatedTouch = repeatedTouchTrace.find(
+    (entry) =>
+      entry?.type === "navigation" &&
+      entry?.intentType === "customer.touch" &&
+      entry?.decision === "accepted" &&
+      entry?.reasonCode === "touchscreen_session_renewed",
+  );
+  if (!repeatedTouch) {
+    throw new Error(
+      "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
+    );
+  }
+  const repeatedTouchAt = timestamp(
+    repeatedTouch.at,
+    "repeated physical customer.touch trace at",
+  );
+  if (
+    !(gateObservedAt <= repeatedTouchAt && repeatedTouchAt <= gateReleasedAt)
+  ) {
+    throw new Error(
+      "repeated physical customer.touch must occur while payment creation is explicitly pending",
+    );
+  }
   const guardedDeparture = runtimeTrace.find(
     (entry) =>
       entry.type === "navigation" &&
@@ -691,14 +785,6 @@ export function validateFastRouteStressSaleEvidence(input) {
       "runtime trace must contain the real transaction projection refresh for the correlated order after Vision departure",
     );
   }
-  const spontaneousCatalog = runtimeTrace.some(
-    (entry) =>
-      entry.type === "navigation" &&
-      Date.parse(entry.at) >= visionAt &&
-      entry.finalRoute === "#/catalog",
-  );
-  if (spontaneousCatalog)
-    throw new Error("runtime returned spontaneously to Catalog");
   const result = input.ui?.afterF2?.result;
   if (
     input.ui?.afterF2?.route !== "#/result/success" ||
@@ -746,6 +832,27 @@ export function validateFastRouteStressSaleEvidence(input) {
       "runtime trace must expose a correlated post-F2 result surface with its raw timestamp",
     );
   }
+  const resultTraceIndex = runtimeTrace.indexOf(correlatedResultTrace);
+  const noCatalogResultIndex = noCatalogTrace.indexOf(correlatedResultTrace);
+  if (resultTraceIndex < 0 || noCatalogResultIndex < 0) {
+    throw new Error(
+      "no-Catalog trace boundary must precede the correlated terminal result",
+    );
+  }
+  const catalogNavigation = noCatalogTrace
+    .slice(0, noCatalogResultIndex + 1)
+    .find(
+      (entry) =>
+        entry?.type === "navigation" &&
+        (isCatalogRoute(entry.finalRoute) ||
+          isCatalogRoute(entry.decidedRoute) ||
+          isCatalogRoute(entry.targetRoute)),
+    );
+  if (catalogNavigation) {
+    throw new Error(
+      "runtime trace contains an actual or decided Catalog navigation after the stressed customer flow began",
+    );
+  }
   return {
     machineCode,
     machineId: input.platform.beforeF0.scope.machineId,
@@ -766,6 +873,8 @@ export function validateFastRouteStressSaleEvidence(input) {
       platformAfter.onHandQty - platformMiddle.onHandQty,
     movementId: movement.id,
     visionEventId: vision.eventId,
+    repeatedPhysicalTouchTraceId: repeatedTouch.id ?? null,
+    repeatedPhysicalTouchAt: repeatedTouch.at,
     guardedNavigationReason: guardedDeparture.reasonCode,
     projectionRefreshReason: projectionRefresh.reasonCode,
     projectionRefreshRoute: projectionRefresh.finalRoute,
@@ -911,6 +1020,45 @@ async function readRuntimeTrace(client) {
   );
 }
 
+async function captureRuntimeTraceBoundary(client, label) {
+  return traceBoundary(await readRuntimeTrace(client), label);
+}
+
+async function waitForRepeatedCustomerTouchTrace(
+  client,
+  preDispatchTraceBoundary,
+  pendingObservedAt,
+  timeoutMs = 5_000,
+) {
+  const pendingAt = timestamp(
+    pendingObservedAt,
+    "create-order gate pendingObservedAt",
+  );
+  const deadline = Date.now() + timeoutMs;
+  let lastTrace = [];
+  do {
+    lastTrace = await readRuntimeTrace(client);
+    const touch = traceEntriesAfterBoundary(
+      lastTrace,
+      preDispatchTraceBoundary,
+      "repeated payment touch pre-dispatch trace boundary",
+    ).find(
+      (entry) =>
+        entry?.type === "navigation" &&
+        entry?.intentType === "customer.touch" &&
+        entry?.decision === "accepted" &&
+        entry?.reasonCode === "touchscreen_session_renewed" &&
+        timestamp(entry?.at, "repeated physical customer.touch trace at") >=
+          pendingAt,
+    );
+    if (touch) return touch;
+    await sleep(25);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `installed runtime did not trace the repeated physical customer.touch after the pre-dispatch boundary: ${JSON.stringify(lastTrace.slice(-8))}`,
+  );
+}
+
 async function readInstalledUiViewport(client) {
   return evaluateExpression(
     client,
@@ -969,6 +1117,7 @@ async function waitForPlatformMovement(
   guestInput,
   input,
   baselineCount,
+  expected,
   timeoutMs = 30_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -976,11 +1125,23 @@ async function waitForPlatformMovement(
   do {
     last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
       .report;
-    if (rows(last?.raw, "movements").length > baselineCount) return last;
+    const raw = last?.raw ?? {};
+    const order = matchingRowById(raw, "orders", expected.orderId);
+    const command = matchingRowById(raw, "commands", expected.commandId);
+    if (
+      rows(raw, "movements").length > baselineCount &&
+      order?.status === "fulfilled" &&
+      order?.paymentState === "paid" &&
+      order?.fulfillmentState === "dispensed" &&
+      command?.commandKind === "dispatch" &&
+      command?.status === "succeeded"
+    ) {
+      return last;
+    }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   } while (Date.now() < deadline);
   throw new Error(
-    `platform movement did not appear after inbound F2: ${JSON.stringify(last?.raw?.movements ?? [])}`,
+    `platform did not reach terminal post-F2 order/command state: ${JSON.stringify(last?.raw ?? {})}`,
   );
 }
 
@@ -1113,12 +1274,21 @@ function cleanupTimeout(label, timeoutMs) {
   });
 }
 
-export async function runCleanupStep(label, action, timeoutMs = CLEANUP_TIMEOUT_MS) {
+export async function runCleanupStep(
+  label,
+  action,
+  timeoutMs = CLEANUP_TIMEOUT_MS,
+) {
   try {
-    const detail = await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+    const detail = await Promise.race([
+      action(),
+      cleanupTimeout(label, timeoutMs),
+    ]);
     return { label, ok: true, detail };
   } catch (error) {
-    const wrapped = new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    const wrapped = new Error(
+      `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     wrapped.cause = error;
     wrapped.cleanupLabel = label;
     throw wrapped;
@@ -1348,6 +1518,8 @@ async function runFastRouteStressSale(options) {
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
   let createOrderGate = null;
+  let noCatalogTraceBoundary = null;
+  let repeatedPaymentTouch = null;
   let successReport = null;
   let failureReport = null;
   let primaryError = null;
@@ -1430,6 +1602,12 @@ async function runFastRouteStressSale(options) {
         timeoutMs: 30_000,
         pollMs: 250,
       });
+      if (step.name === "catalog product") {
+        noCatalogTraceBoundary = await captureRuntimeTraceBoundary(
+          client,
+          "no-Catalog trace boundary",
+        );
+      }
     }
     await waitForRoute(client, "#/checkout", {
       timeoutMs: 30_000,
@@ -1445,11 +1623,23 @@ async function runFastRouteStressSale(options) {
     const pendingCreate = await waitForCreateOrderGatePending(guestInput);
     stage = "vision-departure-during-create-order";
     const visionDelivery = await dispatchVisionDeparture(guestInput);
+    const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
+      client,
+      "repeated payment touch pre-dispatch trace boundary",
+    );
     const secondSubmit = await dispatchRepeatedPaymentTouch(
       client,
       firstSubmit,
     );
     assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+    await waitForRepeatedCustomerTouchTrace(
+      client,
+      preDispatchTraceBoundary,
+      pendingCreate.observedAt,
+    );
+    repeatedPaymentTouch = {
+      preDispatchTraceBoundary,
+    };
     const releasedCreateOrderGate = await releaseCreateOrderGate(
       guestInput,
       pendingCreate.paymentNo,
@@ -1578,6 +1768,10 @@ async function runFastRouteStressSale(options) {
         sessionId: sessionStart.sessionId,
       },
       rows(afterF1Platform.raw, "movements").length,
+      {
+        orderId: renderedSale.orderId,
+        commandId: liveSale.vendingCommandId,
+      },
     );
     const afterF2Ui = resultSurface;
     const runtimeTrace = await readRuntimeTrace(client);
@@ -1602,6 +1796,8 @@ async function runFastRouteStressSale(options) {
         pendingObservedAt: pendingCreate.observedAt,
         releasedAt: releasedCreateOrderGate.releasedAt,
       },
+      noCatalogTraceBoundary,
+      repeatedPaymentTouch,
       saleStartCapability,
       uiViewport,
       visionDelivery,
@@ -1790,8 +1986,14 @@ async function runFastRouteStressSale(options) {
             guestInput,
             "/v1/mock-payment-create-gate/status",
           );
-          if (opened?.state !== "open" || status?.state !== "open" || status?.pending !== null) {
-            throw new Error("payment create gate did not return to open with no pending payment");
+          if (
+            opened?.state !== "open" ||
+            status?.state !== "open" ||
+            status?.pending !== null
+          ) {
+            throw new Error(
+              "payment create gate did not return to open with no pending payment",
+            );
           }
           return { opened, status };
         }),
@@ -1814,7 +2016,9 @@ async function runFastRouteStressSale(options) {
             `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
           );
           if (result?.aborted !== true) {
-            throw new Error("serial session abort did not confirm inactive state");
+            throw new Error(
+              "serial session abort did not confirm inactive state",
+            );
           }
           return result;
         }),

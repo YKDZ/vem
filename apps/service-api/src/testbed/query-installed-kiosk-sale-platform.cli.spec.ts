@@ -91,13 +91,20 @@ describe("installed kiosk sale platform raw query", () => {
       "utf8",
     );
     expect(source).toContain(".where(eq(orders.machineId, machine.id))");
+    expect(source).toContain("status: orders.status");
     expect(source).toContain("inArray(payments.orderId, orderIds)");
+    expect(source).toContain("status: payments.status");
     expect(source).toContain("inArray(paymentCodeAttempts.orderId, orderIds)");
     expect(source).toContain("scannerEventId");
+    expect(source).toContain("paymentState: orders.paymentState");
+    expect(source).toContain("fulfillmentState: orders.fulfillmentState");
+    expect(source).toContain("fulfillmentStatus: orderItems.fulfillmentStatus");
     expect(source).toContain(
       "inArray(inventoryReservations.orderId, orderIds)",
     );
     expect(source).toContain("inArray(vendingCommands.orderId, orderIds)");
+    expect(source).toContain("commandKind: vendingCommands.commandKind");
+    expect(source).toContain("status: vendingCommands.status");
     expect(source).toContain(
       'eq(machineRawStockMovements.movementType, "dispense_succeeded")',
     );

@@ -29,7 +29,15 @@ function validEvidence() {
     inventories: [inventory],
   };
   const beforeF0Raw = {
-    orders: [{ id: "order-1", orderNo: "ORD-1" }],
+    orders: [
+      {
+        id: "order-1",
+        orderNo: "ORD-1",
+        status: "dispensing",
+        paymentState: "paid",
+        fulfillmentState: "dispensing",
+      },
+    ],
     orderItems: [
       {
         id: "item-1",
@@ -39,7 +47,14 @@ function validEvidence() {
         quantity: 1,
       },
     ],
-    payments: [{ id: "payment-1", orderId: "order-1", paymentNo: "PAY-1" }],
+    payments: [
+      {
+        id: "payment-1",
+        orderId: "order-1",
+        paymentNo: "PAY-1",
+        status: "succeeded",
+      },
+    ],
     commands: [
       {
         id: "command-1",
@@ -47,6 +62,8 @@ function validEvidence() {
         orderId: "order-1",
         orderItemId: "item-1",
         slotId: "slot-1",
+        commandKind: "dispatch",
+        status: "sent",
       },
     ],
     movements: [],
@@ -117,12 +134,20 @@ function validEvidence() {
       visualViewportHeight: 1920,
     },
     platform: {
-      baseline: platformReport(baselineRaw, "2026-07-18T04:00:00.200Z"),
+      baseline: platformReport(baselineRaw, "2026-07-18T03:59:59.500Z"),
       beforeF0: platformReport(beforeF0Raw, "2026-07-18T04:00:00.900Z"),
       afterF1BeforeF2: platformReport(inFlightRaw, "2026-07-18T04:00:02.500Z"),
       afterF2: platformReport(
         {
           ...inFlightRaw,
+          orders: [
+            {
+              ...inFlightRaw.orders[0],
+              status: "fulfilled",
+              fulfillmentState: "dispensed",
+            },
+          ],
+          commands: [{ ...inFlightRaw.commands[0], status: "succeeded" }],
           movements: [
             {
               id: "movement-1",
@@ -210,12 +235,37 @@ function validEvidence() {
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
     },
+    noCatalogTraceBoundary: {
+      source: "installed_machine_runtime_trace_cdp",
+      entryCount: 0,
+      capturedAt: "2026-07-18T03:59:59.700Z",
+    },
+    repeatedPaymentTouch: {
+      preDispatchTraceBoundary: {
+        source: "installed_machine_runtime_trace_cdp",
+        entryCount: 2,
+        capturedAt: "2026-07-18T04:00:00.110Z",
+      },
+    },
     machineRuntimeTrace: {
       source: "installed_machine_runtime_trace_cdp",
       capturedAt: "2026-07-18T04:00:04.100Z",
       entries: [
         {
           type: "navigation",
+          id: 1,
+          intentType: "customer.touch",
+          decision: "accepted",
+          reasonCode: "touchscreen_session_renewed",
+          fromRoute: "#/checkout",
+          decidedRoute: null,
+          finalRoute: null,
+          targetRoute: null,
+          at: "2026-07-18T03:59:59.850Z",
+        },
+        {
+          type: "navigation",
+          id: 2,
           intentType: "presence.departed",
           sourceEventId: "departure-event-1",
           decision: "rejected",
@@ -226,6 +276,19 @@ function validEvidence() {
         },
         {
           type: "navigation",
+          id: 3,
+          intentType: "customer.touch",
+          decision: "accepted",
+          reasonCode: "touchscreen_session_renewed",
+          fromRoute: "#/checkout",
+          decidedRoute: null,
+          finalRoute: null,
+          targetRoute: null,
+          at: "2026-07-18T04:00:00.125Z",
+        },
+        {
+          type: "navigation",
+          id: 4,
           intentType: "transaction.projection",
           decision: "accepted",
           reasonCode: "transaction_projection",
@@ -236,7 +299,7 @@ function validEvidence() {
         },
         {
           type: "transaction_surface",
-          id: 2,
+          id: 5,
           at: "2026-07-18T04:00:04.000Z",
           recordedAt: "2026-07-18T04:00:04.000Z",
           route: "#/result/success",
@@ -369,6 +432,8 @@ describe("fast route stress sale tracer", () => {
     assert.equal(summary.saleStartCapabilityRevision, 7);
     assert.equal(summary.projectionRefreshReason, "transaction_projection");
     assert.equal(summary.projectionRefreshRoute, "#/payment");
+    assert.equal(summary.repeatedPhysicalTouchTraceId, 3);
+    assert.equal(summary.repeatedPhysicalTouchAt, "2026-07-18T04:00:00.125Z");
     assert.deepEqual(summary.uiViewport, { width: 1080, height: 1920 });
     assert.deepEqual(summary.runtimeTraceCorrelation.rawFrames, [
       {
@@ -463,8 +528,9 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when runtime trace does not bind the exact departed eventId", () => {
     const evidence = validEvidence();
-    evidence.machineRuntimeTrace.entries[0].sourceEventId =
-      "departure-event-other";
+    evidence.machineRuntimeTrace.entries.find(
+      (entry) => entry.intentType === "presence.departed",
+    ).sourceEventId = "departure-event-other";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /guarded Vision departure navigation effect for the accepted eventId/,
@@ -477,6 +543,38 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /Vision departure must occur while payment creation is explicitly pending/,
+    );
+  });
+
+  it("fails closed when the repeated physical touch has no installed-runtime trace after its pre-dispatch boundary", () => {
+    const evidence = validEvidence();
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter((entry) => entry.id !== 3);
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /repeated physical customer\.touch after its pre-dispatch boundary/,
+    );
+  });
+
+  it("fails closed when the repeated physical touch trace falls outside the pending create-order gate interval", () => {
+    const evidence = validEvidence();
+    evidence.machineRuntimeTrace.entries.find((entry) => entry.id === 3).at =
+      "2026-07-18T04:00:00.250Z";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /repeated physical customer\.touch must occur while payment creation is explicitly pending/,
+    );
+  });
+
+  it("fails closed on a pre-Vision decided Catalog navigation after the stressed customer flow begins", () => {
+    const evidence = validEvidence();
+    const preVisionTouch = evidence.machineRuntimeTrace.entries.find(
+      (entry) => entry.id === 1,
+    );
+    preVisionTouch.decidedRoute = "#/catalog";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /actual or decided Catalog navigation after the stressed customer flow began/,
     );
   });
 
@@ -553,6 +651,31 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /before inbound F0 the correlated order, payment, and vending command must already exist exactly once/,
+    );
+  });
+
+  it("fails closed when authoritative pre-F0 payment status or paymentNo is not the gated payment", () => {
+    const wrongStatus = validEvidence();
+    wrongStatus.platform.beforeF0.raw.payments[0].status = "pending";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(wrongStatus),
+      /authoritative pre-F0 payment must be authorized or succeeded/,
+    );
+
+    const wrongPaymentNo = validEvidence();
+    wrongPaymentNo.platform.beforeF0.raw.payments[0].paymentNo = "PAY-OTHER";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(wrongPaymentNo),
+      /authoritative pre-F0 paymentNo must match the create-order gate paymentNo/,
+    );
+  });
+
+  it("fails closed when authoritative post-F2 order or command status is not terminal", () => {
+    const evidence = validEvidence();
+    evidence.platform.afterF2.raw.orders[0].status = "dispensing";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /authoritative post-F2 order and dispatch command must be fulfilled, paid, dispensed, and succeeded/,
     );
   });
 
@@ -656,6 +779,12 @@ describe("fast route stress sale tracer", () => {
       /sale-start-capability must expose a ready mock:mock payment option/,
     );
     assert.match(implementation, /installed_machine_runtime_trace_cdp/);
+    assert.match(implementation, /customer\.touch/);
+    assert.match(implementation, /pre-dispatch trace boundary/);
+    assert.match(implementation, /no-Catalog trace boundary/);
+    assert.match(implementation, /actual or decided Catalog navigation/);
+    assert.match(implementation, /authorized or succeeded/);
+    assert.match(implementation, /terminal post-F2 order\/command state/);
     assert.match(implementation, /host_pty_raw_serial_journal/);
     assert.doesNotMatch(implementation, /observe-payment/);
     assert.doesNotMatch(implementation, /observe-result/);
@@ -698,7 +827,10 @@ describe("fast route stress sale tracer", () => {
       "utf8",
     );
 
-    assert.match(implementation, /runCleanupStep\("reopen payment create gate"/);
+    assert.match(
+      implementation,
+      /runCleanupStep\("reopen payment create gate"/,
+    );
     assert.match(implementation, /mock-payment-create-gate\/status/);
     assert.match(
       implementation,
@@ -709,6 +841,9 @@ describe("fast route stress sale tracer", () => {
       implementation,
       /serial session abort did not confirm inactive state/,
     );
-    assert.match(implementation, /runCleanupStep\("stop controlled vision mock"/);
+    assert.match(
+      implementation,
+      /runCleanupStep\("stop controlled vision mock"/,
+    );
   });
 });
