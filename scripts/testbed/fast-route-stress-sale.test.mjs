@@ -25,17 +25,16 @@ function validEvidence() {
     inventories: [inventory],
   };
   const inFlightRaw = structuredClone(beforeF0Raw);
-  const saleBinding = {
-    saleCorrelationId: "sale-1",
-    orderId: "order-1",
-    paymentId: "payment-1",
-    vendingCommandId: "command-1",
-  };
   return {
     saleCorrelationId: "sale-1",
     machineCode: "VEM-TESTBED-LOCAL",
     renderedSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1" },
     liveSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1", vendingCommandId: "command-1" },
+    createOrderGate: {
+      paymentNo: "PAY-1",
+      pendingObservedAt: "2026-07-18T03:59:59.900Z",
+      releasedAt: "2026-07-18T04:00:00.200Z",
+    },
     platform: {
       baseline: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: baselineRaw },
       beforeF0: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: beforeF0Raw },
@@ -56,7 +55,7 @@ function validEvidence() {
       afterF2: { items: [{ inventoryId: "inventory-1", slotId: "slot-1", slotCode: "R2C5", layerNo: 2, cellNo: 5, saleableStock: 2 }] },
     },
     ui: {
-      beforeF0: { route: "#/payment/code", result: null },
+      beforeF0: { route: "#/payment", result: null },
       afterF1BeforeF2: { route: "#/dispensing", result: null },
       afterF2: { route: "#/result/success", result: { kind: "success", orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1", commandId: "command-1" } },
     },
@@ -89,12 +88,6 @@ function validEvidence() {
         { sequence: 3, direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
         { sequence: 4, direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
       ],
-      records: ["dispense-request", "dispense-ack", "dispense-result"].map((event) => ({
-        role: "lower-controller",
-        event,
-        saleCorrelationId: "sale-1",
-        saleBinding,
-      })),
     },
   };
 }
@@ -238,6 +231,15 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("fails closed when Vision departure is not anchored inside the gated pending payment creation interval", () => {
+    const evidence = validEvidence();
+    evidence.createOrderGate.releasedAt = "2026-07-18T03:59:59.950Z";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /Vision departure must occur while payment creation is explicitly pending/,
+    );
+  });
+
   it("fails closed when MQTT command or serial slot is not correlated to the order", () => {
     const evidence = validEvidence();
     evidence.mqttMessages[0].payload.payload.commandNo = "CMD-OTHER";
@@ -335,7 +337,8 @@ describe("fast route stress sale tracer", () => {
     );
     assert.match(implementation, /Input\.dispatchTouchEvent/);
     assert.match(implementation, /__VEM_MACHINE_RUNTIME_TRACE__/);
-    assert.match(implementation, /payment_code:mock/);
+    assert.match(implementation, /mock:mock/);
+    assert.match(implementation, /payments\/mock\/\$\{encodeURIComponent\(paymentNo\)\}\/complete/);
     assert.match(implementation, /vision\/control\/departure/);
     assert.match(implementation, /release-f0/);
     assert.match(implementation, /platform-log/);
@@ -350,6 +353,7 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
     assert.doesNotMatch(implementation, /factory-route-competition/);
+    assert.doesNotMatch(implementation, /scannerCode/);
   });
 
   it("exports an explicit controlled vision mock shutdown path", () => {

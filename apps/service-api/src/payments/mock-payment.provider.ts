@@ -1,4 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { z } from "zod";
 
 import type {
@@ -45,10 +47,73 @@ export class MockPaymentProvider implements PaymentProvider {
     if (!this.config.paymentMockEnabled) {
       throw new Error("mock payment provider is disabled");
     }
+    await this.waitForCreateGate(input.paymentNo);
     return {
       providerTradeNo: `MOCK-${input.paymentNo}`,
       paymentUrl: this.config.buildMockPaymentCompletionUrl(input.paymentNo),
     };
+  }
+
+  private async waitForCreateGate(paymentNo: string): Promise<void> {
+    const gatePath = this.config.paymentMockProviderCreateGatePath;
+    if (!gatePath) return;
+    const state = await this.readCreateGateState(gatePath);
+    if (state.state !== "hold") return;
+
+    const pendingPath = `${gatePath}.pending.json`;
+    await mkdir(dirname(gatePath), { recursive: true });
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify({
+        paymentNo,
+        state: "pending",
+        observedAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const deadline = Date.now() + 30_000;
+    try {
+      while (Date.now() < deadline) {
+        const current = await this.readCreateGateState(gatePath);
+        if (
+          current.state === "release" &&
+          (current.paymentNo === undefined || current.paymentNo === paymentNo)
+        ) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await rm(pendingPath, { force: true }).catch(() => undefined);
+    }
+    throw new Error(
+      `mock payment create gate timed out before release for ${paymentNo}`,
+    );
+  }
+
+  private async readCreateGateState(
+    gatePath: string,
+  ): Promise<{ state: "open" | "hold" | "release"; paymentNo?: string }> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(gatePath, "utf8"));
+    } catch (error) {
+      throw new Error(
+        `mock payment create gate is unreadable at ${gatePath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const schema = z.strictObject({
+      state: z.enum(["open", "hold", "release"]),
+      paymentNo: z.string().min(1).optional(),
+    });
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error(`mock payment create gate is invalid at ${gatePath}`);
+    }
+    return result.data;
   }
 
   async chargePaymentCode(

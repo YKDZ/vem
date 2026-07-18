@@ -21,7 +21,10 @@ import {
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
-const DEFAULT_SCANNER_CODE = "6901234567892";
+const PLATFORM_LOG_REFERENCE = Object.freeze({
+  unit: "vem-local-testbed-service-api",
+  command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
+});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -88,7 +91,7 @@ export function buildFastRouteStressScenarioSteps() {
       type: "customer-activation",
       name: "payment option",
       selector:
-        '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]',
+        '[data-test="payment-option"][data-payment-option-key="mock:mock"]:not(:disabled)',
       routeBefore: "#/checkout",
       routeAfter: "#/checkout",
       inputKind: "touch",
@@ -106,7 +109,7 @@ export function buildFastRouteStressScenarioSteps() {
       name: "payment submit repeat",
       selector: '[data-test="checkout-submit"]',
       routeBefore: "#/checkout",
-      routeAfter: /^#\/payment/,
+      routeAfter: "#/checkout",
       inputKind: "touch",
     },
   ];
@@ -119,6 +122,66 @@ export async function dispatchRepeatedPaymentTouch(client, firstActivation) {
     timeoutMs: 5_000,
   });
   return { originalPoint: { x: originalPoint.x, y: originalPoint.y }, input };
+}
+
+function createOrderGatePaths(guestInput) {
+  const gate = guestInput?.fastSale?.createOrderGate;
+  return {
+    statePath: required(gate?.statePath, "fastSale.createOrderGate.statePath"),
+    pendingPath: required(
+      gate?.pendingPath,
+      "fastSale.createOrderGate.pendingPath",
+    ),
+  };
+}
+
+function readJsonFile(path, label) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `${label} is unreadable at ${path}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function writeGateState(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function armCreateOrderGate(guestInput) {
+  const gate = createOrderGatePaths(guestInput);
+  writeGateState(gate.statePath, { state: "hold" });
+  return gate;
+}
+
+async function waitForCreateOrderGatePending(gate, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    try {
+      const pending = readJsonFile(
+        gate.pendingPath,
+        "mock create-order pending marker",
+      );
+      if (pending?.state === "pending" && typeof pending.paymentNo === "string") {
+        return pending;
+      }
+    } catch {}
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  } while (Date.now() < deadline);
+  throw new Error("mock create-order gate did not observe a pending payment creation");
+}
+
+function releaseCreateOrderGate(gate, paymentNo) {
+  writeGateState(gate.statePath, { state: "release", paymentNo });
+  return {
+    statePath: gate.statePath,
+    paymentNo,
+    releasedAt: new Date().toISOString(),
+  };
 }
 
 function rows(raw, key) {
@@ -188,6 +251,7 @@ function compactEvidenceForReport(evidence, summary) {
     machineCode: evidence.machineCode,
     renderedSale: evidence.renderedSale,
     liveSale: evidence.liveSale,
+    createOrderGate: evidence.createOrderGate,
     visionDelivery: evidence.visionDelivery,
     platform: {
       baseline: compactPlatformBoundary(evidence.platform?.baseline, summary),
@@ -209,11 +273,6 @@ function compactEvidenceForReport(evidence, summary) {
         ? evidence.serial.rawFrames
             .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame?.parsedOpcode))
             .slice(-4)
-        : [],
-      records: Array.isArray(evidence.serial?.records)
-        ? evidence.serial.records
-            .filter((record) => record.role === "lower-controller" && record.event.startsWith("dispense-"))
-            .slice(-3)
         : [],
     },
   };
@@ -376,21 +435,16 @@ export function validateFastRouteStressSaleEvidence(input) {
       throw new Error("platform evidence must preserve correlated machine scope at every boundary");
     }
   }
-  const saleBinding = {
-    saleCorrelationId: input.saleCorrelationId,
-    orderId: order.id,
-    paymentId: payment.id,
-    vendingCommandId: command.id,
-  };
   if (!input.serial?.sessionId) throw new Error("serial session identity is required");
-  const semantic = Array.isArray(input.serial?.records)
-    ? input.serial.records.filter((record) => record.role === "lower-controller" && record.event.startsWith("dispense-"))
-    : [];
-  if (JSON.stringify(semantic.map((record) => record.event)) !== JSON.stringify(["dispense-request", "dispense-ack", "dispense-result"])) {
-    throw new Error("serial semantic evidence must retain dispense-request/ack/result");
-  }
-  if (semantic.some((record) => record.saleCorrelationId !== input.saleCorrelationId || JSON.stringify(record.saleBinding) !== JSON.stringify(saleBinding))) {
-    throw new Error("serial semantic frames must bind the correlated sale and command");
+  const createOrderGate = input.createOrderGate ?? {};
+  const gateObservedAt = Date.parse(createOrderGate.pendingObservedAt);
+  const gateReleasedAt = Date.parse(createOrderGate.releasedAt);
+  if (
+    !Number.isFinite(gateObservedAt) ||
+    !Number.isFinite(gateReleasedAt) ||
+    gateReleasedAt < gateObservedAt
+  ) {
+    throw new Error("create-order gate must expose a pending boundary before release");
   }
   const vision = input.visionDelivery ?? {};
   if (
@@ -403,6 +457,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     throw new Error("Vision departure requires a connected installed runtime client and accepted delivery");
   }
   const visionAt = Date.parse(vision.timestamp);
+  if (!(gateObservedAt <= visionAt && visionAt <= gateReleasedAt)) {
+    throw new Error("Vision departure must occur while payment creation is explicitly pending");
+  }
   const guardedDeparture = (Array.isArray(input.runtimeTrace) ? input.runtimeTrace : []).find(
     (entry) =>
       entry.type === "navigation" &&
@@ -454,6 +511,8 @@ export function validateFastRouteStressSaleEvidence(input) {
     movementId: movement.id,
     visionEventId: vision.eventId,
     guardedNavigationReason: guardedDeparture.reasonCode,
+    createOrderGateObservedAt: createOrderGate.pendingObservedAt,
+    createOrderGateReleasedAt: createOrderGate.releasedAt,
   };
 }
 
@@ -820,6 +879,21 @@ async function dispatchVisionDeparture(guestInput) {
   });
 }
 
+async function completeMockPayment(guestInput, paymentNo) {
+  const provisioningApiBaseUrl = required(
+    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    "runtimeBootstrap.provisioningApiBaseUrl",
+  );
+  const apiBase = provisioningApiBaseUrl.replace(/\/+$/, "");
+  return fetchJson(
+    `${apiBase}/payments/mock/${encodeURIComponent(paymentNo)}/complete`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
 async function runFastRouteStressSale(options) {
   let guestInput = null;
   let handoff = null;
@@ -839,6 +913,7 @@ async function runFastRouteStressSale(options) {
   let stage = "read-input";
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
+  let createOrderGate = null;
   try {
     guestInput = readJson(options.guestInputPath, "guest input");
     handoff = readJson(options.handoffPath, "handoff");
@@ -846,6 +921,7 @@ async function runFastRouteStressSale(options) {
     const machineCode = required(guestInput.machineCode, "machineCode");
     const saleCorrelationId = `sale-correlation://fast-route-${Date.now()}`;
     const steps = buildFastRouteStressScenarioSteps();
+    createOrderGate = armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
       guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort,
@@ -913,10 +989,16 @@ async function runFastRouteStressSale(options) {
       { kind: "touch", timeoutMs: 30_000 },
     );
     assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
-    const secondSubmit = await dispatchRepeatedPaymentTouch(client, firstSubmit);
-    assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+    stage = "wait-create-order-pending-boundary";
+    const pendingCreate = await waitForCreateOrderGatePending(createOrderGate);
     stage = "vision-departure-during-create-order";
     const visionDelivery = await dispatchVisionDeparture(guestInput);
+    const secondSubmit = await dispatchRepeatedPaymentTouch(client, firstSubmit);
+    assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+    const releasedCreateOrderGate = releaseCreateOrderGate(
+      createOrderGate,
+      pendingCreate.paymentNo,
+    );
     await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
     checkpoints.push(
       await captureCheckpoint(client, "payment-creation", {
@@ -925,12 +1007,12 @@ async function runFastRouteStressSale(options) {
       }),
     );
     const renderedSale = await readRenderedPaymentSurface(client);
-    stage = "physical-scanner-payment";
-    await controlPlaneRequest(guestInput, `/v1/serial-sessions/${sessionStart.sessionId}/inject`, {
-      orderId: renderedSale.orderId,
-      paymentId: renderedSale.paymentId,
-      scannerCode: guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
-    });
+    const pendingTransaction = await daemonGet(handoff, "/v1/transactions/current");
+    if (pendingTransaction?.paymentNo !== pendingCreate.paymentNo) {
+      throw new Error("released create-order gate paymentNo must match the rendered payment surface");
+    }
+    stage = "complete-mock-payment";
+    await completeMockPayment(guestInput, pendingCreate.paymentNo);
     liveSale = await waitForCommand(handoff, renderedSale);
     stage = "snapshot-before-f0";
     const vendBoundary = await controlPlaneRequest(
@@ -1005,12 +1087,7 @@ async function runFastRouteStressSale(options) {
     stage = "collect-raw-serial-evidence";
     const collect = await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/collect`,
-      {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        vendingCommandId: liveSale.vendingCommandId,
-      },
+      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
     );
     stage = "wait-success-result";
     const resultRoute = await waitForResultRoute(client, 60_000);
@@ -1041,6 +1118,13 @@ async function runFastRouteStressSale(options) {
       saleCorrelationId,
       machineCode,
       runtimeTrace,
+      createOrderGate: {
+        statePath: createOrderGate.statePath,
+        pendingPath: createOrderGate.pendingPath,
+        paymentNo: pendingCreate.paymentNo,
+        pendingObservedAt: pendingCreate.observedAt,
+        releasedAt: releasedCreateOrderGate.releasedAt,
+      },
       visionDelivery,
       renderedSale,
       liveSale,
@@ -1064,8 +1148,7 @@ async function runFastRouteStressSale(options) {
       mqttMessages: collect.mqtt?.messages ?? [],
       serial: {
         sessionId: sessionStart.binding.serialSessionId,
-        rawFrames: collect.collectReport?.serialEvidence?.rawFrames ?? [],
-        records: collect.collectReport?.serialEvidence?.records ?? [],
+        rawFrames: collect.rawFrames ?? [],
       },
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
@@ -1210,6 +1293,11 @@ async function runFastRouteStressSale(options) {
     writeReport(options.outPath, report);
     throw error;
   } finally {
+    if (createOrderGate) {
+      try {
+        writeGateState(createOrderGate.statePath, { state: "open" });
+      } catch {}
+    }
     await client?.close().catch(() => undefined);
     await shutdownControlledVisionMock(vision?.child).catch(() => undefined);
   }

@@ -52,6 +52,7 @@ const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "MAINTENANCE_RELAY_CREDENTIAL",
   "MAINTENANCE_RELAY_JWT_SECRET",
   "PAYMENT_MOCK_ENABLED",
+  "PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH",
   "PAYMENT_WEBHOOK_BASE_URL",
   "MACHINE_API_BASE_URL",
   "MEDIA_ASSET_STORAGE_ROOT",
@@ -76,6 +77,7 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
   "USER",
   "XDG_RUNTIME_DIR",
 ]);
+const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -452,6 +454,7 @@ export function buildReconstructionPlan(options, contract) {
 }
 
 export function buildHostLocalServiceApiEnvironment(options) {
+  const createOrderGate = paymentMockCreateGatePaths(options.stateRoot);
   return {
     NODE_ENV: "development",
     DATABASE_URL:
@@ -461,6 +464,7 @@ export function buildHostLocalServiceApiEnvironment(options) {
     MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
     PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
     PAYMENT_MOCK_ENABLED: "true",
+    PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH: createOrderGate.statePath,
     CORS_ORIGINS: [
       "http://127.0.0.1:1420",
       "http://tauri.localhost",
@@ -495,6 +499,14 @@ export function buildHostLocalServiceApiEnvironment(options) {
     ),
     PAYMENT_CONFIG_ENCRYPTION_KEY:
       "local-payment-config-encryption-key-32-chars",
+  };
+}
+
+export function paymentMockCreateGatePaths(stateRoot) {
+  const root = resolve(required(stateRoot, "stateRoot"));
+  return {
+    statePath: join(root, "fast-route", "mock-payment-create-gate.json"),
+    pendingPath: join(root, "fast-route", "mock-payment-create-gate.json.pending.json"),
   };
 }
 
@@ -649,6 +661,28 @@ function runCapture(command, args, options = {}) {
   });
 }
 
+export function interpretServiceApiJournalCapture(input) {
+  if (input.ok === true) {
+    const stdout = String(input.stdout ?? "");
+    if (stdout.length === 0) {
+      return {
+        kind: "unavailable",
+        text: "journalctl returned no stdout",
+      };
+    }
+    return {
+      kind: "journal",
+      text: stdout.slice(-SERVICE_API_LOG_TAIL_MAX_CHARS),
+    };
+  }
+  return {
+    kind: "unavailable",
+    text: String(input.error ?? "journalctl failed").slice(
+      -SERVICE_API_LOG_TAIL_MAX_CHARS,
+    ),
+  };
+}
+
 async function waitForPostgres() {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
@@ -739,7 +773,7 @@ async function waitForApi(baseUrl) {
 }
 
 async function serviceApiFailure(error) {
-  let log = "log unavailable";
+  let journal = { kind: "unavailable", text: "journalctl was not attempted" };
   try {
     const result = await runCapture("sudo", [
       "journalctl",
@@ -751,10 +785,25 @@ async function serviceApiFailure(error) {
       "--output",
       "short-iso-precise",
     ]);
-    log = result.stdout || result.stderr || log;
-  } catch {}
+    journal = interpretServiceApiJournalCapture({
+      ok: true,
+      stdout: result.stdout,
+    });
+  } catch (journalError) {
+    journal = interpretServiceApiJournalCapture({
+      ok: false,
+      error:
+        journalError instanceof Error
+          ? journalError.message
+          : String(journalError),
+    });
+  }
+  const suffix =
+    journal.kind === "journal"
+      ? `--- local Service API log ---\n${journal.text}`
+      : `--- local Service API log unavailable ---\n${journal.text}`;
   return new Error(
-    `${error.message}\n--- local Service API log ---\n${log.slice(-16_000)}`,
+    `${error.message}\n${suffix}`,
   );
 }
 
@@ -983,6 +1032,13 @@ async function reconstruct(options) {
     "",
     "utf8",
   );
+  const createOrderGate = paymentMockCreateGatePaths(options.stateRoot);
+  await mkdir(dirname(createOrderGate.statePath), { recursive: true });
+  await writeFile(
+    createOrderGate.statePath,
+    `${JSON.stringify({ state: "open" })}\n`,
+    "utf8",
+  );
   const plan = buildReconstructionPlan(options, contract);
   if (options.dryRun)
     return {
@@ -1048,6 +1104,10 @@ async function reconstruct(options) {
       runtimeBaseIdentity: runtimeBaseIdentity(contract),
       targetIdentity: runtimeTargetIdentity(contract),
       visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
+    },
+    fastSale: {
+      paymentOptionKey: "mock:mock",
+      createOrderGate,
     },
     claimCode: seeded.claim.claimCode,
     machineCode: seeded.machine.code,

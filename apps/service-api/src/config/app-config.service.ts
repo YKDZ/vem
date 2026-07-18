@@ -270,6 +270,14 @@ export class AppConfigService {
     });
   }
 
+  get paymentMockProviderCreateGatePath(): string | null {
+    return (
+      this.config.get("PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH", {
+        infer: true,
+      }) ?? null
+    );
+  }
+
   get paymentWebhookBaseUrl(): string {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
   }

@@ -22,7 +22,9 @@ import {
   buildHostControlPlaneUnitPlan,
   buildReconstructionPlan,
   buildServiceApiUnitPlan,
+  interpretServiceApiJournalCapture,
   parseOptions,
+  paymentMockCreateGatePaths,
   seedThroughSupportedApis,
   validateBaselineContract,
 } from "./local-testbed.mjs";
@@ -410,6 +412,10 @@ describe("local testbed orchestration", () => {
         migrationEnvironment.DOTENV_CONFIG_PATH,
         join(root, "state", "service-api.local-testbed.env"),
       );
+      assert.equal(
+        serviceEnvironment.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH,
+        paymentMockCreateGatePaths(parsedOptions.stateRoot).statePath,
+      );
       assert.doesNotMatch(
         JSON.stringify({ serviceEnvironment, migrationEnvironment }),
         /admin-ui|5173|118\.25\.|192\.168\.|VPS/i,
@@ -426,6 +432,37 @@ describe("local testbed orchestration", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("publishes one shared mock create gate path for service-api and fast-sale tracer", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const parsedOptions = options(root);
+      const environment = buildHostLocalServiceApiEnvironment(parsedOptions);
+      const gate = paymentMockCreateGatePaths(parsedOptions.stateRoot);
+      assert.equal(environment.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH, gate.statePath);
+      assert.match(gate.pendingPath, /mock-payment-create-gate\.json\.pending\.json$/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when journalctl exits non-zero and only exposes bounded stdout as platform log", () => {
+    const bounded = interpretServiceApiJournalCapture({
+      ok: true,
+      stdout: `stderr-looking-line\n${"x".repeat(20_000)}`,
+    });
+    assert.deepEqual(bounded.kind, "journal");
+    assert.equal(bounded.text.length, 16_000);
+
+    const unavailable = interpretServiceApiJournalCapture({
+      ok: false,
+      error: "journalctl exited with 1: permission denied",
+    });
+    assert.deepEqual(unavailable, {
+      kind: "unavailable",
+      text: "journalctl exited with 1: permission denied",
+    });
   });
 
   it("starts a persistent Linux host control plane and publishes its guest-facing endpoint", () => {
