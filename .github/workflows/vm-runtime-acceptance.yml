@@ -25,69 +25,16 @@ permissions:
   contents: read
 
 jobs:
-  capture-prepared-debug-baseline:
+  initialize-testbed-known-hosts:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Capture prepared VM as reusable baseline
+      - name: Initialize testbed known-hosts contract file
         run: |
           set -euo pipefail
-          config=/opt/vem/runtime-baseline/config.6225f6a6.json
-          host=192.168.122.50
-          user="$(jq -r .guest.sshUser "$config")"
-          key="$(jq -r .guest.sshPrivateKeyFile "$config")"
-          runner_url="$(jq -r .runner.url "$config")"
-          chmod 600 "$key"
-          ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
-          domain=vem-win10-runtime-debug-checkpoint
-          if virsh dominfo "$domain" >/dev/null 2>&1; then
-            state="$(virsh domstate "$domain")"
-            if test "$state" != "shut off"; then
-              ssh "${ssh_options[@]}" "$user@$host" "shutdown.exe /s /t 0" || true
-            fi
-            for attempt in $(seq 1 90); do
-              state="$(virsh domstate "$domain" 2>/dev/null || true)"
-              if test "$state" = "shut off"; then break; fi
-              if test "$attempt" -eq 90; then virsh destroy "$domain" || true; fi
-              sleep 2
-            done
-            virsh undefine "$domain" || true
-          fi
-          source_root=/opt/vem/runtime-baseline/source.5eb6cf2c
-          stage_root=/opt/vem/runtime-baseline/images/.manual-debug-capture
-          cache_stage_root=/opt/vem/runtime-baseline/images/.manual-debug-cache-capture
-          rm -rf "$stage_root" "$cache_stage_root"
-          mkdir -p "$stage_root" "$cache_stage_root"
-          cp --reflink=auto /opt/vem/runtime-baseline/checkpoints/last-debug/system.qcow2 "$stage_root/system.qcow2"
-          cp --reflink=auto /opt/vem/runtime-baseline/checkpoints/last-debug/cache.qcow2 "$cache_stage_root/cache.qcow2"
-          CONFIG="$config" SOURCE_ROOT="$source_root" STAGE_ROOT="$stage_root" CACHE_STAGE_ROOT="$cache_stage_root" node --input-type=module <<'NODE'
-          import { execFile } from "node:child_process";
-          import { readFile, writeFile } from "node:fs/promises";
-          import { promisify } from "node:util";
-          const run = promisify(execFile);
-          const { renderLibvirtDomainXml } = await import(`${process.env.SOURCE_ROOT}/libvirt-runtime-profile.mjs`);
-          const { publishVerifiedBaselineRelease, runtimeProfileForPublishedRelease } = await import(`${process.env.SOURCE_ROOT}/linux-kvm-baseline.mjs`);
-          const config = JSON.parse(await readFile(process.env.CONFIG, "utf8"));
-          const releaseId = `release-debug-${Date.now()}`;
-          const profile = runtimeProfileForPublishedRelease(config, releaseId);
-          const xmlPath = `${process.env.STAGE_ROOT}/runtime-profile.xml`;
-          const diagnosticPath = `${process.env.STAGE_ROOT}/diagnostic.json`;
-          await writeFile(xmlPath, renderLibvirtDomainXml(profile));
-          await writeFile(diagnosticPath, JSON.stringify({schemaVersion:"win10-kvm-baseline-diagnostic/v1",sourceCommit:"5eb6cf2c",verifiedAt:new Date().toISOString(),profile,verification:{ok:true,capturedFromPreparedDebugVm:true}}, null, 2));
-          const release = await publishVerifiedBaselineRelease({
-            config,
-            releaseId,
-            stagedSystemPath:`${process.env.STAGE_ROOT}/system.qcow2`,
-            stagedCachePath:`${process.env.CACHE_STAGE_ROOT}/cache.qcow2`,
-            stagedDomainXmlPath:xmlPath,
-            stagedDiagnosticPath:diagnosticPath,
-            profile,
-            verified:true,
-            commitDefinition: async candidate => { await run("virsh", ["--connect", config.host.libvirtUri, "define", candidate.domainXmlPath]); },
-            rollbackDefinition: async () => { await run("virsh", ["--connect", config.host.libvirtUri, "undefine", config.vm.name]).catch(() => {}); },
-          });
-          console.log(JSON.stringify(release));
-          NODE
+          install -d -m 700 /opt/vem/runtime-testbed
+          touch /opt/vem/runtime-testbed/known_hosts
+          chmod 600 /opt/vem/runtime-testbed/known_hosts
 
   build-windows-runtime:
     name: Build Current Windows Runtime
