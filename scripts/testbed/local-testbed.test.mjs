@@ -889,10 +889,15 @@ describe("Windows D cache contract", () => {
       const sourceDigest = "a".repeat(64);
       const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
       let binaryPresent = false;
+      let markerPresent = false;
       const commands = [];
       const dependencies = {
         ensureDirectory: async () => {},
         isExecutable: async () => binaryPresent,
+        markerPresent: async () => markerPresent,
+        publishMarker: async () => {
+          markerPresent = true;
+        },
         runCommand: async (command, args, commandOptions) => {
           commands.push({ command, args, commandOptions });
           binaryPresent = true;
@@ -912,6 +917,7 @@ describe("Windows D cache contract", () => {
       assert.equal(first.cache, "miss");
       assert.equal(second.cache, "hit");
       assert.equal(first.binaryPath, layout.binaryPath);
+      assert.equal(first.successMarkerPath, layout.successMarkerPath);
       assert.equal(commands.length, 1);
       assert.deepEqual(commands[0].args, [
         "build",

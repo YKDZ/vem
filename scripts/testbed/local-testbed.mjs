@@ -558,6 +558,7 @@ export function lowerControllerSimCacheLayout(options, sourceDigest) {
     root,
     targetDirectory,
     binaryPath: join(targetDirectory, "debug", "lower-controller-sim"),
+    successMarkerPath: join(root, "build-success.json"),
   };
 }
 
@@ -579,7 +580,16 @@ export async function ensureLowerControllerSimCached({
       access(path, constants.X_OK)
         .then(() => true)
         .catch(() => false));
-  if (await isExecutable(layout.binaryPath)) {
+  const markerPresent =
+    dependencies.markerPresent ??
+    (async (path) =>
+      access(path, constants.R_OK)
+        .then(() => true)
+        .catch(() => false));
+  if (
+    (await isExecutable(layout.binaryPath)) &&
+    (await markerPresent(layout.successMarkerPath))
+  ) {
     return { ...layout, cache: "hit" };
   }
   const ensureDirectory = dependencies.ensureDirectory ?? mkdir;
@@ -598,6 +608,12 @@ export async function ensureLowerControllerSimCached({
       "lower-controller simulator build did not publish an executable to its persistent cache",
     );
   }
+  const publishMarker = dependencies.publishMarker ?? writeFile;
+  await publishMarker(
+    layout.successMarkerPath,
+    `${JSON.stringify({ sourceDigest: resolvedSourceDigest })}\n`,
+    "utf8",
+  );
   return { ...layout, cache: "miss" };
 }
 
