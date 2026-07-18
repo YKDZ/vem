@@ -25,9 +25,22 @@ permissions:
   contents: read
 
 jobs:
+  recover-host-ssh:
+    if: github.ref == 'refs/heads/ops/recover-forest-ssh-20260718'
+    runs-on: [self-hosted, Linux, X64, vem-runtime]
+    steps:
+      - name: Restart SSH service
+        run: |
+          set -euo pipefail
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n systemctl restart ssh
+          else
+            systemctl restart ssh
+          fi
+
   build-windows-runtime:
     name: Build Current Windows Runtime
-    if: inputs.runtime_artifact_run_id == ''
+    if: github.ref != 'refs/heads/ops/recover-forest-ssh-20260718' && inputs.runtime_artifact_run_id == ''
     uses: ./.github/workflows/build-windows-runtime-artifacts.yml
     with:
       artifact_name: windows-runtime-artifacts-${{ github.run_id }}
