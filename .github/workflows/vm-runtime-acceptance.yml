@@ -25,31 +25,34 @@ permissions:
   contents: read
 
 jobs:
-  resume-prepared-debug-vm:
+  register-prepared-debug-runner:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Stop redundant rebuild and resume prepared debug VM
+      - name: Register prepared debug VM as Windows runner
         run: |
           set -euo pipefail
-          builder="$(virsh list --name | grep '^vem-win10-runtime-baseline-build-' || true)"
-          for pid in $(pgrep -f '^node build-win10-baseline\.mjs ' || true); do
-            kill -TERM "$pid"
-          done
-          sleep 3
-          if test -n "$builder"; then
-            virsh destroy "$builder" || true
-            virsh undefine "$builder" || true
-          fi
-          domain=vem-win10-runtime-debug-checkpoint
-          virsh destroy "$domain" || true
-          virsh undefine "$domain" || true
-          virsh define /opt/vem/runtime-baseline/checkpoints/last-debug/debug-domain.xml
-          virsh start "$domain"
-          for attempt in $(seq 1 30); do
-            virsh domifaddr "$domain" --source lease || true
+          config=/opt/vem/runtime-baseline/config.6225f6a6.json
+          host=192.168.122.50
+          user="$(jq -r .guest.sshUser "$config")"
+          key="$(jq -r .guest.sshPrivateKeyFile "$config")"
+          runner_url="$(jq -r .runner.url "$config")"
+          token_command="$(jq -r .runner.registrationTokenProvider.command "$config")"
+          mapfile -t token_arguments < <(jq -r '.runner.registrationTokenProvider.arguments[]?' "$config")
+          token="$("$token_command" "${token_arguments[@]}")"
+          runner_name="forest-win10-runtime-debug"
+          labels="$(jq -r '.runner.labels | join(",")' "$config")"
+          chmod 600 "$key"
+          ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
+          for attempt in $(seq 1 60); do
+            if ssh "${ssh_options[@]}" "$user@$host" hostname; then
+              break
+            fi
+            if test "$attempt" -eq 60; then exit 1; fi
             sleep 2
           done
+          ssh "${ssh_options[@]}" "$user@$host" \
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\ProgramData\WindowsRuntimeBaseline\media\actions-runner-win-x64-2.335.1.zip' -RunnerUrl '$runner_url' -RunnerRegistrationToken '$token' -RunnerName '$runner_name' -RunnerLabels @('$labels'.Split(','))\""
 
   build-windows-runtime:
     name: Build Current Windows Runtime
