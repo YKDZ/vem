@@ -183,6 +183,25 @@ describe("host serial control plane", () => {
     );
   });
 
+  it("passes the explicit E6 failure scenario into the real host serial adapter", () => {
+    const command = buildSerialOperationCommand({
+      workspace: "/workspaces/vem",
+      stateRoot: "/tmp/vem-state",
+      request: {
+        operation: "start-serial-session",
+        runId: "RUN-20",
+        targetIdentity: "vm-target://release-testbed-0001",
+        runtimeBase:
+          "runtime-base://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        serialScenario: "e6",
+        saleCorrelationId: "sale-correlation-20",
+        outPath: "/tmp/vem-state/start.json",
+      },
+    });
+
+    assert.equal(command.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO, "e6");
+  });
+
   it("arms, polls, releases, and reopens the mock payment create gate through the host control plane API", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-host-control-plane-"));
     const controlPlane = createHostSerialControlPlane({

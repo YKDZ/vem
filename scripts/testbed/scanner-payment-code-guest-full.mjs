@@ -297,7 +297,7 @@ async function injectSessionCode(guestInput, sessionId, renderedSale, bytes) {
   );
 }
 
-function assertNoAttemptOrDuplicatePayment(label, baseline, post, renderedSale) {
+export function assertNoAttemptOrDuplicatePayment(label, baseline, post, renderedSale) {
   const baselineAttempts = attemptRowsByOrder(baseline, renderedSale.orderId);
   const postAttempts = attemptRowsByOrder(post, renderedSale.orderId);
   if (baselineAttempts.length !== 0 || postAttempts.length !== 0) {
@@ -312,9 +312,15 @@ function assertNoAttemptOrDuplicatePayment(label, baseline, post, renderedSale) 
   if (movementRowsByOrderNo(post, renderedSale.orderNo).length !== 0) {
     throw new Error(`${label} must not vend before a valid scanner frame`);
   }
+  if (
+    paymentRowsByOrder(post, renderedSale.orderId).length !==
+    paymentRowsByOrder(baseline, renderedSale.orderId).length
+  ) {
+    throw new Error(`${label} must have platform payment delta 0`);
+  }
 }
 
-function validateSuccessfulOutcome({
+export function validateSuccessfulOutcome({
   baseline,
   post,
   renderedSale,
@@ -355,10 +361,11 @@ function validateSuccessfulOutcome({
     throw new Error("successful scan did not reach a correlated success result surface");
   }
   if (
-    attemptSnapshot?.paymentCodeAttempt?.scannerEventId !==
-    attemptSnapshot?.paymentCodeAttempt?.scannerEventId
+    typeof attemptSnapshot?.paymentCodeAttempt?.scannerEventId !== "string" ||
+    attemptSnapshot.paymentCodeAttempt.scannerEventId.length === 0 ||
+    attemptSnapshot.paymentCodeAttempt.attemptNo !== 1
   ) {
-    throw new Error("scanner event id snapshot is inconsistent");
+    throw new Error("valid scan must create exactly one daemon scanner event and attempt");
   }
   return {
     attempt,
@@ -503,6 +510,11 @@ export async function runScannerPaymentCodeGuest(options) {
       30_000,
     );
     const command = await waitForCommand(handoff, renderedSale, 30_000);
+    await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/bind-sale`,
+      command,
+    );
 
     stage = "vend-boundaries";
     const vendBoundary = await controlPlaneRequest(
@@ -615,10 +627,16 @@ export async function runScannerPaymentCodeGuest(options) {
         malformed: {
           platformCapturedAt: postMalformed.capturedAt,
           attemptCount: attemptRowsByOrder(postMalformed, renderedSale.orderId).length,
+          paymentDelta:
+            paymentRowsByOrder(postMalformed, renderedSale.orderId).length -
+            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
         },
         timeout: {
           platformCapturedAt: postTimeout.capturedAt,
           attemptCount: attemptRowsByOrder(postTimeout, renderedSale.orderId).length,
+          paymentDelta:
+            paymentRowsByOrder(postTimeout, renderedSale.orderId).length -
+            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
         },
       },
       final: {
@@ -637,7 +655,53 @@ export async function runScannerPaymentCodeGuest(options) {
       ok: false,
       stage,
       error: error instanceof Error ? error.message : String(error),
+      evidence: { checkpoints },
     };
+    if (guestInput) {
+      const runId = guestInput.runId;
+      const machineCode = guestInput.machineCode;
+      if (runId && machineCode) {
+        failure.evidence.platform = await queryPlatform(
+          guestInput,
+          runId,
+          machineCode,
+          sessionStart?.sessionId ?? null,
+        ).catch((captureError) => ({ error: String(captureError) }));
+      }
+      if (sessionStart?.sessionId) {
+        failure.evidence.serial = await controlPlaneRequest(
+          guestInput,
+          `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+        ).catch((captureError) => ({ error: String(captureError) }));
+      }
+    }
+    if (handoff) {
+      failure.evidence.daemon = await daemonGet(
+        handoff,
+        "/v1/transactions/current",
+      ).catch((captureError) => ({ error: String(captureError) }));
+    }
+    if (client) {
+      failure.evidence.ui = await readUiBoundary(client).catch(
+        (captureError) => ({ error: String(captureError) }),
+      );
+      checkpoints.push(
+        await captureCheckpoint(client, "scanner-payment-code-failure", {
+          screenshot: true,
+          screenshotSink({ bytes, label }) {
+            const ref = join(artifactRoot, `${label}.png`);
+            writeFileSync(ref, bytes);
+            return { ref };
+          },
+        }).catch((captureError) => ({ error: String(captureError) })),
+      );
+    }
+    if (guestInput && sessionStart?.sessionId) {
+      failure.cleanup = await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+      ).catch((cleanupError) => ({ error: String(cleanupError) }));
+    }
     writeJson(options.outPath, failure);
     throw error;
   } finally {

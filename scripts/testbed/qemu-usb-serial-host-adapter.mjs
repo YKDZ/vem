@@ -416,7 +416,9 @@ function startSession(request) {
       "--scenario",
       process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "delayed-pickup"
         ? "pickup-timeout-success"
-        : "normal",
+        : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "e6"
+          ? "pickup-timeout-blocked"
+          : "normal",
       "--trace",
       "--f0-release-file",
       releaseF0Path,
@@ -447,7 +449,9 @@ function startSession(request) {
     serialScenario:
       process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "delayed-pickup"
         ? "delayed-pickup"
-        : "normal",
+        : process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "e6"
+          ? "e6"
+          : "normal",
     journalPath,
     releaseF0Path,
     releaseF2Path,

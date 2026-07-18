@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import {
+  parseSerialFulfillmentErrorGuestArgs,
+  validateSerialFulfillmentErrorEvidence,
+} from "./serial-fulfillment-error-guest-full.mjs";
+
+const sale = {
+  orderId: "order-20",
+  paymentId: "payment-20",
+  orderNo: "ORDER-20",
+};
+const liveSale = { ...sale, vendingCommandId: "command-20" };
+
+function evidence(overrides = {}) {
+  return {
+    baseline: {
+      platform: {
+        raw: { inventories: [{ id: "inventory-20", onHandQty: 7 }] },
+      },
+    },
+    final: {
+      platform: {
+        raw: {
+          orders: [{ id: sale.orderId, status: "refunded" }],
+          payments: [{ id: sale.paymentId, orderId: sale.orderId }],
+          commands: [{ id: liveSale.vendingCommandId, orderId: sale.orderId }],
+          movements: [],
+          inventories: [{ id: "inventory-20", onHandQty: 7 }],
+        },
+      },
+    },
+    sale,
+    liveSale,
+    daemon: { orderId: sale.orderId, paymentId: sale.paymentId },
+    serial: {
+      saleBinding: {
+        orderId: sale.orderId,
+        paymentId: sale.paymentId,
+        vendingCommandId: liveSale.vendingCommandId,
+      },
+      rawFrames: [
+        { parsedOpcode: "VEND" },
+        { parsedOpcode: "F0" },
+        { parsedOpcode: "E5" },
+        { parsedOpcode: "E5" },
+        { parsedOpcode: "E6" },
+      ],
+    },
+    ui: { route: "#/dispensing", trace: [{ type: "dispense_failure" }] },
+    ...overrides,
+  };
+}
+
+describe("serial fulfillment error guest full", () => {
+  it("parses an installed Windows full guest contract", () => {
+    assert.deepEqual(
+      parseSerialFulfillmentErrorGuestArgs([
+        "--mode",
+        "full",
+        "--guest-input",
+        "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+        "--handoff",
+        "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
+        "--out",
+        "C:\\ProgramData\\VEM\\testbed\\serial-fulfillment-error.json",
+      ]),
+      {
+        mode: "full",
+        guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+        handoffPath:
+          "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
+        outPath: "C:\\ProgramData\\VEM\\testbed\\serial-fulfillment-error.json",
+      },
+    );
+  });
+
+  it("accepts only a bound E6 terminal journey with no F2, movement, or stock delta", () => {
+    assert.deepEqual(validateSerialFulfillmentErrorEvidence(evidence()), {
+      orderStatus: "refunded",
+      paymentId: sale.paymentId,
+      commandId: liveSale.vendingCommandId,
+      inventoryDelta: 0,
+    });
+  });
+
+  it("rejects an accidental F2 or customer success projection", () => {
+    assert.throws(
+      () =>
+        validateSerialFulfillmentErrorEvidence(
+          evidence({
+            serial: {
+              ...evidence().serial,
+              rawFrames: [
+                ...evidence().serial.rawFrames,
+                { parsedOpcode: "F2" },
+              ],
+            },
+          }),
+        ),
+      /must not contain F2/,
+    );
+    assert.throws(
+      () =>
+        validateSerialFulfillmentErrorEvidence(
+          evidence({ ui: { route: "#/result/success" } }),
+        ),
+      /must never project success/,
+    );
+  });
+});

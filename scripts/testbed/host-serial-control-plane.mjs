@@ -35,6 +35,7 @@ const PLATFORM_DATABASE_URL =
 const SERIAL_SCENARIOS = Object.freeze({
   NORMAL: "normal",
   DELAYED_PICKUP: "delayed-pickup",
+  E6: "e6",
 });
 
 function required(value, label) {
@@ -115,7 +116,7 @@ function normalizeSerialScenario(value) {
   if (value == null) return SERIAL_SCENARIOS.NORMAL;
   const scenario = String(value).trim().toLowerCase();
   if (!Object.values(SERIAL_SCENARIOS).includes(scenario)) {
-    throw new Error("serialScenario must be normal or delayed-pickup");
+    throw new Error("serialScenario must be normal, delayed-pickup, or e6");
   }
   return scenario;
 }
@@ -587,6 +588,7 @@ const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   E5: "controller-to-daemon",
   F1: "controller-to-daemon",
   AF: "controller-to-daemon",
+  E6: "controller-to-daemon",
   F2: "controller-to-daemon",
 });
 
@@ -611,8 +613,13 @@ export async function waitForRawSerialFrame({
       F1: ["VEND", "F0", "E5", "E5", "F1"],
       F2: ["VEND", "F0", "E5", "E5", "F1", "AF", "F2"],
     },
+    [SERIAL_SCENARIOS.E6]: {
+      VEND: ["VEND"],
+      F0: ["VEND", "F0"],
+      E6: ["VEND", "F0", "E5", "E5", "E6"],
+    },
   }[scenario]?.[parsedOpcode];
-  if (!expected) throw new Error("parsedOpcode must be VEND, F0, F1, or F2");
+  if (!expected) throw new Error("parsedOpcode is not valid for the serial scenario");
   const deadline = Date.now() + timeoutMs;
   do {
     const raw = readRawSerialJournal(journalPath);
@@ -633,7 +640,7 @@ export async function waitForRawSerialFrame({
       throw new Error("F0 appeared before the before-F0 gate was released");
     }
     if (
-      parsedOpcode !== "F2" &&
+      !["F2", "E6"].includes(parsedOpcode) &&
       opcodes.includes("F2") &&
       !opcodes.includes(parsedOpcode)
     ) {
@@ -757,6 +764,7 @@ function boundedSessionEvidence(server, input) {
     : "";
   return {
     serialSessionId: session.binding.serialSessionId,
+    saleBinding: session.sale ?? null,
     rawFrames: readRawSerialJournal(paths.journalPath)
       .slice(-64)
       .map((frame) => ({
@@ -949,6 +957,27 @@ function audioCaptureDiagnostics(server, input) {
     startReport: capture.startReport,
     stopReport: capture.stopReport,
   };
+}
+
+function bindSale(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const sale = {
+    saleCorrelationId: session.saleCorrelationId,
+    orderId: required(input.orderId, "orderId"),
+    paymentId: required(input.paymentId, "paymentId"),
+    vendingCommandId: required(input.vendingCommandId, "vendingCommandId"),
+  };
+  if (
+    session.sale &&
+    (session.sale.orderId !== sale.orderId ||
+      session.sale.paymentId !== sale.paymentId ||
+      (session.sale.vendingCommandId &&
+        session.sale.vendingCommandId !== sale.vendingCommandId))
+  ) {
+    throw new Error("serial session is already bound to another sale");
+  }
+  session.sale = sale;
+  return { saleBinding: sale };
 }
 
 async function abortSession(server, input) {
@@ -1309,7 +1338,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|platform-log|evidence|abort|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|abort|collect|stop))?$/,
       );
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
@@ -1385,6 +1414,14 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           ok: true,
           sessionId,
           ...releaseSessionF2(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "bind-sale") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...bindSale(serverState, body),
         });
         return;
       }
