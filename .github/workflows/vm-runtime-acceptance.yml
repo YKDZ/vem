@@ -39,15 +39,11 @@ jobs:
           runner_url="$(jq -r .runner.url "$config")"
           chmod 600 "$key"
           ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
-          for attempt in $(seq 1 60); do
-            if ssh "${ssh_options[@]}" "$user@$host" hostname; then
-              break
-            fi
-            if test "$attempt" -eq 60; then exit 1; fi
-            sleep 2
-          done
-          ssh "${ssh_options[@]}" "$user@$host" "shutdown.exe /s /t 0" || true
           domain=vem-win10-runtime-debug-checkpoint
+          state="$(virsh domstate "$domain" 2>/dev/null || true)"
+          if test "$state" != "shut off"; then
+            ssh "${ssh_options[@]}" "$user@$host" "shutdown.exe /s /t 0" || true
+          fi
           for attempt in $(seq 1 90); do
             state="$(virsh domstate "$domain" 2>/dev/null || true)"
             if test "$state" = "shut off"; then break; fi
