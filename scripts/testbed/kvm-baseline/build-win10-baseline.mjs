@@ -1572,6 +1572,20 @@ async function definePublishedDomain(config, release) {
   ]);
 }
 
+async function existingPublishedDomainUuid(config) {
+  const result = await run(
+    "virsh",
+    ["--connect", config.host.libvirtUri, "domuuid", config.vm.name],
+    { allowFailure: true },
+  );
+  if (result.failed) return null;
+  const uuid = result.stdout.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+    throw new Error("existing published domain returned an invalid UUID");
+  }
+  return uuid;
+}
+
 async function defineAndVerifyPublishedDomain(config, release) {
   await definePublishedDomain(config, release);
   await verifyDefinedRuntimeDevicesForDomain(
@@ -1800,9 +1814,12 @@ async function buildWin10BaselineImpl(
           nextReleaseId,
         );
         const finalXmlPath = join(stagingDirectory, "runtime-profile.xml");
+        const publishedDomainUuid = await existingPublishedDomainUuid(config);
         await writeFile(
           finalXmlPath,
-          renderLibvirtDomainXml(publishedProfile),
+          renderLibvirtDomainXml(publishedProfile, {
+            domainUuid: publishedDomainUuid,
+          }),
           {
             mode: 0o600,
           },

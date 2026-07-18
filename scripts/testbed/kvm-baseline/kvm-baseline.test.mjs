@@ -642,6 +642,18 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /target dev="sdd" bus="sata"/);
     assert.doesNotMatch(xml, /device="cdrom"[\s\S]*target dev="sd[ab]"/);
     assert.doesNotMatch(xml, /192\.168\.2\.22|\/mnt\/user|Unraid/i);
+    assert.doesNotMatch(xml, /<uuid>/);
+    const updatedXml = renderLibvirtDomainXml(profile, {
+      domainUuid: "ac436898-f1f8-4c55-a8c9-c1d115bac9b4",
+    });
+    assert.match(
+      updatedXml,
+      /<uuid>ac436898-f1f8-4c55-a8c9-c1d115bac9b4<\/uuid>/,
+    );
+    assert.throws(
+      () => renderLibvirtDomainXml(profile, { domainUuid: "not-a-uuid" }),
+      /domainUuid must be a UUID or null/,
+    );
     const parsed = spawnSync("xmllint", ["--noout", "-"], {
       input: xml,
       encoding: "utf8",

@@ -134,12 +134,23 @@ export function createRuntimeProfile(options) {
   };
 }
 
-export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
+export function renderLibvirtDomainXml(
+  profile,
+  { cdromPaths = [], domainUuid = null } = {},
+) {
   if (!profile || typeof profile !== "object") {
     throw new Error("profile must be an object");
   }
   if (!Array.isArray(cdromPaths))
     throw new Error("cdromPaths must be an array");
+  if (
+    domainUuid !== null &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      domainUuid,
+    )
+  ) {
+    throw new Error("domainUuid must be a UUID or null");
+  }
   const cdroms = cdromPaths
     .map((path, index) => {
       requiredString(path, `cdromPaths[${index}]`);
@@ -161,7 +172,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
     )
     .join("\n");
   return `<domain type="kvm">
-  <name>${xml(profile.vmName)}</name>
+  <name>${xml(profile.vmName)}</name>${domainUuid ? `\n  <uuid>${xml(domainUuid)}</uuid>` : ""}
   <memory unit="MiB">${profile.memoryMiB}</memory>
   <currentMemory unit="MiB">${profile.memoryMiB}</currentMemory>
   <vcpu placement="static">${profile.vcpus}</vcpu>
