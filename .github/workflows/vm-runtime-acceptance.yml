@@ -25,18 +25,26 @@ permissions:
   contents: read
 
 jobs:
-  inspect-testbed-build-progress:
+  diagnose-stalled-host-cargo:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Inspect testbed build progress
+      - name: Diagnose stalled host Cargo
         run: |
           set -euo pipefail
           date -Is
-          df -h /opt /
-          du -sh /opt/vem/runtime-testbed/cargo /opt/vem/runtime-testbed/rustup /opt/vem/runtime-testbed/cargo-target 2>/dev/null || true
-          ps -eo pid,etimes,%cpu,%mem,cmd | grep -E 'cargo|rustc|local-testbed|service-api|qemu-system' | grep -v grep || true
-          virsh list --all
+          pids="$(pgrep -f '/cargo build -p lower-controller-sim --locked' || true)"
+          test -n "$pids"
+          for pid in $pids; do
+            echo "--- pid=$pid ---"
+            ps -o pid,ppid,stat,etimes,%cpu,%mem,wchan:32,cmd -p "$pid"
+            cat "/proc/$pid/stack" 2>/dev/null || true
+            tr '\0' '\n' <"/proc/$pid/environ" | grep -E '^(CARGO|RUST|HTTP|HTTPS|ALL_PROXY|NO_PROXY)=' || true
+            ls -l "/proc/$pid/fd" 2>/dev/null | tail -40 || true
+            ps --ppid "$pid" -o pid,ppid,stat,etimes,%cpu,wchan:32,cmd || true
+          done
+          ss -tpn | grep -E 'cargo|github|crates|static.rust-lang' || true
+          du -sh /opt/vem/runtime-testbed/cargo/* /opt/vem/runtime-testbed/cargo-target 2>/dev/null || true
 
   build-windows-runtime:
     name: Build Current Windows Runtime
