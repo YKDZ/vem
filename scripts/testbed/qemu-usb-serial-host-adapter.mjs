@@ -176,13 +176,20 @@ export function parseLibvirtUsbSerialMappings(xml) {
     const targetPort = xmlAttribute(targetTag, "port");
     const usbBus = xmlAttribute(addressTag, "bus");
     const usbPort = xmlAttribute(addressTag, "port");
-    if (!alias?.startsWith("serial-") || !path || targetType !== "usb-serial")
-      continue;
+    if (!alias || !path || targetType !== "usb-serial") continue;
     if (!/^\d+$/.test(targetPort ?? "") || !/^\d+$/.test(usbBus ?? "") || !/^\d+(?:\.\d+)*$/.test(usbPort ?? "")) {
       throw new Error(`${alias} must expose explicit libvirt USB target and address topology`);
     }
+    const role = alias.startsWith("serial-")
+      ? alias.slice("serial-".length)
+      : targetPort === "0"
+        ? "lower-controller"
+        : targetPort === "1"
+          ? "scanner"
+          : null;
+    if (!role) continue;
     mappings.push({
-      role: alias.slice("serial-".length),
+      role,
       alias,
       path,
       guestUsbTopology: {

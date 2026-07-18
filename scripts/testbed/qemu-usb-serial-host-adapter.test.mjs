@@ -42,7 +42,27 @@ function domainXml() {
   </devices></domain>`;
 }
 
+function libvirtNormalizedDomainXml() {
+  return domainXml()
+    .replace("serial-lower-controller", "serial0")
+    .replace("serial-scanner", "serial1")
+    .replace('port="3.1"', 'port="1"')
+    .replace('port="3.2"', 'port="2"');
+}
+
 describe("repo QEMU USB serial host adapter", () => {
+  it("derives roles after libvirt normalizes the serial aliases", () => {
+    assert.deepEqual(
+      parseLibvirtUsbSerialMappings(libvirtNormalizedDomainXml()).map(
+        ({ role, alias }) => ({ role, alias }),
+      ),
+      [
+        { role: "lower-controller", alias: "serial0" },
+        { role: "scanner", alias: "serial1" },
+      ],
+    );
+  });
+
   it("rejects missing or duplicate live libvirt USB serial role mappings", () => {
     assert.throws(
       () =>
