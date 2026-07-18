@@ -897,111 +897,6 @@ export async function evaluateExpression(
   return result.result?.value;
 }
 
-async function injectDebugDisturbance(client, disturbance, options = {}) {
-  const injection = await evaluateExpression(
-    client,
-    `(() => {
-      const control = window.__VEM_INSTALLED_KIOSK_SALE_DEBUG__;
-      if (!control || typeof control.inject !== "function" || typeof control.readEvidence !== "function") {
-        throw new Error("installed kiosk sale debug disturbance control is unavailable");
-      }
-      return Promise.resolve(control.inject(${JSON.stringify(disturbance)})).then(() => {
-        const injections = control.readEvidence()?.disturbanceInjections;
-        return Array.isArray(injections) ? injections[injections.length - 1] ?? null : null;
-      });
-    })()`,
-    options,
-  );
-  const hasCompetingPressure =
-    disturbance === "catalog_refresh" || disturbance === "readiness_refresh";
-  const expectedState = disturbance === "catalog_refresh" ? "catalog" : "readiness";
-  if (
-    injection?.kind !== disturbance ||
-    injection.count !== 1 ||
-    injection.outcome !== "completed"
-  ) {
-    throw new Error(`${disturbance} did not complete at the payment barrier`);
-  }
-  const baseInjection = {
-    injectionId: boundedRequiredString(
-      injection.injectionId,
-      "debug disturbance injection id",
-      MAX_LABEL_LENGTH,
-    ),
-    kind: disturbance,
-    count: 1,
-    outcome: "completed",
-  };
-  if (hasCompetingPressure) {
-    if (
-      injection.pressure?.refreshedState !== expectedState ||
-      injection.pressure?.routeAuthorityWon !== true ||
-      injection.pressure?.resolvedRoute !== "/payment" ||
-      injection.pressure.attemptedRoute === injection.pressure.resolvedRoute
-    ) {
-      throw new Error(
-        `${disturbance} did not prove competing navigation pressure during payment`,
-      );
-    }
-    return {
-      ...baseInjection,
-      pressure: {
-        refreshedState: expectedState,
-        attemptedRoute: boundedRequiredString(
-          injection.pressure.attemptedRoute,
-          "debug disturbance attempted route",
-          MAX_URL_LENGTH,
-        ),
-        resolvedRoute: "/payment",
-        routeAuthorityWon: true,
-      },
-    };
-  }
-  if (injection.pressure != null) {
-    throw new Error(
-      `${disturbance} unexpectedly reported competing navigation pressure`,
-    );
-  }
-  if (disturbance === "ipc_interruption") {
-    const retainedOrderCredential =
-      typeof injection?.recovery?.retainedOrderCredential === "string"
-        ? boundedString(
-            injection.recovery.retainedOrderCredential,
-            MAX_LABEL_LENGTH,
-          )
-        : null;
-    const resumedOrderCredential =
-      typeof injection?.recovery?.resumedOrderCredential === "string"
-        ? boundedString(
-            injection.recovery.resumedOrderCredential,
-            MAX_LABEL_LENGTH,
-          )
-        : null;
-    if (
-      injection?.recovery?.overlayObserved !== true ||
-      !retainedOrderCredential ||
-      retainedOrderCredential !== resumedOrderCredential
-    ) {
-      throw new Error(
-        "ipc_interruption did not prove one recovery overlay and same-order reconciliation",
-      );
-    }
-    return {
-      ...baseInjection,
-      pressure: null,
-      recovery: {
-        overlayObserved: true,
-        retainedOrderCredential,
-        resumedOrderCredential,
-      },
-    };
-  }
-  return {
-    ...baseInjection,
-    pressure: null,
-  };
-}
-
 export async function captureDomIdentity(client, options = {}) {
   const identity = await evaluateExpression(
     client,
@@ -1397,7 +1292,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   const executedExecution = {
     customerActivations: 0,
     observations: 0,
-    routeActions: 0,
+    externalOperations: 0,
   };
   let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
   let activeAllowedRoutes = null;
@@ -1696,7 +1591,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         record({ ...observation, type: "observation" });
         executedExecution.observations += 1;
         continue;
-      } else if (step.type === "route-action") {
+      } else if (step.type === "external-operation") {
         const before = await captureDomIdentity(client, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
         });
@@ -1706,64 +1601,16 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           activeAllowedRoutes,
         );
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
-        record({
-          type: "checkpoint",
-          label: `${step.name}:before`,
-          identity: before,
-        });
-        const routeStimulus = await evaluateExpression(
-          client,
-          `(() => {
-            const routeBefore = location.hash;
-            history.back();
-            return { stimulus: "history-back", routeBefore };
-          })()`,
-          { timeoutMs: step.timeoutMs ?? timeoutMs },
-        );
-        if (
-          routeStimulus?.stimulus !== step.stimulus ||
-          normalizeMachineRoute(routeStimulus.routeBefore) !== before.route
-        ) {
-          throw new Error(`${step.name} did not acknowledge ${step.stimulus}`);
+        if (typeof adapter.executeExternalOperation !== "function") {
+          throw new Error("external operation requires adapter.executeExternalOperation");
         }
-        executedExecution.routeActions += 1;
-        assertHealthy();
-        const after = await waitForRoute(client, step.routeAfter, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-          pollMs: routePollMs,
-          forbiddenRoutes: activeForbiddenRoutes,
-          allowedRoutes: activeAllowedRoutes,
-          assertHealthy,
-        });
-        assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
-        record({
-          type: "route-action",
-          label: step.name,
-          stimulus: step.stimulus,
-          routeBefore: before.route,
-          routeAfter: after.route,
-          triggerAcknowledged: true,
-        });
-        record({
-          type: "checkpoint",
-          label: `${step.name}:after`,
-          identity: after,
-        });
-        continue;
-      } else if (step.type === "debug-disturbance") {
-        const before = await captureDomIdentity(client, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-        });
-        assertAllowedRoute(
-          before.route,
-          activeForbiddenRoutes,
-          activeAllowedRoutes,
-        );
-        assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
-        const injection = await injectDebugDisturbance(
-          client,
-          step.disturbance,
-          { timeoutMs: step.timeoutMs ?? timeoutMs },
+        const provenance = boundExternalOperation(
+          await adapter.executeExternalOperation({
+            operation: step.operation,
+            label: step.name,
+            routeBefore: before.route,
+          }),
+          step.operation,
         );
         const after = await waitForRoute(client, step.routeAfter, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1774,13 +1621,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
         record({
-          type: "route-disturbance",
+          type: "external-operation",
           label: step.name,
-          disturbance: step.disturbance,
+          operation: step.operation,
           routeBefore: before.route,
           routeAfter: after.route,
-          injection,
+          provenance,
         });
+        executedExecution.externalOperations += 1;
         if (step.screenshot) {
           const checkpoint = await captureCheckpoint(client, `${step.name}:after`, {
             timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1914,6 +1762,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
   }
   let customerActivations = 0;
   let observations = 0;
+  let externalOperations = 0;
   const validatedSteps = [];
   for (const [index, step] of steps.entries()) {
     if (
@@ -2000,20 +1849,12 @@ function validateScenarioSequence({ sequenceName, steps }) {
           ),
         }),
       );
-    } else if (type === "route-action") {
+    } else if (type === "external-operation") {
+      externalOperations += 1;
       validatedSteps.push(
         Object.freeze({
           ...common,
-          stimulus: requiredStepRouteActionStimulus(step, index),
-          routeBefore: requiredStepRouteMatcher(step, "routeBefore", index),
-          routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
-        }),
-      );
-    } else if (type === "debug-disturbance") {
-      validatedSteps.push(
-        Object.freeze({
-          ...common,
-          disturbance: requiredStepDebugDisturbance(step, index),
+          operation: requiredStepExternalOperation(step, index),
           routeBefore: requiredStepRouteMatcher(step, "routeBefore", index),
           routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
         }),
@@ -2027,6 +1868,9 @@ function validateScenarioSequence({ sequenceName, steps }) {
   }
   if (observations > MAX_SCENARIO_STEPS) {
     throw new Error("scenario observations exceed maximum step count");
+  }
+  if (externalOperations > 8) {
+    throw new Error("scenario external operations exceed maximum");
   }
   return Object.freeze(validatedSteps);
 }
@@ -2049,26 +1893,16 @@ function assertClosedStep(step, index, type) {
         ])
       : type === "observation"
         ? new Set(["type", "name", "route", "timeoutMs", "screenshot"])
-        : type === "route-action"
+        : type === "external-operation"
           ? new Set([
               "type",
               "name",
-              "stimulus",
+              "operation",
               "routeBefore",
               "routeAfter",
               "timeoutMs",
               "screenshot",
             ])
-          : type === "debug-disturbance"
-            ? new Set([
-                "type",
-                "name",
-                "disturbance",
-                "routeBefore",
-                "routeAfter",
-                "timeoutMs",
-                "screenshot",
-              ])
             : null;
   if (!allowed) return;
   for (const key of Object.keys(step)) {
@@ -2111,26 +1945,16 @@ function requiredStepRouteMatcher(step, field, index) {
   throw new Error(`scenario step ${index + 1} requires ${field}`);
 }
 
-function requiredStepRouteActionStimulus(step, index) {
-  const stimulus = requiredStepString(step, "stimulus", index);
-  if (stimulus !== "history-back") {
-    throw new Error(`scenario step ${index + 1} stimulus is invalid`);
-  }
-  return stimulus;
-}
-
-function requiredStepDebugDisturbance(step, index) {
-  const disturbance = requiredStepString(step, "disturbance", index);
+function requiredStepExternalOperation(step, index) {
+  const operation = requiredStepString(step, "operation", index);
   if (
-    disturbance !== "catalog_refresh" &&
-    disturbance !== "readiness_refresh" &&
-    disturbance !== "presence_departure" &&
-    disturbance !== "duplicate_payment_status" &&
-    disturbance !== "ipc_interruption"
+    operation !== "vision_departure" &&
+    operation !== "catalog_projection_refresh" &&
+    operation !== "daemon_transport_interrupt"
   ) {
-    throw new Error(`scenario step ${index + 1} disturbance is invalid`);
+    throw new Error(`scenario step ${index + 1} operation is invalid`);
   }
-  return disturbance;
+  return operation;
 }
 
 function requiredStepTimeout(step, index) {
@@ -2165,13 +1989,13 @@ function countScenarioSteps(sequence) {
       (step) => step.type === "customer-activation",
     ).length,
     observations: sequence.filter((step) => step.type === "observation").length,
-    routeActions: sequence.filter((step) => step.type === "route-action")
+    externalOperations: sequence.filter((step) => step.type === "external-operation")
       .length,
   };
 }
 
 function assertScenarioExecutionCounts(planned, executed) {
-  for (const field of ["customerActivations", "observations", "routeActions"]) {
+  for (const field of ["customerActivations", "observations", "externalOperations"]) {
     if (planned[field] !== executed[field]) {
       throw new Error(
         `scenario executed ${executed[field]} ${field}, expected ${planned[field]}`,
@@ -2334,6 +2158,51 @@ function normalizeForbiddenRoutePath(value) {
   return routePath(`#${path}`);
 }
 
+function boundExternalOperation(value, expectedOperation) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("external operation returned no provenance");
+  }
+  const operation = boundedRequiredString(
+    value.operation,
+    "external operation",
+    MAX_LABEL_LENGTH,
+  );
+  if (operation !== expectedOperation) {
+    throw new Error("external operation provenance does not match the requested operation");
+  }
+  const guestOperationId = boundedRequiredString(
+    value.guestOperationId,
+    "guest operation id",
+    MAX_LABEL_LENGTH,
+  );
+  const adapterSessionId = boundedRequiredString(
+    value.adapterSessionId,
+    "adapter session id",
+    MAX_LABEL_LENGTH,
+  );
+  const daemon = value.daemon;
+  const platform = value.platform;
+  const serial = value.serial;
+  const vision = value.vision;
+  for (const [name, source] of Object.entries({ daemon, platform, serial, vision })) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) {
+      throw new Error(`external operation ${name} provenance is required`);
+    }
+    if (source.source === "browser" || source.source === "debug") {
+      throw new Error(`external operation ${name} provenance cannot be browser or debug`);
+    }
+  }
+  return {
+    operation,
+    guestOperationId,
+    adapterSessionId,
+    daemon,
+    platform,
+    serial,
+    vision,
+  };
+}
+
 function boundEvidenceEntry(entry) {
   if (!entry || typeof entry !== "object") {
     throw new Error("evidence entry must be an object");
@@ -2409,132 +2278,14 @@ function boundEvidenceEntry(entry) {
       },
     };
   }
-  if (entry.type === "route-action") {
-    if (entry.stimulus !== "history-back") {
-      throw new Error("route action stimulus is invalid");
-    }
-    if (entry.triggerAcknowledged !== true) {
-      throw new Error("route action must acknowledge its stimulus");
-    }
+  if (entry.type === "external-operation") {
     return {
-      type: "route-action",
-      label: boundedRequiredString(
-        entry.label,
-        "route action label",
-        MAX_LABEL_LENGTH,
-      ),
-      stimulus: "history-back",
+      type: "external-operation",
+      label: boundedRequiredString(entry.label, "external operation label", MAX_LABEL_LENGTH),
+      operation: boundedRequiredString(entry.operation, "external operation", MAX_LABEL_LENGTH),
       routeBefore: normalizeMachineRoute(entry.routeBefore),
       routeAfter: normalizeMachineRoute(entry.routeAfter),
-      triggerAcknowledged: true,
-    };
-  }
-  if (entry.type === "route-disturbance") {
-    const disturbance = entry.disturbance;
-    if (
-      disturbance !== "catalog_refresh" &&
-      disturbance !== "readiness_refresh" &&
-      disturbance !== "presence_departure" &&
-      disturbance !== "duplicate_payment_status" &&
-      disturbance !== "ipc_interruption"
-    ) {
-      throw new Error("route disturbance is invalid");
-    }
-    const hasCompetingPressure =
-      disturbance === "catalog_refresh" || disturbance === "readiness_refresh";
-    const expectedState = disturbance === "catalog_refresh" ? "catalog" : "readiness";
-    if (
-      entry.injection?.kind !== disturbance ||
-      entry.injection?.count !== 1 ||
-      entry.injection?.outcome !== "completed"
-    ) {
-      throw new Error("route disturbance did not complete");
-    }
-    const baseEntry = {
-      type: "route-disturbance",
-      label: boundedRequiredString(
-        entry.label,
-        "route disturbance label",
-        MAX_LABEL_LENGTH,
-      ),
-      disturbance,
-      routeBefore: normalizeMachineRoute(entry.routeBefore),
-      routeAfter: normalizeMachineRoute(entry.routeAfter),
-    };
-    const baseInjection = {
-      injectionId: boundedRequiredString(
-        entry.injection.injectionId,
-        "route disturbance injection id",
-        MAX_LABEL_LENGTH,
-      ),
-      kind: disturbance,
-      count: 1,
-      outcome: "completed",
-      pressure: null,
-    };
-    if (hasCompetingPressure) {
-      if (
-        entry.injection?.pressure?.refreshedState !== expectedState ||
-        entry.injection?.pressure?.routeAuthorityWon !== true ||
-        entry.injection?.pressure?.resolvedRoute !== "/payment" ||
-        entry.injection.pressure.attemptedRoute ===
-          entry.injection.pressure.resolvedRoute
-      ) {
-        throw new Error("route disturbance did not prove route authority");
-      }
-      return {
-        ...baseEntry,
-        injection: {
-          ...baseInjection,
-          pressure: {
-            refreshedState: expectedState,
-            attemptedRoute: boundedRequiredString(
-              entry.injection.pressure.attemptedRoute,
-              "route disturbance attempted route",
-              MAX_URL_LENGTH,
-            ),
-            resolvedRoute: "/payment",
-            routeAuthorityWon: true,
-          },
-        },
-      };
-    }
-    if (entry.injection?.pressure != null) {
-      throw new Error("non-routing disturbance must not report route pressure");
-    }
-    if (disturbance === "ipc_interruption") {
-      if (
-        entry.injection?.recovery?.overlayObserved !== true ||
-        typeof entry.injection?.recovery?.retainedOrderCredential !== "string" ||
-        entry.injection.recovery.retainedOrderCredential.trim() === "" ||
-        entry.injection.recovery.retainedOrderCredential !==
-          entry.injection?.recovery?.resumedOrderCredential
-      ) {
-        throw new Error(
-          "ipc interruption disturbance must retain and resume the same order credential",
-        );
-      }
-      return {
-        ...baseEntry,
-        injection: {
-          ...baseInjection,
-          recovery: {
-            overlayObserved: true,
-            retainedOrderCredential: boundedString(
-              entry.injection.recovery.retainedOrderCredential,
-              MAX_LABEL_LENGTH,
-            ),
-            resumedOrderCredential: boundedString(
-              entry.injection.recovery.resumedOrderCredential,
-              MAX_LABEL_LENGTH,
-            ),
-          },
-        },
-      };
-    }
-    return {
-      ...baseEntry,
-      injection: baseInjection,
+      provenance: boundExternalOperation(entry.provenance, entry.operation),
     };
   }
   if (entry.type === "payment-window") {

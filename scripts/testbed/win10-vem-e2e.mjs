@@ -2661,6 +2661,8 @@ $sessionId = [int]$normalProcess.SessionId
 if ($principal -cne $activeConsolePrincipal -or $sessionId -ne $activeConsoleSessionId) { throw 'normal machine.exe must belong exactly to the active console principal and session' }
 $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
 if ($null -ne $normalTaskInstance) { Stop-ScheduledTask -TaskName $normalTask -ErrorAction Stop }
+$normalTaskAction = if ($null -ne $normalTaskInstance) { @($normalTaskInstance.Actions | Select-Object -First 1) } else { @() }
+if ($normalTaskAction.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$normalTaskAction[0].Execute)) { throw 'VEMMachineUI task action is missing before temporary CDP launch' }
 $launcherOwners = @(Get-CimInstance Win32_Process -Filter "Name = 'wscript.exe'" | Where-Object {
   if (-not ($_.CommandLine -and $_.CommandLine -match [regex]::Escape('${INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER}'))) { return $false }
   $launcherProcess = Get-Process -Id ([int]$_.ProcessId) -ErrorAction Stop
@@ -2690,7 +2692,7 @@ $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 if ($observedPrincipal -cne $principal) { throw 'debug machine.exe principal differs from active interactive principal' }
 $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
 if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id)) { throw 'debug CDP must expose exactly one tauri target' }
-[Console]::Out.WriteLine(([ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8))
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' }; task = [ordered]@{ name = $normalTask; execute = [string]$normalTaskAction[0].Execute; arguments = [string]$normalTaskAction[0].Arguments; workingDirectory = [string]$normalTaskAction[0].WorkingDirectory } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
 
@@ -2703,106 +2705,48 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
       "installed kiosk cleanup requires the saved active interactive principal and session",
     );
   }
+  const task = prelaunch.task;
+  if (
+    !task ||
+    task.name !== EXPECTED_MACHINE_UI_TASK_NAME ||
+    typeof task.execute !== "string" ||
+    task.execute.trim() === "" ||
+    typeof task.arguments !== "string" ||
+    typeof task.workingDirectory !== "string"
+  ) {
+    throw new Error("installed kiosk cleanup requires the original VEMMachineUI task action");
+  }
+  const execute = task.execute.replaceAll("'", "''");
+  const argumentsValue = task.arguments.replaceAll("'", "''");
+  const workingDirectory = task.workingDirectory.replaceAll("'", "''");
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
 $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
-$debugLauncher = '${INSTALLED_KIOSK_SALE_DEBUG_LAUNCHER}'
 $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
-$expectedRoute = '${expectedRoute.replaceAll("'", "''")}'
-$allowedInitialRoutes = @($expectedRoute, '#/result/*') | Select-Object -Unique
-$preCleanupDeadline = [DateTime]::UtcNow.AddSeconds(15)
-$preCleanupRoute = $null
-do {
-  $preCleanupTargets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
-  if ($preCleanupTargets.Count -eq 1) {
-    $preCleanupRoute = ([uri][string]$preCleanupTargets[0].url).Fragment
-    if ($preCleanupRoute -eq $expectedRoute) { break }
-    if ($preCleanupRoute -notlike '#/result/*') { throw 'live kiosk route is outside the post-sale return policy before cleanup' }
-  }
-  Start-Sleep -Milliseconds 250
-} while ([DateTime]::UtcNow -lt $preCleanupDeadline)
-if ($preCleanupRoute -ne $expectedRoute) { throw 'live ResultView did not automatically return to the post-sale route before cleanup' }
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
-$listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
-if ($listeners.Count -ne 1) { throw 'live kiosk did not retain exactly one CDP listener after sale' }
-$normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-if (-not [bool]$normalTaskInstance.Settings.Enabled) { throw 'normal VEMMachineUI task is disabled during cleanup' }
-$normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
-if ($normalTaskPrincipal -cne $principal -and $normalTaskPrincipal -cne ($principal -split '\\')[-1]) { throw 'normal VEMMachineUI task does not target the observed interactive principal' }
-if (-not (Test-Path -LiteralPath $debugLauncher -PathType Leaf)) { throw 'installed kiosk sale acceptance CDP launcher is missing' }
-$acceptanceOverlayAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
-$acceptanceOverlayPrincipal = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
-Unregister-ScheduledTask -TaskName $normalTask -Confirm:$false -ErrorAction Stop
-$acceptanceOverlayTask = New-ScheduledTask -Action $acceptanceOverlayAction -Principal $acceptanceOverlayPrincipal
-Register-ScheduledTask -TaskName $normalTask -InputObject $acceptanceOverlayTask -Force | Out-Null
-$normalTaskPrincipal = $principal
+Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id ([int]$_.OwningProcess) -Force -ErrorAction SilentlyContinue }
+Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) } | ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
+$action = New-ScheduledTaskAction -Execute '${execute}' -Argument '${argumentsValue}' -WorkingDirectory '${workingDirectory}'
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
+Unregister-ScheduledTask -TaskName $normalTask -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName $normalTask -InputObject (New-ScheduledTask -Action $action -Principal $taskPrincipal) -Force | Out-Null
+Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
-$acceptanceTarget = $null
-  do {
-    $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
-    $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
-    if ($normal.Count -eq 1 -and $listeners.Count -eq 1) {
-      $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
-      if ($targets.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$targets[0].id)) {
-        $acceptanceTarget = $targets[0]
-        break
-      }
-    }
-    Start-Sleep -Milliseconds 250
-  } while ([DateTime]::UtcNow -lt $deadline)
-  if ($normal.Count -ne 1 -or $listeners.Count -ne 1 -or $null -eq $acceptanceTarget) { throw 'acceptance overlay kiosk restoration did not retain exactly one CDP listener' }
-  $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
-  $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
-  $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'acceptance overlay machine.exe principal or session differs from saved interactive owner' }
-  $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listeners[0].OwningProcess)" -ErrorAction Stop
-  if ([int]$listenerProcess.SessionId -ne $sessionId) { throw 'acceptance overlay CDP listener session differs from interactive session' }
-  $cursor = $listenerProcess
-  $listenerBound = $false
-  for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
-    if ([int]$cursor.ProcessId -eq [int]$normalProcess.Id) { $listenerBound = $true; break }
-    $parentId = [int]$cursor.ParentProcessId
-    if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
-    $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
-  }
-  if (-not $listenerBound) { throw 'acceptance overlay CDP listener is not a machine.exe descendant' }
-  $initialRoute = ([uri][string]$acceptanceTarget.url).Fragment
-  $initialRouteAllowed = $initialRoute -eq $expectedRoute -or $initialRoute -like '#/result/*'
-  if ([string]::IsNullOrWhiteSpace($initialRoute) -or -not $initialRouteAllowed) { throw 'acceptance overlay CDP route is outside the post-sale return policy' }
-  $settledTarget = $acceptanceTarget
-  $settledRoute = $initialRoute
-  $resultAutoReturnObserved = $false
-  if ($initialRoute -like '#/result/*') {
-    $deadline = [DateTime]::UtcNow.AddSeconds(15)
-    do {
-      $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
-      if ($targets.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$targets[0].id)) {
-        $candidateRoute = ([uri][string]$targets[0].url).Fragment
-        if ($candidateRoute -eq $expectedRoute) {
-          $settledTarget = $targets[0]
-          $settledRoute = $candidateRoute
-          $resultAutoReturnObserved = $true
-          break
-        }
-      }
-      Start-Sleep -Milliseconds 250
-    } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $resultAutoReturnObserved) { throw 'ResultView did not settle to the post-sale return route in the acceptance overlay' }
-  }
-  if ($settledRoute -ne $expectedRoute) { throw 'acceptance overlay CDP did not settle to the expected normal route' }
-  $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-  $taskAction = @($normalTaskInstance.Actions | Select-Object -First 1)
-  if ($taskAction.Count -ne 1 -or [string]$taskAction[0].Arguments -notmatch [regex]::Escape($debugLauncher)) { throw 'VEMMachineUI task action is not bound to the acceptance CDP launcher' }
-  $routeEvidence = [ordered]@{ source = 'acceptance_overlay_cdp'; initialTargetId = [string]$acceptanceTarget.id; initialTargetUrl = [string]$acceptanceTarget.url; initialRoute = $initialRoute; allowedInitialRoutes = $allowedInitialRoutes; settledTargetId = [string]$settledTarget.id; settledTargetUrl = [string]$settledTarget.url; settledRoute = $settledRoute; resultAutoReturnObserved = $resultAutoReturnObserved; settledWithAcceptanceOverlay = $true; processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId }
-$cdpListenerCount = @((Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)).Count
-if ($cdpListenerCount -ne 1) { throw 'acceptance overlay kiosk restoration did not retain exactly one CDP listener' }
-$daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
-if ([string]$daemon.Status -ne 'Running') { throw 'daemon stopped during installed kiosk sale acceptance' }
-[Console]::Out.WriteLine(([ordered]@{ ok = $true; restored = 'acceptance_overlay_cdp_task_after_settled_route'; overlayScope = 'disposable_acceptance_overlay'; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $observedPrincipal; sessionId = [int]$normalProcess.SessionId; machineCount = $normal.Count; task = [ordered]@{ name = $normalTask; exists = $true; enabled = [bool]$normalTaskInstance.Settings.Enabled; runAsUser = $normalTaskPrincipal; acceptanceOverlayCdp = $true; launcher = $debugLauncher }; acceptanceOverlayCdp = $true; cdpListenerCount = $cdpListenerCount; cdpListenerProcessId = [int]$listenerProcess.ProcessId; cdpListenerSessionId = [int]$listenerProcess.SessionId; cdpMachineAncestorProcessId = [int]$normalProcess.Id; cdpTargetId = [string]$settledTarget.id; route = $settledRoute; routeEvidence = $routeEvidence }; daemonRunning = $true; cdpListenerCount = $cdpListenerCount } | ConvertTo-Json -Compress -Depth 8))
+do {
+  $machines = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
+  $listeners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
+  if ($machines.Count -eq 1 -and $listeners.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($machines.Count -ne 1 -or $listeners.Count -ne 0) { throw 'VEMMachineUI restoration retained CDP or did not start exactly one machine.exe' }
+$restored = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+$restoredAction = @($restored.Actions | Select-Object -First 1)
+if ($restoredAction.Count -ne 1 -or [string]$restoredAction[0].Execute -cne '${execute}' -or [string]$restoredAction[0].Arguments -cne '${argumentsValue}' -or [string]$restoredAction[0].WorkingDirectory -cne '${workingDirectory}') { throw 'VEMMachineUI action or arguments were not restored exactly' }
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; restored = 'original_vem_machine_ui_task'; normal = [ordered]@{ machineCount = $machines.Count; task = [ordered]@{ name = $normalTask; execute = [string]$restoredAction[0].Execute; arguments = [string]$restoredAction[0].Arguments; workingDirectory = [string]$restoredAction[0].WorkingDirectory }; cdpListenerCount = $listeners.Count }; daemonRunning = ((Get-Service -Name 'VemVendingDaemon').Status -eq 'Running'); cdpListenerCount = $listeners.Count } | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
 

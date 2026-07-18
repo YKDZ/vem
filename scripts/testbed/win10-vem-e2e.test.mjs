@@ -4720,12 +4720,17 @@ if ($errors.Count -gt 0) {
     }
   });
 
-  it("restores the single kiosk UI through the disposable acceptance-overlay CDP task action", () => {
+  it("restores the original kiosk task action without leaving a CDP listener", () => {
     const launch = buildInstalledKioskSaleLaunchScript();
     const cleanup = buildInstalledKioskSaleCleanupScript({
       principal: "VEM\\VEMKiosk",
       sessionId: 1,
-      expectedRoute: "#/catalog",
+      task: {
+        name: "VEMMachineUI",
+        execute: "C:\\Windows\\System32\\wscript.exe",
+        arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
+        workingDirectory: "C:\\VEM\\bringup",
+      },
     });
 
     assert.match(launch, /launch-machine-ui-debug\.vbs/);
@@ -4750,55 +4755,19 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(launch, /Stop-Service -Name 'VemVendingDaemon'/);
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
+    assert.match(cleanup, /VEMMachineUI restoration retained CDP/);
+    assert.match(cleanup, /New-ScheduledTaskAction -Execute/);
     assert.match(
       cleanup,
-      /live kiosk did not retain exactly one CDP listener after sale/,
-    );
-    assert.match(cleanup, /launch-machine-ui-debug\.vbs/);
-    assert.match(
-      cleanup,
-      /Register-ScheduledTask -TaskName \$normalTask -InputObject \$acceptanceOverlayTask/,
+      /Register-ScheduledTask -TaskName \$normalTask -InputObject \(New-ScheduledTask/,
     );
     assert.match(
       cleanup,
       /New-ScheduledTaskPrincipal -UserId \$principal -LogonType Interactive/,
     );
-    assert.doesNotMatch(cleanup, /Set-ScheduledTask -TaskName \$normalTask/);
-    assert.match(
-      cleanup,
-      /acceptance overlay machine\.exe principal or session differs from saved interactive owner/,
-    );
-    assert.match(
-      cleanup,
-      /daemon stopped during installed kiosk sale acceptance/,
-    );
-    assert.match(cleanup, /http:\/\/127\.0\.0\.1:9222\/json/);
-    assert.match(cleanup, /acceptance_overlay_cdp/);
-    assert.match(
-      cleanup,
-      /acceptance overlay CDP route is outside the post-sale return policy/,
-    );
-    assert.match(cleanup, /#\/result\/\*/);
-    assert.match(cleanup, /\$initialRoute -like '#\/result\/\*'/);
-    assert.match(cleanup, /AddSeconds\(15\)/);
-    assert.match(
-      cleanup,
-      /live ResultView did not automatically return to the post-sale route before cleanup/,
-    );
-    assert.match(cleanup, /settledRoute/);
-    assert.doesNotMatch(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
-    assert.match(cleanup, /\[Console\]::Out\.WriteLine/);
-    assert.match(
-      cleanup,
-      /acceptance overlay kiosk restoration did not retain exactly one CDP listener/,
-    );
-    assert.match(cleanup, /acceptanceOverlayCdp = \$true/);
-    assert.doesNotMatch(cleanup, /VEMInstalledKioskSaleRestoreObserve/);
-    assert.ok(
-      cleanup.indexOf("Unregister-ScheduledTask -TaskName $debugTask") <
-        cleanup.indexOf("Get-Service -Name 'VemVendingDaemon'"),
-      "cleanup must remove the temporary debug task before daemon health is evaluated",
-    );
+    assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
+    assert.doesNotMatch(cleanup, /http:\/\/127\.0\.0\.1:9222/);
+    assert.doesNotMatch(cleanup, /acceptanceOverlayCdp/);
   });
 
   it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {

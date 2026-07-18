@@ -15,6 +15,7 @@ import {
   buildInstalledKioskSaleAcceptancePlan,
   buildInstalledKioskSaleScenarioSteps,
   deriveFulfillmentBinding,
+  evaluateInstalledErrorMatrixEvidence,
   formatInstalledKioskSaleError,
   postMinusBaselinePlatformRaw,
   runInstalledKioskSaleAcceptanceCli,
@@ -76,17 +77,16 @@ describe("installed kiosk sale preflight", () => {
         "payment option",
         "payment submit",
         "payment submit repeat",
-        "vision departure during payment",
-        "catalog refresh during payment",
-        "history competition during payment",
+        "vision departure through daemon during payment",
+        "catalog projection refresh during payment",
       ],
     );
     assert.equal(steps[4].routeAfter, "#/checkout");
     assert.equal(steps[4].completesRouteBarrier, false);
     assert.equal(steps[5].repeatPreviousActivationCenter, true);
     assert.equal(steps[5].completesRouteBarrier, true);
-    assert.equal(steps[6].disturbance, "presence_departure");
-    assert.equal(steps[7].disturbance, "catalog_refresh");
+    assert.equal(steps[6].operation, "vision_departure");
+    assert.equal(steps[7].operation, "catalog_projection_refresh");
   });
 
   it("adds the installed IPC recovery disturbance as a payment-route hold", () => {
@@ -99,10 +99,10 @@ describe("installed kiosk sale preflight", () => {
         "buy",
         "payment option",
         "payment submit",
-        "daemon IPC interruption during payment",
+        "daemon UI transport interruption during payment",
       ],
     );
-    assert.equal(steps[5].disturbance, "ipc_interruption");
+    assert.equal(steps[5].operation, "daemon_transport_interrupt");
   });
 
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
@@ -116,6 +116,36 @@ describe("installed kiosk sale preflight", () => {
       "installed kiosk sale and cleanup failed\n" +
         "cause 1: CDP launch failed\n" +
         "cause 2: task recovery failed",
+    );
+  });
+
+  it("rejects browser or debug self-reported error-matrix evidence", () => {
+    const scenario = {
+      evidence: [
+        {
+          type: "external-operation",
+          operation: "daemon_transport_interrupt",
+          routeBefore: "#/payment",
+          routeAfter: "#/payment",
+          provenance: {
+            guestOperationId: "guest-1",
+            adapterSessionId: "serial-1",
+            daemon: { source: "browser", orderNo: "ORDER-1" },
+            platform: { source: "service-api" },
+            serial: { source: "production-serial" },
+            vision: { source: "vision-runtime" },
+          },
+        },
+      ],
+    };
+    assert.throws(
+      () =>
+        evaluateInstalledErrorMatrixEvidence({
+          profile: "vm-ipc-recovery",
+          scenario,
+          correlation: { rendered: { orderNo: "ORDER-1" } },
+        }),
+      /non-browser daemon provenance/,
     );
   });
 

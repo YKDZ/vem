@@ -203,6 +203,19 @@ async function runInstalledRouteCompetitionScenario({
         expectedInitialRoute: "#/catalog",
         sequenceName: "installed-route-competition",
         steps: buildInstalledKioskSaleScenarioSteps("vm-route-competition"),
+        adapter: {
+          async executeExternalOperation({ operation }) {
+            return {
+              operation,
+              guestOperationId: `guest-${operation}`,
+              adapterSessionId: "serial-session-test",
+              daemon: { source: "daemon-ipc", orderNo: "ORDER-TEST" },
+              platform: { source: "service-api", orderNo: "ORDER-TEST" },
+              serial: { source: "production-serial", sessionId: "serial-session-test" },
+              vision: { source: "vision-runtime", eventId: "vision-event-test" },
+            };
+          },
+        },
         webSocketFactory: factory,
         continuousCapture: true,
         continuousCaptureIntervalMs: 1,
@@ -890,36 +903,17 @@ describe("machine-ui-cdp-driver", () => {
     const { result, sockets } = await runInstalledRouteCompetitionScenario();
 
     assert.deepEqual(result.execution, {
-      planned: { customerActivations: 6, observations: 0, routeActions: 1 },
-      executed: { customerActivations: 6, observations: 0, routeActions: 1 },
+      planned: { customerActivations: 6, observations: 0, externalOperations: 2 },
+      executed: { customerActivations: 6, observations: 0, externalOperations: 2 },
     });
     assert.ok(
       result.evidence.some(
         (entry) =>
-          entry.type === "route-disturbance" &&
-          entry.disturbance === "presence_departure" &&
+          entry.type === "external-operation" &&
+          entry.operation === "vision_departure" &&
           entry.routeBefore === "#/payment" &&
           entry.routeAfter === "#/payment" &&
-          entry.injection.pressure === null,
-      ),
-    );
-    assert.ok(
-      result.evidence.some(
-        (entry) =>
-          entry.type === "route-action" &&
-          entry.stimulus === "history-back" &&
-          entry.triggerAcknowledged === true &&
-          entry.routeBefore === "#/payment" &&
-          entry.routeAfter === "#/payment",
-      ),
-    );
-    assert.ok(
-      result.evidence.some(
-        (entry) =>
-          entry.type === "route-disturbance" &&
-          entry.disturbance === "catalog_refresh" &&
-          entry.injection.pressure.attemptedRoute === "/catalog" &&
-          entry.injection.pressure.resolvedRoute === "/payment",
+          entry.provenance.guestOperationId === "guest-vision_departure",
       ),
     );
     const barrier = result.evidence.find(
@@ -933,13 +927,6 @@ describe("machine-ui-cdp-driver", () => {
         entry.label === "payment submit repeat",
     );
     assert.equal(paymentActivation.routeBefore, "#/checkout");
-    assert.ok(
-      sockets[0].sent.some(
-        (message) =>
-          message.method === "Runtime.evaluate" &&
-          message.params.expression.includes("history.back()"),
-      ),
-    );
   });
 
   it("records a timer checkpoint strictly during injected serial completion", async () => {
@@ -1000,13 +987,6 @@ describe("machine-ui-cdp-driver", () => {
     assert.ok(
       result.evidence.some(
         (entry) =>
-          entry.type === "route-changed" &&
-          entry.identity.route === "#/catalog",
-      ),
-    );
-    assert.ok(
-      result.evidence.some(
-        (entry) =>
           entry.type === "payment-window" &&
           entry.serialCompleted === true &&
           entry.postSaleStable === true,
@@ -1024,15 +1004,6 @@ describe("machine-ui-cdp-driver", () => {
           },
         }),
         new RegExp(`payment barrier route observed: ${rejectedRoute}`),
-      );
-    });
-  }
-
-  for (const competingRoute of ["#/checkout", "#/products/test-item"]) {
-    it(`rejects ${competingRoute} committed by history-back after the payment barrier`, async () => {
-      await assert.rejects(
-        runInstalledRouteCompetitionScenario({ competingRoute }),
-        new RegExp(`payment barrier route observed: ${competingRoute}`),
       );
     });
   }
@@ -1159,11 +1130,11 @@ describe("machine-ui-cdp-driver", () => {
           ),
         );
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1, routeActions: 0 },
+          planned: { customerActivations: 1, observations: 1, externalOperations: 0 },
           executed: {
             customerActivations: 1,
             observations: 1,
-            routeActions: 0,
+            externalOperations: 0,
           },
         });
       },
@@ -1499,11 +1470,11 @@ describe("machine-ui-cdp-driver", () => {
 
         const result = await running;
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1, routeActions: 0 },
+          planned: { customerActivations: 1, observations: 1, externalOperations: 0 },
           executed: {
             customerActivations: 1,
             observations: 1,
-            routeActions: 0,
+            externalOperations: 0,
           },
         });
         assert.deepEqual(sidecarOptions, {

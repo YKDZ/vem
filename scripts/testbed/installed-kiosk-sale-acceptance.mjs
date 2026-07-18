@@ -287,33 +287,26 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       repeatPreviousActivationCenter: true,
     });
     steps.push({
-      type: "debug-disturbance",
-      name: "vision departure during payment",
-      disturbance: "presence_departure",
+      type: "external-operation",
+      name: "vision departure through daemon during payment",
+      operation: "vision_departure",
       routeBefore: /^#\/payment/,
       routeAfter: /^#\/payment/,
       screenshot: true,
     });
     steps.push({
-      type: "debug-disturbance",
-      name: "catalog refresh during payment",
-      disturbance: "catalog_refresh",
-      routeBefore: /^#\/payment/,
-      routeAfter: /^#\/payment/,
-    });
-    steps.push({
-      type: "route-action",
-      name: "history competition during payment",
-      stimulus: "history-back",
+      type: "external-operation",
+      name: "catalog projection refresh during payment",
+      operation: "catalog_projection_refresh",
       routeBefore: /^#\/payment/,
       routeAfter: /^#\/payment/,
     });
   }
   if (profile === "vm-ipc-recovery") {
     steps.push({
-      type: "debug-disturbance",
-      name: "daemon IPC interruption during payment",
-      disturbance: "ipc_interruption",
+      type: "external-operation",
+      name: "daemon UI transport interruption during payment",
+      operation: "daemon_transport_interrupt",
       routeBefore: /^#\/payment/,
       routeAfter: /^#\/payment/,
       screenshot: true,
@@ -426,6 +419,53 @@ if (-not $health -or -not [bool]$health.hardwareOnline -or -not [bool]$health.sc
   throw "serial-backed daemon lost hardware/scanner readiness after fixture"
 }
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
+`.trim();
+}
+
+export function buildInstalledKioskGuestOperationScript({ operation }) {
+  if (![
+    "vision_departure",
+    "catalog_projection_refresh",
+    "daemon_transport_interrupt",
+  ].includes(operation)) {
+    throw new Error("installed kiosk guest operation is invalid");
+  }
+  const operationId = `guest-operation-${randomBytes(12).toString("hex")}`;
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+$operation = '${operation}'
+$guestOperationId = '${operationId}'
+$ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+$headers = @{ Authorization = "Bearer $($ready.ipcToken)"; 'Content-Type' = 'application/json'; 'X-VEM-Guest-Operation-Id' = $guestOperationId }
+$base = [string]$ready.healthzUrl -replace '/healthz$', ''
+$before = Invoke-RestMethod -Uri "$base/v1/transactions/current" -Headers $headers -TimeoutSec 10
+if ([string]::IsNullOrWhiteSpace([string]$before.orderNo)) { throw 'guest operation requires an active daemon transaction' }
+if ($operation -eq 'vision_departure') {
+  $vision = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:7893/control/departure' -ContentType 'application/json' -Body (@{ operationId = $guestOperationId; lastSeenAt = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress) -TimeoutSec 10
+  if ($vision.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$vision.eventId)) { throw 'Vision control did not deliver departure to a live runtime client' }
+} elseif ($operation -eq 'catalog_projection_refresh') {
+  $catalog = Invoke-RestMethod -Method Post -Uri "$base/v1/catalog" -Headers $headers -TimeoutSec 15
+  if ($null -eq $catalog.items) { throw 'daemon catalog projection did not return items' }
+} else {
+  Restart-Service -Name 'VemVendingDaemon' -Force
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  do {
+    Start-Sleep -Milliseconds 250
+    try { $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3 } catch { $health = $null }
+  } while ($null -eq $health -and [DateTime]::UtcNow -lt $deadline)
+  if ($null -eq $health) { throw 'daemon transport did not recover after the real service interruption' }
+}
+$after = Invoke-RestMethod -Uri "$base/v1/transactions/current" -Headers $headers -TimeoutSec 10
+if ([string]$after.orderNo -cne [string]$before.orderNo) { throw 'daemon transport operation did not restore the same order' }
+[Console]::Out.WriteLine(([ordered]@{
+  operation = $operation
+  guestOperationId = $guestOperationId
+  adapterSessionId = "daemon-ipc:$base"
+  daemon = [ordered]@{ source = 'daemon-ipc'; orderNo = [string]$after.orderNo; beforeUpdatedAt = [string]$before.updatedAt; afterUpdatedAt = [string]$after.updatedAt }
+  platform = [ordered]@{ source = 'service-api-projection'; machineCode = [string]$after.machineCode; orderNo = [string]$after.orderNo }
+  serial = [ordered]@{ source = 'production-serial-session'; adapter = 'serial'; session = 'prestarted' }
+  vision = [ordered]@{ source = 'vision-runtime'; eventId = if ($null -ne $vision) { [string]$vision.eventId } else { $null }; operationId = $guestOperationId }
+} | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
 
@@ -1238,6 +1278,14 @@ export async function runInstalledKioskSaleAcceptanceCli(
       expectedRuntimeAttestation: attestation,
       expectedInitialRoute: runtime.route,
       sequenceName: `installed-kiosk-${options.profile}`,
+      adapter: {
+        async executeExternalOperation({ operation }) {
+          return runRemote(
+            remote,
+            buildInstalledKioskGuestOperationScript({ operation }),
+          );
+        },
+      },
       screenshotCheckpoints: true,
       continuousCapture: true,
       steps: buildInstalledKioskSaleScenarioSteps(options.profile),
@@ -1386,6 +1434,11 @@ export async function runInstalledKioskSaleAcceptanceCli(
       machineCode: options.machine_code,
       saleCorrelationId,
     });
+    const errorMatrix = evaluateInstalledErrorMatrixEvidence({
+      profile: options.profile,
+      scenario,
+      correlation,
+    });
     report = {
       ...report,
       status: "passed",
@@ -1402,6 +1455,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       machineUiCdpScenario: scenario,
       fixture: JSON.parse(readFileSync(plan.artifacts.fixtureReport, "utf8")),
       correlation,
+      errorMatrix,
       fulfillmentBinding: {
         ...fulfillment,
         currentDomProbe:
@@ -1479,45 +1533,18 @@ export async function runInstalledKioskSaleAcceptanceCli(
           }),
         );
         if (
+          cleanup?.restored !== "original_vem_machine_ui_task" ||
           cleanup?.daemonRunning !== true ||
-          cleanup?.cdpListenerCount !== 1 ||
-          cleanup?.normal?.principal !== launch.prelaunch.principal ||
-          cleanup?.normal?.sessionId !== launch.prelaunch.sessionId ||
+          cleanup?.cdpListenerCount !== 0 ||
           cleanup?.normal?.machineCount !== 1 ||
+          cleanup?.normal?.cdpListenerCount !== 0 ||
           cleanup?.normal?.task?.name !== "VEMMachineUI" ||
-          cleanup.normal.task.exists !== true ||
-          cleanup.normal.task.enabled !== true ||
-          ![
-            String(launch.prelaunch.principal).toLowerCase(),
-            String(launch.prelaunch.principal).split("\\").at(-1).toLowerCase(),
-          ].includes(String(cleanup.normal.task.runAsUser).toLowerCase()) ||
-          cleanup.normal.cdpListenerCount !== 1 ||
-          cleanup.normal.acceptanceOverlayCdp !== true ||
-          cleanup.normal.task.acceptanceOverlayCdp !== true ||
-          cleanup.normal.task.launcher !==
-            "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs" ||
-          !Number.isInteger(cleanup.normal.cdpListenerProcessId) ||
-          cleanup.normal.cdpListenerSessionId !== launch.prelaunch.sessionId ||
-          cleanup.normal.cdpMachineAncestorProcessId !==
-            cleanup.normal.processId ||
-          cleanup?.normal?.route !== "#/catalog" ||
-          cleanup?.normal?.routeEvidence?.source !== "acceptance_overlay_cdp" ||
-          cleanup.normal.routeEvidence.settledRoute !== "#/catalog" ||
-          cleanup.normal.routeEvidence.settledWithAcceptanceOverlay !== true ||
-          !Array.isArray(cleanup.normal.routeEvidence.allowedInitialRoutes) ||
-          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
-            "#/catalog",
-          ) ||
-          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
-            "#/result/*",
-          ) ||
-          !cleanup.normal.routeEvidence.allowedInitialRoutes.includes(
-            cleanup.normal.routeEvidence.initialRoute,
-          )
+          cleanup.normal.task.execute !== launch.prelaunch.task?.execute ||
+          cleanup.normal.task.arguments !== launch.prelaunch.task?.arguments ||
+          cleanup.normal.task.workingDirectory !==
+            launch.prelaunch.task?.workingDirectory
         ) {
-          throw new Error(
-            "installed kiosk cleanup did not restore the acceptance-overlay interactive CDP binding",
-          );
+          throw new Error("installed kiosk cleanup did not restore the original VEMMachineUI task without CDP");
         }
       } else {
         cleanup = runRemote(
@@ -1589,6 +1616,60 @@ export function formatInstalledKioskSaleError(error) {
     ].join("\n");
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+export function evaluateInstalledErrorMatrixEvidence({
+  profile,
+  scenario,
+  correlation,
+}) {
+  const expected =
+    profile === "vm-route-competition"
+      ? ["vision_departure", "catalog_projection_refresh"]
+      : profile === "vm-ipc-recovery"
+        ? ["daemon_transport_interrupt"]
+        : [];
+  const entries = Array.isArray(scenario?.evidence) ? scenario.evidence : [];
+  if (entries.some((entry) => entry?.type === "route-disturbance")) {
+    throw new Error("error matrix rejects browser-originated disturbance evidence");
+  }
+  for (const operation of expected) {
+    const entry = entries.find(
+      (candidate) =>
+        candidate?.type === "external-operation" &&
+        candidate.operation === operation &&
+        candidate.routeBefore === "#/payment" &&
+        candidate.routeAfter === "#/payment",
+    );
+    const provenance = entry?.provenance;
+    if (
+      !provenance ||
+      typeof provenance.guestOperationId !== "string" ||
+      provenance.guestOperationId.length === 0 ||
+      typeof provenance.adapterSessionId !== "string" ||
+      provenance.adapterSessionId.length === 0
+    ) {
+      throw new Error(`${operation} requires a guest operation id and adapter session`);
+    }
+    for (const source of ["daemon", "platform", "serial", "vision"]) {
+      const value = provenance[source];
+      if (
+        !value ||
+        typeof value !== "object" ||
+        value.source === "browser" ||
+        value.source === "debug"
+      ) {
+        throw new Error(`${operation} requires non-browser ${source} provenance`);
+      }
+    }
+    if (
+      operation === "daemon_transport_interrupt" &&
+      provenance.daemon.orderNo !== correlation?.rendered?.orderNo
+    ) {
+      throw new Error("daemon transport recovery did not resume the rendered order");
+    }
+  }
+  return { status: "passed", operations: expected };
 }
 
 function usage() {
