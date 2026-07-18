@@ -7,6 +7,7 @@ import {
   type VisionErrorCode,
   type VisionServerMessage,
 } from "@vem/shared/schemas/vision";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -18,6 +19,7 @@ export const MOCK_VISION_SCENARIOS = [
   "presence_only",
   "presence_absent",
   "departure_after_presence",
+  "controlled",
   "disconnect_once",
   "camera_unavailable",
   "try_on_unavailable_handshake",
@@ -32,6 +34,7 @@ export interface MockVisionServerOptions {
   path?: string;
   scenario?: MockVisionScenario;
   pushIntervalMs?: number;
+  controlPort?: number | null;
 }
 
 export interface MockVisionServer {
@@ -43,6 +46,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 7892;
 const DEFAULT_PATH = "/ws";
 const DEFAULT_PUSH_INTERVAL_MS = 1000;
+const DEFAULT_CONTROL_PATH = "/control";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -222,6 +226,24 @@ function createTryOnStoppedMessage(sessionId: string): VisionServerMessage {
   return message;
 }
 
+function json(response: ServerResponse, status: number, payload: unknown): void {
+  response.statusCode = status;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(`${JSON.stringify(payload)}\n`);
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    if (chunks.reduce((sum, entry) => sum + entry.length, 0) > 64 * 1024) {
+      throw new Error("request body too large");
+    }
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 function sendServerMessage(
   socket: WebSocket,
   message: VisionServerMessage,
@@ -302,6 +324,9 @@ async function pushScenarioEvents(
   }
 
   if (options.scenario === "presence_only") {
+    return;
+  }
+  if (options.scenario === "controlled") {
     return;
   }
 
@@ -410,10 +435,82 @@ export function startMockVisionServer(
   const wsPath = options.path ?? DEFAULT_PATH;
   const scenario = options.scenario ?? "success";
   const pushIntervalMs = options.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
+  const controlPort = options.controlPort ?? null;
   const server = new WebSocketServer({ host, port, path: wsPath });
   const disconnectOnceServed = { value: false };
+  const sockets = new Set<WebSocket>();
+  const controlServer =
+    controlPort == null
+      ? null
+      : createServer(async (request, response) => {
+          if (request.method !== "POST") {
+            json(response, 405, { ok: false, error: "method_not_allowed" });
+            return;
+          }
+          if (!request.url?.startsWith(DEFAULT_CONTROL_PATH)) {
+            json(response, 404, { ok: false, error: "not_found" });
+            return;
+          }
+          if (scenario !== "controlled") {
+            json(response, 409, {
+              ok: false,
+              error: "control_requires_controlled_scenario",
+            });
+            return;
+          }
+          try {
+            const body = await readJsonBody(request);
+            if (request.url === `${DEFAULT_CONTROL_PATH}/presence`) {
+              const state =
+                body &&
+                typeof body === "object" &&
+                "state" in body &&
+                body.state === "empty"
+                  ? "empty"
+                  : "approach";
+              const message = createPresenceMessage(state);
+              for (const socket of sockets) sendServerMessage(socket, message);
+              json(response, 200, {
+                ok: true,
+                event: message.type,
+                eventId: message.payload.eventId,
+                state: message.payload.state,
+              });
+              return;
+            }
+            if (request.url === `${DEFAULT_CONTROL_PATH}/departure`) {
+              const lastSeenAt =
+                body &&
+                typeof body === "object" &&
+                "lastSeenAt" in body &&
+                (typeof body.lastSeenAt === "string" || body.lastSeenAt === null)
+                  ? body.lastSeenAt
+                  : null;
+              const message = createPersonDepartedMessage(lastSeenAt);
+              for (const socket of sockets) sendServerMessage(socket, message);
+              json(response, 200, {
+                ok: true,
+                event: message.type,
+                eventId: message.payload.eventId,
+                lastSeenAt: message.payload.lastSeenAt,
+              });
+              return;
+            }
+            json(response, 404, { ok: false, error: "unknown_control_route" });
+          } catch (error) {
+            json(response, 400, {
+              ok: false,
+              error:
+                error instanceof Error ? error.message : "invalid_control_request",
+            });
+          }
+        });
 
   server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => {
+      sockets.delete(socket);
+    });
     socket.on("message", (data) => {
       handleClientRawMessage(socket, data, {
         scenario,
@@ -423,27 +520,49 @@ export function startMockVisionServer(
     });
   });
 
-  const ready = new Promise<string>((resolve, reject) => {
-    server.once("listening", () => {
-      resolve(resolveServerUrl(server, host, wsPath));
-    });
-    server.once("error", (error) => {
-      reject(error);
-    });
-  });
+  const ready = Promise.all([
+    new Promise<string>((resolve, reject) => {
+      server.once("listening", () => {
+        resolve(resolveServerUrl(server, host, wsPath));
+      });
+      server.once("error", (error) => {
+        reject(error);
+      });
+    }),
+    controlServer === null
+      ? Promise.resolve(null)
+      : new Promise<void>((resolve, reject) => {
+          controlServer.once("listening", () => resolve());
+          controlServer.once("error", (error) => reject(error));
+          controlServer.listen(controlPort, DEFAULT_HOST);
+        }),
+  ]).then(([url]) => url);
 
   return {
     ready,
     close: async () => {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await Promise.all([
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        }),
+        controlServer === null
+          ? Promise.resolve()
+          : new Promise<void>((resolve, reject) => {
+              controlServer.close((error) => {
+                if (error) {
+                  reject(error);
+                  return;
+                }
+                resolve();
+              });
+            }),
+      ]);
     },
   };
 }
@@ -471,6 +590,15 @@ function parsePushInterval(value: string | undefined): number {
   return parsed;
 }
 
+function parseControlPort(value: string | undefined): number | null {
+  if (value == null || value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
+    return null;
+  }
+  return parsed;
+}
+
 function logLine(message: string): void {
   process.stdout.write(`${message}\n`);
 }
@@ -492,6 +620,7 @@ if (isCliEntrypoint()) {
     path: process.env.VISION_MOCK_PATH ?? DEFAULT_PATH,
     scenario: parseScenario(process.env.VISION_MOCK_SCENARIO),
     pushIntervalMs: parsePushInterval(process.env.VISION_MOCK_PUSH_INTERVAL_MS),
+    controlPort: parseControlPort(process.env.VISION_MOCK_CONTROL_PORT),
   });
 
   void server.ready

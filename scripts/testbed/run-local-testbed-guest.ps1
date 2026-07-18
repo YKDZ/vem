@@ -211,6 +211,7 @@ if ($observedInteractiveUser -ine $expectedInteractiveUser) {
 $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
+[string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"
   machineCode = [string]$input.machineCode
@@ -241,4 +242,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 
 node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
+node scripts/testbed/fast-route-stress-sale.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $fastRouteOutPath
+if ($LASTEXITCODE -ne 0) { throw "fast route stress sale failed" }
 Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
+Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output

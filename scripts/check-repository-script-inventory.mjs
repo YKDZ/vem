@@ -66,6 +66,30 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance"],
   },
   {
+    path: "scripts/testbed/host-serial-control-plane.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/host-serial-control-plane.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/fast-route-stress-sale.mjs",
+    owner: "machine-runtime-console",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/fast-route-stress-sale.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     owner: "machine-runtime-console",
     category: "test support operation",

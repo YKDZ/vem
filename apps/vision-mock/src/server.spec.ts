@@ -68,6 +68,18 @@ async function createServer(scenario: MockVisionScenario): Promise<string> {
   return await server.ready;
 }
 
+async function postJson(url: string, body: unknown): Promise<any> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return {
+    status: response.status,
+    json: await response.json(),
+  };
+}
+
 async function openSocket(url: string): Promise<WebSocket> {
   return await new Promise<WebSocket>((resolve, reject) => {
     const socket = new WebSocket(url);
@@ -288,6 +300,56 @@ describe("vision mock server - departure events", () => {
 
       const result = await messages.next();
       expect(result.type).toBe("vision.profile_result");
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+});
+
+describe("vision mock server - controlled injections", () => {
+  it("pushes presence and departure only when the control endpoint is called", async () => {
+    const controlPort = 18_932;
+    const server = startMockVisionServer({
+      port: 0,
+      scenario: "controlled",
+      pushIntervalMs: 1,
+      controlPort,
+    });
+    servers.push(server);
+    const url = await server.ready;
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presenceResponse = await postJson(
+        `http://127.0.0.1:${controlPort}/control/presence`,
+        { state: "approach" },
+      );
+      expect(presenceResponse.status).toBe(200);
+      expect(presenceResponse.json.ok).toBe(true);
+
+      const presence = await messages.next();
+      expect(presence.type).toBe("vision.presence_status");
+      expect(presence.payload.state).toBe("approach");
+
+      const departureResponse = await postJson(
+        `http://127.0.0.1:${controlPort}/control/departure`,
+        { lastSeenAt: presence.payload.detectedAt },
+      );
+      expect(departureResponse.status).toBe(200);
+      expect(departureResponse.json.ok).toBe(true);
+
+      let departed = await messages.next();
+      if (departed.type !== "vision.person_departed") {
+        departed = await messages.next();
+      }
+      expect(departed.type).toBe("vision.person_departed");
+      expect(departed.payload.lastSeenAt).toBe(presence.payload.detectedAt);
     } finally {
       messages.dispose();
       socket.close();

@@ -18,6 +18,7 @@ import {
 import {
   buildHostLocalServiceApiEnvironment,
   buildMigrationEnvironment,
+  buildHostControlPlaneUnitPlan,
   buildReconstructionPlan,
   buildServiceApiUnitPlan,
   parseOptions,
@@ -426,6 +427,34 @@ describe("local testbed orchestration", () => {
     }
   });
 
+  it("starts a persistent Linux host control plane and publishes its guest-facing endpoint", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const plan = buildHostControlPlaneUnitPlan(options(root));
+      const rendered = plan.map(
+        (step) => `${step.command} ${step.args.join(" ")}`,
+      );
+      assert.match(
+        rendered.at(-1),
+        /systemd-run --unit=vem-local-testbed-host-control-plane --collect/,
+      );
+      assert.match(
+        rendered.at(-1),
+        /scripts\/testbed\/host-serial-control-plane\.mjs/,
+      );
+      const implementation = readFileSync(
+        new URL("./local-testbed.mjs", import.meta.url),
+        "utf8",
+      );
+      assert.match(implementation, /hostControlPlane:/);
+      assert.match(implementation, /targetIdentity:/);
+      assert.match(implementation, /runtimeBaseIdentity:/);
+      assert.match(implementation, /26851/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("replaces fixed host state and C overlay before admitting the Windows runner", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
@@ -495,6 +524,7 @@ describe("local testbed orchestration", () => {
         implementation,
         /interactiveUser:\s*contract\.testbed\.guest\.user/,
       );
+      assert.match(implementation, /installed-runtime-handoff\.json/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -692,5 +722,6 @@ describe("local testbed fixture", () => {
     assert.match(implementation, /seedThroughSupportedApis/);
     assert.match(implementation, /\/auth\/login/);
     assert.match(implementation, /\/machines\/\$\{machine\.id\}\/claim-codes/);
+    assert.match(implementation, /runtimeBaseIdentity/);
   });
 });

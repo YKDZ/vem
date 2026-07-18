@@ -175,6 +175,7 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /C:\\VEM\\bringup/);
     assert.match(guest, /vending-daemon\.exe.*--console/s);
     assert.match(guest, /installed-runtime-smoke\.mjs/);
+    assert.match(guest, /fast-route-stress-sale\.mjs/);
     assert.match(
       guest,
       /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,
@@ -182,7 +183,7 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /\$input\.interactiveUser/);
     assert.doesNotMatch(
       guest,
-      /test:e2e:real-daemon|playwright|vite|fake[_ -]?platform/i,
+      /test:e2e:real-daemon|playwright|vite|fake[_ -]?platform|simulatedHardwareSaleFlow/i,
     );
   });
 });

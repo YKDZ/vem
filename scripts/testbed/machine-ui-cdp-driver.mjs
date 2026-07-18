@@ -2720,7 +2720,7 @@ function boundedRequiredString(value, label, maxLength) {
   return normalized;
 }
 
-async function runWindowsPowerShellOverSsh({
+export async function runWindowsPowerShellOverSsh({
   remote,
   sshPort,
   identityFile,

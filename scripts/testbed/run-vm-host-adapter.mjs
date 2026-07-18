@@ -303,7 +303,10 @@ function serialSessionForOperation(operation, scannerCode) {
           saleCorrelationId,
           orderId: readOption("--order-id"),
           paymentId: readOption("--payment-id"),
-          vendingCommandId: readOption("--vending-command-id"),
+          vendingCommandId:
+            operation === "inject-scanner-code"
+              ? null
+              : readOption("--vending-command-id"),
         })),
     idempotencyCheck:
       operation === "stop-serial-session" &&

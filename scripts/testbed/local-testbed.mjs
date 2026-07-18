@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -20,6 +21,13 @@ const VOLUME_NAMES = Object.freeze({
   mqtt: "vem-local-testbed-mosquitto-data",
 });
 const SERVICE_API_UNIT = "vem-local-testbed-service-api";
+const HOST_CONTROL_PLANE_UNIT = "vem-local-testbed-host-control-plane";
+const GUEST_HANDOFF_PATH =
+  "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json";
+const GUEST_SMOKE_PATH =
+  "C:\\ProgramData\\VEM\\testbed\\installed-runtime-smoke.json";
+const GUEST_VISION_MOCK_CONTROL_PORT = 7893;
+const HOST_CONTROL_PLANE_PORT = 26851;
 const MODES = new Set(["fast", "full", "clear_cache"]);
 const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "NODE_ENV",
@@ -299,6 +307,22 @@ function commandLine(command, args, extra = {}) {
   return { command, args: args.map(String), ...extra };
 }
 
+function runtimeBaseIdentity(contract) {
+  return `runtime-base://sha256/${createHash("sha256")
+    .update(
+      JSON.stringify({
+        releaseId: contract.releaseId,
+        baselinePath: contract.destinations?.baselinePath,
+        systemPath: contract.artifacts?.systemPath,
+      }),
+    )
+    .digest("hex")}`;
+}
+
+function runtimeTargetIdentity(contract) {
+  return `vm-target://${String(contract.releaseId).toLowerCase()}`;
+}
+
 function renderPublishedCommand(command, options, contract) {
   const guest = contract.testbed.guest;
   const replacements = {
@@ -516,6 +540,40 @@ export function buildServiceApiUnitPlan(options) {
       ),
       process.execPath,
       join(options.workspace, "apps/service-api/dist/main.js"),
+    ]),
+  ];
+}
+
+export function buildHostControlPlaneUnitPlan(options) {
+  const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
+  const token = createHash("sha256")
+    .update(`${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`)
+    .digest("hex");
+  return [
+    commandLine("sudo", ["systemctl", "stop", unit]),
+    commandLine("sudo", ["systemctl", "reset-failed", unit]),
+    commandLine("sudo", [
+      "systemd-run",
+      `--unit=${HOST_CONTROL_PLANE_UNIT}`,
+      "--collect",
+      "--property=Type=simple",
+      "--property=Restart=no",
+      "--property=StandardOutput=journal",
+      "--property=StandardError=journal",
+      `--property=WorkingDirectory=${options.workspace}`,
+      "--setenv=VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL=postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+      process.execPath,
+      "scripts/testbed/host-serial-control-plane.mjs",
+      "--workspace",
+      options.workspace,
+      "--state-root",
+      options.stateRoot,
+      "--bind",
+      "0.0.0.0",
+      "--port",
+      String(HOST_CONTROL_PLANE_PORT),
+      "--token",
+      token,
     ]),
   ];
 }
@@ -809,6 +867,21 @@ async function startServiceApiUnit(options) {
   await run(start.command, start.args, { cwd: options.workspace });
 }
 
+async function stopHostControlPlaneUnit(options) {
+  const [stop, reset] = buildHostControlPlaneUnitPlan(options);
+  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
+  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
+}
+
+async function startHostControlPlaneUnit(options) {
+  const start = buildHostControlPlaneUnitPlan(options).at(-1);
+  await run(start.command, start.args, { cwd: options.workspace });
+}
+
 async function reconstruct(options) {
   const [contract, fixture] = await Promise.all([
     readFile(options.baselineContract, "utf8")
@@ -841,6 +914,7 @@ async function reconstruct(options) {
       plan,
     };
   await stopServiceApiUnit(options);
+  await stopHostControlPlaneUnit(options);
   await run(
     "docker",
     ["rm", "-f", SERVICE_NAMES.postgres, SERVICE_NAMES.mqtt],
@@ -865,6 +939,7 @@ async function reconstruct(options) {
   } catch (error) {
     throw await serviceApiFailure(error);
   }
+  await startHostControlPlaneUnit(options);
   let seeded;
   try {
     seeded = await seedThroughSupportedApis({
@@ -885,6 +960,17 @@ async function reconstruct(options) {
       hardwareModel: "vem-prod-24",
       topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
     },
+    hostControlPlane: {
+      endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
+      token: createHash("sha256")
+        .update(
+          `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
+        )
+        .digest("hex"),
+      runtimeBaseIdentity: runtimeBaseIdentity(contract),
+      targetIdentity: runtimeTargetIdentity(contract),
+      visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
+    },
     claimCode: seeded.claim.claimCode,
     machineCode: seeded.machine.code,
     planogramVersion: seeded.planogramVersion,
@@ -899,7 +985,7 @@ async function reconstruct(options) {
     await run(step.command, step.args, { cwd: options.workspace });
   const admitRunner = plan.at(-1);
   await run(admitRunner.command, admitRunner.args, { cwd: options.workspace });
-  return {
+  const result = {
     schemaVersion: "vem-local-testbed-reconstruction/v1",
     mode: options.mode,
     runId: options.runId,
@@ -914,7 +1000,42 @@ async function reconstruct(options) {
       planogramVersion: seeded.planogramVersion,
       bootstrapPath: contract.testbed.guest.stagingPath,
     },
+    runtimeTestbed: {
+      hostPrivateAddress: options.hostPrivateAddress,
+      platform: {
+        apiBaseUrl,
+        databaseUrl:
+          "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+      },
+      hostControlPlane: {
+        endpoint: `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`,
+        token: createHash("sha256")
+          .update(
+            `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
+          )
+          .digest("hex"),
+        targetIdentity: runtimeTargetIdentity(contract),
+      },
+      guest: {
+        remote: `${contract.testbed.guest.user}@${contract.testbed.guest.host}`,
+        host: contract.testbed.guest.host,
+        user: contract.testbed.guest.user,
+        identityFile: contract.testbed.guest.identityFile,
+        knownHostsFile: contract.testbed.guest.knownHostsFile,
+        handoffPath: GUEST_HANDOFF_PATH,
+        smokePath: GUEST_SMOKE_PATH,
+        visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
+      },
+      runtimeBaseIdentity: runtimeBaseIdentity(contract),
+      targetIdentity: runtimeTargetIdentity(contract),
+    },
   };
+  await writeFile(
+    join(options.stateRoot, "reconstruction.json"),
+    `${JSON.stringify(result, null, 2)}\n`,
+    "utf8",
+  );
+  return result;
 }
 
 async function main() {
