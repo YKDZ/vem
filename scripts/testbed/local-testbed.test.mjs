@@ -1086,6 +1086,14 @@ describe("Windows D cache contract", () => {
       guest,
       /function Clear-DeclaredCaches \{\s+foreach \(\$path in \$declaredCachePaths\) \{\s+Remove-Item -LiteralPath \$path -Recurse -Force -ErrorAction SilentlyContinue/s,
     );
+    assert.match(
+      guest,
+      /\$retainedToolPaths = @\([\s\S]*Join-Path \$cacheRoot "powershell"[\s\S]*\$allowedRetainedPaths = @\(\$declaredCachePaths\) \+ @\(\$retainedToolPaths\)/,
+    );
+    assert.match(
+      guest,
+      /function Remove-UndeclaredCacheDirectories \{[\s\S]*foreach \(\$path in \$allowedRetainedPaths\)/,
+    );
     const clearFunction = guest.match(
       /function Clear-DeclaredCaches \{[\s\S]*?\n\}/,
     )?.[0];

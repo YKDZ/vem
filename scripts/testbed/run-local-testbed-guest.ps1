@@ -17,6 +17,10 @@ $declaredCachePaths = @(
   (Join-Path $cacheRoot "turbo"),
   (Join-Path $cacheRoot "vision-main")
 )
+$retainedToolPaths = @(
+  (Join-Path $cacheRoot "powershell")
+)
+$allowedRetainedPaths = @($declaredCachePaths) + @($retainedToolPaths)
 
 function Require-Path([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "missing required testbed input: $Path" }
@@ -75,7 +79,7 @@ function Get-ObservedCacheDirectories {
 
 function Remove-UndeclaredCacheDirectories {
   $declared = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  foreach ($path in $declaredCachePaths) {
+  foreach ($path in $allowedRetainedPaths) {
     [void]$declared.Add([IO.Path]::GetFullPath($path))
   }
   $removed = @()
@@ -90,7 +94,7 @@ function Remove-UndeclaredCacheDirectories {
 
 function Get-DeclaredCacheObservation {
   return [ordered]@{
-    declaredRetainedCaches = @($declaredCachePaths | ForEach-Object { [IO.Path]::GetFullPath($_) } | Sort-Object)
+    declaredRetainedCaches = @($allowedRetainedPaths | ForEach-Object { [IO.Path]::GetFullPath($_) } | Sort-Object)
     observedRetainedCaches = @(Get-ObservedCacheDirectories)
   }
 }
