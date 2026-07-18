@@ -45,7 +45,7 @@ if (-not (Test-CachedPowerShell -InstallRoot $root)) {
 
     New-Item -ItemType Directory -Force -Path $pending | Out-Null
     $url = "https://github.com/PowerShell/PowerShell/releases/download/v$version/PowerShell-$version-win-x64.zip"
-    & curl.exe --fail --location --retry 3 --output $archive $url
+    & curl.exe --fail --location --retry 3 --ssl-no-revoke --output $archive $url
     if ($LASTEXITCODE -ne 0) {
       throw "PowerShell download failed with curl exit code $LASTEXITCODE"
     }

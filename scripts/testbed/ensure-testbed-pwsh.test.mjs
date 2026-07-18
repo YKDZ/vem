@@ -39,6 +39,10 @@ describe("testbed PowerShell cache bootstrap", () => {
     );
   });
 
+  it("does not block proxy downloads on Windows revocation lookup", () => {
+    assert.match(script, /curl\.exe[^\r\n]*--ssl-no-revoke/);
+  });
+
   it("parses with the PowerShell AST parser", () => {
     execFileSync(
       process.env.PWSH ?? "pwsh",
