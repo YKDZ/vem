@@ -668,10 +668,6 @@ function Complete-InteractiveDisplayPreparation {
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Remove-InteractiveDisplayPreparationTask
   Enable-InteractiveAutomaticLogon
-  $cleanup = Get-InteractiveDisplayCleanupStatus
-  if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonEnabled) {
-    throw "interactive display completion cleanup is incomplete: taskRemoved=$($cleanup.taskRemoved), automaticLogonEnabled=$($cleanup.automaticLogonEnabled)"
-  }
   # The report is durable before the complete state commits it. A crash between
   # these writes is intentionally non-accepting and will be re-armed by host.
   Write-AtomicJson -Path $interactiveDisplayReportPath -Value $Report

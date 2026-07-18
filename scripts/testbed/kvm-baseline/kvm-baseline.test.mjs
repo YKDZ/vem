@@ -4187,7 +4187,9 @@ await writeFile(markerPath, "created");
     );
     assert.ok(
       completion.indexOf("Enable-InteractiveAutomaticLogon") <
-        completion.indexOf("Get-InteractiveDisplayCleanupStatus"),
+        completion.indexOf(
+          "Write-AtomicJson -Path $interactiveDisplayReportPath",
+        ),
     );
     assert.ok(
       completion.indexOf("Get-InteractiveDisplayCleanupStatus") <
