@@ -670,6 +670,7 @@ function Complete-InteractiveDisplayPreparation {
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Remove-InteractiveDisplayPreparationTask
+  Enable-InteractiveAutomaticLogon
   $cleanup = Get-InteractiveDisplayCleanupStatus
   if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonEnabled) {
     throw "interactive display completion cleanup is incomplete"
