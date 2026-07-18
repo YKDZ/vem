@@ -41,6 +41,8 @@ jobs:
       VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
       VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
     steps:
+      - name: Add cached Rust toolchain to PATH
+        run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Verify cached host Rust toolchain
         run: |
           test "$("$CARGO_HOME/bin/rustc" --version)" = "rustc 1.96.0 (ac68faa20 2026-05-25)"
@@ -123,6 +125,8 @@ jobs:
       CARGO_NET_RETRY: "10"
       VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
     steps:
+      - name: Add cached Rust toolchain to PATH
+        run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Verify cached host Rust toolchain
         run: |
           test "$("$CARGO_HOME/bin/rustc" --version)" = "rustc 1.96.0 (ac68faa20 2026-05-25)"
