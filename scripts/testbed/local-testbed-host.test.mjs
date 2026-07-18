@@ -136,6 +136,9 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
+    const encodedAssertion = plan[0].args.at(-1).split(" ").at(-1);
+    const assertion = Buffer.from(encodedAssertion, "base64").toString("utf16le");
+    assert.match(assertion, /Get-Content[^\n]+-Encoding UTF8/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(
       plan[0].path,

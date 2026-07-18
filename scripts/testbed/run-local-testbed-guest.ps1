@@ -80,7 +80,7 @@ function Update-WorkflowIdentityCacheObservation(
   [string[]]$RemovedUndeclaredCaches
 ) {
   Require-Path $Path
-  $input = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+  $input = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
   if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") {
     throw "invalid local testbed guest input"
   }
@@ -286,7 +286,7 @@ if ($Mode -eq "clear_cache") {
 }
 
 Require-Path $GuestInputPath
-$input = Get-Content -Raw -LiteralPath $GuestInputPath | ConvertFrom-Json
+$input = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
 
 New-Item -ItemType Directory -Force -Path $deploymentRoot, $daemonDataRoot, $handoffRoot | Out-Null
