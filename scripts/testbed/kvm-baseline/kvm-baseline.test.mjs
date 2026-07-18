@@ -2653,8 +2653,17 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /Turbo version does not match \$turboVersion/);
     assert.match(
       runtime,
-      /rustup\.exe" -ArgumentList @\("toolchain", "install", "1\.96\.0-x86_64-pc-windows-msvc"/,
+      /\$rustupPath -ArgumentList @\("toolchain", "install", "1\.96\.0-x86_64-pc-windows-msvc"/,
     );
+    assert.match(
+      runtime,
+      /\$rustupPath = Join-Path \$cachePaths\.CARGO_HOME "bin\\rustup\.exe"/,
+    );
+    assert.match(
+      runtime,
+      /\$rustcPath = Join-Path \$cachePaths\.CARGO_HOME "bin\\rustc\.exe"/,
+    );
+    assert.doesNotMatch(runtime, /Invoke-Native -FilePath "rustup\.exe"/);
     assert.doesNotMatch(
       runtime,
       /rustup\.exe" -ArgumentList @\("default", "stable"/,

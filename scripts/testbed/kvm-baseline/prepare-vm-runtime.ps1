@@ -352,19 +352,22 @@ function Install-Toolchain {
   Refresh-ProcessPath
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("enable") -Description "Corepack enable"
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("prepare", "pnpm@11.9.0", "--activate") -Description "pinned pnpm activation"
-  Invoke-Native -FilePath "rustup.exe" -ArgumentList @("toolchain", "install", "1.96.0-x86_64-pc-windows-msvc", "--profile", "minimal") -Description "pinned Rust toolchain installation"
-  Invoke-Native -FilePath "rustup.exe" -ArgumentList @("default", "1.96.0-x86_64-pc-windows-msvc") -Description "pinned Rust toolchain activation"
   $cachePaths = Get-CachePaths
+  $rustupPath = Join-Path $cachePaths.CARGO_HOME "bin\rustup.exe"
+  $cargoPath = Join-Path $cachePaths.CARGO_HOME "bin\cargo.exe"
+  $rustcPath = Join-Path $cachePaths.CARGO_HOME "bin\rustc.exe"
+  Invoke-Native -FilePath $rustupPath -ArgumentList @("toolchain", "install", "1.96.0-x86_64-pc-windows-msvc", "--profile", "minimal") -Description "pinned Rust toolchain installation"
+  Invoke-Native -FilePath $rustupPath -ArgumentList @("default", "1.96.0-x86_64-pc-windows-msvc") -Description "pinned Rust toolchain activation"
   New-Item -ItemType Directory -Force -Path $cachePaths.PNPM_STORE_PATH | Out-Null
   Invoke-Native -FilePath "pnpm.cmd" -ArgumentList @("config", "set", "store-dir", $cachePaths.PNPM_STORE_PATH, "--global") -Description "pnpm cache configuration"
   Invoke-Native -FilePath "pnpm.cmd" -ArgumentList @("add", "--global", "turbo@2.10.0") -Description "pinned Turbo installation"
-  foreach ($tool in @("git.exe", "node.exe", "corepack.cmd", "pnpm.cmd", "turbo.cmd", "cargo.exe", "rustc.exe", "rustup.exe")) {
+  foreach ($tool in @("git.exe", "node.exe", "corepack.cmd", "pnpm.cmd", "turbo.cmd", $cargoPath, $rustcPath, $rustupPath)) {
     Invoke-Native -FilePath $tool -ArgumentList @("--version") -Description "$tool version probe"
   }
   if ((& node.exe --version).Trim().TrimStart("v") -ne $nodeVersion) { throw "Node.js version does not match $nodeVersion" }
   if ((& pnpm.cmd --version).Trim() -ne $pnpmVersion) { throw "pnpm version does not match $pnpmVersion" }
   if ((& turbo.cmd --version).Trim() -ne $turboVersion) { throw "Turbo version does not match $turboVersion" }
-  if ((& rustc.exe --version) -notmatch "^rustc 1\\.96\\.0 ") { throw "Rust version does not match $rustToolchain" }
+  if ((& $rustcPath --version) -notmatch "^rustc 1\\.96\\.0 ") { throw "Rust version does not match $rustToolchain" }
   $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
   if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe is unavailable" }
   $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Workload.VCTools -property installationPath).Trim()
