@@ -2,10 +2,7 @@
 use std::{num::NonZeroU16, num::NonZeroU32};
 
 #[cfg(windows)]
-use rodio::{
-    buffer::SamplesBuffer,
-    DeviceSinkBuilder, Player,
-};
+use rodio::{buffer::SamplesBuffer, cpal::traits::HostTrait, DeviceSinkBuilder, Player};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeAudioPlaybackEvidence {
@@ -69,9 +66,9 @@ impl AudioOutputPlayback for WindowsAudioOutputPlayback {
         #[cfg(windows)]
         {
             let host = rodio::cpal::default_host();
-            let device = host
-                .default_output_device()
-                .ok_or_else(|| "Windows default audio output is not currently observed".to_string())?;
+            let device = host.default_output_device().ok_or_else(|| {
+                "Windows default audio output is not currently observed".to_string()
+            })?;
             let samples = fixed_audio_calibration_samples();
             let source_non_silent = samples.iter().any(|sample| sample.abs() > 0.000_1);
             if !source_non_silent {
