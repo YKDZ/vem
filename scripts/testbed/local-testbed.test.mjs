@@ -1148,7 +1148,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
     assert.match(
       guest,
-      /tauri:build:kiosk:windows -- --no-bundle/,
+      /--filter machine exec tauri build --config src-tauri\/tauri\.windows\.conf\.json --no-bundle/,
     );
     assert.match(guest, /function Get-TestbedSccache/);
     assert.match(guest, /sccache-v\$version-x86_64-pc-windows-msvc\.zip/);
