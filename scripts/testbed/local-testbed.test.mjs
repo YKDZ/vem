@@ -32,6 +32,7 @@ import {
   parseOptions,
   paymentMockCreateGatePaths,
   seedThroughSupportedApis,
+  runnerProxyEnvironment,
   validateBaselineContract,
 } from "./local-testbed.mjs";
 
@@ -670,10 +671,7 @@ describe("local testbed orchestration", () => {
         new URL("./local-testbed.mjs", import.meta.url),
         "utf8",
       );
-      assert.match(
-        implementation,
-        /interactiveUser:\s*"VEMKiosk"/,
-      );
+      assert.match(implementation, /interactiveUser:\s*"VEMKiosk"/);
       assert.match(implementation, /installed-runtime-handoff\.json/);
       assert.match(
         implementation,
@@ -693,7 +691,7 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("forwards explicitly configured runner proxies to host admission and leaves an absent proxy configuration untouched", () => {
+  it("forwards explicitly configured runner proxies, including explicit clears, while leaving absent configuration untouched", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const value = contract(root);
@@ -740,6 +738,18 @@ describe("local testbed orchestration", () => {
         "--runner-no-proxy",
         "localhost,127.0.0.1",
       ]);
+      assert.deepEqual(runnerProxyEnvironment({}), {
+        configured: false,
+        http: "",
+        https: "",
+        noProxy: "",
+      });
+      assert.deepEqual(runnerProxyEnvironment({ VEM_RUNNER_HTTP_PROXY: "" }), {
+        configured: true,
+        http: "",
+        https: "",
+        noProxy: "",
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1127,10 +1137,7 @@ describe("Windows D cache contract", () => {
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
     assert.match(guest, /function Get-TestbedSccache/);
-    assert.match(
-      guest,
-      /sccache-v\$version-x86_64-pc-windows-msvc\.zip/,
-    );
+    assert.match(guest, /sccache-v\$version-x86_64-pc-windows-msvc\.zip/);
     assert.match(guest, /Join-Path \$cacheRoot "sccache\\bin\\\$version"/);
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);

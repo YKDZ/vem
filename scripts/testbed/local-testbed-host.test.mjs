@@ -6,6 +6,7 @@ import {
   buildHostReconstructionPlan,
   executeHostAdmissionPlan,
   renderReconstructedDomainXml,
+  stopDomainBeforeReconstruction,
 } from "./local-testbed-host.mjs";
 
 const ROOT = "/var/lib/vem-testbed";
@@ -113,6 +114,68 @@ describe("tracked local testbed host lifecycle", () => {
         "win10-runtime-testbed",
       ],
     );
+    assert.ok(
+      plan.findIndex((step) => step.type === "acpi-shutdown-domain") <
+        plan.findIndex((step) => step.type === "destroy-domain"),
+    );
+  });
+
+  it("uses generic libvirt ACPI shutdown before bounded polling and only destroys a still-running domain", async () => {
+    const operations = [];
+    const states = ["running\n", "shut off\n"];
+    const result = await stopDomainBeforeReconstruction(config(), {
+      domainDefined: true,
+      runCommand: async (command, args) => operations.push([command, args]),
+      runCaptureCommand: async () => ({ stdout: states.shift() }),
+      sleep: async () => operations.push(["sleep"]),
+    });
+    assert.deepEqual(result, { stoppedBy: "acpi" });
+    assert.deepEqual(operations, [
+      [
+        "virsh",
+        ["--connect", "qemu:///system", "shutdown", "win10-runtime-testbed"],
+      ],
+      ["sleep"],
+    ]);
+
+    const fallbackOperations = [];
+    const fallback = await stopDomainBeforeReconstruction(config(), {
+      domainDefined: true,
+      runCommand: async (command, args) =>
+        fallbackOperations.push([command, args]),
+      runCaptureCommand: async () => ({ stdout: "running\n" }),
+      sleep: async () => {},
+      now: (() => {
+        let tick = 0;
+        return () => (tick += 30_000);
+      })(),
+    });
+    assert.deepEqual(fallback, { stoppedBy: "destroy" });
+    assert.deepEqual(fallbackOperations.at(-1), [
+      "virsh",
+      ["--connect", "qemu:///system", "destroy", "win10-runtime-testbed"],
+    ]);
+
+    const missingOperations = [];
+    assert.deepEqual(
+      await stopDomainBeforeReconstruction(config(), {
+        domainDefined: false,
+        runCommand: async (...args) => missingOperations.push(args),
+      }),
+      { stoppedBy: "absent" },
+    );
+    assert.deepEqual(missingOperations, []);
+
+    const shutOffOperations = [];
+    assert.deepEqual(
+      await stopDomainBeforeReconstruction(config(), {
+        domainDefined: true,
+        runCommand: async (...args) => shutOffOperations.push(args),
+        runCaptureCommand: async () => ({ stdout: "shut off\n" }),
+      }),
+      { stoppedBy: "shut-off" },
+    );
+    assert.deepEqual(shutOffOperations, []);
   });
 
   it("renders the fixed domain against overlay C, persistent D, and the admission gate", () => {
@@ -229,7 +292,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
   });
 
-  it("updates only explicit runner proxy entries, restarts the discovered service, and waits for a fresh listener diagnostic", async () => {
+  it("clears explicitly configured proxy entries, restarts the discovered service, and waits for a newly appended listener diagnostic", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -246,9 +309,13 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(runner.input, /C:\\actions-runner\\.env/);
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
-    assert.match(runner.input, /Session created|Listening for Jobs|Runner reconnected/);
+    assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
+    assert.doesNotMatch(runner.input, /Session created/);
+    assert.match(runner.input, /\$diagnosticOffsets/);
+    assert.match(runner.input, /\.Length/);
+    assert.match(runner.input, /\.Seek\(\$offset/);
     assert.match(runner.input, /HTTP_PROXY=http:\/\/proxy\.example\.test:8080/);
-    assert.match(runner.input, /HTTPS_PROXY=/);
+    assert.doesNotMatch(runner.input, /HTTPS_PROXY=/);
     assert.match(runner.input, /NO_PROXY=localhost,127\.0\.0\.1/);
     assert.match(runner.input, /Where-Object \{ \$_ -notmatch/);
     assert.doesNotMatch(runner.input, /GitHub API|GITHUB_TOKEN|gh api/i);
@@ -278,11 +345,48 @@ describe("tracked local testbed host lifecycle", () => {
     });
     assert.equal(result.runnerAdmission.listenerMarker, "Listening for Jobs");
 
+    await assert.rejects(
+      executeHostAdmissionPlan(plan, {
+        runCommand: async () => {},
+        runCaptureCommand: async (_command, _args, input) => {
+          if (input.includes("interactive-display-report")) {
+            return {
+              stdout: `${JSON.stringify({
+                schemaVersion: "vem-local-testbed-display-admission-proof/v1",
+                status: "passed",
+                widthPx: 1080,
+                heightPx: 1920,
+                sessionUser: "baseline",
+              })}\n`,
+            };
+          }
+          return {
+            stdout: `${JSON.stringify({
+              serviceName: "actions.runner.example.runtime",
+              listenerMarker: "Session created",
+              diagnosticLog: "Runner_old.log",
+            })}\n`,
+          };
+        },
+      }),
+      /invalid listener marker/,
+    );
+
     const withoutProxy = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-16",
     }).at(-1);
     assert.doesNotMatch(withoutProxy.input, /WriteAllLines|\$proxyLines/);
+
+    const clearProxy = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-17",
+      runnerProxy: { configured: true, http: "", https: "", noProxy: "" },
+    }).at(-1);
+    assert.match(clearProxy.input, /\$proxyLines = @\(\)/);
+    assert.match(clearProxy.input, /Where-Object \{ \$_ -notmatch/);
+    assert.doesNotMatch(clearProxy.input, /HTTP_PROXY=|HTTPS_PROXY=|NO_PROXY=/);
   });
 });

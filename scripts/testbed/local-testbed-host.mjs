@@ -27,6 +27,8 @@ const ACTIVATOR_SERVICE_OWNER_SCHEMA =
 const POWERSHELL_STDIN_COMMAND =
   'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"';
 const RUNNER_ADMISSION_TIMEOUT_SECONDS = 180;
+const DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS = 20_000;
+const DOMAIN_ACPI_SHUTDOWN_POLL_MS = 1_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -248,7 +250,7 @@ function runnerAdmissionAssertion(runnerProxy) {
         `HTTP_PROXY=${runnerProxy.http}`,
         `HTTPS_PROXY=${runnerProxy.https}`,
         `NO_PROXY=${runnerProxy.noProxy}`,
-      ]
+      ].filter((line) => !line.endsWith("="))
     : [];
   const updateEnvironment = runnerProxy?.configured
     ? `$proxyLines = @(${proxyLines.map(quotePowerShell).join(", ")})
@@ -265,20 +267,28 @@ if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw '
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
-${updateEnvironment}$restartStartedAt = (Get-Date).ToUniversalTime()
+${updateEnvironment}$diagnosticDirectory = Join-Path $runnerRoot '_diag'
+$diagnosticOffsets = @{}
+@(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
 Restart-Service -Name $service.Name -Force -ErrorAction Stop
 $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
-$diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $deadline = (Get-Date).ToUniversalTime().AddSeconds(${RUNNER_ADMISSION_TIMEOUT_SECONDS})
 $latestTail = ''
 while ((Get-Date).ToUniversalTime() -lt $deadline) {
-  $logs = @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -ge $restartStartedAt.AddSeconds(-1) } | Sort-Object LastWriteTimeUtc -Descending)
+  $logs = @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending)
   foreach ($log in $logs) {
-    $tail = (Get-Content -LiteralPath $log.FullName -Tail 80 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    $offset = if ($diagnosticOffsets.ContainsKey($log.FullName)) { [int64]$diagnosticOffsets[$log.FullName] } else { 0 }
+    if ([int64]$log.Length -lt $offset) { $offset = 0 }
+    $stream = [System.IO.File]::Open($log.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+      [void]$stream.Seek($offset, [System.IO.SeekOrigin]::Begin)
+      $reader = [System.IO.StreamReader]::new($stream)
+      try { $tail = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
     if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
-    $marker = [regex]::Match($tail, 'Session created|Listening for Jobs|Runner reconnected')
+    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected')
     if ($marker.Success) {
-      [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name } | ConvertTo-Json -Compress
+      [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name; diagnosticOffset = $offset } | ConvertTo-Json -Compress
       exit 0
     }
   }
@@ -423,6 +433,10 @@ export function buildHostReconstructionPlan({
   const template = absolute(domainXml, "domainXml");
   const pendingOverlay = `${config.overlayPath}.pending`;
   return [
+    {
+      type: "acpi-shutdown-domain",
+      ...virsh(config, "shutdown", config.domainName),
+    },
     { type: "destroy-domain", ...virsh(config, "destroy", config.domainName) },
     {
       type: "undefine-domain",
@@ -459,6 +473,49 @@ export function buildHostReconstructionPlan({
     { type: "start-domain", ...virsh(config, "start", config.domainName) },
     { type: "wait-ssh", timeoutSeconds: config.ssh.readinessTimeoutSeconds },
   ];
+}
+
+function domainIsShutOff(state) {
+  return (
+    String(state ?? "")
+      .trim()
+      .toLowerCase() === "shut off"
+  );
+}
+
+export async function stopDomainBeforeReconstruction(
+  config,
+  {
+    domainDefined,
+    runCommand = run,
+    runCaptureCommand = runCapture,
+    sleep = (milliseconds) =>
+      new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+    now = Date.now,
+  } = {},
+) {
+  if (!domainDefined) return { stoppedBy: "absent" };
+  const stateCommand = virsh(config, "domstate", config.domainName);
+  const initialState = await runCaptureCommand(
+    stateCommand.command,
+    stateCommand.args,
+  );
+  if (domainIsShutOff(initialState.stdout)) return { stoppedBy: "shut-off" };
+
+  const shutdownCommand = virsh(config, "shutdown", config.domainName);
+  await runCommand(shutdownCommand.command, shutdownCommand.args);
+  const deadline = now() + DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS;
+  while (now() < deadline) {
+    await sleep(DOMAIN_ACPI_SHUTDOWN_POLL_MS);
+    const state = await runCaptureCommand(
+      stateCommand.command,
+      stateCommand.args,
+    );
+    if (domainIsShutOff(state.stdout)) return { stoppedBy: "acpi" };
+  }
+  const destroyCommand = virsh(config, "destroy", config.domainName);
+  await runCommand(destroyCommand.command, destroyCommand.args);
+  return { stoppedBy: "destroy" };
 }
 
 export function buildHostAdmissionPlan({
@@ -605,17 +662,10 @@ async function executeReconstruction(options) {
     .split(/\r?\n/)
     .some((name) => name.trim() === config.domainName);
   for (const step of plan) {
-    if (step.type === "destroy-domain") {
-      if (!domainDefined) continue;
-      const state = await runCapture("virsh", [
-        "--connect",
-        config.libvirtUri,
-        "domstate",
-        config.domainName,
-      ]);
-      if (state.stdout.trim().toLowerCase() !== "shut off") {
-        await run(step.command, step.args);
-      }
+    if (step.type === "acpi-shutdown-domain") {
+      await stopDomainBeforeReconstruction(config, { domainDefined });
+    } else if (step.type === "destroy-domain") {
+      continue;
     } else if (step.type === "undefine-domain") {
       if (domainDefined) await run(step.command, step.args);
     } else if (step.type === "remove-file") {
@@ -691,6 +741,13 @@ export async function executeHostAdmissionPlan(
         typeof runnerAdmission.diagnosticLog !== "string"
       ) {
         throw new Error("runner admission emitted incomplete diagnostics");
+      }
+      if (
+        !["Listening for Jobs", "Runner reconnected"].includes(
+          runnerAdmission.listenerMarker,
+        )
+      ) {
+        throw new Error("runner admission emitted an invalid listener marker");
       }
     } else {
       await runCommand(step.command, step.args, step.input);

@@ -3,7 +3,14 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, readFileSync } from "node:fs";
-import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -212,7 +219,10 @@ export function validateHostPrivateAddress(
 
 export function parseOptions(
   args,
-  { observeNetworkInterfaces = networkInterfaces, environment = process.env } = {},
+  {
+    observeNetworkInterfaces = networkInterfaces,
+    environment = process.env,
+  } = {},
 ) {
   const command = args[0];
   if (command !== "reconstruct") {
@@ -249,7 +259,9 @@ export function runnerProxyEnvironment(environment = process.env) {
     String(environment[name] ?? "").trim(),
   );
   return {
-    configured: [http, https, noProxy].some((value) => value.length > 0),
+    configured: RUNNER_PROXY_ENVIRONMENT_NAMES.some((name) =>
+      Object.hasOwn(environment, name),
+    ),
     http,
     https,
     noProxy,
