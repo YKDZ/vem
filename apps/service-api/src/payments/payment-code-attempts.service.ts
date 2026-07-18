@@ -186,21 +186,6 @@ export class PaymentCodeAttemptsService {
       if (row.providerCode === "mock" && input.mockPaymentEnabled !== true) {
         throw new ConflictException("Mock payment code is disabled");
       }
-      if (row.paymentStatus === "succeeded") {
-        throw new ConflictException("Payment already succeeded");
-      }
-      if (isIncidentLocked(row)) {
-        throw new ConflictException("payment_incident_locked");
-      }
-      // This is the durable admission boundary before the orchestrator can
-      // touch a provider. Canceled, closed, paid, or fulfillment-transitioned
-      // orders must never create a new payment-code attempt.
-      if (!isPayablePaymentCodeOrder(row)) {
-        throw new ConflictException("payment_code_order_not_payable");
-      }
-      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
-        throw new ConflictException("payment_code_order_not_payable");
-      }
 
       const [existingByKey] = await tx
         .select()
@@ -218,6 +203,22 @@ export class PaymentCodeAttemptsService {
           attempt: existingByKey,
           replayed: true,
         };
+      }
+
+      if (row.paymentStatus === "succeeded") {
+        throw new ConflictException("Payment already succeeded");
+      }
+      if (isIncidentLocked(row)) {
+        throw new ConflictException("payment_incident_locked");
+      }
+      // This is the durable admission boundary before the orchestrator can
+      // touch a provider. Canceled, closed, paid, or fulfillment-transitioned
+      // orders must never create a new payment-code attempt.
+      if (!isPayablePaymentCodeOrder(row)) {
+        throw new ConflictException("payment_code_order_not_payable");
+      }
+      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
+        throw new ConflictException("payment_code_order_not_payable");
       }
 
       const [active] = await tx

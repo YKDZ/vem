@@ -4,6 +4,7 @@ import { ConfigModule } from "../config/config.module";
 import { DatabaseModule } from "../database/database.module";
 import { AlipaySdkClientFactory } from "./alipay-sdk.client";
 import { AlipayProvider } from "./alipay.provider";
+import { MockPaymentCodeTradeStore } from "./mock-payment-code-trade.store";
 import { MockPaymentProvider } from "./mock-payment.provider";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
@@ -13,6 +14,7 @@ import { WeChatPayProvider } from "./wechat-pay.provider";
 @Module({
   imports: [ConfigModule, DatabaseModule],
   providers: [
+    MockPaymentCodeTradeStore,
     MockPaymentProvider,
     WeChatPayProvider,
     AlipayProvider,

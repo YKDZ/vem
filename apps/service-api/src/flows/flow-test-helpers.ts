@@ -261,6 +261,7 @@ export async function pollMachineHeartbeatCount(
 export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
   await db.client.execute(sql`
     TRUNCATE TABLE
+      mock_payment_code_trades,
       notification_deliveries,
       notifications,
       payment_channel_policies,

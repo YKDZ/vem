@@ -108,6 +108,12 @@ const baseEnvSchema = z.object({
       return value;
     }, z.boolean())
     .default(false),
+  PAYMENT_MOCK_PROVIDER_RESPONSE_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(60_000)
+    .default(0),
   PAYMENT_WEBHOOK_BASE_URL: z.url(),
   MACHINE_API_BASE_URL: z.url().default("http://localhost:3000/api"),
   MEDIA_ASSET_STORAGE_ROOT: z

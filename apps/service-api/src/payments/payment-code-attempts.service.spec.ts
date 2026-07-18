@@ -137,6 +137,131 @@ describe("PaymentCodeAttemptsService", () => {
     expect(tx.insert).not.toHaveBeenCalled();
   });
 
+  it("replays a committed succeeded attempt after the HTTP response is lost", async () => {
+    const existingAttempt = {
+      id: "attempt-succeeded",
+      attemptNo: 1,
+      status: "succeeded",
+      idempotencyKey: "idem-succeeded",
+      isActive: false,
+    };
+    const tx = { select: vi.fn(), insert: vi.fn() };
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: "paid",
+            paymentState: "paid",
+            fulfillmentState: "awaiting_fulfillment",
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: "succeeded",
+            paymentMethod: "payment_code",
+            providerId: "provider-1",
+            providerCode: "alipay",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([existingAttempt]));
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (value: unknown) => unknown) => fn(tx)),
+    };
+
+    const result = await new PaymentCodeAttemptsService(
+      db as never,
+    ).createOrReplay({
+      orderNo: "ORD001",
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-succeeded",
+      source: "serial_text",
+    });
+
+    expect(result).toMatchObject({
+      replayed: true,
+      attempt: existingAttempt,
+      payment: { status: "succeeded" },
+    });
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "manual-handling",
+      orderStatus: "manual_handling",
+      paymentState: "payment_unknown",
+      fulfillmentState: "manual_handling",
+      paymentStatus: "unknown",
+      attemptStatus: "manual_handling",
+    },
+    {
+      name: "expired",
+      orderStatus: "payment_expired",
+      paymentState: "payment_expired",
+      fulfillmentState: "canceled",
+      paymentStatus: "expired",
+      attemptStatus: "canceled",
+    },
+  ])("replays a committed $name terminal attempt", async (terminal) => {
+    const existingAttempt = {
+      id: `attempt-${terminal.name}`,
+      attemptNo: 1,
+      status: terminal.attemptStatus,
+      idempotencyKey: `idem-${terminal.name}`,
+      isActive: terminal.attemptStatus === "manual_handling",
+    };
+    const tx = { select: vi.fn(), insert: vi.fn() };
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: terminal.orderStatus,
+            paymentState: terminal.paymentState,
+            fulfillmentState: terminal.fulfillmentState,
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: terminal.paymentStatus,
+            paymentMethod: "payment_code",
+            expiresAt: new Date("2026-01-01T00:00:00.000Z"),
+            providerId: "provider-1",
+            providerCode: "alipay",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([existingAttempt]));
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (value: unknown) => unknown) => fn(tx)),
+    };
+
+    const result = await new PaymentCodeAttemptsService(
+      db as never,
+    ).createOrReplay({
+      orderNo: "ORD001",
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: `idem-${terminal.name}`,
+      source: "serial_text",
+    });
+
+    expect(result.replayed).toBe(true);
+    expect(result.attempt).toBe(existingAttempt);
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
   it("throws when another active attempt already exists", async () => {
     const tx = {
       select: vi.fn(),
@@ -194,31 +319,33 @@ describe("PaymentCodeAttemptsService", () => {
     );
   });
 
-  it("blocks replay and new attempts for incident-locked payment-code orders", async () => {
+  it("blocks a new attempt for incident-locked payment-code orders", async () => {
     const tx = {
       select: vi.fn(),
       insert: vi.fn(),
     };
-    tx.select.mockReturnValueOnce(
-      makeSelectResult([
-        {
-          orderId: "order-1",
-          orderNo: "ORD001",
-          orderStatus: "manual_handling",
-          paymentState: "payment_unknown",
-          fulfillmentState: "manual_handling",
-          machineId: "machine-1",
-          paymentId: "payment-1",
-          paymentNo: "PAY001",
-          paymentProviderConfigId: "cfg-1",
-          amountCents: 300,
-          paymentStatus: "unknown",
-          paymentMethod: "payment_code",
-          providerId: "provider-1",
-          providerCode: "alipay",
-        },
-      ]),
-    );
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: "manual_handling",
+            paymentState: "payment_unknown",
+            fulfillmentState: "manual_handling",
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: "unknown",
+            paymentMethod: "payment_code",
+            providerId: "provider-1",
+            providerCode: "alipay",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([]));
 
     const db = {
       transaction: vi
@@ -376,26 +503,28 @@ describe("PaymentCodeAttemptsService", () => {
 
   it("rejects a canceled payment-code order before an attempt can reach a provider", async () => {
     const tx = { select: vi.fn(), insert: vi.fn() };
-    tx.select.mockReturnValueOnce(
-      makeSelectResult([
-        {
-          orderId: "order-1",
-          orderNo: "ORD001",
-          orderStatus: "canceled",
-          paymentState: "canceled",
-          fulfillmentState: "canceled",
-          machineId: "machine-1",
-          paymentId: "payment-1",
-          paymentNo: "PAY001",
-          paymentProviderConfigId: "cfg-1",
-          amountCents: 300,
-          paymentStatus: "canceled",
-          paymentMethod: "payment_code",
-          providerId: "provider-1",
-          providerCode: "alipay",
-        },
-      ]),
-    );
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: "canceled",
+            paymentState: "canceled",
+            fulfillmentState: "canceled",
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: "canceled",
+            paymentMethod: "payment_code",
+            providerId: "provider-1",
+            providerCode: "alipay",
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([]));
     const db = {
       transaction: vi
         .fn()
@@ -417,27 +546,29 @@ describe("PaymentCodeAttemptsService", () => {
 
   it("rejects an attempt when its payment has reached expiry", async () => {
     const tx = { select: vi.fn(), insert: vi.fn() };
-    tx.select.mockReturnValueOnce(
-      makeSelectResult([
-        {
-          orderId: "order-1",
-          orderNo: "ORD001",
-          orderStatus: "pending_payment",
-          paymentState: "awaiting_payment",
-          fulfillmentState: "awaiting_fulfillment",
-          machineId: "machine-1",
-          paymentId: "payment-1",
-          paymentNo: "PAY001",
-          paymentProviderConfigId: "cfg-1",
-          amountCents: 300,
-          paymentStatus: "pending",
-          paymentMethod: "payment_code",
-          providerId: "provider-1",
-          providerCode: "alipay",
-          expiresAt: new Date(Date.now() - 1),
-        },
-      ]),
-    );
+    tx.select
+      .mockReturnValueOnce(
+        makeSelectResult([
+          {
+            orderId: "order-1",
+            orderNo: "ORD001",
+            orderStatus: "pending_payment",
+            paymentState: "awaiting_payment",
+            fulfillmentState: "awaiting_fulfillment",
+            machineId: "machine-1",
+            paymentId: "payment-1",
+            paymentNo: "PAY001",
+            paymentProviderConfigId: "cfg-1",
+            amountCents: 300,
+            paymentStatus: "pending",
+            paymentMethod: "payment_code",
+            providerId: "provider-1",
+            providerCode: "alipay",
+            expiresAt: new Date(Date.now() - 1),
+          },
+        ]),
+      )
+      .mockReturnValueOnce(makeSelectResult([]));
     const db = {
       transaction: vi
         .fn()

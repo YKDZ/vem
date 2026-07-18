@@ -24,21 +24,19 @@ import type {
 } from "./payment-provider.interface";
 
 import { AppConfigService } from "../config/app-config.service";
-
-type MockPaymentCodeTrade = {
-  providerTradeNo: string;
-  paidAt: Date;
-  status: "succeeded" | "reversed";
-};
+import {
+  MockPaymentCodeTradeStore,
+  type MockPaymentCodeTrade,
+} from "./mock-payment-code-trade.store";
 
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
   readonly code = "mock";
   readonly supportsPartialRefund = true;
-  private readonly paymentCodeTrades = new Map<string, MockPaymentCodeTrade>();
 
   constructor(
     @Inject(AppConfigService) private readonly config: AppConfigService,
+    private readonly paymentCodeTrades: MockPaymentCodeTradeStore,
   ) {}
 
   async createPaymentIntent(
@@ -58,21 +56,15 @@ export class MockPaymentProvider implements PaymentProvider {
   ): Promise<ProviderPaymentCodeChargeResult> {
     if (!this.config.paymentMockEnabled)
       throw new Error("mock payment code is disabled");
-    const existing = this.paymentCodeTrades.get(input.paymentNo);
-    if (existing) {
-      return this.paymentCodeResult(input.paymentNo, existing);
-    }
-    const trade: MockPaymentCodeTrade = {
+    const trade = await this.paymentCodeTrades.acceptCharge({
+      providerPaymentNo: input.paymentNo,
+      idempotencyKey: input.idempotencyKey ?? input.paymentNo,
       providerTradeNo: `MOCK-CODE-${input.paymentNo}`,
-      paidAt: new Date(),
-      status: "succeeded",
-    };
-    this.paymentCodeTrades.set(input.paymentNo, trade);
-    return this.paymentCodeResult(
-      input.paymentNo,
-      trade,
-      input.authCode.length,
-    );
+      amountCents: input.amountCents,
+      authCodeLength: input.authCode.length,
+    });
+    await this.delayResponse();
+    return this.paymentCodeResult(input.paymentNo, trade, trade.authCodeLength);
   }
 
   private paymentCodeResult(
@@ -105,8 +97,12 @@ export class MockPaymentProvider implements PaymentProvider {
   async queryPaymentCode(
     input: ProviderPaymentCodeQueryInput,
   ): Promise<ProviderPaymentCodeQueryResult> {
-    const trade = this.paymentCodeTrades.get(input.paymentNo);
-    if (!trade || trade.providerTradeNo !== input.providerTradeNo) {
+    const trade = await this.paymentCodeTrades.find(input.paymentNo);
+    if (
+      !trade ||
+      (input.providerTradeNo !== null &&
+        trade.providerTradeNo !== input.providerTradeNo)
+    ) {
       return {
         status: "unknown",
         providerTradeNo: input.providerTradeNo,
@@ -124,10 +120,18 @@ export class MockPaymentProvider implements PaymentProvider {
   async reversePaymentCode(
     input: ProviderPaymentCodeReverseInput,
   ): Promise<ProviderPaymentCodeReverseResult> {
-    const trade = this.paymentCodeTrades.get(input.paymentNo);
-    if (trade && trade.providerTradeNo === input.providerTradeNo) {
-      trade.status = "reversed";
+    if (!input.providerTradeNo) {
+      return this.unknownReversal(input.paymentNo, "missing_provider_trade_no");
     }
+    const trade = await this.paymentCodeTrades.acceptReversal({
+      providerPaymentNo: input.paymentNo,
+      providerTradeNo: input.providerTradeNo,
+      idempotencyKey: input.idempotencyKey ?? input.paymentNo,
+    });
+    if (!trade) {
+      return this.unknownReversal(input.paymentNo, "trade_not_found");
+    }
+    await this.delayResponse();
     return {
       status: "reversed",
       recall: true,
@@ -138,6 +142,30 @@ export class MockPaymentProvider implements PaymentProvider {
         paymentNo: input.paymentNo,
       },
     };
+  }
+
+  private unknownReversal(
+    paymentNo: string,
+    reason: string,
+  ): ProviderPaymentCodeReverseResult {
+    return {
+      status: "unknown",
+      recall: false,
+      providerStatus: "TESTBED_REVERSE_UNKNOWN",
+      failureCode: "TESTBED_REVERSE_UNKNOWN",
+      rawPayload: {
+        provider: "mock",
+        source: "payment_code",
+        paymentNo,
+        reason,
+      },
+    };
+  }
+
+  private async delayResponse(): Promise<void> {
+    const delayMs = this.config.paymentMockProviderResponseDelayMs ?? 0;
+    if (delayMs <= 0) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
   }
 
   async queryPayment(

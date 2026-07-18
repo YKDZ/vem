@@ -32,6 +32,13 @@ const RECOVERY_BATCH_SIZE = 20;
 const RECOVERY_MAX_ATTEMPTS = 8;
 const PROVIDER_CALL_TIMEOUT_MS = 15_000;
 
+class PaymentCodeRecoveryLeaseLostError extends Error {
+  constructor(attemptId: string, cause?: unknown) {
+    super(`payment_code_recovery_lease_lost:${attemptId}`, { cause });
+    this.name = "PaymentCodeRecoveryLeaseLostError";
+  }
+}
+
 export const PAYMENT_CODE_WORKER_FAULTS = Symbol("PAYMENT_CODE_WORKER_FAULTS");
 export const PAYMENT_CODE_WORKER_OPTIONS = Symbol(
   "PAYMENT_CODE_WORKER_OPTIONS",
@@ -571,16 +578,32 @@ export class PaymentCodeRecoveryService
     claim: PaymentCodeRecoveryClaim,
     call: () => Promise<T>,
   ): Promise<T> {
+    await this.requireLeaseRenewal(claim);
+
     let renewing = false;
+    let leaseLost = false;
+    let rejectLeaseLost!: (error: Error) => void;
+    const leaseLostPromise = new Promise<T>((_resolve, reject) => {
+      rejectLeaseLost = reject;
+    });
     const interval = setInterval(
       () => {
-        if (renewing) return;
+        if (renewing || leaseLost) return;
         renewing = true;
         void this.attempts
           .renewRecoveryClaim(claim, this.recoveryLeaseMs)
+          .then((renewed) => {
+            if (renewed) return;
+            leaseLost = true;
+            rejectLeaseLost(new PaymentCodeRecoveryLeaseLostError(claim.id));
+          })
           .catch((error: unknown) => {
+            leaseLost = true;
             this.logger.warn(
               `payment-code lease renewal failed for ${claim.id}: ${this.errorMessage(error)}`,
+            );
+            rejectLeaseLost(
+              new PaymentCodeRecoveryLeaseLostError(claim.id, error),
             );
           })
           .finally(() => {
@@ -590,10 +613,26 @@ export class PaymentCodeRecoveryService
       Math.max(25, Math.floor(this.recoveryLeaseMs / 3)),
     );
     try {
-      return await this.withTimeout(call(), this.providerCallTimeoutMs);
+      return await Promise.race([
+        this.withTimeout(call(), this.providerCallTimeoutMs),
+        leaseLostPromise,
+      ]);
     } finally {
       clearInterval(interval);
     }
+  }
+
+  private async requireLeaseRenewal(
+    claim: PaymentCodeRecoveryClaim,
+  ): Promise<void> {
+    try {
+      if (await this.attempts.renewRecoveryClaim(claim, this.recoveryLeaseMs)) {
+        return;
+      }
+    } catch (error) {
+      throw new PaymentCodeRecoveryLeaseLostError(claim.id, error);
+    }
+    throw new PaymentCodeRecoveryLeaseLostError(claim.id);
   }
 
   private async withTimeout<T>(

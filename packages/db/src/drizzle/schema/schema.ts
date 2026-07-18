@@ -1449,6 +1449,57 @@ export const paymentCodeAttempts = t.pgTable(
   ],
 );
 
+export const mockPaymentCodeTrades = t.pgTable(
+  "mock_payment_code_trades",
+  {
+    providerPaymentNo: t
+      .varchar("provider_payment_no", { length: 64 })
+      .primaryKey(),
+    chargeIdempotencyKey: t
+      .varchar("charge_idempotency_key", { length: 128 })
+      .notNull(),
+    reversalIdempotencyKey: t.varchar("reversal_idempotency_key", {
+      length: 128,
+    }),
+    providerTradeNo: t.varchar("provider_trade_no", { length: 128 }).notNull(),
+    amountCents: t.integer("amount_cents").notNull(),
+    authCodeLength: t.integer("auth_code_length").notNull(),
+    status: t.varchar("status", { length: 16 }).notNull(),
+    chargeAcceptedCount: t
+      .integer("charge_accepted_count")
+      .default(1)
+      .notNull(),
+    reversalAcceptedCount: t
+      .integer("reversal_accepted_count")
+      .default(0)
+      .notNull(),
+    paidAt: t.timestamp("paid_at", { withTimezone: true }).notNull(),
+    reversedAt: t.timestamp("reversed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("mock_payment_code_trades_charge_idempotency_unique")
+      .on(table.chargeIdempotencyKey),
+    t
+      .uniqueIndex("mock_payment_code_trades_provider_trade_no_unique")
+      .on(table.providerTradeNo),
+    t.check(
+      "mock_payment_code_trades_status_check",
+      sql`${table.status} in ('succeeded', 'reversed')`,
+    ),
+    t.check(
+      "mock_payment_code_trades_charge_once_check",
+      sql`${table.chargeAcceptedCount} = 1`,
+    ),
+    t.check(
+      "mock_payment_code_trades_reversal_once_check",
+      sql`${table.reversalAcceptedCount} in (0, 1)`,
+    ),
+  ],
+);
+
 export const paymentEvents = t.pgTable(
   "payment_events",
   {

@@ -264,6 +264,12 @@ export class AppConfigService {
     return this.config.get("PAYMENT_MOCK_ENABLED", { infer: true });
   }
 
+  get paymentMockProviderResponseDelayMs(): number {
+    return this.config.get("PAYMENT_MOCK_PROVIDER_RESPONSE_DELAY_MS", {
+      infer: true,
+    });
+  }
+
   get paymentWebhookBaseUrl(): string {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
   }

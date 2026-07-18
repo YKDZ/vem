@@ -1291,6 +1291,159 @@ postgresDescribe(
       expect(commands).toHaveLength(1);
     });
 
+    it.each([
+      ["returns false", false],
+      ["throws", new Error("renewal database unavailable")],
+    ])(
+      "does not call the provider when the required lease renewal %s",
+      async (_description, renewalResult) => {
+        const instance = new DrizzleDB(databaseUrl);
+        databases.push(instance);
+        await instance.connect();
+        const seeded = await seedPayablePaymentCodeOrder(instance);
+        const created = await createDurableAttempt(
+          instance,
+          seeded,
+          `lease-renewal-rejected:${seeded.paymentId}`,
+        );
+        const provider = {
+          chargePaymentCode: vi.fn(),
+          queryPaymentCode: vi.fn(),
+          reversePaymentCode: vi.fn(),
+        };
+        const worker = makeDurableWorker(instance, provider);
+        const attempts = (
+          worker as unknown as { attempts: PaymentCodeAttemptsService }
+        ).attempts;
+        const renewal = vi.spyOn(attempts, "renewRecoveryClaim");
+        if (renewalResult instanceof Error) {
+          renewal.mockRejectedValue(renewalResult);
+        } else {
+          renewal.mockResolvedValue(renewalResult);
+        }
+
+        await expect(
+          worker.submitAttempt({
+            attemptId: created.attempt.id,
+            authCode: "28763443825664394",
+            clientIp: null,
+          }),
+        ).resolves.toBeDefined();
+
+        expect(provider.chargePaymentCode).not.toHaveBeenCalled();
+        expect(provider.queryPaymentCode).not.toHaveBeenCalled();
+        expect(provider.reversePaymentCode).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["returns false", false],
+      ["throws", new Error("heartbeat database unavailable")],
+    ])(
+      "stops a stale worker when an in-flight lease heartbeat %s and recovers one accepted charge",
+      async (_description, heartbeatResult) => {
+        const instanceA = new DrizzleDB(databaseUrl);
+        const instanceB = new DrizzleDB(databaseUrl);
+        databases.push(instanceA, instanceB);
+        await Promise.all([instanceA.connect(), instanceB.connect()]);
+        const seeded = await seedPayablePaymentCodeOrder(instanceA);
+        const created = await createDurableAttempt(
+          instanceA,
+          seeded,
+          `lease-heartbeat-lost:${seeded.paymentId}`,
+        );
+        const chargeStarted = deferred<void>();
+        const releaseCharge = deferred<{
+          status: "succeeded";
+          providerTradeNo: string;
+          providerStatus: string;
+          rawPayload: Record<string, string>;
+        }>();
+        const acceptedChargeKeys = new Set<string>();
+        let effectiveCharges = 0;
+        const success = {
+          status: "succeeded" as const,
+          providerTradeNo: `MOCK-${created.attempt.providerPaymentNo}`,
+          providerStatus: "TRADE_SUCCESS",
+          rawPayload: { trade_status: "TRADE_SUCCESS" },
+        };
+        const provider = {
+          chargePaymentCode: vi.fn(
+            async (input: { idempotencyKey?: string }) => {
+              const operationKey = input.idempotencyKey;
+              if (!operationKey)
+                throw new Error("missing charge operation key");
+              if (!acceptedChargeKeys.has(operationKey)) {
+                acceptedChargeKeys.add(operationKey);
+                effectiveCharges += 1;
+              }
+              chargeStarted.resolve();
+              return await releaseCharge.promise;
+            },
+          ),
+          queryPaymentCode: vi.fn().mockResolvedValue(success),
+          reversePaymentCode: vi.fn(),
+        };
+        const workerA = makeDurableWorker(
+          instanceA,
+          provider,
+          {},
+          { recoveryLeaseMs: 90, providerCallTimeoutMs: 1_500 },
+        );
+        const attempts = (
+          workerA as unknown as { attempts: PaymentCodeAttemptsService }
+        ).attempts;
+        const renewal = vi
+          .spyOn(attempts, "renewRecoveryClaim")
+          .mockResolvedValueOnce(true);
+        if (heartbeatResult instanceof Error) {
+          renewal.mockRejectedValueOnce(heartbeatResult);
+        } else {
+          renewal.mockResolvedValueOnce(heartbeatResult);
+        }
+
+        const staleSubmission = workerA.submitAttempt({
+          attemptId: created.attempt.id,
+          authCode: "28763443825664394",
+          clientIp: null,
+        });
+        await chargeStarted.promise;
+        await expect(staleSubmission).resolves.toMatchObject({
+          status: "querying",
+          isActive: true,
+        });
+
+        await makeAttemptRecoverableNow(instanceA, created.attempt.id);
+        await expect(
+          makeDurableWorker(instanceB, provider).reconcileDueAttempts(),
+        ).resolves.toEqual({ claimed: 1 });
+        releaseCharge.resolve(success);
+
+        expect(provider.chargePaymentCode).toHaveBeenCalledTimes(1);
+        expect(effectiveCharges).toBe(1);
+        expect(acceptedChargeKeys).toEqual(
+          new Set([created.attempt.providerPaymentNo]),
+        );
+        const [state] = await instanceB.client
+          .select({
+            attemptStatus: paymentCodeAttempts.status,
+            attemptActive: paymentCodeAttempts.isActive,
+            paymentStatus: payments.status,
+            orderStatus: orders.status,
+          })
+          .from(paymentCodeAttempts)
+          .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+          .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
+          .where(eq(paymentCodeAttempts.id, created.attempt.id));
+        expect(state).toEqual({
+          attemptStatus: "succeeded",
+          attemptActive: false,
+          paymentStatus: "succeeded",
+          orderStatus: "paid",
+        });
+      },
+    );
+
     it("renews a bounded slow query lease so a competing worker cannot take it", async () => {
       const instanceA = new DrizzleDB(databaseUrl);
       const instanceB = new DrizzleDB(databaseUrl);
@@ -1385,6 +1538,8 @@ postgresDescribe(
         rawPayload: { action: "reverse" },
       };
       let reverseCalls = 0;
+      let effectiveReversals = 0;
+      const admittedReversalKeys = new Set<string>();
       const provider = {
         chargePaymentCode: vi.fn().mockResolvedValue({
           status: "processing",
@@ -1398,14 +1553,23 @@ postgresDescribe(
           providerStatus: "WAIT_BUYER_PAY",
           rawPayload: { trade_status: "WAIT_BUYER_PAY" },
         }),
-        reversePaymentCode: vi.fn(async () => {
-          reverseCalls += 1;
-          if (reverseCalls === 1) {
-            firstReverseStarted.resolve();
-            return await releaseFirstReverse.promise;
-          }
-          return reversed;
-        }),
+        reversePaymentCode: vi.fn(
+          async (input: { idempotencyKey?: string }) => {
+            const operationKey = input.idempotencyKey;
+            if (!operationKey)
+              throw new Error("missing reversal operation key");
+            if (!admittedReversalKeys.has(operationKey)) {
+              admittedReversalKeys.add(operationKey);
+              effectiveReversals += 1;
+            }
+            reverseCalls += 1;
+            if (reverseCalls === 1) {
+              firstReverseStarted.resolve();
+              return await releaseFirstReverse.promise;
+            }
+            return reversed;
+          },
+        ),
       };
       const workerA = makeDurableWorker(instanceA, provider);
       const workerB = makeDurableWorker(instanceB, provider);
@@ -1464,6 +1628,10 @@ postgresDescribe(
 
       expect(provider.queryPaymentCode).toHaveBeenCalledTimes(2);
       expect(provider.reversePaymentCode).toHaveBeenCalledTimes(2);
+      expect(effectiveReversals).toBe(1);
+      expect(admittedReversalKeys).toEqual(
+        new Set([created.attempt.providerPaymentNo]),
+      );
       expect(provider.reversePaymentCode).toHaveBeenCalledWith(
         expect.objectContaining({
           paymentNo: created.attempt.providerPaymentNo,
