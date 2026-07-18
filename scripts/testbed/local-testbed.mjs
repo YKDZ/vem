@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -20,6 +21,52 @@ const VOLUME_NAMES = Object.freeze({
 });
 const SERVICE_API_UNIT = "vem-local-testbed-service-api";
 const MODES = new Set(["fast", "full", "clear_cache"]);
+const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
+  "NODE_ENV",
+  "DATABASE_URL",
+  "JWT_SECRET",
+  "JWT_REFRESH_SECRET",
+  "MACHINE_JWT_SECRET",
+  "MACHINE_CREDENTIAL_ENCRYPTION_KEY",
+  "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
+  "CORS_ORIGINS",
+  "MQTT_URL",
+  "MACHINE_MQTT_URL",
+  "MAINTENANCE_RELAY_ADDRESS_POOL",
+  "MAINTENANCE_RUNNER_ADDRESS_POOL",
+  "MAINTENANCE_MAINTAINER_ADDRESS_POOL",
+  "MAINTENANCE_MACHINE_ADDRESS_POOL",
+  "MAINTENANCE_RELAY_PEER_ID",
+  "MAINTENANCE_RELAY_ENDPOINT",
+  "MAINTENANCE_RELAY_PUBLIC_KEY",
+  "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
+  "MAINTENANCE_RELAY_CREDENTIAL",
+  "MAINTENANCE_RELAY_JWT_SECRET",
+  "PAYMENT_MOCK_ENABLED",
+  "PAYMENT_WEBHOOK_BASE_URL",
+  "MACHINE_API_BASE_URL",
+  "MEDIA_ASSET_STORAGE_ROOT",
+  "PAYMENT_CONFIG_ENCRYPTION_KEY",
+  "BOOTSTRAP_ADMIN_USERNAME",
+  "BOOTSTRAP_ADMIN_PASSWORD",
+  "SERVICE_HOST",
+  "SERVICE_PORT",
+]);
+const COMMAND_ENV_PASSTHROUGH = Object.freeze([
+  "CI",
+  "COREPACK_HOME",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LOGNAME",
+  "PATH",
+  "PNPM_HOME",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "USER",
+  "XDG_RUNTIME_DIR",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -82,7 +129,55 @@ function option(args, name, optional = false) {
   return value;
 }
 
-export function parseOptions(args) {
+function isObservedIpv4(entry) {
+  return entry?.family === "IPv4" || entry?.family === 4;
+}
+
+function observedNonLoopbackIpv4Addresses(observeNetworkInterfaces) {
+  const observed = observeNetworkInterfaces();
+  const addresses = new Set();
+  for (const entries of Object.values(observed ?? {})) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (
+        entry &&
+        typeof entry.address === "string" &&
+        isObservedIpv4(entry) &&
+        entry.internal !== true &&
+        !entry.address.startsWith("127.")
+      ) {
+        addresses.add(entry.address);
+      }
+    }
+  }
+  return addresses;
+}
+
+export function validateHostPrivateAddress(
+  hostPrivateAddress,
+  { observeNetworkInterfaces = networkInterfaces } = {},
+) {
+  if (isIP(hostPrivateAddress) !== 4 || hostPrivateAddress.startsWith("127.")) {
+    throw new Error(
+      "--host-private-address must be a non-loopback IPv4 address",
+    );
+  }
+  if (
+    !observedNonLoopbackIpv4Addresses(observeNetworkInterfaces).has(
+      hostPrivateAddress,
+    )
+  ) {
+    throw new Error(
+      "--host-private-address must match a non-loopback IPv4 interface on this host",
+    );
+  }
+  return hostPrivateAddress;
+}
+
+export function parseOptions(
+  args,
+  { observeNetworkInterfaces = networkInterfaces } = {},
+) {
   const command = args[0];
   if (command !== "reconstruct") {
     throw new Error(
@@ -92,12 +187,10 @@ export function parseOptions(args) {
   const mode = option(args, "mode");
   if (!MODES.has(mode))
     throw new Error("--mode must be fast, full, or clear_cache");
-  const hostPrivateAddress = option(args, "host-private-address");
-  if (isIP(hostPrivateAddress) !== 4 || hostPrivateAddress.startsWith("127.")) {
-    throw new Error(
-      "--host-private-address must be a non-loopback IPv4 address",
-    );
-  }
+  const hostPrivateAddress = validateHostPrivateAddress(
+    option(args, "host-private-address"),
+    { observeNetworkInterfaces },
+  );
   return {
     command,
     mode,
@@ -202,8 +295,8 @@ async function loadFixture() {
   return fixture;
 }
 
-function commandLine(command, args) {
-  return { command, args: args.map(String) };
+function commandLine(command, args, extra = {}) {
+  return { command, args: args.map(String), ...extra };
 }
 
 function renderPublishedCommand(command, options, contract) {
@@ -308,7 +401,9 @@ export function buildReconstructionPlan(options, contract) {
       "--filter",
       "service-api",
     ]),
-    commandLine("pnpm", ["--filter", "@vem/db", "migrate"]),
+    commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
+      env: buildMigrationEnvironment(options),
+    }),
     commandLine("ssh", [
       ...sshArgs,
       `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${binding.guest.stagingPath}') | Out-Null\"`,
@@ -325,15 +420,21 @@ export function buildReconstructionPlan(options, contract) {
   ];
 }
 
-function serviceApiEnvironment(options) {
+export function buildHostLocalServiceApiEnvironment(options) {
   return {
+    NODE_ENV: "development",
     DATABASE_URL:
       "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
     MQTT_URL: "mqtt://127.0.0.1:18883",
     MACHINE_MQTT_URL: `mqtt://${options.hostPrivateAddress}:18883`,
     MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
-    PAYMENT_WEBHOOK_BASE_URL: "http://127.0.0.1:26849",
+    PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
     PAYMENT_MOCK_ENABLED: "true",
+    CORS_ORIGINS: [
+      "http://127.0.0.1:1420",
+      "http://tauri.localhost",
+      "https://tauri.localhost",
+    ].join(","),
     SERVICE_HOST: "0.0.0.0",
     SERVICE_PORT: "26849",
     BOOTSTRAP_ADMIN_USERNAME: "local-testbed-admin",
@@ -344,12 +445,59 @@ function serviceApiEnvironment(options) {
     MACHINE_CREDENTIAL_ENCRYPTION_KEY:
       "local-testbed-machine-credential-key-32-chars",
     MACHINE_CLAIM_LOOKUP_HMAC_KEY: "local-testbed-machine-claim-lookup-key-v1",
+    MAINTENANCE_RELAY_ADDRESS_POOL: "10.91.0.0/24",
+    MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.1.0/24",
+    MAINTENANCE_MAINTAINER_ADDRESS_POOL: "10.91.3.0/24",
+    MAINTENANCE_MACHINE_ADDRESS_POOL: "10.91.16.0/20",
+    MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
+    MAINTENANCE_RELAY_ENDPOINT: `${options.hostPrivateAddress}:51820`,
+    MAINTENANCE_RELAY_PUBLIC_KEY:
+      "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+    MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
+    MAINTENANCE_RELAY_CREDENTIAL:
+      "local-maintenance-relay-credential-change-before-production",
+    MAINTENANCE_RELAY_JWT_SECRET:
+      "local-maintenance-relay-jwt-secret-change-before-production",
+    MEDIA_ASSET_STORAGE_ROOT: join(
+      options.stateRoot,
+      "service-api-media-assets",
+    ),
+    PAYMENT_CONFIG_ENCRYPTION_KEY:
+      "local-payment-config-encryption-key-32-chars",
+  };
+}
+
+function mergeCommandEnvironment(
+  explicitEnvironment,
+  baseEnvironment = process.env,
+) {
+  const merged = {};
+  for (const name of COMMAND_ENV_PASSTHROUGH) {
+    const value = baseEnvironment[name];
+    if (typeof value === "string" && value.length > 0) merged[name] = value;
+  }
+  return { ...merged, ...explicitEnvironment };
+}
+
+export function buildMigrationEnvironment(
+  options,
+  { baseEnvironment = process.env } = {},
+) {
+  return {
+    ...mergeCommandEnvironment(
+      buildHostLocalServiceApiEnvironment(options),
+      baseEnvironment,
+    ),
+    DOTENV_CONFIG_PATH: join(
+      options.stateRoot,
+      "service-api.local-testbed.env",
+    ),
   };
 }
 
 export function buildServiceApiUnitPlan(options) {
   const unit = `${SERVICE_API_UNIT}.service`;
-  const environment = serviceApiEnvironment(options);
+  const environment = buildHostLocalServiceApiEnvironment(options);
   return [
     commandLine("sudo", ["systemctl", "stop", unit]),
     commandLine("sudo", ["systemctl", "reset-failed", unit]),
@@ -362,8 +510,8 @@ export function buildServiceApiUnitPlan(options) {
       "--property=StandardOutput=journal",
       "--property=StandardError=journal",
       `--property=WorkingDirectory=${options.workspace}`,
-      ...Object.entries(environment).map(
-        ([name, value]) => `--setenv=${name}=${value}`,
+      ...REQUIRED_SERVICE_API_ENV_KEYS.map(
+        (name) => `--setenv=${name}=${environment[name]}`,
       ),
       process.execPath,
       "apps/service-api/dist/main.js",
@@ -673,6 +821,11 @@ async function reconstruct(options) {
     "listener 1883 0.0.0.0\nallow_anonymous true\npersistence false\n",
     "utf8",
   );
+  await writeFile(
+    join(options.stateRoot, "service-api.local-testbed.env"),
+    "",
+    "utf8",
+  );
   const plan = buildReconstructionPlan(options, contract);
   if (options.dryRun)
     return {
@@ -694,7 +847,10 @@ async function reconstruct(options) {
   ).catch(() => undefined);
   await run(plan[2].command, plan[2].args, { cwd: options.workspace });
   for (const step of plan.slice(3, 9))
-    await run(step.command, step.args, { cwd: options.workspace });
+    await run(step.command, step.args, {
+      cwd: options.workspace,
+      env: step.env,
+    });
   await waitForPostgres();
   await startServiceApiUnit(options);
   const apiBaseUrl = "http://127.0.0.1:26849/api";

@@ -20,23 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  clear-declared-windows-caches:
-    name: Clear Declared Windows Caches
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'clear_cache' }}
-    runs-on: [self-hosted, Windows, X64, vem-runtime]
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Clear Declared D Drive Caches
-        shell: pwsh
-        run: scripts/testbed/run-local-testbed-guest.ps1 -Mode clear_cache
-
   reconstruct-local-testbed:
     name: Reconstruct Local Testbed
-    if: ${{ github.event_name == 'push' || inputs.mode != 'clear_cache' }}
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 30
     outputs:

@@ -23,6 +23,10 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /VEM_LOCAL_TESTBED_STATE_ROOT/);
     assert.doesNotMatch(
       workflow,
+      /Acquire Host Global Lock|Release Host Global Lock/,
+    );
+    assert.doesNotMatch(
+      workflow,
       /docker run|postgres:|mosquitto|win10-vem-e2e|build-windows-runtime-artifacts|upload-artifact/,
     );
     assert.doesNotMatch(workflow, /2\.22|192\.168\.|118\.25\.|VPS|admin-ui/i);
@@ -32,6 +36,7 @@ describe("VM runtime acceptance workflow", () => {
     const reconstruct = workflow.indexOf("reconstruct-local-testbed:");
     const windows = workflow.indexOf("run-inside-windows:");
     assert.ok(reconstruct >= 0 && windows > reconstruct);
+    assert.doesNotMatch(workflow, /clear-declared-windows-caches:/);
     assert.match(workflow.slice(windows), /needs: reconstruct-local-testbed/);
     assert.match(
       workflow.slice(windows),
@@ -39,22 +44,18 @@ describe("VM runtime acceptance workflow", () => {
     );
   });
 
-  it("runs clear_cache directly on Windows without reconstructing C or platform state", () => {
+  it("runs clear_cache only after reconstructing host state, staging guest input, and admitting the runner", () => {
     assert.match(
       workflow,
-      /clear-declared-windows-caches:[\s\S]*if: .*inputs\.mode == 'clear_cache'[\s\S]*run-local-testbed-guest\.ps1 -Mode clear_cache/,
+      /TESTBED_MODE: \$\{\{ inputs\.mode \|\| 'full' \}\}/,
     );
     assert.match(
       workflow,
-      /reconstruct-local-testbed:[\s\S]*if: .*inputs\.mode != 'clear_cache'/,
+      /local-testbed\.mjs reconstruct[\s\S]*--out "\$RUNNER_TEMP\/vem-local-testbed-reconstruction\.json"/,
     );
-    const clearJob = workflow.match(
-      /clear-declared-windows-caches:[\s\S]*?(?=\n  [a-z][\w-]+:|$)/,
-    )?.[0];
-    assert.ok(clearJob);
-    assert.doesNotMatch(
-      clearJob,
-      /needs:|local-testbed\.mjs|baseline|host-address/i,
+    assert.match(
+      workflow,
+      /run-inside-windows:[\s\S]*needs: reconstruct-local-testbed[\s\S]*run-local-testbed-guest\.ps1 -Mode '\$\{\{ needs\.reconstruct-local-testbed\.outputs\.mode \}\}'/,
     );
   });
 });

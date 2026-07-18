@@ -33,8 +33,7 @@ const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
 const CURRENT_MANIFEST_SCHEMA = "win10-kvm-baseline-current/v1";
 export const VNC_ACTIVATOR_METADATA_FILE = ".vnc-activator.json";
 const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v1";
-const VNC_LAUNCH_SUPERVISOR_READY =
-  "VEM_VNC_LAUNCH_SUPERVISOR_READY/v1";
+const VNC_LAUNCH_SUPERVISOR_READY = "VEM_VNC_LAUNCH_SUPERVISOR_READY/v1";
 const VNC_LAUNCH_SUPERVISOR_SOURCE = String.raw`
 import { spawn } from "node:child_process";
 
@@ -570,7 +569,10 @@ function settlesWithin(promise, timeoutMs) {
 function processStartTime(statValue) {
   const closingName = statValue.lastIndexOf(")");
   if (closingName < 0) throw new Error("Linux process stat is malformed");
-  const fields = statValue.slice(closingName + 2).trim().split(/\s+/);
+  const fields = statValue
+    .slice(closingName + 2)
+    .trim()
+    .split(/\s+/);
   const startTimeTicks = fields[19];
   if (!/^\d+$/.test(startTimeTicks ?? "")) {
     throw new Error("Linux process start time is unavailable");
@@ -977,9 +979,7 @@ export async function startHeadlessVncActivator({
     await releaseSupervisor(viewer);
     await Promise.race([
       failure,
-      new Promise((resolveReady) =>
-        setTimeout(resolveReady, readinessDelayMs),
-      ),
+      new Promise((resolveReady) => setTimeout(resolveReady, readinessDelayMs)),
     ]);
     return {
       endpoint,

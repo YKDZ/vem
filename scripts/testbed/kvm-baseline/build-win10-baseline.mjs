@@ -131,9 +131,7 @@ async function writeConstructionOwner(path, owner) {
 
 export async function createConstructionWorkspace(
   config,
-  {
-    nextBuildId = () => randomUUID().replaceAll("-", "").slice(0, 8),
-  } = {},
+  { nextBuildId = () => randomUUID().replaceAll("-", "").slice(0, 8) } = {},
 ) {
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const buildId = nextBuildId();
@@ -563,9 +561,7 @@ export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
   }
   const packageSha256 = createHash("sha256")
     .update(
-      identityFiles
-        .map(({ path, sha256 }) => `${path}\0${sha256}\n`)
-        .join(""),
+      identityFiles.map(({ path, sha256 }) => `${path}\0${sha256}\n`).join(""),
       "utf8",
     )
     .digest("hex");
@@ -770,8 +766,7 @@ function verificationCommand({
     ExpectedInteractiveUser: config.guest.sshUser,
     ExpectedRunnerUrl: config.runner.url,
     ExpectedRunnerName: runnerName,
-    ExpectedVirtioGpuDriverPackageSha256:
-      expectedVirtioGpuDriverPackageSha256,
+    ExpectedVirtioGpuDriverPackageSha256: expectedVirtioGpuDriverPackageSha256,
     ExpectedAudioModel: "ich9",
     ExpectedSerialRole: ["lower-controller", "scanner"],
     ExpectedSerialUsbPort: [1, 2],
@@ -819,7 +814,10 @@ function validateInteractiveDisplayReport(report, config) {
       "interactive display report does not match the requested desktop",
     );
   }
-  if (typeof report.displayAdapter !== "string" || report.displayAdapter === "") {
+  if (
+    typeof report.displayAdapter !== "string" ||
+    report.displayAdapter === ""
+  ) {
     throw new Error(
       "interactive display report does not identify the active display adapter",
     );
@@ -1037,7 +1035,8 @@ export async function waitForInteractiveDisplayReport(
       if (currentBootIdentity === null) {
         diagnostic = {
           status,
-          error: "waiting for a guest boot identity before interactive display re-arm",
+          error:
+            "waiting for a guest boot identity before interactive display re-arm",
         };
       } else {
         rearmAttempts += 1;
@@ -1050,7 +1049,8 @@ export async function waitForInteractiveDisplayReport(
         if (!rearm.failed) {
           try {
             const response = readJsonWithBom(rearm.stdout ?? "");
-            if (interactiveDisplayCompleted(response)) rearmCompletion = response;
+            if (interactiveDisplayCompleted(response))
+              rearmCompletion = response;
           } catch {
             // A reboot can close the SSH channel before PowerShell flushes JSON.
           }
@@ -1368,8 +1368,9 @@ export async function recoverStaleConstructionDomains(
     .map((name) => name.trim())
     .filter(Boolean);
   const remainingDomains = new Set(listedDomains);
-  const constructionDomains = listedDomains
-    .filter((name) => constructionDomainPattern.test(name));
+  const constructionDomains = listedDomains.filter((name) =>
+    constructionDomainPattern.test(name),
+  );
   for (const domainName of constructionDomains) {
     await destroyAndUndefine(config, domainName, { runCommand });
     remainingDomains.delete(domainName);
@@ -1450,10 +1451,7 @@ async function rollbackPublishedDefinition(config, previousRelease) {
   );
 }
 
-export async function buildWin10Baseline(
-  config,
-  options = {},
-) {
+export async function buildWin10Baseline(config, options = {}) {
   const commandTracker = createConstructionCommandTracker();
   const previousCommandTracker = activeConstructionCommandTracker;
   activeConstructionCommandTracker = commandTracker;
@@ -1619,10 +1617,7 @@ async function buildWin10BaselineImpl(
             width: profile.display.width,
             height: profile.display.height,
           },
-          metadataPath: join(
-            stagingDirectory,
-            VNC_ACTIVATOR_METADATA_FILE,
-          ),
+          metadataPath: join(stagingDirectory, VNC_ACTIVATOR_METADATA_FILE),
           owner: construction,
         });
         const { verification, virtualDevices } =
