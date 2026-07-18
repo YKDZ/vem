@@ -388,7 +388,8 @@ describe("tracked local testbed host lifecycle", () => {
       runnerRemovalToken: "runner-removal-token",
     }).at(-1);
     assert.doesNotMatch(dynamicRegistration.input, /curl\.exe|actions\/runners\/registration-token/);
-    assert.match(dynamicRegistration.input, /config\.cmd'\) remove --token 'runner-removal-token'/);
+    assert.match(dynamicRegistration.input, /Stop-Service.*sc\.exe delete/s);
+    assert.doesNotMatch(dynamicRegistration.input, /config\.cmd'\) remove/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
     assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);

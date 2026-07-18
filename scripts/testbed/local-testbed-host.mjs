@@ -260,8 +260,14 @@ function runnerAdmissionAssertion(
 ) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
   const registrationSetup = runnerRegistrationToken
-    ? `& (Join-Path $runnerRoot 'config.cmd') remove --token ${quotePowerShell(runnerRemovalToken)}
-if ($LASTEXITCODE -ne 0) { throw "actions runner removal failed with exit code $LASTEXITCODE" }
+    ? `$oldServiceIdentityPath = Join-Path $runnerRoot '.service'
+if (Test-Path -LiteralPath $oldServiceIdentityPath -PathType Leaf) {
+  $oldServiceName = (Get-Content -LiteralPath $oldServiceIdentityPath -Raw -Encoding UTF8).Trim()
+  if ($oldServiceName -like 'actions.runner.*') {
+    Stop-Service -Name $oldServiceName -Force -ErrorAction SilentlyContinue
+    & sc.exe delete $oldServiceName | Out-Null
+  }
+}
 Set-RunnerAdmissionPhase 'removed-old-runner'
 $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
