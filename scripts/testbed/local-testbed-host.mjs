@@ -286,7 +286,7 @@ while ((Get-Date).ToUniversalTime() -lt $deadline) {
       try { $tail = $reader.ReadToEnd() } finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
-    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected')
+    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected|A session for this runner already exists')
     if ($marker.Success) {
       [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name; diagnosticOffset = $offset } | ConvertTo-Json -Compress
       exit 0
@@ -743,7 +743,11 @@ export async function executeHostAdmissionPlan(
         throw new Error("runner admission emitted incomplete diagnostics");
       }
       if (
-        !["Listening for Jobs", "Runner reconnected"].includes(
+        ![
+          "Listening for Jobs",
+          "Runner reconnected",
+          "A session for this runner already exists",
+        ].includes(
           runnerAdmission.listenerMarker,
         )
       ) {

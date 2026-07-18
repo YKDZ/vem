@@ -310,6 +310,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
     assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
+    assert.match(runner.input, /A session for this runner already exists/);
     assert.doesNotMatch(runner.input, /Session created/);
     assert.match(runner.input, /\$diagnosticOffsets/);
     assert.match(runner.input, /\.Length/);
