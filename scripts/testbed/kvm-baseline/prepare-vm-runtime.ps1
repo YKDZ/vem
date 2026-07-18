@@ -319,12 +319,25 @@ function Set-CacheEnvironment {
     [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Machine")
     Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value
   }
+  $cachePaths = Get-CachePaths
+  $toolPathEntries = @(
+    (Join-Path $cachePaths.CARGO_HOME "bin"),
+    (Join-Path $cachePaths.PNPM_HOME "bin"),
+    "C:\Program Files\nodejs",
+    "C:\ProgramData\chocolatey\bin"
+  )
+  $machinePathEntries = @([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";" | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_) -and $toolPathEntries -inotcontains $_
+  })
+  $machinePath = (@($toolPathEntries) + $machinePathEntries) -join ";"
+  [Environment]::SetEnvironmentVariable("Path", $machinePath, "Machine")
+  $env:Path = $machinePath + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
   Set-CargoDownloadCacheLinks
 }
 
 function Refresh-ProcessPath {
   $cachePaths = Get-CachePaths
-  $env:Path = $cachePaths.CARGO_HOME + "\bin;" + $cachePaths.PNPM_HOME + ";C:\Program Files\nodejs;" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
+  $env:Path = $cachePaths.CARGO_HOME + "\bin;" + $cachePaths.PNPM_HOME + "\bin;C:\Program Files\nodejs;" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User") + ";C:\ProgramData\chocolatey\bin"
 }
 
 function Test-WindowsMediaStack {

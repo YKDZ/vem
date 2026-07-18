@@ -2756,6 +2756,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.doesNotMatch(verify, /Get-Volume -DriveLetter D/);
     assert.match(runtime, /foreach \(\$codePoint in 69\.\.90\)/);
     assert.doesNotMatch(runtime, /"E"\.\."Z"/);
+    assert.match(runtime, /Join-Path \$cachePaths\.PNPM_HOME "bin"/);
+    assert.match(runtime, /SetEnvironmentVariable\("Path", \$machinePath, "Machine"\)/);
     assert.match(shared, /PreserveStartupType/);
     assert.match(
       shared,
