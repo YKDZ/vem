@@ -208,4 +208,49 @@ describe("useVisionStore", () => {
       occupancyConfidence: null,
     });
   });
+
+  it("degrades try-on only when its ready capability or error reports it unavailable", () => {
+    const visionStore = useVisionStore();
+
+    visionStore.applyStatus(
+      visionStatus({
+        type: "vision.ready",
+        payload: {
+          serverName: "vending-vision",
+          serverVersion: "main",
+          cameraReady: true,
+          modelReady: false,
+          capabilities: ["profile_push", "try_on_session"],
+        },
+      }),
+    );
+    expect(visionStore.isTryOnCapabilityDegraded).toBe(false);
+
+    visionStore.applyStatus(
+      visionStatus(
+        {
+          type: "vision.error",
+          payload: {
+            code: "model_not_ready",
+            message: "profile model warming up",
+            retryable: true,
+          },
+        },
+        { online: false },
+      ),
+    );
+    expect(visionStore.isTryOnCapabilityDegraded).toBe(false);
+
+    visionStore.applyStatus(
+      visionStatus({
+        type: "vision.error",
+        payload: {
+          code: "try_on_unavailable",
+          message: "front camera unavailable",
+          retryable: true,
+        },
+      }),
+    );
+    expect(visionStore.isTryOnCapabilityDegraded).toBe(true);
+  });
 });

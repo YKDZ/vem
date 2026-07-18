@@ -17,6 +17,7 @@ import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { useVisionStore } from "@/stores/vision";
 import { formatCents } from "@/utils/format";
 
 type VariantOption = {
@@ -29,6 +30,7 @@ const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
+const visionStore = useVisionStore();
 const saleCapabilityStore = useSaleCapabilityStore();
 
 const selectedVariantId = ref<string | null>(null);
@@ -226,7 +228,9 @@ async function purchase(): Promise<void> {
 
 async function enterTryOn(): Promise<void> {
   const variant = selectedVariant.value;
-  if (!variant?.tryOnSilhouetteUrl) return;
+  if (!variant?.tryOnSilhouetteUrl || visionStore.isTryOnCapabilityDegraded) {
+    return;
+  }
   await submitMachineNavigationIntent({
     type: "customer.navigate",
     target: {
@@ -416,6 +420,7 @@ async function enterTryOn(): Promise<void> {
               class="try-on-button kiosk-touch-target"
               type="button"
               data-test="try-on-entry"
+              :disabled="visionStore.isTryOnCapabilityDegraded"
               @click="enterTryOn"
             >
               虚拟试穿

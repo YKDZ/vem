@@ -136,6 +136,31 @@ describe("transaction route authority", () => {
     expect(router.currentRoute.value.name).toBe("payment");
   });
 
+  it("keeps the payment route when a field-observed departure arrives", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useCheckoutStore(pinia).applyTransaction(activePaymentTransaction());
+    await router.push("/payment");
+
+    await authority.submit({ type: "presence.departed" });
+
+    expect(router.currentRoute.value.name).toBe("payment");
+    expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
+      intentType: "presence.departed",
+      reasonCode: "active_transaction_route",
+      transactionOrderNo: "ORD-ROUTE-ACTIVE",
+    });
+    authority.dispose();
+  });
+
   it("requires explicit terminal dismissal before a completed transaction can leave its result route", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

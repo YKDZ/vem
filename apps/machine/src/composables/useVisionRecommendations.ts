@@ -4,6 +4,7 @@ import type { Ref } from "vue";
 import { readonly, ref, onUnmounted } from "vue";
 
 import {
+  isVisionTryOnCapabilityDegraded,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
@@ -110,13 +111,19 @@ export function useVisionRecommendations(): {
   const subscription = subscribeVisionProfiles(
     { machineCode: machineStore.machineCode },
     {
-    onPresenceStatus: handlePresence,
-    onPersonDeparted: handlePersonDeparted,
-    onProfile: handleProfile,
-    onError: () => {
-      clearState();
-      visionStore.clearLatestDiagnosticPayload();
-    },
+      onReady: (payload) => {
+        visionStore.applyVisionReady(payload);
+      },
+      onPresenceStatus: handlePresence,
+      onPersonDeparted: handlePersonDeparted,
+      onProfile: handleProfile,
+      onError: (error) => {
+        if (isVisionTryOnCapabilityDegraded(error)) {
+          visionStore.markTryOnCapabilityDegraded();
+        }
+        clearState();
+        visionStore.clearLatestDiagnosticPayload();
+      },
     },
   );
 

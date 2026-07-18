@@ -1,9 +1,11 @@
 import {
   type VisionPresenceOccupancyState,
   type VisionProfileNotUsableReason,
+  visionErrorPayloadSchema,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
+  visionReadyPayloadSchema,
 } from "@vem/shared";
 import { defineStore } from "pinia";
 
@@ -30,6 +32,8 @@ type VisionPersonDepartedDiagnosticPayload = {
   type: "vision.person_departed";
   payload: VisionPersonDepartedPayload;
 };
+
+type VisionTryOnCapability = "unknown" | "available" | "degraded";
 
 type VisionPresenceState = {
   personPresent: boolean;
@@ -66,6 +70,7 @@ export const useVisionStore = defineStore("vision", {
     message: "等待 daemon 状态",
     updatedAt: null as string | null,
     latestDiagnosticPayload: null as unknown,
+    tryOnCapability: "unknown" as VisionTryOnCapability,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
   }),
   getters: {
@@ -79,6 +84,8 @@ export const useVisionStore = defineStore("vision", {
       state.presence.personPresent &&
       state.presence.profileUsable &&
       state.presence.occupancyState !== "multiple",
+    isTryOnCapabilityDegraded: (state): boolean =>
+      state.tryOnCapability === "degraded",
   },
   actions: {
     applyStatus(
@@ -91,8 +98,12 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = status.updatedAt ?? new Date().toISOString();
       if (status.latestDiagnosticPayload !== undefined) {
         this.latestDiagnosticPayload = status.latestDiagnosticPayload;
+        this.applyTryOnCapabilityFromDiagnostic(this.latestDiagnosticPayload);
         this.applyPresenceFromDiagnostic(this.latestDiagnosticPayload, options);
         return;
+      }
+      if (!status.enabled) {
+        this.tryOnCapability = "degraded";
       }
       if (!status.enabled || !status.online) {
         this.clearLatestDiagnosticPayload();
@@ -130,9 +141,30 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPersonDeparted(parsed);
     },
+    applyVisionReady(payload: unknown): void {
+      const result = visionReadyPayloadSchema.safeParse(payload);
+      if (!result.success) return;
+      this.tryOnCapability =
+        result.data.cameraReady &&
+        result.data.capabilities.includes("try_on_session")
+          ? "available"
+          : "degraded";
+    },
+    markTryOnCapabilityDegraded(): void {
+      this.tryOnCapability = "degraded";
+    },
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;
       this.presence = { ...EMPTY_PRESENCE };
+    },
+    applyTryOnCapabilityFromDiagnostic(value: unknown): void {
+      if (isVisionReadyDiagnostic(value)) {
+        this.applyVisionReady(value.payload);
+        return;
+      }
+      if (isVisionTryOnUnavailableDiagnostic(value)) {
+        this.markTryOnCapabilityDegraded();
+      }
     },
     applyPresenceFromDiagnostic(
       value: unknown,
@@ -323,6 +355,32 @@ function parseProfileResultDiagnostic(
     }
   }
   return null;
+}
+
+function isVisionReadyDiagnostic(
+  value: unknown,
+): value is { type: "vision.ready"; payload: unknown } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "vision.ready" &&
+    "payload" in value
+  );
+}
+
+function isVisionTryOnUnavailableDiagnostic(value: unknown): boolean {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("type" in value) ||
+    value.type !== "vision.error" ||
+    !("payload" in value)
+  ) {
+    return false;
+  }
+  const result = visionErrorPayloadSchema.safeParse(value.payload);
+  return result.success && result.data.code === "try_on_unavailable";
 }
 
 function parsePresenceStatusDiagnostic(

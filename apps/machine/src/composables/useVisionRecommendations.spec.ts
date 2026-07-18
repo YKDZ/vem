@@ -17,6 +17,9 @@ const { subscribeVisionProfilesMock } = vi.hoisted(() => ({
 
 vi.mock("@/native/vision", () => ({
   subscribeVisionProfiles: subscribeVisionProfilesMock,
+  isVisionTryOnCapabilityDegraded: (error: unknown) =>
+    error instanceof Error &&
+    error.message.startsWith("vision try_on_unavailable:"),
 }));
 
 import { useVisionRecommendations } from "./useVisionRecommendations";

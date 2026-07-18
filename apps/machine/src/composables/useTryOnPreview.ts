@@ -1,12 +1,14 @@
 import { readonly, ref, type Ref } from "vue";
 
 import {
+  isVisionTryOnCapabilityDegraded,
   openVisionTryOnSession,
   type VisionTryOnSession,
   type VisionTryOnSessionInput,
   type VisionTryOnStopReason,
 } from "@/native/vision";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 export interface TryOnPreviewStartInput extends VisionTryOnSessionInput {
   silhouetteUrl?: string | null;
@@ -20,6 +22,7 @@ export function useTryOnPreview(): {
   stopPreview: (reason?: VisionTryOnStopReason) => Promise<void>;
 } {
   const machineStore = useMachineStore();
+  const visionStore = useVisionStore();
   const previewUrl = ref<string | null>(null);
   const errorMessage = ref<string | null>(null);
   const isStarting = ref(false);
@@ -60,8 +63,11 @@ export function useTryOnPreview(): {
       }
       activeSession.value = session;
       previewUrl.value = session.previewUrl;
-    } catch {
+    } catch (error) {
       if (sequence === requestSequence) {
+        if (isVisionTryOnCapabilityDegraded(error)) {
+          visionStore.markTryOnCapabilityDegraded();
+        }
         errorMessage.value =
           "虚拟试穿预览启动失败，请联系维护人员检查视觉服务与摄像头。";
       }

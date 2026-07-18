@@ -5,14 +5,6 @@ export const VISION_CAMERA_MAINTENANCE_CONTRACT_VERSION =
 
 export const visionCameraMaintenanceRoleSchema = z.enum(["top", "front"]);
 
-export const visionCameraMaintenanceScopeSchema = z.enum([
-  "camera.read",
-  "camera.refresh",
-  "camera.preview",
-  "camera.test",
-  "camera.confirm",
-]);
-
 export const visionCameraBackendObservationSchema = z
   .object({
     backend: z.string().trim().min(1),

@@ -78,6 +78,9 @@ vi.mock("@/daemon/client", () => ({
 vi.mock("@/native/vision", () => ({
   subscribeVisionProfiles: subscribeVisionProfilesMock,
   openVisionTryOnSession: openVisionTryOnSessionMock,
+  isVisionTryOnCapabilityDegraded: (error: unknown) =>
+    error instanceof Error &&
+    error.message.startsWith("vision try_on_unavailable:"),
 }));
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
@@ -1274,6 +1277,57 @@ describe("sale-start capability UI flow", () => {
     await nextTick();
 
     expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
+  });
+
+  it("disables only a degraded try-on capability while preserving ordinary purchase", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    useVisionStore().applyStatus({
+      enabled: true,
+      online: true,
+      message: "vision ready without try-on",
+      latestDiagnosticPayload: {
+        type: "vision.ready",
+        payload: {
+          serverName: "vending-vision",
+          serverVersion: "main",
+          cameraReady: true,
+          modelReady: false,
+          capabilities: ["profile_push"],
+        },
+      },
+    });
+    routeParams.catalogKey = item.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+    const tryOnEntry = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="try-on-entry"]',
+    );
+    const buy = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-buy"]',
+    );
+
+    expect(tryOnEntry.disabled).toBe(true);
+    expect(buy.disabled).toBe(false);
+    tryOnEntry.click();
+    buy.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenCalledWith({ name: "checkout" });
+    expect(useCheckoutStore().selectedItem?.catalogKey).toBe(item.catalogKey);
   });
 
   it("starts virtual try-on with the vision preview stream and overlays the selected silhouette", async () => {

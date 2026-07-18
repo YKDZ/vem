@@ -90,6 +90,7 @@ const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 10_000;
+const TRY_ON_UNAVAILABLE_PREFIX = "vision try_on_unavailable:";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -173,7 +174,9 @@ function serializeClientMessage(message: VisionClientMessage): string {
   return JSON.stringify(message);
 }
 
-function connectionOptions(connection: VisionRuntimeConnection = {}): Required<VisionRuntimeConnection> {
+function connectionOptions(
+  connection: VisionRuntimeConnection = {},
+): Required<VisionRuntimeConnection> {
   return {
     machineCode: connection.machineCode ?? null,
     url: connection.url ?? DEFAULT_VISION_WS_URL,
@@ -265,6 +268,17 @@ function errorFromVisionMessage(message: VisionErrorMessage): Error {
   );
 }
 
+function tryOnUnavailableError(message: string): Error {
+  return new Error(`${TRY_ON_UNAVAILABLE_PREFIX} ${message}`);
+}
+
+export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith(TRY_ON_UNAVAILABLE_PREFIX)
+  );
+}
+
 function closeSocket(socket: WebSocket): void {
   if (
     socket.readyState === WebSocket.CONNECTING ||
@@ -290,7 +304,9 @@ async function visionSelfCheckBrowser(
 
   const socket = await openVisionSocket(options.url, options.timeoutMs);
   try {
-    socket.send(serializeClientMessage(createHelloMessage(options.machineCode)));
+    socket.send(
+      serializeClientMessage(createHelloMessage(options.machineCode)),
+    );
     const message = await nextServerMessage(socket, options.timeoutMs);
     if (message.type === "vision.error") throw errorFromVisionMessage(message);
     if (message.type !== "vision.ready") {
@@ -361,10 +377,7 @@ export async function openVisionTryOnSession(
     throw new Error("视觉模块未启用，无法启动虚拟试穿");
   }
 
-  const socket = await openVisionSocket(
-    options.url,
-    options.timeoutMs,
-  );
+  const socket = await openVisionSocket(options.url, options.timeoutMs);
   let closed = false;
 
   const closeSessionSocket = (): void => {
@@ -373,11 +386,10 @@ export async function openVisionTryOnSession(
   };
 
   try {
-    socket.send(serializeClientMessage(createHelloMessage(options.machineCode)));
-    const readyMessage = await nextServerMessage(
-      socket,
-      options.timeoutMs,
+    socket.send(
+      serializeClientMessage(createHelloMessage(options.machineCode)),
     );
+    const readyMessage = await nextServerMessage(socket, options.timeoutMs);
     if (readyMessage.type === "vision.error") {
       throw errorFromVisionMessage(readyMessage);
     }
@@ -387,10 +399,10 @@ export async function openVisionTryOnSession(
       );
     }
     if (!readyMessage.payload.cameraReady) {
-      throw new Error("视觉摄像头未就绪，无法启动虚拟试穿");
+      throw tryOnUnavailableError("视觉摄像头未就绪，无法启动虚拟试穿");
     }
     if (!readyMessage.payload.capabilities.includes("try_on_session")) {
-      throw new Error("视觉模块不支持虚拟试穿会话");
+      throw tryOnUnavailableError("视觉模块不支持虚拟试穿会话");
     }
 
     const startMessage = createTryOnStartMessage(input);
@@ -595,7 +607,10 @@ export function subscribeVisionProfiles(
 
   const connect = async (): Promise<void> => {
     try {
-      const connectedSocket = await openVisionSocket(options.url, options.timeoutMs);
+      const connectedSocket = await openVisionSocket(
+        options.url,
+        options.timeoutMs,
+      );
       if (closed) {
         closeSocket(connectedSocket);
         return;
