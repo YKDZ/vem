@@ -160,7 +160,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
     </serial>`,
     )
     .join("\n");
-  return `<domain type="kvm">
+  return `<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
   <name>${xml(profile.vmName)}</name>
   <memory unit="MiB">${profile.memoryMiB}</memory>
   <currentMemory unit="MiB">${profile.memoryMiB}</currentMemory>
@@ -188,6 +188,10 @@ ${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(
 ${serial}
     <memballoon model="virtio"/>
   </devices>
+  <qemu:commandline>
+    <qemu:arg value="-global"/>
+    <qemu:arg value="usb-serial.always-plugged=on"/>
+  </qemu:commandline>
 </domain>
 `;
 }

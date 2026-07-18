@@ -628,6 +628,7 @@ describe("Linux KVM Windows baseline", () => {
     );
     assert.doesNotMatch(xml, /<model type="(?:vga|bochs|qxl)"/);
     assert.match(xml, /target type="usb-serial" port="0"/);
+    assert.match(xml, /usb-serial\.always-plugged=on/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
     assert.match(
@@ -1099,6 +1100,17 @@ await new Promise(() => setInterval(() => {}, 1_000));
           profile,
         ),
       /USB serial role scanner is invalid/,
+    );
+    assert.throws(
+      () =>
+        verifyDefinedRuntimeDevices(
+          xml.replace(
+            "usb-serial.always-plugged=on",
+            "usb-serial.always-plugged=off",
+          ),
+          profile,
+        ),
+      /must remain attached/,
     );
     assert.doesNotThrow(() =>
       verifyDefinedRuntimeDevices(
@@ -2580,8 +2592,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /Install-VirtioGpuDisplayDriver -DriverRoot \$VirtioGpuDriverPath/,
     );
     assert.match(prepareKvmGuest, /Install-FtdiVirtualComPortDriver/);
-    assert.match(runtime, /runtime-testbed-assets-v1\/ftdi-cdm-2\.06\.02-win-x64\.zip/);
-    assert.match(runtime, /79ed0432d79bff644d22a6b9e9580b916b0b32993570cf4cda498f014a27e0f1/);
+    assert.match(
+      runtime,
+      /runtime-testbed-assets-v1\/ftdi-cdm-2\.12\.36\.20-win-x64\.zip/,
+    );
+    assert.match(
+      runtime,
+      /11fc404c0cb8d173567f400783a3a60642b0d0bc1d4c3bbad64ab96e0bfd43de/,
+    );
     assert.match(
       runtime,
       /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf[\s\S]*VID_0403&PID_6001/,
@@ -3058,6 +3076,38 @@ await new Promise(() => setInterval(() => {}, 1_000));
       );
     } finally {
       rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails immediately when first-logon KVM preparation reports its root error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-first-logon-failure-"));
+    const config = buildConfig(root);
+    try {
+      await assert.rejects(
+        waitForInteractiveDisplayReport(
+          config,
+          "win10-runtime-baseline-build-test",
+          root,
+          {
+            discoverGuestAddress: async () => "192.0.2.44",
+            runCommand: async (command, args) => {
+              if (command === "ssh" && args.at(-1) === "exit") return {};
+              return {
+                stdout: JSON.stringify({
+                  reportPresent: false,
+                  guestStageFailure: {
+                    message:
+                      "the two FTDI virtual COM ports did not become available",
+                  },
+                }),
+              };
+            },
+          },
+        ),
+        /initial KVM guest preparation failed: the two FTDI virtual COM ports did not become available/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

@@ -34,8 +34,8 @@ $nodeNamespace = "node-$nodeVersion"
 $pnpmNamespace = "pnpm-$pnpmVersion"
 $turboNamespace = "turbo-$turboVersion"
 $rustNamespace = "rust-1.96.0"
-$ftdiVcpDriverUri = "https://github.com/YKDZ/vem/releases/download/runtime-testbed-assets-v1/ftdi-cdm-2.06.02-win-x64.zip"
-$ftdiVcpDriverSha256 = "79ed0432d79bff644d22a6b9e9580b916b0b32993570cf4cda498f014a27e0f1"
+$ftdiVcpDriverUri = "https://github.com/YKDZ/vem/releases/download/runtime-testbed-assets-v1/ftdi-cdm-2.12.36.20-win-x64.zip"
+$ftdiVcpDriverSha256 = "11fc404c0cb8d173567f400783a3a60642b0d0bc1d4c3bbad64ab96e0bfd43de"
 
 function Get-CachePaths {
   return @{
@@ -204,7 +204,7 @@ function Install-VirtioGpuDisplayDriver {
 }
 
 function Install-FtdiVirtualComPortDriver {
-  $driverRoot = Join-Path $env:TEMP "vem-ftdi-vcp-2.06.02"
+  $driverRoot = Join-Path $env:TEMP "vem-ftdi-vcp-2.12.36.20"
   $archivePath = "$driverRoot.zip"
   Remove-Item -LiteralPath $driverRoot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
@@ -738,6 +738,10 @@ function Get-InteractiveDisplayPreparationStatus {
     ((Get-Content -LiteralPath $interactiveDisplayLogPath -Tail 30 -ErrorAction SilentlyContinue) -join "`n")
   } else { $null }
   $state = Read-InteractiveDisplayPreparationState
+  $guestStageFailurePath = Join-Path $baselineRoot "guest-stage-failure.json"
+  $guestStageFailure = if (Test-Path -LiteralPath $guestStageFailurePath -PathType Leaf) {
+    Get-Content -Raw -LiteralPath $guestStageFailurePath | ConvertFrom-Json
+  } else { $null }
   $task = Get-InteractiveDisplayTaskStatus
   $cleanup = Get-InteractiveDisplayCleanupStatus -Task $task
   $driverBindingValid = Test-VirtioGpuDriverBinding
@@ -749,6 +753,7 @@ function Get-InteractiveDisplayPreparationStatus {
     state = $state
     task = $task
     cleanup = $cleanup
+    guestStageFailure = $guestStageFailure
     driverBindingValid = $driverBindingValid
     completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonDisabled
     taskLogTail = $taskLogTail
