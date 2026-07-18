@@ -25,74 +25,29 @@ permissions:
   contents: read
 
 jobs:
-  recover-host-ssh:
-    if: github.ref == 'refs/heads/ops/recover-forest-ssh-20260718'
+  inspect-host-runtime:
+    if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Start temporary host command channel
+      - name: Inspect VM runtime state without changing host services
         run: |
           set -euo pipefail
-          if command -v sudo >/dev/null 2>&1; then
-            sudo -n systemctl stop ssh.socket ssh.service
-          else
-            systemctl stop ssh.socket ssh.service
-          fi
-          test ! -e /tmp/vem-host-command.pid || kill "$(cat /tmp/vem-host-command.pid)" 2>/dev/null || true
-          cat >/tmp/vem-host-command.py <<'PY'
-          import subprocess
-          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-          class Handler(BaseHTTPRequestHandler):
-              def do_GET(self):
-                  if self.path != "/health":
-                      self.send_error(404)
-                      return
-                  self.send_response(200)
-                  self.end_headers()
-                  self.wfile.write(b"ok\n")
-
-              def do_POST(self):
-                  if self.path != "/exec":
-                      self.send_error(404)
-                      return
-                  command = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
-                  try:
-                      result = subprocess.run(
-                          command,
-                          shell=True,
-                          executable="/bin/bash",
-                          stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT,
-                          timeout=3600,
-                      )
-                      output = result.stdout
-                      exit_code = result.returncode
-                  except subprocess.TimeoutExpired as error:
-                      output = (error.stdout or b"") + b"\ncommand timed out\n"
-                      exit_code = 124
-                  self.send_response(200)
-                  self.send_header("X-Exit-Code", str(exit_code))
-                  self.send_header("Content-Length", str(len(output)))
-                  self.end_headers()
-                  self.wfile.write(output)
-
-              def log_message(self, *_args):
-                  pass
-
-          ThreadingHTTPServer(("0.0.0.0", 22), Handler).serve_forever()
-          PY
-          if command -v sudo >/dev/null 2>&1; then
-            sudo -n bash -c 'nohup python3 /tmp/vem-host-command.py >/tmp/vem-host-command.log 2>&1 </dev/null & echo $! >/tmp/vem-host-command.pid'
-          else
-            nohup python3 /tmp/vem-host-command.py >/tmp/vem-host-command.log 2>&1 </dev/null &
-            echo $! >/tmp/vem-host-command.pid
-          fi
-          sleep 1
-          curl -fsS http://127.0.0.1:22/health
+          hostname
+          date -Is
+          df -h /opt /
+          virsh list --all
+          ps -eo pid,etimes,cmd | grep -E 'build-win10-baseline|qemu-system' | grep -v grep || true
+          find /opt/vem/runtime-baseline -maxdepth 3 -type f -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n' | sort | tail -80
+          for path in /opt/vem/runtime-baseline/build-final.exit /opt/vem/runtime-baseline/build-final.log; do
+            if test -f "$path"; then
+              echo "--- $path ---"
+              tail -120 "$path"
+            fi
+          done
 
   build-windows-runtime:
     name: Build Current Windows Runtime
-    if: github.ref != 'refs/heads/ops/recover-forest-ssh-20260718' && inputs.runtime_artifact_run_id == ''
+    if: github.ref != 'refs/heads/ops/inspect-forest-vm-20260718' && inputs.runtime_artifact_run_id == ''
     uses: ./.github/workflows/build-windows-runtime-artifacts.yml
     with:
       artifact_name: windows-runtime-artifacts-${{ github.run_id }}
