@@ -29,6 +29,7 @@ $interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-rep
 $runnerRegistrationPath = Join-Path $baselineRoot "runner-registration.json"
 $virtioGpuDriverBindingPath = Join-Path $baselineRoot "virtio-gpu-driver-binding.json"
 $virtioGpuDriverRoot = Join-Path $baselineRoot "media\virtio-gpu-driver"
+$virtioGpuDriverIdentityPath = Join-Path $baselineRoot "media\virtio-gpu-driver-identity.json"
 if (-not (Test-Path -LiteralPath $interactiveDisplayReportPath)) { throw "interactive autologon display report is unavailable" }
 $interactiveDisplay = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json
 if ($interactiveDisplay.schemaVersion -ne "win10-kvm-interactive-display/v1") { throw "interactive display report schema is invalid" }
@@ -62,8 +63,13 @@ function Get-VerifiedVirtioGpuDriverBinding {
   if ($binding.schemaVersion -ne "win10-kvm-virtio-gpu-driver-binding/v1" -or [string]$binding.packageSha256 -cne $ExpectedVirtioGpuDriverPackageSha256) {
     throw "VirtIO GPU driver binding package identity does not match the published payload"
   }
-  $files = @($binding.files | Sort-Object path)
-  if ($files.Count -lt 3 -or @($files.path | Select-Object -Unique).Count -ne $files.Count) { throw "VirtIO GPU driver binding file identity is invalid" }
+  if (-not (Test-Path -LiteralPath $virtioGpuDriverIdentityPath -PathType Leaf)) { throw "VirtIO GPU driver package identity is unavailable" }
+  $packageIdentity = Get-Content -Raw -LiteralPath $virtioGpuDriverIdentityPath | ConvertFrom-Json
+  if ($packageIdentity.schemaVersion -ne "win10-kvm-virtio-gpu-driver-package/v2" -or [string]$packageIdentity.packageSha256 -cne $ExpectedVirtioGpuDriverPackageSha256) {
+    throw "VirtIO GPU driver package identity does not match the published payload"
+  }
+  $files = @($packageIdentity.files | Sort-Object path)
+  if ($files.Count -lt 3 -or @($files.path | Select-Object -Unique).Count -ne $files.Count) { throw "VirtIO GPU driver package file identity is invalid" }
   $identityText = New-Object Text.StringBuilder
   foreach ($file in $files) {
     if ([string]$file.path -notmatch "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$" -or [string]$file.sha256 -notmatch "^[0-9a-f]{64}$") { throw "VirtIO GPU driver binding file identity is invalid" }
@@ -83,6 +89,15 @@ function Get-VerifiedVirtioGpuDriverBinding {
     $sha256.Dispose()
   }
   if ($packageHash -cne $ExpectedVirtioGpuDriverPackageSha256) { throw "VirtIO GPU driver binding aggregate identity is invalid" }
+
+  $driverStoreFiles = @($packageIdentity.driverStoreFiles | Sort-Object path)
+  $bindingFiles = @($binding.files | Sort-Object path)
+  if ($driverStoreFiles.Count -lt 3 -or $bindingFiles.Count -ne $driverStoreFiles.Count) { throw "VirtIO GPU DriverStore binding identity is invalid" }
+  for ($index = 0; $index -lt $driverStoreFiles.Count; $index += 1) {
+    if ([string]$driverStoreFiles[$index].path -cne [string]$bindingFiles[$index].path -or [string]$driverStoreFiles[$index].sha256 -cne [string]$bindingFiles[$index].sha256) {
+      throw "VirtIO GPU DriverStore binding is not part of the published package"
+    }
+  }
 
   $adapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
     Where-Object { $_.Status -eq "OK" -and $_.ConfigManagerErrorCode -eq 0 -and $_.PNPDeviceID -ceq [string]$binding.pnpDeviceId } |

@@ -33,7 +33,11 @@ const REQUIRED_COMMANDS = [
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
 const CURRENT_MANIFEST_SCHEMA = "win10-kvm-baseline-current/v1";
 export const VNC_ACTIVATOR_METADATA_FILE = ".vnc-activator.json";
-const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v2";
+const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v3";
+const VNC_ACTIVATOR_LEGACY_SCHEMAS = new Set([
+  "win10-kvm-vnc-activator/v1",
+  "win10-kvm-vnc-activator/v2",
+]);
 const VNC_ACTIVATOR_ROLES = Object.freeze(["xvfb", "window-manager", "viewer"]);
 const VNC_LAUNCH_SUPERVISOR_READY = "VEM_VNC_LAUNCH_SUPERVISOR_READY/v1";
 const VNC_LAUNCH_SUPERVISOR_SOURCE = String.raw`
@@ -104,6 +108,10 @@ for (const key of Object.keys(targetEnvironment)) {
 targetChild = spawn(target.command, target.arguments, {
   env: targetEnvironment,
   stdio: ["ignore", "inherit", "inherit"],
+});
+await module.publishVncActivatorTargetIdentity({
+  ...registration,
+  pid: targetChild.pid,
 });
 targetChild.once("error", () => process.exit(1));
 targetChild.once("exit", (code, signal) => {
@@ -688,8 +696,9 @@ export async function recoverHeadlessVncActivator({
     if (error.code === "ENOENT") return { present: false, recovered: true };
     return { present: true, recovered: false };
   }
+  const legacy = VNC_ACTIVATOR_LEGACY_SCHEMAS.has(metadata.schemaVersion);
   if (
-    metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
+    (!legacy && metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA) ||
     !ownerMatches(metadata.owner, owner) ||
     !metadata.processes ||
     Object.keys(metadata.processes).some(
@@ -700,6 +709,23 @@ export async function recoverHeadlessVncActivator({
     )
   ) {
     return { present: true, recovered: false };
+  }
+  if (!legacy) {
+    if (
+      !metadata.targets ||
+      Object.keys(metadata.targets).some(
+        (role) => !VNC_ACTIVATOR_ROLES.includes(role),
+      ) ||
+      Object.values(metadata.targets).some(
+        (identity) => !processIdentityShape(identity),
+      )
+    ) {
+      return { present: true, recovered: false };
+    }
+    for (const role of ["viewer", "window-manager", "xvfb"]) {
+      const identity = metadata.targets[role];
+      if (identity) await terminateExactProcessIdentity(identity, termination);
+    }
   }
   for (const role of ["viewer", "window-manager", "xvfb"]) {
     const identity = metadata.processes[role];
@@ -729,6 +755,7 @@ export async function publishVncActivatorSupervisorIdentity({
     schemaVersion: VNC_ACTIVATOR_METADATA_SCHEMA,
     owner,
     processes: {},
+    targets: {},
   };
   try {
     metadata = JSON.parse(await readFile(metadataPath, "utf8"));
@@ -745,6 +772,13 @@ export async function publishVncActivatorSupervisorIdentity({
     Object.values(metadata.processes).some(
       (identity) => !processIdentityShape(identity),
     ) ||
+    !metadata.targets ||
+    Object.keys(metadata.targets).some(
+      (observedRole) => !VNC_ACTIVATOR_ROLES.includes(observedRole),
+    ) ||
+    Object.values(metadata.targets).some(
+      (identity) => !processIdentityShape(identity),
+    ) ||
     metadata.processes[role]
   ) {
     throw new Error("VNC activator metadata cannot register this supervisor");
@@ -753,6 +787,40 @@ export async function publishVncActivatorSupervisorIdentity({
   await writeJsonAtomicallyDurably(metadataPath, {
     ...metadata,
     processes: { ...metadata.processes, [role]: identity },
+  });
+  return identity;
+}
+
+export async function publishVncActivatorTargetIdentity({
+  metadataPath,
+  owner,
+  pid,
+  role,
+}) {
+  if (!VNC_ACTIVATOR_ROLES.includes(role)) {
+    throw new Error("VNC activator target role is invalid");
+  }
+  const expectedMetadataPath = resolve(
+    string(owner?.systemStagingPath, "owner.systemStagingPath"),
+    VNC_ACTIVATOR_METADATA_FILE,
+  );
+  if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
+    throw new Error("VNC activator metadata must use its owned staging path");
+  }
+  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  if (
+    metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
+    !ownerMatches(metadata.owner, owner) ||
+    !processIdentityShape(metadata.processes?.[role]) ||
+    !metadata.targets ||
+    metadata.targets[role]
+  ) {
+    throw new Error("VNC activator metadata cannot register this target");
+  }
+  const identity = await readLinuxProcessIdentity(pid);
+  await writeJsonAtomicallyDurably(metadataPath, {
+    ...metadata,
+    targets: { ...metadata.targets, [role]: identity },
   });
   return identity;
 }

@@ -753,16 +753,29 @@ await new Promise(() => setInterval(() => {}, 1_000));
         const xvfbPid = Number(readFileSync(xvfbPidPath, "utf8"));
         const viewerPid = JSON.parse(readFileSync(viewerStatePath, "utf8")).pid;
         const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-        assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v2");
+        assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v3");
         assert.deepEqual(metadata.owner, owner);
         assert.deepEqual(Object.keys(metadata.processes), [
           "xvfb",
           "window-manager",
           "viewer",
         ]);
+        assert.deepEqual(Object.keys(metadata.targets), [
+          "xvfb",
+          "window-manager",
+          "viewer",
+        ]);
         assert.notEqual(metadata.processes.xvfb.pid, xvfbPid);
         assert.notEqual(metadata.processes.viewer.pid, viewerPid);
+        assert.equal(metadata.targets.xvfb.pid, xvfbPid);
+        assert.equal(metadata.targets.viewer.pid, viewerPid);
         for (const identity of Object.values(metadata.processes)) {
+          assert.match(identity.startTimeTicks, /^\d+$/);
+          assert.match(identity.executable, /^\//);
+          assert.match(identity.commandLineSha256, /^[0-9a-f]{64}$/);
+          assert.doesNotThrow(() => process.kill(identity.pid, 0));
+        }
+        for (const identity of Object.values(metadata.targets)) {
           assert.match(identity.startTimeTicks, /^\d+$/);
           assert.match(identity.executable, /^\//);
           assert.match(identity.commandLineSha256, /^[0-9a-f]{64}$/);
@@ -2337,6 +2350,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /driverStoreFiles[\s\S]*DriverStore identity is not bound to the distribution package/,
     );
     assert.match(runtime, /virtio-gpu-driver-binding\.json/);
+    assert.match(
+      verify,
+      /virtio-gpu-driver-identity\.json[\s\S]*packageIdentity\.files[\s\S]*packageHash -cne \$ExpectedVirtioGpuDriverPackageSha256/,
+    );
+    assert.match(
+      verify,
+      /packageIdentity\.driverStoreFiles[\s\S]*binding\.files[\s\S]*DriverStore binding is not part of the published package/,
+    );
     assert.doesNotMatch(
       runtime,
       /\/subdirs|\/add-driver[^\r\n]*\*\.inf|testsigning|nointegritychecks/i,
@@ -4228,9 +4249,27 @@ await new Promise(() => setInterval(() => {}, 1_000));
           viewerTargetPath,
         ].map((path) => Number(readFileSync(path, "utf8")));
 
+        const crashedSupervisorPid = metadata.processes.viewer.pid;
+        process.kill(crashedSupervisorPid, "SIGKILL");
+        const supervisorDeadline = Date.now() + 2_000;
+        while (Date.now() < supervisorDeadline) {
+          try {
+            process.kill(crashedSupervisorPid, 0);
+            await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+          } catch (error) {
+            if (error.code === "ESRCH") break;
+            throw error;
+          }
+        }
+        assertProcessIsNotRunning(crashedSupervisorPid);
+        assert.doesNotThrow(() => process.kill(metadata.targets.viewer.pid, 0));
+
         builderChild.kill("SIGKILL");
         await once(builderChild, "exit");
-        for (const pid of [...activatorPids, ...targetPids]) {
+        for (const pid of [
+          ...activatorPids.filter((pid) => pid !== crashedSupervisorPid),
+          ...targetPids,
+        ]) {
           assert.doesNotThrow(() => process.kill(pid, 0));
         }
 
