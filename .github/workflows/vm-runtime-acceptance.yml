@@ -74,7 +74,7 @@ jobs:
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
       - name: Collect Compact Runtime Acceptance Evidence Pass 1
-        if: always()
+        if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode != 'clear_cache' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}

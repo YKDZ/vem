@@ -85,6 +85,10 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
     assert.match(workflow, /VISION_GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
     assert.match(workflow, /GITHUB_SHA: \$\{\{ github\.sha \}\}/);
+    assert.match(
+      workflow,
+      /Collect Compact Runtime Acceptance Evidence Pass 1\n\s+if: \$\{\{ always\(\) && needs\.reconstruct-local-testbed\.outputs\.mode != 'clear_cache' \}\}/,
+    );
   });
 
   it("runs a second reconstructed full pass and emits a stability gate report for full mode only", () => {
