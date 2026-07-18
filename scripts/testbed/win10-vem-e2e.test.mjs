@@ -850,7 +850,7 @@ describe("simulated hardware serial acceptance evidence", () => {
             return { status: 0 };
           },
           runRemote(_options, script) {
-            if (script.includes("/v1/hardware-bindings")) {
+            if (script.includes("lowerControllerIdentityKey")) {
               calls.push("serial activation");
               return {
                 lowerControllerPort: "COM1",
@@ -858,7 +858,7 @@ describe("simulated hardware serial acceptance evidence", () => {
                 health: { hardwareOnline: true, scannerOnline: true },
               };
             }
-            if (script.includes("original_vem_machine_ui_task")) {
+            if (script.includes("VEMMachineUI XML restore")) {
               calls.push("cleanup");
               return {
                 restored: "original_vem_machine_ui_task",
@@ -871,32 +871,17 @@ describe("simulated hardware serial acceptance evidence", () => {
                   machineCount: 1,
                   task: {
                     name: "VEMMachineUI",
-                    exists: true,
-                    enabled: true,
-                    runAsUser: "VEMKiosk",
                     execute: "C:\\Windows\\System32\\wscript.exe",
                     arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
                     workingDirectory: "C:\\VEM\\bringup",
+                    xmlSha256: "a".repeat(64),
+                    triggersSettingsConditionsPrincipalActionRestored: true,
                   },
+                  simulatedOrFaultProcessCount: 0,
                   cdpListenerCount: 0,
-                  route: "#/catalog",
-                  routeEvidence: {
-                    source: "acceptance_overlay_cdp",
-                    initialTargetId: "restored-normal-target",
-                    initialTargetUrl:
-                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
-                    initialRoute: "#/catalog",
-                    allowedInitialRoutes: ["#/catalog", "#/result/*"],
-                    settledTargetId: "restored-normal-target",
-                    settledTargetUrl:
-                      "http://127.0.0.1:9222/devtools/page/restored-normal-target",
-                    settledRoute: "#/catalog",
-                    resultAutoReturnObserved: false,
-                    settledWithAcceptanceOverlay: true,
-                    processId: 4243,
-                    principal: "VEM\\VEMKiosk",
-                    sessionId: 1,
-                  },
+                  cdpListenerProcessId: 5151,
+                  cdpListenerSessionId: 1,
+                  cdpMachineAncestorProcessId: 4243,
                 },
               };
             }
@@ -911,6 +896,8 @@ describe("simulated hardware serial acceptance evidence", () => {
                   execute: "C:\\Windows\\System32\\wscript.exe",
                   arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
                   workingDirectory: "C:\\VEM\\bringup",
+                  xmlBase64: "PHRhc2svPg==",
+                  xmlSha256: "a".repeat(64),
                 },
               },
               machine: {
@@ -928,6 +915,11 @@ describe("simulated hardware serial acceptance evidence", () => {
             assert.equal(
               options.expectedRuntimeAttestation.targetId,
               "debug-target",
+            );
+            assert.ok(
+              options.steps.some(
+                (step) => step.operation === "vision_departure",
+              ),
             );
             assert.equal(
               options.tunnelOptions.sshKnownHostsPath,
@@ -948,25 +940,35 @@ describe("simulated hardware serial acceptance evidence", () => {
                   forbiddenRoutes: ["/catalog"],
                   allowedRoutes: ["/payment", "/dispensing", "/result"],
                 },
-                ...options.steps
-                  .filter((step) => step.type === "external-operation")
-                  .map((step, index) => ({
-                    type: "external-operation",
-                    operation: step.operation,
-                    routeBefore: "#/payment",
-                    routeAfter: "#/payment",
-                    provenance: {
-                      guestOperationId: `guest-operation-${index + 1}`,
-                      adapterSessionId: "adapter-session-180",
-                      daemon: {
-                        source: "installed-daemon",
-                        orderNo: "ORDER-NO-180",
+                {
+                  type: "route-action",
+                  stimulus: "history-back",
+                  routeBefore: "#/payment",
+                  routeAfter: "#/payment",
+                  triggerAcknowledged: true,
+                },
+                ...["vision_departure", "catalog_projection_refresh"].map(
+                  (operation) => {
+                    const revision = "a".repeat(64);
+                    const invalidationId = `catalog-invalidation:guest-${operation}:${revision}`;
+                    return {
+                      type: "external-operation",
+                      operation,
+                      routeBefore: "#/payment",
+                      routeAfter: "#/payment",
+                      provenance: {
+                        guestOperationId: `guest-${operation}`,
+                        adapterSessionId: "daemon-ipc:http://127.0.0.1:7615",
+                        session: { daemonReadyFile: "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json", daemonEndpoint: "http://127.0.0.1:7615" },
+                        daemon: { transactionBefore: { orderNo: "ORDER-NO-180" }, transactionAfter: { orderNo: "ORDER-NO-180" }, runtimeTrace: { eventId: "vision-event-180" }, catalog: { revision: operation === "catalog_projection_refresh" ? revision : null, invalidationId: operation === "catalog_projection_refresh" ? invalidationId : null } },
+                        platform: { orderNo: "ORDER-NO-180" },
+                        log: { collector: "windows_application_log", digest: "b".repeat(64), recordCount: 1 },
+                        vision: { eventId: "vision-event-180", delivered: true },
+                        ui: { before: { catalogRequests: [], orderCredential: "ORDER-NO-180" }, after: { runtimeTrace: [{ type: "navigation", intentType: "presence.departed", sourceEventId: "vision-event-180" }], catalogRequests: operation === "catalog_projection_refresh" ? ["http://127.0.0.1/v1/catalog"] : [], catalogRevision: operation === "catalog_projection_refresh" ? revision : null, catalogInvalidationId: operation === "catalog_projection_refresh" ? invalidationId : null, orderCredential: "ORDER-NO-180" }, recoveryOverlay: null },
                       },
-                      platform: { source: "ephemeral-platform" },
-                      serial: { source: "host-serial-adapter" },
-                      vision: { source: "installed-vision-adapter" },
-                    },
-                  })),
+                    };
+                  },
+                ),
                 {
                   type: "checkpoint",
                   label: "continuous",
@@ -1017,9 +1019,10 @@ describe("simulated hardware serial acceptance evidence", () => {
       assert.equal(report.runtimeBinding.debug.targetId, "debug-target");
       assert.equal(report.cleanup.status, "passed");
       assert.equal(
-        report.cleanup.normal.routeEvidence.settledRoute,
-        "#/catalog",
+        report.cleanup.normal.task.triggersSettingsConditionsPrincipalActionRestored,
+        true,
       );
+      assert.equal(report.cleanup.normal.simulatedOrFaultProcessCount, 0);
       assert.deepEqual(
         JSON.parse(readFileSync(output, "utf8")).cleanup,
         report.cleanup,
@@ -4802,7 +4805,7 @@ if ($errors.Count -gt 0) {
     }
   });
 
-  it("restores the original kiosk task action without leaving a CDP listener", () => {
+  it("restores the complete original kiosk task XML without leaving CDP or fault state", () => {
     const launch = buildInstalledKioskSaleLaunchScript();
     const cleanup = buildInstalledKioskSaleCleanupScript({
       principal: "VEM\\VEMKiosk",
@@ -4812,6 +4815,8 @@ if ($errors.Count -gt 0) {
         execute: "C:\\Windows\\System32\\wscript.exe",
         arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
         workingDirectory: "C:\\VEM\\bringup",
+        xmlBase64: Buffer.from("<Task><Triggers/><Settings/><Principals/><Actions/></Task>").toString("base64"),
+        xmlSha256: "a".repeat(64),
       },
     });
 
@@ -4838,15 +4843,16 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(launch, /Invoke-IpcJson .*create-order/);
     assert.match(cleanup, /Unregister-ScheduledTask -TaskName \$debugTask/);
     assert.match(cleanup, /VEMMachineUI restoration retained CDP/);
-    assert.match(cleanup, /New-ScheduledTaskAction -Execute/);
     assert.match(
       cleanup,
-      /Register-ScheduledTask -TaskName \$normalTask -InputObject \(New-ScheduledTask/,
+      /Register-ScheduledTask -TaskName \$normalTask -Xml \$taskXml -Force/,
     );
     assert.match(
       cleanup,
-      /New-ScheduledTaskPrincipal -UserId \$principal -LogonType Interactive/,
+      /Export-ScheduledTask -TaskName \$normalTask/,
     );
+    assert.match(cleanup, /triggers, settings, conditions, principal, or actions/);
+    assert.match(cleanup, /simulated or fault-injection process state/);
     assert.match(cleanup, /Start-ScheduledTask -TaskName \$normalTask/);
     assert.doesNotMatch(cleanup, /http:\/\/127\.0\.0\.1:9222/);
     assert.doesNotMatch(cleanup, /acceptanceOverlayCdp/);

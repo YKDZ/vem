@@ -119,7 +119,7 @@ describe("installed kiosk sale preflight", () => {
     );
   });
 
-  it("rejects browser or debug self-reported error-matrix evidence", () => {
+  it("rejects source labels without reproducible operation/session/log facts", () => {
     const scenario = {
       evidence: [
         {
@@ -145,7 +145,22 @@ describe("installed kiosk sale preflight", () => {
           scenario,
           correlation: { rendered: { orderNo: "ORDER-1" } },
         }),
-      /non-browser daemon provenance/,
+      /reproducible daemon session ready file/,
+    );
+  });
+
+  it("does not retain the retired browser route-disturbance requirement", () => {
+    assert.deepEqual(
+      evaluateInstalledErrorMatrixEvidence({
+        profile: "vm-normal",
+        scenario: {
+          evidence: [
+            { type: "route-disturbance", disturbance: "catalog_refresh" },
+          ],
+        },
+        correlation: null,
+      }),
+      { status: "passed", operations: [] },
     );
   });
 
@@ -247,21 +262,21 @@ describe("installed kiosk sale preflight", () => {
         ),
         /temporary CDP launch terminated before metadata/,
       );
-      assert.equal(remoteScripts.length, 2);
+      assert.equal(remoteScripts.length, 3);
       assert.match(
-        remoteScripts[1],
+        remoteScripts[2],
         /Start-ScheduledTask -TaskName \$normalTask/,
       );
-      assert.match(remoteScripts[1], /\$normalTask = 'VEMMachineUI'/);
+      assert.match(remoteScripts[2], /\$normalTask = 'VEMMachineUI'/);
       assert.match(
-        remoteScripts[1],
+        remoteScripts[2],
         /launch failure cleanup retained a CDP owner/,
       );
       assert.match(
-        remoteScripts[1],
+        remoteScripts[2],
         /launch failure cleanup retained a detached machine\.exe/,
       );
-      assert.match(remoteScripts[1], /\$machines\.Count -eq 1/);
+      assert.match(remoteScripts[2], /\$machines\.Count -eq 1/);
       assert.equal(existsSync(output), true);
       const failureReport = JSON.parse(readFileSync(output, "utf8"));
       assert.equal(failureReport.status, "failed");

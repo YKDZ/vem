@@ -923,6 +923,43 @@ export async function captureDomIdentity(client, options = {}) {
   return boundIdentity(identity);
 }
 
+// This is intentionally a CDP read-only probe.  Installed acceptance must not
+// manufacture a UI state while it is trying to observe the daemon transport.
+export async function captureRuntimeOperationObservation(client, options = {}) {
+  const value = await evaluateExpression(
+    client,
+    `(() => {
+      const trace = window.__VEM_MACHINE_RUNTIME_TRACE__;
+      const payment = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
+      const overlays = [...document.querySelectorAll(
+        '[data-test*="recovery"], [data-vem-recovery-overlay], [role="alert"]'
+      )].map((element) => ({
+        test: element.getAttribute('data-test'),
+        text: (element.textContent || '').trim().slice(0, 256),
+        visible: Boolean(element.getClientRects().length)
+      })).filter((entry) => entry.visible && /recover|reconnect|daemon|connection/i.test((entry.test || '') + ' ' + entry.text));
+      const catalogRequests = performance.getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .filter((name) => /\\/v1\\/catalog(?:[?#]|$)/.test(name))
+        .slice(-32);
+      return {
+        runtimeTrace: Array.isArray(trace) ? structuredClone(trace).slice(-256) : [],
+        catalogRequests,
+        catalogRevision: document.documentElement?.dataset.catalogRevision || document.querySelector('[data-catalog-revision]')?.dataset.catalogRevision || null,
+        catalogInvalidationId: document.documentElement?.dataset.catalogInvalidationId || document.querySelector('[data-catalog-invalidation-id]')?.dataset.catalogInvalidationId || null,
+        recoveryOverlay: overlays,
+        orderCredential: payment?.dataset.orderNo || payment?.dataset.orderCredential || null,
+        route: location.hash
+      };
+    })()`,
+    options,
+  );
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("runtime operation observation returned no object");
+  }
+  return value;
+}
+
 export async function captureScreenshot(client, options = {}) {
   const format = options.format ?? "png";
   if (format !== "png" && format !== "jpeg") {
@@ -1604,12 +1641,66 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         if (typeof adapter.executeExternalOperation !== "function") {
           throw new Error("external operation requires adapter.executeExternalOperation");
         }
-        const provenance = boundExternalOperation(
-          await adapter.executeExternalOperation({
+        const uiBefore = await captureRuntimeOperationObservation(client, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+        });
+        let rawProvenance;
+        let recoveryOverlay = null;
+        if (
+          step.operation === "daemon_transport_interrupt" &&
+          typeof adapter.beginExternalOperation === "function" &&
+          typeof adapter.completeExternalOperation === "function"
+        ) {
+          const pending = await adapter.beginExternalOperation({
             operation: step.operation,
             label: step.name,
             routeBefore: before.route,
-          }),
+            uiBefore,
+          });
+          const overlayDeadline = Date.now() + (step.timeoutMs ?? timeoutMs);
+          do {
+            const observation = await captureRuntimeOperationObservation(client, {
+              timeoutMs: step.timeoutMs ?? timeoutMs,
+            });
+            if (observation.recoveryOverlay?.length > 0) {
+              recoveryOverlay = {
+                observation,
+                screenshot: await captureScreenshot(client, {
+                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                  screenshotSink: adapter.screenshotSink,
+                  label: `${step.name}:recovery-overlay`,
+                }),
+              };
+              break;
+            }
+            await sleep(routePollMs);
+          } while (Date.now() < overlayDeadline);
+          if (recoveryOverlay === null) {
+            throw new Error("daemon transport interruption did not expose a recovery overlay to read-only CDP");
+          }
+          rawProvenance = await adapter.completeExternalOperation(pending, {
+            operation: step.operation,
+            label: step.name,
+            routeBefore: before.route,
+            uiBefore,
+            recoveryOverlay,
+          });
+        } else {
+          rawProvenance = await adapter.executeExternalOperation({
+            operation: step.operation,
+            label: step.name,
+            routeBefore: before.route,
+            uiBefore,
+          });
+        }
+        const uiAfter = await captureRuntimeOperationObservation(client, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+        });
+        const provenance = boundExternalOperation(
+          {
+            ...rawProvenance,
+            ui: { before: uiBefore, after: uiAfter, recoveryOverlay },
+          },
           step.operation,
         );
         const after = await waitForRoute(client, step.routeAfter, {
@@ -2180,26 +2271,27 @@ function boundExternalOperation(value, expectedOperation) {
     "adapter session id",
     MAX_LABEL_LENGTH,
   );
+  const session = value.session;
   const daemon = value.daemon;
   const platform = value.platform;
-  const serial = value.serial;
+  const log = value.log;
   const vision = value.vision;
-  for (const [name, source] of Object.entries({ daemon, platform, serial, vision })) {
-    if (!source || typeof source !== "object" || Array.isArray(source)) {
-      throw new Error(`external operation ${name} provenance is required`);
-    }
-    if (source.source === "browser" || source.source === "debug") {
-      throw new Error(`external operation ${name} provenance cannot be browser or debug`);
+  const ui = value.ui;
+  for (const [name, fact] of Object.entries({ session, daemon, platform, log, vision, ui })) {
+    if (!fact || typeof fact !== "object" || Array.isArray(fact)) {
+      throw new Error(`external operation ${name} fact is required`);
     }
   }
   return {
     operation,
     guestOperationId,
     adapterSessionId,
+    session,
     daemon,
     platform,
-    serial,
+    log,
     vision,
+    ui,
   };
 }
 

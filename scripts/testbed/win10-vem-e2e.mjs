@@ -2661,6 +2661,10 @@ $sessionId = [int]$normalProcess.SessionId
 if ($principal -cne $activeConsolePrincipal -or $sessionId -ne $activeConsoleSessionId) { throw 'normal machine.exe must belong exactly to the active console principal and session' }
 $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
 if ($null -ne $normalTaskInstance) { Stop-ScheduledTask -TaskName $normalTask -ErrorAction Stop }
+$normalTaskXml = Export-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+$normalTaskXmlBytes = [Text.Encoding]::UTF8.GetBytes($normalTaskXml)
+$normalTaskXmlSha256 = ([Security.Cryptography.SHA256]::Create().ComputeHash($normalTaskXmlBytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+$normalTaskXmlBase64 = [Convert]::ToBase64String($normalTaskXmlBytes)
 $normalTaskAction = if ($null -ne $normalTaskInstance) { @($normalTaskInstance.Actions | Select-Object -First 1) } else { @() }
 if ($normalTaskAction.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$normalTaskAction[0].Execute)) { throw 'VEMMachineUI task action is missing before temporary CDP launch' }
 $launcherOwners = @(Get-CimInstance Win32_Process -Filter "Name = 'wscript.exe'" | Where-Object {
@@ -2692,7 +2696,7 @@ $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 if ($observedPrincipal -cne $principal) { throw 'debug machine.exe principal differs from active interactive principal' }
 $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
 if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id)) { throw 'debug CDP must expose exactly one tauri target' }
-[Console]::Out.WriteLine(([ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' }; task = [ordered]@{ name = $normalTask; execute = [string]$normalTaskAction[0].Execute; arguments = [string]$normalTaskAction[0].Arguments; workingDirectory = [string]$normalTaskAction[0].WorkingDirectory } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8))
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' }; task = [ordered]@{ name = $normalTask; execute = [string]$normalTaskAction[0].Execute; arguments = [string]$normalTaskAction[0].Arguments; workingDirectory = [string]$normalTaskAction[0].WorkingDirectory; xmlBase64 = $normalTaskXmlBase64; xmlSha256 = $normalTaskXmlSha256 } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
 
@@ -2712,13 +2716,14 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
     typeof task.execute !== "string" ||
     task.execute.trim() === "" ||
     typeof task.arguments !== "string" ||
-    typeof task.workingDirectory !== "string"
+    typeof task.workingDirectory !== "string" ||
+    typeof task.xmlBase64 !== "string" ||
+    !/^[a-f0-9]{64}$/i.test(task.xmlSha256 ?? "")
   ) {
-    throw new Error("installed kiosk cleanup requires the original VEMMachineUI task action");
+    throw new Error("installed kiosk cleanup requires the complete original VEMMachineUI task XML");
   }
-  const execute = task.execute.replaceAll("'", "''");
-  const argumentsValue = task.arguments.replaceAll("'", "''");
-  const workingDirectory = task.workingDirectory.replaceAll("'", "''");
+  const taskXmlBase64 = task.xmlBase64.replaceAll("'", "''");
+  const taskXmlSha256 = task.xmlSha256.toLowerCase();
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
@@ -2726,14 +2731,16 @@ $normalTask = '${EXPECTED_MACHINE_UI_TASK_NAME}'
 $machinePath = '${INSTALLED_KIOSK_SALE_MACHINE_PATH}'
 $principal = '${principal.replaceAll("'", "''")}'
 $sessionId = ${sessionId}
+$taskXml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${taskXmlBase64}'))
+$taskXmlBytes = [Text.Encoding]::UTF8.GetBytes($taskXml)
+$taskXmlSha256 = ([Security.Cryptography.SHA256]::Create().ComputeHash($taskXmlBytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+if ($taskXmlSha256 -cne '${taskXmlSha256}') { throw 'VEMMachineUI saved task XML digest is invalid' }
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id ([int]$_.OwningProcess) -Force -ErrorAction SilentlyContinue }
 Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) } | ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
-$action = New-ScheduledTaskAction -Execute '${execute}' -Argument '${argumentsValue}' -WorkingDirectory '${workingDirectory}'
-$taskPrincipal = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
 Unregister-ScheduledTask -TaskName $normalTask -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $normalTask -InputObject (New-ScheduledTask -Action $action -Principal $taskPrincipal) -Force | Out-Null
+Register-ScheduledTask -TaskName $normalTask -Xml $taskXml -Force | Out-Null
 Start-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
@@ -2744,9 +2751,13 @@ do {
 } while ([DateTime]::UtcNow -lt $deadline)
 if ($machines.Count -ne 1 -or $listeners.Count -ne 0) { throw 'VEMMachineUI restoration retained CDP or did not start exactly one machine.exe' }
 $restored = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
-$restoredAction = @($restored.Actions | Select-Object -First 1)
-if ($restoredAction.Count -ne 1 -or [string]$restoredAction[0].Execute -cne '${execute}' -or [string]$restoredAction[0].Arguments -cne '${argumentsValue}' -or [string]$restoredAction[0].WorkingDirectory -cne '${workingDirectory}') { throw 'VEMMachineUI action or arguments were not restored exactly' }
-[Console]::Out.WriteLine(([ordered]@{ ok = $true; restored = 'original_vem_machine_ui_task'; normal = [ordered]@{ machineCount = $machines.Count; task = [ordered]@{ name = $normalTask; execute = [string]$restoredAction[0].Execute; arguments = [string]$restoredAction[0].Arguments; workingDirectory = [string]$restoredAction[0].WorkingDirectory }; cdpListenerCount = $listeners.Count }; daemonRunning = ((Get-Service -Name 'VemVendingDaemon').Status -eq 'Running'); cdpListenerCount = $listeners.Count } | ConvertTo-Json -Compress -Depth 8))
+$restoredXml = Export-ScheduledTask -TaskName $normalTask -ErrorAction Stop
+$restoredXmlBytes = [Text.Encoding]::UTF8.GetBytes($restoredXml)
+$restoredXmlSha256 = ([Security.Cryptography.SHA256]::Create().ComputeHash($restoredXmlBytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+if ($restoredXmlSha256 -cne $taskXmlSha256) { throw 'VEMMachineUI XML restore changed triggers, settings, conditions, principal, or actions' }
+$simulatedOrFaultProcesses = @(Get-CimInstance Win32_Process | Where-Object { [string]$_.CommandLine -match '(?i)ui-debug|simulat|fault-inject|testbed-fault' })
+if ($simulatedOrFaultProcesses.Count -ne 0) { throw 'VEMMachineUI cleanup retained simulated or fault-injection process state' }
+[Console]::Out.WriteLine(([ordered]@{ ok = $true; restored = 'original_vem_machine_ui_task'; normal = [ordered]@{ machineCount = $machines.Count; task = [ordered]@{ name = $normalTask; execute = [string]$restored.Actions[0].Execute; arguments = [string]$restored.Actions[0].Arguments; workingDirectory = [string]$restored.Actions[0].WorkingDirectory; xmlSha256 = $restoredXmlSha256; triggersSettingsConditionsPrincipalActionRestored = $true }; cdpListenerCount = $listeners.Count; simulatedOrFaultProcessCount = $simulatedOrFaultProcesses.Count }; daemonRunning = ((Get-Service -Name 'VemVendingDaemon').Status -eq 'Running'); cdpListenerCount = $listeners.Count } | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
 

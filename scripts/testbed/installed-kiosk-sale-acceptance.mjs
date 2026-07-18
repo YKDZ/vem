@@ -449,7 +449,11 @@ if (-not $health -or -not [bool]$health.hardwareOnline -or -not [bool]$health.sc
 `.trim();
 }
 
-export function buildInstalledKioskGuestOperationScript({ operation }) {
+export function buildInstalledKioskGuestOperationScript({
+  operation,
+  phase = "complete",
+  operationId = `guest-operation-${randomBytes(12).toString("hex")}`,
+}) {
   if (![
     "vision_departure",
     "catalog_projection_refresh",
@@ -457,28 +461,53 @@ export function buildInstalledKioskGuestOperationScript({ operation }) {
   ].includes(operation)) {
     throw new Error("installed kiosk guest operation is invalid");
   }
-  const operationId = `guest-operation-${randomBytes(12).toString("hex")}`;
+  if (!["complete", "interrupt", "recover"].includes(phase)) {
+    throw new Error("installed kiosk guest operation phase is invalid");
+  }
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $operation = '${operation}'
+$phase = '${phase}'
 $guestOperationId = '${operationId}'
 $ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 $headers = @{ Authorization = "Bearer $($ready.ipcToken)"; 'Content-Type' = 'application/json'; 'X-VEM-Guest-Operation-Id' = $guestOperationId }
 $base = [string]$ready.healthzUrl -replace '/healthz$', ''
 $before = Invoke-RestMethod -Uri "$base/v1/transactions/current" -Headers $headers -TimeoutSec 10
 if ([string]::IsNullOrWhiteSpace([string]$before.orderNo)) { throw 'guest operation requires an active daemon transaction' }
+$service = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
+$daemonLogs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).ToUniversalTime().AddMinutes(-5) } -ErrorAction SilentlyContinue | Select-Object -First 32)
+$logDigestInput = (($daemonLogs | ForEach-Object { "$($_.RecordId):$($_.ProviderName):$($_.Id):$($_.TimeCreated.ToUniversalTime().ToString('o'))" }) -join [Environment]::NewLine)
+$logDigest = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($logDigestInput)) | ForEach-Object { $_.ToString('x2') }) -join ''
 if ($operation -eq 'vision_departure') {
   $vision = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:7893/control/departure' -ContentType 'application/json' -Body (@{ operationId = $guestOperationId; lastSeenAt = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress) -TimeoutSec 10
   if ($vision.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$vision.eventId)) { throw 'Vision control did not deliver departure to a live runtime client' }
 } elseif ($operation -eq 'catalog_projection_refresh') {
   $catalog = Invoke-RestMethod -Method Post -Uri "$base/v1/catalog" -Headers $headers -TimeoutSec 15
   if ($null -eq $catalog.items) { throw 'daemon catalog projection did not return items' }
-} else {
-  Restart-Service -Name 'VemVendingDaemon' -Force
+  $catalogRevision = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(($catalog | ConvertTo-Json -Compress -Depth 64))) | ForEach-Object { $_.ToString('x2') }) -join ''
+  $catalogInvalidationId = "catalog-invalidation:$($guestOperationId):$catalogRevision"
+} elseif ($phase -eq 'interrupt') {
+  Stop-Service -Name 'VemVendingDaemon' -Force -ErrorAction Stop
+  [Console]::Out.WriteLine(([ordered]@{
+    operation = $operation; guestOperationId = $guestOperationId; adapterSessionId = "daemon-ipc:$base"
+    session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; serviceName = 'VemVendingDaemon'; serviceStatusBefore = [string]$service.Status }
+    daemon = [ordered]@{ transactionBefore = [ordered]@{ orderNo = [string]$before.orderNo; updatedAt = [string]$before.updatedAt }; transport = [ordered]@{ phase = 'interrupted'; serviceStopped = $true } }
+    platform = [ordered]@{ machineCode = [string]$before.machineCode; orderNo = [string]$before.orderNo }
+    log = [ordered]@{ collector = 'windows_application_log'; recordCount = $daemonLogs.Count; digest = $logDigest; operationId = $guestOperationId }
+    vision = [ordered]@{ eventId = $null; delivered = $false }
+  } | ConvertTo-Json -Compress -Depth 12))
+  exit 0
+} elseif ($phase -eq 'recover') {
+  Start-Service -Name 'VemVendingDaemon' -ErrorAction Stop
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     Start-Sleep -Milliseconds 250
-    try { $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3 } catch { $health = $null }
+    try {
+      $ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      $headers = @{ Authorization = "Bearer $($ready.ipcToken)"; 'Content-Type' = 'application/json'; 'X-VEM-Guest-Operation-Id' = $guestOperationId }
+      $base = [string]$ready.healthzUrl -replace '/healthz$', ''
+      $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3
+    } catch { $health = $null }
   } while ($null -eq $health -and [DateTime]::UtcNow -lt $deadline)
   if ($null -eq $health) { throw 'daemon transport did not recover after the real service interruption' }
 }
@@ -488,10 +517,11 @@ if ([string]$after.orderNo -cne [string]$before.orderNo) { throw 'daemon transpo
   operation = $operation
   guestOperationId = $guestOperationId
   adapterSessionId = "daemon-ipc:$base"
-  daemon = [ordered]@{ source = 'daemon-ipc'; orderNo = [string]$after.orderNo; beforeUpdatedAt = [string]$before.updatedAt; afterUpdatedAt = [string]$after.updatedAt }
-  platform = [ordered]@{ source = 'service-api-projection'; machineCode = [string]$after.machineCode; orderNo = [string]$after.orderNo }
-  serial = [ordered]@{ source = 'production-serial-session'; adapter = 'serial'; session = 'prestarted' }
-  vision = [ordered]@{ source = 'vision-runtime'; eventId = if ($null -ne $vision) { [string]$vision.eventId } else { $null }; operationId = $guestOperationId }
+  session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; serviceName = 'VemVendingDaemon'; serviceStatusBefore = [string]$service.Status; serviceStatusAfter = [string](Get-Service -Name 'VemVendingDaemon').Status }
+  daemon = [ordered]@{ transactionBefore = [ordered]@{ orderNo = [string]$before.orderNo; updatedAt = [string]$before.updatedAt }; transactionAfter = [ordered]@{ orderNo = [string]$after.orderNo; updatedAt = [string]$after.updatedAt }; runtimeTrace = [ordered]@{ eventId = if ($null -ne $vision) { [string]$vision.eventId } else { $null }; observedAt = (Get-Date).ToUniversalTime().ToString('o'); endpoint = "$base/v1/vision/status" }; catalog = [ordered]@{ revision = if ($null -ne $catalogRevision) { $catalogRevision } else { $null }; invalidationId = if ($null -ne $catalogInvalidationId) { $catalogInvalidationId } else { $null } }; transport = [ordered]@{ phase = if ($operation -eq 'daemon_transport_interrupt') { 'recovered' } else { 'uninterrupted' }; healthz = $null -ne $health } }
+  platform = [ordered]@{ machineCode = [string]$after.machineCode; orderNo = [string]$after.orderNo }
+  log = [ordered]@{ collector = 'windows_application_log'; recordCount = $daemonLogs.Count; digest = $logDigest; operationId = $guestOperationId }
+  vision = [ordered]@{ eventId = if ($null -ne $vision) { [string]$vision.eventId } else { $null }; delivered = if ($null -ne $vision) { [int]$vision.acceptedDeliveries -gt 0 } else { $false }; operationId = $guestOperationId }
 } | ConvertTo-Json -Compress -Depth 8))
 `.trim();
 }
@@ -586,6 +616,38 @@ function writeJson(path, value, mode) {
     mode ? { mode } : undefined,
   );
   renameSync(temporary, resolved);
+}
+
+function installedKioskScreenshotSink(root) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return ({ bytes, sha256, label }) => {
+    const safeLabel = String(label).replaceAll(/[^A-Za-z0-9._-]+/g, "-");
+    const path = join(root, `${safeLabel}-${sha256}.png`);
+    const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(temporary, bytes, { mode: 0o600 });
+    renameSync(temporary, path);
+    return { ref: path };
+  };
+}
+
+export function buildInstalledKioskFailureArtifactScript() {
+  return String.raw`
+$ErrorActionPreference = 'Continue'
+$readyPath = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'
+$service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+$ready = $null
+$transaction = $null
+try {
+  $ready = [System.IO.File]::ReadAllText($readyPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+  $base = [string]$ready.healthzUrl -replace '/healthz$', ''
+  $transaction = Invoke-RestMethod -Uri "$base/v1/transactions/current" -Headers $headers -TimeoutSec 3
+} catch {}
+$events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).ToUniversalTime().AddMinutes(-10) } -ErrorAction SilentlyContinue | Select-Object -First 64)
+$digestInput = (($events | ForEach-Object { "$($_.RecordId):$($_.ProviderName):$($_.Id):$($_.TimeCreated.ToUniversalTime().ToString('o'))" }) -join [Environment]::NewLine)
+$digest = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($digestInput)) | ForEach-Object { $_.ToString('x2') }) -join ''
+[Console]::Out.WriteLine(([ordered]@{ schemaVersion = 'installed-kiosk-failure-daemon/v1'; capturedAt = (Get-Date).ToUniversalTime().ToString('o'); daemon = [ordered]@{ serviceStatus = if ($service) { [string]$service.Status } else { 'missing' }; readyFilePresent = Test-Path -LiteralPath $readyPath; transaction = $transaction }; log = [ordered]@{ collector = 'windows_application_log'; recordCount = $events.Count; digest = $digest } } | ConvertTo-Json -Compress -Depth 20))
+`.trim();
 }
 
 function delayedPickupEvidenceIndex({
@@ -1073,6 +1135,10 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
     outputRoot,
     "platform-raw-records-baseline.json",
   );
+  const screenshotDirectory = join(outputRoot, "machine-ui-screenshots");
+  const failureArtifactReport = join(outputRoot, "installed-kiosk-sale-failure.json");
+  const failureTraceReport = join(outputRoot, "installed-kiosk-sale-failure-trace.json");
+  const failurePlatformReport = join(outputRoot, "installed-kiosk-sale-failure-platform.json");
   const fixtureCommand = buildAcceptanceScriptCommand(
     "simulated-hardware-sale-flow",
     remote,
@@ -1103,6 +1169,10 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
       serialPrestartReport,
       platformRawRecordsReport,
       platformRawBaselineReport,
+      screenshotDirectory,
+      failureArtifactReport,
+      failureTraceReport,
+      failurePlatformReport,
     },
   };
 }
@@ -1153,6 +1223,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   let cleanup;
   let delayedPickupTrack;
   let primaryError;
+  let scenario = null;
   let report = {
     schemaVersion: SCHEMA_VERSION,
     kind: "installed-kiosk-sale-acceptance",
@@ -1292,7 +1363,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
     let completion;
     let fulfillmentProbe;
     let fulfillmentProbeError;
-    const scenario = await drive({
+    scenario = await drive({
       tunnelOptions: {
         remote: remote.remote,
         sshPort: remote.sshPort,
@@ -1307,11 +1378,40 @@ export async function runInstalledKioskSaleAcceptanceCli(
       expectedInitialRoute: runtime.route,
       sequenceName: `installed-kiosk-${options.profile}`,
       adapter: {
+        screenshotSink: installedKioskScreenshotSink(
+          plan.artifacts.screenshotDirectory,
+        ),
         async executeExternalOperation({ operation }) {
           return runRemote(
             remote,
             buildInstalledKioskGuestOperationScript({ operation }),
           );
+        },
+        async beginExternalOperation({ operation }) {
+          if (operation !== "daemon_transport_interrupt") {
+            throw new Error("only daemon transport interruption is two-phase");
+          }
+          const operationId = `guest-operation-${randomBytes(12).toString("hex")}`;
+          const interrupted = runRemote(
+            remote,
+            buildInstalledKioskGuestOperationScript({
+              operation,
+              phase: "interrupt",
+              operationId,
+            }),
+          );
+          return { operationId, interrupted };
+        },
+        async completeExternalOperation(pending, { operation }) {
+          const recovered = runRemote(
+            remote,
+            buildInstalledKioskGuestOperationScript({
+              operation,
+              phase: "recover",
+              operationId: pending.operationId,
+            }),
+          );
+          return recovered;
         },
       },
       screenshotCheckpoints: true,
@@ -1549,6 +1649,46 @@ export async function runInstalledKioskSaleAcceptanceCli(
     }
   } catch (error) {
     primaryError = error;
+    const failure = {
+      schemaVersion: "installed-kiosk-sale-failure/v1",
+      capturedAt: new Date().toISOString(),
+      error: formatInstalledKioskSaleError(error),
+      daemon: null,
+      platform: {
+        path: plan.artifacts.failurePlatformReport,
+        captured: false,
+        error: null,
+      },
+      trace: { path: plan.artifacts.failureTraceReport },
+      screenshots: plan.artifacts.screenshotDirectory,
+    };
+    try {
+      failure.daemon = runRemote(
+        remote,
+        buildInstalledKioskFailureArtifactScript(),
+      );
+    } catch (captureError) {
+      failure.daemon = { captureError: formatInstalledKioskSaleError(captureError) };
+    }
+    writeJson(
+      plan.artifacts.failureTraceReport,
+      { schemaVersion: "installed-kiosk-sale-failure-trace/v1", scenario },
+      0o600,
+    );
+    try {
+      await run(
+        platformRawQuery(plan.artifacts.failurePlatformReport),
+        "authoritative platform raw failure query",
+        { env: queryEnvironment },
+      );
+      failure.platform.captured = existsSync(plan.artifacts.failurePlatformReport);
+    } catch (captureError) {
+      failure.platform.error = formatInstalledKioskSaleError(captureError);
+    }
+    // The write is rename-based through writeJson, so a failed run never
+    // publishes a partial daemon/platform/trace/screenshot manifest.
+    writeJson(plan.artifacts.failureArtifactReport, failure, 0o600);
+    report.evidence.failureArtifactPath = plan.artifacts.failureArtifactReport;
   } finally {
     try {
       await delayedPickupTrack?.close();
@@ -1570,7 +1710,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup.normal.task.execute !== launch.prelaunch.task?.execute ||
           cleanup.normal.task.arguments !== launch.prelaunch.task?.arguments ||
           cleanup.normal.task.workingDirectory !==
-            launch.prelaunch.task?.workingDirectory
+            launch.prelaunch.task?.workingDirectory ||
+          cleanup.normal.task.xmlSha256 !== launch.prelaunch.task?.xmlSha256 ||
+          cleanup.normal.task.triggersSettingsConditionsPrincipalActionRestored !== true ||
+          cleanup.normal.simulatedOrFaultProcessCount !== 0
         ) {
           throw new Error("installed kiosk cleanup did not restore the original VEMMachineUI task without CDP");
         }
@@ -1658,9 +1801,6 @@ export function evaluateInstalledErrorMatrixEvidence({
         ? ["daemon_transport_interrupt"]
         : [];
   const entries = Array.isArray(scenario?.evidence) ? scenario.evidence : [];
-  if (entries.some((entry) => entry?.type === "route-disturbance")) {
-    throw new Error("error matrix rejects browser-originated disturbance evidence");
-  }
   for (const operation of expected) {
     const entry = entries.find(
       (candidate) =>
@@ -1670,31 +1810,76 @@ export function evaluateInstalledErrorMatrixEvidence({
         candidate.routeAfter === "#/payment",
     );
     const provenance = entry?.provenance;
-    if (
-      !provenance ||
-      typeof provenance.guestOperationId !== "string" ||
-      provenance.guestOperationId.length === 0 ||
-      typeof provenance.adapterSessionId !== "string" ||
-      provenance.adapterSessionId.length === 0
-    ) {
-      throw new Error(`${operation} requires a guest operation id and adapter session`);
+    const requiredString = (value, field) => {
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new Error(`${operation} requires reproducible ${field}`);
+      }
+      return value;
+    };
+    if (!provenance || typeof provenance !== "object") {
+      throw new Error(`${operation} requires operation provenance`);
     }
-    for (const source of ["daemon", "platform", "serial", "vision"]) {
-      const value = provenance[source];
+    requiredString(provenance.guestOperationId, "operation id");
+    requiredString(provenance.adapterSessionId, "adapter session");
+    requiredString(provenance.session?.daemonReadyFile, "daemon session ready file");
+    requiredString(provenance.session?.daemonEndpoint, "daemon session endpoint");
+    requiredString(provenance.log?.collector, "operation log collector");
+    requiredString(provenance.log?.digest, "operation log digest");
+    if (!Number.isInteger(provenance.log?.recordCount) || provenance.log.recordCount < 0) {
+      throw new Error(`${operation} requires a bounded operation log record count`);
+    }
+    if (
+      provenance.platform?.orderNo !== correlation?.rendered?.orderNo ||
+      provenance.platform?.orderNo !== correlation?.platform?.orderNo
+    ) {
+      throw new Error(`${operation} platform fact does not bind the rendered order`);
+    }
+    if (
+      provenance.daemon?.transactionBefore?.orderNo !== correlation?.rendered?.orderNo ||
+      provenance.daemon?.transactionAfter?.orderNo !== correlation?.rendered?.orderNo
+    ) {
+      throw new Error(`${operation} daemon transaction fact does not bind the rendered order`);
+    }
+    if (operation === "vision_departure") {
+      const eventId = requiredString(provenance.vision?.eventId, "Vision event id");
       if (
-        !value ||
-        typeof value !== "object" ||
-        value.source === "browser" ||
-        value.source === "debug"
+        provenance.vision?.delivered !== true ||
+        provenance.daemon?.runtimeTrace?.eventId !== eventId ||
+        !Array.isArray(provenance.ui?.after?.runtimeTrace) ||
+        !provenance.ui.after.runtimeTrace.some(
+          (entry) =>
+            entry?.type === "navigation" &&
+            entry?.intentType === "presence.departed" &&
+            entry?.sourceEventId === eventId,
+        )
       ) {
-        throw new Error(`${operation} requires non-browser ${source} provenance`);
+        throw new Error("Vision departure must prove one eventId through Vision, daemon runtime trace, and UI trace");
       }
     }
-    if (
-      operation === "daemon_transport_interrupt" &&
-      provenance.daemon.orderNo !== correlation?.rendered?.orderNo
-    ) {
-      throw new Error("daemon transport recovery did not resume the rendered order");
+    if (operation === "catalog_projection_refresh") {
+      const revision = requiredString(provenance.daemon?.catalog?.revision, "daemon catalog revision");
+      const invalidationId = requiredString(provenance.daemon?.catalog?.invalidationId, "daemon catalog invalidation");
+      if (
+        !invalidationId.includes(revision) ||
+        provenance.ui?.after?.catalogRevision !== revision ||
+        provenance.ui?.after?.catalogInvalidationId !== invalidationId ||
+        !Array.isArray(provenance.ui?.after?.catalogRequests) ||
+        provenance.ui.after.catalogRequests.length <= (provenance.ui?.before?.catalogRequests?.length ?? 0)
+      ) {
+        throw new Error("catalog refresh must prove the daemon revision and invalidation reached the UI");
+      }
+    }
+    if (operation === "daemon_transport_interrupt") {
+      const overlay = provenance.ui?.recoveryOverlay;
+      if (
+        provenance.daemon?.transport?.phase !== "recovered" ||
+        overlay?.observation?.recoveryOverlay?.length < 1 ||
+        !/^[a-f0-9]{64}$/.test(overlay?.screenshot?.sha256 ?? "") ||
+        provenance.ui?.before?.orderCredential !== correlation?.rendered?.orderNo ||
+        provenance.ui?.after?.orderCredential !== correlation?.rendered?.orderNo
+      ) {
+        throw new Error("daemon transport recovery must preserve the rendered order credential and recovery-overlay screenshot");
+      }
     }
   }
   return { status: "passed", operations: expected };

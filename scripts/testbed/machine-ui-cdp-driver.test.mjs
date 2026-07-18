@@ -86,6 +86,7 @@ async function runInstalledRouteCompetitionScenario({
       let route = "#/catalog";
       let activations = 0;
       let disturbanceCount = 0;
+      let externalOperation = null;
       let cdpSocket;
       const setRoute = (nextRoute) => {
         route = nextRoute;
@@ -99,6 +100,40 @@ async function runInstalledRouteCompetitionScenario({
           cdpSocket = socket;
           if (message.method === "Runtime.evaluate") {
             const expression = message.params.expression;
+            if (expression.includes("catalogRequests")) {
+              const catalogRevision = "a".repeat(64);
+              const catalogInvalidationId = `catalog-invalidation:guest-catalog_projection_refresh:${catalogRevision}`;
+              return cdpValue(
+                {
+                  runtimeTrace:
+                    externalOperation === "vision_departure"
+                      ? [
+                          {
+                            type: "navigation",
+                            intentType: "presence.departed",
+                            sourceEventId: "vision-event-test",
+                          },
+                        ]
+                      : [],
+                  catalogRequests:
+                    externalOperation === "catalog_projection_refresh"
+                      ? ["http://127.0.0.1/v1/catalog"]
+                      : [],
+                  catalogRevision:
+                    externalOperation === "catalog_projection_refresh"
+                      ? catalogRevision
+                      : null,
+                  catalogInvalidationId:
+                    externalOperation === "catalog_projection_refresh"
+                      ? catalogInvalidationId
+                      : null,
+                  recoveryOverlay: [],
+                  orderCredential: "ORDER-TEST",
+                  route,
+                },
+                message.id,
+              );
+            }
             if (expression.includes("getBoundingClientRect")) {
               return cdpValue(
                 {
@@ -205,14 +240,34 @@ async function runInstalledRouteCompetitionScenario({
         steps: buildInstalledKioskSaleScenarioSteps("vm-route-competition"),
         adapter: {
           async executeExternalOperation({ operation }) {
+            externalOperation = operation;
+            const catalogRevision = "a".repeat(64);
             return {
               operation,
               guestOperationId: `guest-${operation}`,
               adapterSessionId: "serial-session-test",
-              daemon: { source: "daemon-ipc", orderNo: "ORDER-TEST" },
-              platform: { source: "service-api", orderNo: "ORDER-TEST" },
-              serial: { source: "production-serial", sessionId: "serial-session-test" },
-              vision: { source: "vision-runtime", eventId: "vision-event-test" },
+              session: {
+                daemonReadyFile: "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json",
+                daemonEndpoint: "http://127.0.0.1:7615",
+              },
+              daemon: {
+                transactionBefore: { orderNo: "ORDER-TEST" },
+                transactionAfter: { orderNo: "ORDER-TEST" },
+                runtimeTrace: { eventId: "vision-event-test" },
+                catalog: {
+                  revision:
+                    operation === "catalog_projection_refresh"
+                      ? catalogRevision
+                      : null,
+                  invalidationId:
+                    operation === "catalog_projection_refresh"
+                      ? `catalog-invalidation:guest-catalog_projection_refresh:${catalogRevision}`
+                      : null,
+                },
+              },
+              platform: { orderNo: "ORDER-TEST" },
+              log: { collector: "windows_application_log", digest: "b".repeat(64), recordCount: 1 },
+              vision: { eventId: "vision-event-test", delivered: true },
             };
           },
         },
