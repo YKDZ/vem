@@ -410,9 +410,7 @@ export function runtimeProfileForConfig(config) {
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
     audio: {
-      capturePath:
-        config.storage.audioCapturePath ??
-        `${config.storage.baselinePath}.default-audio.wav`,
+      capturePath: `${config.storage.baselinePath}.default-audio.wav`,
     },
   });
 }
@@ -448,9 +446,7 @@ export function runtimeProfileForPublishedRelease(config, id) {
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
     audio: {
-      capturePath:
-        config.storage.audioCapturePath ??
-        `${config.storage.baselinePath}.default-audio.wav`,
+      capturePath: `${config.storage.baselinePath}.default-audio.wav`,
     },
   });
 }

@@ -622,6 +622,10 @@ export function buildHostControlPlaneUnitPlan(options, contract) {
       String(HOST_CONTROL_PLANE_PORT),
       "--token",
       token,
+      "--libvirt-uri",
+      baselineLibvirtUri(contract),
+      "--domain-name",
+      baselineDomainName(contract),
     ]),
   ];
 }
@@ -629,7 +633,10 @@ export function buildHostControlPlaneUnitPlan(options, contract) {
 function baselineLibvirtUri(contract) {
   const command = contract?.testbed?.reconstructCommand;
   const index = Array.isArray(command) ? command.indexOf("--libvirt-uri") : -1;
-  return required(index >= 0 ? command[index + 1] : null, "baseline libvirt uri");
+  return required(
+    index >= 0 ? command[index + 1] : null,
+    "baseline libvirt uri",
+  );
 }
 
 export function buildHeadlessVncActivatorUnitPlan(options, contract) {

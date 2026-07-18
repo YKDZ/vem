@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   createSaleAudioCaptureRequest,
+  createFileBackedAudioCaptureTestBackend,
   executeSaleAudioCaptureHostAdapter,
   runSaleAudioCaptureHostAdapterCli,
   SALE_AUDIO_REPORT_SCHEMA_VERSION,
   validateSaleAudioCaptureReport,
 } from "./sale-audio-capture-host-adapter.mjs";
-
-process.env.VEM_TEST_ALLOW_JSON_PTY_FIXTURE = "1";
 
 const runtime = {
   processId: 42,
@@ -74,6 +79,29 @@ function wavWithTone(frameCount = 48_000, sampleRate = 48_000, channels = 2) {
   bytes.writeUInt32LE(data.length, 40);
   data.copy(bytes, 44);
   return bytes;
+}
+
+function delayedPickupFrames() {
+  return [
+    ["daemon-to-controller", "55020531", 2, "VEND"],
+    ["controller-to-daemon", "55F0", 240, "F0"],
+    ["controller-to-daemon", "55F1", 241, "F1"],
+    ["controller-to-daemon", "55F2", 242, "F2"],
+  ].map(([direction, rawFrameHex, opcode, parsedOpcode], index) => ({
+    direction,
+    rawFrameHex,
+    opcode,
+    parsedOpcode,
+    capturedAt: `2026-07-18T08:00:0${index}.000Z`,
+  }));
+}
+
+function productionBinding(serialJournalPath) {
+  return {
+    libvirtUri: "qemu:///system",
+    domainName: "win10-runtime-testbed",
+    serialJournalPath,
+  };
 }
 
 describe("capture-sale-audio host adapter extension", () => {
@@ -160,6 +188,12 @@ describe("capture-sale-audio host adapter extension", () => {
           join(root, "evidence"),
           "--out",
           join(root, "report.json"),
+          "--libvirt-uri",
+          "qemu:///system",
+          "--domain-name",
+          "win10-runtime-testbed",
+          "--serial-journal-path",
+          join(root, "raw-serial.socat.log"),
         ],
         {
           async invokeAdapter(request) {
@@ -180,12 +214,17 @@ describe("capture-sale-audio host adapter extension", () => {
     }
   });
 
-  it("exports real file-backed WAV evidence and guest-captured serial directions on stop", async () => {
+  it("keeps the file-backed WAV and JSON PTY fixture behind injected test dependencies", async () => {
     const root = makeTempDir("vem-sale-audio-file");
     const evidenceDirectory = join(root, "evidence");
     const journalPath = join(root, "raw-serial.jsonl");
     const wavPath = join(root, "captured.wav");
     try {
+      writeFileSync(wavPath, "");
+      const dependencies = {
+        backendFactory: () => createFileBackedAudioCaptureTestBackend(wavPath),
+        readSerialJournal: () => delayedPickupFrames(),
+      };
       const started = await executeSaleAudioCaptureHostAdapter(
         {
           phase: "start",
@@ -196,17 +235,9 @@ describe("capture-sale-audio host adapter extension", () => {
           runtime,
           evidenceDirectory,
           outPath: join(root, "start.json"),
+          production: productionBinding(journalPath),
         },
-        {
-          environment: {
-            ...process.env,
-            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
-            VEM_VM_HOST_AUDIO_CAPTURE_MODE: "file",
-            VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: wavPath,
-            VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: journalPath,
-            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
-          },
-        },
+        dependencies,
       );
       writeFileSync(
         journalPath,
@@ -265,17 +296,9 @@ describe("capture-sale-audio host adapter extension", () => {
           },
           evidenceDirectory,
           outPath: join(root, "stop.json"),
+          production: productionBinding(journalPath),
         },
-        {
-          environment: {
-            ...process.env,
-            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
-            VEM_VM_HOST_AUDIO_CAPTURE_MODE: "file",
-            VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: wavPath,
-            VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: journalPath,
-            VEM_TEST_ALLOW_JSON_PTY_FIXTURE: "1",
-          },
-        },
+        dependencies,
       );
       const serialEvidence = stopped.evidence.find(
         (entry) => entry.role === "sale-serial-frame-capture",
@@ -286,6 +309,81 @@ describe("capture-sale-audio host adapter extension", () => {
       assert.equal(serialCapture.frames[0].direction, "guest_to_host");
       assert.equal(serialCapture.frames[1].direction, "host_to_guest");
       assert.equal(stopped.capture.source, "windows_default_output");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives the running domain's sole audio output and snapshots its live inode without ambient injection", async () => {
+    const root = makeTempDir("vem-sale-audio-libvirt");
+    const evidenceDirectory = join(root, "evidence");
+    const journalPath = join(root, "raw-serial.socat.log");
+    const wavPath = join(root, "domain-output.wav");
+    const ignoredWavPath = join(root, "attacker-selected.wav");
+    const domainXml = `<domain type="kvm"><devices><audio id="1" type="file"><output file="${wavPath}"/></audio><sound model="ich9"><audio id="1"/></sound></devices></domain>`;
+    const testOnlyRunVirsh = (args) => {
+      if (args.at(-2) === "domstate") return "running\n";
+      if (args.at(-2) === "dumpxml") return domainXml;
+      throw new Error(`unexpected test virsh invocation: ${args.join(" ")}`);
+    };
+    try {
+      writeFileSync(wavPath, "live-wav");
+      writeFileSync(journalPath, "not a JSON PTY fixture\n");
+      const common = {
+        runId: "RUN-17-LIBVIRT",
+        lifecycleReference: "vm-lifecycle://run-17-libvirt.runtime",
+        targetIdentity: "vm-target://runtime",
+        transactionId: "transaction://run-17-libvirt",
+        runtime,
+        evidenceDirectory,
+        production: productionBinding(journalPath),
+      };
+      const dependencies = {
+        testOnlyRunVirsh,
+        readSerialJournal: () => delayedPickupFrames(),
+      };
+      const started = await executeSaleAudioCaptureHostAdapter(
+        { ...common, phase: "start", outPath: join(root, "start.json") },
+        {
+          ...dependencies,
+          environment: {
+            VEM_VM_HOST_AUDIO_CAPTURE_MODE: "file",
+            VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: ignoredWavPath,
+            VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: join(root, "fixture.jsonl"),
+          },
+        },
+      );
+      writeFileSync(wavPath, wavWithTone());
+      const stopped = await executeSaleAudioCaptureHostAdapter(
+        {
+          ...common,
+          phase: "stop",
+          captureSessionId: started.captureSession.captureSessionId,
+          startOperationReference:
+            started.captureSession.startOperationReference,
+          captureStartedAt: started.captureSession.startedAt,
+          outPath: join(root, "stop.json"),
+          sale: {
+            saleCorrelationId: "sale-correlation://run-17-libvirt",
+            orderId: "11111111-1111-4111-8111-111111111111",
+            orderNo: "ORDER-17-LIBVIRT",
+            commandId: "22222222-2222-4222-8222-222222222222",
+            commandNo: "COMMAND-17-LIBVIRT",
+          },
+        },
+        dependencies,
+      );
+      assert.equal(existsSync(ignoredWavPath), false);
+      assert.equal(
+        stopped.capture.provenance.domain.domainName,
+        "win10-runtime-testbed",
+      );
+      assert.equal(stopped.capture.provenance.wav.path, wavPath);
+      assert.equal(
+        stopped.capture.provenance.wav.startOffset,
+        "live-wav".length,
+      );
+      assert.ok(stopped.capture.provenance.wav.capturedByteLength > 0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

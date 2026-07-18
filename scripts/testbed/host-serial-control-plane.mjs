@@ -105,6 +105,8 @@ export function parseHostSerialControlPlaneArgs(args) {
     bind: required(option(args, "bind"), "--bind"),
     port: positiveInteger(option(args, "port"), "--port"),
     token: required(option(args, "token"), "--token"),
+    libvirtUri: required(option(args, "libvirt-uri"), "--libvirt-uri"),
+    domainName: required(option(args, "domain-name"), "--domain-name"),
   };
 }
 
@@ -785,13 +787,12 @@ function boundedSessionEvidence(server, input) {
   };
 }
 
-function audioCaptureEnvironment(session) {
+function audioCaptureProductionBinding(server, session) {
   const paths = adapterSessionPaths(session);
   return {
-    ...process.env,
-    RUNNER_TEMP: runnerTempRoot(session.dir),
-    VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: paths.journalPath,
-    VEM_VM_HOST_AUDIO_SIMULATOR_LOG: paths.logPath,
+    libvirtUri: server.options.libvirtUri,
+    domainName: server.options.domainName,
+    serialJournalPath: paths.journalPath,
   };
 }
 
@@ -839,8 +840,9 @@ async function startAudioCapture(server, input) {
       runtime: cloneJson(runtime),
       evidenceDirectory,
       outPath,
+      production: audioCaptureProductionBinding(server, session),
     },
-    { environment: audioCaptureEnvironment(session) },
+    {},
   );
   server.audioCaptures.set(audioCaptureId, {
     id: audioCaptureId,
@@ -893,8 +895,9 @@ async function stopAudioCapture(server, input) {
       },
       evidenceDirectory: capture.evidenceDirectory,
       outPath,
+      production: audioCaptureProductionBinding(server, session),
     },
-    { environment: audioCaptureEnvironment(session) },
+    {},
   );
   return {
     audioCaptureId: capture.id,
@@ -913,12 +916,17 @@ async function cancelAudioCapture(server, input) {
     };
   }
   if (!capture.cancelledAt) {
-    await abortSaleAudioCaptureSession(
+    await server.dependencies.abortSaleAudioCapture(
       {
         captureSessionId: capture.startReport.captureSession.captureSessionId,
         evidenceDirectory: capture.evidenceDirectory,
       },
-      { environment: audioCaptureEnvironment(requireSession(server, capture.sessionId)) },
+      {
+        production: audioCaptureProductionBinding(
+          server,
+          requireSession(server, capture.sessionId),
+        ),
+      },
     );
     capture.cancelledAt = new Date().toISOString();
   }
@@ -1298,6 +1306,8 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
     dependencies: {
       executeSaleAudioCapture:
         dependencies.executeSaleAudioCapture ?? executeSaleAudioCaptureHostAdapter,
+      abortSaleAudioCapture:
+        dependencies.abortSaleAudioCapture ?? abortSaleAudioCaptureSession,
     },
   };
   const server = createServer(async (request, response) => {
@@ -1549,13 +1559,14 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
       for (const capture of audioCaptures.values()) {
         if (!capture.stopReport && !capture.cancelledAt) {
           try {
-            await abortSaleAudioCaptureSession(
+            await serverState.dependencies.abortSaleAudioCapture(
               {
                 captureSessionId: capture.startReport.captureSession.captureSessionId,
                 evidenceDirectory: capture.evidenceDirectory,
               },
               {
-                environment: audioCaptureEnvironment(
+                production: audioCaptureProductionBinding(
+                  serverState,
                   requireSession(serverState, capture.sessionId),
                 ),
               },

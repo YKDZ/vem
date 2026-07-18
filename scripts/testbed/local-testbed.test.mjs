@@ -533,6 +533,8 @@ describe("local testbed orchestration", () => {
         rendered.at(-1),
         /--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=.*host-adapter/,
       );
+      assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
+      assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
       assert.doesNotMatch(rendered.at(-1), /fake-vm-host-adapter/);
       const implementation = readFileSync(
         new URL("./local-testbed.mjs", import.meta.url),

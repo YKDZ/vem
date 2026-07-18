@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
-  unlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { inspectWavPcm } from "./default-audio-evidence.mjs";
@@ -402,71 +401,181 @@ function buildSaleAudioFrameCapture(binding, rawFrames) {
   };
 }
 
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    throw error;
-  }
-}
-
-async function waitForProcessExit(pid, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (processAlive(pid) && Date.now() < deadline) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  return !processAlive(pid);
-}
-
-async function stopProcessGroup(pid) {
-  if (!Number.isInteger(pid) || pid < 1) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (await waitForProcessExit(pid)) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (!(await waitForProcessExit(pid, 2_000))) {
-    throw new Error("audio capture backend did not exit");
-  }
-}
-
-function defaultBackendFactory(environment = process.env) {
-  const explicitMode = environment.VEM_VM_HOST_AUDIO_CAPTURE_MODE?.trim();
-  if (explicitMode === "pipewire") {
-    return createPipeWireBackend(environment);
-  }
-  if (explicitMode === "file" || environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH) {
-    return createFileBackend(environment);
-  }
-  throw new Error(
-    "audio capture backend is not configured; set VEM_VM_HOST_AUDIO_CAPTURE_MODE=file or pipewire",
+function libvirtDomainBinding(value) {
+  exactKeys(
+    value,
+    ["libvirtUri", "domainName", "serialJournalPath"],
+    "libvirt domain binding",
   );
-}
-
-function createFileBackend(environment) {
-  const wavPath = resolve(
-    requiredString(
-      environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH,
-      "VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH",
+  const libvirtUri = requiredString(value.libvirtUri, "libvirtUri");
+  const domainName = requiredString(value.domainName, "domainName");
+  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(domainName))
+    throw new Error("domainName contains unsupported characters");
+  return {
+    libvirtUri,
+    domainName,
+    serialJournalPath: resolve(
+      requiredString(value.serialJournalPath, "serialJournalPath"),
     ),
-  );
+  };
+}
+
+function attribute(element, name) {
+  const match = String(element).match(new RegExp(`\\b${name}=(['\"])(.*?)\\1`));
+  return match?.[2] ?? null;
+}
+
+function soleDomainAudioOutput(domainXml) {
+  const xml = String(domainXml);
+  const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
+  const audioDevices = [...xml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g)];
+  if (
+    sounds.length !== 1 ||
+    attribute(sounds[0][0], "model") !== "ich9" ||
+    !/<audio\b[^>]*\bid=(['"])1\1\s*\/>/.test(sounds[0][0]) ||
+    audioDevices.length !== 1 ||
+    attribute(audioDevices[0][0], "id") !== "1" ||
+    attribute(audioDevices[0][0], "type") !== "file"
+  ) {
+    throw new Error(
+      "running domain must expose one default ICH9 file audio output",
+    );
+  }
+  const outputs = [...audioDevices[0][0].matchAll(/<output\b[^>]*\/>/g)];
+  const outputPath =
+    outputs.length === 1 ? attribute(outputs[0][0], "file") : null;
+  if (!outputPath || !outputPath.startsWith("/") || outputPath.includes("\0")) {
+    throw new Error("running domain audio output path is invalid");
+  }
+  return { model: "ich9", audioId: 1, outputPath: resolve(outputPath) };
+}
+
+function productionVirsh(args) {
+  const result = spawnSync("/usr/bin/virsh", args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `virsh ${args.at(-1)} failed: ${String(result.stderr ?? result.stdout ?? "").trim()}`,
+    );
+  }
+  return String(result.stdout ?? "");
+}
+
+function runningDomainAudio(binding, runVirsh = productionVirsh) {
+  const state = runVirsh([
+    "--connect",
+    binding.libvirtUri,
+    "domstate",
+    binding.domainName,
+  ])
+    .trim()
+    .toLowerCase();
+  if (state !== "running") throw new Error("libvirt domain is not running");
+  const domainXml = runVirsh([
+    "--connect",
+    binding.libvirtUri,
+    "dumpxml",
+    binding.domainName,
+  ]);
+  return { state, ...soleDomainAudioOutput(domainXml) };
+}
+
+function wavSnapshot(path) {
+  const stat = statSync(path);
+  if (!stat.isFile())
+    throw new Error("running domain audio output is not a regular file");
+  return {
+    path,
+    device: stat.dev,
+    inode: stat.ino,
+    byteLength: stat.size,
+  };
+}
+
+function readStableWavSnapshot(path, expected) {
+  const before = wavSnapshot(path);
+  if (before.device !== expected.device || before.inode !== expected.inode) {
+    throw new Error("running domain audio output inode changed during capture");
+  }
+  const bytes = readFileSync(path);
+  const after = wavSnapshot(path);
+  if (
+    after.device !== before.device ||
+    after.inode !== before.inode ||
+    after.byteLength !== before.byteLength ||
+    bytes.length !== after.byteLength
+  ) {
+    throw new Error("running domain audio output changed while snapshotting");
+  }
+  return { bytes, snapshot: after };
+}
+
+function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
+  const runVirsh = testOnlyRunVirsh ?? productionVirsh;
   return {
     async start() {
-      if (existsSync(wavPath)) unlinkSync(wavPath);
-      return { kind: "file", wavPath };
+      const domain = runningDomainAudio(binding, runVirsh);
+      const snapshot = wavSnapshot(domain.outputPath);
+      return {
+        kind: "libvirt-domain-file-output",
+        domain,
+        startSnapshot: snapshot,
+      };
     },
     async stop(state) {
-      if (!existsSync(state.wavPath)) {
-        throw new Error("configured audio capture WAV was not produced");
+      const domain = runningDomainAudio(binding, runVirsh);
+      if (
+        domain.outputPath !== state.domain.outputPath ||
+        domain.model !== state.domain.model ||
+        domain.audioId !== state.domain.audioId
+      ) {
+        throw new Error("running domain audio output changed during capture");
       }
+      const completed = readStableWavSnapshot(
+        domain.outputPath,
+        state.startSnapshot,
+      );
+      if (completed.snapshot.byteLength <= state.startSnapshot.byteLength) {
+        throw new Error(
+          "running domain audio output did not advance after capture start",
+        );
+      }
+      return {
+        bytes: completed.bytes,
+        completedAt: new Date().toISOString(),
+        provenance: {
+          domain: {
+            libvirtUri: binding.libvirtUri,
+            domainName: binding.domainName,
+            state: domain.state,
+            model: domain.model,
+            audioId: domain.audioId,
+          },
+          wav: {
+            path: domain.outputPath,
+            device: completed.snapshot.device,
+            inode: completed.snapshot.inode,
+            startOffset: state.startSnapshot.byteLength,
+            endOffset: completed.snapshot.byteLength,
+            capturedByteLength:
+              completed.snapshot.byteLength - state.startSnapshot.byteLength,
+          },
+        },
+      };
+    },
+    async abort() {},
+  };
+}
+
+// This is intentionally test-only. Production always derives the path from the
+// running libvirt domain and never accepts an ambient audio file configuration.
+export function createFileBackedAudioCaptureTestBackend(wavPath) {
+  const path = resolve(requiredString(wavPath, "test WAV path"));
+  return {
+    async start() {
+      return { kind: "test-file", wavPath: path };
+    },
+    async stop(state) {
       return {
         bytes: readFileSync(state.wavPath),
         completedAt: new Date().toISOString(),
@@ -476,57 +585,26 @@ function createFileBackend(environment) {
   };
 }
 
-function createPipeWireBackend(environment) {
-  const wavPath = resolve(
-    environment.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH ??
-      join(
-        resolve(environment.RUNNER_TEMP ?? tmpdir()),
-        `vem-default-audio-${randomBytes(8).toString("hex")}.wav`,
-      ),
-  );
-  const executable =
-    environment.VEM_VM_HOST_AUDIO_PIPEWIRE_RECORD_BIN?.trim() || "pw-record";
-  const target = environment.VEM_VM_HOST_AUDIO_PIPEWIRE_TARGET?.trim();
-  return {
-    async start() {
-      if (existsSync(wavPath)) unlinkSync(wavPath);
-      const args = [];
-      if (target) args.push("--target", target);
-      args.push("--rate", "48000", "--channels", "2", wavPath);
-      const child = spawn(executable, args, {
-        detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
-        windowsHide: true,
-      });
-      child.unref();
-      return {
-        kind: "pipewire",
-        wavPath,
-        processId: child.pid ?? null,
-      };
-    },
-    async stop(state) {
-      await stopProcessGroup(state.processId);
-      if (!existsSync(state.wavPath)) {
-        throw new Error("PipeWire capture did not produce a WAV artifact");
-      }
-      return {
-        bytes: readFileSync(state.wavPath),
-        completedAt: new Date().toISOString(),
-      };
-    },
-    async abort(state) {
-      await stopProcessGroup(state.processId);
-    },
-  };
+function productionReadSerialJournal(path) {
+  if (
+    existsSync(path) &&
+    readFileSync(path, "utf8").trimStart().startsWith("{")
+  ) {
+    throw new Error(
+      "production serial evidence must be captured from the host QEMU PTY",
+    );
+  }
+  return readRawSerialJournal(path);
 }
 
 async function executeAdapterOperation(
   request,
   {
-    environment = process.env,
     evidenceDirectory,
-    backendFactory = defaultBackendFactory,
+    production,
+    backendFactory,
+    readSerialJournal,
+    testOnlyRunVirsh,
   } = {},
 ) {
   const exportDirectory = resolve(
@@ -539,7 +617,12 @@ async function executeAdapterOperation(
       startOperationReference: request.operationReference,
       startedAt: new Date().toISOString(),
     };
-    const backend = await backendFactory(environment).start({
+    const domainBinding = libvirtDomainBinding(production);
+    const backend = await (
+      backendFactory
+        ? backendFactory()
+        : createLibvirtDomainBackend(domainBinding, testOnlyRunVirsh)
+    ).start({
       request,
       evidenceDirectory: exportDirectory,
       captureSession,
@@ -547,12 +630,7 @@ async function executeAdapterOperation(
     writeSessionState(exportDirectory, captureSession.captureSessionId, {
       request,
       captureSession,
-      rawSerialJournalPath: resolve(
-        requiredString(
-          environment.VEM_VM_HOST_AUDIO_SERIAL_JOURNAL,
-          "VEM_VM_HOST_AUDIO_SERIAL_JOURNAL",
-        ),
-      ),
+      rawSerialJournalPath: domainBinding.serialJournalPath,
       backend,
       status: "started",
     });
@@ -576,20 +654,26 @@ async function executeAdapterOperation(
     request.captureSession.captureSessionId,
   );
   if (
-    JSON.stringify(state.captureSession) !== JSON.stringify(request.captureSession)
+    JSON.stringify(state.captureSession) !==
+    JSON.stringify(request.captureSession)
   ) {
     throw new Error("sale audio capture session binding is invalid");
   }
-  const backend = backendFactory(environment);
+  const domainBinding = libvirtDomainBinding(production);
+  const backend = backendFactory
+    ? backendFactory()
+    : createLibvirtDomainBackend(domainBinding, testOnlyRunVirsh);
   const stopped = await backend.stop(state.backend, {
     request,
     evidenceDirectory: exportDirectory,
     state,
   });
-  const binding = normalizedSaleAudioBinding(request);
+  const saleBinding = normalizedSaleAudioBinding(request);
   const serialCapture = buildSaleAudioFrameCapture(
-    binding,
-    readRawSerialJournal(state.rawSerialJournalPath),
+    saleBinding,
+    (readSerialJournal ?? productionReadSerialJournal)(
+      state.rawSerialJournalPath,
+    ),
   );
   const inspection = inspectWavPcm(stopped.bytes, SALE_AUDIO_THRESHOLD);
   if (!inspection.ok || inspection.kind !== "passed") {
@@ -624,12 +708,13 @@ async function executeAdapterOperation(
     captureSession: state.captureSession,
     capture: {
       source: "windows_default_output",
-      binding,
+      binding: saleBinding,
       startedAt: state.captureSession.startedAt,
       completedAt: stopped.completedAt,
       audioArtifact: audioEvidence.identity,
       serialArtifact: serialEvidence.identity,
       threshold: { ...SALE_AUDIO_THRESHOLD },
+      provenance: stopped.provenance ?? null,
     },
     evidence: [audioEvidence, serialEvidence],
   };
@@ -637,11 +722,18 @@ async function executeAdapterOperation(
 
 export async function abortSaleAudioCaptureSession(
   { captureSessionId, evidenceDirectory },
-  { environment = process.env, backendFactory = defaultBackendFactory } = {},
+  { production, backendFactory, testOnlyRunVirsh } = {},
 ) {
   const state = readSessionState(evidenceDirectory, captureSessionId);
-  if (state.status !== "started") return { aborted: false, alreadyStopped: true };
-  await backendFactory(environment).abort(state.backend, {
+  if (state.status !== "started")
+    return { aborted: false, alreadyStopped: true };
+  const backend = backendFactory
+    ? backendFactory()
+    : createLibvirtDomainBackend(
+        libvirtDomainBinding(production),
+        testOnlyRunVirsh,
+      );
+  await backend.abort(state.backend, {
     evidenceDirectory,
     state,
   });
@@ -728,6 +820,7 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
       "audioArtifact",
       "serialArtifact",
       "threshold",
+      "provenance",
     ],
     "report.capture",
   );
@@ -749,6 +842,47 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
       Date.parse(report.capture.startedAt)
   )
     throw new Error("sale audio capture timestamps are invalid");
+  if (report.capture.provenance !== null) {
+    exactKeys(
+      report.capture.provenance,
+      ["domain", "wav"],
+      "report.capture.provenance",
+    );
+    exactKeys(
+      report.capture.provenance.domain,
+      ["libvirtUri", "domainName", "state", "model", "audioId"],
+      "report.capture.provenance.domain",
+    );
+    exactKeys(
+      report.capture.provenance.wav,
+      [
+        "path",
+        "device",
+        "inode",
+        "startOffset",
+        "endOffset",
+        "capturedByteLength",
+      ],
+      "report.capture.provenance.wav",
+    );
+    if (
+      report.capture.provenance.domain.state !== "running" ||
+      report.capture.provenance.domain.model !== "ich9" ||
+      report.capture.provenance.domain.audioId !== 1 ||
+      !String(report.capture.provenance.wav.path ?? "").startsWith("/") ||
+      !Number.isInteger(report.capture.provenance.wav.device) ||
+      !Number.isInteger(report.capture.provenance.wav.inode) ||
+      !Number.isInteger(report.capture.provenance.wav.startOffset) ||
+      !Number.isInteger(report.capture.provenance.wav.endOffset) ||
+      report.capture.provenance.wav.endOffset <=
+        report.capture.provenance.wav.startOffset ||
+      report.capture.provenance.wav.capturedByteLength !==
+        report.capture.provenance.wav.endOffset -
+          report.capture.provenance.wav.startOffset
+    ) {
+      throw new Error("sale audio capture provenance is invalid");
+    }
+  }
   if (!Array.isArray(report.evidence) || report.evidence.length !== 2)
     throw new Error(
       "completed sale audio capture must export WAV and serial evidence",
@@ -835,6 +969,14 @@ export async function runSaleAudioCaptureHostAdapterCli(
       sale: options["capture-phase"] === "stop" ? saleBinding(options) : null,
       evidenceDirectory: options["evidence-dir"],
       outPath: requiredString(options.out, "--out"),
+      production: {
+        libvirtUri: requiredString(options["libvirt-uri"], "--libvirt-uri"),
+        domainName: requiredString(options["domain-name"], "--domain-name"),
+        serialJournalPath: requiredString(
+          options["serial-journal-path"],
+          "--serial-journal-path",
+        ),
+      },
     },
     dependencies,
   );
@@ -864,7 +1006,10 @@ export async function executeSaleAudioCaptureHostAdapter(
         options.evidenceDirectory,
         "evidenceDirectory",
       ),
+      production: options.production,
       backendFactory: dependencies.backendFactory,
+      readSerialJournal: dependencies.readSerialJournal,
+      testOnlyRunVirsh: dependencies.testOnlyRunVirsh,
     }),
     request,
   );

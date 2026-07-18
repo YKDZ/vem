@@ -975,6 +975,17 @@ await new Promise(() => setInterval(() => {}, 1_000));
       () =>
         verifyDefinedRuntimeDevices(
           xml.replace(
+            "</devices>",
+            '<audio id="2" type="file"><output file="/tmp/injected.wav"/></audio></devices>',
+          ),
+          profile,
+        ),
+      /default ICH9 audio device/,
+    );
+    assert.throws(
+      () =>
+        verifyDefinedRuntimeDevices(
+          xml.replace(
             'address type="usb" bus="0" port="2"',
             'address type="usb" bus="0" port="1"',
           ),
@@ -987,6 +998,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
         xml.replaceAll(/\s*<alias name="serial-[^"]+"\/>/g, ""),
         profile,
       ),
+    );
+    const configured = buildConfig("/var/tmp/vem-kvm-audio-profile");
+    configured.storage.audioCapturePath = "/tmp/injected.wav";
+    assert.equal(
+      runtimeProfileForConfig(configured).audio.capturePath,
+      `${configured.storage.baselinePath}.default-audio.wav`,
     );
   });
 

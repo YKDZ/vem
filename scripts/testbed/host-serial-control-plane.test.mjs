@@ -26,6 +26,10 @@ import {
   qemuUsbSerialSessionPaths,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
 } from "./qemu-usb-serial-host-adapter.mjs";
+import {
+  createFileBackedAudioCaptureTestBackend,
+  executeSaleAudioCaptureHostAdapter,
+} from "./sale-audio-capture-host-adapter.mjs";
 
 process.env.VEM_TEST_ALLOW_JSON_PTY_FIXTURE = "1";
 
@@ -98,6 +102,10 @@ describe("host serial control plane", () => {
       "26851",
       "--token",
       "control-plane-token",
+      "--libvirt-uri",
+      "qemu:///system",
+      "--domain-name",
+      "win10-runtime-testbed",
     ]);
 
     assert.deepEqual(options, {
@@ -106,6 +114,8 @@ describe("host serial control plane", () => {
       bind: "0.0.0.0",
       port: 26851,
       token: "control-plane-token",
+      libvirtUri: "qemu:///system",
+      domainName: "win10-runtime-testbed",
     });
   });
 
@@ -608,8 +618,6 @@ describe("host serial control plane", () => {
       VEM_VM_HOST_ADAPTER_STATE_ROOT:
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
       VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
-      VEM_VM_HOST_AUDIO_CAPTURE_MODE: process.env.VEM_VM_HOST_AUDIO_CAPTURE_MODE,
-      VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH: process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH,
     };
     const domainXml = `<domain type="kvm"><devices>
       <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
@@ -642,15 +650,33 @@ describe("host serial control plane", () => {
       process.env.VEM_VM_HOST_ADAPTER_DOMAIN = "win10-runtime-testbed";
       process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT = join(stateRoot, "adapter");
       process.env.VEM_LOWER_CONTROLLER_SIM = join(bin, "lower-controller-sim");
-      process.env.VEM_VM_HOST_AUDIO_CAPTURE_MODE = "file";
-      process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH = join(root, "captured.wav");
-      controlPlane = createHostSerialControlPlane({
-        workspace,
-        stateRoot,
-        bind: "127.0.0.1",
-        port: 0,
-        token,
-      });
+      const capturedWavPath = join(root, "captured.wav");
+      writeFileSync(capturedWavPath, "");
+      controlPlane = createHostSerialControlPlane(
+        {
+          workspace,
+          stateRoot,
+          bind: "127.0.0.1",
+          port: 0,
+          token,
+          libvirtUri: "qemu:///system",
+          domainName: "win10-runtime-testbed",
+        },
+        {
+          executeSaleAudioCapture: (input, dependencies) =>
+            executeSaleAudioCaptureHostAdapter(input, {
+              ...dependencies,
+              backendFactory: () =>
+                createFileBackedAudioCaptureTestBackend(capturedWavPath),
+              readSerialJournal: (journalPath) =>
+                readFileSync(journalPath, "utf8")
+                  .split(/\r?\n/)
+                  .filter(Boolean)
+                  .map((line) => JSON.parse(line)),
+            }),
+          abortSaleAudioCapture: async () => ({ aborted: true }),
+        },
+      );
       server = controlPlane.listen();
       await new Promise((resolve) => server.once("listening", resolve));
       const address = server.address();
@@ -757,7 +783,7 @@ describe("host serial control plane", () => {
           },
         },
       );
-      writeFileSync(process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH, wavWithTone());
+      writeFileSync(capturedWavPath, wavWithTone());
       const stopped = await requestJson(
         baseUrl,
         token,
