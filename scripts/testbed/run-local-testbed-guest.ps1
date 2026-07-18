@@ -322,6 +322,11 @@ Require-Path $GuestInputPath
 $input = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
 
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
+  $env:Path = "$machinePath;$env:Path"
+}
+
 New-Item -ItemType Directory -Force -Path $deploymentRoot, $daemonDataRoot, $handoffRoot | Out-Null
 $env:CARGO_TARGET_DIR = Join-Path $cacheRoot "target"
 $env:SCCACHE_DIR = Join-Path $cacheRoot "sccache"

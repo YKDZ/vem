@@ -1130,6 +1130,7 @@ describe("Windows D cache contract", () => {
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
+      '[Environment]::GetEnvironmentVariable("Path", "Machine")',
     ])
       assert.match(
         guest,
