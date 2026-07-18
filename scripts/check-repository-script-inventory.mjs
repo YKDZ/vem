@@ -6,6 +6,30 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_INVENTORY = [
   {
+    path: "scripts/testbed/fixtures/local-testbed-catalog.json",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/local-testbed.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/local-testbed.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/run-local-testbed-guest.ps1",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/machine-ui-cdp-driver.mjs",
     owner: "machine-runtime-console",
     category: "test support operation",
@@ -408,12 +432,9 @@ const DEFAULT_INVENTORY = [
   {
     path: "scripts/testbed/win10-vem-e2e.mjs",
     owner: "field-operations",
-    category: "canonical entrypoint",
-    workflows: [
-      "factory preparation",
-      "runtime acceptance",
-      "testbed workflows",
-    ],
+    category: "explicitly maintained legacy operation",
+    verifier: "scripts/testbed/win10-vem-e2e.test.mjs",
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/factory-image-acceptance.mjs",
@@ -459,7 +480,7 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/win10-vem-e2e.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs",

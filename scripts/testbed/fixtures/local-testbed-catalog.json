@@ -1,0 +1,293 @@
+{
+  "schemaVersion": "vem-local-testbed-catalog/v1",
+  "source": "docs/唐诗村商品列表.xlsx",
+  "normalizedAt": "2026-07-18",
+  "products": [
+    {
+      "sourceRow": 2,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·休闲·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 3,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·商务·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 4,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·时尚潮·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 5,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·运动·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 6,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·休闲·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 7,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·商务·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 8,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·时尚潮·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 9,
+      "category": "袜子",
+      "name": "汉麻透气消臭四季袜·运动·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 10,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·女童",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 11,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·男童",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 12,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·商务·女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 13,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·时尚·女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 14,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·正装·女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 15,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·运动·女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 16,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·商务·男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 17,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·时尚·男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 18,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·正装·男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 19,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·运动·男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 20,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·户外·老年女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 21,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·日常·老年女士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 22,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·户外·老年男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 23,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·日常·老年男士",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 24,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·商务·青少年女生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 25,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·时尚·青少年女生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 26,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·正装·青少年女生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 27,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·运动·青少年女生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 28,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·商务·青少年男生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 29,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·时尚·青少年男生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 30,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·正装·青少年男生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 31,
+      "category": "内裤",
+      "name": "汉麻抗菌舒适内裤·运动·青少年男生",
+      "size": "小码、中码、大码"
+    },
+    {
+      "sourceRow": 32,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·中老年女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 33,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·中老年女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 34,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·中老年男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 35,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·中老年男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 36,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·V领·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 37,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·圆领·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 38,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·女士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 39,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·V领·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 40,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·圆领·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 41,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·男士",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 42,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·女童",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 43,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·女童",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 44,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·短袖·男童",
+      "size": "常规码"
+    },
+    {
+      "sourceRow": 45,
+      "category": "T恤",
+      "name": "会呼吸的汉麻T·长袖·男童",
+      "size": "常规码"
+    }
+  ],
+  "slots": [
+    {
+      "slotCode": "A1",
+      "sourceRow": 2,
+      "layerNo": 1,
+      "cellNo": 1,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 3900
+    },
+    {
+      "slotCode": "A2",
+      "sourceRow": 3,
+      "layerNo": 1,
+      "cellNo": 2,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 4900
+    }
+  ]
+}

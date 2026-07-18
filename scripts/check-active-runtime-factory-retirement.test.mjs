@@ -26,7 +26,8 @@ const activeRuntimeFiles = [
 ];
 
 const runtimeEntrypoints = [
-  "scripts/testbed/win10-vem-e2e.mjs",
+  "scripts/testbed/local-testbed.mjs",
+  "scripts/testbed/run-local-testbed-guest.ps1",
   "scripts/testbed/run-vm-host-adapter.mjs",
   "scripts/testbed/kvm-baseline/build-win10-baseline.mjs",
   "scripts/testbed/kvm-baseline/linux-kvm-baseline.mjs",
