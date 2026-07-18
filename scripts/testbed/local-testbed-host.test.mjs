@@ -134,7 +134,10 @@ describe("tracked local testbed host lifecycle", () => {
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "display-proof",
     });
-    assert.match(admission[1].input, /Marshal\]::SizeOf\(\$mode\)/);
+    assert.match(
+      admission[1].input,
+      /C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report\.json/,
+    );
   });
 
   it("does not admit the runner until the exact guest input is proven staged", async () => {
@@ -155,7 +158,8 @@ describe("tracked local testbed host lifecycle", () => {
       plan[1].args.at(-1),
       'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
     );
-    assert.match(plan[1].input, /Get-CurrentDesktopScreenDimensions/);
+    assert.match(plan[1].input, /interactive-display-report\.json/);
+    assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(
       plan[0].path,
@@ -197,7 +201,7 @@ describe("tracked local testbed host lifecycle", () => {
           args.at(-1),
           'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
         );
-        assert.match(input, /Get-CurrentDesktopScreenDimensions/);
+        assert.match(input, /interactive-display-report\.json/);
         return {
           stdout: `${JSON.stringify({
             schemaVersion: "vem-local-testbed-display-admission-proof/v1",
@@ -206,7 +210,7 @@ describe("tracked local testbed host lifecycle", () => {
             heightPx: 1920,
             sessionUser: "baseline",
             sessionId: 2,
-            source: "enum_display_settings",
+            source: "interactive_autologon_report",
           })}\n`,
         };
       },

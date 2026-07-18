@@ -198,45 +198,19 @@ function Test-ExpectedInteractiveSession($Session, [string]$User) {
     ))
   )
 }
-function Get-CurrentDesktopScreenDimensions {
-  if ($null -eq ('VemDisplaySettings' -as [type])) {
-    Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-public struct VemDevMode {
-  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
-  public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
-  public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
-  public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
-  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
-  public short dmLogPixels;
-  public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency, dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
-}
-public static class VemDisplaySettings {
-  public const int ENUM_CURRENT_SETTINGS = -1;
-  [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref VemDevMode devMode);
-}
-"@ -ErrorAction Stop
-  }
-  $mode = New-Object VemDevMode
-  $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf($mode)
-  if (-not [VemDisplaySettings]::EnumDisplaySettings($null, [VemDisplaySettings]::ENUM_CURRENT_SETTINGS, [ref]$mode)) {
-    throw 'interactive desktop dimensions were not available'
-  }
-  [pscustomobject]@{
-    widthPx = [int]$mode.dmPelsWidth
-    heightPx = [int]$mode.dmPelsHeight
-    source = 'enum_display_settings'
-  }
-}
 $expectedUser = ${quotePowerShell(expectedUser)}
 $lines = @(quser 2>$null | Select-Object -Skip 1)
 $sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } | Where-Object { $null -ne $_ })
 $session = @($sessions | Where-Object { Test-ExpectedInteractiveSession $_ $expectedUser } | Select-Object -First 1)
 if ($session.Count -eq 0) { throw "interactive session for $expectedUser was not observed" }
-$screen = Get-CurrentDesktopScreenDimensions
+$displayReportPath = 'C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json'
+if (-not (Test-Path -LiteralPath $displayReportPath -PathType Leaf)) { throw 'interactive display report was not found' }
+$displayReport = Get-Content -LiteralPath $displayReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$screen = [pscustomobject]@{
+  widthPx = [int]$displayReport.desktop.width
+  heightPx = [int]$displayReport.desktop.height
+  source = 'interactive_autologon_report'
+}
 $proof = [ordered]@{
   schemaVersion = ${quotePowerShell(DISPLAY_PROOF_SCHEMA)}
   status = if ($screen.widthPx -eq ${width} -and $screen.heightPx -eq ${height}) { 'passed' } else { 'failed' }
