@@ -138,14 +138,14 @@ describe("tracked local testbed host lifecycle", () => {
     assert.equal(plan[0].type, "assert-guest-input");
     assert.equal(
       plan[0].args.at(-1),
-      "powershell -NoProfile -NonInteractive -Command -",
+      'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
     );
     assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
     assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
     assert.doesNotMatch(plan[0].input, /\$input\s*=/);
     assert.equal(
       plan[1].args.at(-1),
-      "powershell -NoProfile -NonInteractive -Command -",
+      'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
     );
     assert.match(plan[1].input, /Get-CurrentDesktopScreenDimensions/);
     assert.equal(plan[1].type, "assert-interactive-display");
@@ -161,7 +161,7 @@ describe("tracked local testbed host lifecycle", () => {
           operations.push(command);
           assert.equal(
             args.at(-1),
-            "powershell -NoProfile -NonInteractive -Command -",
+            'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
           );
           assert.match(input, /guest input/);
           throw new Error("guest input missing");
@@ -187,7 +187,7 @@ describe("tracked local testbed host lifecycle", () => {
         operations.push(command);
         assert.equal(
           args.at(-1),
-          "powershell -NoProfile -NonInteractive -Command -",
+          'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
         );
         assert.match(input, /Get-CurrentDesktopScreenDimensions/);
         return {

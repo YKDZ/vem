@@ -24,6 +24,8 @@ const PORTRAIT_HEIGHT_PX = 1920;
 const DISPLAY_PROOF_SCHEMA = "vem-local-testbed-display-admission-proof/v1";
 const ACTIVATOR_SERVICE_OWNER_SCHEMA =
   "vem-local-testbed-headless-vnc-activator-owner/v1";
+const POWERSHELL_STDIN_COMMAND =
+  'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"';
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -439,7 +441,7 @@ export function buildHostAdmissionPlan({
       type: "assert-guest-input",
       path,
       command: "ssh",
-      args: sshArgs(config, "powershell -NoProfile -NonInteractive -Command -"),
+      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
       input: assertion,
     },
     {
@@ -448,7 +450,7 @@ export function buildHostAdmissionPlan({
       expectedUser: config.ssh.user,
       expectedWidth: PORTRAIT_WIDTH_PX,
       expectedHeight: PORTRAIT_HEIGHT_PX,
-      args: sshArgs(config, "powershell -NoProfile -NonInteractive -Command -"),
+      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
       input: interactiveDisplayAssertion(
         config.ssh.user,
         PORTRAIT_WIDTH_PX,
