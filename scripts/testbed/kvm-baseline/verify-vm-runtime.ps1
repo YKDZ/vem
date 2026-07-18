@@ -71,7 +71,7 @@ function Get-VerifiedVirtioGpuDriverBinding {
   $files = @($packageIdentity.files | Sort-Object path)
   if ($files.Count -lt 3 -or @($files.path | Select-Object -Unique).Count -ne $files.Count) { throw "VirtIO GPU driver package file identity is invalid" }
   $identityText = New-Object Text.StringBuilder
-  foreach ($file in $driverStoreFiles) {
+  foreach ($file in $files) {
     if ([string]$file.path -notmatch "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$" -or [string]$file.sha256 -notmatch "^[0-9a-f]{64}$") { throw "VirtIO GPU driver binding file identity is invalid" }
     $mediaPath = Join-Path $virtioGpuDriverRoot ([string]$file.path).Replace("/", "\")
     if (-not (Test-Path -LiteralPath $mediaPath -PathType Leaf) -or (Get-Sha256 -Path $mediaPath) -cne [string]$file.sha256) {
@@ -116,7 +116,7 @@ function Get-VerifiedVirtioGpuDriverBinding {
   if ($null -eq $signedDriver) { throw "the bound VirtIO GPU signed-driver identity changed after preparation" }
   $driverPackage = Get-WindowsDriver -Online -Driver $signedDriver.InfName -ErrorAction Stop
   $driverStoreRoot = Split-Path -Parent ([string]$driverPackage.OriginalFileName)
-  foreach ($file in $files) {
+  foreach ($file in $driverStoreFiles) {
     $storePath = Join-Path $driverStoreRoot ([string]$file.path).Replace("/", "\")
     if (-not (Test-Path -LiteralPath $storePath -PathType Leaf) -or (Get-Sha256 -Path $storePath) -cne [string]$file.sha256) {
       throw "the bound VirtIO GPU DriverStore package differs from the supplied payload"

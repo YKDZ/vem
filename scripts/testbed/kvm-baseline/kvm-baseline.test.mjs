@@ -2361,6 +2361,20 @@ await new Promise(() => setInterval(() => {}, 1_000));
       verify,
       /packageIdentity\.driverStoreFiles[\s\S]*binding\.files[\s\S]*DriverStore binding is not part of the published package/,
     );
+    const packageFilesLoop = verify.indexOf("foreach ($file in $files)");
+    const driverStoreDeclaration = verify.indexOf(
+      "$driverStoreFiles = @($packageIdentity.driverStoreFiles",
+    );
+    const driverStoreRoot = verify.indexOf(
+      "$driverStoreRoot = Split-Path -Parent",
+    );
+    const driverStoreLoop = verify.indexOf(
+      "foreach ($file in $driverStoreFiles)",
+    );
+    assert.ok(
+      packageFilesLoop >= 0 && packageFilesLoop < driverStoreDeclaration,
+    );
+    assert.ok(driverStoreLoop > driverStoreRoot);
     assert.doesNotMatch(
       runtime,
       /\/subdirs|\/add-driver[^\r\n]*\*\.inf|testsigning|nointegritychecks/i,
