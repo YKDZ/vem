@@ -37,7 +37,15 @@ export class PaymentCodeOrchestratorService {
       authCode: input.authCode,
       idempotencyKey: input.idempotencyKey,
       source: input.source,
-      scannerHealthJson: input.scannerHealth ?? null,
+      scannerHealthJson:
+        input.scannerHealth || input.scannerEventId
+          ? {
+              ...(input.scannerHealth ?? {}),
+              ...(input.scannerEventId
+                ? { scannerEventId: input.scannerEventId }
+                : {}),
+            }
+          : null,
       mockPaymentEnabled: this.appConfig.paymentMockEnabled,
     });
 

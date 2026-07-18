@@ -93,6 +93,7 @@ describe("installed kiosk sale platform raw query", () => {
     expect(source).toContain(".where(eq(orders.machineId, machine.id))");
     expect(source).toContain("inArray(payments.orderId, orderIds)");
     expect(source).toContain("inArray(paymentCodeAttempts.orderId, orderIds)");
+    expect(source).toContain("scannerEventId");
     expect(source).toContain(
       "inArray(inventoryReservations.orderId, orderIds)",
     );

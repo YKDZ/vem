@@ -31,6 +31,16 @@ export const QEMU_USB_SERIAL_ADAPTER_IDENTITY =
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
+const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
+const SCANNER_BINDING_PROBE_BYTES = Buffer.from("621234567890123456\r\n", "utf8");
+const TERMINATE_GRACE_MS = 3_000;
+const KILL_GRACE_MS = 1_000;
+const SALE_AUDIO_THRESHOLD = Object.freeze({
+  minimumPeakAbsoluteSample: 512,
+  minimumNonSilentFrames: 4_800,
+  minimumDurationMs: 100,
+  minimumDistinctNonSilentSampleMagnitudes: 2,
+});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -255,24 +265,6 @@ async function waitForProcessExit(pid, timeoutMs = 5_000) {
   return !Number.isInteger(pid) || !processAlive(pid);
 }
 
-async function terminateProcessGroup(pid) {
-  if (!Number.isInteger(pid)) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (await waitForProcessExit(pid)) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (!(await waitForProcessExit(pid, 2_000))) {
-    throw new Error("lower-controller simulator did not exit");
-  }
-}
-
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -347,6 +339,83 @@ function contractMappings(liveMappings, pid, connectionState = "connected") {
   }));
 }
 
+function processGroupAlive(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processGroupAlive(pid)) return true;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  return !processGroupAlive(pid);
+}
+
+async function terminateProcessGroup(label, pid) {
+  const evidence = { label, pid, sent: [], exitedAfter: null };
+  if (!processGroupAlive(pid)) {
+    evidence.exitedAfter = "already_exited";
+    return evidence;
+  }
+  process.kill(-pid, "SIGTERM");
+  evidence.sent.push("SIGTERM");
+  if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) {
+    evidence.exitedAfter = "SIGTERM";
+    return evidence;
+  }
+  process.kill(-pid, "SIGKILL");
+  evidence.sent.push("SIGKILL");
+  if (await waitForProcessGroupExit(pid, KILL_GRACE_MS)) {
+    evidence.exitedAfter = "SIGKILL";
+    return evidence;
+  }
+  throw new Error(`${label} process group ${pid} survived SIGTERM and SIGKILL`);
+}
+
+function survivingSocketCount(paths) {
+  return paths.filter((path) => {
+    try {
+      return statSync(path).isSocket();
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  }).length;
+}
+
+function startScannerBindingProbe(scannerPath, logPath) {
+  if (process.env.VEM_LOCAL_TESTBED_SCANNER_BINDING_PROBE === "0") return null;
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      "const { appendFileSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const timer = setInterval(() => appendFileSync(path, bytes), 100); setTimeout(() => { clearInterval(timer); process.exit(0); }, 4000);",
+      scannerPath,
+      SCANNER_BINDING_PROBE_BYTES.toString("base64"),
+    ],
+    {
+      detached: true,
+      stdio: ["ignore", openSync(logPath, "a", 0o600), openSync(logPath, "a", 0o600)],
+    },
+  );
+  child.unref();
+  if (!Number.isInteger(child.pid)) throw new Error("scanner binding probe did not start");
+  return {
+    pid: child.pid,
+    byteLength: SCANNER_BINDING_PROBE_BYTES.length,
+    digest: `sha256:${sha256(SCANNER_BINDING_PROBE_BYTES)}`,
+    suffix: "crlf",
+  };
+}
+
 function startSession(request) {
   const binding = deriveSerialSessionBinding({
     runId: request.runId,
@@ -359,6 +428,7 @@ function startSession(request) {
   const lower = liveMappings.find(
     (mapping) => mapping.role === "lower-controller",
   );
+  const scanner = liveMappings.find((mapping) => mapping.role === "scanner");
   const simulator = resolve(
     required(process.env.VEM_LOWER_CONTROLLER_SIM, "VEM_LOWER_CONTROLLER_SIM"),
   );
@@ -418,6 +488,7 @@ function startSession(request) {
   child.unref();
   if (!Number.isInteger(child.pid))
     throw new Error("lower-controller simulator did not start");
+  const scannerBindingProbe = startScannerBindingProbe(scanner.path, logPath);
   const mappings = contractMappings(liveMappings, child.pid);
   const state = {
     serialSessionId: binding.serialSessionId,
@@ -437,6 +508,8 @@ function startSession(request) {
     releaseF0Path,
     releaseF2Path,
     logPath,
+    runtimeSocketPaths: [],
+    scannerBindingProbe,
     scannerInjection: null,
     cleanupAttemptCount: 0,
     active: true,
@@ -672,13 +745,32 @@ function semanticRecords(request, state, rawFrames) {
 async function stopSession(request) {
   const state = readState(request.serialSession.serialSessionId);
   state.cleanupAttemptCount += 1;
-  if (state.active) {
-    await terminateProcessGroup(state.simulatorPid);
-    await terminateProcessGroup(state.ptyCapturePid);
+  const errors = [];
+  const termination = [];
+  for (const [label, pid] of [
+    ["lower-controller simulator", state.simulatorPid],
+    ["host PTY capture", state.ptyCapturePid],
+    ["scanner binding probe", state.scannerBindingProbe?.pid],
+  ]) {
+    if (!Number.isInteger(pid)) continue;
+    try {
+      termination.push(await terminateProcessGroup(label, pid));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
   }
   state.active = false;
-  state.simulatorPid = null;
-  state.ptyCapturePid = null;
+  const pids = [
+    state.simulatorPid,
+    state.ptyCapturePid,
+    state.scannerBindingProbe?.pid,
+  ].filter(Number.isInteger);
+  state.cleanup = {
+    termination,
+    errors,
+    survivingProcessCount: pids.filter((pid) => processGroupAlive(pid)).length,
+    survivingSocketCount: survivingSocketCount(state.runtimeSocketPaths ?? []),
+  };
   writeState(state);
   return state;
 }
@@ -706,8 +798,10 @@ function serialSessionReport(request, state) {
       ? {
           cleanupAttemptCount: state.cleanupAttemptCount,
           idempotencyVerified: request.serialSession.idempotencyCheck,
-          survivingProcessCount: 0,
-          survivingSocketCount: 0,
+          survivingProcessCount: state.cleanup?.survivingProcessCount ?? 0,
+          survivingSocketCount: state.cleanup?.survivingSocketCount ?? 0,
+          termination: state.cleanup?.termination ?? [],
+          errors: state.cleanup?.errors ?? [],
         }
       : null,
   };

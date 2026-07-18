@@ -254,22 +254,29 @@ impl MqttSyncRuntime {
                 .max(1)
                 .saturating_add(DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS),
         );
+        let (progress_sender, mut progress_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<vending_core::hardware::DispenseProgressEvent>();
         let progress_state = self.state.clone();
         let progress_events = self.events.clone();
-        let progress: DispenseProgressObserver = Arc::new(move |event| {
-            let state = progress_state.clone();
-            let events = progress_events.clone();
-            tokio::spawn(async move {
+        let progress_worker = tokio::spawn(async move {
+            while let Some(event) = progress_receiver.recv().await {
                 let order_no = event.order_no.clone();
-                if matches!(state.record_dispense_progress(&event).await, Ok(true)) {
-                    let _ = events.send(DaemonEvent::TransactionChanged {
+                if matches!(
+                    progress_state.record_dispense_progress(&event).await,
+                    Ok(true)
+                ) {
+                    let _ = progress_events.send(DaemonEvent::TransactionChanged {
                         event_id: Uuid::new_v4().simple().to_string(),
                         updated_at: crate::state::store::now_iso(),
                         order_no,
                         status: "dispensing".to_string(),
                     });
                 }
-            });
+            }
+        });
+        let progress_sender_for_observer = progress_sender.clone();
+        let progress: DispenseProgressObserver = Arc::new(move |event| {
+            let _ = progress_sender_for_observer.send(event);
         });
         let result = match tokio::time::timeout(
             local_timeout,
@@ -290,6 +297,10 @@ impl MqttSyncRuntime {
                 reported_at: crate::state::store::now_iso(),
             },
         };
+        drop(progress_sender);
+        progress_worker
+            .await
+            .map_err(|error| format!("dispense progress worker failed: {error}"))?;
         let mut result_event =
             crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
         result_event.payload_json = self.sign_outbox_payload(

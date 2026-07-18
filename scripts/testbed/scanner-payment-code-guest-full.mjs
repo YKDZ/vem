@@ -27,6 +27,22 @@ const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from(
   "utf8",
 );
 
+export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
+  const bytes = Buffer.isBuffer(value)
+    ? Buffer.from(value)
+    : typeof value === "string"
+      ? Buffer.from(value, "utf8")
+      : null;
+  if (!bytes || bytes.length <= 2 || !bytes.subarray(-2).equals(Buffer.from("\r\n"))) {
+    throw new Error("scannerAcceptance.validCode must end with exactly one CRLF frame suffix");
+  }
+  const body = bytes.subarray(0, -2);
+  if (body.includes(0x0d) || body.includes(0x0a)) {
+    throw new Error("scannerAcceptance.validCode must contain exactly one trailing CRLF frame suffix");
+  }
+  return bytes;
+}
+
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -96,6 +112,49 @@ function daemonHeaders(handoff) {
   return {
     authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
   };
+}
+
+function daemonEventsUrl(handoff) {
+  const baseUrl = daemonBaseUrl(handoff).replace(/^http/i, "ws");
+  return `${baseUrl}/v1/events?token=${encodeURIComponent(required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken"))}`;
+}
+
+function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
+  let socket = null;
+  let settled = false;
+  let timer = null;
+  const close = () => {
+    if (timer) clearTimeout(timer);
+    socket?.close();
+  };
+  const promise = new Promise((resolvePromise, reject) => {
+    socket = new WebSocket(daemonEventsUrl(handoff));
+    timer = setTimeout(() => {
+      if (!settled) reject(new Error("timed out waiting for a daemon scanner_code event"));
+    }, timeoutMs);
+    socket.addEventListener("error", () => {
+      if (!settled) reject(new Error("daemon scanner event stream failed"));
+    });
+    socket.addEventListener("message", (message) => {
+      let event;
+      try {
+        event = JSON.parse(String(message.data));
+      } catch {
+        return;
+      }
+      if (
+        event?.type === "scanner_code" &&
+        event.source === "serial_text" &&
+        typeof event.eventId === "string" &&
+        event.eventId.length > 0
+      ) {
+        settled = true;
+        close();
+        resolvePromise(event);
+      }
+    });
+  });
+  return { promise, close };
 }
 
 async function fetchJson(url, options = {}) {
@@ -192,6 +251,41 @@ async function waitForPaymentCodeAttempt(handoff, renderedSale, timeoutMs = 30_0
   throw new Error(
     `serial-text payment-code attempt did not appear: ${JSON.stringify(lastTransaction)}`,
   );
+}
+
+async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const snapshot = await daemonGet(handoff, "/v1/hardware-bindings").catch(() => null);
+    last = snapshot;
+    const roles = Array.isArray(snapshot?.roles) ? snapshot.roles : [];
+    const resolved = Object.fromEntries(roles.map((role) => [role.role, role]));
+    const lower = resolved.lower_controller;
+    const scanner = resolved.scanner;
+    if (
+      lower?.ready === true &&
+      scanner?.ready === true &&
+      /^COM[1-9][0-9]*$/.test(lower.currentPort ?? "") &&
+      /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
+      lower.currentPort !== scanner.currentPort &&
+      typeof lower.binding?.identity?.identityKey === "string" &&
+      typeof scanner.binding?.identity?.identityKey === "string"
+    ) {
+      const qemuMappings = sessionStart?.qemuUsbSerialMappings;
+      if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
+        throw new Error("serial session did not expose the real QEMU USB device mappings");
+      }
+      for (const role of ["lower-controller", "scanner"]) {
+        if (!qemuMappings.some((mapping) => mapping.role === role && /^qemu-usb-serial:\/\//.test(mapping.guestDeviceIdentity ?? ""))) {
+          throw new Error(`QEMU USB mapping for ${role} is missing`);
+        }
+      }
+      return { daemon: snapshot, qemuUsbSerialMappings: qemuMappings };
+    }
+    await sleep(250);
+  }
+  throw new Error(`daemon hardware bindings were not ready: ${JSON.stringify(last)}`);
 }
 
 async function waitForSuccessfulResultSurface(client, expected, timeoutMs = 60_000) {
@@ -326,6 +420,7 @@ export function validateSuccessfulOutcome({
   renderedSale,
   command,
   attemptSnapshot,
+  scannerEvent,
   afterF2Ui,
 }) {
   const attempts = attemptRowsByOrder(post, renderedSale.orderId);
@@ -360,18 +455,42 @@ export function validateSuccessfulOutcome({
   ) {
     throw new Error("successful scan did not reach a correlated success result surface");
   }
+  const daemonAttempt = attemptSnapshot?.paymentCodeAttempt;
   if (
-    typeof attemptSnapshot?.paymentCodeAttempt?.scannerEventId !== "string" ||
-    attemptSnapshot.paymentCodeAttempt.scannerEventId.length === 0 ||
-    attemptSnapshot.paymentCodeAttempt.attemptNo !== 1
+    scannerEvent?.type !== "scanner_code" ||
+    scannerEvent.source !== "serial_text" ||
+    typeof scannerEvent.eventId !== "string" ||
+    daemonAttempt?.scannerEventId !== scannerEvent.eventId ||
+    attempt.scannerEventId !== scannerEvent.eventId ||
+    daemonAttempt?.attemptNo !== attempt.attemptNo ||
+    daemonAttempt?.idempotencyKey !== attempt.idempotencyKey
   ) {
-    throw new Error("valid scan must create exactly one daemon scanner event and attempt");
+    throw new Error("ScannerCode event id does not strictly correlate daemon and platform payment attempts");
+  }
+  const baselineInventory = rows(baseline?.raw, "inventories").find(
+    (entry) => entry.id === movements[0].inventoryId,
+  );
+  const finalInventory = rows(post?.raw, "inventories").find(
+    (entry) => entry.id === movements[0].inventoryId,
+  );
+  if (
+    !baselineInventory ||
+    !finalInventory ||
+    baselineInventory.onHandQty - finalInventory.onHandQty !== 1
+  ) {
+    throw new Error("successful scan must decrement the same platform inventory by exactly one from baseline to final");
   }
   return {
     attempt,
     movement: movements[0],
     baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId).length,
     finalPaymentCount: paymentRowsByOrder(post, renderedSale.orderId).length,
+    inventory: {
+      id: baselineInventory.id,
+      baselineOnHandQty: baselineInventory.onHandQty,
+      finalOnHandQty: finalInventory.onHandQty,
+      deltaOnHandQty: finalInventory.onHandQty - baselineInventory.onHandQty,
+    },
   };
 }
 
@@ -397,6 +516,9 @@ export async function runScannerPaymentCodeGuest(options) {
   const checkpoints = [];
   let client = null;
   let sessionStart = null;
+  let scannerEventCapture = null;
+  let failure = null;
+  let cleanup = null;
   let stage = "connect";
   try {
     guestInput = readJson(options.guestInputPath, "guest input");
@@ -416,6 +538,7 @@ export async function runScannerPaymentCodeGuest(options) {
 
     stage = "start-session";
     sessionStart = await startSession(guestInput, runId, machineCode);
+    const hardwareBindings = await waitForHardwareBindings(handoff, sessionStart);
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-scanner-payment-code");
     for (const step of steps) {
@@ -490,19 +613,19 @@ export async function runScannerPaymentCodeGuest(options) {
     );
 
     stage = "valid-scan";
-    const validScannerBytes = Buffer.from(
-      required(
-        guestInput?.scannerAcceptance?.validCode ?? DEFAULT_VALID_SCANNER_CODE,
-        "scannerAcceptance.validCode",
-      ),
-      "utf8",
+    const validScannerBytes = scannerFrameBytes(
+      guestInput?.scannerAcceptance?.validCode ?? DEFAULT_VALID_SCANNER_CODE,
     );
+    scannerEventCapture = captureNextSerialScannerEvent(handoff);
     await injectSessionCode(
       guestInput,
       sessionStart.sessionId,
       renderedSale,
       validScannerBytes,
     );
+
+    const scannerEvent = await scannerEventCapture.promise;
+    scannerEventCapture = null;
 
     const attemptSnapshot = await waitForPaymentCodeAttempt(
       handoff,
@@ -584,6 +707,7 @@ export async function runScannerPaymentCodeGuest(options) {
       renderedSale,
       command,
       attemptSnapshot,
+      scannerEvent,
       afterF2Ui,
     });
 
@@ -611,6 +735,12 @@ export async function runScannerPaymentCodeGuest(options) {
         scannerEventId: attemptSnapshot.paymentCodeAttempt.scannerEventId,
         idempotencyKey: attemptSnapshot.paymentCodeAttempt.idempotencyKey,
       },
+      scannerEvent: {
+        eventId: scannerEvent.eventId,
+        source: scannerEvent.source,
+        scannedAtMs: scannerEvent.scannedAtMs,
+      },
+      hardwareBindings,
       platformAssertions: success,
       checkpoints,
       boundaries: {
@@ -650,7 +780,7 @@ export async function runScannerPaymentCodeGuest(options) {
     writeJson(options.outPath, report);
     return report;
   } catch (error) {
-    const failure = {
+    failure = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
       ok: false,
       stage,
@@ -707,14 +837,18 @@ export async function runScannerPaymentCodeGuest(options) {
   } finally {
     try {
       if (sessionStart?.sessionId) {
-        await controlPlaneRequest(
+        cleanup = await controlPlaneRequest(
           guestInput,
           `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-        ).catch(() => undefined);
+        ).catch((error) => ({
+          error: error instanceof Error ? error.message : String(error),
+        }));
       }
     } finally {
+      scannerEventCapture?.close();
       await client?.close().catch(() => undefined);
     }
+    if (failure) writeJson(options.outPath, { ...failure, cleanup });
   }
 }
 

@@ -362,6 +362,16 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckoutFlowAction {
 #[doc = "                }"]
 #[doc = "              ]"]
 #[doc = "            },"]
+#[doc = "            \"scannerEventId\": {"]
+#[doc = "              \"anyOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"type\": \"null\""]
+#[doc = "                }"]
+#[doc = "              ]"]
+#[doc = "            },"]
 #[doc = "            \"source\": {"]
 #[doc = "              \"anyOf\": ["]
 #[doc = "                {"]
@@ -1014,6 +1024,16 @@ impl ::std::convert::TryFrom<::std::string::String> for CurrentTransactionSnapsh
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
+#[doc = "    \"scannerEventId\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"source\": {"]
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
@@ -1083,6 +1103,12 @@ pub struct CurrentTransactionSnapshotPaymentCodeAttempt {
     #[serde(rename = "maskedAuthCode")]
     pub masked_auth_code: ::std::option::Option<::std::string::String>,
     pub message: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "scannerEventId",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub scanner_event_id: ::std::option::Option<::std::string::String>,
     pub source: ::std::option::Option<CurrentTransactionSnapshotPaymentCodeAttemptSource>,
     pub status: ::std::option::Option<CurrentTransactionSnapshotPaymentCodeAttemptStatus>,
     #[serde(rename = "submittedAt")]
@@ -2246,6 +2272,16 @@ impl ::std::convert::TryFrom<::std::string::String> for DispenseProgressObservat
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
+#[doc = "    \"scannerEventId\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"source\": {"]
 #[doc = "      \"anyOf\": ["]
 #[doc = "        {"]
@@ -2315,6 +2351,12 @@ pub struct PaymentCodeAttemptSummary {
     #[serde(rename = "maskedAuthCode")]
     pub masked_auth_code: ::std::option::Option<::std::string::String>,
     pub message: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "scannerEventId",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub scanner_event_id: ::std::option::Option<::std::string::String>,
     pub source: ::std::option::Option<PaymentCodeAttemptSummarySource>,
     pub status: ::std::option::Option<PaymentCodeAttemptSummaryStatus>,
     #[serde(rename = "submittedAt")]

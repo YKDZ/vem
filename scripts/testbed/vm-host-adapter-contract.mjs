@@ -340,9 +340,7 @@ function sha256(value) {
 }
 
 export function createScannerCodeDescriptor(scannerCode) {
-  const bytes = Buffer.isBuffer(scannerCode)
-    ? Buffer.from(scannerCode)
-    : Buffer.from(String(scannerCode ?? ""), "utf8");
+  const bytes = normalizeScannerInput(scannerCode);
   if (bytes.length < 1 || bytes.length > 256)
     throw new Error("scanner input must contain 1 through 256 bytes");
   const digest = sha256(bytes);
@@ -351,6 +349,12 @@ export function createScannerCodeDescriptor(scannerCode) {
     scannerCodeByteLength: bytes.length,
     scannerCodeSuffix: digest.slice(-8),
   };
+}
+
+function normalizeScannerInput(scannerCode) {
+  if (Buffer.isBuffer(scannerCode)) return Buffer.from(scannerCode);
+  if (typeof scannerCode === "string") return Buffer.from(scannerCode, "utf8");
+  throw new Error("scanner input must be a string or Buffer");
 }
 
 export function deriveSerialFrameCaptureBindingDigest({
@@ -1375,6 +1379,9 @@ function assertSerialSessionReport(report, request, issues) {
   );
   if (needsCleanup) {
     const cleanup = session.simulatorCleanup;
+    const detailedCleanup =
+      Object.hasOwn(cleanup ?? {}, "termination") ||
+      Object.hasOwn(cleanup ?? {}, "errors");
     if (
       !assertExactKeys(
         cleanup,
@@ -1383,6 +1390,7 @@ function assertSerialSessionReport(report, request, issues) {
           "idempotencyVerified",
           "survivingProcessCount",
           "survivingSocketCount",
+          ...(detailedCleanup ? ["termination", "errors"] : []),
         ],
         "report.serialSession.simulatorCleanup",
         issues,
@@ -1401,7 +1409,11 @@ function assertSerialSessionReport(report, request, issues) {
         );
       if (
         cleanup.survivingProcessCount !== 0 ||
-        cleanup.survivingSocketCount !== 0
+        cleanup.survivingSocketCount !== 0 ||
+        (detailedCleanup &&
+          (!Array.isArray(cleanup.errors) ||
+            cleanup.errors.length !== 0 ||
+            !Array.isArray(cleanup.termination)))
       )
         issue(
           issues,
@@ -3560,6 +3572,25 @@ export function validateVmHostAdapterReport(input, requestInput) {
                           survivingSocketCount:
                             report.serialSession.simulatorCleanup
                               .survivingSocketCount,
+                          ...(Object.hasOwn(
+                            report.serialSession.simulatorCleanup,
+                            "termination",
+                          )
+                            ? {
+                                termination:
+                                  report.serialSession.simulatorCleanup
+                                    .termination,
+                              }
+                            : {}),
+                          ...(Object.hasOwn(
+                            report.serialSession.simulatorCleanup,
+                            "errors",
+                          )
+                            ? {
+                                errors:
+                                  report.serialSession.simulatorCleanup.errors,
+                              }
+                            : {}),
                         },
                 },
           serialEvidence:
@@ -4107,9 +4138,8 @@ export async function runVmHostAdapter({
     process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
   const request = validateVmHostAdapterRequest(requestInput);
   if (request.operation === "inject-scanner-code") {
-    if (!Buffer.isBuffer(scannerCode))
-      throw new Error("inject-scanner-code requires protected scanner input");
-    const descriptor = createScannerCodeDescriptor(scannerCode);
+    const scannerInput = normalizeScannerInput(scannerCode);
+    const descriptor = createScannerCodeDescriptor(scannerInput);
     if (
       JSON.stringify(descriptor) !==
       JSON.stringify({

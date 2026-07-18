@@ -668,6 +668,14 @@ describe("host serial control plane", () => {
           serialScenario: "delayed-pickup",
         },
       );
+      assert.equal(
+        session.qemuUsbSerialMappings.every(
+          (mapping) =>
+            ["lower-controller", "scanner"].includes(mapping.role) &&
+            mapping.guestDeviceIdentity.startsWith("qemu-usb-serial://"),
+        ),
+        true,
+      );
       const sessionPaths = qemuUsbSerialSessionPaths(
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
         session.binding.serialSessionId,

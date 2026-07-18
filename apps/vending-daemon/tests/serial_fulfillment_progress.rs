@@ -182,12 +182,11 @@ async fn serial_progress_survives_nullable_backend_refresh_until_f2_stock_commit
     });
 
     let (progress_sender, mut progress_receiver) = mpsc::unbounded_channel();
+    let (progress_queue_sender, mut progress_queue_receiver) = mpsc::unbounded_channel();
     let progress_store = store.clone();
-    let progress: DispenseProgressObserver = Arc::new(move |event| {
-        let store = progress_store.clone();
-        let progress_sender = progress_sender.clone();
-        tokio::spawn(async move {
-            if store
+    let progress_worker = tokio::spawn(async move {
+        while let Some(event) = progress_queue_receiver.recv().await {
+            if progress_store
                 .record_dispense_progress(&event)
                 .await
                 .expect("persist serial progress")
@@ -196,7 +195,13 @@ async fn serial_progress_survives_nullable_backend_refresh_until_f2_stock_commit
                     .send(event.stage)
                     .expect("report persisted progress");
             }
-        });
+        }
+    });
+    let progress_queue_sender_for_observer = progress_queue_sender.clone();
+    let progress: DispenseProgressObserver = Arc::new(move |event| {
+        progress_queue_sender_for_observer
+            .send(event)
+            .expect("queue serial progress");
     });
     let adapter = SerialHardwareAdapter::new(serial_path);
     let dispense = adapter.dispense_with_progress(command.clone(), Some(progress));
@@ -304,6 +309,9 @@ async fn serial_progress_survives_nullable_backend_refresh_until_f2_stock_commit
         .await
         .expect("F2 completion timed out");
     assert!(result.success, "F2 must complete dispense: {result:?}");
+    drop(progress_queue_sender);
+    progress_worker.abort();
+    let _ = progress_worker.await;
 
     let result_event = OutboxInput::dispense_result("MACHINE-SERIAL", &result);
     assert!(store

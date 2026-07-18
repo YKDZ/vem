@@ -346,6 +346,16 @@
                 }
               ]
             },
+            "scannerEventId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "source": {
               "anyOf": [
                 {
@@ -557,6 +567,16 @@
           ]
         },
         "maskedAuthCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scannerEventId": {
           "anyOf": [
             {
               "type": "string"

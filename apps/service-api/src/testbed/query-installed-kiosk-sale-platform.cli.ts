@@ -72,6 +72,7 @@ type PlatformRawRecords = {
     status: string;
     isActive: boolean;
     source: string | null;
+    scannerEventId: string | null;
   }>;
   reservations: Array<{
     id: string;
@@ -271,6 +272,7 @@ export async function queryInstalledKioskSalePlatform(
                     status: paymentCodeAttempts.status,
                     isActive: paymentCodeAttempts.isActive,
                     source: paymentCodeAttempts.source,
+                    scannerEventId: sql<string | null>`${paymentCodeAttempts.scannerHealthJson}->>'scannerEventId'`,
                   })
                   .from(paymentCodeAttempts)
                   .where(inArray(paymentCodeAttempts.orderId, orderIds)),

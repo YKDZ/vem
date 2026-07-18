@@ -980,23 +980,84 @@ function bindSale(server, input) {
   return { saleBinding: sale };
 }
 
+async function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return true;
+      throw error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    if (error?.code === "ESRCH") return true;
+    throw error;
+  }
+}
+
+async function abortProcessGroup(label, pid) {
+  if (!Number.isInteger(pid)) return { label, pid: null, exitedAfter: "not_started" };
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code === "ESRCH") return { label, pid, exitedAfter: "already_exited" };
+    throw error;
+  }
+  if (await waitForProcessGroupExit(pid, 3_000)) return { label, pid, exitedAfter: "SIGTERM" };
+  process.kill(-pid, "SIGKILL");
+  if (await waitForProcessGroupExit(pid, 1_000)) return { label, pid, exitedAfter: "SIGKILL" };
+  throw new Error(`${label} process group ${pid} survived abort SIGTERM and SIGKILL`);
+}
+
 async function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
+  const cleanup = { termination: [], errors: [], survivingProcessCount: 0, survivingSocketCount: 0 };
   if (existsSync(paths.statePath)) {
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
-    if (state.active) {
-      await terminateProcessGroup(state.simulatorPid);
-      await terminateProcessGroup(state.ptyCapturePid);
-      state.active = false;
-      state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
-      writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
-        mode: 0o600,
-      });
+    for (const [label, pid] of [
+      ["lower-controller simulator", state.simulatorPid],
+      ["host PTY capture", state.ptyCapturePid],
+      ["scanner binding probe", state.scannerBindingProbe?.pid],
+    ]) {
+      try {
+        cleanup.termination.push(await abortProcessGroup(label, pid));
+      } catch (error) {
+        cleanup.errors.push(error instanceof Error ? error.message : String(error));
+      }
     }
+    state.active = false;
+    state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
+    const pids = [
+      state.simulatorPid,
+      state.ptyCapturePid,
+      state.scannerBindingProbe?.pid,
+    ].filter(Number.isInteger);
+    cleanup.survivingProcessCount = pids.filter((pid) => {
+      try {
+        process.kill(-pid, 0);
+        return true;
+      } catch (error) {
+        if (error?.code === "ESRCH") return false;
+        throw error;
+      }
+    }).length;
+    cleanup.survivingSocketCount = (state.runtimeSocketPaths ?? []).filter((path) => existsSync(path)).length;
+    state.cleanup = cleanup;
+    writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
+      mode: 0o600,
+    });
   }
   session.mqttCapture.stop();
-  return { aborted: true };
+  if (cleanup.errors.length || cleanup.survivingProcessCount || cleanup.survivingSocketCount) {
+    throw new Error(`serial session abort cleanup failed: ${JSON.stringify(cleanup)}`);
+  }
+  return { aborted: true, cleanup };
 }
 
 async function executePlatformQuery(server, input) {
@@ -1080,6 +1141,7 @@ async function createSerialSession(server, input) {
     saleCorrelationId,
     serialScenario,
     binding: session.binding,
+    qemuUsbSerialMappings: report.serialSession.deviceMappings,
     startReport: summarizeReport(report),
   };
 }

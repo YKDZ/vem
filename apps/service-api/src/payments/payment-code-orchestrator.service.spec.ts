@@ -94,6 +94,7 @@ describe("PaymentCodeOrchestratorService", () => {
       authCode: "28763443825664394",
       idempotencyKey: "scan-1",
       source: "serial_text",
+      scannerEventId: "evt-scanner-1",
       scannerHealth: {
         online: true,
         adapter: "serial_text",
@@ -112,6 +113,7 @@ describe("PaymentCodeOrchestratorService", () => {
         online: true,
         adapter: "serial_text",
         port: "ttyUSB0",
+        scannerEventId: "evt-scanner-1",
       },
       mockPaymentEnabled: true,
     });

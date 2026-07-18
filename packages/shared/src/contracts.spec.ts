@@ -3065,6 +3065,7 @@ describe("shared API contract", () => {
         authCode: "28763443825664394",
         idempotencyKey: "scan-20260524-0001",
         source: "serial_text",
+        scannerEventId: "evt-scanner-1",
         scannerHealth: {
           online: true,
           adapter: "serial_text",
@@ -3075,6 +3076,7 @@ describe("shared API contract", () => {
       expect(submit.source).toBe("serial_text");
       expect(JSON.stringify(submit)).toContain("scannerHealth");
       expect(JSON.stringify(submit)).toContain("serial_text");
+      expect(submit.scannerEventId).toBe("evt-scanner-1");
 
       const response = paymentCodeSubmitResponseSchema.parse({
         orderNo: "ORD202605240001",

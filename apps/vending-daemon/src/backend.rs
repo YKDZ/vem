@@ -39,6 +39,7 @@ pub struct PaymentCodeSubmitBody {
     pub auth_code: String,
     pub idempotency_key: String,
     pub source: String,
+    pub scanner_event_id: Option<String>,
     pub scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
 }
 
@@ -509,6 +510,7 @@ impl BackendClient {
         auth_code: &str,
         idempotency_key: &str,
         source: &str,
+        scanner_event_id: Option<&str>,
         scanner_health: Option<&vending_core::scanner::ScannerHealthSnapshot>,
     ) -> Result<serde_json::Value, String> {
         let url = format!("/machine-orders/{order_no}/payment-code/submit");
@@ -517,6 +519,7 @@ impl BackendClient {
             "authCode": auth_code,
             "idempotencyKey": idempotency_key,
             "source": source,
+            "scannerEventId": scanner_event_id,
             "scannerHealth": scanner_health,
         });
         self.request_json_with_timeout(
@@ -1214,6 +1217,7 @@ mod tests {
             .and(body_partial_json(serde_json::json!({
                 "machineCode": "M-1",
                 "source": "serial_text",
+                "scannerEventId": "evt-scanner-1",
                 "scannerHealth": {
                     "online": true,
                     "adapter": "serial_text",
@@ -1244,6 +1248,7 @@ mod tests {
                 "621234567890123456",
                 "ORDER-1:attempt-1",
                 "serial_text",
+                Some("evt-scanner-1"),
                 Some(&health),
             )
             .await

@@ -683,6 +683,7 @@ impl TransactionStateMachine {
                     &raw.auth_code,
                     &idempotency_key,
                     source,
+                    scanner_event_id,
                     scanner_health.as_ref(),
                 )
                 .await

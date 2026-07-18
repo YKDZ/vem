@@ -559,6 +559,9 @@ export const paymentCodeSubmitSchema = z.object({
   authCode: paymentCodeAuthCodeSchema,
   idempotencyKey: z.string().trim().min(8).max(128),
   source: paymentCodeSourceSchema,
+  // The daemon event id is correlation evidence, not customer-controlled code.
+  // It is only populated by the serial scanner production path.
+  scannerEventId: z.string().min(1).max(128).optional(),
   scannerHealth: z
     .object({
       online: z.boolean(),
