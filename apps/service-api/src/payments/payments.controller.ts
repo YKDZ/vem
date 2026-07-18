@@ -126,6 +126,14 @@ export class PaymentsController {
     );
   }
 
+  @Public()
+  @Post("mock/:paymentNo/complete")
+  async completeMockPaymentFromProvider(@Param("paymentNo") paymentNo: string) {
+    return await this.paymentsService.completeMockPaymentFromProvider(
+      paymentNo,
+    );
+  }
+
   @RequirePermissions("payments.configure")
   @Get("providers")
   async listProviders(

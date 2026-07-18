@@ -151,6 +151,14 @@ export type RuntimeConfigurationJsonSchemaDocument = {
   $schema: "https://json-schema.org/draft/2020-12/schema";
 } & Record<string, unknown>;
 
+export function exportScannerProtocolParametersJsonSchema(): RuntimeConfigurationJsonSchemaDocument {
+  return {
+    ...z.toJSONSchema(scannerProtocolParametersSchema),
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "ScannerProtocolParameters",
+  };
+}
+
 export function exportRuntimeConfigurationJsonSchema(): RuntimeConfigurationJsonSchemaDocument {
   // The daemon generator needs every HTTP boundary from this source, while
   // each route still validates one member of this strict union.

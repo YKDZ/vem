@@ -4,8 +4,11 @@ use std::fmt;
 
 #[doc(hidden)]
 mod generated {
+    pub mod device_binding;
+    pub mod device_binding_activation;
     pub mod runtime_configuration;
     pub mod sale_start_capability;
+    pub mod scanner_protocol_request;
     pub mod scanner_status;
     pub mod transaction_checkout;
 }
@@ -19,6 +22,11 @@ pub type PaymentCodeAttemptSummary =
 pub type PickupReminder =
     generated::transaction_checkout::CurrentTransactionSnapshotVendingPickupReminder;
 pub type ScannerRuntimeStatus = generated::scanner_status::ScannerRuntimeStatus;
+pub type DeviceBindingSnapshot = generated::device_binding::DeviceBindingSnapshot;
+pub type DeviceBindingSnapshotRolesItem = generated::device_binding::DeviceBindingSnapshotRolesItem;
+pub type DeviceBindingSnapshotRolesItemRole =
+    generated::device_binding::DeviceBindingSnapshotRolesItemRole;
+pub type DeviceBindingActivation = generated::device_binding_activation::DeviceBindingActivation;
 pub type SaleStartCapabilitySnapshot =
     generated::sale_start_capability::SaleStartCapabilitySnapshot;
 pub type SaleStartCapabilityGeneration =
@@ -42,9 +50,9 @@ pub type ConfirmHardwareBindingRequest =
 pub type ClearHardwareBindingRequest =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype2;
 pub type SetScannerProtocolParametersRequest =
-    generated::runtime_configuration::RuntimeConfigurationContractSubtype3;
+    Option<generated::scanner_protocol_request::ScannerProtocolParameters>;
 pub type ScannerProtocolFrameSuffix =
-    generated::runtime_configuration::RuntimeConfigurationContractSubtype3FrameSuffix;
+    generated::scanner_protocol_request::ScannerProtocolParametersFrameSuffix;
 pub type SetAudioPreferencesRequest =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype4;
 pub type MachineClaimRequest =

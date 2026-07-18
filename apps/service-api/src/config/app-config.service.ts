@@ -139,10 +139,6 @@ export class AppConfigService {
     });
   }
 
-  get machineProvisioningProfile(): "production" | "testbed" {
-    return this.config.get("MACHINE_PROVISIONING_PROFILE", { infer: true });
-  }
-
   get maintenanceAddressPools(): MaintenanceAddressPools {
     return this.parsedMaintenanceAddressPools;
   }
@@ -351,6 +347,14 @@ export class AppConfigService {
       return `${rawBase}/${encodedProviderCode}`;
     }
     return `${rawBase}/api/payments/webhooks/${encodedProviderCode}`;
+  }
+
+  buildMockPaymentCompletionUrl(paymentNo: string): string {
+    const rawBase = this.paymentWebhookBaseUrl.replace(/\/+$/, "");
+    const apiBase = rawBase.endsWith("/api/payments/webhooks")
+      ? rawBase.slice(0, -"/payments/webhooks".length)
+      : `${rawBase}/api`;
+    return `${apiBase}/payments/mock/${encodeURIComponent(paymentNo)}/complete`;
   }
 
   getPaymentNotifyUrlStaticCheck(providerCode: string) {

@@ -29,6 +29,28 @@ pub struct ScannerProtocolParameters {
     pub frame_suffix: vending_core::scanner::ScannerFrameSuffix,
 }
 
+pub fn effective_scanner_protocol(
+    settings: &LocalRuntimeSettings,
+    hardware_model: &str,
+    topology_identity: &str,
+) -> ScannerProtocolParameters {
+    settings.scanner_protocol.clone().unwrap_or_else(|| {
+        // Deployment bootstrap owns the model/topology selection. Keeping the
+        // fallback explicit prevents a local override clear from silently
+        // turning into a machine-independent serial setting.
+        match (hardware_model, topology_identity) {
+            ("vem-prod-24", "vem-prod-24") => ScannerProtocolParameters {
+                baud_rate: 9_600,
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            },
+            _ => ScannerProtocolParameters {
+                baud_rate: 9_600,
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            },
+        }
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AudioPreferences {
@@ -317,8 +339,40 @@ mod tests {
         let restarted = LocalRuntimeSettingsStore::new(data_dir);
         let settings = restarted.load().await.expect("restart load");
         assert!(settings.scanner_binding.is_none());
-        assert!(!fs::try_exists(restarted.path())
-            .await
-            .expect("settings path state"));
+        assert!(
+            !fs::try_exists(restarted.path())
+                .await
+                .expect("settings path state")
+        );
+    }
+
+    #[test]
+    fn scanner_protocol_defaults_follow_deployment_model_and_topology_with_a_safe_fallback() {
+        let settings = LocalRuntimeSettings::default();
+        let production = effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24");
+        let fallback = effective_scanner_protocol(&settings, "unknown-model", "unknown-topology");
+
+        assert_eq!(production.baud_rate, 9_600);
+        assert_eq!(
+            production.frame_suffix,
+            vending_core::scanner::ScannerFrameSuffix::Crlf
+        );
+        assert_eq!(fallback, production);
+    }
+
+    #[test]
+    fn scanner_protocol_local_override_takes_precedence_over_deployment_defaults() {
+        let settings = LocalRuntimeSettings {
+            scanner_protocol: Some(ScannerProtocolParameters {
+                baud_rate: 115_200,
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Lf,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24"),
+            settings.scanner_protocol.expect("override")
+        );
     }
 }

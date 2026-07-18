@@ -10,6 +10,7 @@ import {
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
   daemonIpcDeviceBindingSnapshotSchema,
+  daemonIpcDeviceBindingActivationSchema,
   daemonIpcDeviceBindingTestResultSchema,
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcScannerStatusSchema,
@@ -230,6 +231,33 @@ describe("Daemon IPC Contract Area", () => {
         testEvidenceToken: undefined,
       }),
     ).toThrow();
+  });
+
+  it("round-trips daemon binding activation output through the strict shared contract", () => {
+    expect(
+      daemonIpcDeviceBindingActivationSchema.parse({
+        binding: {
+          identity: {
+            identityKey: "container:11111111-2222-3333-4444-555555555555",
+            instanceId: "USB\\SCANNER-1",
+            containerId: "11111111-2222-3333-4444-555555555555",
+            hardwareIds: ["USB\\VID_1234&PID_5678"],
+            serialNumber: "SCANNER-1",
+          },
+          confirmedAt: "2026-07-17T00:00:00Z",
+          confirmedBy: "local_operator",
+          testEvidenceCode: "SCANNER_PORT_OPEN_READY",
+        },
+        currentPort: "COM7",
+        ready: true,
+        code: "DEVICE_BINDING_ACTIVATED",
+        message: "scanner binding activated",
+        unrelatedRuntimeRestarted: false,
+      }),
+    ).toMatchObject({
+      currentPort: "COM7",
+      unrelatedRuntimeRestarted: false,
+    });
   });
 
   it("keeps stable audio endpoint identity distinct from friendly names", () => {

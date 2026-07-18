@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaymentsService } from "./payments.service";
 
 import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
+import { IS_PUBLIC_KEY } from "../auth/public.decorator";
 import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentsController } from "./payments.controller";
 
@@ -310,6 +311,29 @@ describe("PaymentsController", () => {
       );
       expect(res.type).not.toHaveBeenCalled();
       expect(result).toEqual(jsonResult);
+    });
+  });
+
+  describe("completeMockPaymentFromProvider", () => {
+    it("keeps test-provider checkout completion on the provider webhook boundary", async () => {
+      const result = { handled: true, duplicate: false };
+      const paymentsService = {
+        completeMockPaymentFromProvider: vi.fn().mockResolvedValue(result),
+      };
+      const controller = makeController(paymentsService);
+
+      await expect(
+        controller.completeMockPaymentFromProvider("PAY-MOCK-001"),
+      ).resolves.toBe(result);
+      expect(
+        paymentsService.completeMockPaymentFromProvider,
+      ).toHaveBeenCalledWith("PAY-MOCK-001");
+      expect(
+        Reflect.getMetadata(
+          IS_PUBLIC_KEY,
+          PaymentsController.prototype.completeMockPaymentFromProvider,
+        ),
+      ).toBe(true);
     });
   });
 });

@@ -229,7 +229,7 @@ describe("Factory Image Acceptance workflow", () => {
   });
 
   it("shares local testbed maintenance metadata with the Service API and preparer", () => {
-    assert.match(workflow, /MACHINE_PROVISIONING_PROFILE: testbed/);
+    assert.doesNotMatch(workflow, /MACHINE_PROVISIONING_PROFILE/);
     assert.doesNotMatch(workflow, /550e8400-e29b-41d4-a716-446655440010/);
     assert.doesNotMatch(
       workflow,

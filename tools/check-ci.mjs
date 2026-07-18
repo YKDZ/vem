@@ -24,7 +24,6 @@ const serviceApiEnv = {
   JWT_REFRESH_SECRET: "ci-jwt-refresh-secret-minimum-32-chars!!",
   MACHINE_JWT_SECRET: "ci-machine-jwt-secret-min-32-chars-long!",
   MACHINE_CREDENTIAL_ENCRYPTION_KEY: "ci-machine-cred-enc-key-32-chars!!",
-  MACHINE_PROVISIONING_PROFILE: "testbed",
   MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
   MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
   MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",

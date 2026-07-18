@@ -502,6 +502,21 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return transition;
   }
 
+  async completeMockPaymentFromProvider(paymentNo: string) {
+    this.assertMockPaymentEnabled();
+    return this.handleProviderWebhook(
+      "mock",
+      {},
+      {
+        providerEventId: `mock:checkout:${randomUUID()}`,
+        eventType: "mock.checkout.completed",
+        paymentNo,
+        providerTradeNo: `MOCK-${paymentNo}`,
+        paymentStatus: "succeeded",
+      },
+    );
+  }
+
   async markMockFailed(
     paymentNo: string,
     reason: string,
@@ -1768,9 +1783,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     // when this payment was created; accepting another currently-valid
     // merchant would make app/seller matching meaningless after a rotation.
     if (
-      payment.providerConfigId === null ||
-      (payment.providerConfigId !== undefined &&
-        webhook.matchedConfigId !== payment.providerConfigId)
+      providerCode !== "mock" &&
+      (payment.providerConfigId === null ||
+        (payment.providerConfigId !== undefined &&
+          webhook.matchedConfigId !== payment.providerConfigId))
     ) {
       await this.webhookAttemptRecorder.finish({
         attemptId,

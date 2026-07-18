@@ -1,11 +1,11 @@
 mod support;
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{Json, Router, extract::State, routing::post};
 use reqwest::StatusCode;
 use support::process::DaemonHarness;
 use tokio_tungstenite::connect_async;
@@ -92,6 +92,23 @@ async fn ipc_exposes_runtime_boundaries_without_legacy_summary_or_maintenance_ga
     let scanner_contract: daemon_ipc_contracts::ScannerRuntimeStatus =
         scanner.json().await.expect("scanner contract");
     assert_eq!(scanner_contract.adapter, "serial_text");
+
+    let bindings = client
+        .get(format!("{base}/v1/hardware-bindings"))
+        .header("Authorization", daemon.bearer())
+        .send()
+        .await
+        .expect("hardware bindings response");
+    assert_eq!(bindings.status(), StatusCode::OK);
+    let bindings_contract: daemon_ipc_contracts::DeviceBindingSnapshot = bindings
+        .json()
+        .await
+        .expect("shared generated bindings contract");
+    assert_eq!(bindings_contract.roles.len(), 2);
+    assert_eq!(
+        bindings_contract.roles[0].role,
+        daemon_ipc_contracts::DeviceBindingSnapshotRolesItemRole::LowerController
+    );
 
     let update_audio = client
         .post(format!(
@@ -203,15 +220,17 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
             .expect("profile cache");
     assert!(profile_cache.contains("MACHINE-CLAIM-IPC"));
     assert!(!profile_cache.contains("machine-secret-claim-000000000000000"));
-    assert!(tokio::fs::try_exists(
-        daemon
-            .data_dir
-            .parent()
-            .expect("runtime root")
-            .join("secrets/machine_secret.dpapi"),
-    )
-    .await
-    .expect("secret path"));
+    assert!(
+        tokio::fs::try_exists(
+            daemon
+                .data_dir
+                .parent()
+                .expect("runtime root")
+                .join("secrets/machine_secret.dpapi"),
+        )
+        .await
+        .expect("secret path")
+    );
     assert!(
         !tokio::fs::try_exists(daemon.data_dir.join("config/local-settings.json"))
             .await

@@ -784,6 +784,32 @@ export function exportDaemonIpcScannerStatusJsonSchema(): DaemonIpcJsonSchemaDoc
   };
 }
 
+export function exportDaemonIpcDeviceBindingJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "DeviceBindingSnapshot",
+    daemonIpcDeviceBindingSnapshotSchema,
+  );
+
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "DeviceBindingSnapshot",
+    ...root,
+  };
+}
+
+export function exportDaemonIpcDeviceBindingActivationJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "DeviceBindingActivation",
+    daemonIpcDeviceBindingActivationSchema,
+  );
+
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "DeviceBindingActivation",
+    ...root,
+  };
+}
+
 export function exportDaemonIpcSaleStartCapabilityJsonSchema(): DaemonIpcJsonSchemaDocument {
   const root = exportDaemonIpcJsonSchemaDefinition(
     "SaleStartCapabilitySnapshot",

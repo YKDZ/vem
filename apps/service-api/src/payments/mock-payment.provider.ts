@@ -37,9 +37,12 @@ export class MockPaymentProvider implements PaymentProvider {
   async createPaymentIntent(
     input: PaymentIntentInput,
   ): Promise<PaymentIntentResult> {
+    if (!this.config.paymentMockEnabled) {
+      throw new Error("mock payment provider is disabled");
+    }
     return {
       providerTradeNo: `MOCK-${input.paymentNo}`,
-      paymentUrl: `${this.config.paymentWebhookBaseUrl.replace(/\/payments\/webhooks$/, "")}/payments/mock/${input.paymentNo}`,
+      paymentUrl: this.config.buildMockPaymentCompletionUrl(input.paymentNo),
     };
   }
 
@@ -115,6 +118,9 @@ export class MockPaymentProvider implements PaymentProvider {
   async handleWebhook(
     input: ProviderWebhookInput,
   ): Promise<ProviderWebhookResult> {
+    if (!this.config.paymentMockEnabled) {
+      throw new Error("mock payment provider is disabled");
+    }
     const schema = z.object({
       providerEventId: z.string().optional(),
       eventType: z.string().optional(),

@@ -21,7 +21,6 @@ export default defineConfig({
     include: ["src/**/*.e2e-spec.ts"],
     fileParallelism: false,
     env: {
-      MACHINE_PROVISIONING_PROFILE: "testbed",
       MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
       MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
       MAINTENANCE_RELAY_PUBLIC_KEY:

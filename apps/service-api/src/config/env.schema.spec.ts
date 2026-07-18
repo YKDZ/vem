@@ -13,7 +13,6 @@ const baseValidEnv = {
     "local-cred-enc-key-change-before-production!",
   MACHINE_CLAIM_LOOKUP_HMAC_KEY:
     "local-claim-lookup-hmac-key-change-before-production",
-  MACHINE_PROVISIONING_PROFILE: "testbed",
   MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
   MAINTENANCE_RELAY_ENDPOINT: "relay.example:51820",
   MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
@@ -93,7 +92,6 @@ describe("validateEnv", () => {
   });
 
   it.each([
-    "MACHINE_PROVISIONING_PROFILE",
     "MAINTENANCE_RELAY_PEER_ID",
     "MAINTENANCE_RELAY_ENDPOINT",
     "MAINTENANCE_RELAY_PUBLIC_KEY",

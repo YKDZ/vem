@@ -7,29 +7,32 @@ use std::{
 };
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message, WebSocket},
         Path as AxumPath, Query, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     http::{
-        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
         HeaderMap, Method, StatusCode,
+        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
     },
     response::{IntoResponse, Json},
     routing::{get, post},
-    Router,
 };
 use sha2::Digest;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
     device_binding::{self, DeviceRoleRuntimeReadiness, LocalDeviceRole, LocalSerialRoleBinding},
-    events::{scanner_runtime_status_contract, DaemonEvent},
+    events::{DaemonEvent, scanner_runtime_status_contract},
     hardware::HardwareSupervisor,
-    local_runtime_settings::{AudioPreferences, LocalRuntimeSettings, ScannerProtocolParameters},
+    local_runtime_settings::{
+        AudioPreferences, LocalRuntimeSettings, ScannerProtocolParameters,
+        effective_scanner_protocol,
+    },
     logs,
     natural_context::MachineNaturalContextSnapshot,
     network::{
@@ -40,11 +43,11 @@ use crate::{
     runtime_configuration::RuntimeSources,
     scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     state::{
-        store::{
-            MachinePlanogramInput, PhysicalStockAttestationInput, StockMaintenanceBatchInput,
-            StockMovementInput, OUTBOX_MAX_EVENTS,
-        },
         LocalStateStore,
+        store::{
+            MachinePlanogramInput, OUTBOX_MAX_EVENTS, PhysicalStockAttestationInput,
+            StockMaintenanceBatchInput, StockMovementInput,
+        },
     },
     transaction::TransactionStateMachine,
 };
@@ -412,6 +415,48 @@ pub(crate) struct SaleBindingOperationLease {
     gate: Arc<SaleBindingOperationGate>,
     operation: u8,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum BindingMutationSafety {
+    ActiveSale,
+    StateUnavailable(String),
+}
+
+fn binding_mutation_safety<T>(
+    snapshot: Result<Option<T>, String>,
+    is_active: impl FnOnce(&T) -> bool,
+) -> Result<(), BindingMutationSafety> {
+    match snapshot {
+        Ok(Some(snapshot)) if is_active(&snapshot) => Err(BindingMutationSafety::ActiveSale),
+        Ok(_) => Ok(()),
+        Err(error) => Err(BindingMutationSafety::StateUnavailable(error)),
+    }
+}
+
+async fn require_binding_mutation_safe(ctx: &IpcContext) -> Result<(), BindingMutationSafety> {
+    binding_mutation_safety(
+        ctx.state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string()),
+        crate::transaction::is_active_transaction,
+    )
+}
+
+fn binding_mutation_safety_response(safety: BindingMutationSafety) -> axum::response::Response {
+    match safety {
+        BindingMutationSafety::ActiveSale => error_response(
+            StatusCode::CONFLICT,
+            "device_binding_active_sale",
+            "hardware binding cannot change during an active sale",
+        ),
+        BindingMutationSafety::StateUnavailable(error) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "device_binding_active_sale_state_unavailable",
+            format!("hardware binding cannot change until active-sale state is available: {error}"),
+        ),
+    }
+}
 impl Drop for SaleBindingOperationLease {
     fn drop(&mut self) {
         let _ = self.gate.state.compare_exchange(
@@ -730,7 +775,7 @@ async fn claim_machine(
     let bootstrap = match clean.load_bootstrap().await {
         Ok(value) => value,
         Err(error) => {
-            return error_response(StatusCode::CONFLICT, "runtime_bootstrap_invalid", error)
+            return error_response(StatusCode::CONFLICT, "runtime_bootstrap_invalid", error);
         }
     };
     let profile = match BackendClient::new(bootstrap.provisioning_api_base_url.to_string())
@@ -739,7 +784,7 @@ async fn claim_machine(
     {
         Ok(value) => value,
         Err(error) => {
-            return error_response(StatusCode::BAD_GATEWAY, "machine_claim_failed", error)
+            return error_response(StatusCode::BAD_GATEWAY, "machine_claim_failed", error);
         }
     };
     if let Err(error) = validate_machine_provisioning_profile(&profile) {
@@ -760,7 +805,7 @@ async fn claim_machine(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "machine_profile_projection_failed",
                 error,
-            )
+            );
         }
     };
     let _ = ctx.events.send(DaemonEvent::RuntimeReconfigureRequested {
@@ -1132,7 +1177,7 @@ fn capability_fingerprint(snapshot: &daemon_ipc_contracts::SaleStartCapabilitySn
 
 async fn sale_start_capability_snapshot(
     ctx: &IpcContext,
-    invalidate: bool,
+    _force_refresh: bool,
 ) -> Result<daemon_ipc_contracts::SaleStartCapabilitySnapshot, String> {
     let mut state = ctx.ui.status_cache.sale_start_state.lock().await;
     let observation = observe_sale_start_capability(ctx).await;
@@ -1159,14 +1204,11 @@ async fn sale_start_capability_snapshot(
         }
     };
     let fingerprint = capability_fingerprint(&provisional);
-    let fingerprint_changed = state
-        .fingerprint
-        .as_ref()
-        .is_some_and(|current| current != &fingerprint);
-    if state.fingerprint.as_ref() != Some(&fingerprint) {
+    let fingerprint_changed = state.fingerprint.as_ref() != Some(&fingerprint);
+    if fingerprint_changed {
         state.fingerprint = Some(fingerprint);
     }
-    let changed = fingerprint_changed || invalidate;
+    let changed = fingerprint_changed;
     if changed {
         state.revision = state.revision.saturating_add(1).max(1);
     } else if state.revision == 0 {
@@ -1257,11 +1299,7 @@ pub(crate) fn local_payment_code_submit_guard(
             }
             let scanner = cache.scanner.read().await.clone();
             let (ready, message) = scanner_payment_readiness(&scanner);
-            if ready {
-                Ok(())
-            } else {
-                Err(message)
-            }
+            if ready { Ok(()) } else { Err(message) }
         })
     })
 }
@@ -1310,7 +1348,7 @@ async fn create_order(
                 StatusCode::CONFLICT,
                 "create_order_hardware_reconfiguring",
                 "local hardware binding is changing",
-            )
+            );
         }
     };
     let profile = match ctx.runtime_sources.require_profile().await {
@@ -1331,7 +1369,7 @@ async fn create_order(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "create_order_blocked",
                 error,
-            )
+            );
         }
     };
     if !capability.can_start_sale {
@@ -1391,7 +1429,7 @@ async fn create_order(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "create_order_blocked",
                 error.to_string(),
-            )
+            );
         }
     };
     if sale_view.planogram_version.as_deref() != Some(input.planogram_version.as_str()) {
@@ -1502,7 +1540,7 @@ fn transaction_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "transaction_contract_invalid",
                 error.to_string(),
-            )
+            );
         }
     };
     if let Some(status) = value.pointer_mut("/vending/status") {
@@ -1535,7 +1573,7 @@ async fn apply_planogram(
     let topology = match ctx.runtime_sources.hardware_topology_readiness().await {
         Ok(value) => value,
         Err(error) => {
-            return error_response(StatusCode::CONFLICT, "hardware_topology_unavailable", error)
+            return error_response(StatusCode::CONFLICT, "hardware_topology_unavailable", error);
         }
     };
     if !topology.ready {
@@ -1711,7 +1749,7 @@ async fn clear_whole_machine_maintenance_lock(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "whole_machine_lock_read_failed",
                 error.to_string(),
-            )
+            );
         }
     };
     let Some(previous_lock) = previous else {
@@ -1724,14 +1762,14 @@ async fn clear_whole_machine_maintenance_lock(
                 StatusCode::CONFLICT,
                 "self_check_evidence_required",
                 "run lower-controller self-check before clearing whole-machine lock",
-            )
+            );
         }
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "whole_machine_lock_evidence_read_failed",
                 error.to_string(),
-            )
+            );
         }
     };
     if !evidence.online
@@ -1829,7 +1867,7 @@ async fn manual_dispense_diagnostic(
                 StatusCode::CONFLICT,
                 "manual_dispense_controller_busy",
                 "sale or hardware reconfiguration is active",
-            )
+            );
         }
     };
     match ctx.state.current_transaction_snapshot().await {
@@ -1838,14 +1876,14 @@ async fn manual_dispense_diagnostic(
                 StatusCode::CONFLICT,
                 "manual_dispense_active_sale",
                 "manual dispense is unavailable during an active sale",
-            )
+            );
         }
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "manual_dispense_sale_state_unavailable",
                 error.to_string(),
-            )
+            );
         }
         _ => {}
     }
@@ -1860,7 +1898,7 @@ async fn manual_dispense_diagnostic(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "manual_dispense_binding_unavailable",
                 error,
-            )
+            );
         }
     };
     let Some(binding) = binding else {
@@ -1877,7 +1915,7 @@ async fn manual_dispense_diagnostic(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "manual_dispense_controller_discovery_unavailable",
                 error,
-            )
+            );
         }
     };
     let resolved_port = match device_binding::resolve_bound_port(&binding.identity, &observed) {
@@ -1887,14 +1925,14 @@ async fn manual_dispense_diagnostic(
                 StatusCode::CONFLICT,
                 "manual_dispense_controller_binding_missing",
                 "the bound lower controller is not currently attached",
-            )
+            );
         }
         device_binding::BindingResolution::Ambiguous(_) => {
             return error_response(
                 StatusCode::CONFLICT,
                 "manual_dispense_controller_binding_ambiguous",
                 "the bound lower controller does not resolve to one current port",
-            )
+            );
         }
     };
     let controller = ctx.hardware.self_check().await;
@@ -1961,7 +1999,7 @@ async fn manual_dispense_diagnostic(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "manual_dispense_unknown_evidence_write_failed",
                             error.to_string(),
-                        )
+                        );
                     }
                 }
             } else {
@@ -1982,7 +2020,7 @@ async fn manual_dispense_diagnostic(
                 StatusCode::CONFLICT,
                 "manual_dispense_pending_evidence_write_failed",
                 error.to_string(),
-            )
+            );
         }
     }
     let result = match tokio::time::timeout(
@@ -2028,7 +2066,7 @@ async fn manual_dispense_diagnostic(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "manual_dispense_terminal_evidence_write_failed",
                 error.to_string(),
-            )
+            );
         }
     };
     Json(serde_json::json!({
@@ -2062,7 +2100,7 @@ async fn device_binding_snapshot(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
@@ -2095,7 +2133,16 @@ async fn device_binding_snapshot(
             message: scanner.message,
         }),
     );
-    Json(serde_json::json!({ "bindings": [lower, scan] })).into_response()
+    match serde_json::from_value::<daemon_ipc_contracts::DeviceBindingSnapshot>(
+        serde_json::json!({ "roles": [lower, scan] }),
+    ) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "device_binding_contract_invalid",
+            error.to_string(),
+        ),
+    }
 }
 
 fn parse_role(value: &str) -> Option<LocalDeviceRole> {
@@ -2129,21 +2176,28 @@ async fn test_binding(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "device_discovery_failed",
                 error,
-            )
+            );
         }
     };
-    let Some(candidate) = observed.iter().find(|candidate| {
-        device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
-            .ok()
-            .as_ref()
-            .is_some_and(|identity| identity.identity_key == input.identity_key)
-    }) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "device_binding_candidate_missing",
-            "stable USB device identity is not currently observed",
-        );
-    };
+    let candidate =
+        match device_binding::select_observed_candidate_by_identity(&observed, &input.identity_key)
+        {
+            device_binding::ObservedCandidateSelection::Selected(candidate) => candidate,
+            device_binding::ObservedCandidateSelection::Missing => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    "device_binding_candidate_missing",
+                    "stable USB device identity is not currently observed",
+                );
+            }
+            device_binding::ObservedCandidateSelection::Ambiguous(_) => {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "device_binding_candidate_ambiguous",
+                    "stable USB device identity has duplicate current observations",
+                );
+            }
+        };
     let settings = match ctx.runtime_sources.load_local_runtime_settings().await {
         Ok(value) => value,
         Err(error) => {
@@ -2151,15 +2205,31 @@ async fn test_binding(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
+    let bootstrap = match ctx
+        .runtime_sources
+        .clean_runtime_configuration()
+        .load_bootstrap()
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(StatusCode::CONFLICT, "runtime_bootstrap_invalid", error);
+        }
+    };
+    let scanner_protocol = effective_scanner_protocol(
+        &settings,
+        bootstrap.hardware_model.as_str(),
+        bootstrap.topology.identity.as_str(),
+    );
     let result = ctx
         .serial_device_platform
         .test_candidate(
             role,
             candidate,
-            &device_binding::SerialDeviceRoleProbeConfig::from(&scanner_protocol(&settings)),
+            &device_binding::SerialDeviceRoleProbeConfig::from(&scanner_protocol),
         )
         .await;
     if !result.success {
@@ -2180,7 +2250,7 @@ async fn test_binding(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
     let observation_revision = observation_revision(&observed);
@@ -2226,23 +2296,11 @@ async fn confirm_runtime_binding(
                 StatusCode::CONFLICT,
                 "device_binding_sale_start_in_progress",
                 "a sale is starting",
-            )
+            );
         }
     };
-    if ctx
-        .state
-        .current_transaction_snapshot()
-        .await
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(crate::transaction::is_active_transaction)
-    {
-        return error_response(
-            StatusCode::CONFLICT,
-            "device_binding_active_sale",
-            "hardware binding cannot change during an active sale",
-        );
+    if let Err(safety) = require_binding_mutation_safe(&ctx).await {
+        return binding_mutation_safety_response(safety);
     }
     let observed = match ctx.serial_device_platform.discover().await {
         Ok(value) => value,
@@ -2251,21 +2309,29 @@ async fn confirm_runtime_binding(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "device_discovery_failed",
                 error,
-            )
+            );
         }
     };
     let observation_revision = observation_revision(&observed);
-    let Some(candidate) = observed.iter().find(|candidate| {
-        device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
-            .ok()
-            .as_ref()
-            .is_some_and(|identity| identity.identity_key == input.identity_key.to_string())
-    }) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "device_binding_candidate_missing",
-            "stable USB device identity is not currently observed",
-        );
+    let candidate = match device_binding::select_observed_candidate_by_identity(
+        &observed,
+        &input.identity_key.to_string(),
+    ) {
+        device_binding::ObservedCandidateSelection::Selected(candidate) => candidate,
+        device_binding::ObservedCandidateSelection::Missing => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "device_binding_candidate_missing",
+                "stable USB device identity is not currently observed",
+            );
+        }
+        device_binding::ObservedCandidateSelection::Ambiguous(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "device_binding_candidate_ambiguous",
+                "stable USB device identity has duplicate current observations",
+            );
+        }
     };
     let (previous, revision) = match ctx
         .runtime_sources
@@ -2278,7 +2344,7 @@ async fn confirm_runtime_binding(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
     let token = input.test_evidence_token.to_string();
@@ -2303,7 +2369,7 @@ async fn confirm_runtime_binding(
     {
         Ok(value) => value,
         Err(error) => {
-            return error_response(StatusCode::BAD_REQUEST, "device_identity_invalid", error)
+            return error_response(StatusCode::BAD_REQUEST, "device_identity_invalid", error);
         }
     };
     let binding = LocalSerialRoleBinding {
@@ -2323,7 +2389,7 @@ async fn confirm_runtime_binding(
                 StatusCode::CONFLICT,
                 "device_binding_persist_conflict",
                 error,
-            )
+            );
         }
     };
     let activation = activate_binding(&ctx, role, &binding, candidate.current_port.clone()).await;
@@ -2339,7 +2405,23 @@ async fn confirm_runtime_binding(
         );
     }
     invalidate_sale_start_capability(&ctx).await;
-    Json(serde_json::json!({ "binding": binding, "currentPort": candidate.current_port, "ready": true, "code": "DEVICE_BINDING_ACTIVATED" })).into_response()
+    match serde_json::from_value::<daemon_ipc_contracts::DeviceBindingActivation>(
+        serde_json::json!({
+            "binding": binding,
+            "currentPort": candidate.current_port,
+            "ready": true,
+            "code": "DEVICE_BINDING_ACTIVATED",
+            "message": format!("{} binding activated", role.as_str()),
+            "unrelatedRuntimeRestarted": false,
+        }),
+    ) {
+        Ok(activation) => Json(activation).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "device_binding_activation_contract_invalid",
+            error.to_string(),
+        ),
+    }
 }
 
 async fn activate_binding(
@@ -2361,8 +2443,18 @@ async fn activate_binding(
         }
         LocalDeviceRole::Scanner => {
             let settings = ctx.runtime_sources.load_local_runtime_settings().await?;
+            let bootstrap = ctx
+                .runtime_sources
+                .clean_runtime_configuration()
+                .load_bootstrap()
+                .await?;
             ctx.scanner_runtime
-                .reconfigure(scanner_config(&settings, Some(port)))
+                .reconfigure(scanner_config(
+                    &settings,
+                    bootstrap.hardware_model.as_str(),
+                    bootstrap.topology.identity.as_str(),
+                    Some(port),
+                ))
                 .await?;
         }
     }
@@ -2393,23 +2485,11 @@ async fn clear_runtime_binding(
                 StatusCode::CONFLICT,
                 "device_binding_sale_start_in_progress",
                 "a sale is starting",
-            )
+            );
         }
     };
-    if ctx
-        .state
-        .current_transaction_snapshot()
-        .await
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(crate::transaction::is_active_transaction)
-    {
-        return error_response(
-            StatusCode::CONFLICT,
-            "device_binding_active_sale",
-            "hardware binding cannot change during an active sale",
-        );
+    if let Err(safety) = require_binding_mutation_safe(&ctx).await {
+        return binding_mutation_safety_response(safety);
     }
     let (previous, revision) = match ctx
         .runtime_sources
@@ -2422,7 +2502,7 @@ async fn clear_runtime_binding(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
     let _ = previous;
@@ -2462,29 +2542,38 @@ async fn set_scanner_protocol(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    let baud_rate = match u32::try_from(request.baud_rate) {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "scanner_protocol_parameters_invalid",
-                "scanner baud rate is outside the supported range",
-            )
+    let protocol = match request {
+        Some(request) => {
+            let baud_rate = match u32::try_from(request.baud_rate) {
+                Ok(value) => value,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "scanner_protocol_parameters_invalid",
+                        "scanner baud rate is outside the supported range",
+                    );
+                }
+            };
+            let frame_suffix = match request.frame_suffix {
+                daemon_ipc_contracts::ScannerProtocolFrameSuffix::Crlf => {
+                    vending_core::scanner::ScannerFrameSuffix::Crlf
+                }
+                daemon_ipc_contracts::ScannerProtocolFrameSuffix::Lf => {
+                    vending_core::scanner::ScannerFrameSuffix::Lf
+                }
+                daemon_ipc_contracts::ScannerProtocolFrameSuffix::Cr => {
+                    vending_core::scanner::ScannerFrameSuffix::Cr
+                }
+                daemon_ipc_contracts::ScannerProtocolFrameSuffix::None => {
+                    vending_core::scanner::ScannerFrameSuffix::None
+                }
+            };
+            Some(ScannerProtocolParameters {
+                baud_rate,
+                frame_suffix,
+            })
         }
-    };
-    let frame_suffix = match request.frame_suffix {
-        daemon_ipc_contracts::ScannerProtocolFrameSuffix::Crlf => {
-            vending_core::scanner::ScannerFrameSuffix::Crlf
-        }
-        daemon_ipc_contracts::ScannerProtocolFrameSuffix::Lf => {
-            vending_core::scanner::ScannerFrameSuffix::Lf
-        }
-        daemon_ipc_contracts::ScannerProtocolFrameSuffix::Cr => {
-            vending_core::scanner::ScannerFrameSuffix::Cr
-        }
-        daemon_ipc_contracts::ScannerProtocolFrameSuffix::None => {
-            vending_core::scanner::ScannerFrameSuffix::None
-        }
+        None => None,
     };
     let previous = match ctx.runtime_sources.load_local_runtime_settings().await {
         Ok(value) => value.scanner_protocol,
@@ -2493,15 +2582,12 @@ async fn set_scanner_protocol(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
         }
     };
     if let Err(error) = ctx
         .runtime_sources
-        .set_local_scanner_protocol(Some(ScannerProtocolParameters {
-            baud_rate,
-            frame_suffix,
-        }))
+        .set_local_scanner_protocol(protocol)
         .await
     {
         return error_response(
@@ -2517,7 +2603,18 @@ async fn set_scanner_protocol(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "local_settings_read_failed",
                 error,
-            )
+            );
+        }
+    };
+    let bootstrap = match ctx
+        .runtime_sources
+        .clean_runtime_configuration()
+        .load_bootstrap()
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(StatusCode::CONFLICT, "runtime_bootstrap_invalid", error);
         }
     };
     let observed = ctx
@@ -2531,7 +2628,12 @@ async fn set_scanner_protocol(
         {
             if let Err(error) = ctx
                 .scanner_runtime
-                .reconfigure(scanner_config(&settings, Some(port)))
+                .reconfigure(scanner_config(
+                    &settings,
+                    bootstrap.hardware_model.as_str(),
+                    bootstrap.topology.identity.as_str(),
+                    Some(port),
+                ))
                 .await
             {
                 let _ = ctx
@@ -2750,7 +2852,7 @@ async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 None,
                 "Machine is not provisioned for Natural Context",
             ))
-            .into_response()
+            .into_response();
         }
     };
     let machine_code = profile.profile.machine.code.to_string();
@@ -2837,20 +2939,13 @@ fn observation_revision(observed: &[device_binding::ObservedSerialDevice]) -> St
     format!("sha256:{:x}", sha2::Sha256::digest(bytes))
 }
 
-fn scanner_protocol(settings: &LocalRuntimeSettings) -> ScannerProtocolParameters {
-    settings
-        .scanner_protocol
-        .clone()
-        .unwrap_or(ScannerProtocolParameters {
-            baud_rate: 9_600,
-            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
-        })
-}
 fn scanner_config(
     settings: &LocalRuntimeSettings,
+    hardware_model: &str,
+    topology_identity: &str,
     port_path: Option<String>,
 ) -> ScannerRuntimeConfig {
-    let protocol = scanner_protocol(settings);
+    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity);
     ScannerRuntimeConfig {
         port_path,
         baud_rate: protocol.baud_rate,
@@ -2892,8 +2987,8 @@ mod tests {
     };
     use tower::ServiceExt;
     use wiremock::{
-        matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, method, path},
     };
 
     use super::*;
@@ -3015,6 +3110,69 @@ mod tests {
             !tokio::fs::try_exists(data_dir.join("config/local-settings.json"))
                 .await
                 .expect("settings path")
+        );
+    }
+
+    #[tokio::test]
+    async fn scanner_protocol_override_clear_preserves_json_null_as_no_local_override() {
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        tokio::fs::write(
+            temp.path().join("runtime-bootstrap.json"),
+            serde_json::json!({ "schemaVersion": 1, "provisioningApiBaseUrl": server.uri(), "hardwareModel": "vem-prod-24", "topology": { "identity": "vem-prod-24", "version": "v1" } }).to_string(),
+        )
+        .await
+        .expect("bootstrap");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+
+        let configured = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/runtime-configuration/intents/scanner-protocol-parameters")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"baudRate":115200,"frameSuffix":"lf"}"#))
+                    .expect("configure request"),
+            )
+            .await
+            .expect("configure response");
+        assert_eq!(configured.status(), StatusCode::OK);
+
+        let cleared = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/runtime-configuration/intents/scanner-protocol-parameters")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("null"))
+                    .expect("clear request"),
+            )
+            .await
+            .expect("clear response");
+        assert_eq!(cleared.status(), StatusCode::OK);
+        assert!(
+            ctx.runtime_sources
+                .load_local_runtime_settings()
+                .await
+                .expect("settings")
+                .scanner_protocol
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn binding_mutation_rejects_unavailable_active_sale_state() {
+        assert_eq!(
+            binding_mutation_safety::<()>(Err("sqlite read failed".to_string()), |_| false),
+            Err(BindingMutationSafety::StateUnavailable(
+                "sqlite read failed".to_string()
+            ))
         );
     }
 
@@ -3186,16 +3344,20 @@ mod tests {
         assert_eq!(ready.payment_options.options.len(), 1);
         let initial_revision = ready.revision.get();
         let generation = ready.generation.to_string();
+        assert!(matches!(
+            events.recv().await.expect("initial capability event"),
+            DaemonEvent::SaleStartCapabilityChanged { revision, .. } if revision == initial_revision
+        ));
 
         invalidate_sale_start_capability(&ctx).await;
         let invalidated = sale_start_capability_snapshot(&ctx, false)
             .await
             .expect("invalidated capability");
         assert_eq!(invalidated.can_start_sale, ready.can_start_sale);
-        assert!(invalidated.revision.get() > initial_revision);
+        assert_eq!(invalidated.revision.get(), initial_revision);
         assert!(matches!(
-            events.recv().await.expect("capability invalidation event"),
-            DaemonEvent::SaleStartCapabilityChanged { revision, .. } if revision == invalidated.revision.get()
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
         ));
 
         ctx.ui.status_cache.scanner.write().await.online = false;
@@ -3235,10 +3397,12 @@ mod tests {
             .expect("last accepted stale capability");
         assert_eq!(stale.generation.to_string(), generation);
         assert!(stale.revision.get() > blocked.revision.get());
-        assert!(stale
-            .degradations
-            .iter()
-            .any(|reason| reason.code == "CAPABILITY_STALE"));
+        assert!(
+            stale
+                .degradations
+                .iter()
+                .any(|reason| reason.code == "CAPABILITY_STALE")
+        );
 
         let restarted_cache =
             RuntimeStatusCache::new(Some(&profile_cache(&profile)), ctx.state).await;

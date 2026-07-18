@@ -133,11 +133,16 @@ async fn write_secret_file_durable(
 }
 
 async fn sync_secret_directory(dir: &Path, label: &str) -> Result<(), String> {
-    let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || std::fs::File::open(dir)?.sync_all())
+    crate::platform_fs::sync_directory(dir)
         .await
-        .map_err(|error| format!("join {label} directory sync failed: {error}"))?
         .map_err(|error| format!("sync {label} directory failed: {error}"))
+}
+
+async fn sync_secret_parent_directory(dir: &Path, label: &str) -> Result<(), String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("{label} directory has no parent"))?;
+    sync_secret_directory(parent, label).await
 }
 
 impl ProtectedLocalSecretStore {
@@ -298,7 +303,7 @@ impl SecretStore for FileSecretStore {
 
     async fn clear_all(&self) -> Result<(), String> {
         match tokio::fs::remove_dir_all(&self.dir).await {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_secret_parent_directory(&self.dir, "file secret").await,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("clear file secrets failed: {error}")),
         }
@@ -357,7 +362,7 @@ impl SecretStore for ProtectedLocalSecretStore {
 
     async fn clear_all(&self) -> Result<(), String> {
         match tokio::fs::remove_dir_all(&self.dir).await {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_secret_parent_directory(&self.dir, "protected local secret").await,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("clear protected local secrets failed: {error}")),
         }
@@ -444,7 +449,7 @@ Set-Acl -LiteralPath $path -AclObject $acl"#
 
 #[cfg(any(windows, test))]
 fn windows_secret_acl_command() -> Vec<String> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     let script = windows_secret_acl_script();
     let utf16le = script
@@ -482,7 +487,7 @@ fn protected_secret_protection_name() -> &'static str {
 
 #[cfg(not(windows))]
 async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
-    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 
     let encoded: Vec<u8> = value.as_bytes().iter().map(|byte| byte ^ 0xA5).collect();
     Ok(format!(
@@ -494,7 +499,7 @@ async fn protect_secret_blob(value: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(not(windows))]
 async fn unprotect_secret_blob(blob: Vec<u8>) -> Result<String, String> {
-    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 
     let text =
         String::from_utf8(blob).map_err(|error| format!("decode test blob failed: {error}"))?;
@@ -535,8 +540,8 @@ pub(crate) fn protect_machine_local_bytes_blocking(value: &[u8]) -> Result<Vec<u
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
         Security::Cryptography::{
-            CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
-            CRYPT_INTEGER_BLOB,
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
+            CryptProtectData,
         },
     };
 
@@ -578,7 +583,7 @@ pub(crate) fn unprotect_machine_local_bytes_blocking(blob: &[u8]) -> Result<Vec<
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree},
         Security::Cryptography::{
-            CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
         },
     };
 
@@ -748,10 +753,12 @@ mod tests {
                 .as_deref(),
             Some("test-signing")
         );
-        assert!(store
-            .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "x")
-            .await
-            .is_err());
+        assert!(
+            store
+                .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "x")
+                .await
+                .is_err()
+        );
         // SAFETY: tests mutate process env in a scoped way.
         unsafe {
             std::env::remove_var("VEM_MQTT_SIGNING_SECRET");
@@ -778,11 +785,13 @@ mod tests {
             .write_secret(MACHINE_SECRET_ACCOUNT, "")
             .await
             .unwrap();
-        assert!(store
-            .read_secret(MACHINE_SECRET_ACCOUNT)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -847,11 +856,13 @@ mod tests {
         assert!(!status.machine_secret_configured);
         assert!(!status.mqtt_signing_secret_configured);
         assert!(!status.mqtt_password_configured);
-        assert!(store
-            .read_secret(MACHINE_SECRET_ACCOUNT)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

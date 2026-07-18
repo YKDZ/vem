@@ -10,6 +10,7 @@ pub mod logs;
 pub mod mqtt;
 pub mod natural_context;
 pub mod network;
+pub mod platform_fs;
 pub mod provisioning;
 pub mod runtime;
 pub mod runtime_configuration;

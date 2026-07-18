@@ -221,6 +221,17 @@ type ProvisioningProfilePaymentProjection = {
   paymentCodeEnabled: boolean;
 };
 
+type ProvisioningProfileMachineProjection = {
+  claimCodeId: string;
+  claimedAt: Date;
+  machineId: string;
+  machineCode: string;
+  machineName: string;
+  machineStatus: MachineProvisioningProfile["machine"]["status"];
+  machineLocationLabel: string | null;
+  machineMqttClientId: string | null;
+};
+
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
 const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
   "machine_claim_codes_machine_open_unique";
@@ -2146,100 +2157,26 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const buildProfile = (
       claimCodeId: string,
       secretVersion: number,
-    ): MachineProvisioningProfile => {
-      const claimedAt = toIso(now);
-      const profile = {
+      payment: ProvisioningProfilePaymentProjection,
+    ): MachineProvisioningProfile =>
+      this.projectMachineClaimProfile({
         machine: {
-          id: claimCode.machineId,
-          code: claimCode.machineCode,
-          name: claimCode.machineName,
-          status: claimCode.machineStatus,
-          locationLabel: claimCode.machineLocationLabel,
+          claimCodeId,
+          claimedAt: now,
+          machineId: claimCode.machineId,
+          machineCode: claimCode.machineCode,
+          machineName: claimCode.machineName,
+          machineStatus: claimCode.machineStatus,
+          machineLocationLabel: claimCode.machineLocationLabel,
+          machineMqttClientId: mqttClientId,
         },
+        payment,
         credentials: {
           machineSecret: bundle.machineSecret,
           machineSecretVersion: secretVersion,
           mqttSigningSecret: bundle.mqttSigningSecret,
-          mqttConnection: {
-            url: this.config.machineMqttUrl,
-            clientId: mqttClientId,
-            ...(this.config.mqttUsername
-              ? { username: this.config.mqttUsername }
-              : {}),
-            ...(this.config.mqttPassword
-              ? { password: this.config.mqttPassword }
-              : {}),
-          },
         },
-        apiBaseUrl: this.config.machineApiBaseUrl,
-        runtimeEndpoints: {
-          apiBasePath: "/api",
-          machineAuthTokenPath: "/api/machine-auth/token",
-          machineApiBasePath: `/api/machines/${claimCode.machineCode}`,
-          mqttTopicPrefix: `vem/machines/${claimCode.machineCode}`,
-        },
-        hardwareProfile: {
-          profile: "production",
-          controller: {
-            required: true,
-            protocol: "vem-vending-controller",
-          },
-          paymentScanner: {
-            required: true,
-            supportsPaymentCode: true,
-          },
-          vision: {
-            required: false,
-            supportsRecommendations: true,
-          },
-        },
-        hardwareModel: "vem-prod-24",
-        hardwareSlotTopology: {
-          identity: "vem-prod-24",
-          version: "2026-06-adr0026",
-        },
-        paymentCapability: {
-          profile: "production",
-          qrCodeEnabled: true,
-          paymentCodeEnabled: true,
-          serverTime: claimedAt,
-        },
-        metadata: {
-          profileVersion: 1,
-          profileRevision: 1,
-          claimCodeId,
-          claimedAt,
-          serverTime: claimedAt,
-        },
-      } satisfies MachineProvisioningProfile;
-      const profileFacts = {
-        machine: profile.machine,
-        apiBaseUrl: profile.apiBaseUrl,
-        runtimeEndpoints: profile.runtimeEndpoints,
-        mqttConnection: {
-          url: profile.credentials.mqttConnection.url,
-          clientId: profile.credentials.mqttConnection.clientId,
-          username: this.config.mqttUsername ?? null,
-        },
-        hardwareProfile: profile.hardwareProfile,
-        hardwareModel: profile.hardwareModel,
-        hardwareSlotTopology: profile.hardwareSlotTopology,
-        paymentCapability: profile.paymentCapability,
-        metadata: {
-          profileVersion: profile.metadata.profileVersion,
-          claimCodeId: profile.metadata.claimCodeId,
-          claimedAt: profile.metadata.claimedAt,
-          serverTime: profile.metadata.serverTime,
-        },
-      };
-      return {
-        ...profile,
-        metadata: {
-          ...profile.metadata,
-          profileRevision: provisioningProfileFactRevision(profileFacts),
-        },
-      };
-    };
+      });
 
     const claimResult = await this.db.transaction(async (tx) => {
       const [consumedClaimCode] = await tx
@@ -2305,9 +2242,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       if (!rotatedMachine) {
         throw this.invalidMachineClaimCode();
       }
+      const payment = await this.provisioningProfilePaymentProjection(
+        claimCode.machineId,
+      );
       const profile = buildProfile(
         consumedClaimCode.id,
         rotatedMachine.secretVersion,
+        payment,
       );
       await tx
         .update(machineClaimCodes)
@@ -2412,20 +2353,58 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private projectProvisioningProfileSnapshot(input: {
-    machine: {
-      claimCodeId: string;
-      claimedAt: Date;
-      machineId: string;
-      machineCode: string;
-      machineName: string;
-      machineStatus: MachineProvisioningProfile["machine"]["status"];
-      machineLocationLabel: string | null;
-      machineMqttClientId: string | null;
-    };
+    machine: ProvisioningProfileMachineProjection;
     payment: ProvisioningProfilePaymentProjection;
   }): MachineProvisioningProfileSnapshot {
+    const profileFacts = this.projectProvisioningProfileFacts(input);
+    return machineProvisioningProfileSnapshotSchema.parse({
+      ...profileFacts,
+      metadata: {
+        ...profileFacts.metadata,
+        profileRevision: provisioningProfileFactRevision(profileFacts),
+      },
+    });
+  }
+
+  private projectMachineClaimProfile(input: {
+    machine: ProvisioningProfileMachineProjection;
+    payment: ProvisioningProfilePaymentProjection;
+    credentials: {
+      machineSecret: string;
+      machineSecretVersion: number;
+      mqttSigningSecret: string;
+    };
+  }): MachineProvisioningProfile {
+    const profileFacts = this.projectProvisioningProfileFacts(input);
+    const { mqttConnection, ...claimFacts } = profileFacts;
+    return machineProvisioningProfileSchema.parse({
+      ...claimFacts,
+      credentials: {
+        ...input.credentials,
+        mqttConnection: {
+          url: mqttConnection.url,
+          clientId: mqttConnection.clientId,
+          ...(this.config.mqttUsername
+            ? { username: this.config.mqttUsername }
+            : {}),
+          ...(this.config.mqttPassword
+            ? { password: this.config.mqttPassword }
+            : {}),
+        },
+      },
+      metadata: {
+        ...profileFacts.metadata,
+        profileRevision: provisioningProfileFactRevision(profileFacts),
+      },
+    });
+  }
+
+  private projectProvisioningProfileFacts(input: {
+    machine: ProvisioningProfileMachineProjection;
+    payment: ProvisioningProfilePaymentProjection;
+  }) {
     const claimedAt = toIso(input.machine.claimedAt);
-    const profileFacts = {
+    return {
       machine: {
         id: input.machine.machineId,
         code: input.machine.machineCode,
@@ -2480,14 +2459,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         serverTime: claimedAt,
       },
     };
-
-    return machineProvisioningProfileSnapshotSchema.parse({
-      ...profileFacts,
-      metadata: {
-        ...profileFacts.metadata,
-        profileRevision: provisioningProfileFactRevision(profileFacts),
-      },
-    });
   }
 
   private parseMachineClaimReplay(

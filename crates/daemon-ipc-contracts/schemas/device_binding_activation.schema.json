@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceBindingActivation",
+  "type": "object",
+  "properties": {
+    "binding": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "object",
+          "properties": {
+            "identityKey": {
+              "type": "string",
+              "pattern": "^(?:container:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|usb:usb\\\\vid_[0-9a-f]{4}&pid_[0-9a-f]{4}:[a-z0-9._-]+)$"
+            },
+            "instanceId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "containerId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hardwareIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^USB\\\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}$"
+              }
+            },
+            "serialNumber": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "identityKey",
+            "instanceId",
+            "containerId",
+            "hardwareIds",
+            "serialNumber"
+          ],
+          "additionalProperties": false
+        },
+        "confirmedAt": {
+          "type": "string"
+        },
+        "confirmedBy": {
+          "type": "string"
+        },
+        "testEvidenceCode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "confirmedAt",
+        "confirmedBy",
+        "testEvidenceCode"
+      ],
+      "additionalProperties": false
+    },
+    "currentPort": {
+      "type": "string"
+    },
+    "ready": {
+      "type": "boolean",
+      "const": true
+    },
+    "code": {
+      "type": "string",
+      "const": "DEVICE_BINDING_ACTIVATED"
+    },
+    "message": {
+      "type": "string"
+    },
+    "unrelatedRuntimeRestarted": {
+      "type": "boolean",
+      "const": false
+    }
+  },
+  "required": [
+    "binding",
+    "currentPort",
+    "ready",
+    "code",
+    "message",
+    "unrelatedRuntimeRestarted"
+  ],
+  "additionalProperties": false
+}

@@ -1,8 +1,8 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -16,11 +16,11 @@ use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use crate::{
     device_binding::{LocalDeviceRole, LocalSerialRoleBinding},
     local_runtime_settings::LocalRuntimeSettingsStore,
-    provisioning::{validate_machine_provisioning_profile, MachineProvisioningProfile},
+    provisioning::{MachineProvisioningProfile, validate_machine_provisioning_profile},
     secret::{
-        SecretStore, MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT,
-        MQTT_PASSWORD_ACCOUNT, MQTT_PASSWORD_ROLLBACK_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
-        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT,
+        MACHINE_SECRET_ACCOUNT, MACHINE_SECRET_ROLLBACK_ACCOUNT, MQTT_PASSWORD_ACCOUNT,
+        MQTT_PASSWORD_ROLLBACK_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        MQTT_SIGNING_SECRET_ROLLBACK_ACCOUNT, SecretStore,
     },
 };
 
@@ -888,10 +888,8 @@ async fn sync_runtime_configuration_parent(path: &Path) -> Result<(), String> {
 }
 
 async fn sync_runtime_configuration_directory(path: &Path) -> Result<(), String> {
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || std::fs::File::open(path)?.sync_all())
+    crate::platform_fs::sync_directory(path)
         .await
-        .map_err(|error| format!("join runtime configuration directory sync failed: {error}"))?
         .map_err(|error| format!("sync runtime configuration directory failed: {error}"))
 }
 

@@ -4,6 +4,7 @@ import {
   effectiveMachineRuntimeConfigurationSchema,
   provisioningProfileCacheSchema,
   runtimeBootstrapSchema,
+  setScannerProtocolParametersRequestSchema,
 } from "./runtime-configuration";
 
 describe("Runtime Bootstrap contract", () => {
@@ -78,5 +79,11 @@ describe("Effective Machine Runtime Configuration contract", () => {
     }
     expect(schema).not.toContain("currentPort");
     expect(schema).not.toContain("connectivity");
+  });
+});
+
+describe("Scanner protocol intent contract", () => {
+  it("preserves null as an explicit clear of the local scanner override", () => {
+    expect(setScannerProtocolParametersRequestSchema.parse(null)).toBeNull();
   });
 });

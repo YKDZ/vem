@@ -17,7 +17,7 @@ use crate::{
     events::DaemonEvent,
     hardware::HardwareSupervisor,
     ipc::{self, IpcContext},
-    local_runtime_settings::{LocalRuntimeSettings, ScannerProtocolParameters},
+    local_runtime_settings::{LocalRuntimeSettings, effective_scanner_protocol},
     mqtt::MqttSyncRuntime,
     provisioning,
     runtime::{DaemonRuntime, RuntimeStartInput},
@@ -25,17 +25,16 @@ use crate::{
     scanner::{ScannerRuntimeConfig, ScannerRuntimeController},
     secret,
     state::{
-        store::{MachinePlanogramInput, MachinePlanogramSlotInput},
         LocalStateStore,
+        store::{MachinePlanogramInput, MachinePlanogramSlotInput},
     },
     stock_upload::StockMovementUploadRuntime,
-    transaction::{is_active_transaction, TransactionStateMachine},
+    transaction::{TransactionStateMachine, is_active_transaction},
     vision::VisionSupervisor,
 };
 
 const PLATFORM_STOCK_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 const PROFILE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-const SALE_START_CAPABILITY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct ConsoleRunConfig {
@@ -150,7 +149,12 @@ async fn run_console_cycle(
     let (events_tx, _) = broadcast::channel(64);
     let scanner_runtime = ScannerRuntimeController::new(tx_raw.clone(), events_tx.clone());
     scanner_runtime
-        .start(scanner_runtime_config(&settings, scanner_port))
+        .start(scanner_runtime_config(
+            &settings,
+            bootstrap.hardware_model.as_str(),
+            bootstrap.topology.identity.as_str(),
+            scanner_port,
+        ))
         .await?;
 
     let backend_url = profile
@@ -241,10 +245,6 @@ async fn run_console_cycle(
         Some(ipc_ctx.clone()),
         stop_token.clone(),
     ));
-    let sale_start_capability = tokio::spawn(run_sale_start_capability_polling(
-        ipc_ctx.clone(),
-        stop_token.clone(),
-    ));
     let binding_watch = tokio::spawn(run_device_binding_watch(
         serial_device_platform,
         runtime_sources.clone(),
@@ -254,6 +254,8 @@ async fn run_console_cycle(
         ipc_ctx.ui.status_cache.clone(),
         ipc_ctx.sale_binding_gate.clone(),
         data_dir.clone(),
+        bootstrap.hardware_model.to_string(),
+        bootstrap.topology.identity.to_string(),
         ipc_ctx.clone(),
         stop_token.clone(),
     ));
@@ -314,7 +316,6 @@ async fn run_console_cycle(
         cache_updates,
         payment_watcher,
         hardware_health,
-        sale_start_capability,
         binding_watch,
         stock_upload,
         stock_sync,
@@ -419,21 +420,13 @@ fn resolve_bound_port(
     binding.and_then(|binding| device_binding::resolve_runtime_port(role, binding, observed).ok())
 }
 
-fn scanner_protocol(settings: &LocalRuntimeSettings) -> ScannerProtocolParameters {
-    settings
-        .scanner_protocol
-        .clone()
-        .unwrap_or(ScannerProtocolParameters {
-            baud_rate: 9_600,
-            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
-        })
-}
-
 fn scanner_runtime_config(
     settings: &LocalRuntimeSettings,
+    hardware_model: &str,
+    topology_identity: &str,
     port_path: Option<String>,
 ) -> ScannerRuntimeConfig {
-    let protocol = scanner_protocol(settings);
+    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity);
     ScannerRuntimeConfig {
         port_path,
         baud_rate: protocol.baud_rate,
@@ -451,6 +444,8 @@ async fn run_device_binding_watch(
     status_cache: ipc::RuntimeStatusCache,
     sale_gate: Arc<ipc::SaleBindingOperationGate>,
     data_dir: PathBuf,
+    hardware_model: String,
+    topology_identity: String,
     sale_start_context: IpcContext,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
@@ -502,7 +497,9 @@ async fn run_device_binding_watch(
             .map(|snapshot| snapshot.as_ref().is_some_and(is_active_transaction))
             .unwrap_or(true);
         if !active_sale {
-            let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol(&settings));
+            let scanner_protocol =
+                effective_scanner_protocol(&settings, &hardware_model, &topology_identity);
+            let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol);
             for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
                 if binding_for_role(&settings, role).is_some() {
                     continue;
@@ -593,7 +590,12 @@ async fn run_device_binding_watch(
                     if status_cache.scanner.read().await.port.as_deref() != Some(port.as_str()) =>
                 {
                     if let Err(error) = scanner_runtime
-                        .reconfigure(scanner_runtime_config(&settings, Some(port)))
+                        .reconfigure(scanner_runtime_config(
+                            &settings,
+                            &hardware_model,
+                            &topology_identity,
+                            Some(port),
+                        ))
                         .await
                     {
                         *status_cache.scanner.write().await =
@@ -903,27 +905,26 @@ async fn run_hardware_health_watcher(
     }
 }
 
-async fn run_sale_start_capability_polling(
-    ctx: IpcContext,
-    shutdown: CancellationToken,
-) -> Result<(), String> {
-    let mut interval = time::interval(SALE_START_CAPABILITY_POLL_INTERVAL);
-    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return Ok(()),
-            _ = interval.tick() => ipc::refresh_sale_start_capability(&ctx).await,
-        }
-    }
-}
-
 async fn cache_daemon_events(
     mut events: broadcast::Receiver<DaemonEvent>,
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
     sale_start_context: Option<IpcContext>,
 ) -> Result<(), String> {
-    while let Ok(event) = events.recv().await {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // A lagged receiver has lost individual invalidations. One
+                // One immediate recomputation coalesces the lost burst into
+                // current facts before this receiver accepts the next event.
+                if let Some(context) = sale_start_context.as_ref() {
+                    ipc::invalidate_sale_start_capability(context).await;
+                }
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        };
         let capability_input_changed = sale_start_capability_input_changed(&event);
         match event {
             DaemonEvent::MqttChanged {
@@ -968,7 +969,6 @@ async fn cache_daemon_events(
             }
         }
     }
-    Ok(())
 }
 
 fn sale_start_capability_input_changed(event: &DaemonEvent) -> bool {
@@ -1026,15 +1026,18 @@ async fn wait_for_local_signal() -> Result<(), String> {
 mod tests {
     use std::{num::NonZeroU64, sync::Arc};
 
+    use tokio::sync::broadcast;
     use wiremock::{
-        matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
     };
 
-    use super::{refresh_provisioning_profile_once, sale_start_capability_input_changed};
+    use super::{
+        cache_daemon_events, refresh_provisioning_profile_once, sale_start_capability_input_changed,
+    };
     use crate::{
-        backend::BackendClient, events::DaemonEvent, runtime_configuration::RuntimeSources,
-        secret::InMemorySecretStore,
+        backend::BackendClient, events::DaemonEvent, ipc::RuntimeStatusCache,
+        runtime_configuration::RuntimeSources, secret::InMemorySecretStore, state::LocalStateStore,
     };
 
     #[test]
@@ -1056,8 +1059,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_refresh_changes_only_for_new_profile_content_and_retains_it_when_refresh_degrades(
-    ) {
+    async fn event_cache_survives_a_burst_larger_than_the_broadcast_buffer() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let cache = RuntimeStatusCache::new(None, state).await;
+        let (sender, receiver) = broadcast::channel(64);
+        for sequence in 0..65 {
+            sender
+                .send(DaemonEvent::SaleStartCapabilityInvalidated {
+                    event_id: format!("burst-{sequence}"),
+                    updated_at: "2026-07-17T00:00:00Z".to_string(),
+                    reason: "durable-fact-burst".to_string(),
+                })
+                .expect("receiver remains subscribed");
+        }
+        sender
+            .send(DaemonEvent::MqttChanged {
+                event_id: "latest".to_string(),
+                updated_at: "2026-07-17T00:00:01Z".to_string(),
+                connected: true,
+                last_error: None,
+            })
+            .expect("receiver remains subscribed");
+
+        let worker = tokio::spawn(cache_daemon_events(receiver, cache.clone(), None, None));
+        drop(sender);
+        tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+            .await
+            .expect("lagged cache should keep receiving")
+            .expect("cache task join")
+            .expect("cache result");
+        assert!(cache.sync.read().await.mqtt_connected);
+    }
+
+    #[tokio::test]
+    async fn production_refresh_changes_only_for_new_profile_content_and_retains_it_when_refresh_degrades()
+     {
         let temp = tempfile::tempdir().expect("temp");
         let data_dir = temp.path().join("VEM").join("vending-daemon");
         tokio::fs::create_dir_all(temp.path().join("VEM"))

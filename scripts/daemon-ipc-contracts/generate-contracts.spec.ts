@@ -95,6 +95,8 @@ describe("Daemon IPC contract generator", () => {
             expect.stringContaining("node_modules/oxfmt/dist/cli.js"),
             expect.stringContaining("transaction_checkout.schema.json"),
             expect.stringContaining("scanner_status_invalid.snapshots.json"),
+            expect.stringContaining("device_binding_activation.schema.json"),
+            expect.stringContaining("scanner_protocol_request.schema.json"),
             expect.stringContaining("sale_start_capability.schema.json"),
           ]),
           cwd: root,
@@ -131,9 +133,53 @@ describe("Daemon IPC contract generator", () => {
             "--no-builder",
             "--additional-derive",
             "PartialEq",
+            expect.stringContaining("src/generated/device_binding.rs"),
+            expect.stringContaining("schemas/device_binding.schema.json"),
+          ]),
+          cwd: root,
+        }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
+            expect.stringContaining(
+              "src/generated/device_binding_activation.rs",
+            ),
+            expect.stringContaining(
+              "schemas/device_binding_activation.schema.json",
+            ),
+          ]),
+          cwd: root,
+        }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
             expect.stringContaining("src/generated/runtime_configuration.rs"),
             expect.stringContaining(
               "schemas/runtime_configuration.schema.json",
+            ),
+          ]),
+          cwd: root,
+        }),
+        expect.objectContaining({
+          command: "cargo",
+          args: expect.arrayContaining([
+            "typify",
+            "--no-builder",
+            "--additional-derive",
+            "PartialEq",
+            expect.stringContaining(
+              "src/generated/scanner_protocol_request.rs",
+            ),
+            expect.stringContaining(
+              "schemas/scanner_protocol_request.schema.json",
             ),
           ]),
           cwd: root,

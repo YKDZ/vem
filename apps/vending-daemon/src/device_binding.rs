@@ -493,6 +493,40 @@ pub enum BindingResolution {
     Resolved(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservedCandidateSelection<'a> {
+    Missing,
+    Ambiguous(Vec<String>),
+    Selected(&'a ObservedSerialDevice),
+}
+
+pub fn select_observed_candidate_by_identity<'a>(
+    observed: &'a [ObservedSerialDevice],
+    identity_key: &str,
+) -> ObservedCandidateSelection<'a> {
+    let candidates = observed
+        .iter()
+        .filter(|candidate| {
+            StableSerialDeviceIdentity::try_from_observation(candidate)
+                .ok()
+                .as_ref()
+                .is_some_and(|identity| identity.identity_key == identity_key)
+        })
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [] => ObservedCandidateSelection::Missing,
+        [candidate] => ObservedCandidateSelection::Selected(candidate),
+        _ => {
+            let mut ports = candidates
+                .iter()
+                .map(|candidate| candidate.current_port.clone())
+                .collect::<Vec<_>>();
+            ports.sort();
+            ObservedCandidateSelection::Ambiguous(ports)
+        }
+    }
+}
+
 pub fn resolve_bound_port(
     binding: &StableSerialDeviceIdentity,
     observed: &[ObservedSerialDevice],
@@ -553,102 +587,100 @@ pub fn project_role_binding(
         .map(|candidate| candidate.current_port.clone())
         .collect::<Vec<_>>();
 
-    let (current_port, ready, code, message, ambiguous, ambiguity_ports) =
-        match binding.as_ref() {
-            Some(binding) => match resolve_bound_port(&binding.identity, observed) {
-                BindingResolution::Resolved(port) => match runtime_readiness.as_ref() {
-                    Some(runtime)
-                        if runtime.online
-                            && runtime.current_port.as_deref() == Some(port.as_str()) =>
-                    {
-                        (
-                            Some(port),
-                            true,
-                            "DEVICE_BINDING_RESOLVED".to_string(),
-                            "bound device resolved and its role runtime self-check is ready"
-                                .to_string(),
-                            false,
-                            vec![],
-                        )
-                    }
-                    Some(runtime) => (
+    let (current_port, ready, code, message, ambiguous, ambiguity_ports) = match binding.as_ref() {
+        Some(binding) => match resolve_bound_port(&binding.identity, observed) {
+            BindingResolution::Resolved(port) => match runtime_readiness.as_ref() {
+                Some(runtime)
+                    if runtime.online && runtime.current_port.as_deref() == Some(port.as_str()) =>
+                {
+                    (
                         Some(port),
-                        false,
-                        "DEVICE_BINDING_RUNTIME_NOT_READY".to_string(),
-                        format!(
-                            "bound device is attached but its role runtime is not ready ({}): {}",
-                            runtime.code, runtime.message
-                        ),
-                        false,
-                        vec![],
-                    ),
-                    None => (
-                        Some(port),
-                        false,
-                        "DEVICE_BINDING_RUNTIME_STATUS_UNKNOWN".to_string(),
-                        "bound device is attached but no role runtime self-check evidence is available"
+                        true,
+                        "DEVICE_BINDING_RESOLVED".to_string(),
+                        "bound device resolved and its role runtime self-check is ready"
                             .to_string(),
                         false,
                         vec![],
-                    ),
-                },
-                BindingResolution::Missing => (
-                    None,
+                    )
+                }
+                Some(runtime) => (
+                    Some(port),
                     false,
-                    "DEVICE_BINDING_MISSING".to_string(),
+                    "DEVICE_BINDING_RUNTIME_NOT_READY".to_string(),
                     format!(
-                        "{} binding is not currently attached; replug or replace it through the local binding workflow",
-                        role.as_str()
+                        "bound device is attached but its role runtime is not ready ({}): {}",
+                        runtime.code, runtime.message
                     ),
                     false,
                     vec![],
                 ),
-                BindingResolution::Ambiguous(ports) => (
-                    None,
+                None => (
+                    Some(port),
                     false,
-                    "DEVICE_BINDING_AMBIGUOUS".to_string(),
-                    format!(
-                        "{} binding resolved to multiple Windows ports; select and test the intended device",
-                        role.as_str()
-                    ),
-                    true,
-                    ports,
+                    "DEVICE_BINDING_RUNTIME_STATUS_UNKNOWN".to_string(),
+                    "bound device is attached but no role runtime self-check evidence is available"
+                        .to_string(),
+                    false,
+                    vec![],
                 ),
             },
-            None if !duplicate_observation_ports.is_empty() => (
+            BindingResolution::Missing => (
                 None,
                 false,
-                "DEVICE_BINDING_AMBIGUOUS".to_string(),
+                "DEVICE_BINDING_MISSING".to_string(),
                 format!(
-                    "{} discovery returned duplicate observations for the same stable identity",
-                    role.as_str()
-                ),
-                true,
-                duplicate_observation_ports,
-            ),
-            None if candidates.len() > 1 => (
-                None,
-                false,
-                "DEVICE_BINDING_SELECTION_REQUIRED".to_string(),
-                format!(
-                    "multiple {} candidates require protected operator selection",
-                    role.as_str()
-                ),
-                true,
-                candidates.iter().map(|item| item.current_port.clone()).collect(),
-            ),
-            None => (
-                None,
-                false,
-                "DEVICE_BINDING_REQUIRED".to_string(),
-                format!(
-                    "{} requires a tested stable device binding",
+                    "{} binding is not currently attached; replug or replace it through the local binding workflow",
                     role.as_str()
                 ),
                 false,
                 vec![],
             ),
-        };
+            BindingResolution::Ambiguous(ports) => (
+                None,
+                false,
+                "DEVICE_BINDING_AMBIGUOUS".to_string(),
+                format!(
+                    "{} binding resolved to multiple Windows ports; select and test the intended device",
+                    role.as_str()
+                ),
+                true,
+                ports,
+            ),
+        },
+        None if !duplicate_observation_ports.is_empty() => (
+            None,
+            false,
+            "DEVICE_BINDING_AMBIGUOUS".to_string(),
+            format!(
+                "{} discovery returned duplicate observations for the same stable identity",
+                role.as_str()
+            ),
+            true,
+            duplicate_observation_ports,
+        ),
+        None if candidates.len() > 1 => (
+            None,
+            false,
+            "DEVICE_BINDING_SELECTION_REQUIRED".to_string(),
+            format!(
+                "multiple {} candidates require protected operator selection",
+                role.as_str()
+            ),
+            true,
+            candidates
+                .iter()
+                .map(|item| item.current_port.clone())
+                .collect(),
+        ),
+        None => (
+            None,
+            false,
+            "DEVICE_BINDING_REQUIRED".to_string(),
+            format!("{} requires a tested stable device binding", role.as_str()),
+            false,
+            vec![],
+        ),
+    };
 
     let ambiguity_kind = match code.as_str() {
         "DEVICE_BINDING_SELECTION_REQUIRED" => Some(DeviceBindingAmbiguityKind::CandidateSelection),
@@ -958,6 +990,26 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_stable_identity_cannot_select_a_candidate_for_test_or_confirm() {
+        let observed = ["COM4", "COM9"].map(|current_port| ObservedSerialDevice {
+            current_port: current_port.to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-01".to_string()),
+            container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
+            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+            serial_number: Some("CTRL-01".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        });
+
+        assert_eq!(
+            select_observed_candidate_by_identity(
+                &observed,
+                "container:11111111-2222-3333-4444-555555555555",
+            ),
+            ObservedCandidateSelection::Ambiguous(vec!["COM4".to_string(), "COM9".to_string()]),
+        );
+    }
+
+    #[test]
     fn duplicate_observations_are_ambiguous_even_when_they_report_the_same_com_port() {
         let observed = ObservedSerialDevice {
             current_port: "COM4".to_string(),
@@ -990,6 +1042,27 @@ mod tests {
                 .expect("stable")
                 .identity_key,
             "container:11111111-2222-3333-4444-555555555555"
+        );
+    }
+
+    #[test]
+    fn qemu_passthrough_and_physical_windows_adapters_share_the_replug_contract() {
+        let qemu_passthrough = parse_windows_serial_discovery(
+            br#"[{"currentPort":"COM4","instanceId":"USB\\VID_1A86&PID_55D3\\CTRL-01","containerId":"{11111111-2222-3333-4444-555555555555}","hardwareIds":["USB\\VID_1A86&PID_55D3"],"serialNumber":"CTRL-01","friendlyName":"QEMU USB passthrough serial adapter"}]"#,
+        )
+        .expect("QEMU passthrough fixture");
+        let physical = parse_windows_serial_discovery(
+            br#"[{"currentPort":"COM12","instanceId":"USB\\VID_1A86&PID_55D3\\CTRL-01","containerId":"{11111111-2222-3333-4444-555555555555}","hardwareIds":["USB\\VID_1A86&PID_55D3"],"serialNumber":"CTRL-01","friendlyName":"USB-Enhanced-SERIAL CH343"}]"#,
+        )
+        .expect("physical Windows fixture");
+
+        let binding = StableSerialDeviceIdentity::try_from_observation(&qemu_passthrough[0])
+            .expect("stable passthrough identity");
+
+        assert!(binding.matches(&physical[0]));
+        assert_eq!(
+            resolve_bound_port(&binding, &physical),
+            BindingResolution::Resolved("COM12".to_string())
         );
     }
 
@@ -1113,9 +1186,11 @@ mod tests {
             "DEVICE_IDENTITY_NOT_BINDABLE"
         );
         assert_eq!(snapshot.discovery_diagnostics[0].current_port, "COM8");
-        assert!(snapshot.discovery_diagnostics[0]
-            .message
-            .contains("physical USB"));
+        assert!(
+            snapshot.discovery_diagnostics[0]
+                .message
+                .contains("physical USB")
+        );
     }
 
     #[test]

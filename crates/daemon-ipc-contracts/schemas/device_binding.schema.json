@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceBindingSnapshot",
+  "type": "object",
+  "properties": {
+    "roles": {
+      "minItems": 2,
+      "maxItems": 2,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["lower_controller", "scanner"]
+          },
+          "binding": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "identity": {
+                    "type": "object",
+                    "properties": {
+                      "identityKey": {
+                        "type": "string",
+                        "pattern": "^(?:container:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|usb:usb\\\\vid_[0-9a-f]{4}&pid_[0-9a-f]{4}:[a-z0-9._-]+)$"
+                      },
+                      "instanceId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "containerId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "hardwareIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^USB\\\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}$"
+                        }
+                      },
+                      "serialNumber": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "identityKey",
+                      "instanceId",
+                      "containerId",
+                      "hardwareIds",
+                      "serialNumber"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "confirmedAt": {
+                    "type": "string"
+                  },
+                  "confirmedBy": {
+                    "type": "string"
+                  },
+                  "testEvidenceCode": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "identity",
+                  "confirmedAt",
+                  "confirmedBy",
+                  "testEvidenceCode"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentPort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "ambiguous": {
+            "type": "boolean"
+          },
+          "ambiguityKind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["candidate_selection", "duplicate_observation"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ambiguityPorts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "legacyPortHint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "identity": {
+                  "type": "object",
+                  "properties": {
+                    "identityKey": {
+                      "type": "string",
+                      "pattern": "^(?:container:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|usb:usb\\\\vid_[0-9a-f]{4}&pid_[0-9a-f]{4}:[a-z0-9._-]+)$"
+                    },
+                    "instanceId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "containerId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "hardwareIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^USB\\\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}$"
+                      }
+                    },
+                    "serialNumber": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "identityKey",
+                    "instanceId",
+                    "containerId",
+                    "hardwareIds",
+                    "serialNumber"
+                  ],
+                  "additionalProperties": false
+                },
+                "currentPort": {
+                  "type": "string",
+                  "pattern": "^COM[1-9]\\d*$"
+                },
+                "friendlyName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "readiness": {
+                  "type": "string",
+                  "enum": ["candidate", "ready", "blocked"]
+                },
+                "readinessCode": {
+                  "type": "string"
+                },
+                "readinessMessage": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "identity",
+                "currentPort",
+                "friendlyName",
+                "readiness",
+                "readinessCode",
+                "readinessMessage"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "discoveryDiagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "currentPort": {
+                  "type": "string"
+                },
+                "friendlyName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "const": "DEVICE_IDENTITY_NOT_BINDABLE"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": ["currentPort", "friendlyName", "code", "message"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "role",
+          "binding",
+          "currentPort",
+          "ready",
+          "code",
+          "message",
+          "ambiguous",
+          "ambiguityKind",
+          "ambiguityPorts",
+          "legacyPortHint",
+          "candidates",
+          "discoveryDiagnostics"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["roles"],
+  "additionalProperties": false
+}

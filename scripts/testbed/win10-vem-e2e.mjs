@@ -1559,7 +1559,7 @@ export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
     const evidence = action?.evidence ?? {};
     return (
       evidence.usedDaemonIpcTaskExecute === true &&
-      String(evidence.endpoint ?? "").endsWith("/v1/bring-up/tasks/execute") &&
+      String(evidence.endpoint ?? "").endsWith("/v1/provisioning/claim") &&
       ["provisioned", "failed"].includes(String(evidence.claimStatus ?? ""))
     );
   });
@@ -5763,7 +5763,7 @@ function Wait-DaemonIpcAfterProvisioning(
       $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
       Invoke-IpcJson "GET" "$baseUrl/healthz" @{} -TimeoutSec 2 | Out-Null
       $RecoveryEvidence["observedHealthAfterReconfigure"] = $true
-      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers -TimeoutSec 2
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers -TimeoutSec 2
       $config = Get-ConfigSnapshotFromRuntimeSummary $summary
       $lastObservedMachineCode = [string]$config.public.machineCode
       $RecoveryEvidence["observedMachineCodeAfterReconfigure"] = $lastObservedMachineCode
@@ -5830,7 +5830,7 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
     }
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
     try {
-      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+      $summary = Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers
       $evidence.config = Convert-ConfigSnapshotEvidence (Get-ConfigSnapshotFromRuntimeSummary $summary)
     } catch {
       $failed = Get-FailedIpcEvidence $_
@@ -5851,7 +5851,7 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
     if (
       $null -ne $actionEvidence -and
       [bool]$actionEvidence.usedDaemonIpcTaskExecute -and
-      ([string]$actionEvidence.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -and
+      ([string]$actionEvidence.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -and
       @("provisioned", "failed") -contains [string]$actionEvidence.claimStatus
     ) {
       $usedTaskExecute = $true
@@ -5942,7 +5942,7 @@ function Confirm-ExistingTestbedProvisioningClaim($Actions) {
       throw "persisted daemon IPC claim evidence does not bind this sale fixture to the same run, identity, and platform"
     }
     $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-    $config = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$($daemonIpc.baseUrl)/v1/config/summary" $daemonIpc.headers)
+    $config = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$($daemonIpc.baseUrl)/v1/runtime-configuration" $daemonIpc.headers)
     if (
       [bool]$config.provisioned -ne $true -or
       [string]$config.public.machineCode -ne ${psString(machineCode)} -or
@@ -5986,25 +5986,9 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
     mqttUrl = ${psString(platform.mqttUrl)}
     preClaimRuntimeBootstrapVerified = $false
-    networkProbe = [ordered]@{
-      endpoint = $null
-      status = "not_attempted"
-      httpStatus = $null
-    }
-    bootstrapMaintenanceSession = [ordered]@{
-      endpoint = $null
-      status = "not_attempted"
-      httpStatus = $null
-    }
     claimStatus = "not_attempted"
     claimFailureCode = $null
     claimHttpStatus = $null
-    maintenanceStatusAfterClaimFailure = [ordered]@{
-      observed = $false
-      state = $null
-      handshakeVerified = $null
-      lastError = $null
-    }
     claimResult = [ordered]@{
       restartRequested = $null
       runtimeReconfigureObserved = $false
@@ -6053,7 +6037,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $baseUrl = $daemonIpc.baseUrl
     $headers = $daemonIpc.headers
 
-    $configBefore = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
+    $configBefore = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers)
     $public = $configBefore.public
     Assert-FirstClaimConfig $configBefore
     if (-not [bool]$configBefore.runtimeBootstrapConfigured) {
@@ -6064,37 +6048,14 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     $evidence.preClaimRuntimeBootstrapVerified = $true
 
-    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
-    $currentTask = $bringUp.currentTask
-    if ($null -eq $currentTask) {
-      throw "daemon did not project a Runtime Bootstrap claim task"
-    }
-    if ([string]$currentTask.kind -ne "claim_machine" -or [string]$currentTask.intent -ne "claim_machine") {
-      throw "daemon projected unexpected Runtime Bootstrap claim task: $($currentTask.kind)/$($currentTask.intent)"
-    }
-    if (
-      [int]$currentTask.contractVersion -ne 1 -or
-      [string]::IsNullOrWhiteSpace([string]$currentTask.taskId) -or
-      [uint64]$currentTask.taskVersion -lt 1
-    ) {
-      throw "daemon projected an invalid Runtime Bootstrap claim task cursor"
-    }
     $claimPayload = [ordered]@{
-      contractVersion = [int]$currentTask.contractVersion
-      taskId = [string]$currentTask.taskId
-      taskVersion = [uint64]$currentTask.taskVersion
-      kind = [string]$currentTask.kind
-      intent = [string]$currentTask.intent
-      mutation = [ordered]@{
-        type = "claim_machine"
-        claimCode = ${psString(claimCode)}
-      }
+      claimCode = ${psString(claimCode)}
     }
-    $evidence.endpoint = "$baseUrl/v1/bring-up/tasks/execute"
+    $evidence.endpoint = "$baseUrl/v1/provisioning/claim"
     $evidence.usedDaemonIpcTaskExecute = $true
     $preClaimReadyGeneration = [long](Get-Item -LiteralPath ${psString(bringUpPlan.arguments.DaemonReadyFile)} -ErrorAction Stop).LastWriteTimeUtc.Ticks
     try {
-      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload
+      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
       $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
@@ -6104,17 +6065,6 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       $evidence.claimStatus = "failed"
       $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
       $evidence.claimHttpStatus = $claimError.statusCode
-      try {
-        $maintenanceStatus = Invoke-IpcJson "GET" "$baseUrl/v1/maintenance/status" $headers
-        $evidence.maintenanceStatusAfterClaimFailure.observed = $true
-        $evidence.maintenanceStatusAfterClaimFailure.state = [string]$maintenanceStatus.state
-        $evidence.maintenanceStatusAfterClaimFailure.handshakeVerified = [bool]$maintenanceStatus.handshakeVerified
-        $evidence.maintenanceStatusAfterClaimFailure.lastError = if (
-          [string]::IsNullOrWhiteSpace([string]$maintenanceStatus.lastError)
-        ) { $null } else { [string]$maintenanceStatus.lastError }
-      } catch {
-        $evidence.maintenanceStatusAfterClaimFailure.lastError = "maintenance_status_unavailable"
-      }
       throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
     }
 
@@ -6134,7 +6084,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
 
     $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
     $evidence.readyzAfterClaim = Get-SafeReadyzEvidence $baseUrl
-    $configAfter = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers)
+    $configAfter = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers)
     $configEvidence = Convert-ConfigSnapshotEvidence $configAfter
     $evidence.provisioned = $configEvidence.provisioned
     $evidence.credentialFlags.machineSecretConfigured = $configEvidence.machineSecretConfigured
@@ -8157,7 +8107,7 @@ function Classify-SimulatedHardwareSaleFlowReport($Facts) {
   if (
     [string]$Facts.provisioning.claim.runId -ne [string]$Facts.platformSetup.preparedRunId -or
     [string]$Facts.provisioning.claim.status -ne "provisioned" -or
-    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/bring-up/tasks/execute", [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -or
     [int]$Facts.provisioning.claim.httpStatus -ne 200
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "fresh_machine_claim_evidence_required" "Simulated hardware sale-flow evidence must include a successful daemon IPC claim from the same run."
@@ -8604,8 +8554,8 @@ function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
       $selectedItem = $context.selectedItem
       $effectiveProvisioningActions = @($context.provisioningActions)
     } else {
-    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
-    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+    $bringUp = [pscustomobject]@{ hardwareMode = "serial" }
+    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers
     $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     $hardwareMappingFaultProbeRequired =
       $daemonIpcBeforeMutation.healthz.observed -eq $true -and
@@ -9901,7 +9851,7 @@ Defaults target the documented Machine Runtime Testbed:
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
 
-Provision mode starts and reads the daemon IPC, applies only pre-claim platform endpoints, obtains its current claim task cursor, and claims the prepared testbed identity through daemon IPC /v1/bring-up/tasks/execute.
+Provision mode starts and reads the daemon IPC, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 

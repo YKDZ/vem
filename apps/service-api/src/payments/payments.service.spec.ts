@@ -176,6 +176,27 @@ function makeService(overrides: {
 // ---- tests ------------------------------------------------------------------
 
 describe("PaymentsService", () => {
+  it("completes test-provider checkout through the normal provider webhook orchestrator", async () => {
+    const service = makeService({});
+    const handleProviderWebhook = vi
+      .spyOn(service, "handleProviderWebhook")
+      .mockResolvedValue({ handled: true, duplicate: false });
+
+    await expect(
+      service.completeMockPaymentFromProvider("PAY-MOCK-001"),
+    ).resolves.toEqual({ handled: true, duplicate: false });
+    expect(handleProviderWebhook).toHaveBeenCalledWith(
+      "mock",
+      {},
+      expect.objectContaining({
+        eventType: "mock.checkout.completed",
+        paymentNo: "PAY-MOCK-001",
+        providerTradeNo: "MOCK-PAY-MOCK-001",
+        paymentStatus: "succeeded",
+      }),
+    );
+  });
+
   describe("listRefunds", () => {
     it("projects drill markers in the admin refund list", async () => {
       const db = makeDb();

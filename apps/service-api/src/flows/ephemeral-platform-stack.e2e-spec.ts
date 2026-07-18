@@ -1,7 +1,17 @@
 import type { INestApplication } from "@nestjs/common";
+import type { MqttClient } from "mqtt";
 
 import { Test } from "@nestjs/testing";
-import { and, auditLogs, DrizzleDB, eq, inArray } from "@vem/db";
+import {
+  and,
+  auditLogs,
+  DrizzleDB,
+  eq,
+  inArray,
+  orders,
+  payments,
+  vendingCommands,
+} from "@vem/db";
 import {
   machineProvisioningProfileSchema,
   machineProvisioningProfileSnapshotSchema,
@@ -17,6 +27,13 @@ import {
   prepareEphemeralPlatformStack,
 } from "../testbed/prepare-ephemeral-platform-stack.cli";
 import { loginAndGetToken } from "./flow-test-helpers";
+import {
+  connectMqtt,
+  disconnectMqtt,
+  pollMachineHeartbeatCount,
+  publishMqtt,
+  signMqttPayload,
+} from "./flow-test-helpers";
 
 describe(
   "ephemeral platform stack acceptance setup",
@@ -26,15 +43,8 @@ describe(
     let appConfig: AppConfigService;
     let db: DrizzleDB;
     let api: ReturnType<typeof request>;
-    const claimEnvironment = {
-      MACHINE_PROVISIONING_PROFILE: "testbed",
-    } as const;
-    const previousEnvironment = Object.fromEntries(
-      Object.keys(claimEnvironment).map((key) => [key, process.env[key]]),
-    );
-
+    let mqttClient: MqttClient;
     beforeAll(async () => {
-      Object.assign(process.env, claimEnvironment);
       const { AppModule } = await import("../app.module");
       const moduleRef = await Test.createTestingModule({
         imports: [AppModule],
@@ -47,20 +57,23 @@ describe(
       appConfig = app.get(AppConfigService);
       db = new DrizzleDB(appConfig.databaseUrl);
       await db.connect();
+      mqttClient = await connectMqtt(appConfig.mqttUrl, {
+        username: appConfig.mqttUsername,
+        password: appConfig.mqttPassword,
+      });
       const httpServer = app.getHttpServer() as Parameters<typeof request>[0];
       api = request(httpServer);
     }, 120_000);
 
     afterAll(async () => {
+      if (mqttClient) {
+        await disconnectMqtt(mqttClient);
+      }
       if (db) {
         await db.disconnect();
       }
       if (app) {
         await app.close();
-      }
-      for (const [key, value] of Object.entries(previousEnvironment)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
       }
     }, 120_000);
 
@@ -233,10 +246,49 @@ describe(
       const refreshed = machineProvisioningProfileSnapshotSchema.parse(
         (refreshResponse.body as ApiResponse<unknown>).data,
       );
-      expect(refreshed.metadata.profileRevision).not.toBe(
-        claimed.metadata.profileRevision,
-      );
+      const { credentials, ...claimedProfileFacts } = claimed;
+      const { password: _password, ...claimedMqttConnection } =
+        credentials.mqttConnection;
+      const claimedSnapshot = machineProvisioningProfileSnapshotSchema.parse({
+        ...claimedProfileFacts,
+        mqttConnection: {
+          ...claimedMqttConnection,
+          username: claimedMqttConnection.username ?? null,
+        },
+      });
+      expect(refreshed).toEqual(claimedSnapshot);
       expect(refreshed).not.toHaveProperty("credentials");
+
+      await publishMqtt(
+        mqttClient,
+        `vem/machines/${second.testbedMachine.code}/events/heartbeat`,
+        signMqttPayload({
+          machineCode: second.testbedMachine.code,
+          mqttSigningSecret: claimed.credentials.mqttSigningSecret,
+          messageId: `provisioning-profile-heartbeat:${Date.now()}`,
+          payload: {
+            machineCode: second.testbedMachine.code,
+            reportedAt: new Date().toISOString(),
+            statusPayload: {
+              appVersion: "e2e",
+              network: "online",
+              mqttConnected: true,
+              hardwareStatus: "ok",
+              localQueueSize: 0,
+            },
+          },
+        }),
+      );
+      await pollMachineHeartbeatCount(db, claimed.machine.id);
+      const heartbeatRefreshResponse = await api
+        .get(`/api/machines/${second.testbedMachine.code}/provisioning-profile`)
+        .set(auth);
+      expect(heartbeatRefreshResponse.status).toBe(200);
+      expect(
+        machineProvisioningProfileSnapshotSchema.parse(
+          (heartbeatRefreshResponse.body as ApiResponse<unknown>).data,
+        ),
+      ).toEqual(refreshed);
 
       const adminToken = await loginAndGetToken(api, appConfig);
       const renamedMachine = `${second.testbedMachine.code} refreshed`;
@@ -347,6 +399,12 @@ describe(
           method: "payment_code",
         }),
       );
+      expect(paymentOptions.data.options).toContainEqual(
+        expect.objectContaining({
+          providerCode: "mock",
+          method: "mock",
+        }),
+      );
 
       const saleSlot = published.data.slots[0];
       expect(saleSlot).toBeDefined();
@@ -406,6 +464,69 @@ describe(
         status: string;
       }>;
       expect(scannerPayment.data.status).toBe("succeeded");
+
+      const providerCompletionSaleSlot = published.data.slots[1];
+      expect(providerCompletionSaleSlot).toBeDefined();
+      if (!providerCompletionSaleSlot) {
+        throw new Error("Generated planogram needs a second saleable slot");
+      }
+      const providerCompletionOrderResponse = await api
+        .post("/api/machine-orders")
+        .set(auth)
+        .send({
+          machineCode: second.testbedMachine.code,
+          items: [
+            {
+              inventoryId: providerCompletionSaleSlot.inventoryId,
+              quantity: 1,
+              planogramVersion: published.data.planogramVersion,
+              slotId: providerCompletionSaleSlot.slotId,
+              slotCode: providerCompletionSaleSlot.slotCode,
+            },
+          ],
+          paymentMethod: "mock",
+          paymentProviderCode: "mock",
+        });
+      expect(providerCompletionOrderResponse.status).toBe(201);
+      const providerCompletionOrder =
+        providerCompletionOrderResponse.body as ApiResponse<{
+          orderId: string;
+          paymentNo: string;
+          paymentUrl: string;
+        }>;
+      expect(providerCompletionOrder.data.paymentUrl).toMatch(
+        new RegExp(
+          `/payments/mock/${providerCompletionOrder.data.paymentNo}/complete$`,
+        ),
+      );
+
+      const completePath = new URL(providerCompletionOrder.data.paymentUrl)
+        .pathname;
+      const completionResponse = await api.post(completePath).send({});
+      expect(completionResponse.status).toBe(201);
+      expect(
+        (completionResponse.body as ApiResponse<{ handled: boolean }>).data,
+      ).toMatchObject({ handled: true });
+
+      const [completedPayment] = await db.client
+        .select({ status: payments.status })
+        .from(payments)
+        .where(eq(payments.paymentNo, providerCompletionOrder.data.paymentNo));
+      const [completedOrder] = await db.client
+        .select({ paymentState: orders.paymentState })
+        .from(orders)
+        .where(eq(orders.id, providerCompletionOrder.data.orderId));
+      const dispatchedCommands = await db.client
+        .select({ commandKind: vendingCommands.commandKind })
+        .from(vendingCommands)
+        .where(
+          eq(vendingCommands.orderId, providerCompletionOrder.data.orderId),
+        );
+      expect(completedPayment?.status).toBe("succeeded");
+      expect(completedOrder?.paymentState).toBe("paid");
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({ commandKind: "dispatch" }),
+      );
     }, 60_000);
   },
 );

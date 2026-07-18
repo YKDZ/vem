@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "baudRate": {
+      "type": "integer",
+      "minimum": 1200,
+      "maximum": 230400
+    },
+    "frameSuffix": {
+      "type": "string",
+      "enum": ["crlf", "lf", "cr", "none"]
+    }
+  },
+  "required": ["baudRate", "frameSuffix"],
+  "additionalProperties": false,
+  "title": "ScannerProtocolParameters"
+}

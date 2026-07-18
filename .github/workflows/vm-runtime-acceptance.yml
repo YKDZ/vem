@@ -368,7 +368,6 @@ jobs:
           JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
           MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
           MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
-          MACHINE_PROVISIONING_PROFILE: testbed
           MAINTENANCE_RELAY_ENDPOINT: 127.0.0.1:51820
           MQTT_URL: mqtt://127.0.0.1:18883
           MACHINE_MQTT_URL: ${{ env.EPHEMERAL_MQTT_URL }}

@@ -3063,58 +3063,30 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json/,
     );
-    assert.match(
-      script,
-      /C:\\ProgramData\\VEM\\vending-daemon\\factory\\bootstrap-provisioning-capability/,
-    );
     assert.match(script, /C:\\VEM\\bringup\\machine\.exe/);
     assert.match(script, /C:\\VEM\\bringup\\launch-machine-ui-debug\.vbs/);
     assert.doesNotMatch(script, /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
     assert.match(script, /Authorization = "Bearer \$\(\$ready\.ipcToken\)"/);
     assert.match(
       script,
-      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/config\/summary" \$headers/,
+      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/runtime-configuration" \$headers/,
     );
     assert.match(script, /Get-ConfigSnapshotFromRuntimeSummary/);
-    assert.doesNotMatch(script, /"\$baseUrl\/v1\/config" \$headers/);
     assert.match(
       script,
-      /disposable Testbed config did not reload the run-local Platform endpoint/,
-    );
-    assert.match(script, /\$machineConfig\.apiBaseUrl = /);
-    assert.match(script, /\$machineConfig\.mqttUrl = /);
-    assert.match(script, /C:\\ProgramData\\VEM\\bringup\\local-settings\.json/);
-    assert.match(script, /\$localSettings\.provisioningEndpointOverride = /);
-    assert.match(script, /VEM_NETWORK_ADAPTER=fake/);
-    assert.match(script, /VEM_FAKE_NETWORK_OUTCOME=success/);
-    assert.match(
-      script,
-      /Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue/,
+      /\$runtimeBootstrapPath = "C:\\ProgramData\\VEM\\runtime-bootstrap\.json"/,
     );
     assert.match(
       script,
-      /Start-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\\VEM\\" -ErrorAction Stop/,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/provisioning\/claim" \$headers \$claimPayload/,
     );
-    assert.match(
-      script,
-      /Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop/,
-    );
+    assert.doesNotMatch(script, /\/v1\/config\/summary/);
+    assert.doesNotMatch(script, /\/v1\/bring-up/);
+    assert.doesNotMatch(script, /\/v1\/maintenance\/status/);
     assert.match(script, /Restart-Service -Name "VemVendingDaemon" -Force/);
-    assert.match(script, /preClaimFactoryConfigVerified = \$true/);
     assert.match(
       script,
-      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/bring-up" \$headers/,
-    );
-    assert.match(script, /mutation = \[ordered\]@\{ type = "probe_network" \}/);
-    assert.match(script, /networkProbe = \[ordered\]@\{/);
-    assert.match(script, /daemon IPC existing-network probe failed/);
-    assert.match(script, /taskId = \[string\]\$currentTask\.taskId/);
-    assert.match(script, /taskVersion = \[uint64\]\$currentTask\.taskVersion/);
-    assert.match(script, /kind = \[string\]\$currentTask\.kind/);
-    assert.match(script, /intent = \[string\]\$currentTask\.intent/);
-    assert.match(
-      script,
-      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/bring-up\/tasks\/execute"/,
+      /\$evidence\.preClaimRuntimeBootstrapVerified = \$true/,
     );
     assert.match(script, /usedDaemonIpcTaskExecute = \$true/);
     assert.match(script, /machineCode = \$claimResult\.machineCode/);
@@ -3130,13 +3102,22 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /readyzAfterClaim = Get-SafeReadyzEvidence/);
     assert.match(script, /testbed-provisioning-evidence\.json/);
     assert.match(script, /Set-Content -LiteralPath \$provisioningEvidencePath/);
-    assert.doesNotMatch(script, /machineSecret\s*=/);
-    assert.doesNotMatch(script, /mqttSigningSecret\s*=/);
-    assert.doesNotMatch(script, /mqttPassword\s*=/);
+    const claimFunction = extractPowerShellFunction(
+      script,
+      "Invoke-TestbedProvisioningClaim",
+    );
+    const claimPayload = claimFunction.match(
+      /\$claimPayload = \[ordered\]@\{[\s\S]*?\n    \}/,
+    )?.[0];
+    assert.ok(claimPayload);
+    assert.match(claimPayload, /claimCode = /);
+    assert.doesNotMatch(claimPayload, /machineSecret/);
+    assert.doesNotMatch(claimPayload, /mqttSigningSecret/);
+    assert.doesNotMatch(claimPayload, /mqttPassword/);
     assert.doesNotMatch(script, /vms_local/);
   });
 
-  it("uses the daemon cursor to probe the existing network before obtaining the claim cursor", () => {
+  it("reads the current runtime configuration before claiming through the explicit daemon endpoint", () => {
     const script = buildRemotePowerShellScript({
       mode: "provision",
       claimCode: "ABCD-2345",
@@ -3152,23 +3133,11 @@ describe("win10-vem-e2e reset planning", () => {
       provisioningStart,
     );
     const configRead = script.indexOf(
-      'Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers',
+      'Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers',
       provisioningStart,
-    );
-    const taskSnapshot = script.indexOf(
-      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
-      provisioningStart,
-    );
-    const networkProbe = script.indexOf(
-      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $probePayload',
-      provisioningStart,
-    );
-    const claimTaskSnapshot = script.indexOf(
-      'Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers',
-      taskSnapshot + 1,
     );
     const claim = script.indexOf(
-      'Invoke-IpcJson "POST" "$baseUrl/v1/bring-up/tasks/execute" $headers $claimPayload',
+      'Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload',
       provisioningStart,
     );
     const generationSnapshot = script.indexOf(
@@ -3195,13 +3164,12 @@ describe("win10-vem-e2e reset planning", () => {
     assert.ok(readyRead < healthz);
     assert.ok(daemonIpcWait >= provisioningStart);
     assert.ok(daemonIpcWait < configRead);
-    assert.ok(configRead < taskSnapshot);
-    assert.ok(taskSnapshot < networkProbe);
-    assert.ok(networkProbe < claimTaskSnapshot);
-    assert.ok(claimTaskSnapshot < claim);
-    assert.ok(claimTaskSnapshot < generationSnapshot);
+    assert.ok(configRead < generationSnapshot);
     assert.ok(generationSnapshot < claim);
     assert.ok(claim < claimHttpCatch);
+    assert.doesNotMatch(script, /\/v1\/config\/summary/);
+    assert.doesNotMatch(script, /\/v1\/bring-up/);
+    assert.doesNotMatch(script, /\/v1\/maintenance\/status/);
     assert.ok(claimHttpCatch < convergence);
     assert.match(
       script,
@@ -3591,11 +3559,7 @@ try {
       /claimFailureCode = Convert-ClaimFailureClassification \$claimError/,
     );
     assert.match(script, /claimHttpStatus = \$claimError.statusCode/);
-    assert.match(
-      script,
-      /Invoke-IpcJson "GET" "\$baseUrl\/v1\/maintenance\/status" \$headers/,
-    );
-    assert.match(script, /maintenanceStatusAfterClaimFailure\.lastError = if/);
+    assert.doesNotMatch(script, /\/v1\/maintenance\/status/);
     assert.match(
       script,
       /daemon IPC claim failed: \$\(\$evidence.claimFailureCode\)/,
@@ -3646,7 +3610,7 @@ try {
           {
             evidence: {
               usedDaemonIpcTaskExecute: true,
-              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
+              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
               claimStatus: "provisioned",
             },
           },
@@ -3689,7 +3653,7 @@ try {
           {
             evidence: {
               usedDaemonIpcTaskExecute: true,
-              endpoint: "http://127.0.0.1:3921/v1/bring-up/tasks/execute",
+              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
               claimStatus: "failed",
               claimFailureCode: "machine_profile_persistence_failed",
             },

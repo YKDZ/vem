@@ -107,7 +107,6 @@ describe("MachinesService", () => {
           useValue: {
             machineCommandTimeoutSeconds: 5,
             machineHeartbeatTimeoutSeconds: 120,
-            machineProvisioningProfile: "production",
             maintenanceRelayPeerId: "550e8400-e29b-41d4-a716-446655440010",
             maintenanceRelayEndpoint: "http://127.0.0.1:51820",
             maintenanceRelayPublicKey:
@@ -3361,7 +3360,6 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
             machineApiBaseUrl: "https://platform.example.com/api",
-            machineProvisioningProfile: "production",
             maintenanceRelayPeerId: "550e8400-e29b-41d4-a716-446655440010",
             maintenanceRelayEndpoint: "127.0.0.1:51820",
             maintenanceRelayPublicKey:
@@ -3611,6 +3609,22 @@ describe("MachinesService claim code lifecycle", () => {
 
     expect(afterHeartbeat).toEqual(beforeHeartbeat);
 
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [{ method: "payment_code", disabled: false }],
+    });
+    queueSnapshot(new Date("2026-06-08T16:38:00.000Z"));
+    const afterPaymentChange = await service.getOwnProvisioningProfile(
+      profile.machine.id,
+    );
+
+    expect(afterPaymentChange.paymentCapability).toMatchObject({
+      qrCodeEnabled: false,
+      paymentCodeEnabled: true,
+    });
+    expect(afterPaymentChange.metadata.profileRevision).not.toBe(
+      beforeHeartbeat.metadata.profileRevision,
+    );
+
     queueSnapshot(new Date("2026-06-08T16:38:00.000Z"), "Lobby renamed");
     const afterConfigurationChange = await service.getOwnProvisioningProfile(
       profile.machine.id,
@@ -3618,7 +3632,7 @@ describe("MachinesService claim code lifecycle", () => {
 
     expect(afterConfigurationChange.machine.name).toBe("Lobby renamed");
     expect(afterConfigurationChange.metadata.profileRevision).not.toBe(
-      beforeHeartbeat.metadata.profileRevision,
+      afterPaymentChange.metadata.profileRevision,
     );
 
     const config = (
@@ -3760,6 +3774,12 @@ describe("MachinesService claim code lifecycle", () => {
       secretHash: "scrypt:rotated-machine-secret-hash",
       mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
     });
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [
+        { method: "qr_code", disabled: false },
+        { method: "payment_code", disabled: false },
+      ],
+    });
     const consumeSet = vi.fn().mockReturnValue({
       where: () => ({ returning: async () => [consumed] }),
     });
@@ -3879,7 +3899,9 @@ describe("MachinesService claim code lifecycle", () => {
     expect(serializedProfile).not.toContain("face_pay");
     expect(serializedProfile).not.toContain("defaultProviderCode");
     expect(serializedProfile).not.toContain("optionKey");
-    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
+    expect(listMachinePaymentOptionsForMachine).toHaveBeenCalledWith(
+      machine.id,
+    );
   });
 
   it("consumes a reclaim code with credential rotation and distinct audit", async () => {

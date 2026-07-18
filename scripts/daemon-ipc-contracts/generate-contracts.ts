@@ -9,10 +9,15 @@ import {
 import {
   type DaemonIpcJsonSchemaDocument,
   exportDaemonIpcScannerStatusJsonSchema,
+  exportDaemonIpcDeviceBindingActivationJsonSchema,
+  exportDaemonIpcDeviceBindingJsonSchema,
   exportDaemonIpcSaleStartCapabilityJsonSchema,
   exportDaemonIpcTransactionCheckoutJsonSchema,
 } from "@vem/shared/schemas/daemon-ipc";
-import { exportRuntimeConfigurationJsonSchema } from "@vem/shared/schemas/runtime-configuration";
+import {
+  exportRuntimeConfigurationJsonSchema,
+  exportScannerProtocolParametersJsonSchema,
+} from "@vem/shared/schemas/runtime-configuration";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import {
   existsSync,
@@ -49,8 +54,14 @@ type GeneratorPaths = {
   scannerGeneratedPath: string;
   scannerValidFixturePath: string;
   scannerInvalidFixturePath: string;
+  deviceBindingSchemaPath: string;
+  deviceBindingGeneratedPath: string;
+  deviceBindingActivationSchemaPath: string;
+  deviceBindingActivationGeneratedPath: string;
   runtimeConfigurationSchemaPath: string;
   runtimeConfigurationGeneratedPath: string;
+  scannerProtocolRequestSchemaPath: string;
+  scannerProtocolRequestGeneratedPath: string;
   saleStartCapabilitySchemaPath: string;
   saleStartCapabilityGeneratedPath: string;
 };
@@ -66,7 +77,16 @@ export type DaemonIpcGeneratedContractInputs = {
     validFixtures: unknown[];
     invalidFixtures: Array<{ name: string; snapshot: unknown }>;
   };
+  deviceBinding: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
+  deviceBindingActivation: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
   runtimeConfiguration: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
+  scannerProtocolRequest: {
     schema: DaemonIpcJsonSchemaDocument;
   };
   saleStartCapability: {
@@ -113,6 +133,22 @@ function defaultPaths(repoRoot: string): GeneratorPaths {
       crateRoot,
       "tests/fixtures/scanner_status_invalid.snapshots.json",
     ),
+    deviceBindingSchemaPath: resolve(
+      crateRoot,
+      "schemas/device_binding.schema.json",
+    ),
+    deviceBindingGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/device_binding.rs",
+    ),
+    deviceBindingActivationSchemaPath: resolve(
+      crateRoot,
+      "schemas/device_binding_activation.schema.json",
+    ),
+    deviceBindingActivationGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/device_binding_activation.rs",
+    ),
     runtimeConfigurationSchemaPath: resolve(
       crateRoot,
       "schemas/runtime_configuration.schema.json",
@@ -120,6 +156,14 @@ function defaultPaths(repoRoot: string): GeneratorPaths {
     runtimeConfigurationGeneratedPath: resolve(
       crateRoot,
       "src/generated/runtime_configuration.rs",
+    ),
+    scannerProtocolRequestSchemaPath: resolve(
+      crateRoot,
+      "schemas/scanner_protocol_request.schema.json",
+    ),
+    scannerProtocolRequestGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/scanner_protocol_request.rs",
     ),
     saleStartCapabilitySchemaPath: resolve(
       crateRoot,
@@ -202,9 +246,18 @@ function writeGeneratorInputs(
   writeJson(paths.scannerSchemaPath, inputs.scanner.schema);
   writeJson(paths.scannerValidFixturePath, inputs.scanner.validFixtures);
   writeJson(paths.scannerInvalidFixturePath, inputs.scanner.invalidFixtures);
+  writeJson(paths.deviceBindingSchemaPath, inputs.deviceBinding.schema);
+  writeJson(
+    paths.deviceBindingActivationSchemaPath,
+    inputs.deviceBindingActivation.schema,
+  );
   writeJson(
     paths.runtimeConfigurationSchemaPath,
     inputs.runtimeConfiguration.schema,
+  );
+  writeJson(
+    paths.scannerProtocolRequestSchemaPath,
+    inputs.scannerProtocolRequest.schema,
   );
   writeJson(
     paths.saleStartCapabilitySchemaPath,
@@ -227,7 +280,10 @@ function formatGeneratorJsonInputs(
       paths.scannerSchemaPath,
       paths.scannerValidFixturePath,
       paths.scannerInvalidFixturePath,
+      paths.deviceBindingSchemaPath,
+      paths.deviceBindingActivationSchemaPath,
       paths.runtimeConfigurationSchemaPath,
+      paths.scannerProtocolRequestSchemaPath,
       paths.saleStartCapabilitySchemaPath,
     ],
     {
@@ -345,8 +401,17 @@ export function buildDaemonIpcGeneratedContractInputs(): DaemonIpcGeneratedContr
         ([name, snapshot]) => ({ name, snapshot }),
       ),
     },
+    deviceBinding: {
+      schema: exportDaemonIpcDeviceBindingJsonSchema(),
+    },
+    deviceBindingActivation: {
+      schema: exportDaemonIpcDeviceBindingActivationJsonSchema(),
+    },
     runtimeConfiguration: {
       schema: exportRuntimeConfigurationJsonSchema(),
+    },
+    scannerProtocolRequest: {
+      schema: exportScannerProtocolParametersJsonSchema(),
     },
     saleStartCapability: {
       schema: exportDaemonIpcSaleStartCapabilityJsonSchema(),
@@ -394,12 +459,43 @@ export function generateDaemonIpcContracts(
     writeGeneratedHeader(targetPaths.scannerGeneratedPath, cargoTypifyVersion);
     runCargoTypify(
       repoRoot,
+      targetPaths.deviceBindingSchemaPath,
+      targetPaths.deviceBindingGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.deviceBindingGeneratedPath,
+      cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
+      targetPaths.deviceBindingActivationSchemaPath,
+      targetPaths.deviceBindingActivationGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.deviceBindingActivationGeneratedPath,
+      cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
       targetPaths.runtimeConfigurationSchemaPath,
       targetPaths.runtimeConfigurationGeneratedPath,
       spawnSync,
     );
     writeGeneratedHeader(
       targetPaths.runtimeConfigurationGeneratedPath,
+      cargoTypifyVersion,
+      "packages/shared/src/schemas/runtime-configuration.ts",
+    );
+    runCargoTypify(
+      repoRoot,
+      targetPaths.scannerProtocolRequestSchemaPath,
+      targetPaths.scannerProtocolRequestGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.scannerProtocolRequestGeneratedPath,
       cargoTypifyVersion,
       "packages/shared/src/schemas/runtime-configuration.ts",
     );
@@ -441,12 +537,43 @@ export function generateDaemonIpcContracts(
     writeGeneratedHeader(actualPaths.scannerGeneratedPath, cargoTypifyVersion);
     runCargoTypify(
       repoRoot,
+      actualPaths.deviceBindingSchemaPath,
+      actualPaths.deviceBindingGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.deviceBindingGeneratedPath,
+      cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
+      actualPaths.deviceBindingActivationSchemaPath,
+      actualPaths.deviceBindingActivationGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.deviceBindingActivationGeneratedPath,
+      cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
       actualPaths.runtimeConfigurationSchemaPath,
       actualPaths.runtimeConfigurationGeneratedPath,
       spawnSync,
     );
     writeGeneratedHeader(
       actualPaths.runtimeConfigurationGeneratedPath,
+      cargoTypifyVersion,
+      "packages/shared/src/schemas/runtime-configuration.ts",
+    );
+    runCargoTypify(
+      repoRoot,
+      actualPaths.scannerProtocolRequestSchemaPath,
+      actualPaths.scannerProtocolRequestGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.scannerProtocolRequestGeneratedPath,
       cargoTypifyVersion,
       "packages/shared/src/schemas/runtime-configuration.ts",
     );
