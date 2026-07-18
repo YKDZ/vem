@@ -605,6 +605,42 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/delayed-pickup-machine-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/delayed-pickup-daemon-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/delayed-pickup-platform-evidence.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/delayed-pickup-production-producers.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/sale-audio-capture-host-adapter.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/sale-audio-capture-host-adapter.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/fake-vm-host-adapter.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -632,6 +668,12 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/run-vm-host-adapter.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/run-vm-host-adapter.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {

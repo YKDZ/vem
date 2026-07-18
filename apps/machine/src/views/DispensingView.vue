@@ -23,6 +23,14 @@ const hasCustomerVisibleError = computed(
   () => dispensingView.value?.customerVisibleError !== null,
 );
 const orderCredential = computed(() => checkoutView.value.orderCredential);
+const pickupEvidenceSurface = computed(() => {
+  if (pickupReminder.value?.stage === "pickup_completed")
+    return "reset_progress";
+  if (pickupReminder.value?.stage !== "pickup_timeout_warning") return "none";
+  return pickupReminder.value.urgency === "urgent"
+    ? "urgent_warning"
+    : "ordinary_warning";
+});
 const productName = computed(() => {
   const summary = checkoutStore.transaction?.productSummary;
   if (!summary || typeof summary !== "object") return null;
@@ -127,6 +135,8 @@ onUnmounted(() => {
       :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
       :data-payment-url="checkoutStore.transaction?.paymentUrl ?? ''"
       :data-command-id="checkoutStore.transaction?.vending?.commandId ?? ''"
+      :data-command-no="checkoutStore.transaction?.vending?.commandNo ?? ''"
+      :data-pickup-surface="pickupEvidenceSurface"
       data-test="dispensing-page"
     >
       <div class="dispensing-mist dispensing-mist-left"></div>

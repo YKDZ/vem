@@ -105,6 +105,7 @@ export function createAudioCoordinator(
         type: "journey_transition",
         transitionId: transition.transitionId,
         requestId: null,
+        terminalOutcomeId: null,
         outcome: null,
         message: null,
       });
@@ -113,6 +114,7 @@ export function createAudioCoordinator(
           type: "audio_rejected",
           transitionId: transition.transitionId,
           requestId: null,
+          terminalOutcomeId: null,
           outcome: null,
           message: "duplicate transition",
         });
@@ -126,6 +128,7 @@ export function createAudioCoordinator(
           type: "audio_rejected",
           transitionId: transition.transitionId,
           requestId: null,
+          terminalOutcomeId: null,
           outcome: null,
           message: "audio cue preference disabled",
         });
@@ -136,6 +139,7 @@ export function createAudioCoordinator(
           type: "audio_rejected",
           transitionId: transition.transitionId,
           requestId: null,
+          terminalOutcomeId: null,
           outcome: null,
           message: "audio queue full",
         });
@@ -154,6 +158,7 @@ export function createAudioCoordinator(
         type: "audio_queued",
         transitionId: request.transitionId,
         requestId: request.requestId,
+        terminalOutcomeId: null,
         outcome: null,
         message: null,
       });
@@ -178,6 +183,7 @@ export function createAudioCoordinator(
       type: "audio_queued",
       transitionId: request.transitionId,
       requestId: request.requestId,
+      terminalOutcomeId: null,
       outcome: null,
       message: "local operations test playback",
     });
@@ -234,6 +240,7 @@ export function createAudioCoordinator(
         type: "audio_started",
         transitionId: request.transitionId,
         requestId: request.requestId,
+        terminalOutcomeId: null,
         outcome: null,
         message: options.driver.name,
       });
@@ -264,6 +271,7 @@ export function createAudioCoordinator(
       type: "audio_terminal",
       transitionId: request.transitionId,
       requestId: request.requestId,
+      terminalOutcomeId: `audio-terminal:${request.requestId}`,
       outcome: outcome.status,
       message: outcome.message ?? null,
     });

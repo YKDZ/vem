@@ -38,6 +38,7 @@ export type MachineRuntimeAudioTraceEntry = {
   recordedAt: string;
   transitionId: string;
   requestId: string | null;
+  terminalOutcomeId: string | null;
   outcome: "completed" | "failed" | "stopped" | null;
   message: string | null;
 };
@@ -92,7 +93,8 @@ export function createMachineRuntimeTrace(
       });
       nextId += 1;
     },
-    entries: () => Object.freeze(entries.map((entry) => Object.freeze({ ...entry }))),
+    entries: () =>
+      Object.freeze(entries.map((entry) => Object.freeze({ ...entry }))),
     navigationEntries: () =>
       Object.freeze(
         entries

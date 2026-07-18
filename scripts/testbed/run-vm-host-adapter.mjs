@@ -356,6 +356,12 @@ async function main() {
   process.on("SIGINT", abort);
   process.on("SIGTERM", abort);
   const operation = readOption("--operation");
+  if (operation === "capture-sale-audio") {
+    const { runSaleAudioCaptureHostAdapterCli } =
+      await import("./sale-audio-capture-host-adapter.mjs");
+    await runSaleAudioCaptureHostAdapterCli(process.argv.slice(2));
+    return;
+  }
   assertActiveRuntimeOperation(operation);
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");

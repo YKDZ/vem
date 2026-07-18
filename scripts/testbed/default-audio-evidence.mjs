@@ -227,5 +227,9 @@ export function inspectExportedDefaultAudioCapture({
         `default audio capture ${key} does not match exported WAV inspection`,
       );
   }
-  return { ...inspected, bytes };
+  return {
+    ...inspected,
+    sha256: digest,
+    byteLength: bytes.length,
+  };
 }
