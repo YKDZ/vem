@@ -136,9 +136,16 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
-    const encodedAssertion = plan[0].args.at(-1).split(" ").at(-1);
-    const assertion = Buffer.from(encodedAssertion, "base64").toString("utf16le");
-    assert.match(assertion, /Get-Content[^\n]+-Encoding UTF8/);
+    assert.equal(
+      plan[0].args.at(-1),
+      "powershell -NoProfile -NonInteractive -Command -",
+    );
+    assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
+    assert.equal(
+      plan[1].args.at(-1),
+      "powershell -NoProfile -NonInteractive -Command -",
+    );
+    assert.match(plan[1].input, /Get-CurrentDesktopScreenDimensions/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(
       plan[0].path,
@@ -148,8 +155,13 @@ describe("tracked local testbed host lifecycle", () => {
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
-        runCommand: async (command) => {
+        runCommand: async (command, args, input) => {
           operations.push(command);
+          assert.equal(
+            args.at(-1),
+            "powershell -NoProfile -NonInteractive -Command -",
+          );
+          assert.match(input, /guest input/);
           throw new Error("guest input missing");
         },
       }),
@@ -169,8 +181,13 @@ describe("tracked local testbed host lifecycle", () => {
       runCommand: async (command) => {
         operations.push(command);
       },
-      runCaptureCommand: async (command) => {
+      runCaptureCommand: async (command, args, input) => {
         operations.push(command);
+        assert.equal(
+          args.at(-1),
+          "powershell -NoProfile -NonInteractive -Command -",
+        );
+        assert.match(input, /Get-CurrentDesktopScreenDimensions/);
         return {
           stdout: `${JSON.stringify({
             schemaVersion: "vem-local-testbed-display-admission-proof/v1",

@@ -153,10 +153,6 @@ function sshArgs(config, remoteCommand) {
   ];
 }
 
-function encodedPowerShell(script) {
-  return Buffer.from(script, "utf16le").toString("base64");
-}
-
 function quotePowerShell(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -344,7 +340,9 @@ export function renderReconstructedDomainXml({
   }
   const domainNames = [...templateXml.matchAll(/<name>[^<]+<\/name>/g)];
   if (domainNames.length !== 1) {
-    throw new Error("published domain XML must contain exactly one domain name");
+    throw new Error(
+      "published domain XML must contain exactly one domain name",
+    );
   }
   const baselineSource = `file="${xml(baseline)}"`;
   const cacheSource = `file="${xml(cache)}"`;
@@ -441,10 +439,8 @@ export function buildHostAdmissionPlan({
       type: "assert-guest-input",
       path,
       command: "ssh",
-      args: sshArgs(
-        config,
-        `powershell -NoProfile -NonInteractive -EncodedCommand ${encodedPowerShell(assertion)}`,
-      ),
+      args: sshArgs(config, "powershell -NoProfile -NonInteractive -Command -"),
+      input: assertion,
     },
     {
       type: "assert-interactive-display",
@@ -452,23 +448,22 @@ export function buildHostAdmissionPlan({
       expectedUser: config.ssh.user,
       expectedWidth: PORTRAIT_WIDTH_PX,
       expectedHeight: PORTRAIT_HEIGHT_PX,
-      args: sshArgs(
-        config,
-        `powershell -NoProfile -NonInteractive -EncodedCommand ${encodedPowerShell(
-          interactiveDisplayAssertion(
-            config.ssh.user,
-            PORTRAIT_WIDTH_PX,
-            PORTRAIT_HEIGHT_PX,
-          ),
-        )}`,
+      args: sshArgs(config, "powershell -NoProfile -NonInteractive -Command -"),
+      input: interactiveDisplayAssertion(
+        config.ssh.user,
+        PORTRAIT_WIDTH_PX,
+        PORTRAIT_HEIGHT_PX,
       ),
     },
   ];
 }
 
-function run(command, args) {
+function run(command, args, input) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+    const child = spawn(command, args, {
+      stdio: [input === undefined ? "inherit" : "pipe", "inherit", "inherit"],
+    });
+    if (input !== undefined) child.stdin.end(input);
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
@@ -477,9 +472,12 @@ function run(command, args) {
   });
 }
 
-function runCapture(command, args) {
+function runCapture(command, args, input) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -616,15 +614,16 @@ async function executeAdmission(options) {
 
 export async function executeHostAdmissionPlan(
   plan,
-  {
-    runCommand = run,
-    runCaptureCommand = runCapture,
-  } = {},
+  { runCommand = run, runCaptureCommand = runCapture } = {},
 ) {
   let displayAdmissionProof = null;
   for (const step of plan) {
     if (step.type === "assert-interactive-display") {
-      const output = await runCaptureCommand(step.command, step.args);
+      const output = await runCaptureCommand(
+        step.command,
+        step.args,
+        step.input,
+      );
       displayAdmissionProof = validateDisplayAdmissionProof(
         parseJsonLine(output.stdout, "interactive display admission proof"),
         {
@@ -634,7 +633,7 @@ export async function executeHostAdmissionPlan(
         },
       );
     } else {
-      await runCommand(step.command, step.args);
+      await runCommand(step.command, step.args, step.input);
     }
   }
   return { displayAdmissionProof };
@@ -647,7 +646,9 @@ export function parseHostOptions(args) {
     action !== "admit" &&
     action !== "headless-vnc-activator"
   ) {
-    throw new Error("action must be reconstruct, admit, or headless-vnc-activator");
+    throw new Error(
+      "action must be reconstruct, admit, or headless-vnc-activator",
+    );
   }
   if (action === "headless-vnc-activator") {
     return {
@@ -714,8 +715,14 @@ function startProcess(command, args, options = {}) {
 }
 
 async function executeHeadlessVncActivatorService(options) {
-  const owner = headlessVncActivatorOwner(options.stateRoot, options.domainName);
-  const metadataPath = join(owner.systemStagingPath, VNC_ACTIVATOR_METADATA_FILE);
+  const owner = headlessVncActivatorOwner(
+    options.stateRoot,
+    options.domainName,
+  );
+  const metadataPath = join(
+    owner.systemStagingPath,
+    VNC_ACTIVATOR_METADATA_FILE,
+  );
   await mkdir(owner.systemStagingPath, { recursive: true });
   const recovered = await recoverHeadlessVncActivator({
     metadataPath,
