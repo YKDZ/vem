@@ -248,10 +248,9 @@ function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
   const registrationSetup = runnerRegistration
     ? `$existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
-$existingServices | Stop-Service -Force -ErrorAction SilentlyContinue
-Get-Process -Name 'Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name 'RunnerService','Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$existingServices | ForEach-Object { & sc.exe stop $_.Name | Out-Null; & sc.exe delete $_.Name | Out-Null }
 Start-Sleep -Seconds 1
-$existingServices | ForEach-Object { & sc.exe delete $_.Name | Out-Null }
 Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue
 $registration = Invoke-RestMethod -Method Post -Uri ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)} -Headers @{ Authorization = ${quotePowerShell(`Bearer ${runnerRegistration.adminToken}`)}; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url ${quotePowerShell(`https://github.com/${runnerRegistration.repository}`)} --token ([string]$registration.token) --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
