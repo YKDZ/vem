@@ -40,6 +40,11 @@ const removedRuntimePaths = [
   "start_scanner",
 ];
 
+const retiredEnvTemplateSelectors = [
+  "VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG",
+  "VITE_ENABLE_MOCK_PAYMENT_CONTROLS",
+];
+
 function transactionContractOffenders(source: string): string[] {
   const offenders: string[] = [];
   const transactionSchemaAlias = source.match(
@@ -192,6 +197,19 @@ function guardedProductionSourceFiles(dir: string): string[] {
   });
 }
 
+function envTemplateFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return envTemplateFiles(path);
+    return name.startsWith(".env") &&
+      (name.endsWith(".example") ||
+        name.endsWith(".sample") ||
+        name.endsWith(".template"))
+      ? [path]
+      : [];
+  });
+}
+
 describe("machine-ui daemon migration guards", () => {
   it("does not reference old critical runtime APIs from production src", () => {
     const root = new URL("../..", import.meta.url).pathname;
@@ -234,6 +252,18 @@ describe("machine-ui daemon migration guards", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("does not expose retired Machine selector variables in env templates", () => {
+    const root = new URL("../..", import.meta.url).pathname;
+    const offenders = envTemplateFiles(root).flatMap((file) => {
+      const content = readFileSync(file, "utf8");
+      return retiredEnvTemplateSelectors
+        .filter((term) => content.includes(term))
+        .map((term) => `${relative(root, file)}:${term}`);
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   it("detects retired Machine selector and route fixtures without scanning guard tests as production", () => {
     expect(
       retiredMachineSurfaceOffenders(`
@@ -253,6 +283,17 @@ describe("machine-ui daemon migration guards", () => {
         `await client.post("/v1/provisioning/claim")`,
       ),
     ).toEqual([]);
+  });
+
+  it("detects retired Machine selector variables in env templates", () => {
+    expect(
+      retiredEnvTemplateSelectors.filter((term) =>
+        `
+          VITE_DAEMON_MOCK=true
+          VITE_ENABLE_MOCK_PAYMENT_CONTROLS=true
+        `.includes(term),
+      ),
+    ).toEqual(["VITE_ENABLE_MOCK_PAYMENT_CONTROLS"]);
   });
 
   it("does not keep machine-local vocabulary aliases for covered daemon IPC transaction payloads", () => {
