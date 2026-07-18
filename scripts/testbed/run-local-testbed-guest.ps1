@@ -350,14 +350,16 @@ foreach ($pair in @{
   PNPM_STORE_PATH = $env:PNPM_STORE_PATH
   CARGO_HOME = $env:CARGO_HOME
 }.GetEnumerator()) { Assert-DeclaredCachePath $pair.Value $pair.Key }
-pnpm.cmd config set store-dir $env:PNPM_STORE_PATH --location global
+$pnpm = "C:\Program Files\nodejs\pnpm.cmd"
+Require-Path $pnpm
+& $pnpm config set store-dir $env:PNPM_STORE_PATH --location global
 if ($LASTEXITCODE -ne 0) { throw "pnpm store configuration failed" }
-if ((pnpm.cmd config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnpm store-dir did not resolve to D: cache" }
-pnpm.cmd install --frozen-lockfile
+if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnpm store-dir did not resolve to D: cache" }
+& $pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
-pnpm.cmd turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
+& $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
-pnpm.cmd --filter machine tauri:build:kiosk:windows
+& $pnpm --filter machine tauri:build:kiosk:windows
 if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
 $null = & $sccache --zero-stats
 cargo build -p vending-daemon --release

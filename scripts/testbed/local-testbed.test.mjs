@@ -1129,8 +1129,8 @@ describe("Windows D cache contract", () => {
       "$env:CARGO_HOME",
       "$env:RUSTC_WRAPPER",
       "sccache --show-stats",
-      "pnpm.cmd config set store-dir",
-      "pnpm.cmd config get store-dir",
+      "& $pnpm config set store-dir",
+      "& $pnpm config get store-dir",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1141,6 +1141,7 @@ describe("Windows D cache contract", () => {
         new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
+    assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
     assert.match(guest, /function Get-TestbedSccache/);
     assert.match(guest, /sccache-v\$version-x86_64-pc-windows-msvc\.zip/);
     assert.match(guest, /Join-Path \$cacheRoot "sccache\\bin\\\$version"/);
