@@ -317,6 +317,9 @@ if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw '
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
+Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
+& sc.exe config $service.Name obj= LocalSystem | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "actions runner LocalSystem configuration failed with exit code $LASTEXITCODE" }
 $diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }

@@ -391,6 +391,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(dynamicRegistration.input, /Stop-Service.*sc\.exe delete/s);
     assert.doesNotMatch(dynamicRegistration.input, /config\.cmd'\) remove/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
+    assert.match(dynamicRegistration.input, /sc\.exe config .*obj= LocalSystem/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
     assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);
     assert.match(dynamicRegistration.input, /registered unexpected identity/);
