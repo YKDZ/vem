@@ -41,6 +41,11 @@ jobs:
           virsh dumpxml "$domain" | sed -n '/<interface/,/<\/interface>/p' || true
           ss -ltnp 'sport = :22' || true
           timeout 3 bash -c '</dev/tcp/192.168.122.50/22' && echo guest-ssh-open || echo guest-ssh-closed
+          find /opt/vem/runtime-baseline /opt/vem/runtime-testbed -maxdepth 5 -type f \
+            \( -name '*.qcow2' -o -name '*.json' -o -name '*.xml' \) \
+            -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -k3 || true
+          cat /opt/vem/runtime-baseline/images/win10-runtime-baseline.qcow2.current.json || true
+          df -h /opt || true
           tail -n 120 "/var/log/libvirt/qemu/${domain}.log" || true
 
   compare-cargo-download-paths:
