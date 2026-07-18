@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -298,6 +299,43 @@ function matchesStableGuestUsbIdentity(expected, actual) {
   );
 }
 
+export function pnpObservationMatchesLibvirtTopology(observation, topology) {
+  if (!observation || !topology || !/^COM[1-9][0-9]*$/.test(observation.currentPort ?? "")) return false;
+  const paths = Array.isArray(observation.locationPaths) ? observation.locationPaths : [];
+  const portSegments = String(topology.usbPort).split(".").map(Number);
+  return paths.some((path) => {
+    const root = String(path).match(/USBROOT\((\d+)\)/i);
+    const ports = [...String(path).matchAll(/USB\((\d+)\)/gi)].map((match) => Number(match[1]));
+    return Number(root?.[1]) === topology.usbBus &&
+      ports.length >= portSegments.length &&
+      portSegments.every((port, index) => ports[ports.length - portSegments.length + index] === port);
+  });
+}
+
+function observeWindowsSerialPnP() {
+  const script = String.raw`$ErrorActionPreference = 'Stop'
+$devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
+  $instanceId = [string]$_.PNPDeviceID
+  $property = { param($key) try { (Get-PnpDeviceProperty -InstanceId $instanceId -KeyName $key -ErrorAction Stop).Data } catch { $null } }
+  [pscustomobject]@{
+    currentPort = [string]$_.DeviceID
+    pnpDeviceId = $instanceId
+    containerId = [string](& $property 'DEVPKEY_Device_ContainerId')
+    locationPaths = @(& $property 'DEVPKEY_Device_LocationPaths' | ForEach-Object { [string]$_ })
+    locationInformation = [string](& $property 'DEVPKEY_Device_LocationInfo')
+    address = & $property 'DEVPKEY_Device_Address'
+  }
+})
+ConvertTo-Json -Compress -Depth 4 -InputObject $devices`;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) throw new Error(`Windows PnP serial observation failed: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
 function scannerQemuMapping(sessionStart) {
   const qemuMappings = sessionStart?.qemuUsbSerialMappings;
   if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
@@ -308,7 +346,7 @@ function scannerQemuMapping(sessionStart) {
     if (
       !mapping ||
     mapping.guestDeviceIdentity !== `guest-device://qemu-usb-serial-${role}` ||
-      !mapping.guestUsbIdentity?.identityKey
+      !mapping.guestUsbTopology?.alias
     ) {
       throw new Error(`QEMU USB mapping for ${role} is missing stable guest identity`);
     }
@@ -427,13 +465,17 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     const lower = resolved.lower_controller;
     const scanner = resolved.scanner;
     const scannerMapping = scannerQemuMapping(sessionStart);
+    const windowsPnp = observeWindowsSerialPnP();
+    const scannerPnp = windowsPnp.find(
+      (observation) =>
+        observation.currentPort === scanner?.currentPort &&
+        pnpObservationMatchesLibvirtTopology(observation, scannerMapping.guestUsbTopology),
+    );
     const scannerCandidate = scanner?.candidates?.find(
       (candidate) =>
         candidate.currentPort === scanner.currentPort &&
-        matchesStableGuestUsbIdentity(
-          scannerMapping?.guestUsbIdentity,
-          candidate.identity,
-        ),
+        scannerPnp && matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity) &&
+        candidate.identity.instanceId === scannerPnp.pnpDeviceId,
     );
     if (
       lower?.ready === true &&
@@ -442,10 +484,7 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
       /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
       lower.currentPort !== scanner.currentPort &&
       typeof lower.binding?.identity?.identityKey === "string" &&
-      matchesStableGuestUsbIdentity(
-        scannerMapping?.guestUsbIdentity,
-        scanner.binding?.identity,
-      ) &&
+      scannerPnp &&
       scannerCandidate
     ) {
       const qemuMappings = sessionStart?.qemuUsbSerialMappings;
@@ -453,7 +492,8 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
         daemon: snapshot,
         qemuUsbSerialMappings: qemuMappings,
         scanner: {
-          qemuGuestUsbIdentity: scannerMapping.guestUsbIdentity,
+          libvirtUsbTopology: scannerMapping.guestUsbTopology,
+          windowsPnpObservation: scannerPnp,
           daemonBindingIdentity: scanner.binding.identity,
           currentPort: scanner.currentPort,
           observedCandidate: scannerCandidate,
@@ -656,14 +696,13 @@ export function validateSuccessfulOutcome({
   ) {
     throw new Error("successful scan must complete exactly one correlated vending command");
   }
-  const movements = movementRowsByOrderNo(post, renderedSale.orderNo).filter(
-    (entry) => entry.commandNo === commands[0].commandNo,
-  );
+  const movements = movementRowsByOrderNo(post, renderedSale.orderNo);
   if (movements.length !== 1) {
-    throw new Error("successful scan must produce exactly one command-bound movement");
+    throw new Error("successful scan must produce exactly one total movement for the order");
   }
   const movement = movements[0];
   if (
+    movement.commandNo !== commands[0].commandNo ||
     movement.orderItemId !== orderItems[0].id ||
     movement.inventoryId !== orderItems[0].inventoryId ||
     movement.slotId !== orderItems[0].slotId ||
@@ -671,7 +710,9 @@ export function validateSuccessfulOutcome({
     movement.movementType !== "dispense_succeeded" ||
     movement.status !== "accepted"
   ) {
-    throw new Error("successful movement is not bound to the completed command order item and inventory");
+    throw new Error(
+      "successful command-bound movement is not bound to the completed order item and inventory",
+    );
   }
   if (
     afterF2Ui.route !== "#/result/success" ||

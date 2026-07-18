@@ -15,7 +15,6 @@ import { describe, it } from "node:test";
 
 import {
   parseLibvirtUsbSerialMappings,
-  QEMU_USB_SERIAL_GUEST_IDENTITIES,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
   readRawSerialJournal,
   validateProductionRawSerialFrame,
@@ -38,8 +37,8 @@ function makeTempDir(prefix) {
 
 function domainXml() {
   return `<domain type="kvm"><devices>
-    <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
-    <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/></serial>
+    <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/><address type="usb" bus="0" port="3.1"/></serial>
+    <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/><address type="usb" bus="0" port="3.2"/></serial>
   </devices></domain>`;
 }
 
@@ -61,18 +60,30 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
-  it("publishes stable guest USB identity tuples for the QEMU scanner and lower-controller roles", () => {
-    assert.deepEqual(QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner, {
-      identityKey: "usb:usb\\vid_1a86&pid_55d4:qemu-scanner-01",
-      containerId: null,
-      hardwareIds: ["USB\\VID_1A86&PID_55D4"],
-      serialNumber: "QEMU-SCANNER-01",
-    });
-    assert.equal(
-      QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner.hardwareIds.includes(
-        "USB\\VID_1A86&PID_55D4",
-      ),
-      true,
+  it("publishes the live libvirt USB topology for both serial roles", () => {
+    const mappings = parseLibvirtUsbSerialMappings(domainXml());
+    assert.deepEqual(
+      mappings.map(({ role, guestUsbTopology }) => ({ role, guestUsbTopology })),
+      [
+        {
+          role: "lower-controller",
+          guestUsbTopology: {
+            alias: "serial-lower-controller",
+            targetPort: 0,
+            usbBus: 0,
+            usbPort: "3.1",
+          },
+        },
+        {
+          role: "scanner",
+          guestUsbTopology: {
+            alias: "serial-scanner",
+            targetPort: 1,
+            usbBus: 0,
+            usbPort: "3.2",
+          },
+        },
+      ],
     );
   });
 
@@ -218,7 +229,12 @@ describe("repo QEMU USB serial host adapter", () => {
       const scanner = report.serialSession.deviceMappings.find(
         (mapping) => mapping.role === "scanner",
       );
-      assert.deepEqual(scanner.guestUsbIdentity, QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner);
+      assert.deepEqual(scanner.guestUsbTopology, {
+        alias: "serial-scanner",
+        targetPort: 1,
+        usbBus: 0,
+        usbPort: "3.2",
+      });
       assert.match(scanner.guestDeviceIdentity, /qemu-usb-serial-scanner$/);
       const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
       const state = JSON.parse(

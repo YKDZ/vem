@@ -42,21 +42,6 @@ const SALE_AUDIO_THRESHOLD = Object.freeze({
   minimumDistinctNonSilentSampleMagnitudes: 2,
 });
 
-export const QEMU_USB_SERIAL_GUEST_IDENTITIES = Object.freeze({
-  "lower-controller": Object.freeze({
-    identityKey: "usb:usb\\vid_1a86&pid_55d3:qemu-controller-01",
-    containerId: null,
-    hardwareIds: ["USB\\VID_1A86&PID_55D3"],
-    serialNumber: "QEMU-CONTROLLER-01",
-  }),
-  scanner: Object.freeze({
-    identityKey: "usb:usb\\vid_1a86&pid_55d4:qemu-scanner-01",
-    containerId: null,
-    hardwareIds: ["USB\\VID_1A86&PID_55D4"],
-    serialNumber: "QEMU-SCANNER-01",
-  }),
-});
-
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -184,12 +169,29 @@ export function parseLibvirtUsbSerialMappings(xml) {
     const aliasTag = block.match(/<alias\b[^>]*>/)?.[0] ?? "";
     const sourceTag = block.match(/<source\b[^>]*>/)?.[0] ?? "";
     const targetTag = block.match(/<target\b[^>]*>/)?.[0] ?? "";
+    const addressTag = block.match(/<address\b[^>]*\btype=(?:"usb"|'usb')[^>]*\/?\s*>/)?.[0] ?? "";
     const alias = xmlAttribute(aliasTag, "name");
     const path = xmlAttribute(sourceTag, "path");
     const targetType = xmlAttribute(targetTag, "type");
+    const targetPort = xmlAttribute(targetTag, "port");
+    const usbBus = xmlAttribute(addressTag, "bus");
+    const usbPort = xmlAttribute(addressTag, "port");
     if (!alias?.startsWith("serial-") || !path || targetType !== "usb-serial")
       continue;
-    mappings.push({ role: alias.slice("serial-".length), alias, path });
+    if (!/^\d+$/.test(targetPort ?? "") || !/^\d+$/.test(usbBus ?? "") || !/^\d+(?:\.\d+)*$/.test(usbPort ?? "")) {
+      throw new Error(`${alias} must expose explicit libvirt USB target and address topology`);
+    }
+    mappings.push({
+      role: alias.slice("serial-".length),
+      alias,
+      path,
+      guestUsbTopology: {
+        alias,
+        targetPort: Number.parseInt(targetPort, 10),
+        usbBus: Number.parseInt(usbBus, 10),
+        usbPort,
+      },
+    });
   }
   for (const role of REQUIRED_ROLES) {
     if (mappings.filter((mapping) => mapping.role === role).length !== 1) {
@@ -345,7 +347,7 @@ function contractMappings(liveMappings, pid, connectionState = "connected") {
   return liveMappings.map((mapping) => ({
     role: mapping.role,
     guestDeviceIdentity: `guest-device://qemu-usb-serial-${mapping.role}`,
-    guestUsbIdentity: QEMU_USB_SERIAL_GUEST_IDENTITIES[mapping.role],
+    guestUsbTopology: mapping.guestUsbTopology,
     simulatorProcessIdentity:
       mapping.role === "lower-controller"
         ? `linux-process://pid-${pid}`
@@ -911,10 +913,10 @@ function reportFor(request, state, rawFrames = []) {
         reachability: "discovered",
       },
       deviceMappings: serialSession.deviceMappings.map(
-        ({ role, guestDeviceIdentity, guestUsbIdentity }) => ({
+        ({ role, guestDeviceIdentity, guestUsbTopology }) => ({
           role,
           guestDeviceIdentity,
-          guestUsbIdentity,
+          guestUsbTopology,
         }),
       ),
       defaultAudioIdentity: "guest-audio://qemu-ich9-default",

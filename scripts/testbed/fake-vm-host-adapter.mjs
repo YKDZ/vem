@@ -262,12 +262,7 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY ??
         "guest-device://fake-lower-controller-001",
-      guestUsbIdentity: {
-        identityKey: "usb:usb\\vid_1a86&pid_55d3:fake-controller-001",
-        containerId: null,
-        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
-        serialNumber: "FAKE-CONTROLLER-001",
-      },
+      guestUsbTopology: { alias: "serial-lower-controller", targetPort: 0, usbBus: 0, usbPort: "1" },
       simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
       connectionState: state,
@@ -277,12 +272,7 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY ??
         "guest-device://fake-scanner-001",
-      guestUsbIdentity: {
-        identityKey: "usb:usb\\vid_1a86&pid_55d4:fake-scanner-001",
-        containerId: null,
-        hardwareIds: ["USB\\VID_1A86&PID_55D4"],
-        serialNumber: "FAKE-SCANNER-001",
-      },
+      guestUsbTopology: { alias: "serial-scanner", targetPort: 1, usbBus: 0, usbPort: "2" },
       simulatorProcessIdentity: "simulator-process://fake-scanner-001",
       simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
       connectionState: state,
@@ -435,7 +425,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     deviceMappings.push({
       role: "lower-controller",
       guestDeviceIdentity: mappings[0].guestDeviceIdentity,
-      guestUsbIdentity: mappings[0].guestUsbIdentity,
+      guestUsbTopology: mappings[0].guestUsbTopology,
     });
   if (
     negotiatedCapabilities.includes("serial:scanner") ||
@@ -444,7 +434,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     deviceMappings.push({
       role: "scanner",
       guestDeviceIdentity: mappings[1].guestDeviceIdentity,
-      guestUsbIdentity: mappings[1].guestUsbIdentity,
+      guestUsbTopology: mappings[1].guestUsbTopology,
     });
   const evidenceEntries =
     request.operation === "capture-display"

@@ -433,45 +433,31 @@ export function deriveSerialDeviceMappingDigest(deviceMappings) {
   const canonical = deviceMappings.map((mapping) => ({
     role: mapping?.role,
     guestDeviceIdentity: mapping?.guestDeviceIdentity,
-    guestUsbIdentity: mapping?.guestUsbIdentity,
+    guestUsbTopology: mapping?.guestUsbTopology,
     simulatorProcessIdentity: mapping?.simulatorProcessIdentity,
     simulatorSocketIdentity: mapping?.simulatorSocketIdentity,
   }));
   return `sha256:${sha256(JSON.stringify(canonical))}`;
 }
 
-function assertGuestUsbIdentity(value, path, issues) {
+function assertGuestUsbTopology(value, path, issues) {
   if (
     !assertExactKeys(
       value,
-      ["identityKey", "containerId", "hardwareIds", "serialNumber"],
+      ["alias", "targetPort", "usbBus", "usbPort"],
       path,
       issues,
     )
   )
     return;
-  const containerId = value.containerId;
-  const hardwareIds = value.hardwareIds;
-  const serialNumber = value.serialNumber;
-  if (containerId !== null && !UUID.test(containerId))
-    issue(issues, `${path}.containerId`, "must be a UUID or null");
-  if (
-    !Array.isArray(hardwareIds) ||
-    hardwareIds.length === 0 ||
-    hardwareIds.some((entry) => !/^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}$/.test(entry))
-  )
-    issue(issues, `${path}.hardwareIds`, "must contain canonical USB VID/PID identities");
-  if (
-    typeof serialNumber !== "string" ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(serialNumber)
-  )
-    issue(issues, `${path}.serialNumber`, "must be a stable USB serial number");
-  const expectedIdentityKey =
-    containerId === null
-      ? `usb:${hardwareIds?.[0]?.toLowerCase()}:${serialNumber?.toLowerCase()}`
-      : `container:${containerId}`;
-  if (value.identityKey !== expectedIdentityKey)
-    issue(issues, `${path}.identityKey`, "must derive from ContainerId or VID/PID and serial");
+  if (typeof value.alias !== "string" || !/^serial-(?:lower-controller|scanner)$/.test(value.alias))
+    issue(issues, `${path}.alias`, "must identify a supported libvirt serial role");
+  if (!Number.isInteger(value.targetPort) || value.targetPort < 0)
+    issue(issues, `${path}.targetPort`, "must be a non-negative libvirt target port");
+  if (!Number.isInteger(value.usbBus) || value.usbBus < 0)
+    issue(issues, `${path}.usbBus`, "must be a non-negative libvirt USB bus");
+  if (typeof value.usbPort !== "string" || !/^\d+(?:\.\d+)*$/.test(value.usbPort))
+    issue(issues, `${path}.usbPort`, "must be a libvirt USB address port");
 }
 
 function expectedSerialBinding(request, session) {
@@ -815,7 +801,7 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
       [
         "role",
         "guestDeviceIdentity",
-        "guestUsbIdentity",
+        "guestUsbTopology",
         "simulatorProcessIdentity",
         "simulatorSocketIdentity",
         "connectionState",
@@ -833,7 +819,7 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
     "simulatorSocketIdentity",
   ])
     assertLogicalIdentity(mapping[key], `${path}.${key}`, issues);
-  assertGuestUsbIdentity(mapping.guestUsbIdentity, `${path}.guestUsbIdentity`, issues);
+  assertGuestUsbTopology(mapping.guestUsbTopology, `${path}.guestUsbTopology`, issues);
   if (!new Set(["connected", "disconnected"]).has(mapping.connectionState))
     issue(
       issues,
@@ -846,8 +832,8 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
   if (
     !guestMapping ||
     guestMapping.guestDeviceIdentity !== mapping.guestDeviceIdentity ||
-    JSON.stringify(guestMapping.guestUsbIdentity) !==
-      JSON.stringify(mapping.guestUsbIdentity)
+    JSON.stringify(guestMapping.guestUsbTopology) !==
+      JSON.stringify(mapping.guestUsbTopology)
   )
     issue(
       issues,
@@ -3255,7 +3241,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         if (
           !assertExactKeys(
             mapping,
-            ["role", "guestDeviceIdentity", "guestUsbIdentity"],
+            ["role", "guestDeviceIdentity", "guestUsbTopology"],
             path,
             issues,
           )
@@ -3268,9 +3254,9 @@ export function validateVmHostAdapterReport(input, requestInput) {
           `${path}.guestDeviceIdentity`,
           issues,
         );
-        assertGuestUsbIdentity(
-          mapping.guestUsbIdentity,
-          `${path}.guestUsbIdentity`,
+        assertGuestUsbTopology(
+          mapping.guestUsbTopology,
+          `${path}.guestUsbTopology`,
           issues,
         );
       });
@@ -3528,7 +3514,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       deviceMappings: report.guest.deviceMappings.map((mapping) => ({
         role: mapping.role,
         guestDeviceIdentity: mapping.guestDeviceIdentity,
-        guestUsbIdentity: mapping.guestUsbIdentity,
+        guestUsbTopology: mapping.guestUsbTopology,
       })),
       defaultAudioIdentity: report.guest.defaultAudioIdentity,
     },
@@ -3578,7 +3564,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
                     (mapping) => ({
                       role: mapping.role,
                       guestDeviceIdentity: mapping.guestDeviceIdentity,
-                      guestUsbIdentity: mapping.guestUsbIdentity,
+                      guestUsbTopology: mapping.guestUsbTopology,
                       simulatorProcessIdentity:
                         mapping.simulatorProcessIdentity,
                       simulatorSocketIdentity: mapping.simulatorSocketIdentity,

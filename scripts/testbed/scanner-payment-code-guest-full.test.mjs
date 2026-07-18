@@ -6,6 +6,7 @@ import {
   assertNoAttemptOrDuplicatePayment,
   combineCleanupError,
   parseScannerPaymentCodeGuestArgs,
+  pnpObservationMatchesLibvirtTopology,
   scannerFrameBytes,
   runCleanupStep,
   validateSuccessfulOutcome,
@@ -52,6 +53,34 @@ describe("scanner payment-code guest full", () => {
     assert.match(source, /\/v1\/serial-sessions\/.*\/wait-frame/);
   });
 
+  it("correlates an independently observed Windows PnP location to libvirt USB topology", () => {
+    const observation = {
+      currentPort: "COM17",
+      pnpDeviceId: "USB\\VID_1B36&PID_0001\\5&1234&0&2",
+      locationPaths: ["PCIROOT(0)#PCI(0100)#USBROOT(0)#USB(3)#USB(2)"],
+      locationInformation: "Port_#0002.Hub_#0003",
+      address: 2,
+    };
+    assert.equal(
+      pnpObservationMatchesLibvirtTopology(observation, {
+        alias: "serial-scanner",
+        targetPort: 1,
+        usbBus: 0,
+        usbPort: "3.2",
+      }),
+      true,
+    );
+    assert.equal(
+      pnpObservationMatchesLibvirtTopology(observation, {
+        alias: "serial-lower-controller",
+        targetPort: 0,
+        usbBus: 0,
+        usbPort: "3.1",
+      }),
+      false,
+    );
+  });
+
   it("keeps malformed and timed-out raw bytes at platform attempt/payment delta 0", () => {
     const sale = { orderId: "order-20", paymentId: "payment-20", orderNo: "ORDER-20" };
     const baseline = {
@@ -72,7 +101,7 @@ describe("scanner payment-code guest full", () => {
     );
   });
 
-  it("requires one paid transaction, completed command, and command-bound post-F2 movement", () => {
+  it("requires one paid transaction, completed command, and exactly one total post-F2 movement", () => {
     const sale = { orderId: "order-20", paymentId: "payment-20", orderNo: "ORDER-20" };
     const baseline = {
       raw: {
@@ -103,6 +132,24 @@ describe("scanner payment-code guest full", () => {
     assert.equal(result.finalPaymentCount, 1);
     assert.equal(result.command.status, "succeeded");
     assert.equal(result.inventory.deltaOnHandQty, -1);
+
+    post.raw.movements.push({
+      ...post.raw.movements[0],
+      commandNo: "UNRELATED-COMMAND",
+      movementType: "manual_adjustment",
+    });
+    assert.throws(
+      () => validateSuccessfulOutcome({
+        baseline,
+        post,
+        renderedSale: sale,
+        command: { vendingCommandId: "command-20", vendingCommandNo: "COMMAND-20" },
+        attemptSnapshot: { paymentCodeAttempt: { scannerEventId: "scanner-event-20", attemptNo: 1, idempotencyKey: "scanner-attempt-20" } },
+        scannerEvent: { type: "scanner_code", source: "serial_text", eventId: "scanner-event-20" },
+        afterF2Ui: { route: "#/result/success", result: { kind: "success", orderId: sale.orderId, paymentId: sale.paymentId, commandId: "command-20" } },
+      }),
+      /exactly one total movement for the order/,
+    );
   });
 
   it("rejects a movement that does not carry the completed command number", () => {

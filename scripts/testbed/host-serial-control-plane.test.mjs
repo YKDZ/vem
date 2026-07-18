@@ -620,8 +620,8 @@ describe("host serial control plane", () => {
       VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
     };
     const domainXml = `<domain type="kvm"><devices>
-      <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
-      <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/></serial>
+      <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/><address type="usb" bus="0" port="3.1"/></serial>
+      <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/><address type="usb" bus="0" port="3.2"/></serial>
     </devices></domain>`;
     mkdirSync(bin, { recursive: true });
     writeFileSync(
@@ -699,7 +699,7 @@ describe("host serial control plane", () => {
           (mapping) =>
             ["lower-controller", "scanner"].includes(mapping.role) &&
             mapping.guestDeviceIdentity.startsWith("guest-device://qemu-usb-serial-") &&
-            typeof mapping.guestUsbIdentity?.identityKey === "string",
+            typeof mapping.guestUsbTopology?.alias === "string",
         ),
         true,
       );
