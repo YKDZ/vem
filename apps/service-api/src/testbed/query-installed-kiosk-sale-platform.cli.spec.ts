@@ -77,6 +77,7 @@ describe("installed kiosk sale platform raw query", () => {
       reservations: "enumerated_order_ids",
       commands: "enumerated_order_ids",
       movements: "machine_id + dispense_succeeded",
+      inventories: "machine_id",
     });
     const source = await readFile(
       new URL("./query-installed-kiosk-sale-platform.cli.ts", import.meta.url),

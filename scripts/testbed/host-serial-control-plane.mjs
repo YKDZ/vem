@@ -9,6 +9,11 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  qemuUsbSerialSessionPaths,
+  readRawSerialJournal,
+} from "./qemu-usb-serial-host-adapter.mjs";
+
 const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
 const PLATFORM_DATABASE_URL =
   process.env.VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL ??
@@ -293,6 +298,119 @@ function summarizeReport(report) {
   };
 }
 
+const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
+  VEND: "daemon-to-controller",
+  F0: "controller-to-daemon",
+  F1: "controller-to-daemon",
+  F2: "controller-to-daemon",
+});
+
+export async function waitForRawSerialFrame({
+  journalPath,
+  parsedOpcode,
+  timeoutMs = 30_000,
+  pollMs = 25,
+}) {
+  const expected = {
+    F0: ["VEND", "F0"],
+    F1: ["VEND", "F0", "F1"],
+    F2: ["VEND", "F0", "F1", "F2"],
+  }[parsedOpcode];
+  if (!expected) throw new Error("parsedOpcode must be F0, F1, or F2");
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const raw = readRawSerialJournal(journalPath);
+    if (raw.length > 256) throw new Error("raw serial evidence exceeded 256 records");
+    const protocolFrames = raw.filter((frame) =>
+      Object.hasOwn(RAW_PROTOCOL_DIRECTIONS, frame.parsedOpcode),
+    );
+    for (const frame of protocolFrames) {
+      if (frame.direction !== RAW_PROTOCOL_DIRECTIONS[frame.parsedOpcode]) {
+        throw new Error(`${frame.parsedOpcode} has invalid serial direction ${frame.direction}`);
+      }
+    }
+    const opcodes = protocolFrames.map((frame) => frame.parsedOpcode);
+    if (parsedOpcode !== "F2" && opcodes.includes("F2") && !opcodes.includes(parsedOpcode)) {
+      throw new Error(`F2 appeared before required ${parsedOpcode} boundary`);
+    }
+    const boundaryIndex = opcodes.indexOf(parsedOpcode);
+    if (boundaryIndex >= 0) {
+      const prefix = protocolFrames.slice(0, boundaryIndex + 1);
+      if (JSON.stringify(prefix.map((frame) => frame.parsedOpcode)) !== JSON.stringify(expected)) {
+        throw new Error(`raw serial protocol order must be ${expected.join(" -> ")}`);
+      }
+      return { parsedOpcode, frame: prefix.at(-1), protocolFrames: prefix };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for inbound ${parsedOpcode}`);
+}
+
+function adapterSessionPaths(session) {
+  const adapterRoot = required(
+    process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+    "VEM_VM_HOST_ADAPTER_STATE_ROOT",
+  );
+  return qemuUsbSerialSessionPaths(adapterRoot, session.binding.serialSessionId);
+}
+
+async function waitForSessionFrame(server, input) {
+  const session = requireSession(server, input.sessionId);
+  return waitForRawSerialFrame({
+    journalPath: adapterSessionPaths(session).journalPath,
+    parsedOpcode: required(input.parsedOpcode, "parsedOpcode"),
+    timeoutMs: Number(input.timeoutMs ?? 30_000),
+  });
+}
+
+function releaseSessionF2(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const path = adapterSessionPaths(session).releaseF2Path;
+  writeFileSync(path, `${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+  return { released: true, releaseFile: path };
+}
+
+function boundedSessionEvidence(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const paths = adapterSessionPaths(session);
+  const simulatorLog = existsSync(paths.logPath)
+    ? readFileSync(paths.logPath, "utf8").slice(-64 * 1024)
+    : "";
+  return {
+    serialSessionId: session.binding.serialSessionId,
+    rawFrames: readRawSerialJournal(paths.journalPath).slice(-64),
+    mqtt: {
+      ...session.mqttCapture.snapshot(),
+      messages: session.mqttCapture.snapshot().messages.slice(-4),
+    },
+    simulatorLog,
+    references: {
+      journal: paths.journalPath,
+      simulatorLog: paths.logPath,
+    },
+  };
+}
+
+function abortSession(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const paths = adapterSessionPaths(session);
+  if (existsSync(paths.statePath)) {
+    const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
+    if (state.active && Number.isInteger(state.simulatorPid)) {
+      try {
+        process.kill(-state.simulatorPid, "SIGTERM");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+      state.active = false;
+      state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
+      writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    }
+  }
+  session.mqttCapture.stop();
+  return { aborted: true };
+}
+
 async function executePlatformQuery(server, input) {
   const sessionId = input.sessionId ? required(input.sessionId, "sessionId") : null;
   const session = sessionId ? server.sessions.get(sessionId) : null;
@@ -532,7 +650,7 @@ export function createHostSerialControlPlane(options) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f2|evidence|abort|collect|stop))?$/,
       );
       if (!sessionMatch) {
         jsonResponse(response, 404, { ok: false, error: "not_found" });
@@ -554,6 +672,38 @@ export function createHostSerialControlPlane(options) {
         jsonResponse(response, 200, {
           ok: true,
           ...(await injectScannerCode(serverState, body)),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "wait-frame") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...(await waitForSessionFrame(serverState, body)),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "release-f2") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...releaseSessionF2(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "evidence") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...boundedSessionEvidence(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "abort") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...abortSession(serverState, body),
         });
         return;
       }

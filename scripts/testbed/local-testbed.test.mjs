@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -430,7 +431,14 @@ describe("local testbed orchestration", () => {
   it("starts a persistent Linux host control plane and publishes its guest-facing endpoint", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
-      const plan = buildHostControlPlaneUnitPlan(options(root));
+      const value = contract(root);
+      const adapterRelativePath = "scripts/testbed/qemu-usb-serial-host-adapter.mjs";
+      mkdirSync(join(root, "scripts/testbed"), { recursive: true });
+      writeFileSync(
+        join(root, adapterRelativePath),
+        readFileSync(new URL(`./qemu-usb-serial-host-adapter.mjs`, import.meta.url)),
+      );
+      const plan = buildHostControlPlaneUnitPlan(options(root), value);
       const rendered = plan.map(
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
@@ -442,6 +450,34 @@ describe("local testbed orchestration", () => {
         rendered.at(-1),
         /scripts\/testbed\/host-serial-control-plane\.mjs/,
       );
+      const adapterPath = join(
+        root,
+        "scripts/testbed/qemu-usb-serial-host-adapter.mjs",
+      );
+      const adapterSha256 = createHash("sha256")
+        .update(readFileSync(adapterPath))
+        .digest("hex");
+      assert.match(
+        rendered.at(-1),
+        new RegExp(`--setenv=VEM_VM_HOST_ADAPTER=${adapterPath.replaceAll("/", "\\/")}`),
+      );
+      assert.match(
+        rendered.at(-1),
+        /--setenv=VEM_VM_HOST_ADAPTER_VERSION=1\.0\.0/,
+      );
+      assert.match(
+        rendered.at(-1),
+        new RegExp(`--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterSha256}`),
+      );
+      assert.match(
+        rendered.at(-1),
+        /--setenv=VEM_VM_HOST_ADAPTER_DOMAIN=win10-runtime-testbed/,
+      );
+      assert.match(
+        rendered.at(-1),
+        /--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=.*host-adapter/,
+      );
+      assert.doesNotMatch(rendered.at(-1), /fake-vm-host-adapter/);
       const implementation = readFileSync(
         new URL("./local-testbed.mjs", import.meta.url),
         "utf8",
@@ -498,6 +534,11 @@ describe("local testbed orchestration", () => {
           postgresIndex < admissionIndex,
       );
       assert.ok(rendered.some((step) => step.includes("guest-input.json")));
+      assert.ok(
+        rendered.some((step) =>
+          step.includes("cargo build -p lower-controller-sim --locked"),
+        ),
+      );
       assert.match(
         rendered[resetIndex],
         new RegExp(value.artifacts.systemPath),

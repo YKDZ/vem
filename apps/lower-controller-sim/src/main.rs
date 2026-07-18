@@ -122,6 +122,14 @@ struct Cli {
 
     #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_TRACE")]
     trace: bool,
+
+    /// Append bounded acceptance evidence for observed serial frames.
+    #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_FRAME_JOURNAL")]
+    frame_journal: Option<PathBuf>,
+
+    /// Hold terminal F2 until this host-owned file exists.
+    #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_F2_RELEASE_FILE")]
+    f2_release_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -173,6 +181,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })
         },
         trace: cli.trace,
+        frame_journal_path: cli.frame_journal,
+        f2_release_file: cli.f2_release_file,
     };
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();

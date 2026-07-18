@@ -5,6 +5,7 @@ import {
   DrizzleDB,
   eq,
   inArray,
+  inventories,
   inventoryReservations,
   machineRawStockMovements,
   machines,
@@ -30,6 +31,7 @@ export const installedKioskSalePlatformQueryScope = Object.freeze({
   reservations: "enumerated_order_ids",
   commands: "enumerated_order_ids",
   movements: "machine_id + dispense_succeeded",
+  inventories: "machine_id",
 });
 
 export type InstalledKioskSalePlatformQueryOptions = {
@@ -88,6 +90,13 @@ type PlatformRawRecords = {
     orderItemId: string | null;
     inventoryId: string | null;
     commandNo: string | null;
+  }>;
+  inventories: Array<{
+    id: string;
+    machineId: string;
+    slotId: string;
+    onHandQty: number;
+    reservedQty: number;
   }>;
 };
 
@@ -178,7 +187,8 @@ export async function queryInstalledKioskSalePlatform(
           payments: [],
           reservations: [],
           commands: [],
-          movements: [],
+            movements: [],
+            inventories: [],
         },
       });
     }
@@ -289,6 +299,16 @@ export async function queryInstalledKioskSalePlatform(
           eq(machineRawStockMovements.movementType, "dispense_succeeded"),
         ),
       );
+    const inventoryRows = await database.client
+      .select({
+        id: inventories.id,
+        machineId: inventories.machineId,
+        slotId: inventories.slotId,
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
+      .from(inventories)
+      .where(eq(inventories.machineId, machine.id));
 
     return buildInstalledKioskSalePlatformRawReport({
       options,
@@ -300,6 +320,7 @@ export async function queryInstalledKioskSalePlatform(
         reservations: reservationRows,
         commands: commandRows,
         movements: movementRows,
+        inventories: inventoryRows,
       },
     });
   } finally {

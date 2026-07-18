@@ -343,6 +343,9 @@ describe("vision mock server - controlled injections", () => {
       );
       expect(departureResponse.status).toBe(200);
       expect(departureResponse.json.ok).toBe(true);
+      expect(departureResponse.json.connectedRuntimeClients).toBe(1);
+      expect(departureResponse.json.acceptedDeliveries).toBe(1);
+      expect(departureResponse.json.eventId).toMatch(/^departure-event-/);
 
       let departed = await messages.next();
       if (departed.type !== "vision.person_departed") {
@@ -354,6 +357,29 @@ describe("vision mock server - controlled injections", () => {
       messages.dispose();
       socket.close();
     }
+  });
+
+  it("rejects a controlled departure when no installed runtime client can accept it", async () => {
+    const controlPort = 18_933;
+    const server = startMockVisionServer({
+      port: 0,
+      scenario: "controlled",
+      controlPort,
+    });
+    servers.push(server);
+    await server.ready;
+
+    const response = await postJson(
+      `http://127.0.0.1:${controlPort}/control/departure`,
+      {},
+    );
+    expect(response.status).toBe(409);
+    expect(response.json).toEqual({
+      ok: false,
+      error: "no_connected_runtime_client",
+      connectedRuntimeClients: 0,
+      acceptedDeliveries: 0,
+    });
   });
 });
 

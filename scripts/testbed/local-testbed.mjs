@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -425,6 +426,12 @@ export function buildReconstructionPlan(options, contract) {
       "--filter",
       "service-api",
     ]),
+    commandLine("cargo", [
+      "build",
+      "-p",
+      "lower-controller-sim",
+      "--locked",
+    ]),
     commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: buildMigrationEnvironment(options),
     }),
@@ -544,10 +551,23 @@ export function buildServiceApiUnitPlan(options) {
   ];
 }
 
-export function buildHostControlPlaneUnitPlan(options) {
+function baselineDomainName(contract) {
+  const command = contract?.testbed?.reconstructCommand;
+  const index = Array.isArray(command) ? command.indexOf("--domain-name") : -1;
+  return required(index >= 0 ? command[index + 1] : null, "baseline domain name");
+}
+
+export function buildHostControlPlaneUnitPlan(options, contract) {
   const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
   const token = createHash("sha256")
     .update(`${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`)
+    .digest("hex");
+  const adapterPath = join(
+    options.workspace,
+    "scripts/testbed/qemu-usb-serial-host-adapter.mjs",
+  );
+  const adapterDigest = createHash("sha256")
+    .update(readFileSync(adapterPath))
     .digest("hex");
   return [
     commandLine("sudo", ["systemctl", "stop", unit]),
@@ -562,6 +582,12 @@ export function buildHostControlPlaneUnitPlan(options) {
       "--property=StandardError=journal",
       `--property=WorkingDirectory=${options.workspace}`,
       "--setenv=VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL=postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+      `--setenv=VEM_VM_HOST_ADAPTER=${adapterPath}`,
+      "--setenv=VEM_VM_HOST_ADAPTER_VERSION=1.0.0",
+      `--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterDigest}`,
+      `--setenv=VEM_VM_HOST_ADAPTER_DOMAIN=${baselineDomainName(contract)}`,
+      `--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=${join(options.stateRoot, "host-adapter")}`,
+      `--setenv=VEM_LOWER_CONTROLLER_SIM=${join(options.workspace, "target/debug/lower-controller-sim")}`,
       process.execPath,
       "scripts/testbed/host-serial-control-plane.mjs",
       "--workspace",
@@ -867,8 +893,8 @@ async function startServiceApiUnit(options) {
   await run(start.command, start.args, { cwd: options.workspace });
 }
 
-async function stopHostControlPlaneUnit(options) {
-  const [stop, reset] = buildHostControlPlaneUnitPlan(options);
+async function stopHostControlPlaneUnit(options, contract) {
+  const [stop, reset] = buildHostControlPlaneUnitPlan(options, contract);
   await run(stop.command, stop.args, { stdio: "ignore" }).catch(
     () => undefined,
   );
@@ -877,8 +903,8 @@ async function stopHostControlPlaneUnit(options) {
   );
 }
 
-async function startHostControlPlaneUnit(options) {
-  const start = buildHostControlPlaneUnitPlan(options).at(-1);
+async function startHostControlPlaneUnit(options, contract) {
+  const start = buildHostControlPlaneUnitPlan(options, contract).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
 }
 
@@ -914,7 +940,7 @@ async function reconstruct(options) {
       plan,
     };
   await stopServiceApiUnit(options);
-  await stopHostControlPlaneUnit(options);
+  await stopHostControlPlaneUnit(options, contract);
   await run(
     "docker",
     ["rm", "-f", SERVICE_NAMES.postgres, SERVICE_NAMES.mqtt],
@@ -926,7 +952,7 @@ async function reconstruct(options) {
     { stdio: "ignore" },
   ).catch(() => undefined);
   await run(plan[2].command, plan[2].args, { cwd: options.workspace });
-  for (const step of plan.slice(3, 9))
+  for (const step of plan.slice(3, 10))
     await run(step.command, step.args, {
       cwd: options.workspace,
       env: step.env,
@@ -939,7 +965,7 @@ async function reconstruct(options) {
   } catch (error) {
     throw await serviceApiFailure(error);
   }
-  await startHostControlPlaneUnit(options);
+  await startHostControlPlaneUnit(options, contract);
   let seeded;
   try {
     seeded = await seedThroughSupportedApis({
@@ -981,7 +1007,7 @@ async function reconstruct(options) {
     `${JSON.stringify(guestInput, null, 2)}\n`,
     "utf8",
   );
-  for (const step of plan.slice(9, -1))
+  for (const step of plan.slice(10, -1))
     await run(step.command, step.args, { cwd: options.workspace });
   const admitRunner = plan.at(-1);
   await run(admitRunner.command, admitRunner.args, { cwd: options.workspace });

@@ -78,6 +78,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/qemu-usb-serial-host-adapter.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/qemu-usb-serial-host-adapter.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/fast-route-stress-sale.mjs",
     owner: "machine-runtime-console",
     category: "canonical entrypoint",

@@ -1,4 +1,12 @@
-use std::{fmt, future::Future, io, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    fs::OpenOptions,
+    future::Future,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::{
     io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -43,6 +51,8 @@ pub struct SimulatorOptions {
     pub event_repeat_interval: Duration,
     pub environment_sample: Option<EnvironmentSample>,
     pub trace: bool,
+    pub frame_journal_path: Option<PathBuf>,
+    pub f2_release_file: Option<PathBuf>,
 }
 
 impl Default for SimulatorOptions {
@@ -63,6 +73,8 @@ impl Default for SimulatorOptions {
                 relative_humidity_percent: 45,
             }),
             trace: false,
+            frame_journal_path: None,
+            f2_release_file: None,
         }
     }
 }
@@ -346,6 +358,9 @@ where
         ticker.tick().await;
         let frame = current_state(&state).await.status_frame();
         send_frame(&writer, frame).await?;
+        if frame == LowerFrame::IdleHeartbeat {
+            journal_initial_health(&options)?;
+        }
     }
 }
 
@@ -358,6 +373,7 @@ async fn handle_upper_frame<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    journal_upper_frame(&options, &frame)?;
     match frame {
         UpperFrame::BoundaryError => {
             trace(&options, "rx out-of-bound command");
@@ -549,11 +565,12 @@ where
         return Ok(());
     }
 
-    send_repeated_frame(
+    send_observed_repeated_frame(
         &writer,
         LowerFrame::ArrivalAtOutlet,
         3,
         options.event_repeat_interval,
+        &options,
     )
     .await?;
     if current_state(&state).await != ControllerState::Dispensing {
@@ -631,11 +648,12 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     trace(&options, "pickup completed -> F1");
-    send_repeated_frame(
+    send_observed_repeated_frame(
         &writer,
         LowerFrame::PickupCompleted,
         3,
         options.event_repeat_interval,
+        &options,
     )
     .await?;
     set_state(&state, ControllerState::Resetting).await;
@@ -643,12 +661,14 @@ where
     if current_state(&state).await != ControllerState::Resetting {
         return Ok(());
     }
+    wait_for_f2_release(options.f2_release_file.as_deref()).await;
     trace(&options, "reset completed -> F2");
-    send_repeated_frame(
+    send_observed_repeated_frame(
         &writer,
         LowerFrame::ResetCompletedFrame,
         3,
         options.event_repeat_interval,
+        &options,
     )
     .await?;
     set_state(&state, ControllerState::Idle).await;
@@ -835,6 +855,28 @@ where
     Ok(())
 }
 
+async fn send_observed_repeated_frame<W>(
+    writer: &SharedWriter<W>,
+    frame: LowerFrame,
+    count: usize,
+    interval: Duration,
+    options: &SimulatorOptions,
+) -> Result<(), SimulatorError>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    for index in 0..count {
+        send_frame(writer, frame).await?;
+        if index == 0 {
+            journal_controller_frame(options, frame)?;
+        }
+        if index + 1 < count {
+            sleep(interval).await;
+        }
+    }
+    Ok(())
+}
+
 async fn send_frame<W>(writer: &SharedWriter<W>, frame: LowerFrame) -> Result<(), SimulatorError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -860,6 +902,79 @@ async fn sleep_after_delta(previous: Duration, next: Duration) {
 fn trace(options: &SimulatorOptions, message: &str) {
     if options.trace {
         eprintln!("lower-controller-sim: {message}");
+    }
+}
+
+fn frame_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+fn append_raw_frame(
+    options: &SimulatorOptions,
+    direction: &str,
+    parsed_opcode: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let Some(path) = &options.frame_journal_path else {
+        return Ok(());
+    };
+    let opcode = bytes.get(1).copied().unwrap_or_default();
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(
+        file,
+        "{{\"direction\":\"{direction}\",\"parsedOpcode\":\"{parsed_opcode}\",\"opcode\":{opcode},\"rawFrameHex\":\"{}\"}}",
+        frame_hex(bytes)
+    )
+}
+
+fn journal_upper_frame(options: &SimulatorOptions, frame: &UpperFrame) -> io::Result<()> {
+    match frame {
+        UpperFrame::StatusQuery => append_raw_frame(
+            options,
+            "daemon-to-controller",
+            "A0",
+            &[FRAME_HEAD, 0xA0],
+        ),
+        UpperFrame::SingleDispense { raw, .. } => {
+            append_raw_frame(options, "daemon-to-controller", "VEND", raw)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn journal_controller_frame(options: &SimulatorOptions, frame: LowerFrame) -> io::Result<()> {
+    let parsed_opcode = match frame {
+        LowerFrame::IdleHeartbeat => "00",
+        LowerFrame::ArrivalAtOutlet => "F0",
+        LowerFrame::PickupCompleted => "F1",
+        LowerFrame::ResetCompletedFrame => "F2",
+        _ => return Ok(()),
+    };
+    append_raw_frame(
+        options,
+        "controller-to-daemon",
+        parsed_opcode,
+        &frame.protocol_bytes(),
+    )
+}
+
+fn journal_initial_health(options: &SimulatorOptions) -> io::Result<()> {
+    if let Some(path) = &options.frame_journal_path {
+        if path.exists()
+            && std::fs::read_to_string(path)?.contains("\"parsedOpcode\":\"00\"")
+        {
+            return Ok(());
+        }
+    }
+    journal_controller_frame(options, LowerFrame::IdleHeartbeat)
+}
+
+async fn wait_for_f2_release(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    while !path.exists() {
+        sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -898,6 +1013,8 @@ mod tests {
                 relative_humidity_percent: 55,
             }),
             trace: false,
+            frame_journal_path: None,
+            f2_release_file: None,
         }
     }
 
@@ -1200,7 +1317,20 @@ mod tests {
             slave_guard,
         } = open_test_pty();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
-        let options = fast_options(DispenseScenario::Normal);
+        let evidence_root = std::env::temp_dir().join(format!(
+            "vem-lower-controller-evidence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&evidence_root).expect("create evidence root");
+        let journal_path = evidence_root.join("raw-serial.jsonl");
+        let release_f2_path = evidence_root.join("release-f2");
+        let mut options = fast_options(DispenseScenario::Normal);
+        options.frame_journal_path = Some(journal_path.clone());
+        options.f2_release_file = Some(release_f2_path.clone());
         let handle = tokio::spawn(async move {
             let mut master_reader = master_reader;
             run_lower_controller_simulator_with_halves(
@@ -1215,27 +1345,41 @@ mod tests {
         sleep(Duration::from_millis(50)).await;
 
         let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+        let mut dispense = Box::pin(adapter.dispense(DispenseCommandPayload {
+            command_no: "CMD-SIM-PTY".to_string(),
+            order_no: "ORD-SIM-PTY".to_string(),
+            slot: SlotPayload {
+                layer_no: 2,
+                cell_no: 5,
+                slot_code: "R2C5".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 2,
+        }));
+        assert!(
+            timeout(Duration::from_millis(250), &mut dispense).await.is_err(),
+            "dispense must remain pending at the F1 boundary"
+        );
+        std::fs::write(&release_f2_path, b"release\n").expect("release F2");
         let result = timeout(
             Duration::from_secs(5),
-            adapter.dispense(DispenseCommandPayload {
-                command_no: "CMD-SIM-PTY".to_string(),
-                order_no: "ORD-SIM-PTY".to_string(),
-                slot: SlotPayload {
-                    layer_no: 2,
-                    cell_no: 5,
-                    slot_code: "R2C5".to_string(),
-                },
-                quantity: 1,
-                timeout_seconds: 2,
-            }),
+            &mut dispense,
         )
         .await
         .expect("adapter timeout");
 
         assert!(result.success, "{result:?}");
+        sleep(Duration::from_millis(50)).await;
+        let journal = std::fs::read_to_string(&journal_path).expect("read raw serial journal");
+        let vend = journal.find("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\"").expect("outbound VEND record");
+        let f0 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\"").expect("inbound F0 record");
+        let f1 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F1\"").expect("inbound F1 record");
+        let f2 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F2\"").expect("inbound F2 record");
+        assert!(vend < f0 && f0 < f1 && f1 < f2, "raw protocol evidence must be ordered: {journal}");
         control_tx.send(ControlCommand::Quit).expect("quit");
         handle.await.expect("join").expect("sim exits cleanly");
         drop(slave_guard);
+        std::fs::remove_dir_all(evidence_root).expect("remove evidence root");
     }
 
     #[tokio::test]

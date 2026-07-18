@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   buildMqttTopic,
   buildSerialOperationCommand,
   parseHostSerialControlPlaneArgs,
+  waitForRawSerialFrame,
 } from "./host-serial-control-plane.mjs";
 
 describe("host serial control plane", () => {
@@ -87,5 +90,56 @@ describe("host serial control plane", () => {
     assert.match(implementation, /commands\/dispense/);
     assert.match(implementation, /collect-serial-evidence/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
+  });
+
+  it("waits on independent raw inbound F1 evidence and fails closed on an invalid boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-host-serial-"));
+    const journalPath = join(root, "raw-serial.jsonl");
+    try {
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      const boundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "F1",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        boundary.protocolFrames.map(({ direction, parsedOpcode }) => ({ direction, parsedOpcode })),
+        [
+          { direction: "daemon-to-controller", parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", parsedOpcode: "F0" },
+          { direction: "controller-to-daemon", parsedOpcode: "F1" },
+        ],
+      );
+
+      writeFileSync(
+        journalPath,
+        `${JSON.stringify({ direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" })}\n`,
+      );
+      await assert.rejects(
+        waitForRawSerialFrame({ journalPath, parsedOpcode: "F1", timeoutMs: 100 }),
+        /F2 appeared before required F1 boundary/,
+      );
+
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F000", opcode: 240, parsedOpcode: "F0" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      await assert.rejects(
+        waitForRawSerialFrame({ journalPath, parsedOpcode: "F0", timeoutMs: 100 }),
+        /raw serial journal record 2 F0 must match the 2-byte production frame 55 F0/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

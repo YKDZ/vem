@@ -11,15 +11,21 @@ import {
   captureCheckpoint,
   captureDomIdentity,
   CdpClient,
+  dispatchPhysicalInput,
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
 const DEFAULT_SCANNER_CODE = "6901234567892";
+const PLATFORM_LOG_REFERENCE = Object.freeze({
+  unit: "vem-local-testbed-service-api",
+  command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
+});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -110,79 +116,341 @@ export function buildFastRouteStressScenarioSteps() {
   ];
 }
 
-function platformCount(raw, key) {
-  return Array.isArray(raw?.[key]) ? raw[key].length : 0;
+export async function dispatchRepeatedPaymentTouch(client, firstActivation) {
+  const originalPoint = firstActivation?.center;
+  const input = await dispatchPhysicalInput(client, originalPoint, {
+    kind: "touch",
+    timeoutMs: 5_000,
+  });
+  return { originalPoint: { x: originalPoint.x, y: originalPoint.y }, input };
 }
 
-function daemonSaleableTotal(view) {
-  return Array.isArray(view?.items)
-    ? view.items.reduce((sum, item) => sum + Number(item.saleableStock ?? 0), 0)
-    : 0;
+function rows(raw, key) {
+  return Array.isArray(raw?.[key]) ? raw[key] : [];
 }
 
-function protocolFrames(serial) {
-  const lowerControllerRecords = Array.isArray(serial?.lowerControllerRecords)
-    ? serial.lowerControllerRecords
-    : [];
-  const frameByEvent = new Map(
-    lowerControllerRecords.map((record) => [record?.event, record]),
+function deltaRows(before, after, key) {
+  const prior = new Set(rows(before, key).map((row) => row.id));
+  return rows(after, key).filter((row) => !prior.has(row.id));
+}
+
+function exactlyOne(values, message) {
+  if (values.length !== 1) throw new Error(message);
+  return values[0];
+}
+
+function matchingItem(view, identity) {
+  return rows(view, "items").find(
+    (item) =>
+      item.inventoryId === identity.inventoryId &&
+      item.slotId === identity.slotId,
   );
-  return [
-    ["F0", "dispense-request"],
-    ["F1", "dispense-ack"],
-    ["F2", "dispense-result"],
-  ]
-    .map(([stage, event]) => {
-      const record = frameByEvent.get(event);
-      return record
-        ? {
-            stage,
-            event,
-            sequence: record?.capturedFrame?.sequence ?? null,
-            digest: record?.capturedFrame?.digest ?? null,
-            byteLength: record?.capturedFrame?.byteLength ?? null,
-          }
-        : null;
-    })
-    .filter(Boolean);
 }
 
-export function summarizeFastRouteStressSale(input) {
-  const baseline = input.platform?.baseline?.raw ?? {};
-  const beforeF2 = input.platform?.beforeF2?.raw ?? {};
-  const afterF2 = input.platform?.afterF2?.raw ?? {};
-  const lowerControllerEvents = Array.isArray(input.serial?.lowerControllerEvents)
-    ? input.serial.lowerControllerEvents
-    : [];
+function matchingInventory(raw, identity) {
+  return rows(raw, "inventories").find(
+    (inventory) =>
+      inventory.id === identity.inventoryId && inventory.slotId === identity.slotId,
+  );
+}
+
+function matchingRowById(raw, key, id) {
+  return rows(raw, key).find((row) => row.id === id);
+}
+
+function compactRuntimeTrace(trace, maxEntries = 64) {
+  return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
+}
+
+function compactPlatformBoundary(report, summary) {
+  const raw = report?.raw ?? {};
   return {
-    counts: {
-      ordersCreated: platformCount(beforeF2, "orders") - platformCount(baseline, "orders"),
-      paymentsCreated:
-        platformCount(beforeF2, "payments") - platformCount(baseline, "payments"),
-      commandsCreated:
-        platformCount(beforeF2, "commands") - platformCount(baseline, "commands"),
-      mqttCommands: Array.isArray(input.mqttMessages) ? input.mqttMessages.length : 0,
-      platformMovementsBeforeF2:
-        platformCount(beforeF2, "movements") - platformCount(baseline, "movements"),
-      platformMovementsAfterF2:
-        platformCount(afterF2, "movements") - platformCount(beforeF2, "movements"),
-      daemonSaleableDeltaBeforeF2:
-        daemonSaleableTotal(input.daemon?.beforeF2) -
-        daemonSaleableTotal(input.daemon?.baseline ?? input.daemon?.beforeF2),
-      daemonSaleableDeltaAfterF2:
-        daemonSaleableTotal(input.daemon?.afterF2) -
-        daemonSaleableTotal(input.daemon?.beforeF2),
+    scope: report?.scope ?? null,
+    order: matchingRowById(raw, "orders", summary.orderId) ?? null,
+    orderItem: rows(raw, "orderItems").find((row) => row.inventoryId === summary.inventoryId && row.slotId === summary.slotId) ?? null,
+    payment: matchingRowById(raw, "payments", summary.paymentId) ?? null,
+    command: matchingRowById(raw, "commands", summary.vendingCommandId) ?? null,
+    movement: matchingRowById(raw, "movements", summary.movementId) ?? null,
+    inventory: rows(raw, "inventories").find(
+      (row) => row.id === summary.inventoryId && row.slotId === summary.slotId,
+    ) ?? null,
+  };
+}
+
+function compactDaemonBoundary(view, summary) {
+  return {
+    item:
+      rows(view, "items").find(
+        (row) => row.inventoryId === summary.inventoryId && row.slotId === summary.slotId,
+      ) ?? null,
+  };
+}
+
+function compactEvidenceForReport(evidence, summary) {
+  return {
+    saleCorrelationId: evidence.saleCorrelationId,
+    machineCode: evidence.machineCode,
+    renderedSale: evidence.renderedSale,
+    liveSale: evidence.liveSale,
+    visionDelivery: evidence.visionDelivery,
+    platform: {
+      baseline: compactPlatformBoundary(evidence.platform?.baseline, summary),
+      beforeF0: compactPlatformBoundary(evidence.platform?.beforeF0, summary),
+      afterF1BeforeF2: compactPlatformBoundary(evidence.platform?.afterF1BeforeF2, summary),
+      afterF2: compactPlatformBoundary(evidence.platform?.afterF2, summary),
     },
-    runtime: {
-      navigationRecords: Array.isArray(input.runtimeTrace)
-        ? input.runtimeTrace.filter((entry) => entry?.type === "navigation").length
-        : 0,
-      renderedSale: input.renderedSale,
+    daemon: {
+      baseline: compactDaemonBoundary(evidence.daemon?.baseline, summary),
+      beforeF0: compactDaemonBoundary(evidence.daemon?.beforeF0, summary),
+      afterF1BeforeF2: compactDaemonBoundary(evidence.daemon?.afterF1BeforeF2, summary),
+      afterF2: compactDaemonBoundary(evidence.daemon?.afterF2, summary),
     },
+    ui: evidence.ui,
+    mqttMessages: Array.isArray(evidence.mqttMessages) ? evidence.mqttMessages.slice(-2) : [],
     serial: {
-      lowerControllerEvents,
-      protocolFrames: protocolFrames(input.serial),
+      sessionId: evidence.serial?.sessionId ?? null,
+      rawFrames: Array.isArray(evidence.serial?.rawFrames)
+        ? evidence.serial.rawFrames
+            .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame?.parsedOpcode))
+            .slice(-4)
+        : [],
+      records: Array.isArray(evidence.serial?.records)
+        ? evidence.serial.records
+            .filter((record) => record.role === "lower-controller" && record.event.startsWith("dispense-"))
+            .slice(-3)
+        : [],
     },
+  };
+}
+
+export function validateFastRouteStressSaleEvidence(input) {
+  const baseline = input.platform?.baseline?.raw ?? {};
+  const beforeF0 = input.platform?.beforeF0?.raw ?? {};
+  const afterF1 = input.platform?.afterF1BeforeF2?.raw ?? {};
+  const afterF2 = input.platform?.afterF2?.raw ?? {};
+  const rendered = input.renderedSale ?? {};
+  const live = input.liveSale ?? {};
+  const machineCode = required(input.machineCode, "machineCode");
+  const order = exactlyOne(
+    deltaRows(baseline, afterF1, "orders"),
+    "expected exactly one correlated order",
+  );
+  if (order.id !== rendered.orderId || order.id !== live.orderId || order.orderNo !== rendered.orderNo || order.orderNo !== live.orderNo) {
+    throw new Error("rendered, daemon, and platform order identities must match");
+  }
+  const orderItem = exactlyOne(
+    rows(afterF1, "orderItems").filter((row) => row.orderId === order.id),
+    "expected exactly one correlated order item",
+  );
+  const payment = exactlyOne(
+    deltaRows(baseline, afterF1, "payments").filter((row) => row.orderId === order.id),
+    "expected exactly one correlated payment",
+  );
+  if (payment.id !== rendered.paymentId || payment.id !== live.paymentId) {
+    throw new Error("rendered, daemon, and platform payment identities must match");
+  }
+  const command = exactlyOne(
+    deltaRows(baseline, afterF1, "commands").filter(
+      (row) => row.orderId === order.id && row.orderItemId === orderItem.id,
+    ),
+    "expected exactly one correlated vending command",
+  );
+  if (command.id !== live.vendingCommandId || command.slotId !== orderItem.slotId) {
+    throw new Error("daemon and platform vending command identities must match the order slot");
+  }
+  if (
+    deltaRows(baseline, afterF2, "orders").length !== 1 ||
+    deltaRows(baseline, afterF2, "payments").length !== 1 ||
+    deltaRows(baseline, afterF2, "commands").length !== 1
+  ) {
+    throw new Error("duplicate order, payment, or vending command appeared after inbound F2");
+  }
+  if (
+    deltaRows(baseline, beforeF0, "orders").length !== 1 ||
+    deltaRows(baseline, beforeF0, "payments").length !== 1 ||
+    deltaRows(baseline, beforeF0, "commands").length !== 1
+  ) {
+    throw new Error("before inbound F0 the correlated order, payment, and vending command must already exist exactly once");
+  }
+  const identity = {
+    inventoryId: orderItem.inventoryId,
+    slotId: orderItem.slotId,
+  };
+  const baselineInventory = matchingInventory(baseline, identity);
+  const daemonBefore = matchingItem(input.daemon?.beforeF0, identity);
+  const daemonMiddle = matchingItem(input.daemon?.afterF1BeforeF2, identity);
+  const daemonAfter = matchingItem(input.daemon?.afterF2, identity);
+  const platformBefore = matchingInventory(beforeF0, identity);
+  const platformMiddle = matchingInventory(afterF1, identity);
+  const platformAfter = matchingInventory(afterF2, identity);
+  if (!baselineInventory || !daemonBefore || !daemonMiddle || !daemonAfter || !platformBefore || !platformMiddle || !platformAfter) {
+    throw new Error("all temporal boundaries require the correlated slot inventory snapshot");
+  }
+  if (input.ui?.beforeF0?.result?.kind === "success") {
+    throw new Error("UI must not show success before inbound F0");
+  }
+  if (input.ui?.afterF1BeforeF2?.result?.kind === "success") {
+    throw new Error("UI must not show success before inbound F2");
+  }
+  if (
+    daemonMiddle.saleableStock !== daemonBefore.saleableStock ||
+    platformMiddle.onHandQty !== platformBefore.onHandQty ||
+    deltaRows(beforeF0, afterF1, "movements").length !== 0 ||
+    deltaRows(baseline, beforeF0, "movements").length !== 0
+  ) {
+    throw new Error("correlated daemon and platform stock must remain unchanged through inbound F1");
+  }
+  if (daemonAfter.saleableStock - daemonMiddle.saleableStock !== -1) {
+    throw new Error("correlated daemon slot stock must decrement exactly once after inbound F2");
+  }
+  if (platformAfter.onHandQty - platformMiddle.onHandQty !== -1) {
+    throw new Error("correlated platform inventory must decrement exactly once after inbound F2");
+  }
+  const movement = exactlyOne(
+    deltaRows(afterF1, afterF2, "movements"),
+    "expected exactly one correlated platform movement after inbound F2",
+  );
+  if (
+    movement.orderNo !== order.orderNo ||
+    movement.orderItemId !== orderItem.id ||
+    movement.commandNo !== command.commandNo ||
+    movement.inventoryId !== orderItem.inventoryId ||
+    movement.slotId !== orderItem.slotId ||
+    Number(movement.quantity) !== 1
+  ) {
+    throw new Error("platform movement must correlate order, command, item, inventory, and slot");
+  }
+  const mqtt = exactlyOne(
+    Array.isArray(input.mqttMessages) ? input.mqttMessages : [],
+    "expected exactly one MQTT vend command",
+  );
+  if (
+    mqtt?.topic !== `vem/machines/${machineCode}/commands/dispense` ||
+    mqtt?.payload?.machineCode !== machineCode
+  ) {
+    throw new Error("MQTT vend command must correlate the machine identity");
+  }
+  const mqttPayload = mqtt?.payload?.payload;
+  if (mqttPayload?.commandNo !== command.commandNo) {
+    throw new Error(`MQTT vend command must correlate commandNo ${command.commandNo}`);
+  }
+  if (mqttPayload.orderNo !== order.orderNo || mqttPayload.quantity !== 1) {
+    throw new Error("MQTT vend command must correlate order and quantity");
+  }
+  if (
+    mqttPayload.slot?.slotCode !== daemonBefore.slotCode ||
+    mqttPayload.slot?.layerNo !== daemonBefore.layerNo ||
+    mqttPayload.slot?.cellNo !== daemonBefore.cellNo
+  ) {
+    throw new Error("MQTT vend command must correlate the daemon slot coordinates");
+  }
+  const rawFrames = Array.isArray(input.serial?.rawFrames) ? input.serial.rawFrames : [];
+  const protocolFrames = rawFrames
+    .map((frame, index) =>
+      validateProductionRawSerialFrame(frame, `raw serial frame ${index + 1}`),
+    )
+    .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame.parsedOpcode));
+  if (JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !== JSON.stringify(["VEND", "F0", "F1", "F2"])) {
+    throw new Error("raw serial protocol must be VEND -> F0 -> F1 -> F2");
+  }
+  if (
+    protocolFrames[0].direction !== "daemon-to-controller" ||
+    protocolFrames.slice(1).some((frame) => frame.direction !== "controller-to-daemon")
+  ) {
+    throw new Error("raw serial protocol directions are invalid");
+  }
+  if (
+    protocolFrames[1].rawFrameHex !== "55F0" ||
+    protocolFrames[2].rawFrameHex !== "55F1" ||
+    protocolFrames[3].rawFrameHex !== "55F2"
+  ) {
+    throw new Error("raw inbound serial protocol must expose exact production 55 F0/F1/F2 frames");
+  }
+  const vendBytes = protocolFrames[0].bytes;
+  if (vendBytes[1] !== daemonBefore.layerNo || vendBytes[2] !== daemonBefore.cellNo) {
+    throw new Error("outbound serial vend frame must correlate the slot coordinates");
+  }
+  for (const report of [
+    input.platform?.baseline,
+    input.platform?.beforeF0,
+    input.platform?.afterF1BeforeF2,
+    input.platform?.afterF2,
+  ]) {
+    if (report?.scope?.machineCode !== machineCode || typeof report?.scope?.machineId !== "string" || report.scope.machineId === "") {
+      throw new Error("platform evidence must preserve correlated machine scope at every boundary");
+    }
+  }
+  const saleBinding = {
+    saleCorrelationId: input.saleCorrelationId,
+    orderId: order.id,
+    paymentId: payment.id,
+    vendingCommandId: command.id,
+  };
+  if (!input.serial?.sessionId) throw new Error("serial session identity is required");
+  const semantic = Array.isArray(input.serial?.records)
+    ? input.serial.records.filter((record) => record.role === "lower-controller" && record.event.startsWith("dispense-"))
+    : [];
+  if (JSON.stringify(semantic.map((record) => record.event)) !== JSON.stringify(["dispense-request", "dispense-ack", "dispense-result"])) {
+    throw new Error("serial semantic evidence must retain dispense-request/ack/result");
+  }
+  if (semantic.some((record) => record.saleCorrelationId !== input.saleCorrelationId || JSON.stringify(record.saleBinding) !== JSON.stringify(saleBinding))) {
+    throw new Error("serial semantic frames must bind the correlated sale and command");
+  }
+  const vision = input.visionDelivery ?? {};
+  if (vision.ok !== true || vision.connectedRuntimeClients < 1 || vision.acceptedDeliveries < 1) {
+    throw new Error("Vision departure requires a connected installed runtime client and accepted delivery");
+  }
+  const visionAt = Date.parse(vision.timestamp);
+  const guardedDeparture = (Array.isArray(input.runtimeTrace) ? input.runtimeTrace : []).find(
+    (entry) =>
+      entry.type === "navigation" &&
+      entry.intentType === "presence.departed" &&
+      ["touchscreen_session_active", "active_transaction_route"].includes(entry.reasonCode) &&
+      entry.decision === "rejected" &&
+      entry.finalRoute !== "#/catalog" &&
+      Number.isFinite(visionAt) &&
+      Date.parse(entry.at) >= visionAt,
+  );
+  if (!guardedDeparture) {
+    throw new Error("installed runtime trace must contain the guarded Vision departure navigation effect");
+  }
+  const runtimeTrace = Array.isArray(input.runtimeTrace) ? input.runtimeTrace : [];
+  const spontaneousCatalog = runtimeTrace.some(
+    (entry) =>
+      entry.type === "navigation" &&
+      Date.parse(entry.at) >= visionAt &&
+      entry.finalRoute === "#/catalog",
+  );
+  if (spontaneousCatalog) throw new Error("runtime returned spontaneously to Catalog");
+  const result = input.ui?.afterF2?.result;
+  if (
+    result?.kind !== "success" ||
+    result.orderId !== order.id ||
+    result.paymentId !== payment.id ||
+    result.orderNo !== order.orderNo ||
+    result.commandId !== command.id
+  ) {
+    throw new Error("successful UI result must correlate order, payment, and command after inbound F2");
+  }
+  return {
+    machineCode,
+    machineId: input.platform.beforeF0.scope.machineId,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    paymentId: payment.id,
+    paymentNo: payment.paymentNo,
+    vendingCommandId: command.id,
+    commandNo: command.commandNo,
+    serialSessionId: input.serial.sessionId,
+    inventoryId: orderItem.inventoryId,
+    slotId: orderItem.slotId,
+    slotCode: daemonBefore.slotCode,
+    protocol: protocolFrames.map((frame) => frame.parsedOpcode),
+    daemonStockDeltaAfterF2: daemonAfter.saleableStock - daemonMiddle.saleableStock,
+    platformStockDeltaAfterF2: platformAfter.onHandQty - platformMiddle.onHandQty,
+    movementId: movement.id,
+    visionEventId: vision.eventId,
+    guardedNavigationReason: guardedDeparture.reasonCode,
   };
 }
 
@@ -284,6 +552,84 @@ async function readRenderedPaymentSurface(client) {
   return hook;
 }
 
+async function readUiBoundary(client) {
+  return evaluateExpression(
+    client,
+    `(() => {
+      const el = document.querySelector("[data-installed-kiosk-sale-result-surface]");
+      return {
+        route: location.hash,
+        result: el ? {
+          kind: el.dataset.resultKind || null,
+          orderId: el.dataset.orderId || null,
+          paymentId: el.dataset.paymentId || null,
+          orderNo: el.dataset.orderNo || null,
+          commandId: el.dataset.commandId || null
+        } : null
+      };
+    })()`,
+  );
+}
+
+async function waitForPlatformMovement(guestInput, input, baselineCount, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = (
+      await controlPlaneRequest(guestInput, "/v1/platform/query", input)
+    ).report;
+    if (rows(last?.raw, "movements").length > baselineCount) return last;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  } while (Date.now() < deadline);
+  throw new Error(`platform movement did not appear after inbound F2: ${JSON.stringify(last?.raw?.movements ?? [])}`);
+}
+
+async function waitForBeforeF0Boundary(
+  guestInput,
+  input,
+  baselineRaw,
+  renderedSale,
+  liveSale,
+  timeoutMs = 30_000,
+) {
+  const baselineOrders = rows(baselineRaw, "orders").length;
+  const baselinePayments = rows(baselineRaw, "payments").length;
+  const baselineCommands = rows(baselineRaw, "commands").length;
+  const baselineMovements = rows(baselineRaw, "movements").length;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = (
+      await controlPlaneRequest(guestInput, "/v1/platform/query", input)
+    ).report;
+    const raw = last?.raw ?? {};
+    const order = rows(raw, "orders").find((row) => row.id === renderedSale.orderId);
+    const payment = rows(raw, "payments").find((row) => row.id === renderedSale.paymentId);
+    const command = rows(raw, "commands").find((row) => row.id === liveSale.vendingCommandId);
+    if (
+      order &&
+      payment &&
+      command &&
+      rows(raw, "orders").length === baselineOrders + 1 &&
+      rows(raw, "payments").length === baselinePayments + 1 &&
+      rows(raw, "commands").length === baselineCommands + 1 &&
+      rows(raw, "movements").length === baselineMovements
+    ) {
+      return last;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `platform did not reach the pre-F0 correlated boundary: ${JSON.stringify(last?.raw ?? {})}`,
+  );
+}
+
+function writeReport(outPath, report) {
+  const path = localPath(outPath);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);
+}
+
 function screenshotSink(outPath) {
   const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
   mkdirSync(root, { recursive: true });
@@ -292,6 +638,20 @@ function screenshotSink(outPath) {
     writeFileSync(file, bytes);
     return { ref: file, sha256 };
   };
+}
+
+function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
+  if (typeof sourcePath !== "string" || sourcePath === "") return null;
+  try {
+    const bytes = readFileSync(localPath(sourcePath));
+    const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
+    mkdirSync(root, { recursive: true });
+    const destination = join(root, `${label}.tail.log`);
+    writeFileSync(destination, bytes.subarray(Math.max(0, bytes.length - maxBytes)));
+    return { ref: destination, source: sourcePath, byteLength: Math.min(bytes.length, maxBytes) };
+  } catch {
+    return { ref: null, source: sourcePath, byteLength: 0 };
+  }
 }
 
 async function controlPlaneRequest(guestInput, path, body = {}) {
@@ -312,15 +672,10 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
 
 async function ensureControlledVisionMock(controlPort) {
   const healthUrl = "http://127.0.0.1:7892/health";
-  const controlUrl = `http://127.0.0.1:${controlPort}/control/departure`;
   try {
     await fetchJson(healthUrl);
-    const probe = await fetch(controlUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source: "probe" }),
-    });
-    if (probe.ok) return { child: null, started: false };
+    const status = await fetchJson(`http://127.0.0.1:${controlPort}/control/status`);
+    if (status.scenario === "controlled") return { child: null, started: false };
   } catch {}
   const child = spawn(
     process.execPath,
@@ -369,27 +724,40 @@ async function dispatchVisionDeparture(guestInput) {
 }
 
 async function runFastRouteStressSale(options) {
-  const guestInput = readJson(options.guestInputPath, "guest input");
-  const handoff = readJson(options.handoffPath, "handoff");
+  let guestInput = null;
+  let handoff = null;
+  let vision = null;
+  let client = null;
+  let clientReady = false;
+  let sessionStart = null;
+  let liveSale = null;
+  let stage = "read-input";
+  const checkpoints = [];
   const sink = screenshotSink(options.outPath);
-  const vision = await ensureControlledVisionMock(
-    guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort,
-  );
-  const target = await discoverMachineUiTarget({
-    endpoint: "http://127.0.0.1:9222",
-    expectedTargetId: handoff.cdp.targetId,
-  });
-  const client = new CdpClient(
-    rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, "http://127.0.0.1:9222"),
-  );
-  const runId = required(guestInput.runId, "runId");
-  const machineCode = required(guestInput.machineCode, "machineCode");
-  const saleCorrelationId = `fast-route-${Date.now()}`;
-  const steps = buildFastRouteStressScenarioSteps();
   try {
+    guestInput = readJson(options.guestInputPath, "guest input");
+    handoff = readJson(options.handoffPath, "handoff");
+    const runId = required(guestInput.runId, "runId");
+    const machineCode = required(guestInput.machineCode, "machineCode");
+    const saleCorrelationId = `sale-correlation://fast-route-${Date.now()}`;
+    const steps = buildFastRouteStressScenarioSteps();
+    stage = "start-controlled-vision";
+    vision = await ensureControlledVisionMock(
+      guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort,
+    );
+    stage = "connect-installed-tauri-cdp";
+    const target = await discoverMachineUiTarget({
+      endpoint: "http://127.0.0.1:9222",
+      expectedTargetId: handoff.cdp.targetId,
+    });
+    client = new CdpClient(
+      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, "http://127.0.0.1:9222"),
+    );
     await client.connect();
     await enablePageRuntime(client);
+    clientReady = true;
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+    stage = "snapshot-baseline";
     const baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
     const baselinePlatform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
@@ -397,7 +765,8 @@ async function runFastRouteStressSale(options) {
         machineCode,
       })
     ).report;
-    const sessionStart = await controlPlaneRequest(
+    stage = "start-host-serial-session";
+    sessionStart = await controlPlaneRequest(
       guestInput,
       "/v1/serial-sessions/start",
       {
@@ -414,12 +783,13 @@ async function runFastRouteStressSale(options) {
         ),
       },
     );
-    const checkpoints = [
-      await captureCheckpoint(client, "catalog-start", {
+    checkpoints.push(
+      await captureCheckpoint(client, "catalog", {
         screenshot: true,
         screenshotSink: sink,
       }),
-    ];
+    );
+    stage = "physical-catalog-to-checkout";
     for (const step of steps.slice(0, 4)) {
       await waitForRoute(client, step.routeBefore, { timeoutMs: 30_000, pollMs: 250 });
       // activateVisibleSelector hard-fails unless the UI action is dispatched via
@@ -438,13 +808,10 @@ async function runFastRouteStressSale(options) {
       { kind: "touch", timeoutMs: 30_000 },
     );
     assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
-    await dispatchVisionDeparture(guestInput);
-    const secondSubmit = await activateVisibleSelector(
-      client,
-      steps[5].selector,
-      { kind: "touch", timeoutMs: 5_000 },
-    );
+    const secondSubmit = await dispatchRepeatedPaymentTouch(client, firstSubmit);
     assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+    stage = "vision-departure-during-create-order";
+    const visionDelivery = await dispatchVisionDeparture(guestInput);
     await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
     checkpoints.push(
       await captureCheckpoint(client, "payment-creation", {
@@ -453,41 +820,75 @@ async function runFastRouteStressSale(options) {
       }),
     );
     const renderedSale = await readRenderedPaymentSurface(client);
+    stage = "physical-scanner-payment";
     await controlPlaneRequest(guestInput, `/v1/serial-sessions/${sessionStart.sessionId}/inject`, {
       orderId: renderedSale.orderId,
       paymentId: renderedSale.paymentId,
       scannerCode: guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
     });
-    const liveSale = await waitForCommand(handoff, renderedSale);
-    const beforeF2SaleView = await daemonGet(handoff, "/v1/sale-view");
-    const beforeF2Platform = (
+    liveSale = await waitForCommand(handoff, renderedSale);
+    stage = "snapshot-before-f0";
+    const beforeF0Platform = await waitForBeforeF0Boundary(
+      guestInput,
+      {
+        runId,
+        machineCode,
+        sessionId: sessionStart.sessionId,
+      },
+      baselinePlatform.raw,
+      renderedSale,
+      liveSale,
+    );
+    const beforeF0SaleView = await daemonGet(handoff, "/v1/sale-view");
+    const beforeF0Ui = await readUiBoundary(client);
+    checkpoints.push(
+      await captureCheckpoint(client, "before-f0-active", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+    stage = "wait-inbound-f0";
+    const f0Boundary = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      { parsedOpcode: "F0", timeoutMs: 30_000 },
+    );
+    stage = "wait-inbound-f1";
+    const f1Boundary = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      { parsedOpcode: "F1", timeoutMs: 30_000 },
+    );
+    stage = "snapshot-after-f1-before-f2";
+    const afterF1SaleView = await daemonGet(handoff, "/v1/sale-view");
+    const afterF1Platform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
         runId,
         machineCode,
         sessionId: sessionStart.sessionId,
       })
     ).report;
-    const summaryBefore = summarizeFastRouteStressSale({
-      renderedSale,
-      platform: {
-        baseline: baselinePlatform,
-        beforeF2: beforeF2Platform,
-        afterF2: beforeF2Platform,
-      },
-      daemon: {
-        baseline: baselineSaleView,
-        beforeF2: beforeF2SaleView,
-        afterF2: beforeF2SaleView,
-      },
-      mqttMessages: [],
-      serial: { lowerControllerEvents: [] },
-    });
-    if (summaryBefore.counts.platformMovementsBeforeF2 !== 0) {
-      throw new Error("platform inventory changed before F2");
+    const afterF1Ui = await readUiBoundary(client);
+    if (afterF1Ui.result?.kind === "success") {
+      throw new Error("UI must not show success before inbound F2");
     }
-    if (summaryBefore.counts.daemonSaleableDeltaBeforeF2 !== 0) {
-      throw new Error("daemon saleable stock changed before F2");
-    }
+    checkpoints.push(
+      await captureCheckpoint(client, "after-f1-before-f2", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+    stage = "release-and-wait-inbound-f2";
+    const releaseF2 = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/release-f2`,
+    );
+    const f2Boundary = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      { parsedOpcode: "F2", timeoutMs: 30_000 },
+    );
+    stage = "collect-raw-serial-evidence";
     const collect = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/collect`,
@@ -497,6 +898,59 @@ async function runFastRouteStressSale(options) {
         vendingCommandId: liveSale.vendingCommandId,
       },
     );
+    stage = "wait-success-result";
+    const resultRoute = await waitForResultRoute(client, 60_000);
+    checkpoints.push(
+      await captureCheckpoint(client, "result", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+    const afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
+    const afterF2Platform = await waitForPlatformMovement(
+      guestInput,
+      {
+        runId,
+        machineCode,
+        sessionId: sessionStart.sessionId,
+      },
+      rows(afterF1Platform.raw, "movements").length,
+    );
+    const afterF2Ui = await readUiBoundary(client);
+    const runtimeTrace = await readRuntimeTrace(client);
+    const evidence = {
+      saleCorrelationId,
+      machineCode,
+      runtimeTrace,
+      visionDelivery,
+      renderedSale,
+      liveSale,
+      platform: {
+        baseline: baselinePlatform,
+        beforeF0: beforeF0Platform,
+        afterF1BeforeF2: afterF1Platform,
+        afterF2: afterF2Platform,
+      },
+      daemon: {
+        baseline: baselineSaleView,
+        beforeF0: beforeF0SaleView,
+        afterF1BeforeF2: afterF1SaleView,
+        afterF2: afterF2SaleView,
+      },
+      ui: {
+        beforeF0: beforeF0Ui,
+        afterF1BeforeF2: afterF1Ui,
+        afterF2: afterF2Ui,
+      },
+      mqttMessages: collect.mqtt?.messages ?? [],
+      serial: {
+        sessionId: sessionStart.binding.serialSessionId,
+        rawFrames: collect.collectReport?.serialEvidence?.rawFrames ?? [],
+        records: collect.collectReport?.serialEvidence?.records ?? [],
+      },
+    };
+    const summary = validateFastRouteStressSaleEvidence(evidence);
+    stage = "stop-host-serial-session";
     const stop = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
@@ -516,70 +970,8 @@ async function runFastRouteStressSale(options) {
         idempotencyCheck: true,
       },
     );
-    const resultRoute = await waitForResultRoute(client, 60_000);
-    checkpoints.push(
-      await captureCheckpoint(client, "result", {
-        screenshot: true,
-        screenshotSink: sink,
-      }),
-    );
-    const afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
-    const afterF2Platform = (
-      await controlPlaneRequest(guestInput, "/v1/platform/query", {
-        runId,
-        machineCode,
-        sessionId: sessionStart.sessionId,
-      })
-    ).report;
-    const runtimeTrace = await readRuntimeTrace(client);
-    const serialLowerControllerEvents = Array.isArray(
-      collect.collectReport?.serialEvidence?.records,
-    )
-      ? collect.collectReport.serialEvidence.records
-          .filter((record) => record.role === "lower-controller")
-          .map((record) => ({
-            event: record.event,
-            capturedFrame: record.capturedFrame ?? null,
-          }))
-      : [];
-    const summary = summarizeFastRouteStressSale({
-      runtimeTrace,
-      renderedSale,
-      platform: {
-        baseline: baselinePlatform,
-        beforeF2: beforeF2Platform,
-        afterF2: afterF2Platform,
-      },
-      daemon: {
-        baseline: baselineSaleView,
-        beforeF2: beforeF2SaleView,
-        afterF2: afterF2SaleView,
-      },
-      mqttMessages: collect.mqtt?.messages ?? stop.mqtt?.messages ?? [],
-      serial: {
-        lowerControllerEvents: serialLowerControllerEvents.map((record) => record.event),
-        lowerControllerRecords: serialLowerControllerEvents,
-      },
-    });
-    if (summary.counts.ordersCreated !== 1) throw new Error("expected exactly one order");
-    if (summary.counts.paymentsCreated !== 1) throw new Error("expected exactly one payment");
-    if (summary.counts.commandsCreated !== 1) throw new Error("expected exactly one vending command");
-    if (summary.counts.mqttCommands !== 1) throw new Error("expected exactly one MQTT vending command");
-    if (summary.counts.platformMovementsAfterF2 !== 1) throw new Error("expected one platform movement after F2");
-    if (summary.counts.daemonSaleableDeltaAfterF2 !== -1) throw new Error("expected daemon saleable stock to decrement only after F2");
-    if (
-      JSON.stringify(summary.serial.protocolFrames.map((frame) => frame.stage)) !==
-      JSON.stringify(["F0", "F1", "F2"])
-    ) {
-      throw new Error("serial evidence must expose ordered F0/F1/F2 protocol stages");
-    }
-    for (const event of ["dispense-request", "dispense-ack", "dispense-result"]) {
-      if (!summary.serial.lowerControllerEvents.includes(event)) {
-        throw new Error(`serial evidence is missing ${event}`);
-      }
-    }
     const report = {
-      schemaVersion: "vem-fast-route-stress-sale/v1",
+      schemaVersion: "vem-fast-route-stress-sale/v2",
       ok: true,
       mode: options.mode,
       runId,
@@ -589,15 +981,27 @@ async function runFastRouteStressSale(options) {
       renderedSale,
       liveSale,
       summary,
+      boundaries: { f0: f0Boundary.frame, f1: f1Boundary.frame, releaseF2, f2: f2Boundary.frame },
+      evidence: compactEvidenceForReport(evidence, summary),
       serial: {
         start: sessionStart,
         collect,
         stop,
         stopRepeat,
       },
-      runtimeTrace,
+      runtimeTrace: compactRuntimeTrace(runtimeTrace),
       checkpoints,
       logs: {
+        daemonStdout: writeBoundedLogTail(
+          handoff?.daemon?.logs?.stdout,
+          options.outPath,
+          "daemon-stdout",
+        ),
+        daemonStderr: writeBoundedLogTail(
+          handoff?.daemon?.logs?.stderr,
+          options.outPath,
+          "daemon-stderr",
+        ),
         milestones: checkpoints.map((checkpoint) => ({
           label: checkpoint.label,
           route: checkpoint.identity.route,
@@ -605,12 +1009,66 @@ async function runFastRouteStressSale(options) {
         })),
       },
     };
-    mkdirSync(dirname(localPath(options.outPath)), { recursive: true });
-    writeFileSync(localPath(options.outPath), `${JSON.stringify(report, null, 2)}\n`);
+    writeReport(options.outPath, report);
     return report;
+  } catch (error) {
+    const failureCheckpoints = [...checkpoints];
+    if (clientReady) {
+      const failure = await captureCheckpoint(client, `failure-${stage}`, {
+        screenshot: true,
+        screenshotSink: sink,
+      }).catch(() => null);
+      if (failure) failureCheckpoints.push(failure);
+    }
+    const runtimeTrace = clientReady
+      ? await readRuntimeTrace(client).catch(() => [])
+      : [];
+    const hostEvidence = guestInput && sessionStart
+      ? await controlPlaneRequest(
+          guestInput,
+          `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+        ).catch(() => null)
+      : null;
+    if (guestInput && sessionStart) {
+      await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+      ).catch(() => null);
+    }
+    const report = {
+      schemaVersion: "vem-fast-route-stress-sale/v2",
+      ok: false,
+      mode: options.mode,
+      stage,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: String(error.stack ?? "").slice(0, 16 * 1024) } : { name: "Error", message: String(error) },
+      controlPlaneSessionId: sessionStart?.sessionId ?? null,
+      liveSale,
+      runtimeTrace: compactRuntimeTrace(runtimeTrace, 256),
+      hostEvidence,
+      checkpoints: failureCheckpoints,
+      logs: {
+        daemonStdout: writeBoundedLogTail(
+          handoff?.daemon?.logs?.stdout,
+          options.outPath,
+          "daemon-stdout",
+        ),
+        daemonStderr: writeBoundedLogTail(
+          handoff?.daemon?.logs?.stderr,
+          options.outPath,
+          "daemon-stderr",
+        ),
+        platform: PLATFORM_LOG_REFERENCE,
+        simulator: hostEvidence?.references?.simulatorLog ?? null,
+        failureScreenshots: failureCheckpoints
+          .map((checkpoint) => checkpoint?.screenshot?.ref)
+          .filter(Boolean),
+      },
+    };
+    writeReport(options.outPath, report);
+    throw error;
   } finally {
-    await client.close().catch(() => undefined);
-    vision.child?.kill("SIGTERM");
+    await client?.close().catch(() => undefined);
+    vision?.child?.kill("SIGTERM");
   }
 }
 

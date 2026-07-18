@@ -68,3 +68,14 @@ jobs:
         shell: pwsh
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
+      - name: Collect Compact Fast Sale Evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-fast-route-stress-sale-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
+          if-no-files-found: warn
+          retention-days: 7

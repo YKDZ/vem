@@ -225,6 +225,10 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
       readyzUrl = [string]$runtimeReady.ready.readyzUrl
       ipcToken = [string]$runtimeReady.ready.ipcToken
     }
+    logs = [ordered]@{
+      stdout = $daemonStdout
+      stderr = $daemonStderr
+    }
   }
   machine = [ordered]@{
     executablePath = $machineEvidence.executablePath

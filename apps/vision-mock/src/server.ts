@@ -247,9 +247,10 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
 function sendServerMessage(
   socket: WebSocket,
   message: VisionServerMessage,
-): void {
-  if (socket.readyState !== socket.OPEN) return;
+): boolean {
+  if (socket.readyState !== socket.OPEN) return false;
   socket.send(JSON.stringify(visionServerMessageSchema.parse(message)));
+  return true;
 }
 
 function rawDataToText(data: RawData): string {
@@ -338,7 +339,10 @@ function handleClientRawMessage(
   data: RawData,
   options: Required<
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
-  > & { disconnectOnceServed: { value: boolean } },
+  > & {
+    disconnectOnceServed: { value: boolean };
+    runtimeClients: Map<WebSocket, VisionClientMessage["payload"]>;
+  },
 ): void {
   const message = parseClientMessage(data);
   if (!message) {
@@ -355,6 +359,7 @@ function handleClientRawMessage(
 
   switch (message.type) {
     case "vision.hello":
+      options.runtimeClients.set(socket, message.payload);
       if (options.scenario === "try_on_unavailable_handshake") {
         sendServerMessage(
           socket,
@@ -439,10 +444,19 @@ export function startMockVisionServer(
   const server = new WebSocketServer({ host, port, path: wsPath });
   const disconnectOnceServed = { value: false };
   const sockets = new Set<WebSocket>();
+  const runtimeClients = new Map<WebSocket, VisionClientMessage["payload"]>();
   const controlServer =
     controlPort == null
       ? null
       : createServer(async (request, response) => {
+          if (request.method === "GET" && request.url === `${DEFAULT_CONTROL_PATH}/status`) {
+            json(response, 200, {
+              ok: true,
+              scenario,
+              connectedRuntimeClients: runtimeClients.size,
+            });
+            return;
+          }
           if (request.method !== "POST") {
             json(response, 405, { ok: false, error: "method_not_allowed" });
             return;
@@ -487,12 +501,31 @@ export function startMockVisionServer(
                   ? body.lastSeenAt
                   : null;
               const message = createPersonDepartedMessage(lastSeenAt);
-              for (const socket of sockets) sendServerMessage(socket, message);
+              const eligibleClients = [...sockets].filter((socket) =>
+                runtimeClients
+                  .get(socket)
+                  ?.capabilities.includes("person_departed"),
+              );
+              const acceptedDeliveries = eligibleClients.filter((socket) =>
+                sendServerMessage(socket, message),
+              ).length;
+              if (eligibleClients.length === 0 || acceptedDeliveries === 0) {
+                json(response, 409, {
+                  ok: false,
+                  error: "no_connected_runtime_client",
+                  connectedRuntimeClients: eligibleClients.length,
+                  acceptedDeliveries,
+                });
+                return;
+              }
               json(response, 200, {
                 ok: true,
                 event: message.type,
                 eventId: message.payload.eventId,
+                timestamp: message.timestamp,
                 lastSeenAt: message.payload.lastSeenAt,
+                connectedRuntimeClients: eligibleClients.length,
+                acceptedDeliveries,
               });
               return;
             }
@@ -510,12 +543,14 @@ export function startMockVisionServer(
     sockets.add(socket);
     socket.once("close", () => {
       sockets.delete(socket);
+      runtimeClients.delete(socket);
     });
     socket.on("message", (data) => {
       handleClientRawMessage(socket, data, {
         scenario,
         pushIntervalMs,
         disconnectOnceServed,
+        runtimeClients,
       });
     });
   });
