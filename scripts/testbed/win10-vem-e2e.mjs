@@ -3035,9 +3035,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
   const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
   const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
+  const customerUiSaleScannerRoot = `${evidenceRoot}/installed-kiosk-sale-scanner`;
   const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
   const delayedPickupNativeAudioRoot = `${evidenceRoot}/installed-kiosk-sale-delayed-pickup-native-audio`;
   const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
+  const customerUiSaleScannerReport = `${customerUiSaleScannerRoot}/report.json`;
   const customerUiSaleCompetitionReport = `${customerUiSaleCompetitionRoot}/report.json`;
   const delayedPickupNativeAudioReport = `${delayedPickupNativeAudioRoot}/report.json`;
   const runtimeCommand = buildAcceptanceScriptCommand(
@@ -3187,6 +3189,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const installedKioskSaleNormalCommand = buildInstalledKioskSaleCommand(
     "vm-normal",
     customerUiSaleNormalReport,
+    true,
+  );
+  const installedKioskSaleScannerCommand = buildInstalledKioskSaleCommand(
+    "vm-scanner-payment-code",
+    customerUiSaleScannerReport,
     true,
   );
   const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
@@ -3385,6 +3392,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       serialConformance: serialConformanceReport,
       failureMatrix: failureMatrixArtifacts,
       customerUiSaleNormal: customerUiSaleNormalReport,
+      customerUiSaleScanner: customerUiSaleScannerReport,
       customerUiSaleRouteCompetition: customerUiSaleCompetitionReport,
       customerUiSale: customerUiSaleCompetitionReport,
       delayedPickupNativeAudio: delayedPickupNativeAudioReport,
@@ -3473,6 +3481,16 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         command: installedKioskSaleNormalCommand,
         ephemeralPlatformEvidence,
         report: customerUiSaleNormalReport,
+        blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
+      },
+      {
+        name: "installed kiosk sale scanner payment-code",
+        mode: "installed-kiosk-sale",
+        status: "planned",
+        command: installedKioskSaleScannerCommand,
+        ephemeralPlatformEvidence,
+        report: customerUiSaleScannerReport,
         blocksOnFailure: true,
         requiresEphemeralDatabase: true,
       },
@@ -4491,6 +4509,7 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   }
   const rendered = report?.correlation?.rendered;
   const platform = report?.correlation?.platform;
+  const paymentCodeAttempt = platform?.paymentCodeAttempt;
   const exactOnce = report?.correlation?.exactOnce;
   const observations = platform?.observations;
   const reservation = platform?.reservation;
@@ -4503,10 +4522,17 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
     rendered.paymentId !== platform?.paymentId ||
     rendered.orderNo !== platform?.orderNo ||
     rendered.commandId !== platform?.commandId ||
+    paymentCodeAttempt?.orderId !== rendered?.orderId ||
+    paymentCodeAttempt?.paymentId !== rendered?.paymentId ||
+    paymentCodeAttempt?.attemptNo !== 1 ||
+    paymentCodeAttempt?.status !== "succeeded" ||
+    paymentCodeAttempt?.isActive !== false ||
+    paymentCodeAttempt?.source !== "serial_text" ||
     platform?.stockDelta !== -1 ||
     platform?.status !== "accepted" ||
     exactOnce?.orderCount !== 1 ||
     exactOnce.paymentCount !== 1 ||
+    exactOnce.paymentCodeAttemptCount !== 1 ||
     exactOnce.orderNoCount !== 1 ||
     !hasReservationExactOnce(
       reservation,
@@ -4520,6 +4546,10 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
     exactOnce.serialSaleBindingCount?.collected !== 1 ||
     !hasOneObservedIdentity(observations?.orderIds, rendered?.orderId) ||
     !hasOneObservedIdentity(observations?.paymentIds, rendered?.paymentId) ||
+    !hasOneObservedIdentity(
+      observations?.paymentCodeAttemptIds,
+      paymentCodeAttempt?.attemptId,
+    ) ||
     !hasOneObservedIdentity(observations?.orderNos, rendered?.orderNo) ||
     !hasOneObservedIdentity(observations?.commandIds, rendered?.commandId) ||
     !hasOneObservedIdentity(
@@ -4592,6 +4622,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const runtime = stepMap.get("runtime acceptance");
   const saleFlow = stepMap.get("simulated hardware sale flow");
   const saleNormal = stepMap.get("installed kiosk sale normal");
+  const saleScanner = stepMap.get("installed kiosk sale scanner payment-code");
   const saleCompetition = stepMap.get("installed kiosk sale route competition");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const delayedPickup = stepMap.get("delayed pickup native audio live sale");
@@ -4605,6 +4636,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     saleNormal,
     plan,
   );
+  const scannerSaleEvidence = evaluateInstalledKioskSaleEvidence(
+    saleScanner,
+    plan,
+  );
   const competitionSaleEvidence = evaluateInstalledKioskSaleEvidence(
     saleCompetition,
     plan,
@@ -4614,21 +4649,25 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const installedKioskEvidence = {
     status:
       normalSaleEvidence.status === "passed" &&
+      scannerSaleEvidence.status === "passed" &&
       competitionSaleEvidence.status === "passed" &&
       delayedPickupEvidence.status === "passed"
         ? "passed"
         : "failed",
     asserted:
       normalSaleEvidence.asserted === true &&
+      scannerSaleEvidence.asserted === true &&
       competitionSaleEvidence.asserted === true &&
       delayedPickupEvidence.asserted === true,
     diagnostics: [
       ...normalSaleEvidence.diagnostics,
+      ...scannerSaleEvidence.diagnostics,
       ...competitionSaleEvidence.diagnostics,
       ...delayedPickupEvidence.diagnostics,
     ],
     evidence: {
       normal: normalSaleEvidence.evidence,
+      scannerPaymentCode: scannerSaleEvidence.evidence,
       routeCompetition: competitionSaleEvidence.evidence,
       delayedPickupNativeAudio: delayedPickupEvidence.evidence,
     },
@@ -4669,6 +4708,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       runtimeAcceptance: runtime?.status ?? "missing",
       simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
       installedKioskSaleNormal: saleNormal?.status ?? "missing",
+      installedKioskSaleScannerPaymentCode: saleScanner?.status ?? "missing",
       installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
       postSaleRuntimeAcceptance: postSaleRuntime?.status ?? "missing",
       delayedPickupNativeAudio: delayedPickup?.status ?? "missing",
@@ -4698,6 +4738,10 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       normal: {
         status: saleNormal?.status ?? "missing",
         evidencePath: plan.artifacts.customerUiSaleNormal,
+      },
+      scannerPaymentCode: {
+        status: saleScanner?.status ?? "missing",
+        evidencePath: plan.artifacts.customerUiSaleScanner,
       },
       routeCompetition: {
         status: saleCompetition?.status ?? "missing",

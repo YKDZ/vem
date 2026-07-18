@@ -38,6 +38,7 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 const PROFILE_NAMES = new Set([
   "vm-normal",
+  "vm-scanner-payment-code",
   "vm-route-competition",
   "factory-route-competition",
   "vm-delayed-pickup-native-audio",
@@ -116,7 +117,7 @@ function parseArgs(argv) {
   if (options.profile == null) options.profile = "vm-normal";
   if (!PROFILE_NAMES.has(options.profile)) {
     throw new Error(
-      "--profile must be vm-normal, vm-route-competition, factory-route-competition, or vm-delayed-pickup-native-audio",
+      "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, factory-route-competition, or vm-delayed-pickup-native-audio",
     );
   }
   if (options.ssh_port != null) {
@@ -246,7 +247,7 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       type: "customer-activation",
       name: "payment option",
       selector:
-        '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]',
+        '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]:not(:disabled)',
       routeBefore: "#/checkout",
       routeAfter: "#/checkout",
     },
@@ -261,7 +262,10 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       screenshot: true,
     },
   ];
-  if (profile !== "vm-normal") {
+  if (
+    profile === "vm-route-competition" ||
+    profile === "factory-route-competition"
+  ) {
     steps.push({
       type: "debug-disturbance",
       name: "catalog refresh during payment",
@@ -502,6 +506,7 @@ function requiredRawRecords(platformRaw) {
     "orders",
     "orderItems",
     "payments",
+    "paymentCodeAttempts",
     "reservations",
     "commands",
     "movements",
@@ -524,6 +529,36 @@ function rawRecordId(name, record) {
   return id;
 }
 
+function paymentCodeAttemptDelta({ baseline, post }) {
+  const delta = postMinusBaselinePlatformRaw({ baseline, post });
+  const attempts = Array.isArray(delta.raw.paymentCodeAttempts)
+    ? delta.raw.paymentCodeAttempts
+    : [];
+  if (attempts.length !== 1) {
+    throw new Error(
+      "authoritative platform raw query must expose exactly one new payment-code attempt",
+    );
+  }
+  const attempt = attempts[0];
+  if (
+    typeof attempt?.id !== "string" ||
+    attempt.id.length === 0 ||
+    typeof attempt?.paymentId !== "string" ||
+    attempt.paymentId.length === 0 ||
+    typeof attempt?.orderId !== "string" ||
+    attempt.orderId.length === 0 ||
+    !Number.isInteger(attempt?.attemptNo) ||
+    attempt.attemptNo < 1 ||
+    typeof attempt?.idempotencyKey !== "string" ||
+    attempt.idempotencyKey.length === 0
+  ) {
+    throw new Error(
+      "authoritative platform payment-code attempt omitted its stable identity or attempt metadata",
+    );
+  }
+  return { delta, attempt };
+}
+
 export function postMinusBaselinePlatformRaw({ baseline, post }) {
   const baselineRaw = requiredRawRecords(baseline);
   const postRaw = requiredRawRecords(post);
@@ -539,6 +574,7 @@ export function postMinusBaselinePlatformRaw({ baseline, post }) {
     "orders",
     "orderItems",
     "payments",
+    "paymentCodeAttempts",
     "reservations",
     "commands",
     "movements",
@@ -663,10 +699,11 @@ export function deriveCorrelation({
   const sale = platform?.sale;
   const projectedMovementId =
     platform?.platformState?.postSaleDispenseMovement?.movementId;
-  const { scope: platformRawScope, raw } = postMinusBaselinePlatformRaw({
+  const { delta: attemptDelta, attempt: rawAttempt } = paymentCodeAttemptDelta({
     baseline: platformRawBaseline,
     post: platformRawPost,
   });
+  const { scope: platformRawScope, raw } = attemptDelta;
   const rawOrder = raw.orders[0] ?? null;
   const rawOrderItem = raw.orderItems[0] ?? null;
   const rawPayment = raw.payments[0] ?? null;
@@ -697,6 +734,13 @@ export function deriveCorrelation({
     rawOrder?.orderNo === rendered.orderNo &&
     rawPayment?.id === rendered.paymentId &&
     rawPayment?.orderId === rendered.orderId &&
+    rawAttempt?.id &&
+    rawAttempt?.orderId === rendered.orderId &&
+    rawAttempt?.paymentId === rendered.paymentId &&
+    rawAttempt?.attemptNo === 1 &&
+    rawAttempt?.status === "succeeded" &&
+    rawAttempt?.isActive === false &&
+    rawAttempt?.source === "serial_text" &&
     rawCommand?.id === rendered.commandId &&
     rawCommand?.orderId === rendered.orderId &&
     rawMovement?.movementId === projectedMovementId &&
@@ -713,6 +757,20 @@ export function deriveCorrelation({
     paymentIds: observedIdentity(
       raw.payments.map((record) => record?.id),
       "platform payment evidence",
+    ),
+    paymentCodeAttemptIds: observedIdentity(
+      raw.paymentCodeAttempts.map((record) => record?.id),
+      "platform payment-code-attempt evidence",
+    ),
+    paymentCodeAttemptNos: observedIdentity(
+      raw.paymentCodeAttempts.map((record) =>
+        String(record?.attemptNo ?? ""),
+      ),
+      "platform payment-code-attempt number evidence",
+    ),
+    paymentCodeIdempotencyKeys: observedIdentity(
+      raw.paymentCodeAttempts.map((record) => record?.idempotencyKey),
+      "platform payment-code-attempt idempotency evidence",
     ),
     orderNos: observedIdentity(
       raw.orders.map((record) => record?.orderNo),
@@ -766,6 +824,7 @@ export function deriveCorrelation({
   const exactOnce = {
     orderCount: observations.orderIds.count,
     paymentCount: observations.paymentIds.count,
+    paymentCodeAttemptCount: observations.paymentCodeAttemptIds.count,
     orderNoCount: observations.orderNos.count,
     orderItemCount: observations.orderItemIds.count,
     reservationCount: observations.reservationIds.count,
@@ -780,6 +839,9 @@ export function deriveCorrelation({
     !reservationEvidenceMatches ||
     observations.orderIds.count !== 1 ||
     observations.paymentIds.count !== 1 ||
+    observations.paymentCodeAttemptIds.count !== 1 ||
+    observations.paymentCodeAttemptNos.count !== 1 ||
+    observations.paymentCodeIdempotencyKeys.count !== 1 ||
     observations.orderNos.count !== 1 ||
     observations.orderItemIds.count !== 1 ||
     observations.reservationIds.count !== 1 ||
@@ -800,6 +862,16 @@ export function deriveCorrelation({
       orderId: sale.orderId,
       paymentId: sale.paymentId,
       orderNo: sale.orderNo,
+      paymentCodeAttempt: {
+        attemptId: rawAttempt.id,
+        attemptNo: rawAttempt.attemptNo,
+        paymentId: rawAttempt.paymentId,
+        orderId: rawAttempt.orderId,
+        idempotencyKey: rawAttempt.idempotencyKey,
+        status: rawAttempt.status,
+        isActive: rawAttempt.isActive,
+        source: rawAttempt.source,
+      },
       commandId: sale.vendingCommandId,
       stockMovementId: rawMovement.movementId,
       stockDelta: -rawMovement.quantity,

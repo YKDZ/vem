@@ -226,6 +226,18 @@ function platformRawRecords({
           status: "succeeded",
         },
       ],
+      paymentCodeAttempts: [
+        {
+          id: "ATTEMPT-180",
+          orderId: "ORDER-180",
+          paymentId: "PAYMENT-180",
+          attemptNo: 1,
+          idempotencyKey: "ORDER-180:attempt-1",
+          status: "succeeded",
+          isActive: false,
+          source: "serial_text",
+        },
+      ],
       reservations: [
         {
           id: "RESERVATION-180",
@@ -4537,6 +4549,7 @@ if ($errors.Count -gt 0) {
           "ephemeral platform setup",
           "runtime acceptance",
           "installed kiosk sale normal",
+          "installed kiosk sale scanner payment-code",
           "installed kiosk sale route competition",
           "post-sale runtime acceptance",
           "delayed pickup native audio live sale",
@@ -5905,6 +5918,9 @@ if ($errors.Count -gt 0) {
     const saleStep = plan.steps.find(
       (step) => step.name === "installed kiosk sale route competition",
     );
+    const scannerSaleStep = plan.steps.find(
+      (step) => step.name === "installed kiosk sale scanner payment-code",
+    );
     const normalSaleStep = plan.steps.find(
       (step) => step.name === "installed kiosk sale normal",
     );
@@ -5918,6 +5934,10 @@ if ($errors.Count -gt 0) {
     assert.equal(
       commandArg(saleStep.command, "--profile"),
       "vm-route-competition",
+    );
+    assert.equal(
+      commandArg(scannerSaleStep.command, "--profile"),
+      "vm-scanner-payment-code",
     );
     assert.equal(commandArg(normalSaleStep.command, "--profile"), "vm-normal");
     assert.equal(
@@ -5937,6 +5957,10 @@ if ($errors.Count -gt 0) {
       plan.artifacts.customerUiSaleRouteCompetition,
     );
     assert.equal(
+      commandArg(scannerSaleStep.command, "--out"),
+      plan.artifacts.customerUiSaleScanner,
+    );
+    assert.equal(
       commandArg(normalSaleStep.command, "--out"),
       plan.artifacts.customerUiSaleNormal,
     );
@@ -5949,6 +5973,7 @@ if ($errors.Count -gt 0) {
       undefined,
     );
     assert.equal(saleStep.command.includes("--already-claimed"), true);
+    assert.equal(scannerSaleStep.command.includes("--already-claimed"), true);
     assert.equal(normalSaleStep.command.includes("--already-claimed"), true);
     assert.equal(
       commandArg(
@@ -6212,6 +6237,7 @@ if ($errors.Count -gt 0) {
         "ephemeral platform setup",
         "runtime acceptance",
         "installed kiosk sale normal",
+        "installed kiosk sale scanner payment-code",
         "installed kiosk sale route competition",
         "post-sale runtime acceptance",
         "delayed pickup native audio live sale",

@@ -44,6 +44,7 @@ describe("installed kiosk sale platform raw query", () => {
         orders: [],
         orderItems: [],
         payments: [],
+        paymentCodeAttempts: [],
         reservations: [],
         commands: [],
         movements: [],
@@ -64,6 +65,7 @@ describe("installed kiosk sale platform raw query", () => {
         orders: [],
         orderItems: [],
         payments: [],
+        paymentCodeAttempts: [],
         reservations: [],
         commands: [],
         movements: [],
@@ -78,6 +80,7 @@ describe("installed kiosk sale platform raw query", () => {
       orders: "machine_id",
       orderItems: "enumerated_order_ids",
       payments: "enumerated_order_ids",
+      paymentCodeAttempts: "enumerated_order_ids",
       reservations: "enumerated_order_ids",
       commands: "enumerated_order_ids",
       movements: "machine_id + dispense_succeeded",
@@ -89,6 +92,7 @@ describe("installed kiosk sale platform raw query", () => {
     );
     expect(source).toContain(".where(eq(orders.machineId, machine.id))");
     expect(source).toContain("inArray(payments.orderId, orderIds)");
+    expect(source).toContain("inArray(paymentCodeAttempts.orderId, orderIds)");
     expect(source).toContain(
       "inArray(inventoryReservations.orderId, orderIds)",
     );

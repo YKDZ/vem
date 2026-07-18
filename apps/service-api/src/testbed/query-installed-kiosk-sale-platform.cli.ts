@@ -11,6 +11,7 @@ import {
   machines,
   orders,
   orderItems,
+  paymentCodeAttempts,
   payments,
   sql,
   vendingCommands,
@@ -28,6 +29,7 @@ export const installedKioskSalePlatformQueryScope = Object.freeze({
   orders: "machine_id",
   orderItems: "enumerated_order_ids",
   payments: "enumerated_order_ids",
+  paymentCodeAttempts: "enumerated_order_ids",
   reservations: "enumerated_order_ids",
   commands: "enumerated_order_ids",
   movements: "machine_id + dispense_succeeded",
@@ -60,6 +62,16 @@ type PlatformRawRecords = {
     orderId: string;
     paymentNo: string;
     status: string;
+  }>;
+  paymentCodeAttempts: Array<{
+    id: string;
+    orderId: string;
+    paymentId: string;
+    attemptNo: number;
+    idempotencyKey: string;
+    status: string;
+    isActive: boolean;
+    source: string | null;
   }>;
   reservations: Array<{
     id: string;
@@ -200,6 +212,7 @@ export async function queryInstalledKioskSalePlatform(
               orders: [],
               orderItems: [],
               payments: [],
+              paymentCodeAttempts: [],
               reservations: [],
               commands: [],
               movements: [],
@@ -221,6 +234,7 @@ export async function queryInstalledKioskSalePlatform(
         const emptyRaw = {
           orderItems: [],
           payments: [],
+          paymentCodeAttempts: [],
           reservations: [],
           commands: [],
         };
@@ -247,6 +261,19 @@ export async function queryInstalledKioskSalePlatform(
                   })
                   .from(payments)
                   .where(inArray(payments.orderId, orderIds)),
+                client
+                  .select({
+                    id: paymentCodeAttempts.id,
+                    orderId: paymentCodeAttempts.orderId,
+                    paymentId: paymentCodeAttempts.paymentId,
+                    attemptNo: paymentCodeAttempts.attemptNo,
+                    idempotencyKey: paymentCodeAttempts.idempotencyKey,
+                    status: paymentCodeAttempts.status,
+                    isActive: paymentCodeAttempts.isActive,
+                    source: paymentCodeAttempts.source,
+                  })
+                  .from(paymentCodeAttempts)
+                  .where(inArray(paymentCodeAttempts.orderId, orderIds)),
                 client
                   .select({
                     id: inventoryReservations.id,
@@ -276,12 +303,19 @@ export async function queryInstalledKioskSalePlatform(
                     ),
                   ),
               ]);
-        const [orderItemRows, paymentRows, reservationRows, commandRows] =
+        const [
+          orderItemRows,
+          paymentRows,
+          paymentCodeAttemptRows,
+          reservationRows,
+          commandRows,
+        ] =
           Array.isArray(related)
             ? related
             : [
                 related.orderItems,
                 related.payments,
+                related.paymentCodeAttempts,
                 related.reservations,
                 related.commands,
               ];
@@ -341,6 +375,7 @@ export async function queryInstalledKioskSalePlatform(
             orders: orderRows,
             orderItems: orderItemRows,
             payments: paymentRows,
+            paymentCodeAttempts: paymentCodeAttemptRows,
             reservations: reservationRows,
             commands: commandRows,
             movements: movementRows,

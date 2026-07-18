@@ -41,11 +41,27 @@ describe("installed kiosk sale preflight", () => {
     assert.match(JSON.stringify(steps), /catalog-category.*:not\(:disabled\)/);
     assert.match(
       JSON.stringify(steps),
-      /payment-option.*data-payment-option-key.*payment_code:mock/,
+      /payment-option.*data-payment-option-key.*payment_code:mock.*:not\(:disabled\)/,
     );
     assert.equal(
       steps.find((step) => step.name === "payment submit")?.timeoutMs,
       30_000,
+    );
+  });
+
+  it("keeps the scanner profile on the same installed flow without route-competition disturbances", () => {
+    const steps = buildInstalledKioskSaleScenarioSteps(
+      "vm-scanner-payment-code",
+    );
+    assert.deepEqual(
+      steps.map((step) => step.name),
+      [
+        "catalog category",
+        "catalog product",
+        "buy",
+        "payment option",
+        "payment submit",
+      ],
     );
   });
   it("preserves primary and cleanup failures in CLI diagnostics", () => {
@@ -198,6 +214,14 @@ function snapshot({ includeSecondOrder = false } = {}) {
     payments: [
       rawRecord("historical-payment", { orderId: "historical-order" }),
     ],
+    paymentCodeAttempts: [
+      rawRecord("historical-attempt", {
+        orderId: "historical-order",
+        paymentId: "historical-payment",
+        attemptNo: 1,
+        idempotencyKey: "historical-attempt-1",
+      }),
+    ],
     reservations: [
       rawRecord("historical-reservation", { orderId: "historical-order" }),
     ],
@@ -205,18 +229,21 @@ function snapshot({ includeSecondOrder = false } = {}) {
       rawRecord("historical-command", { orderId: "historical-order" }),
     ],
     movements: [rawRecord("historical-movement")],
+    inventories: [rawRecord("historical-inventory")],
   };
   if (includeSecondOrder) {
     for (const [name, id] of [
       ["orders", "new-order-a"],
       ["orderItems", "new-item-a"],
       ["payments", "new-payment-a"],
+      ["paymentCodeAttempts", "new-attempt-a"],
       ["reservations", "new-reservation-a"],
       ["commands", "new-command-a"],
       ["movements", "new-movement-a"],
       ["orders", "new-order-b"],
       ["orderItems", "new-item-b"],
       ["payments", "new-payment-b"],
+      ["paymentCodeAttempts", "new-attempt-b"],
       ["reservations", "new-reservation-b"],
       ["commands", "new-command-b"],
       ["movements", "new-movement-b"],
@@ -354,6 +381,7 @@ describe("installed kiosk sale authoritative platform snapshots", () => {
     for (const name of [
       "orderItems",
       "payments",
+      "paymentCodeAttempts",
       "reservations",
       "commands",
       "movements",
@@ -388,5 +416,25 @@ describe("installed kiosk sale authoritative platform snapshots", () => {
       JSON.stringify(plan).includes("--ephemeral-database-url"),
       false,
     );
+  });
+
+  it("persists the dedicated scanner payment-code profile in the acceptance plan", () => {
+    const plan = buildInstalledKioskSaleAcceptancePlan({
+      run_id: "RUN-SCANNER",
+      machine_code: "VEM-TESTBED-WINVM-RUN-SCANNER",
+      platform_target: "ephemeral-run-scanner",
+      ephemeral_platform_evidence: "/tmp/ephemeral-platform.json",
+      runtime_acceptance_report: "/tmp/runtime.json",
+      remote: "YKDZ@win10.test",
+      identity: "/tmp/id",
+      certificate: "/tmp/id-cert.pub",
+      adapter: "runner-service-adapter",
+      target_identity: "vm-target://runtime-testbed",
+      approved_runtime_base: "factory-cas://sha256/abc",
+      profile: "vm-scanner-payment-code",
+      out: "/tmp/installed-kiosk-sale-scanner-report.json",
+    });
+
+    assert.equal(plan.profile, "vm-scanner-payment-code");
   });
 });
