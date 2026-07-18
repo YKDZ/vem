@@ -92,14 +92,14 @@ function Expand-VisionActionArtifact([string]$ArtifactZip, [string]$Destination)
   } finally { $archive.Dispose() }
 }
 
-function Resolve-VisionMainRun([object[]]$Runs, [string]$Commit) {
+function Get-VisionEligibleMainRuns([object[]]$Runs, [string]$Commit) {
   $eligible = @($Runs | Where-Object { $_.conclusion -ceq "success" -and $_.head_branch -ceq "main" })
   if ($Commit) {
     $Commit = Assert-VisionCommit $Commit
     $eligible = @($eligible | Where-Object { $_.head_sha -ceq $Commit })
   }
   Assert-VisionMainCondition ($eligible.Count -gt 0) "no successful main workflow run was found"
-  return @($eligible | Sort-Object { [int64]$_.id } -Descending | Select-Object -First 1)[0]
+  return @($eligible | Sort-Object { [int64]$_.id } -Descending)
 }
 
 function Resolve-VisionMainArtifact([object[]]$Artifacts, [string]$Commit) {
@@ -107,6 +107,27 @@ function Resolve-VisionMainArtifact([object[]]$Artifacts, [string]$Commit) {
   Assert-VisionMainCondition ($matches.Count -eq 1) "successful main run must expose exactly one non-expired artifact for $Commit"
   Assert-VisionMainCondition (-not [string]::IsNullOrWhiteSpace([string]$matches[0].archive_download_url)) "main artifact has no download URL"
   return $matches[0]
+}
+
+function Find-VisionMainRunArtifact {
+  param(
+    [object[]]$Runs,
+    [string]$Commit,
+    [string]$Repository,
+    [string]$ApiBaseUrl,
+    [scriptblock]$ApiRequest
+  )
+  foreach ($run in @(Get-VisionEligibleMainRuns $Runs $Commit)) {
+    $runCommit = Assert-VisionCommit ([string]$run.head_sha)
+    $artifactResponse = & $ApiRequest "$ApiBaseUrl/repos/$Repository/actions/runs/$($run.id)/artifacts?per_page=100"
+    $matches = @($artifactResponse.artifacts | Where-Object {
+      $_.name -ceq ("vending-vision-main-" + $runCommit) -and $_.expired -ne $true
+    })
+    if ($matches.Count -eq 0) { continue }
+    $artifact = Resolve-VisionMainArtifact @($artifactResponse.artifacts) $runCommit
+    return [pscustomobject]@{ run = $run; commit = $runCommit; artifact = $artifact }
+  }
+  throw "Vision main artifact: no successful main workflow run contains the expected non-expired publishing artifact"
 }
 
 function Get-VisionMainArtifactCache {
@@ -135,14 +156,13 @@ function Get-VisionMainArtifactCache {
   $runsUri = "$ApiBaseUrl/repos/$Repository/actions/runs?branch=main&status=success&per_page=100"
   if (-not [string]::IsNullOrWhiteSpace($CommitSha)) { $runsUri += "&head_sha=" + (Assert-VisionCommit $CommitSha) }
   $runResponse = & $ApiRequest $runsUri
-  $run = Resolve-VisionMainRun @($runResponse.workflow_runs) $CommitSha
-  $commit = Assert-VisionCommit ([string]$run.head_sha)
+  $resolved = Find-VisionMainRunArtifact @($runResponse.workflow_runs) $CommitSha $Repository $ApiBaseUrl $ApiRequest
+  $commit = $resolved.commit
   $cacheDirectory = Join-Path $CacheRoot $commit
   if (Test-Path -LiteralPath $cacheDirectory) {
     return Assert-VisionCachedArtifacts $cacheDirectory $commit
   }
-  $artifactResponse = & $ApiRequest "$ApiBaseUrl/repos/$Repository/actions/runs/$($run.id)/artifacts?per_page=100"
-  $artifact = Resolve-VisionMainArtifact @($artifactResponse.artifacts) $commit
+  $artifact = $resolved.artifact
   $staging = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-" + [guid]::NewGuid().ToString("N"))
   try {
     New-Item -ItemType Directory -Force -Path $staging | Out-Null

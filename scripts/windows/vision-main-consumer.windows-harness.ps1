@@ -102,18 +102,29 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-" + [guid]::NewGuid().ToString("N"))
 try {
   $commit = "0123456789abcdef0123456789abcdef01234567"
+  $unrelatedCommit = "fedcba9876543210fedcba9876543210fedcba98"
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $archives = New-VisionArchiveFixture $root $commit
   $apiCalls = [Collections.Generic.List[string]]::new(); $downloads = [Collections.Generic.List[string]]::new()
   $api = {
     param($Uri)
     $apiCalls.Add($Uri) | Out-Null
-    if ($Uri -match '/actions/runs\?') { return @{ workflow_runs = @(@{ id = 5; head_sha = $commit; head_branch = "main"; conclusion = "success" }) } }
+    if ($Uri -match '/actions/runs\?') {
+      return @{ workflow_runs = @(
+        @{ id = 9; head_sha = $unrelatedCommit; head_branch = "main"; conclusion = "success" },
+        @{ id = 5; head_sha = $commit; head_branch = "main"; conclusion = "success" }
+      ) }
+    }
+    if ($Uri -match '/actions/runs/9/artifacts') {
+      return @{ artifacts = @(@{ name = "unrelated-success-output"; expired = $false; archive_download_url = "fixture://unrelated" }) }
+    }
     return @{ artifacts = @(@{ name = "vending-vision-main-$commit"; expired = $false; archive_download_url = "fixture://artifact" }) }
   }.GetNewClosure()
   $download = { param($Uri, $Destination) $downloads.Add($Uri) | Out-Null; Copy-Item -LiteralPath $archives.actionZip -Destination $Destination }.GetNewClosure()
-  $cache = Get-VisionMainArtifactCache -CacheRoot (Join-Path $root "cache") -CommitSha $commit -ApiRequest $api -DownloadArtifact $download
-  Assert-True ($cache.commit -eq $commit) "resolver did not retain the explicit commit SHA"
+  $cache = Get-VisionMainArtifactCache -CacheRoot (Join-Path $root "cache") -ApiRequest $api -DownloadArtifact $download
+  Assert-True ($cache.commit -eq $commit) "resolver did not select the newest main run containing the expected artifact"
+  Assert-True (($apiCalls -join "`n") -match '/actions/runs/9/artifacts') "resolver did not inspect the newest successful run"
+  Assert-True (($apiCalls -join "`n") -match '/actions/runs/5/artifacts') "resolver did not continue past an unrelated successful run"
   Assert-True ($cache.cacheDirectory -eq (Join-Path (Join-Path $root "cache") $commit)) "cache was not keyed only by commit SHA"
   Assert-True ($downloads.Count -eq 1) "resolver did not download exactly one Actions artifact"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $cache.cacheDirectory "recorded-video"))) "fixtures leaked into the runtime cache root"

@@ -1,3 +1,4 @@
+import { visionTryOnPreviewUrlSchema } from "@vem/shared";
 import { readonly, ref, type Ref } from "vue";
 
 import {
@@ -61,8 +62,15 @@ export function useTryOnPreview(): {
         await session.stop("replaced");
         return;
       }
+      const parsedPreviewUrl = visionTryOnPreviewUrlSchema.safeParse(
+        session.previewUrl,
+      );
+      if (!parsedPreviewUrl.success) {
+        await session.stop("error");
+        throw new Error("Vision returned a non-loopback preview URL");
+      }
       activeSession.value = session;
-      previewUrl.value = session.previewUrl;
+      previewUrl.value = parsedPreviewUrl.data;
     } catch (error) {
       if (sequence === requestSequence) {
         if (isVisionTryOnCapabilityDegraded(error)) {

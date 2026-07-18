@@ -58,7 +58,10 @@ vi.mock("@/composables/usePresenceInteraction", () => ({
 }));
 
 vi.mock("@/composables/useVisionRecommendations", () => ({
-  useVisionRecommendations: () => undefined,
+  useVisionRecommendations: () => ({
+    currentProfile: { value: null },
+    lastVisionResult: { value: null },
+  }),
 }));
 
 vi.mock("@/daemon/client", () => ({

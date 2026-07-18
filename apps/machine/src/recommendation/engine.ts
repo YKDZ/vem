@@ -54,6 +54,43 @@ function matchesColor(
   return Boolean(color && preferred && color.includes(preferred));
 }
 
+export type VariantRecommendation = {
+  variant: MachineCatalogVariantCandidate | null;
+  score: number;
+};
+
+/**
+ * Recommend one variant and expose only whether Vision actually improved the
+ * deterministic catalog fallback. Catalog ordering can consume the score
+ * without becoming a second selection authority.
+ */
+export function recommendVariant(
+  variants: readonly MachineCatalogVariantCandidate[],
+  profile?: VisionProfile | null,
+): VariantRecommendation {
+  const fallback = defaultVariant(variants);
+  if (!fallback) return { variant: null, score: 0 };
+
+  const inferredSize = inferSize(
+    profile?.heightCm ?? undefined,
+    profile?.bodyType,
+  );
+  const hasSizeMatch = Boolean(
+    inferredSize && variants.some((variant) => variant.size === inferredSize),
+  );
+  const size = hasSizeMatch ? inferredSize : fallback.size;
+  const sizePool = variants.filter((variant) => variant.size === size);
+  const scopedFallback = defaultVariant(sizePool) ?? fallback;
+  const colorMatch = sizePool.find((variant) =>
+    matchesColor(variant, profile?.upperColor),
+  );
+
+  return {
+    variant: colorMatch ?? scopedFallback,
+    score: (hasSizeMatch ? 2 : 0) + (colorMatch ? 1 : 0),
+  };
+}
+
 /**
  * Pick the initial product variant silently from a vision profile.
  * Missing or unmatched signals fall back to the catalog's deterministic default.
@@ -62,22 +99,5 @@ export function choosePreferredVariant(
   variants: readonly MachineCatalogVariantCandidate[],
   profile?: VisionProfile | null,
 ): MachineCatalogVariantCandidate | null {
-  const fallback = defaultVariant(variants);
-  if (!fallback) return null;
-
-  const inferredSize = inferSize(
-    profile?.heightCm ?? undefined,
-    profile?.bodyType,
-  );
-  const size =
-    inferredSize && variants.some((variant) => variant.size === inferredSize)
-      ? inferredSize
-      : fallback.size;
-  const sizePool = variants.filter((variant) => variant.size === size);
-  const scopedFallback = defaultVariant(sizePool) ?? fallback;
-  const colorMatch = sizePool.find((variant) =>
-    matchesColor(variant, profile?.upperColor),
-  );
-
-  return colorMatch ?? scopedFallback;
+  return recommendVariant(variants, profile).variant;
 }

@@ -6,6 +6,7 @@ import {
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
   visionServerMessageSchema,
+  visionTryOnPreviewUrlSchema,
   type VisionClientMessage,
   type VisionErrorMessage,
   type VisionProfile,
@@ -279,6 +280,10 @@ export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
   );
 }
 
+export function parseVisionTryOnPreviewUrl(value: unknown): string {
+  return visionTryOnPreviewUrlSchema.parse(value);
+}
+
 function closeSocket(socket: WebSocket): void {
   if (
     socket.readyState === WebSocket.CONNECTING ||
@@ -415,7 +420,7 @@ export async function openVisionTryOnSession(
 
     return {
       sessionId: startedMessage.payload.sessionId,
-      previewUrl: startedMessage.payload.previewUrl,
+      previewUrl: parseVisionTryOnPreviewUrl(startedMessage.payload.previewUrl),
       streamType: startedMessage.payload.streamType,
       stop: async (reason: VisionTryOnStopReason = "user_exit") => {
         if (closed) return;

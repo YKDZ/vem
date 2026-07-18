@@ -112,7 +112,7 @@ describe("useVisionStore", () => {
         message: "vision disabled",
       }),
     );
-    expect(visionStore.latestDiagnosticPayload).toEqual(disabledDiagnostic);
+    expect(visionStore.latestDiagnosticPayload).toBeNull();
     expect(visionStore.presence.personPresent).toBe(false);
   });
 
@@ -252,5 +252,53 @@ describe("useVisionStore", () => {
       }),
     );
     expect(visionStore.isTryOnCapabilityDegraded).toBe(true);
+  });
+
+  it("clears available or unknown try-on state whenever Vision becomes disabled", () => {
+    const visionStore = useVisionStore();
+    visionStore.applyVisionReady({
+      serverName: "vending-vision",
+      serverVersion: "main",
+      cameraReady: true,
+      modelReady: true,
+      capabilities: ["profile_push", "try_on_session"],
+    });
+    visionStore.applyPresenceStatus(presencePayload(true));
+
+    visionStore.applyStatus(
+      visionStatus(null, {
+        enabled: false,
+        online: false,
+        message: "vision disabled",
+      }),
+    );
+
+    expect(visionStore.tryOnCapability).toBe("degraded");
+    expect(visionStore.latestDiagnosticPayload).toBeNull();
+    expect(visionStore.presence.personPresent).toBe(false);
+
+    visionStore.$reset();
+    visionStore.applyStatus(
+      visionStatus(
+        {
+          type: "vision.ready",
+          payload: {
+            serverName: "vending-vision",
+            serverVersion: "main",
+            cameraReady: true,
+            modelReady: true,
+            capabilities: ["profile_push", "try_on_session"],
+          },
+        },
+        {
+          enabled: false,
+          online: false,
+          message: "vision disabled",
+        },
+      ),
+    );
+
+    expect(visionStore.tryOnCapability).toBe("degraded");
+    expect(visionStore.latestDiagnosticPayload).toBeNull();
   });
 });

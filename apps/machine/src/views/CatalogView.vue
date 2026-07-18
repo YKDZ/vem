@@ -25,6 +25,7 @@ import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
@@ -32,7 +33,7 @@ import { formatCents } from "@/utils/format";
 
 const catalogStore = useCatalogStore();
 const machineStore = useMachineStore();
-useVisionRecommendations();
+const { currentProfile } = useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { primaryNotification } = useCatalogNotifications();
 const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
@@ -60,6 +61,8 @@ type DisplayProduct = {
   image: string;
   hasProductImage: boolean;
   item: MachineCatalogItem;
+  preferredVariantId: string | null;
+  recommendationScore: number;
 };
 
 const carouselSlides = [
@@ -105,12 +108,33 @@ const categoryGroups = computed(() =>
 const fallbackCategoryItems = computed(() =>
   catalogStore.availableItems.filter(usesFallbackTopCategory),
 );
-const displayProducts = computed(() => [
-  ...categoryGroups.value.flatMap((group) =>
-    group.items.map((item) => toDisplayProduct(item, group.key)),
-  ),
-  ...fallbackCategoryItems.value.map((item) => toDisplayProduct(item, "other")),
-]);
+const displayProducts = computed(() =>
+  [
+    ...categoryGroups.value.flatMap((group) =>
+      group.items.map((item) => toDisplayProduct(item, group.key)),
+    ),
+    ...fallbackCategoryItems.value.map((item) =>
+      toDisplayProduct(item, "other"),
+    ),
+  ]
+    .map((product) => {
+      const recommendation = recommendVariant(
+        product.item.variantCandidates,
+        currentProfile.value,
+      );
+      return {
+        ...product,
+        preferredVariantId:
+          recommendation.score > 0
+            ? (recommendation.variant?.variantId ?? null)
+            : null,
+        recommendationScore: recommendation.score,
+      };
+    })
+    .sort(
+      (left, right) => right.recommendationScore - left.recommendationScore,
+    ),
+);
 const availableCategoryKeys = computed(
   () =>
     new Set<CatalogSelectionKey>([
@@ -290,15 +314,21 @@ function toDisplayProduct(
     image: item.coverImageUrl || fallbackImageForCategory(categoryKey),
     hasProductImage: Boolean(item.coverImageUrl),
     item,
+    preferredVariantId: null,
+    recommendationScore: 0,
   };
 }
 
 async function openProductDetail(product: DisplayProduct): Promise<void> {
+  const query = product.preferredVariantId
+    ? { variantId: product.preferredVariantId }
+    : undefined;
   await submitMachineNavigationIntent({
     type: "customer.navigate",
     target: {
       name: "product-detail",
       params: { catalogKey: product.item.catalogKey },
+      ...(query ? { query } : {}),
     },
   });
 }

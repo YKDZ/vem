@@ -96,16 +96,18 @@ export const useVisionStore = defineStore("vision", {
       this.online = status.online;
       this.message = status.message;
       this.updatedAt = status.updatedAt ?? new Date().toISOString();
+      if (!status.enabled) {
+        this.tryOnCapability = "degraded";
+        this.clearLatestDiagnosticPayload();
+        return;
+      }
       if (status.latestDiagnosticPayload !== undefined) {
         this.latestDiagnosticPayload = status.latestDiagnosticPayload;
         this.applyTryOnCapabilityFromDiagnostic(this.latestDiagnosticPayload);
         this.applyPresenceFromDiagnostic(this.latestDiagnosticPayload, options);
         return;
       }
-      if (!status.enabled) {
-        this.tryOnCapability = "degraded";
-      }
-      if (!status.enabled || !status.online) {
+      if (!status.online) {
         this.clearLatestDiagnosticPayload();
       }
     },

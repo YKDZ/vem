@@ -7,7 +7,7 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
-import { choosePreferredVariant, inferSize } from "./engine";
+import { choosePreferredVariant, inferSize, recommendVariant } from "./engine";
 
 /** Create a minimal MachineCatalogItem for testing */
 function makeCatalogItem(
@@ -224,5 +224,34 @@ describe("choosePreferredVariant", () => {
 
   it("returns null for an empty variant list", () => {
     expect(choosePreferredVariant([], { personPresent: true })).toBeNull();
+  });
+
+  it("scores profile matches while keeping unmatched fallback deterministic", () => {
+    const matched = recommendVariant(variants, {
+      personPresent: true,
+      heightCm: 178,
+      bodyType: "regular",
+      upperColor: "蓝",
+    });
+    const unmatched = recommendVariant(variants, {
+      personPresent: true,
+      heightCm: 190,
+      bodyType: "regular",
+      upperColor: "红",
+    });
+    const absent = recommendVariant(variants, null);
+
+    expect(matched).toMatchObject({
+      variant: { variantId: "l-blue" },
+      score: 3,
+    });
+    expect(unmatched).toMatchObject({
+      variant: { variantId: "m-white" },
+      score: 0,
+    });
+    expect(absent).toMatchObject({
+      variant: { variantId: "m-white" },
+      score: 0,
+    });
   });
 });

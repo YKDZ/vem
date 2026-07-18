@@ -3,6 +3,30 @@ import { z } from "zod";
 export const VISION_PROTOCOL = "vem.vision.v1" as const;
 export const DEFAULT_VISION_WS_URL = "ws://127.0.0.1:7892/ws" as const;
 
+export function isVisionLoopbackPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+    return (
+      url.protocol === "http:" &&
+      loopbackHosts.has(url.hostname.toLocaleLowerCase()) &&
+      url.port === "7892" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+export const visionTryOnPreviewUrlSchema = z
+  .string()
+  .trim()
+  .pipe(z.url())
+  .refine(isVisionLoopbackPreviewUrl, {
+    message: "Vision preview URL must use the fixed local loopback origin",
+  });
+
 export const visionClientMessageTypeSchema = z.enum([
   "vision.hello",
   "vision.ping",
@@ -187,7 +211,7 @@ export const visionTryOnStopPayloadSchema = z
 export const visionTryOnStartedPayloadSchema = z
   .object({
     sessionId: z.string().min(1).max(128),
-    previewUrl: z.string().trim().pipe(z.url()),
+    previewUrl: visionTryOnPreviewUrlSchema,
     streamType: z.literal("mjpeg").default("mjpeg"),
   })
   .loose();

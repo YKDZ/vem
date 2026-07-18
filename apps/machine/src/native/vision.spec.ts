@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   openVisionTryOnSession,
+  parseVisionTryOnPreviewUrl,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
@@ -246,6 +247,12 @@ describe("vision native browser fallback - try-on sessions", () => {
     await expect(openVisionTryOnSession(config)).rejects.toThrow(
       "视觉模块未启用",
     );
+  });
+
+  it("rejects a remote preview URL returned by Vision", () => {
+    expect(() =>
+      parseVisionTryOnPreviewUrl("https://vision.example/try-on/session.mjpeg"),
+    ).toThrow();
   });
 });
 

@@ -73,6 +73,45 @@ describe("vision protocol schemas", () => {
     expect(message.payload.streamType).toBe("mjpeg");
   });
 
+  it("accepts only the fixed local Vision loopback preview origin", () => {
+    for (const previewUrl of [
+      "http://127.0.0.1:7892/try-on/session.mjpeg",
+      "http://localhost:7892/try-on/session.mjpeg",
+      "http://[::1]:7892/try-on/session.mjpeg",
+    ]) {
+      expect(() =>
+        visionTryOnStartedMessageSchema.parse({
+          ...BASE_ENVELOPE,
+          type: "vision.try_on.started",
+          payload: {
+            sessionId: "try-on-session-001",
+            previewUrl,
+            streamType: "mjpeg",
+          },
+        }),
+      ).not.toThrow();
+    }
+
+    for (const previewUrl of [
+      "https://vision.example/try-on/session.mjpeg",
+      "http://127.0.0.1:8080/try-on/session.mjpeg",
+      "https://127.0.0.1:7892/try-on/session.mjpeg",
+      "http://user@127.0.0.1:7892/try-on/session.mjpeg",
+    ]) {
+      expect(() =>
+        visionTryOnStartedMessageSchema.parse({
+          ...BASE_ENVELOPE,
+          type: "vision.try_on.started",
+          payload: {
+            sessionId: "try-on-session-001",
+            previewUrl,
+            streamType: "mjpeg",
+          },
+        }),
+      ).toThrow();
+    }
+  });
+
   it("parses a pushed profile result", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,

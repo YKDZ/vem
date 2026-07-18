@@ -952,6 +952,126 @@ describe("sale-start capability UI flow", () => {
     expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
+  it("orders and selects catalog recommendations from a usable Vision profile with stable fallback", async () => {
+    const mediumItem = makeCatalogItem();
+    const largeBase = {
+      ...mediumItem,
+      slotId: "550e8400-e29b-41d4-a716-446655440031",
+      slotCode: "A2",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440032",
+      variantId: "550e8400-e29b-41d4-a716-446655440033",
+      productId: "550e8400-e29b-41d4-a716-446655440034",
+      productName: "宽松短袖",
+      sku: "TEE-RELAXED-L-BLUE",
+      size: "L",
+      color: "深蓝色",
+      productSortOrder: 2,
+    };
+    const largeSlot = {
+      ...mediumItem.slotCandidates[0],
+      slotId: largeBase.slotId,
+      slotCode: largeBase.slotCode,
+      inventoryId: largeBase.inventoryId,
+      variantId: largeBase.variantId,
+      sku: largeBase.sku,
+      size: largeBase.size,
+      color: largeBase.color,
+    };
+    const largeItem: MachineCatalogItem = {
+      ...largeBase,
+      catalogKey: `product:${largeBase.productId}`,
+      slotCandidates: [largeSlot],
+      variantCandidates: [
+        {
+          ...mediumItem.variantCandidates[0],
+          variantId: largeBase.variantId,
+          sku: largeBase.sku,
+          size: largeBase.size,
+          color: largeBase.color,
+          slotCandidates: [largeSlot],
+        },
+      ],
+    };
+    useCatalogStore().applySnapshot({
+      items: [mediumItem, largeItem],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const host = await mountView(CatalogView);
+    requireButtonByText(host, "T恤").click();
+    await nextTick();
+    expect(
+      Array.from(host.querySelectorAll('[data-test="catalog-product"]')).map(
+        (element) => element.getAttribute("data-catalog-key"),
+      ),
+    ).toEqual([mediumItem.catalogKey, largeItem.catalogKey]);
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "vision-recommendation-001",
+        detectedAt: "2026-07-18T10:00:00.000Z",
+        occupancy: { state: "single", confidence: 0.94 },
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.94,
+        },
+        quality: {
+          overall: "good",
+          warnings: [],
+          profileUsable: true,
+        },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    const recommendedProducts = Array.from<HTMLButtonElement>(
+      host.querySelectorAll('[data-test="catalog-product"]'),
+    );
+    expect(
+      recommendedProducts.map((element) =>
+        element.getAttribute("data-catalog-key"),
+      ),
+    ).toEqual([largeItem.catalogKey, mediumItem.catalogKey]);
+    recommendedProducts[0].click();
+    await nextTick();
+    expect(routerPushMock).toHaveBeenLastCalledWith({
+      name: "product-detail",
+      params: { catalogKey: largeItem.catalogKey },
+      query: { variantId: largeItem.variantId },
+    });
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "vision-recommendation-low-confidence",
+        detectedAt: "2026-07-18T10:00:01.000Z",
+        occupancy: { state: "single", confidence: 0.3 },
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.3,
+        },
+        quality: { overall: "poor", warnings: [] },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+    expect(
+      Array.from(host.querySelectorAll('[data-test="catalog-product"]')).map(
+        (element) => element.getAttribute("data-catalog-key"),
+      ),
+    ).toEqual([mediumItem.catalogKey, largeItem.catalogKey]);
+  });
+
   it("keeps the fixed catalog home through repeated readiness changes", async () => {
     const item = makeCatalogItem();
     const blockedHealth = {
@@ -1380,6 +1500,35 @@ describe("sale-start capability UI flow", () => {
       `http://localhost:3000${tryOnSilhouetteUrl}`,
     );
     expect(silhouette?.className).toContain("try-on-silhouette-fixed");
+  });
+
+  it("rejects a remote try-on preview URL at the UI boundary", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    const { stop } = mockTryOnSession(
+      "https://vision.example/try-on/session.mjpeg",
+    );
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+
+    const host = await mountView(VirtualTryOnView);
+
+    await vi.waitFor(() => {
+      expect(stop).toHaveBeenCalledWith("error");
+    });
+    expect(host.querySelector('[data-test="try-on-preview"]')).toBeNull();
+    expect(host.textContent).toContain("虚拟试穿预览启动失败");
+    expect(useVisionStore().isTryOnCapabilityDegraded).toBe(false);
   });
 
   it("uses a local placeholder and operator diagnostic when the try-on silhouette cannot decode", async () => {

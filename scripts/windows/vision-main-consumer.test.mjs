@@ -20,6 +20,8 @@ test("consumes the published Vision main Actions artifact contract", () => {
   assert.match(module, /vending-vision-main-artifacts\/v1/);
   assert.match(module, /head_branch -ceq "main"/);
   assert.match(module, /conclusion -ceq "success"/);
+  assert.match(module, /foreach \(\$run in @\(Get-VisionEligibleMainRuns/);
+  assert.match(module, /if \(\$matches\.Count -eq 0\) \{ continue \}/);
   assert.match(module, /Join-Path \$CacheRoot \$commit/);
 });
 
