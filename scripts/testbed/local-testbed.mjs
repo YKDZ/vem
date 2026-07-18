@@ -289,6 +289,11 @@ export function validateBaselineContract(contract) {
   ]) {
     required(binding.guest[key], `baseline contract guest.${key}`);
   }
+  if (binding.guest.user !== "VEMKiosk") {
+    throw new Error(
+      "baseline contract guest.user must be the production machine user VEMKiosk",
+    );
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(binding.guest.host)) {
     throw new Error(
       "baseline contract guest.host must be a hostname or IP address",
@@ -1419,7 +1424,7 @@ async function reconstruct(options) {
       claimCode: seeded.claim.claimCode,
       machineCode: seeded.machine.code,
       planogramVersion: seeded.planogramVersion,
-      interactiveUser: contract.testbed.guest.user,
+      interactiveUser: "VEMKiosk",
       visionAcceptance: seeded.visionAcceptance,
     };
     await writeFile(

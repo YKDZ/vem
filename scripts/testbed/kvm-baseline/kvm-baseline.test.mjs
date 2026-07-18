@@ -94,7 +94,7 @@ function buildConfig(root) {
         "administrator-authorized-keys",
       ),
       sshPrivateKeyFile: join(root, "secrets", "administrator-private-key"),
-      sshUser: "baseline",
+      sshUser: "VEMKiosk",
       desktopScalePercent: 100,
     },
     runner: {
@@ -119,7 +119,7 @@ function buildConfig(root) {
       ],
       guest: {
         host: "win10-runtime.example.test",
-        user: "baseline",
+        user: "VEMKiosk",
         identityFile: join(root, "secrets", "administrator-private-key"),
         knownHostsFile: join(root, "ssh", "known_hosts"),
         stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -1177,6 +1177,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
     try {
       const config = buildConfig(root);
       assert.deepEqual(validateBaselineBuildConfig(config), config);
+
+      const testOnlyUser = buildConfig(root);
+      testOnlyUser.guest.sshUser = "VEMRunner";
+      assert.throws(
+        () => validateBaselineBuildConfig(testOnlyUser),
+        /production machine user VEMKiosk/,
+      );
 
       delete config.runner.registrationTokenProvider;
       assert.throws(
@@ -2923,7 +2930,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     const invocations = [];
     const interactiveReport = {
       schemaVersion: "win10-kvm-interactive-display/v1",
-      interactiveUser: "KVM-BUILDER\\baseline",
+      interactiveUser: "KVM-BUILDER\\VEMKiosk",
       interactiveSessionId: 1,
       desktop: { width: 1080, height: 1920, scalePercent: 100 },
       displayAdapter: "Microsoft Basic Display Adapter",

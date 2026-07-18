@@ -103,7 +103,7 @@ function contract(root) {
       ],
       guest: {
         host: "win10-testbed.local",
-        user: "baseline",
+        user: "VEMKiosk",
         identityFile: join(root, "id_ed25519"),
         knownHostsFile: join(root, "known_hosts"),
         stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -214,7 +214,7 @@ function producerConfig(root) {
         "administrator-authorized-keys",
       ),
       sshPrivateKeyFile: join(root, "secrets", "administrator-private-key"),
-      sshUser: "baseline",
+      sshUser: "VEMKiosk",
       desktopScalePercent: 100,
     },
     runner: {
@@ -249,7 +249,7 @@ function producerConfig(root) {
       ],
       guest: {
         host: "win10-testbed.local",
-        user: "baseline",
+        user: "VEMKiosk",
         identityFile: join(root, "secrets", "administrator-private-key"),
         knownHostsFile: join(root, "ssh", "known_hosts"),
         stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -307,6 +307,17 @@ describe("local testbed orchestration", () => {
     try {
       const value = contract(root);
       assert.deepEqual(validateBaselineContract(value), value);
+      assert.throws(
+        () =>
+          validateBaselineContract({
+            ...value,
+            testbed: {
+              ...value.testbed,
+              guest: { ...value.testbed.guest, user: "VEMRunner" },
+            },
+          }),
+        /production machine user VEMKiosk/,
+      );
       assert.throws(
         () =>
           validateBaselineContract({
@@ -661,7 +672,7 @@ describe("local testbed orchestration", () => {
       );
       assert.match(
         implementation,
-        /interactiveUser:\s*contract\.testbed\.guest\.user/,
+        /interactiveUser:\s*"VEMKiosk"/,
       );
       assert.match(implementation, /installed-runtime-handoff\.json/);
       assert.match(

@@ -357,7 +357,9 @@ export function validateBaselineBuildConfig(input) {
   ]) {
     absolutePath(guest[key], `guest.${key}`);
   }
-  string(guest.sshUser, "guest.sshUser");
+  if (string(guest.sshUser, "guest.sshUser") !== "VEMKiosk") {
+    throw new Error("guest.sshUser must be the production machine user VEMKiosk");
+  }
   integer(guest.desktopScalePercent, "guest.desktopScalePercent");
   const runner = object(config.runner, "runner");
   if (!/^https:\/\/github\.com\//.test(string(runner.url, "runner.url"))) {
