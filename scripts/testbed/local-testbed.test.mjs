@@ -693,6 +693,58 @@ describe("local testbed orchestration", () => {
     }
   });
 
+  it("forwards explicitly configured runner proxies to host admission and leaves an absent proxy configuration untouched", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const value = contract(root);
+      const withoutProxy = buildReconstructionPlan(options(root), value).at(-1);
+      assert.equal(
+        withoutProxy.args.includes("--runner-proxy-configured"),
+        false,
+      );
+
+      const withProxy = parseOptions(
+        [
+          "reconstruct",
+          "--mode",
+          "fast",
+          "--run-id",
+          "run-15",
+          "--workspace",
+          root,
+          "--state-root",
+          join(root, "state"),
+          "--baseline-contract",
+          join(root, "baseline.json"),
+          "--host-private-address",
+          "10.0.0.15",
+          "--out",
+          join(root, "out.json"),
+        ],
+        {
+          observeNetworkInterfaces: observedNetworkInterfaces,
+          environment: {
+            VEM_RUNNER_HTTP_PROXY: "http://proxy.example.test:8080",
+            VEM_RUNNER_HTTPS_PROXY: "",
+            VEM_RUNNER_NO_PROXY: "localhost,127.0.0.1",
+          },
+        },
+      );
+      const admission = buildReconstructionPlan(withProxy, value).at(-1);
+      assert.deepEqual(admission.args.slice(-7), [
+        "--runner-proxy-configured",
+        "--runner-http-proxy",
+        "http://proxy.example.test:8080",
+        "--runner-https-proxy",
+        "",
+        "--runner-no-proxy",
+        "localhost,127.0.0.1",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects tracked defaults that could encode a host address", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {

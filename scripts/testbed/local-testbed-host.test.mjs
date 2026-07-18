@@ -165,7 +165,8 @@ describe("tracked local testbed host lifecycle", () => {
       plan[0].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
-    assert.equal(plan.at(-1).type, "assert-interactive-display");
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan.at(-1).type, "restart-runner-and-await-listener");
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
@@ -201,6 +202,15 @@ describe("tracked local testbed host lifecycle", () => {
           args.at(-1),
           'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"',
         );
+        if (!input.includes("interactive-display-report")) {
+          return {
+            stdout: `${JSON.stringify({
+              serviceName: "actions.runner.example.runtime",
+              listenerMarker: "Listening for Jobs",
+              diagnosticLog: "Runner_20260718-000000-utc.log",
+            })}\n`,
+          };
+        }
         assert.match(input, /interactive-display-report\.json/);
         return {
           stdout: `${JSON.stringify({
@@ -216,6 +226,63 @@ describe("tracked local testbed host lifecycle", () => {
       },
     });
     assert.equal(result.displayAdmissionProof.widthPx, 1080);
-    assert.deepEqual(operations, ["ssh", "ssh"]);
+    assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
+  });
+
+  it("updates only explicit runner proxy entries, restarts the discovered service, and waits for a fresh listener diagnostic", async () => {
+    const plan = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-15",
+      runnerProxy: {
+        configured: true,
+        http: "http://proxy.example.test:8080",
+        https: "",
+        noProxy: "localhost,127.0.0.1",
+      },
+    });
+    const runner = plan.at(-1);
+    assert.equal(runner.type, "restart-runner-and-await-listener");
+    assert.match(runner.input, /C:\\actions-runner\\.env/);
+    assert.match(runner.input, /actions\.runner\.\*/);
+    assert.match(runner.input, /Restart-Service/);
+    assert.match(runner.input, /Session created|Listening for Jobs|Runner reconnected/);
+    assert.match(runner.input, /HTTP_PROXY=http:\/\/proxy\.example\.test:8080/);
+    assert.match(runner.input, /HTTPS_PROXY=/);
+    assert.match(runner.input, /NO_PROXY=localhost,127\.0\.0\.1/);
+    assert.match(runner.input, /Where-Object \{ \$_ -notmatch/);
+    assert.doesNotMatch(runner.input, /GitHub API|GITHUB_TOKEN|gh api/i);
+
+    const result = await executeHostAdmissionPlan(plan, {
+      runCommand: async () => {},
+      runCaptureCommand: async (_command, _args, input) => {
+        if (input.includes("interactive-display-report")) {
+          return {
+            stdout: `${JSON.stringify({
+              schemaVersion: "vem-local-testbed-display-admission-proof/v1",
+              status: "passed",
+              widthPx: 1080,
+              heightPx: 1920,
+              sessionUser: "baseline",
+            })}\n`,
+          };
+        }
+        return {
+          stdout: `${JSON.stringify({
+            serviceName: "actions.runner.example.runtime",
+            listenerMarker: "Listening for Jobs",
+            diagnosticLog: "Runner_20260718-000000-utc.log",
+          })}\n`,
+        };
+      },
+    });
+    assert.equal(result.runnerAdmission.listenerMarker, "Listening for Jobs");
+
+    const withoutProxy = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "run-16",
+    }).at(-1);
+    assert.doesNotMatch(withoutProxy.input, /WriteAllLines|\$proxyLines/);
   });
 });

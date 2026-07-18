@@ -26,6 +26,7 @@ const ACTIVATOR_SERVICE_OWNER_SCHEMA =
   "vem-local-testbed-headless-vnc-activator-owner/v1";
 const POWERSHELL_STDIN_COMMAND =
   'powershell -NoProfile -NonInteractive -Command "$script = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($script))"';
+const RUNNER_ADMISSION_TIMEOUT_SECONDS = 45;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -44,6 +45,16 @@ function option(args, name) {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
+    throw new Error(`--${name} requires a value`);
+  }
+  return value;
+}
+
+function optionalOptionOrEmpty(args, name) {
+  const index = args.indexOf(`--${name}`);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith("--")) {
     throw new Error(`--${name} requires a value`);
   }
   return value;
@@ -184,6 +195,7 @@ function Convert-QuserSessionLine([string]$Line) {
     state = [string]$match.Groups["state"].Value
   }
 }
+
 function Test-ExpectedInteractiveSession($Session, [string]$User) {
   if ($null -eq $Session) { return $false }
   $state = ([string]$Session.state).Trim().ToLowerInvariant()
@@ -227,6 +239,53 @@ if ($proof.status -ne 'passed') {
   throw ('interactive desktop display baseline is {0}x{1}, expected ${width}x${height}' -f $proof.widthPx, $proof.heightPx)
 }
 $proof | ConvertTo-Json -Compress
+`;
+}
+
+function runnerAdmissionAssertion(runnerProxy) {
+  const proxyLines = runnerProxy?.configured
+    ? [
+        `HTTP_PROXY=${runnerProxy.http}`,
+        `HTTPS_PROXY=${runnerProxy.https}`,
+        `NO_PROXY=${runnerProxy.noProxy}`,
+      ]
+    : [];
+  const updateEnvironment = runnerProxy?.configured
+    ? `$proxyLines = @(${proxyLines.map(quotePowerShell).join(", ")})
+$existingLines = if (Test-Path -LiteralPath $environmentPath -PathType Leaf) { @(Get-Content -LiteralPath $environmentPath -Encoding UTF8) } else { @() }
+$preservedLines = @($existingLines | Where-Object { $_ -notmatch '^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY)=' })
+[System.IO.File]::WriteAllLines($environmentPath, @($preservedLines + $proxyLines), [System.Text.UTF8Encoding]::new($false))
+`
+    : "";
+  return `$ErrorActionPreference = 'Stop'
+$runnerRoot = 'C:\\actions-runner'
+$environmentPath = 'C:\\actions-runner\\.env'
+$serviceIdentityPath = Join-Path $runnerRoot '.service'
+if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
+$serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
+if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
+$service = Get-Service -Name $serviceName -ErrorAction Stop
+${updateEnvironment}$restartStartedAt = (Get-Date).ToUniversalTime()
+Restart-Service -Name $service.Name -Force -ErrorAction Stop
+$service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
+$diagnosticDirectory = Join-Path $runnerRoot '_diag'
+$deadline = (Get-Date).ToUniversalTime().AddSeconds(${RUNNER_ADMISSION_TIMEOUT_SECONDS})
+$latestTail = ''
+while ((Get-Date).ToUniversalTime() -lt $deadline) {
+  $logs = @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -ge $restartStartedAt.AddSeconds(-1) } | Sort-Object LastWriteTimeUtc -Descending)
+  foreach ($log in $logs) {
+    $tail = (Get-Content -LiteralPath $log.FullName -Tail 80 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
+    $marker = [regex]::Match($tail, 'Session created|Listening for Jobs|Runner reconnected')
+    if ($marker.Success) {
+      [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name } | ConvertTo-Json -Compress
+      exit 0
+    }
+  }
+  Start-Sleep -Seconds 2
+}
+$serviceState = (Get-Service -Name $service.Name -ErrorAction SilentlyContinue).Status
+throw ("actions runner did not report a fresh listener diagnostic within ${RUNNER_ADMISSION_TIMEOUT_SECONDS} seconds (service=$serviceState; latest diagnostic tail: $latestTail)")
 `;
 }
 
@@ -406,6 +465,7 @@ export function buildHostAdmissionPlan({
   config: configInput,
   guestInputPath,
   runId,
+  runnerProxy = { configured: false },
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -431,6 +491,12 @@ export function buildHostAdmissionPlan({
         PORTRAIT_WIDTH_PX,
         PORTRAIT_HEIGHT_PX,
       ),
+    },
+    {
+      type: "restart-runner-and-await-listener",
+      command: "ssh",
+      args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
+      input: runnerAdmissionAssertion(runnerProxy),
     },
   ];
 }
@@ -578,7 +644,8 @@ async function executeReconstruction(options) {
 
 async function executeAdmission(options) {
   const plan = buildHostAdmissionPlan(options);
-  const { displayAdmissionProof } = await executeHostAdmissionPlan(plan);
+  const { displayAdmissionProof, runnerAdmission } =
+    await executeHostAdmissionPlan(plan);
   return {
     action: "admit",
     runId: options.runId,
@@ -586,6 +653,7 @@ async function executeAdmission(options) {
     guestInputPath: options.guestInputPath,
     runnerAdmitted: true,
     displayAdmissionProof,
+    runnerAdmission,
   };
 }
 
@@ -594,6 +662,7 @@ export async function executeHostAdmissionPlan(
   { runCommand = run, runCaptureCommand = runCapture } = {},
 ) {
   let displayAdmissionProof = null;
+  let runnerAdmission = null;
   for (const step of plan) {
     if (step.type === "assert-interactive-display") {
       const output = await runCaptureCommand(
@@ -609,11 +678,25 @@ export async function executeHostAdmissionPlan(
           height: step.expectedHeight,
         },
       );
+    } else if (step.type === "restart-runner-and-await-listener") {
+      const output = await runCaptureCommand(
+        step.command,
+        step.args,
+        step.input,
+      );
+      runnerAdmission = parseJsonLine(output.stdout, "runner admission");
+      if (
+        typeof runnerAdmission.serviceName !== "string" ||
+        typeof runnerAdmission.listenerMarker !== "string" ||
+        typeof runnerAdmission.diagnosticLog !== "string"
+      ) {
+        throw new Error("runner admission emitted incomplete diagnostics");
+      }
     } else {
       await runCommand(step.command, step.args, step.input);
     }
   }
-  return { displayAdmissionProof };
+  return { displayAdmissionProof, runnerAdmission };
 }
 
 export function parseHostOptions(args) {
@@ -658,12 +741,21 @@ export function parseHostOptions(args) {
     runId: required(option(args, "run-id"), "runId"),
   };
   if (action === "admit") {
+    const runnerProxyConfigured = args.includes("--runner-proxy-configured");
     return {
       ...common,
       guestInputPath: windowsAbsolute(
         option(args, "guest-input"),
         "guestInputPath",
       ),
+      runnerProxy: runnerProxyConfigured
+        ? {
+            configured: true,
+            http: optionalOptionOrEmpty(args, "runner-http-proxy") ?? "",
+            https: optionalOptionOrEmpty(args, "runner-https-proxy") ?? "",
+            noProxy: optionalOptionOrEmpty(args, "runner-no-proxy") ?? "",
+          }
+        : { configured: false },
     };
   }
   return {

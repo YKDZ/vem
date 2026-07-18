@@ -98,6 +98,11 @@ const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
   "apps/lower-controller-sim/Cargo.toml",
   "crates/vending-core/Cargo.toml",
 ]);
+const RUNNER_PROXY_ENVIRONMENT_NAMES = Object.freeze([
+  "VEM_RUNNER_HTTP_PROXY",
+  "VEM_RUNNER_HTTPS_PROXY",
+  "VEM_RUNNER_NO_PROXY",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -207,7 +212,7 @@ export function validateHostPrivateAddress(
 
 export function parseOptions(
   args,
-  { observeNetworkInterfaces = networkInterfaces } = {},
+  { observeNetworkInterfaces = networkInterfaces, environment = process.env } = {},
 ) {
   const command = args[0];
   if (command !== "reconstruct") {
@@ -233,8 +238,21 @@ export function parseOptions(
       "--baseline-contract",
     ),
     hostPrivateAddress,
+    runnerProxy: runnerProxyEnvironment(environment),
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
+  };
+}
+
+export function runnerProxyEnvironment(environment = process.env) {
+  const [http, https, noProxy] = RUNNER_PROXY_ENVIRONMENT_NAMES.map((name) =>
+    String(environment[name] ?? "").trim(),
+  );
+  return {
+    configured: [http, https, noProxy].some((value) => value.length > 0),
+    http,
+    https,
+    noProxy,
   };
 }
 
@@ -415,6 +433,19 @@ function renderPublishedCommand(command, options, contract) {
   return commandLine(rendered[0], rendered.slice(1));
 }
 
+function renderRunnerProxyArguments(runnerProxy) {
+  if (!runnerProxy?.configured) return [];
+  return [
+    "--runner-proxy-configured",
+    "--runner-http-proxy",
+    runnerProxy.http,
+    "--runner-https-proxy",
+    runnerProxy.https,
+    "--runner-no-proxy",
+    runnerProxy.noProxy,
+  ];
+}
+
 export function buildReconstructionPlan(options, contract) {
   const state = options.stateRoot;
   const binding = contract.testbed;
@@ -501,7 +532,17 @@ export function buildReconstructionPlan(options, contract) {
       join(state, "guest-input.json"),
       `${binding.guest.user}@${binding.guest.host}:${binding.guest.stagingPath}`,
     ]),
-    renderPublishedCommand(binding.admitRunnerCommand, options, contract),
+    (() => {
+      const admission = renderPublishedCommand(
+        binding.admitRunnerCommand,
+        options,
+        contract,
+      );
+      return commandLine(admission.command, [
+        ...admission.args,
+        ...renderRunnerProxyArguments(options.runnerProxy),
+      ]);
+    })(),
   ];
 }
 
