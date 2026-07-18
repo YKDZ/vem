@@ -512,6 +512,17 @@ async function waitForSsh(config) {
       await runCapture("ssh", sshArgs(config, command));
       return;
     } catch {
+      const state = await runCapture("virsh", [
+        "--connect",
+        config.libvirtUri,
+        "domstate",
+        config.domainName,
+      ]).catch(() => null);
+      if (state && state.stdout.trim().toLowerCase() !== "running") {
+        throw new Error(
+          `guest stopped while waiting for SSH: ${state.stdout.trim()}`,
+        );
+      }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
     }
   }

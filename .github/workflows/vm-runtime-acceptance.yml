@@ -51,7 +51,9 @@ jobs:
           test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
           test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
           test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          node scripts/testbed/local-testbed.mjs reconstruct \
+          mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
+          flock "$VEM_LOCAL_TESTBED_STATE_ROOT/reconstruct.lock" \
+            node scripts/testbed/local-testbed.mjs reconstruct \
             --mode "$TESTBED_MODE" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --workspace "$GITHUB_WORKSPACE" \
@@ -122,7 +124,9 @@ jobs:
           test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
           test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
           test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          node scripts/testbed/local-testbed.mjs reconstruct \
+          mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
+          flock "$VEM_LOCAL_TESTBED_STATE_ROOT/reconstruct.lock" \
+            node scripts/testbed/local-testbed.mjs reconstruct \
             --mode full \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-pass-2" \
             --workspace "$GITHUB_WORKSPACE" \
