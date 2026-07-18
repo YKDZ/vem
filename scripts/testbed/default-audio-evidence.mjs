@@ -23,7 +23,7 @@ function sampleMagnitude(bytes, offset, bits) {
   return Math.abs(bytes.readInt32LE(offset));
 }
 
-export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
+function parseWavPcm(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length < 44)
     return malformed("capture must be a complete RIFF/WAV buffer");
   if (
@@ -79,19 +79,56 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
     data.length % format.blockAlign
   )
     return malformed("WAV PCM format fields or frames are invalid");
+  return {
+    ok: true,
+    format: "wav_pcm",
+    encoding,
+    sampleRateHz: format.sampleRateHz,
+    channels: format.channels,
+    frameCount: data.length / format.blockAlign,
+    blockAlign: format.blockAlign,
+    bytesPerSample,
+    bits: format.bits,
+    data,
+  };
+}
+
+function inspectParsedWavPcm(
+  parsed,
+  threshold,
+  { startMs = 0, endMs = null, label = null } = {},
+) {
+  if (!parsed.ok) return parsed;
+  const normalizedStartMs = Number.isFinite(startMs) ? Math.max(0, startMs) : 0;
+  const normalizedEndMs =
+    endMs === null || endMs === undefined
+      ? null
+      : Number.isFinite(endMs)
+        ? Math.max(normalizedStartMs, endMs)
+        : null;
+  const startFrame = Math.max(
+    0,
+    Math.floor((normalizedStartMs / 1_000) * parsed.sampleRateHz),
+  );
+  const unclampedEndFrame =
+    normalizedEndMs === null
+      ? parsed.frameCount
+      : Math.ceil((normalizedEndMs / 1_000) * parsed.sampleRateHz);
+  const endFrame = Math.min(parsed.frameCount, unclampedEndFrame);
+  if (endFrame <= startFrame)
+    return malformed("WAV inspection window must span at least one frame");
   let peakAbsoluteSample = 0;
   let nonSilentFrameCount = 0;
   const nonSilentSampleMagnitudes = new Set();
-  const frameCount = data.length / format.blockAlign;
-  for (let frame = 0; frame < frameCount; frame += 1) {
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
     let framePeak = 0;
-    for (let channel = 0; channel < format.channels; channel += 1)
+    for (let channel = 0; channel < parsed.channels; channel += 1)
       framePeak = Math.max(
         framePeak,
         sampleMagnitude(
-          data,
-          frame * format.blockAlign + channel * bytesPerSample,
-          format.bits,
+          parsed.data,
+          frame * parsed.blockAlign + channel * parsed.bytesPerSample,
+          parsed.bits,
         ),
       );
     peakAbsoluteSample = Math.max(peakAbsoluteSample, framePeak);
@@ -100,7 +137,8 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
       nonSilentSampleMagnitudes.add(framePeak);
     }
   }
-  const durationMs = (frameCount / format.sampleRateHz) * 1_000;
+  const frameCount = endFrame - startFrame;
+  const durationMs = (frameCount / parsed.sampleRateHz) * 1_000;
   return {
     ok: true,
     kind:
@@ -111,17 +149,43 @@ export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
         threshold.minimumDistinctNonSilentSampleMagnitudes
         ? "passed"
         : "silent",
-    format: "wav_pcm",
-    encoding,
-    sampleRateHz: format.sampleRateHz,
-    channels: format.channels,
+    label,
+    format: parsed.format,
+    encoding: parsed.encoding,
+    sampleRateHz: parsed.sampleRateHz,
+    channels: parsed.channels,
     frameCount,
     durationMs,
     threshold: { ...threshold },
     nonSilentFrameCount,
     peakAbsoluteSample,
     distinctNonSilentSampleMagnitudes: nonSilentSampleMagnitudes.size,
+    window: {
+      startMs: normalizedStartMs,
+      endMs:
+        normalizedEndMs ?? (parsed.frameCount / parsed.sampleRateHz) * 1_000,
+    },
   };
+}
+
+export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
+  const parsed = parseWavPcm(bytes);
+  return inspectParsedWavPcm(parsed, threshold);
+}
+
+export function inspectWavPcmWindows(
+  bytes,
+  windows,
+  threshold = DEFAULT_AUDIO_THRESHOLD,
+) {
+  const parsed = parseWavPcm(bytes);
+  return windows.map((window) =>
+    inspectParsedWavPcm(parsed, threshold, {
+      startMs: window?.startMs,
+      endMs: window?.endMs,
+      label: window?.label ?? null,
+    }),
+  );
 }
 
 export function inspectExportedDefaultAudioCapture({
@@ -163,5 +227,5 @@ export function inspectExportedDefaultAudioCapture({
         `default audio capture ${key} does not match exported WAV inspection`,
       );
   }
-  return inspected;
+  return { ...inspected, bytes };
 }
