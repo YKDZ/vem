@@ -2661,6 +2661,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(
       runtime,
+      /\$rustupPath -ArgumentList @\("set", "auto-self-update", "disable"\)/,
+    );
+    assert.ok(
+      runtime.indexOf('"auto-self-update", "disable"') <
+        runtime.indexOf('"toolchain", "install"'),
+    );
+    assert.match(
+      runtime,
       /\$rustcPath = Join-Path \$cachePaths\.CARGO_HOME "bin\\rustc\.exe"/,
     );
     assert.doesNotMatch(runtime, /Invoke-Native -FilePath "rustup\.exe"/);

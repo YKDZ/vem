@@ -370,6 +370,7 @@ function Install-Toolchain {
   $rustupPath = Join-Path $cachePaths.CARGO_HOME "bin\rustup.exe"
   $cargoPath = Join-Path $cachePaths.CARGO_HOME "bin\cargo.exe"
   $rustcPath = Join-Path $cachePaths.CARGO_HOME "bin\rustc.exe"
+  Invoke-Native -FilePath $rustupPath -ArgumentList @("set", "auto-self-update", "disable") -Description "disable Rustup self-update"
   Invoke-Native -FilePath $rustupPath -ArgumentList @("toolchain", "install", "1.96.0-x86_64-pc-windows-msvc", "--profile", "minimal") -Description "pinned Rust toolchain installation"
   Invoke-Native -FilePath $rustupPath -ArgumentList @("default", "1.96.0-x86_64-pc-windows-msvc") -Description "pinned Rust toolchain activation"
   New-Item -ItemType Directory -Force -Path $cachePaths.PNPM_STORE_PATH | Out-Null
