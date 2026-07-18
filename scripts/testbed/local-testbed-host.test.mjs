@@ -41,6 +41,7 @@ function config() {
 function baselineXml() {
   return `<domain type="kvm">
   <name>win10-runtime-baseline</name>
+  <uuid>1c94bc95-7791-4ac7-bd44-1771d9b6b029</uuid>
   <devices>
     <disk type="file" device="disk"><source file="${PATHS.baselineSystem}"/><target dev="sda" bus="sata"/></disk>
     <disk type="file" device="disk"><source file="${PATHS.cacheDisk}"/><target dev="sdb" bus="sata"/></disk>
@@ -123,6 +124,7 @@ describe("tracked local testbed host lifecycle", () => {
     });
     assert.doesNotMatch(xml, new RegExp(PATHS.baselineSystem));
     assert.doesNotMatch(xml, /<name>win10-runtime-baseline<\/name>/);
+    assert.doesNotMatch(xml, /<uuid>/);
     assert.match(xml, /<name>win10-runtime-testbed<\/name>/);
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));

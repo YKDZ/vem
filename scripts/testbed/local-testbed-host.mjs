@@ -360,6 +360,7 @@ export function renderReconstructedDomainXml({
     domainNames[0][0],
     `<name>${xml(config.domainName)}</name>`,
   );
+  rendered = rendered.replace(/\s*<uuid>[^<]+<\/uuid>/, "");
   rendered = rendered.replace(
     baselineSource,
     `file="${xml(config.overlayPath)}"`,
