@@ -266,8 +266,8 @@ function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
     : "";
   const registrationSetup = runnerRegistration
     ? `${registrationProxySetup}
-$existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
-$existingServices | ForEach-Object { & sc.exe delete $_.Name | Out-Null }
+$existingServiceNames = @((Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue).Name)
+$existingServiceNames | ForEach-Object { & sc.exe delete $_ | Out-Null }
 Get-Process -Name 'RunnerService','Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue

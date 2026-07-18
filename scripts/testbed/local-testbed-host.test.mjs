@@ -401,6 +401,8 @@ describe("tracked local testbed host lifecycle", () => {
       },
     }).at(-1);
     assert.match(dynamicRegistration.input, /curl\.exe.*actions\/runners\/registration-token/s);
+    assert.match(dynamicRegistration.input, /\$existingServiceNames/);
+    assert.doesNotMatch(dynamicRegistration.input, /\$existingServices =/);
     assert.doesNotMatch(dynamicRegistration.input, /sc\.exe stop/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
