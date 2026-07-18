@@ -244,29 +244,10 @@ $proof | ConvertTo-Json -Compress
 `;
 }
 
-function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
+function runnerAdmissionAssertion(runnerProxy, runnerRegistrationToken) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
-  const registrationProxySetup = runnerProxy?.configured
-    ? [
-        ["HTTP_PROXY", runnerProxy.http],
-        ["HTTPS_PROXY", runnerProxy.https],
-        ["NO_PROXY", runnerProxy.noProxy],
-      ]
-        .filter(([, value]) => value)
-        .map(
-          ([name, value]) =>
-            `$env:${name} = ${quotePowerShell(value)}`,
-        )
-        .join("\n")
-    : "";
-  const registrationProxyArguments = runnerProxy?.configured
-    ? runnerProxy.https || runnerProxy.http
-      ? ` '--proxy' ${quotePowerShell(runnerProxy.https || runnerProxy.http)}`
-      : ""
-    : "";
-  const registrationSetup = runnerRegistration
-    ? `${registrationProxySetup}
-$existingServiceNames = @((Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue).Name)
+  const registrationSetup = runnerRegistrationToken
+    ? `$existingServiceNames = @((Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue).Name)
 $existingServiceNames | ForEach-Object { & sc.exe delete $_ | Out-Null }
 $savedErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = 'SilentlyContinue'
@@ -279,10 +260,7 @@ $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
 $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
 if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
-$registrationJson = & curl.exe '--fail' '--silent' '--show-error'${registrationProxyArguments} '--request' 'POST' '--header' ${quotePowerShell(`Authorization: Bearer ${runnerRegistration.adminToken}`)} '--header' 'Accept: application/vnd.github+json' '--header' 'X-GitHub-Api-Version: 2022-11-28' ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)}
-if ($LASTEXITCODE -ne 0) { throw "actions runner registration token request failed with exit code $LASTEXITCODE" }
-$registration = $registrationJson | ConvertFrom-Json
-& (Join-Path $runnerRoot 'config.cmd') --unattended --url ${quotePowerShell(`https://github.com/${runnerRegistration.repository}`)} --token ([string]$registration.token) --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
+& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 $registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$registeredRunner.agentName -ne 'forest-win10-runtime-current') { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
@@ -567,7 +545,7 @@ export function buildHostAdmissionPlan({
   guestInputPath,
   runId,
   runnerProxy = { configured: false },
-  runnerRegistration = null,
+  runnerRegistrationToken = null,
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -598,7 +576,7 @@ export function buildHostAdmissionPlan({
       type: "restart-runner-and-await-listener",
       command: "ssh",
       args: sshArgs(config, POWERSHELL_STDIN_COMMAND),
-      input: runnerAdmissionAssertion(runnerProxy, runnerRegistration),
+      input: runnerAdmissionAssertion(runnerProxy, runnerRegistrationToken),
     },
   ];
 }
@@ -862,13 +840,8 @@ export function parseHostOptions(args) {
             noProxy: optionalOptionOrEmpty(args, "runner-no-proxy") ?? "",
           }
         : { configured: false },
-      runnerRegistration:
-        option(args, "runner-admin-token") && option(args, "runner-repository")
-          ? {
-              adminToken: option(args, "runner-admin-token"),
-              repository: option(args, "runner-repository"),
-            }
-          : null,
+      runnerRegistrationToken:
+        option(args, "runner-registration-token"),
     };
   }
   return {

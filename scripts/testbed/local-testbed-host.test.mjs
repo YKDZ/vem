@@ -395,12 +395,9 @@ describe("tracked local testbed host lifecycle", () => {
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-18",
-      runnerRegistration: {
-        adminToken: "runner-admin-token",
-        repository: "example/runtime",
-      },
+      runnerRegistrationToken: "runner-registration-token",
     }).at(-1);
-    assert.match(dynamicRegistration.input, /curl\.exe.*actions\/runners\/registration-token/s);
+    assert.doesNotMatch(dynamicRegistration.input, /curl\.exe|actions\/runners\/registration-token/);
     assert.match(dynamicRegistration.input, /\$existingServiceNames/);
     assert.doesNotMatch(dynamicRegistration.input, /\$existingServices =/);
     assert.match(dynamicRegistration.input, /taskkill\.exe \/F \/T \/IM RunnerService\.exe/);
@@ -425,14 +422,11 @@ describe("tracked local testbed host lifecycle", () => {
         https: "http://proxy.example.test:8080",
         noProxy: "localhost,127.0.0.1",
       },
-      runnerRegistration: {
-        adminToken: "runner-admin-token",
-        repository: "example/runtime",
-      },
+      runnerRegistrationToken: "runner-registration-token",
     }).at(-1);
     assert.match(
       proxiedRegistration.input,
-      /curl\.exe.*'--proxy' 'http:\/\/proxy\.example\.test:8080'/s,
+      /HTTP_PROXY=http:\/\/proxy\.example\.test:8080/s,
     );
   });
 });

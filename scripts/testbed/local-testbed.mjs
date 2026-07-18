@@ -249,13 +249,8 @@ export function parseOptions(
     ),
     hostPrivateAddress,
     runnerProxy: runnerProxyEnvironment(environment),
-    runnerRegistration:
-      environment.VEM_RUNNER_ADMIN_TOKEN && environment.VEM_RUNNER_REPOSITORY
-        ? {
-            adminToken: environment.VEM_RUNNER_ADMIN_TOKEN,
-            repository: environment.VEM_RUNNER_REPOSITORY,
-          }
-        : null,
+    runnerRegistrationToken:
+      environment.VEM_RUNNER_REGISTRATION_TOKEN || null,
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
   };
@@ -465,13 +460,11 @@ function renderRunnerProxyArguments(runnerProxy) {
   ];
 }
 
-function renderRunnerRegistrationArguments(runnerRegistration) {
-  if (!runnerRegistration) return [];
+function renderRunnerRegistrationArguments(runnerRegistrationToken) {
+  if (!runnerRegistrationToken) return [];
   return [
-    "--runner-admin-token",
-    runnerRegistration.adminToken,
-    "--runner-repository",
-    runnerRegistration.repository,
+    "--runner-registration-token",
+    runnerRegistrationToken,
   ];
 }
 
@@ -570,7 +563,7 @@ export function buildReconstructionPlan(options, contract) {
       return commandLine(admission.command, [
         ...admission.args,
         ...renderRunnerProxyArguments(options.runnerProxy),
-        ...renderRunnerRegistrationArguments(options.runnerRegistration),
+        ...renderRunnerRegistrationArguments(options.runnerRegistrationToken),
       ]);
     })(),
   ];

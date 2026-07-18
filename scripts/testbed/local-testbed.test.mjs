@@ -761,15 +761,13 @@ describe("local testbed orchestration", () => {
         {
           observeNetworkInterfaces: observedNetworkInterfaces,
           environment: {
-            VEM_RUNNER_ADMIN_TOKEN: "runner-admin-token",
-            VEM_RUNNER_REPOSITORY: "example/runtime",
+            VEM_RUNNER_REGISTRATION_TOKEN: "runner-registration-token",
           },
         },
       );
       const registrationAdmission = buildReconstructionPlan(withRegistration, value).at(-1);
-      assert.deepEqual(registrationAdmission.args.slice(-4), [
-        "--runner-admin-token", "runner-admin-token",
-        "--runner-repository", "example/runtime",
+      assert.deepEqual(registrationAdmission.args.slice(-2), [
+        "--runner-registration-token", "runner-registration-token",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
