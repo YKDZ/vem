@@ -98,6 +98,20 @@ describe("host serial control plane", () => {
     try {
       writeFileSync(
         journalPath,
+        `${JSON.stringify({ direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" })}\n`,
+      );
+      const beforeF0Boundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "VEND",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        beforeF0Boundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["VEND"],
+      );
+
+      writeFileSync(
+        journalPath,
         [
           { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
           { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
@@ -125,6 +139,18 @@ describe("host serial control plane", () => {
       await assert.rejects(
         waitForRawSerialFrame({ journalPath, parsedOpcode: "F1", timeoutMs: 100 }),
         /F2 appeared before required F1 boundary/,
+      );
+
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      await assert.rejects(
+        waitForRawSerialFrame({ journalPath, parsedOpcode: "VEND", timeoutMs: 100 }),
+        /F0 appeared before the before-F0 gate was released/,
       );
 
       writeFileSync(

@@ -126,6 +126,7 @@ describe("usePresenceInteraction", () => {
     await nextTick();
 
     expect(presence.state?.value).toEqual({
+      eventId: "VISION-DEPARTURE-EVENT-001",
       personPresent: false,
       lastSeenAt: "2026-06-29T10:00:06.000Z",
       departedAt: "2026-06-29T10:00:08.000Z",
@@ -175,6 +176,7 @@ describe("usePresenceInteraction", () => {
     await nextTick();
 
     expect(presence.state?.value).toEqual({
+      eventId: "VISION-PRESENCE-EVENT-STALE",
       personPresent: false,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
       departedAt: "2026-06-29T10:00:01.000Z",
@@ -192,6 +194,7 @@ describe("usePresenceInteraction", () => {
     await nextTick();
 
     expect(presence.state?.value).toEqual({
+      eventId: null,
       personPresent: true,
       lastSeenAt: "2026-06-29T11:00:00.000Z",
       departedAt: null,
@@ -211,6 +214,7 @@ describe("usePresenceInteraction", () => {
     await nextTick();
 
     expect(presence.state?.value).toEqual({
+      eventId: null,
       personPresent: false,
       lastSeenAt: "2026-06-29T11:10:00.000Z",
       departedAt: "2026-06-29T11:10:03.000Z",

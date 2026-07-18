@@ -20,6 +20,7 @@ export type MachineRuntimeNavigationTraceRecord = {
   decidedRoute: string | null;
   finalRoute: string | null;
   targetRoute: string | null;
+  sourceEventId: string | null;
   transactionOrderNo: string | null;
   transactionStage: string;
   readinessRevision: string | null;

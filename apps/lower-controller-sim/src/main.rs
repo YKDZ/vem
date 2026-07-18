@@ -130,6 +130,10 @@ struct Cli {
     /// Hold terminal F2 until this host-owned file exists.
     #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_F2_RELEASE_FILE")]
     f2_release_file: Option<PathBuf>,
+
+    /// Hold initial F0 until this host-owned file exists.
+    #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_F0_RELEASE_FILE")]
+    f0_release_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -182,6 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         trace: cli.trace,
         frame_journal_path: cli.frame_journal,
+        f0_release_file: cli.f0_release_file,
         f2_release_file: cli.f2_release_file,
     };
 

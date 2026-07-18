@@ -52,6 +52,7 @@ pub struct SimulatorOptions {
     pub environment_sample: Option<EnvironmentSample>,
     pub trace: bool,
     pub frame_journal_path: Option<PathBuf>,
+    pub f0_release_file: Option<PathBuf>,
     pub f2_release_file: Option<PathBuf>,
 }
 
@@ -74,6 +75,7 @@ impl Default for SimulatorOptions {
             }),
             trace: false,
             frame_journal_path: None,
+            f0_release_file: None,
             f2_release_file: None,
         }
     }
@@ -565,6 +567,7 @@ where
         return Ok(());
     }
 
+    wait_for_release(options.f0_release_file.as_deref()).await;
     send_observed_repeated_frame(
         &writer,
         LowerFrame::ArrivalAtOutlet,
@@ -661,7 +664,7 @@ where
     if current_state(&state).await != ControllerState::Resetting {
         return Ok(());
     }
-    wait_for_f2_release(options.f2_release_file.as_deref()).await;
+    wait_for_release(options.f2_release_file.as_deref()).await;
     trace(&options, "reset completed -> F2");
     send_observed_repeated_frame(
         &writer,
@@ -969,7 +972,7 @@ fn journal_initial_health(options: &SimulatorOptions) -> io::Result<()> {
     journal_controller_frame(options, LowerFrame::IdleHeartbeat)
 }
 
-async fn wait_for_f2_release(path: Option<&Path>) {
+async fn wait_for_release(path: Option<&Path>) {
     let Some(path) = path else {
         return;
     };
@@ -1014,6 +1017,7 @@ mod tests {
             }),
             trace: false,
             frame_journal_path: None,
+            f0_release_file: None,
             f2_release_file: None,
         }
     }
@@ -1327,9 +1331,11 @@ mod tests {
         ));
         std::fs::create_dir_all(&evidence_root).expect("create evidence root");
         let journal_path = evidence_root.join("raw-serial.jsonl");
+        let release_f0_path = evidence_root.join("release-f0");
         let release_f2_path = evidence_root.join("release-f2");
         let mut options = fast_options(DispenseScenario::Normal);
         options.frame_journal_path = Some(journal_path.clone());
+        options.f0_release_file = Some(release_f0_path.clone());
         options.f2_release_file = Some(release_f2_path.clone());
         let handle = tokio::spawn(async move {
             let mut master_reader = master_reader;
@@ -1360,6 +1366,17 @@ mod tests {
             timeout(Duration::from_millis(250), &mut dispense).await.is_err(),
             "dispense must remain pending at the F1 boundary"
         );
+        let journal_before_f0 =
+            std::fs::read_to_string(&journal_path).expect("read raw serial journal before F0");
+        assert!(
+            journal_before_f0.contains("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\""),
+            "outbound VEND must be captured before F0 release: {journal_before_f0}"
+        );
+        assert!(
+            !journal_before_f0.contains("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\""),
+            "F0 must remain gated until the host releases it: {journal_before_f0}"
+        );
+        std::fs::write(&release_f0_path, b"release\n").expect("release F0");
         std::fs::write(&release_f2_path, b"release\n").expect("release F2");
         let result = timeout(
             Duration::from_secs(5),

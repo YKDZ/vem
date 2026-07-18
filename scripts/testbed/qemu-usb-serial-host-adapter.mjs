@@ -181,6 +181,7 @@ export function qemuUsbSerialSessionPaths(root, serialSessionId) {
     directory: path,
     statePath: join(path, "state.json"),
     journalPath: join(path, "raw-serial.jsonl"),
+    releaseF0Path: join(path, "release-f0"),
     releaseF2Path: join(path, "release-f2"),
     logPath: join(path, "simulator.log"),
   };
@@ -237,6 +238,7 @@ function startSession(request) {
   const simulator = resolve(required(process.env.VEM_LOWER_CONTROLLER_SIM, "VEM_LOWER_CONTROLLER_SIM"));
   if (!existsSync(simulator)) throw new Error("repo lower-controller simulator binary does not exist");
   const journalPath = join(dir, "raw-serial.jsonl");
+  const releaseF0Path = join(dir, "release-f0");
   const releaseF2Path = join(dir, "release-f2");
   const logPath = join(dir, "simulator.log");
   writeFileSync(journalPath, "", { mode: 0o600 });
@@ -249,6 +251,8 @@ function startSession(request) {
       "--trace",
       "--frame-journal",
       journalPath,
+      "--f0-release-file",
+      releaseF0Path,
       "--f2-release-file",
       releaseF2Path,
     ],
@@ -267,6 +271,7 @@ function startSession(request) {
     mappings,
     simulatorPid: child.pid,
     journalPath,
+    releaseF0Path,
     releaseF2Path,
     logPath,
     scannerInjection: null,

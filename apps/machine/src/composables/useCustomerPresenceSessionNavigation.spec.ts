@@ -80,6 +80,7 @@ describe("customer presence navigation", () => {
 
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
       type: "presence.departed",
+      eventId: "VISION-DEPARTURE-001",
     });
     unmount();
   });

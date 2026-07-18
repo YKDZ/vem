@@ -21,6 +21,7 @@ export type PresenceInteractionSource =
   | "unavailable";
 
 export type PresenceInteractionState = {
+  eventId: string | null;
   personPresent: boolean;
   lastSeenAt: string | null;
   departedAt: string | null;
@@ -42,6 +43,7 @@ type CustomerPresenceSession = {
 type MutableSessionState = Ref<PresenceInteractionState>;
 
 const state = ref<PresenceInteractionState>({
+  eventId: null,
   personPresent: false,
   lastSeenAt: null,
   departedAt: null,
@@ -118,8 +120,10 @@ function restartDepartureTimers(): void {
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
+  eventId?: string | null;
 }): void {
   state.value = {
+    eventId: input.eventId ?? state.value.eventId,
     personPresent: true,
     lastSeenAt: input.seenAt,
     departedAt: null,
@@ -134,8 +138,10 @@ function markDeparted(input: {
   departedAt: string | null;
   lastSeenAt?: string | null;
   keepLastSeenAt?: boolean;
+  eventId?: string | null;
 }): void {
   state.value = {
+    eventId: input.eventId ?? state.value.eventId,
     personPresent: false,
     lastSeenAt: input.keepLastSeenAt
       ? state.value.lastSeenAt
@@ -158,6 +164,7 @@ function registerInteraction(): void {
     markPresent({
       source: "local_interaction",
       seenAt,
+      eventId: state.value.eventId,
     });
     return;
   }
@@ -208,6 +215,7 @@ function startCustomerPresenceSession(
           source: "unavailable",
           departedAt: null,
           lastSeenAt: null,
+          eventId: null,
         });
         return;
       }
@@ -217,6 +225,7 @@ function startCustomerPresenceSession(
           departedAt: presence.departedAt ?? presence.lastChangedAt,
           lastSeenAt: presence.lastSeenAt,
           keepLastSeenAt: presence.source !== "person_departed",
+          eventId: presence.eventId,
         });
         return;
       }
@@ -229,6 +238,7 @@ function startCustomerPresenceSession(
           source: "vision",
           departedAt: presence.lastChangedAt,
           keepLastSeenAt: true,
+          eventId: presence.eventId,
         });
         return;
       }
@@ -238,6 +248,7 @@ function startCustomerPresenceSession(
       markPresent({
         source: "vision",
         seenAt: observedAt,
+        eventId: presence.eventId,
       });
     },
     { immediate: true },
@@ -253,6 +264,7 @@ export function resetCustomerPresenceSessionForTests(): void {
   started = false;
   activeOptions = null;
   state.value = {
+    eventId: null,
     personPresent: false,
     lastSeenAt: null,
     departedAt: null,
@@ -296,7 +308,10 @@ export function installPresenceDepartureNavigation(): void {
     () => session.state.value.personPresent,
     (personPresent, wasPresent) => {
       if (personPresent || !wasPresent) return;
-      void submitMachineNavigationIntent({ type: "presence.departed" });
+      void submitMachineNavigationIntent({
+        type: "presence.departed",
+        eventId: session.state.value.eventId,
+      });
     },
   );
 }

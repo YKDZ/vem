@@ -22,10 +22,6 @@ import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter
 
 const MODES = new Set(["fast", "full"]);
 const DEFAULT_SCANNER_CODE = "6901234567892";
-const PLATFORM_LOG_REFERENCE = Object.freeze({
-  unit: "vem-local-testbed-service-api",
-  command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
-});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -397,7 +393,13 @@ export function validateFastRouteStressSaleEvidence(input) {
     throw new Error("serial semantic frames must bind the correlated sale and command");
   }
   const vision = input.visionDelivery ?? {};
-  if (vision.ok !== true || vision.connectedRuntimeClients < 1 || vision.acceptedDeliveries < 1) {
+  if (
+    vision.ok !== true ||
+    typeof vision.eventId !== "string" ||
+    vision.eventId === "" ||
+    vision.connectedRuntimeClients < 1 ||
+    vision.acceptedDeliveries < 1
+  ) {
     throw new Error("Vision departure requires a connected installed runtime client and accepted delivery");
   }
   const visionAt = Date.parse(vision.timestamp);
@@ -405,6 +407,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     (entry) =>
       entry.type === "navigation" &&
       entry.intentType === "presence.departed" &&
+      entry.sourceEventId === vision.eventId &&
       ["touchscreen_session_active", "active_transaction_route"].includes(entry.reasonCode) &&
       entry.decision === "rejected" &&
       entry.finalRoute !== "#/catalog" &&
@@ -412,7 +415,7 @@ export function validateFastRouteStressSaleEvidence(input) {
       Date.parse(entry.at) >= visionAt,
   );
   if (!guardedDeparture) {
-    throw new Error("installed runtime trace must contain the guarded Vision departure navigation effect");
+    throw new Error("installed runtime trace must contain the guarded Vision departure navigation effect for the accepted eventId");
   }
   const runtimeTrace = Array.isArray(input.runtimeTrace) ? input.runtimeTrace : [];
   const spontaneousCatalog = runtimeTrace.some(
@@ -654,6 +657,59 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
   }
 }
 
+function writeTextArtifact(outPath, label, text) {
+  const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
+  mkdirSync(root, { recursive: true });
+  const destination = join(root, `${label}.log`);
+  writeFileSync(destination, String(text ?? ""));
+  return { ref: destination, byteLength: Buffer.byteLength(String(text ?? ""), "utf8") };
+}
+
+export function buildFastRouteStressSaleFailureReport(input) {
+  return {
+    schemaVersion: "vem-fast-route-stress-sale/v2",
+    ok: false,
+    mode: input.mode,
+    stage: input.stage,
+    error:
+      input.error instanceof Error
+        ? {
+            name: input.error.name,
+            message: input.error.message,
+            stack: String(input.error.stack ?? "").slice(0, 16 * 1024),
+          }
+        : { name: "Error", message: String(input.error) },
+    controlPlaneSessionId: input.controlPlaneSessionId ?? null,
+    liveSale: input.liveSale ?? null,
+    runtimeTrace: compactRuntimeTrace(input.runtimeTrace ?? [], 256),
+    snapshots: {
+      platform: {
+        baseline: input.snapshots?.platform?.baseline ?? null,
+        beforeF0: input.snapshots?.platform?.beforeF0 ?? null,
+        afterF1BeforeF2: input.snapshots?.platform?.afterF1BeforeF2 ?? null,
+        afterF2: input.snapshots?.platform?.afterF2 ?? null,
+      },
+      daemon: {
+        baseline: input.snapshots?.daemon?.baseline ?? null,
+        beforeF0: input.snapshots?.daemon?.beforeF0 ?? null,
+        afterF1BeforeF2: input.snapshots?.daemon?.afterF1BeforeF2 ?? null,
+        afterF2: input.snapshots?.daemon?.afterF2 ?? null,
+      },
+    },
+    hostEvidence: input.hostEvidence ?? null,
+    checkpoints: input.checkpoints ?? [],
+    logs: {
+      daemonStdout: input.logs?.daemonStdout ?? null,
+      daemonStderr: input.logs?.daemonStderr ?? null,
+      platform: input.logs?.platform ?? null,
+      simulator: input.logs?.simulator ?? null,
+      failureScreenshots: (input.checkpoints ?? [])
+        .map((checkpoint) => checkpoint?.screenshot?.ref)
+        .filter(Boolean),
+    },
+  };
+}
+
 async function controlPlaneRequest(guestInput, path, body = {}) {
   const controlPlane = guestInput.hostControlPlane;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
@@ -668,6 +724,19 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
     },
     body: JSON.stringify(body),
   });
+}
+
+async function collectPlatformLog(guestInput, sessionId, outPath) {
+  const result = await controlPlaneRequest(
+    guestInput,
+    `/v1/serial-sessions/${sessionId}/platform-log`,
+    { lines: 200 },
+  );
+  return {
+    reference: result.reference ?? null,
+    unit: result.unit,
+    artifact: writeTextArtifact(outPath, "platform-service-api", result.log ?? ""),
+  };
 }
 
 async function ensureControlledVisionMock(controlPort) {
@@ -731,6 +800,14 @@ async function runFastRouteStressSale(options) {
   let clientReady = false;
   let sessionStart = null;
   let liveSale = null;
+  let baselineSaleView = null;
+  let baselinePlatform = null;
+  let beforeF0SaleView = null;
+  let beforeF0Platform = null;
+  let afterF1SaleView = null;
+  let afterF1Platform = null;
+  let afterF2SaleView = null;
+  let afterF2Platform = null;
   let stage = "read-input";
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
@@ -758,8 +835,8 @@ async function runFastRouteStressSale(options) {
     clientReady = true;
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     stage = "snapshot-baseline";
-    const baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
-    const baselinePlatform = (
+    baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
+    baselinePlatform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
         runId,
         machineCode,
@@ -828,7 +905,12 @@ async function runFastRouteStressSale(options) {
     });
     liveSale = await waitForCommand(handoff, renderedSale);
     stage = "snapshot-before-f0";
-    const beforeF0Platform = await waitForBeforeF0Boundary(
+    const vendBoundary = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      { parsedOpcode: "VEND", timeoutMs: 30_000 },
+    );
+    beforeF0Platform = await waitForBeforeF0Boundary(
       guestInput,
       {
         runId,
@@ -839,13 +921,17 @@ async function runFastRouteStressSale(options) {
       renderedSale,
       liveSale,
     );
-    const beforeF0SaleView = await daemonGet(handoff, "/v1/sale-view");
+    beforeF0SaleView = await daemonGet(handoff, "/v1/sale-view");
     const beforeF0Ui = await readUiBoundary(client);
     checkpoints.push(
       await captureCheckpoint(client, "before-f0-active", {
         screenshot: true,
         screenshotSink: sink,
       }),
+    );
+    const releaseF0 = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/release-f0`,
     );
     stage = "wait-inbound-f0";
     const f0Boundary = await controlPlaneRequest(
@@ -860,8 +946,8 @@ async function runFastRouteStressSale(options) {
       { parsedOpcode: "F1", timeoutMs: 30_000 },
     );
     stage = "snapshot-after-f1-before-f2";
-    const afterF1SaleView = await daemonGet(handoff, "/v1/sale-view");
-    const afterF1Platform = (
+    afterF1SaleView = await daemonGet(handoff, "/v1/sale-view");
+    afterF1Platform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
         runId,
         machineCode,
@@ -906,8 +992,8 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
-    const afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
-    const afterF2Platform = await waitForPlatformMovement(
+    afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
+    afterF2Platform = await waitForPlatformMovement(
       guestInput,
       {
         runId,
@@ -918,6 +1004,11 @@ async function runFastRouteStressSale(options) {
     );
     const afterF2Ui = await readUiBoundary(client);
     const runtimeTrace = await readRuntimeTrace(client);
+    const platformLog = await collectPlatformLog(
+      guestInput,
+      sessionStart.sessionId,
+      options.outPath,
+    );
     const evidence = {
       saleCorrelationId,
       machineCode,
@@ -981,7 +1072,14 @@ async function runFastRouteStressSale(options) {
       renderedSale,
       liveSale,
       summary,
-      boundaries: { f0: f0Boundary.frame, f1: f1Boundary.frame, releaseF2, f2: f2Boundary.frame },
+      boundaries: {
+        vend: vendBoundary.frame,
+        releaseF0,
+        f0: f0Boundary.frame,
+        f1: f1Boundary.frame,
+        releaseF2,
+        f2: f2Boundary.frame,
+      },
       evidence: compactEvidenceForReport(evidence, summary),
       serial: {
         start: sessionStart,
@@ -1002,6 +1100,7 @@ async function runFastRouteStressSale(options) {
           options.outPath,
           "daemon-stderr",
         ),
+        platform: platformLog.artifact,
         milestones: checkpoints.map((checkpoint) => ({
           label: checkpoint.label,
           route: checkpoint.identity.route,
@@ -1023,6 +1122,13 @@ async function runFastRouteStressSale(options) {
     const runtimeTrace = clientReady
       ? await readRuntimeTrace(client).catch(() => [])
       : [];
+    const platformLog = guestInput && sessionStart
+      ? await collectPlatformLog(
+          guestInput,
+          sessionStart.sessionId,
+          options.outPath,
+        ).catch(() => null)
+      : null;
     const hostEvidence = guestInput && sessionStart
       ? await controlPlaneRequest(
           guestInput,
@@ -1035,15 +1141,27 @@ async function runFastRouteStressSale(options) {
         `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
       ).catch(() => null);
     }
-    const report = {
-      schemaVersion: "vem-fast-route-stress-sale/v2",
-      ok: false,
+    const report = buildFastRouteStressSaleFailureReport({
       mode: options.mode,
       stage,
-      error: error instanceof Error ? { name: error.name, message: error.message, stack: String(error.stack ?? "").slice(0, 16 * 1024) } : { name: "Error", message: String(error) },
+      error,
       controlPlaneSessionId: sessionStart?.sessionId ?? null,
       liveSale,
-      runtimeTrace: compactRuntimeTrace(runtimeTrace, 256),
+      runtimeTrace,
+      snapshots: {
+        platform: {
+          baseline: baselinePlatform,
+          beforeF0: beforeF0Platform,
+          afterF1BeforeF2: afterF1Platform,
+          afterF2: afterF2Platform,
+        },
+        daemon: {
+          baseline: baselineSaleView,
+          beforeF0: beforeF0SaleView,
+          afterF1BeforeF2: afterF1SaleView,
+          afterF2: afterF2SaleView,
+        },
+      },
       hostEvidence,
       checkpoints: failureCheckpoints,
       logs: {
@@ -1057,13 +1175,10 @@ async function runFastRouteStressSale(options) {
           options.outPath,
           "daemon-stderr",
         ),
-        platform: PLATFORM_LOG_REFERENCE,
+        platform: platformLog?.artifact ?? null,
         simulator: hostEvidence?.references?.simulatorLog ?? null,
-        failureScreenshots: failureCheckpoints
-          .map((checkpoint) => checkpoint?.screenshot?.ref)
-          .filter(Boolean),
       },
-    };
+    });
     writeReport(options.outPath, report);
     throw error;
   } finally {

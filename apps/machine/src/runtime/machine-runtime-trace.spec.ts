@@ -56,6 +56,7 @@ describe("Machine Runtime Trace", () => {
       decidedRoute: null,
       finalRoute: null,
       targetRoute: null,
+      sourceEventId: null,
       transactionOrderNo: null,
       transactionStage: "none",
       readinessRevision: "machine-test:1",

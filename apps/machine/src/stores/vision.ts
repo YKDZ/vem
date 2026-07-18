@@ -36,6 +36,7 @@ type VisionPersonDepartedDiagnosticPayload = {
 type VisionTryOnCapability = "unknown" | "available" | "degraded";
 
 type VisionPresenceState = {
+  eventId: string | null;
   personPresent: boolean;
   occupancyState: VisionPresenceOccupancyState;
   occupancyConfidence: number | null;
@@ -51,6 +52,7 @@ type VisionPresenceState = {
 const PROFILE_CONFIDENCE_THRESHOLD = 0.5;
 
 const EMPTY_PRESENCE: VisionPresenceState = {
+  eventId: null,
   personPresent: false,
   occupancyState: "none",
   occupancyConfidence: null,
@@ -200,6 +202,7 @@ export const useVisionStore = defineStore("vision", {
       const occupancy = normalizeOccupancy(payload.occupancy, personPresent);
       const profileUsable = profileResultUsable(payload, occupancy.state);
       this.presence = {
+        eventId: payload.eventId,
         personPresent,
         occupancyState: occupancy.state,
         occupancyConfidence: occupancy.confidence,
@@ -224,6 +227,7 @@ export const useVisionStore = defineStore("vision", {
       const personPresent = payload.personPresent;
       const occupancy = normalizeOccupancy(payload.occupancy, personPresent);
       this.presence = {
+        eventId: payload.eventId,
         personPresent,
         occupancyState: occupancy.state,
         occupancyConfidence: occupancy.confidence,
@@ -250,6 +254,7 @@ export const useVisionStore = defineStore("vision", {
       payload: VisionPersonDepartedPayload,
     ): void {
       this.presence = {
+        eventId: payload.eventId,
         personPresent: false,
         occupancyState: "none",
         occupancyConfidence: null,

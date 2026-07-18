@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -312,11 +312,12 @@ export async function waitForRawSerialFrame({
   pollMs = 25,
 }) {
   const expected = {
+    VEND: ["VEND"],
     F0: ["VEND", "F0"],
     F1: ["VEND", "F0", "F1"],
     F2: ["VEND", "F0", "F1", "F2"],
   }[parsedOpcode];
-  if (!expected) throw new Error("parsedOpcode must be F0, F1, or F2");
+  if (!expected) throw new Error("parsedOpcode must be VEND, F0, F1, or F2");
   const deadline = Date.now() + timeoutMs;
   do {
     const raw = readRawSerialJournal(journalPath);
@@ -330,6 +331,9 @@ export async function waitForRawSerialFrame({
       }
     }
     const opcodes = protocolFrames.map((frame) => frame.parsedOpcode);
+    if (parsedOpcode === "VEND" && opcodes.includes("F0")) {
+      throw new Error("F0 appeared before the before-F0 gate was released");
+    }
     if (parsedOpcode !== "F2" && opcodes.includes("F2") && !opcodes.includes(parsedOpcode)) {
       throw new Error(`F2 appeared before required ${parsedOpcode} boundary`);
     }
@@ -344,6 +348,13 @@ export async function waitForRawSerialFrame({
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   } while (Date.now() < deadline);
   throw new Error(`timed out waiting for inbound ${parsedOpcode}`);
+}
+
+function releaseSessionF0(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const path = adapterSessionPaths(session).releaseF0Path;
+  writeFileSync(path, `${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+  return { released: true, releaseFile: path };
 }
 
 function adapterSessionPaths(session) {
@@ -368,6 +379,38 @@ function releaseSessionF2(server, input) {
   const path = adapterSessionPaths(session).releaseF2Path;
   writeFileSync(path, `${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
   return { released: true, releaseFile: path };
+}
+
+function collectPlatformLog(server, input) {
+  const lines = Number.isInteger(input.lines) ? input.lines : Number(input.lines ?? 200);
+  const lineCount = Number.isInteger(lines) && lines > 0 ? Math.min(lines, 400) : 200;
+  const result = spawnSync(
+    "journalctl",
+    [
+      "--unit",
+      "vem-local-testbed-service-api.service",
+      "--no-pager",
+      "--lines",
+      String(lineCount),
+      "--output",
+      "short-iso-precise",
+    ],
+    { encoding: "utf8" },
+  );
+  const log = String(result.stdout || result.stderr || "").slice(-64 * 1024);
+  if (result.status !== 0 && log.trim() === "") {
+    throw new Error("journalctl failed to collect local testbed Service API log");
+  }
+  const session = input.sessionId ? requireSession(server, input.sessionId) : null;
+  const paths = session ? adapterSessionPaths(session) : null;
+  const logPath = paths ? join(paths.directory, "platform-service-api.log") : null;
+  if (logPath) writeFileSync(logPath, log, { mode: 0o600 });
+  return {
+    unit: "vem-local-testbed-service-api.service",
+    lineCount,
+    log,
+    reference: logPath,
+  };
 }
 
 function boundedSessionEvidence(server, input) {
@@ -650,7 +693,7 @@ export function createHostSerialControlPlane(options) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f2|evidence|abort|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|platform-log|evidence|abort|collect|stop))?$/,
       );
       if (!sessionMatch) {
         jsonResponse(response, 404, { ok: false, error: "not_found" });
@@ -683,11 +726,27 @@ export function createHostSerialControlPlane(options) {
         });
         return;
       }
+      if (request.method === "POST" && action === "release-f0") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...releaseSessionF0(serverState, body),
+        });
+        return;
+      }
       if (request.method === "POST" && action === "release-f2") {
         jsonResponse(response, 200, {
           ok: true,
           sessionId,
           ...releaseSessionF2(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "platform-log") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...collectPlatformLog(serverState, { ...body, sessionId }),
         });
         return;
       }

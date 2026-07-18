@@ -24,7 +24,7 @@ export type MachineNavigationIntent =
   | { type: "customer.navigate"; target: RouteLocationRaw }
   | { type: "customer.touch"; atMs?: number }
   | { type: "customer.inactive"; atMs?: number }
-  | { type: "presence.departed" }
+  | { type: "presence.departed"; eventId: string | null }
   | { type: "readiness.navigate"; target: RouteLocationRaw }
   | { type: "startup.navigate"; target: RouteLocationRaw }
   | { type: "operator.navigate"; target: RouteLocationRaw }
@@ -133,6 +133,7 @@ export function createMachineNavigationAuthority(
       decidedRoute,
       finalRoute,
       targetRoute: finalRoute,
+      sourceEventId: intent.type === "presence.departed" ? intent.eventId : null,
       transactionOrderNo: checkoutStore.customerCheckoutView.orderCredential,
       transactionStage: transactionStage(),
       readinessRevision: saleCapabilityStore.orderingKey,

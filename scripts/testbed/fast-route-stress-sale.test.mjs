@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  buildFastRouteStressSaleFailureReport,
   buildFastRouteStressScenarioSteps,
   dispatchRepeatedPaymentTouch,
   parseFastRouteStressSaleArgs,
@@ -68,6 +69,7 @@ function validEvidence() {
     runtimeTrace: [{
       type: "navigation",
       intentType: "presence.departed",
+      sourceEventId: "departure-event-1",
       decision: "rejected",
       reasonCode: "touchscreen_session_active",
       fromRoute: "#/checkout",
@@ -226,6 +228,15 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("fails closed when runtime trace does not bind the exact departed eventId", () => {
+    const evidence = validEvidence();
+    evidence.runtimeTrace[0].sourceEventId = "departure-event-other";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /guarded Vision departure navigation effect for the accepted eventId/,
+    );
+  });
+
   it("fails closed when MQTT command or serial slot is not correlated to the order", () => {
     const evidence = validEvidence();
     evidence.mqttMessages[0].payload.payload.commandNo = "CMD-OTHER";
@@ -256,6 +267,66 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("preserves bounded failure evidence snapshots and collected log references", () => {
+    const report = buildFastRouteStressSaleFailureReport({
+      mode: "fast",
+      stage: "snapshot-before-f0",
+      error: new Error("before F0 gate timed out"),
+      controlPlaneSessionId: "fast-sale-session-1",
+      liveSale: { orderId: "order-1", paymentId: "payment-1" },
+      runtimeTrace: [{ type: "navigation", at: "2026-07-18T04:00:00.000Z" }],
+      snapshots: {
+        platform: {
+          baseline: { scope: { machineCode: "VEM-TESTBED-LOCAL" } },
+          beforeF0: { scope: { machineCode: "VEM-TESTBED-LOCAL" } },
+          afterF1BeforeF2: { scope: { machineCode: "VEM-TESTBED-LOCAL" } },
+          afterF2: { scope: { machineCode: "VEM-TESTBED-LOCAL" } },
+        },
+        daemon: {
+          baseline: { items: [] },
+          beforeF0: { items: [] },
+          afterF1BeforeF2: { items: [] },
+          afterF2: { items: [] },
+        },
+      },
+      hostEvidence: {
+        references: {
+          simulatorLog: "/tmp/fast-route/simulator.log",
+        },
+      },
+      checkpoints: [
+        { screenshot: { ref: "/tmp/fast-route/failure-before-f0.png" } },
+      ],
+      logs: {
+        daemonStdout: { ref: "/tmp/fast-route/daemon-stdout.tail.log" },
+        daemonStderr: { ref: "/tmp/fast-route/daemon-stderr.tail.log" },
+        platform: { ref: "/tmp/fast-route/platform-service-api.log" },
+        simulator: "/tmp/fast-route/simulator.log",
+      },
+    });
+
+    assert.equal(report.ok, false);
+    assert.deepEqual(Object.keys(report.snapshots.platform), [
+      "baseline",
+      "beforeF0",
+      "afterF1BeforeF2",
+      "afterF2",
+    ]);
+    assert.deepEqual(Object.keys(report.snapshots.daemon), [
+      "baseline",
+      "beforeF0",
+      "afterF1BeforeF2",
+      "afterF2",
+    ]);
+    assert.deepEqual(report.logs.platform, {
+      ref: "/tmp/fast-route/platform-service-api.log",
+    });
+    assert.equal(report.logs.simulator, "/tmp/fast-route/simulator.log");
+    assert.deepEqual(report.logs.failureScreenshots, [
+      "/tmp/fast-route/failure-before-f0.png",
+    ]);
+  });
+
   it("anchors the tracer in production-equivalent runtime surfaces", () => {
     const implementation = readFileSync(
       new URL("./fast-route-stress-sale.mjs", import.meta.url),
@@ -265,6 +336,9 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /__VEM_MACHINE_RUNTIME_TRACE__/);
     assert.match(implementation, /payment_code:mock/);
     assert.match(implementation, /vision\/control\/departure/);
+    assert.match(implementation, /release-f0/);
+    assert.match(implementation, /platform-log/);
+    assert.match(implementation, /snapshots:/);
     assert.match(implementation, /--import", "tsx", "apps\/vision-mock\/src\/server\.ts/);
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);

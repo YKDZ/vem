@@ -60,7 +60,7 @@ describe("transaction route authority", () => {
       target: { name: "product-detail", params: { id: "product-1" } },
     });
     await authority.submit({ type: "customer.touch", atMs: 1_000 });
-    await authority.submit({ type: "presence.departed" });
+    await authority.submit({ type: "presence.departed", eventId: "departure-event-1" });
     await authority.submit({
       type: "readiness.navigate",
       target: { name: "catalog" },
@@ -79,6 +79,7 @@ describe("transaction route authority", () => {
         .find((record) => record.intentType === "presence.departed"),
     ).toMatchObject({
       intentType: "presence.departed",
+      sourceEventId: "departure-event-1",
       reasonCode: "touchscreen_session_active",
       transactionOrderNo: null,
       readinessRevision: null,
@@ -104,7 +105,7 @@ describe("transaction route authority", () => {
 
     window.dispatchEvent(new Event("pointerdown"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await authority.submit({ type: "presence.departed" });
+    await authority.submit({ type: "presence.departed", eventId: "departure-event-2" });
 
     expect(router.currentRoute.value.name).toBe("product-detail");
     expect(authority.trace.snapshot()).toEqual(
@@ -150,11 +151,12 @@ describe("transaction route authority", () => {
     useCheckoutStore(pinia).applyTransaction(activePaymentTransaction());
     await router.push("/payment");
 
-    await authority.submit({ type: "presence.departed" });
+    await authority.submit({ type: "presence.departed", eventId: "departure-event-3" });
 
     expect(router.currentRoute.value.name).toBe("payment");
     expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
       intentType: "presence.departed",
+      sourceEventId: "departure-event-3",
       reasonCode: "active_transaction_route",
       transactionOrderNo: "ORD-ROUTE-ACTIVE",
     });
