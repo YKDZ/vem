@@ -35,6 +35,8 @@ function Require-Path([string]$Path) {
 }
 
 function Write-TestbedPhase([string]$Name) {
+  New-Item -ItemType Directory -Force -Path $handoffRoot | Out-Null
+  Add-Content -LiteralPath (Join-Path $handoffRoot "guest-phases.log") -Encoding utf8 -Value "$(Get-Date -Format o) $Name"
   Write-Output "::vem-testbed-phase::$Name"
 }
 
@@ -333,6 +335,7 @@ if ($Mode -eq "clear_cache") {
 Require-Path $GuestInputPath
 $input = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($input.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
+Write-TestbedPhase "bootstrap"
 
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
@@ -346,8 +349,10 @@ $env:TURBO_CACHE_DIR = Join-Path $cacheRoot "turbo"
 $env:PNPM_STORE_PATH = Join-Path $cacheRoot "pnpm-store"
 $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
 $sccache = Get-TestbedSccache
+Write-TestbedPhase "sccache-ready"
 $env:RUSTC_WRAPPER = $sccache
 $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
+Write-TestbedPhase "cache-cleanup"
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 foreach ($pair in @{
   CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR
