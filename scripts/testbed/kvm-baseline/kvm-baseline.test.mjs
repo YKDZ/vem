@@ -2625,6 +2625,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
     }
     assert.match(verify, /AudioDeviceRole/);
     assert.match(verify, /cacheDisk/);
+    assert.match(verify, /Get-Partition -DriveLetter D/);
+    assert.doesNotMatch(verify, /Get-Volume -DriveLetter D/);
     assert.match(shared, /PreserveStartupType/);
     assert.match(
       shared,

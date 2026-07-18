@@ -199,7 +199,12 @@ $cargoRegistryLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARG
 $cargoGitLink = Get-Item -LiteralPath (Join-Path $expectedMachinePaths.CARGO_HOME "git") -Force -ErrorAction SilentlyContinue
 $cargoDownloadCachesOnD = $null -ne $cargoRegistryLink -and $cargoRegistryLink.LinkType -eq "Junction" -and @($cargoRegistryLink.Target) -contains "$cacheRoot\cargo-registry\$rustNamespace" -and $null -ne $cargoGitLink -and $cargoGitLink.LinkType -eq "Junction" -and @($cargoGitLink.Target) -contains "$cacheRoot\cargo-git\$rustNamespace"
 $exactToolchainVersions = $toolVersion.node -ceq "v$nodeVersion" -and $toolVersion.pnpm -ceq $pnpmVersion -and $toolVersion.turbo -ceq $turboVersion -and $toolVersion.cargo -match "^cargo 1\\.96\\.0 " -and $toolVersion.rustc -match "^rustc 1\\.96\\.0 "
-$cacheVolume = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
+$cachePartition = Get-Partition -DriveLetter D -ErrorAction SilentlyContinue
+$cacheVolume = if ($null -ne $cachePartition) {
+  $cachePartition | Get-Volume -ErrorAction SilentlyContinue
+} else {
+  $null
+}
 $cacheWritable = $null -ne $cacheVolume -and $cacheVolume.FileSystem -eq "NTFS"
 if ($cacheWritable) {
   $probe = "D:\runtime-cache\v1\.verification-write-test"
