@@ -2580,7 +2580,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /Install-VirtioGpuDisplayDriver -DriverRoot \$VirtioGpuDriverPath/,
     );
     assert.match(prepareKvmGuest, /Install-FtdiVirtualComPortDriver/);
-    assert.match(runtime, /CDM-v2\.12\.36\.20-WHQL-Certified\.zip/);
+    assert.match(runtime, /runtime-testbed-assets-v1\/ftdi-cdm-2\.06\.02-win-x64\.zip/);
+    assert.match(runtime, /cbdd582a9e8c383a934d4949ae27927626bd7c8f19cdf4821404629ca32e27b8/);
     assert.match(
       runtime,
       /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf[\s\S]*VID_0403&PID_6001/,

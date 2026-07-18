@@ -34,7 +34,8 @@ $nodeNamespace = "node-$nodeVersion"
 $pnpmNamespace = "pnpm-$pnpmVersion"
 $turboNamespace = "turbo-$turboVersion"
 $rustNamespace = "rust-1.96.0"
-$ftdiVcpDriverUri = "https://ftdichip.com/wp-content/uploads/2025/03/CDM-v2.12.36.20-WHQL-Certified.zip"
+$ftdiVcpDriverUri = "https://github.com/YKDZ/vem/releases/download/runtime-testbed-assets-v1/ftdi-cdm-2.06.02-win-x64.zip"
+$ftdiVcpDriverSha256 = "cbdd582a9e8c383a934d4949ae27927626bd7c8f19cdf4821404629ca32e27b8"
 
 function Get-CachePaths {
   return @{
@@ -203,11 +204,14 @@ function Install-VirtioGpuDisplayDriver {
 }
 
 function Install-FtdiVirtualComPortDriver {
-  $driverRoot = Join-Path $env:TEMP "vem-ftdi-vcp-2.12.36.20"
+  $driverRoot = Join-Path $env:TEMP "vem-ftdi-vcp-2.06.02"
   $archivePath = "$driverRoot.zip"
   Remove-Item -LiteralPath $driverRoot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
   Invoke-WebRequest -UseBasicParsing -Uri $ftdiVcpDriverUri -OutFile $archivePath
+  if ((Get-Sha256 -Path $archivePath) -cne $ftdiVcpDriverSha256) {
+    throw "FTDI VCP driver archive hash does not match the pinned runtime asset"
+  }
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $driverRoot)
   $driverInfs = @(Get-ChildItem -LiteralPath $driverRoot -Recurse -File -Filter "*.inf" | Where-Object {
