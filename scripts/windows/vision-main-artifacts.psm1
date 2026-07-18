@@ -211,6 +211,13 @@ function Get-VisionMainArtifactCache {
     if (-not [string]::IsNullOrWhiteSpace($GitHubToken)) { $headers.Authorization = "Bearer $GitHubToken" }
     $DownloadArtifact = { param($Uri, $OutFile) Invoke-WebRequest -Uri $Uri -Headers $headers -OutFile $OutFile -ErrorAction Stop }
   }
+  if (-not [string]::IsNullOrWhiteSpace($CommitSha)) {
+    $commit = Assert-VisionCommit $CommitSha
+    $cacheDirectory = Join-Path $CacheRoot $commit
+    if (Test-Path -LiteralPath $cacheDirectory -PathType Container) {
+      return Assert-VisionCachedArtifacts $cacheDirectory $commit
+    }
+  }
   $runsUri = "$ApiBaseUrl/repos/$Repository/actions/runs?branch=main&status=success&per_page=100"
   if (-not [string]::IsNullOrWhiteSpace($CommitSha)) { $runsUri += "&head_sha=" + (Assert-VisionCommit $CommitSha) }
   $runResponse = & $ApiRequest $runsUri

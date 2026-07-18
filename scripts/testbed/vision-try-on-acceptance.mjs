@@ -221,6 +221,12 @@ function windowsPathEquals(left, right) {
   );
 }
 
+function windowsUserIdentifier(value, label) {
+  const user = required(value, label);
+  const slash = user.lastIndexOf("\\");
+  return slash === -1 ? user : user.slice(slash + 1);
+}
+
 function normalizeFrameSourceBinding(binding, label = "Vision frame-source binding") {
   const facts = requiredObject(binding, label);
   return {
@@ -1007,10 +1013,19 @@ export function validateVisionInstalledBinding(binding) {
   if (!windowsPathEquals(facts.taskWorkingDirectory, "C:\\VEM\\vision\\app")) {
     throw new Error("Vision scheduled task workingDirectory drifted");
   }
-  if (required(facts.taskUser, "Vision scheduled task user") !== "VEMKiosk") {
+  const taskUser = windowsUserIdentifier(
+    facts.taskUser,
+    "Vision scheduled task user",
+  );
+  if (taskUser.toLowerCase() !== "VEMKiosk".toLowerCase()) {
     throw new Error("Vision scheduled task user drifted");
   }
-  if (required(facts.processOwner, "Vision process owner") !== required(facts.taskUser, "Vision scheduled task user")) {
+  if (
+    windowsUserIdentifier(
+      facts.processOwner,
+      "Vision process owner",
+    ).toLowerCase() !== taskUser.toLowerCase()
+  ) {
     throw new Error("Vision process owner drifted from the scheduled task user");
   }
   if (!windowsPathEquals(fixtureManifestPath, `${VISION_FIXTURE_ROOT}\\${installedRecord.commit}\\recorded-video\\fixture-manifest.json`)) {

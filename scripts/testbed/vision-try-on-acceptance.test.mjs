@@ -870,8 +870,14 @@ describe("vision try-on acceptance script", () => {
         downloadManifest: {
           path: "C:\\cache\\vision\\vending-vision-main-artifacts.json",
           sha256: "c".repeat(64),
-          runtimeArchive: { path: "C:\\cache\\vision\\runtime.zip", sha256: "d".repeat(64) },
-          fixtureArchive: { path: "C:\\cache\\vision\\fixtures.zip", sha256: "e".repeat(64) },
+          runtimeArchive: {
+            path: "C:\\cache\\vision\\runtime.zip",
+            sha256: "d".repeat(64),
+          },
+          fixtureArchive: {
+            path: "C:\\cache\\vision\\fixtures.zip",
+            sha256: "e".repeat(64),
+          },
         },
         fixtureSet: {
           manifestPath:
@@ -908,7 +914,7 @@ describe("vision try-on acceptance script", () => {
       processOwner: "VEMKiosk",
       commandLine:
         '"C:\\VEM\\vision\\app\\vending-vision.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
-      taskUser: "VEMKiosk",
+      taskUser: "DOM\\VEMKiosk",
       taskCommand: "C:\\Windows\\System32\\cmd.exe",
       taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
       taskWorkingDirectory: "C:\\VEM\\vision\\app",
@@ -921,69 +927,78 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
     assert.throws(
       () =>
-        validateVisionInstalledBinding({
-          installedRecord: {
-            schemaVersion: "vem-vision-installed/v1",
-            commit: "a".repeat(40),
-            appDirectory: "C:\\VEM\\vision\\app",
-            runtime: "vending-vision.exe",
-            executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
-            executableSha256: "b".repeat(64),
-            runtimeWorkDirectory: "C:\\ProgramData\\VEM\\vision\\runtime",
+        validateVisionInstalledBinding(
+          {
+            installedRecord: {
+              schemaVersion: "vem-vision-installed/v1",
+              commit: "a".repeat(40),
+              appDirectory: "C:\\VEM\\vision\\app",
+              runtime: "vending-vision.exe",
+              executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
+              executableSha256: "b".repeat(64),
+              runtimeWorkDirectory: "C:\\ProgramData\\VEM\\vision\\runtime",
+              siteConfiguration: {
+                path: "C:\\ProgramData\\VEM\\vision\\site.json",
+                sha256: "a".repeat(64),
+              },
+              downloadManifest: {
+                path: "C:\\cache\\vision\\vending-vision-main-artifacts.json",
+                sha256: "c".repeat(64),
+                runtimeArchive: {
+                  path: "C:\\cache\\vision\\runtime.zip",
+                  sha256: "d".repeat(64),
+                },
+                fixtureArchive: {
+                  path: "C:\\cache\\vision\\fixtures.zip",
+                  sha256: "e".repeat(64),
+                },
+              },
+              fixtureSet: {
+                manifestPath:
+                  "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\fixture-manifest.json",
+                manifestSha256: "f".repeat(64),
+                top: frameSourceBinding().top,
+                front: frameSourceBinding().front,
+                expectedResults: frameSourceBinding().expectedResults,
+              },
+            },
             siteConfiguration: {
-              path: "C:\\ProgramData\\VEM\\vision\\site.json",
-              sha256: "a".repeat(64),
-            },
-            downloadManifest: {
-              path: "C:\\cache\\vision\\vending-vision-main-artifacts.json",
-              sha256: "c".repeat(64),
-              runtimeArchive: { path: "C:\\cache\\vision\\runtime.zip", sha256: "d".repeat(64) },
-              fixtureArchive: { path: "C:\\cache\\vision\\fixtures.zip", sha256: "e".repeat(64) },
-            },
-            fixtureSet: {
-              manifestPath:
-                "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\fixture-manifest.json",
-              manifestSha256: "f".repeat(64),
-              top: frameSourceBinding().top,
-              front: frameSourceBinding().front,
-              expectedResults: frameSourceBinding().expectedResults,
-            },
-          },
-          siteConfiguration: {
-            cameras: {
-              top: {
-                source: "recorded_video",
-                role: "presence",
-                video_path: frameSourceBinding().top.path,
-              },
-              front: {
-                source: "recorded_video",
-                role: "profile_tryon",
-                video_path: frameSourceBinding().front.path,
+              cameras: {
+                top: {
+                  source: "recorded_video",
+                  role: "presence",
+                  video_path: frameSourceBinding().top.path,
+                },
+                front: {
+                  source: "recorded_video",
+                  role: "profile_tryon",
+                  video_path: frameSourceBinding().front.path,
+                },
               },
             },
+            executablePath: "C:\\Temp\\other.exe",
+            executableSha256: "b".repeat(64),
+            siteConfigurationSha256: "a".repeat(64),
+            downloadManifestSha256: "c".repeat(64),
+            fixtureManifestSha256: "f".repeat(64),
+            fixtureTopSha256: frameSourceBinding().top.sha256,
+            fixtureFrontSha256: frameSourceBinding().front.sha256,
+            fixtureExpectedResultsSha256:
+              frameSourceBinding().expectedResults.sha256,
+            processId: 1,
+            processOwner: "OtherUser",
+            commandLine:
+              '"C:\\Temp\\other.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
+            taskUser: "VEMKiosk",
+            taskCommand: "C:\\Windows\\System32\\cmd.exe",
+            taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
+            taskWorkingDirectory: "C:\\VEM\\vision\\app",
+            listenerProcessId: 2,
+            listenerOwnerCount: 2,
+            listenerBindingSource: "Get-NetTCPConnection",
           },
-          executablePath: "C:\\Temp\\other.exe",
-          executableSha256: "b".repeat(64),
-          siteConfigurationSha256: "a".repeat(64),
-          downloadManifestSha256: "c".repeat(64),
-          fixtureManifestSha256: "f".repeat(64),
-          fixtureTopSha256: frameSourceBinding().top.sha256,
-          fixtureFrontSha256: frameSourceBinding().front.sha256,
-          fixtureExpectedResultsSha256: frameSourceBinding().expectedResults.sha256,
-          processId: 1,
-          processOwner: "OtherUser",
-          commandLine:
-            '"C:\\Temp\\other.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
-          taskUser: "VEMKiosk",
-          taskCommand: "C:\\Windows\\System32\\cmd.exe",
-          taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
-          taskWorkingDirectory: "C:\\VEM\\vision\\app",
-          listenerProcessId: 2,
-          listenerOwnerCount: 2,
-          listenerBindingSource: "Get-NetTCPConnection",
-        }),
-      /fixed installed executable|exactly one installed process/,
+        ),
+      /Vision scheduled task user drifted|fixed installed executable|exactly one installed process/,
     );
   });
 

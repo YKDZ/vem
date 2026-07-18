@@ -34,17 +34,54 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
   } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding utf8
 }
 
+function Get-ResolvedVisionMainCommit([string]$CacheRoot) {
+  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
+  if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+    return ""
+  }
+  try {
+    $candidate = (Get-Content -Raw -LiteralPath $indexPath).Trim()
+  } catch {
+    Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
+    return ""
+  }
+  if ($candidate -match '^[a-f0-9]{40}$') {
+    return $candidate
+  }
+  Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
+  return ""
+}
+
+function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
+  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
+  New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+  Set-Content -LiteralPath $indexPath -Value $Commit -NoNewline -Encoding utf8
+}
+
 $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
 Import-Module $visionModulePath -Force
 $visionCacheRoot = Join-Path $CacheRoot "vision-main"
 $visionSiteConfigurationSourcePath = Join-Path $RuntimeRoot "vision-recorded-site-config.json"
+$visionCommit = Get-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot
+if ([string]::IsNullOrWhiteSpace($visionCommit)) {
+  $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+  Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+} else {
+  try {
+    $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot -CommitSha $visionCommit
+  } catch {
+    Remove-Item -LiteralPath (Join-Path $visionCacheRoot "resolved-vision-main-commit.txt") -Force -ErrorAction SilentlyContinue
+    $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+    Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+  }
+}
 Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-$visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
 $visionInstallation = Install-VisionMainArtifact `
   -RuntimeArchive ([string]$visionCache.runtimeArchive) `
   -FixtureArchive ([string]$visionCache.fixtureArchive) `
   -Commit ([string]$visionCache.commit) `
   -SiteConfigurationPath $visionSiteConfigurationSourcePath `
+  -TaskUser "VEMKiosk" `
   -ProbeTimeoutSeconds 60
 if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
   throw "installed Vision commit does not match the resolved cached commit"
