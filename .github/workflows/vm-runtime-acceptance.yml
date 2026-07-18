@@ -40,17 +40,19 @@ jobs:
           chmod 600 "$key"
           ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
           domain=vem-win10-runtime-debug-checkpoint
-          state="$(virsh domstate "$domain" 2>/dev/null || true)"
-          if test "$state" != "shut off"; then
-            ssh "${ssh_options[@]}" "$user@$host" "shutdown.exe /s /t 0" || true
+          if virsh dominfo "$domain" >/dev/null 2>&1; then
+            state="$(virsh domstate "$domain")"
+            if test "$state" != "shut off"; then
+              ssh "${ssh_options[@]}" "$user@$host" "shutdown.exe /s /t 0" || true
+            fi
+            for attempt in $(seq 1 90); do
+              state="$(virsh domstate "$domain" 2>/dev/null || true)"
+              if test "$state" = "shut off"; then break; fi
+              if test "$attempt" -eq 90; then virsh destroy "$domain" || true; fi
+              sleep 2
+            done
+            virsh undefine "$domain" || true
           fi
-          for attempt in $(seq 1 90); do
-            state="$(virsh domstate "$domain" 2>/dev/null || true)"
-            if test "$state" = "shut off"; then break; fi
-            if test "$attempt" -eq 90; then virsh destroy "$domain"; fi
-            sleep 2
-          done
-          virsh undefine "$domain" || true
           source_root=/opt/vem/runtime-baseline/source.5eb6cf2c
           stage_root=/opt/vem/runtime-baseline/images/.manual-debug-capture
           cache_stage_root=/opt/vem/runtime-baseline/images/.manual-debug-cache-capture
