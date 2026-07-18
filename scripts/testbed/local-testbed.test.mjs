@@ -872,8 +872,10 @@ describe("Windows D cache contract", () => {
     );
     assert.match(guest, /\$trackSummary = \[ordered\]@\{/);
     assert.match(guest, /track = "fast"/);
+    assert.match(guest, /track = "scanner"/);
     assert.match(guest, /track = "delayedPickup"/);
     assert.match(guest, /track = "vision"/);
+    assert.match(guest, /scanner-payment-code-guest-full\.mjs --mode full/);
     assert.match(guest, /if \(\$trackFailures\.Count -gt 0\) \{/);
     assert.match(
       guest,

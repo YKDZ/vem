@@ -145,6 +145,7 @@ describe("installed production runtime smoke", () => {
     assert.notDeepEqual(fast, full);
     assert.deepEqual(full.slice(0, fast.length), fast);
     assert.equal(full.at(-1), "installed-runtime-observability");
+    assert.ok(full.includes("scanner-payment-code"));
   });
 
   it("observes the production daemon and attaches to the installed Tauri page", async () => {
@@ -176,6 +177,7 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /vending-daemon\.exe.*--console/s);
     assert.match(guest, /installed-runtime-smoke\.mjs/);
     assert.match(guest, /fast-route-stress-sale\.mjs/);
+    assert.match(guest, /scanner-payment-code-guest-full\.mjs/);
     assert.match(
       guest,
       /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,

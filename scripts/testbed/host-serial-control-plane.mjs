@@ -422,8 +422,11 @@ function openMockPaymentCreateGate(server) {
 
 function writeProtectedTempFile(root, prefix, contents) {
   const directory = mkdtempSync(join(root, `${prefix}-`));
-  const path = join(directory, `${prefix}.txt`);
-  writeFileSync(path, String(contents), { mode: 0o600 });
+  const path = join(directory, `${prefix}.bin`);
+  const bytes = Buffer.isBuffer(contents)
+    ? contents
+    : Buffer.from(String(contents), "utf8");
+  writeFileSync(path, bytes, { mode: 0o600 });
   chmodSync(path, 0o600);
   return path;
 }
@@ -933,10 +936,14 @@ async function injectScannerCode(server, input) {
     paymentId: required(input.paymentId, "paymentId"),
   };
   const runnerTemp = runnerTempRoot(server.options.stateRoot);
+  const scannerBytes =
+    typeof input.scannerCodeBase64 === "string"
+      ? Buffer.from(input.scannerCodeBase64, "base64")
+      : required(input.scannerCode, "scannerCode");
   const scannerCodeFile = writeProtectedTempFile(
     runnerTemp,
     "scanner-code",
-    required(input.scannerCode, "scannerCode"),
+    scannerBytes,
   );
   const outPath = join(session.dir, "inject.json");
   const command = buildSerialOperationCommand({

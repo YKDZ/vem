@@ -4107,7 +4107,7 @@ export async function runVmHostAdapter({
     process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";
   const request = validateVmHostAdapterRequest(requestInput);
   if (request.operation === "inject-scanner-code") {
-    if (typeof scannerCode !== "string")
+    if (!Buffer.isBuffer(scannerCode))
       throw new Error("inject-scanner-code requires protected scanner input");
     const descriptor = createScannerCodeDescriptor(scannerCode);
     if (

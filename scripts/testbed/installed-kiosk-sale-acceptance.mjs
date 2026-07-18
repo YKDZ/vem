@@ -372,32 +372,59 @@ if ($normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup res
 export function buildInstalledKioskSerialActivationScript() {
   return String.raw`
 $ErrorActionPreference = 'Stop'
-$ports = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object { [int]($_ -replace '^COM', '') })
-if ($ports.Count -lt 2) { throw "installed kiosk serial activation requires two COM ports, found $($ports.Count)" }
-$lowerPort = if ($ports -contains 'COM1') { 'COM1' } else { $ports[0] }
-$scannerPort = if ($ports -contains 'COM2') { 'COM2' } else { @($ports | Where-Object { $_ -ne $lowerPort })[0] }
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
+$health = $null
+$bindings = $null
 do {
   Start-Sleep -Milliseconds 500
   try {
     $ready = [System.IO.File]::ReadAllText('C:\ProgramData\VEM\vending-daemon\daemon-ready.json', [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    $healthUrl = [uri][string]$ready.healthzUrl
+    $baseUrl = "{0}://{1}:{2}" -f $healthUrl.Scheme, $healthUrl.Host, $healthUrl.Port
     $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers $headers -TimeoutSec 3
-    if ([bool]$health.hardwareOnline -and [bool]$health.scannerOnline) { break }
+    $bindings = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 3
+    $lower = @($bindings.roles | Where-Object { [string]$_.role -eq 'lower_controller' })[0]
+    $scanner = @($bindings.roles | Where-Object { [string]$_.role -eq 'scanner' })[0]
+    $lowerPort = [string]$lower.currentPort
+    $scannerPort = [string]$scanner.currentPort
+    if (
+      [bool]$health.hardwareOnline -and
+      [bool]$health.scannerOnline -and
+      $lower.ready -eq $true -and
+      $scanner.ready -eq $true -and
+      $lowerPort -match '^COM[1-9][0-9]*$' -and
+      $scannerPort -match '^COM[1-9][0-9]*$' -and
+      $lowerPort -cne $scannerPort
+    ) { break }
   } catch {}
 } while ([DateTime]::UtcNow -lt $deadline)
-if (-not [bool]$health.hardwareOnline -or -not [bool]$health.scannerOnline) {
+if (
+  -not [bool]$health.hardwareOnline -or
+  -not [bool]$health.scannerOnline -or
+  $null -eq $bindings
+) {
   $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
   $diagnostic = [ordered]@{
-    ports = $ports
-    lowerControllerPort = $lowerPort
-    scannerPort = $scannerPort
+    lowerControllerPort = if ($null -ne $lower) { [string]$lower.currentPort } else { $null }
+    scannerPort = if ($null -ne $scanner) { [string]$scanner.currentPort } else { $null }
     serviceStatus = if ($service) { [string]$service.Status } else { 'missing' }
     health = $health
+    bindings = $bindings
   }
-  throw "serial-backed daemon did not become ready without direct persisted configuration edits: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
+  throw "serial-backed daemon did not become ready with dynamic hardware bindings: $($diagnostic | ConvertTo-Json -Depth 30 -Compress)"
 }
-[Console]::Out.WriteLine(([ordered]@{ ok = $true; lowerControllerPort = $lowerPort; scannerPort = $scannerPort; hardwareOnline = [bool]$health.hardwareOnline; scannerOnline = [bool]$health.scannerOnline } | ConvertTo-Json -Compress))
+[Console]::Out.WriteLine(([ordered]@{
+  ok = $true
+  lowerControllerPort = [string]$lower.currentPort
+  scannerPort = [string]$scanner.currentPort
+  lowerControllerIdentityKey = [string]$lower.binding.identity.identityKey
+  scannerIdentityKey = [string]$scanner.binding.identity.identityKey
+  lowerControllerBindingReady = [bool]$lower.ready
+  scannerBindingReady = [bool]$scanner.ready
+  hardwareOnline = [bool]$health.hardwareOnline
+  scannerOnline = [bool]$health.scannerOnline
+} | ConvertTo-Json -Compress -Depth 30))
 `.trim();
 }
 
@@ -486,8 +513,8 @@ function createRunnerTrust(root) {
 function prepareScannerCode(options, root) {
   const path = join(root, "scanner-code.txt");
   const scannerCode = options.scanner_code_file
-    ? readFileSync(options.scanner_code_file, "utf8")
-    : `TEST-${randomBytes(8).toString("hex")}\n`;
+    ? readFileSync(options.scanner_code_file)
+    : Buffer.from(`TEST-${randomBytes(8).toString("hex")}\r\n`, "utf8");
   if (scannerCode.length === 0) {
     throw new Error("--scanner-code-file must not be empty");
   }
@@ -504,7 +531,8 @@ function restoreConsumedSerialInputs(scanner, trust) {
 
 function restoreConsumedSerialInput(path, expected) {
   if (existsSync(path)) {
-    if (readFileSync(path, "utf8") !== expected) {
+    const actual = readFileSync(path);
+    if (!actual.equals(Buffer.from(expected))) {
       throw new Error(`serial input changed before reissue: ${path}`);
     }
     chmodSync(path, 0o600);

@@ -396,7 +396,7 @@ function injectScanner(request, scannerCode) {
     throw new Error("protected scanner input does not match request descriptor");
   }
   const scanner = state.liveMappings.find((mapping) => mapping.role === "scanner");
-  appendFileSync(scanner.path, `${scannerCode}\r\n`);
+  appendFileSync(scanner.path, Buffer.from(scannerCode));
   state.scannerInjection = {
     ...descriptor,
     operationNonce: request.serialSession.scannerInjection.operationNonce,
@@ -834,7 +834,7 @@ export async function runQemuUsbSerialAdapter(args = process.argv.slice(2)) {
     state = startSession(request);
   } else if (request.operation === "inject-scanner-code") {
     const scannerCodePath = option(args, "scanner-code-file");
-    const scannerCode = readFileSync(scannerCodePath, "utf8");
+    const scannerCode = readFileSync(scannerCodePath);
     state = injectScanner(request, scannerCode);
   } else if (request.operation === "collect-serial-evidence") {
     state = readState(request.serialSession.serialSessionId);

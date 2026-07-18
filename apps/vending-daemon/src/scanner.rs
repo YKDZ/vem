@@ -382,8 +382,9 @@ impl ScannerRuntime {
             else {
                 continue;
             };
+            let scanner_event_id = Uuid::new_v4().simple().to_string();
             let _ = self.tx_events.send(DaemonEvent::ScannerCode {
-                event_id: Uuid::new_v4().simple().to_string(),
+                event_id: scanner_event_id.clone(),
                 updated_at: crate::state::store::now_iso(),
                 masked_code: raw.masked_code.clone(),
                 source: self.config.source.clone(),
@@ -394,6 +395,7 @@ impl ScannerRuntime {
                     raw,
                     arm,
                     scanner_health,
+                    scanner_event_id,
                 })
                 .await
                 .map_err(|error| format!("submit scanner code failed: {error}"))?;

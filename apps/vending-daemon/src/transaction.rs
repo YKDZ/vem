@@ -54,6 +54,7 @@ pub struct ArmedPaymentCode {
     pub raw: vending_core::scanner::RawPaymentCode,
     pub arm: PaymentCodeScanArm,
     pub scanner_health: vending_core::scanner::ScannerHealthSnapshot,
+    pub scanner_event_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -271,6 +272,7 @@ impl TransactionStateMachine {
                 scan.raw,
                 vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
                 Some(scan.scanner_health),
+                Some(scan.scanner_event_id.as_str()),
                 Some(&scan.arm),
             )
             .await;
@@ -559,7 +561,7 @@ impl TransactionStateMachine {
         source: &str,
         scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
-        self.submit_payment_code_scoped(raw, source, scanner_health, None)
+        self.submit_payment_code_scoped(raw, source, scanner_health, None, None)
             .await
     }
 
@@ -568,6 +570,7 @@ impl TransactionStateMachine {
         raw: vending_core::scanner::RawPaymentCode,
         source: &str,
         scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
+        scanner_event_id: Option<&str>,
         expected_arm: Option<&PaymentCodeScanArm>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let machine_code = self
@@ -616,6 +619,7 @@ impl TransactionStateMachine {
                     &raw.masked_code,
                     source,
                     raw.scanned_at_ms,
+                    scanner_event_id,
                     scanner_health.as_ref(),
                 )
                 .await
@@ -1548,7 +1552,14 @@ mod tests {
 
         machine
             .state
-            .begin_payment_code_attempt("ORDER-1", "6212****3456", "serial_text", 1_000, None)
+            .begin_payment_code_attempt(
+                "ORDER-1",
+                "6212****3456",
+                "serial_text",
+                1_000,
+                None,
+                None,
+            )
             .await
             .expect("seed payment attempt");
 
@@ -2051,6 +2062,7 @@ mod tests {
                     masked_code: "2829****4955".to_string(),
                     scanned_at_ms: 1_001,
                 },
+                scanner_event_id: "evt-scanner-armed-success".to_string(),
                 scanner_health: vending_core::scanner::ScannerHealthSnapshot {
                     online: true,
                     adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),

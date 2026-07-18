@@ -62,7 +62,7 @@ export function declaredInstalledRuntimeTracks(mode) {
     throw new Error("installed runtime mode must be fast or full");
   return mode === "fast"
     ? [...BASE_TRACKS]
-    : [...BASE_TRACKS, "installed-runtime-observability"];
+    : [...BASE_TRACKS, "scanner-payment-code", "installed-runtime-observability"];
 }
 
 export function validateInstalledRuntimeEvidence(value) {

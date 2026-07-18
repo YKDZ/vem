@@ -102,7 +102,7 @@ describe("installed kiosk sale platform raw query", () => {
     );
     expect(source).toContain("database.client.transaction");
     expect(source).toContain('isolationLevel: "repeatable read"');
-    expect(source).toContain("clock_timestamp()");
+    expect(source).toContain("transaction_timestamp()");
     expect(source).not.toMatch(
       /options\.(?:orderId|paymentId|orderNo|commandId|movementId)/,
     );

@@ -632,6 +632,7 @@ export const daemonIpcPaymentCodeAttemptSummarySchema = z
     attemptNo: z.number().int().positive().nullable(),
     status: paymentCodeAttemptStatusSchema.nullable(),
     maskedAuthCode: z.string().nullable(),
+    scannerEventId: z.string().nullable().optional(),
     source: daemonIpcPaymentCodeSourceSchema.nullable(),
     idempotencyKey: z.string().nullable(),
     submittedAt: z.string().nullable(),

@@ -240,7 +240,7 @@ function protectedScannerCode(operation) {
   )
     throw new Error("--scanner-code-file must be owned by the runner user");
   try {
-    return readFileSync(inputPath, "utf8");
+    return readFileSync(inputPath);
   } finally {
     rmSync(inputPath, { force: true });
   }
@@ -366,6 +366,9 @@ async function main() {
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
   const out = readOption("--out");
+  const lifecycleReferenceOverride = readOption("--lifecycle-reference", {
+    optional: true,
+  });
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const lifecycleSeed = createHash("sha256")
     .update(`${runId}\n${targetIdentity}`)
@@ -387,7 +390,9 @@ async function main() {
     runId,
     operationNonce: nonce,
     operationReference: `vm-operation://${nonce}`,
-    lifecycleReference: `vm-lifecycle://${runId.toLowerCase()}.${lifecycleSeed}`,
+    lifecycleReference:
+      lifecycleReferenceOverride ??
+      `vm-lifecycle://${runId.toLowerCase()}.${lifecycleSeed}`,
     cancelOperationReference:
       operation === "cancel"
         ? readOption("--cancel-operation-reference")

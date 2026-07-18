@@ -782,7 +782,7 @@ function readProtectedScannerCode() {
   )
     throw new Error("--scanner-code-file must be owned by the runner user");
   try {
-    return readFileSync(inputPath, "utf8");
+    return readFileSync(inputPath);
   } finally {
     rmSync(inputPath, { force: true });
   }

@@ -93,6 +93,16 @@ jobs:
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
           if-no-files-found: warn
           retention-days: 7
+      - name: Collect Scanner Payment-Code Evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-scanner-payment-code-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
+          if-no-files-found: warn
+          retention-days: 7
       - name: Collect Bounded Issue17 Delayed Pickup Evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -38,6 +38,8 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(windows, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
     assert.match(windows, /fast-route-stress-sale\.json/);
     assert.match(windows, /fast-route-stress-sale-artifacts/);
+    assert.match(windows, /scanner-payment-code\.json/);
+    assert.match(windows, /scanner-payment-code-artifacts/);
     assert.match(windows, /vision-try-on-acceptance\.json/);
     assert.match(windows, /vision-try-on-acceptance-artifacts/);
     assert.match(windows, /full-workflow-tracks\.json/);

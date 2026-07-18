@@ -262,6 +262,7 @@ $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
+[string]$scannerPaymentCodeOutPath = Join-Path $handoffRoot "scanner-payment-code.json"
 [string]$delayedPickupOutPath = Join-Path $handoffRoot "delayed-pickup-native-audio.json"
 [string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
 [string]$workflowSummaryOutPath = Join-Path $handoffRoot "full-workflow-tracks.json"
@@ -306,6 +307,7 @@ $trackSummary = [ordered]@{
   ok = $true
   tracks = [ordered]@{
     fast = $null
+    scanner = $null
     delayedPickup = $null
     vision = $null
   }
@@ -324,6 +326,16 @@ try {
 }
 
 if ($Mode -eq "full") {
+  try {
+    node scripts/testbed/scanner-payment-code-guest-full.mjs --mode full --guest-input $GuestInputPath --handoff $handoffPath --out $scannerPaymentCodeOutPath
+    if ($LASTEXITCODE -ne 0) { throw "scanner payment-code guest acceptance failed" }
+  } catch {
+    $trackFailures.Add([ordered]@{ track = "scanner"; message = $_.Exception.Message }) | Out-Null
+  } finally {
+    if (Test-Path -LiteralPath $scannerPaymentCodeOutPath) {
+      $trackSummary.tracks.scanner = Get-Content -Raw -LiteralPath $scannerPaymentCodeOutPath | ConvertFrom-Json
+    }
+  }
   try {
     node scripts/testbed/delayed-pickup-native-audio-guest-full.mjs --mode full --guest-input $GuestInputPath --handoff $handoffPath --out $delayedPickupOutPath
     if ($LASTEXITCODE -ne 0) { throw "delayed pickup native audio failed" }
@@ -352,6 +364,9 @@ if (Test-Path -LiteralPath $fastRouteOutPath) {
   Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
 }
 if ($Mode -eq "full") {
+  if (Test-Path -LiteralPath $scannerPaymentCodeOutPath) {
+    Get-Content -Raw -LiteralPath $scannerPaymentCodeOutPath | Write-Output
+  }
   if (Test-Path -LiteralPath $delayedPickupOutPath) {
     Get-Content -Raw -LiteralPath $delayedPickupOutPath | Write-Output
   }

@@ -191,19 +191,19 @@ export async function queryInstalledKioskSalePlatform(
   try {
     return await database.client.transaction(
       async (client) => {
+        const capturedAtResult = await client.execute(
+          sql<{
+            capturedAt: string;
+          }>`select to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt"`,
+        );
+        const capturedAt = capturedAtResult.rows[0]?.capturedAt;
+        if (typeof capturedAt !== "string" || !capturedAt)
+          throw new Error("platform database timestamp is missing");
         const [machine] = await client
           .select({ id: machines.id })
           .from(machines)
           .where(eq(machines.code, options.machineCode));
         if (!machine) {
-          const capturedAtResult = await client.execute(
-            sql<{
-              capturedAt: string;
-            }>`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt"`,
-          );
-          const capturedAt = capturedAtResult.rows[0]?.capturedAt;
-          if (typeof capturedAt !== "string" || !capturedAt)
-            throw new Error("platform database timestamp is missing");
           return buildInstalledKioskSalePlatformRawReport({
             options,
             machineId: null,
@@ -359,14 +359,6 @@ export async function queryInstalledKioskSalePlatform(
           .from(inventories)
           .where(eq(inventories.machineId, machine.id));
 
-        const capturedAtResult = await client.execute(
-          sql<{
-            capturedAt: string;
-          }>`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt"`,
-        );
-        const capturedAt = capturedAtResult.rows[0]?.capturedAt;
-        if (typeof capturedAt !== "string" || !capturedAt)
-          throw new Error("platform database timestamp is missing");
         return buildInstalledKioskSalePlatformRawReport({
           options,
           machineId: machine.id,

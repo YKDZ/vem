@@ -2271,6 +2271,7 @@ impl LocalStateStore {
         masked_auth_code: &str,
         source: &str,
         scanned_at_ms: u128,
+        scanner_event_id: Option<&str>,
         scanner_health: Option<&vending_core::scanner::ScannerHealthSnapshot>,
     ) -> Result<String, StoreError> {
         let mut history = Vec::new();
@@ -2314,6 +2315,12 @@ impl LocalStateStore {
         payload.insert(
             "source".to_string(),
             serde_json::Value::String(source.to_string()),
+        );
+        payload.insert(
+            "scannerEventId".to_string(),
+            scanner_event_id
+                .map(|value| serde_json::Value::String(value.to_string()))
+                .unwrap_or(serde_json::Value::Null),
         );
         payload.insert(
             "status".to_string(),
@@ -6654,6 +6661,10 @@ fn map_payment_code_attempt_summary(
             .map(ToString::to_string),
         masked_auth_code: value
             .get("maskedAuthCode")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        scanner_event_id: value
+            .get("scannerEventId")
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         source: value
@@ -12726,7 +12737,14 @@ mod tests {
             .expect("seed");
 
         let key = store
-            .begin_payment_code_attempt("ORDER-SECRET", "6212****3456", "serial_text", 1_000, None)
+            .begin_payment_code_attempt(
+                "ORDER-SECRET",
+                "6212****3456",
+                "serial_text",
+                1_000,
+                None,
+                None,
+            )
             .await
             .expect("id");
         assert!(key.starts_with("ORDER-SECRET:"));
@@ -12770,6 +12788,7 @@ mod tests {
                 "6212****3456",
                 "serial_text",
                 1_000,
+                None,
                 None,
             )
             .await
@@ -12829,7 +12848,14 @@ mod tests {
             .expect("seed");
 
         let first = store
-            .begin_payment_code_attempt("ORDER-RETRY", "6212****3456", "serial_text", 1_000, None)
+            .begin_payment_code_attempt(
+                "ORDER-RETRY",
+                "6212****3456",
+                "serial_text",
+                1_000,
+                None,
+                None,
+            )
             .await
             .expect("first");
         store
@@ -12842,7 +12868,14 @@ mod tests {
             .await
             .expect("finish");
         let second = store
-            .begin_payment_code_attempt("ORDER-RETRY", "6212****9999", "serial_text", 2_000, None)
+            .begin_payment_code_attempt(
+                "ORDER-RETRY",
+                "6212****9999",
+                "serial_text",
+                2_000,
+                None,
+                None,
+            )
             .await
             .expect("second");
 
@@ -12883,7 +12916,14 @@ mod tests {
             .expect("seed");
 
         let error = store
-            .begin_payment_code_attempt("ORDER-ACTIVE", "6212****9999", "serial_text", 2_000, None)
+            .begin_payment_code_attempt(
+                "ORDER-ACTIVE",
+                "6212****9999",
+                "serial_text",
+                2_000,
+                None,
+                None,
+            )
             .await
             .expect_err("active attempt should block");
         assert!(matches!(error, StoreError::ActivePaymentCodeAttempt));
