@@ -2581,7 +2581,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(prepareKvmGuest, /Install-FtdiVirtualComPortDriver/);
     assert.match(runtime, /runtime-testbed-assets-v1\/ftdi-cdm-2\.06\.02-win-x64\.zip/);
-    assert.match(runtime, /cbdd582a9e8c383a934d4949ae27927626bd7c8f19cdf4821404629ca32e27b8/);
+    assert.match(runtime, /79ed0432d79bff644d22a6b9e9580b916b0b32993570cf4cda498f014a27e0f1/);
     assert.match(
       runtime,
       /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf[\s\S]*VID_0403&PID_6001/,

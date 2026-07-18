@@ -35,7 +35,7 @@ $pnpmNamespace = "pnpm-$pnpmVersion"
 $turboNamespace = "turbo-$turboVersion"
 $rustNamespace = "rust-1.96.0"
 $ftdiVcpDriverUri = "https://github.com/YKDZ/vem/releases/download/runtime-testbed-assets-v1/ftdi-cdm-2.06.02-win-x64.zip"
-$ftdiVcpDriverSha256 = "cbdd582a9e8c383a934d4949ae27927626bd7c8f19cdf4821404629ca32e27b8"
+$ftdiVcpDriverSha256 = "79ed0432d79bff644d22a6b9e9580b916b0b32993570cf4cda498f014a27e0f1"
 
 function Get-CachePaths {
   return @{
