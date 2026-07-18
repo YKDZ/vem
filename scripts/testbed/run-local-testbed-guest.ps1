@@ -359,7 +359,7 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
-& $pnpm --filter machine tauri:build:kiosk:windows
+& $pnpm --filter machine tauri:build:kiosk:windows -- --no-bundle
 if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
 $null = & $sccache --zero-stats
 cargo build -p vending-daemon --release

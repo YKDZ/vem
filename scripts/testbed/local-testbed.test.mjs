@@ -1142,6 +1142,10 @@ describe("Windows D cache contract", () => {
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
+    assert.match(
+      guest,
+      /tauri:build:kiosk:windows -- --no-bundle/,
+    );
     assert.match(guest, /function Get-TestbedSccache/);
     assert.match(guest, /sccache-v\$version-x86_64-pc-windows-msvc\.zip/);
     assert.match(guest, /Join-Path \$cacheRoot "sccache\\bin\\\$version"/);
