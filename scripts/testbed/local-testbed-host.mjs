@@ -259,9 +259,9 @@ function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
         )
         .join("\n")
     : "";
-  const registrationProxyArgument = runnerProxy?.configured
+  const registrationProxyArguments = runnerProxy?.configured
     ? runnerProxy.https || runnerProxy.http
-      ? ` -Proxy ${quotePowerShell(runnerProxy.https || runnerProxy.http)}`
+      ? ` '--proxy' ${quotePowerShell(runnerProxy.https || runnerProxy.http)}`
       : ""
     : "";
   const registrationSetup = runnerRegistration
@@ -271,7 +271,9 @@ Get-Process -Name 'RunnerService','Runner.Listener','Runner.Worker' -ErrorAction
 $existingServices | ForEach-Object { & sc.exe stop $_.Name | Out-Null; & sc.exe delete $_.Name | Out-Null }
 Start-Sleep -Seconds 1
 Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue
-$registration = Invoke-RestMethod -Method Post -Uri ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)} -Headers @{ Authorization = ${quotePowerShell(`Bearer ${runnerRegistration.adminToken}`)}; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }${registrationProxyArgument}
+$registrationJson = & curl.exe '--fail' '--silent' '--show-error'${registrationProxyArguments} '--request' 'POST' '--header' ${quotePowerShell(`Authorization: Bearer ${runnerRegistration.adminToken}`)} '--header' 'Accept: application/vnd.github+json' '--header' 'X-GitHub-Api-Version: 2022-11-28' ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)}
+if ($LASTEXITCODE -ne 0) { throw "actions runner registration token request failed with exit code $LASTEXITCODE" }
+$registration = $registrationJson | ConvertFrom-Json
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url ${quotePowerShell(`https://github.com/${runnerRegistration.repository}`)} --token ([string]$registration.token) --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 `

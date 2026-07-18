@@ -400,7 +400,7 @@ describe("tracked local testbed host lifecycle", () => {
         repository: "example/runtime",
       },
     }).at(-1);
-    assert.match(dynamicRegistration.input, /actions\/runners\/registration-token/);
+    assert.match(dynamicRegistration.input, /curl\.exe.*actions\/runners\/registration-token/s);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
 
@@ -421,7 +421,7 @@ describe("tracked local testbed host lifecycle", () => {
     }).at(-1);
     assert.match(
       proxiedRegistration.input,
-      /Invoke-RestMethod.*-Proxy 'http:\/\/proxy\.example\.test:8080'/s,
+      /curl\.exe.*'--proxy' 'http:\/\/proxy\.example\.test:8080'/s,
     );
   });
 });
