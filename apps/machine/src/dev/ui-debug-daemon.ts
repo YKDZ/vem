@@ -648,6 +648,7 @@ async function injectInstalledKioskSaleDisturbance(
           detectedAt: nowIso(),
           lastSeenAt: nowIso(),
           reason: "left_frame",
+          source: "top",
         });
         break;
       case "duplicate_payment_status":

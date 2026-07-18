@@ -62,12 +62,15 @@ export function useVisionRecommendations(): {
     payload: VisionProfileResultPayload,
   ): VisionProfileResultPayload {
     return {
+      source: payload.source,
       eventId: payload.eventId,
       detectedAt: payload.detectedAt,
       profile: recommendationProfile(payload.profile),
       quality: {
         overall: payload.quality.overall,
         warnings: [],
+        profileUsable: payload.quality.profileUsable,
+        notUsableReason: payload.quality.notUsableReason,
       },
     };
   }
