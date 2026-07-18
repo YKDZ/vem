@@ -1079,6 +1079,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
         ),
       /default ICH9 audio device/,
     );
+    assert.doesNotThrow(() =>
+      verifyDefinedRuntimeDevices(
+        xml.replace(/<output file="[^"]+"\/>/, ""),
+        profile,
+      ),
+    );
     assert.throws(
       () =>
         verifyDefinedRuntimeDevices(

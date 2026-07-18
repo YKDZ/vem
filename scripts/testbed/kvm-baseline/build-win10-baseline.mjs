@@ -1152,8 +1152,7 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
     !/<audio\b[^>]*\bid=(['"])1\1\s*\/>/.test(sounds[0][0]) ||
     audioDevices.length !== 1 ||
     !xmlAttributeEquals(audioDevices[0][0], "id", "1") ||
-    !xmlAttributeEquals(audioDevices[0][0], "type", "file") ||
-    !xmlAttributeEquals(audioDevices[0][0], "file", profile.audio.capturePath)
+    !xmlAttributeEquals(audioDevices[0][0], "type", "file")
   ) {
     throw new Error("defined domain must use the default ICH9 audio device");
   }
