@@ -161,9 +161,9 @@ function guestInputAssertion(path, runId) {
   return `$ErrorActionPreference = 'Stop'
 $path = ${quotePowerShell(path)}
 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'guest input is not staged' }
-$input = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($input.schemaVersion -ne 'vem-local-testbed-guest-input/v1') { throw 'guest input schema is invalid' }
-if ($input.runId -ne ${quotePowerShell(runId)}) { throw 'guest input run does not match' }
+$guestDocument = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($guestDocument.schemaVersion -ne 'vem-local-testbed-guest-input/v1') { throw 'guest input schema is invalid' }
+if ($guestDocument.runId -ne ${quotePowerShell(runId)}) { throw 'guest input run does not match' }
 `;
 }
 

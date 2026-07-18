@@ -141,6 +141,8 @@ describe("tracked local testbed host lifecycle", () => {
       "powershell -NoProfile -NonInteractive -Command -",
     );
     assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
+    assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
+    assert.doesNotMatch(plan[0].input, /\$input\s*=/);
     assert.equal(
       plan[1].args.at(-1),
       "powershell -NoProfile -NonInteractive -Command -",
