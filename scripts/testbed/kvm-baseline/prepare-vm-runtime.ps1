@@ -691,31 +691,41 @@ function Prepare-KvmGuest {
   Initialize-InteractiveDisplayPreparation
 }
 
-if ($Mode -eq "GetInteractiveDisplayPreparationStatus") {
-  Get-InteractiveDisplayPreparationStatus
+try {
+  if ($Mode -eq "GetInteractiveDisplayPreparationStatus") {
+    Get-InteractiveDisplayPreparationStatus
+    exit 0
+  }
+  if ($Mode -eq "PrepareInteractiveDisplay") {
+    Prepare-InteractiveDisplay
+    exit 0
+  }
+  if ($Mode -eq "PrepareKvmGuest") {
+    Prepare-KvmGuest
+    exit 0
+  }
+  if ($Mode -eq "RearmInteractiveDisplay") {
+    Rearm-InteractiveDisplay
+    exit 0
+  }
+  if ($Mode -eq "PrepareToolchain") {
+    Initialize-CacheDisk
+    Set-CacheEnvironment
+    Install-Toolchain
+    exit 0
+  }
+  Register-Runner
   exit 0
+} catch {
+  $failure = @{
+    schemaVersion = "win10-kvm-guest-stage-failure/v1"
+    failedAt = [DateTime]::UtcNow.ToString("o")
+    mode = $Mode
+    message = [string]$_.Exception.Message
+    exceptionType = [string]$_.Exception.GetType().FullName
+    scriptStackTrace = [string]$_.ScriptStackTrace
+  }
+  Write-AtomicJson -Path (Join-Path $baselineRoot "guest-stage-failure.json") -Value $failure
+  [Console]::Out.WriteLine(($failure | ConvertTo-Json -Depth 5 -Compress))
+  exit 1
 }
-
-if ($Mode -eq "PrepareInteractiveDisplay") {
-  Prepare-InteractiveDisplay
-  exit 0
-}
-
-if ($Mode -eq "PrepareKvmGuest") {
-  Prepare-KvmGuest
-  exit 0
-}
-
-if ($Mode -eq "RearmInteractiveDisplay") {
-  Rearm-InteractiveDisplay
-  exit 0
-}
-
-if ($Mode -eq "PrepareToolchain") {
-  Initialize-CacheDisk
-  Set-CacheEnvironment
-  Install-Toolchain
-  exit 0
-}
-
-Register-Runner

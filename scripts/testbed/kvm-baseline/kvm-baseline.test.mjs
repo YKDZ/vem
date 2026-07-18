@@ -2353,6 +2353,9 @@ await new Promise(() => setInterval(() => {}, 1_000));
       /driverStoreFiles[\s\S]*DriverStore identity is not bound to the distribution package/,
     );
     assert.match(runtime, /virtio-gpu-driver-binding\.json/);
+    assert.match(runtime, /win10-kvm-guest-stage-failure\/v1/);
+    assert.match(runtime, /guest-stage-failure\.json/);
+    assert.match(runtime, /scriptStackTrace/);
     assert.match(
       verify,
       /virtio-gpu-driver-identity\.json[\s\S]*packageIdentity\.files[\s\S]*packageHash -cne \$ExpectedVirtioGpuDriverPackageSha256/,
