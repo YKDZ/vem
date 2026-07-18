@@ -3471,6 +3471,82 @@ describe("OrdersService (transaction boundary)", () => {
       expect(tx.update).not.toHaveBeenCalled();
       expect(releaseReservation).not.toHaveBeenCalled();
     });
+
+    it("durably schedules recovery when a submitted payment-code attempt is canceled", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "payment_code",
+        paymentStatus: "pending",
+        paymentUrl: null,
+        paymentExpiresAt: new Date(Date.now() + 60_000),
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-mock",
+        providerCode: "mock",
+        paymentProviderCode: "mock",
+        providerTradeNo: null,
+        providerConfigId: null,
+      };
+      const tx = {
+        execute: vi.fn().mockResolvedValue([]),
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([row]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi
+                  .fn()
+                  .mockResolvedValue([{ id: "attempt-1", status: "querying" }]),
+              }),
+            }),
+          }),
+        update: vi
+          .fn()
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+          })
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+      };
+      db.select.mockReturnValueOnce(makeJoinedSelectResult([row]));
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+
+      await expect(
+        service.cancelMachineOrder("ORD001", { machineCode: "M001" }),
+      ).rejects.toThrow("Payment code confirmation is in progress");
+      expect(tx.update).toHaveBeenCalledTimes(2);
+      expect(releaseReservation).not.toHaveBeenCalled();
+    });
   });
 
   describe("getMachineOrderStatus", () => {

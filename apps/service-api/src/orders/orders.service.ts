@@ -1155,7 +1155,7 @@ export class OrdersService {
 
     const providerPayload = await this.cancelProviderPaymentIfNeeded(row);
 
-    await this.db.transaction(async (tx) => {
+    const cancellation = await this.db.transaction(async (tx) => {
       await tx.execute(sql`
         select p.id
         from payments p
@@ -1198,9 +1198,26 @@ export class OrdersService {
           )
           .limit(1);
         if (activeAttempt && activeAttempt.status !== "created") {
-          throw new ConflictException(
-            "Payment code confirmation is in progress",
-          );
+          const now = new Date();
+          await tx
+            .update(paymentCodeAttempts)
+            .set({ recoveryNextAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(paymentCodeAttempts.id, activeAttempt.id),
+                eq(paymentCodeAttempts.isActive, true),
+              ),
+            );
+          await tx
+            .update(payments)
+            .set({ expiresAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(payments.id, row.paymentId),
+                inArray(payments.status, ["created", "pending", "processing"]),
+              ),
+            );
+          return { recoveryScheduled: true };
         }
         if (activeAttempt) {
           const [canceledAttempt] = await tx
@@ -1315,6 +1332,10 @@ export class OrdersService {
         reason: "canceled",
       });
     });
+
+    if (cancellation?.recoveryScheduled) {
+      throw new ConflictException("Payment code confirmation is in progress");
+    }
 
     return await this.getMachineOrderStatus(orderNo, query);
   }

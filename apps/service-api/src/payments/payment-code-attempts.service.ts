@@ -8,12 +8,16 @@ import {
 } from "@nestjs/common";
 import {
   and,
+  asc,
   count,
   desc,
   eq,
+  gt,
   inArray,
   isNull,
+  lte,
   machines,
+  or,
   orders,
   paymentCodeAttempts,
   paymentProviders,
@@ -44,6 +48,10 @@ export type CreatePaymentCodeAttemptInput = {
 };
 
 export type PaymentCodeAttemptRow = typeof paymentCodeAttempts.$inferSelect;
+export type PaymentCodeRecoveryClaim = PaymentCodeAttemptRow & {
+  recoveryLeaseOwnerToken: string;
+  recoveryLeaseFence: number;
+};
 export type PaymentCodeAttemptDto = {
   id: string;
   orderId: string;
@@ -70,6 +78,14 @@ type PaymentCodeAttemptListQuery = z.infer<
   typeof paymentCodeAttemptQuerySchema
 > &
   z.infer<typeof pageQuerySchema>;
+
+const RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES: PaymentCodeAttemptStatus[] = [
+  "submitting",
+  "user_confirming",
+  "querying",
+  "reversing",
+];
+const PAYMENT_CODE_ADMISSION_RECOVERY_LEASE_MS = 30_000;
 
 function isIncidentLocked(row: {
   orderStatus: string;
@@ -341,6 +357,11 @@ export class PaymentCodeAttemptsService {
         .set({
           status: "submitting",
           submittedAt: new Date(),
+          recoveryLeaseExpiresAt: new Date(
+            Date.now() + PAYMENT_CODE_ADMISSION_RECOVERY_LEASE_MS,
+          ),
+          recoveryLeaseOwnerToken: createBusinessNo("PCA"),
+          recoveryNextAt: new Date(),
           updatedAt: new Date(),
         })
         .where(
@@ -391,6 +412,152 @@ export class PaymentCodeAttemptsService {
     return await this.tryMarkStatus(id, status, patch, allowedCurrentStatuses);
   }
 
+  async claimNextDueRecoveryAttempt(input: {
+    ownerToken: string;
+    now?: Date;
+    leaseMs: number;
+  }): Promise<PaymentCodeRecoveryClaim | null> {
+    const now = input.now ?? new Date();
+    const [candidate] = await this.db
+      .select({ id: paymentCodeAttempts.id })
+      .from(paymentCodeAttempts)
+      .where(
+        and(
+          eq(paymentCodeAttempts.isActive, true),
+          inArray(
+            paymentCodeAttempts.status,
+            RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES,
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryNextAt),
+            lte(paymentCodeAttempts.recoveryNextAt, now),
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryLeaseExpiresAt),
+            lte(paymentCodeAttempts.recoveryLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .orderBy(
+        asc(paymentCodeAttempts.recoveryNextAt),
+        asc(paymentCodeAttempts.createdAt),
+      )
+      .limit(1);
+    if (!candidate) return null;
+
+    const [claimed] = await this.db
+      .update(paymentCodeAttempts)
+      .set({
+        recoveryLeaseOwnerToken: input.ownerToken,
+        recoveryLeaseExpiresAt: new Date(now.getTime() + input.leaseMs),
+        recoveryLeaseFence: sql`${paymentCodeAttempts.recoveryLeaseFence} + 1`,
+        recoveryAttemptCount: sql`${paymentCodeAttempts.recoveryAttemptCount} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(paymentCodeAttempts.id, candidate.id),
+          eq(paymentCodeAttempts.isActive, true),
+          inArray(
+            paymentCodeAttempts.status,
+            RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES,
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryNextAt),
+            lte(paymentCodeAttempts.recoveryNextAt, now),
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryLeaseExpiresAt),
+            lte(paymentCodeAttempts.recoveryLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .returning();
+    if (
+      !claimed ||
+      !claimed.recoveryLeaseOwnerToken ||
+      claimed.recoveryLeaseFence <= 0
+    ) {
+      return null;
+    }
+    return {
+      ...claimed,
+      recoveryLeaseOwnerToken: claimed.recoveryLeaseOwnerToken,
+      recoveryLeaseFence: claimed.recoveryLeaseFence,
+    };
+  }
+
+  async releaseRecoveryClaim(
+    claim: PaymentCodeRecoveryClaim,
+    input: {
+      status: PaymentCodeAttemptStatus;
+      nextRecoveryAt?: Date | null;
+      patch?: Partial<typeof paymentCodeAttempts.$inferInsert>;
+    },
+  ): Promise<PaymentCodeAttemptRow | null> {
+    const terminal = [
+      "succeeded",
+      "failed",
+      "reversed",
+      "canceled",
+      "manual_handling",
+    ].includes(input.status);
+    const [updated] = await this.db
+      .update(paymentCodeAttempts)
+      .set({
+        ...input.patch,
+        status: input.status,
+        isActive: terminal ? false : (input.patch?.isActive ?? true),
+        recoveryLeaseOwnerToken: null,
+        recoveryLeaseExpiresAt: null,
+        recoveryNextAt: terminal ? null : (input.nextRecoveryAt ?? null),
+        updatedAt: new Date(),
+      })
+      .where(this.recoveryLeaseConditions(claim))
+      .returning();
+    return updated ?? null;
+  }
+
+  async getRecoveryContextById(id: string): Promise<{
+    attempt: PaymentCodeAttemptRow;
+    paymentNo: string;
+    paymentStatus: string;
+    paymentExpiresAt: Date | null;
+    orderNo: string;
+    machineId: string;
+    providerCode: "wechat_pay" | "alipay" | "mock";
+    providerConfigId: string | null;
+    providerConfigSnapshotJson: unknown;
+  }> {
+    const context = await this.getContextById(id);
+    const [payment] = await this.db
+      .select({
+        status: payments.status,
+        expiresAt: payments.expiresAt,
+      })
+      .from(payments)
+      .where(eq(payments.id, context.attempt.paymentId))
+      .limit(1);
+    if (!payment) throw new NotFoundException("Payment code attempt not found");
+    return {
+      ...context,
+      paymentStatus: payment.status,
+      paymentExpiresAt: payment.expiresAt,
+    };
+  }
+
+  private recoveryLeaseConditions(claim: PaymentCodeRecoveryClaim) {
+    return and(
+      eq(paymentCodeAttempts.id, claim.id),
+      eq(
+        paymentCodeAttempts.recoveryLeaseOwnerToken,
+        claim.recoveryLeaseOwnerToken,
+      ),
+      eq(paymentCodeAttempts.recoveryLeaseFence, claim.recoveryLeaseFence),
+      gt(paymentCodeAttempts.recoveryLeaseExpiresAt, new Date()),
+    );
+  }
+
   private async tryMarkStatus(
     id: string,
     status: PaymentCodeAttemptStatus,
@@ -412,6 +579,13 @@ export class PaymentCodeAttemptsService {
         ...patch,
         status,
         isActive: terminal ? false : (patch.isActive ?? true),
+        ...(terminal
+          ? {
+              recoveryLeaseOwnerToken: null,
+              recoveryLeaseExpiresAt: null,
+              recoveryNextAt: null,
+            }
+          : {}),
         updatedAt: new Date(),
       })
       .where(and(...conditions))
@@ -434,7 +608,7 @@ export class PaymentCodeAttemptsService {
     paymentNo: string;
     orderNo: string;
     machineId: string;
-    providerCode: "wechat_pay" | "alipay";
+    providerCode: "wechat_pay" | "alipay" | "mock";
     providerConfigId: string | null;
     providerConfigSnapshotJson: unknown;
   }> {
@@ -462,7 +636,7 @@ export class PaymentCodeAttemptsService {
     return {
       ...row,
       // oxlint-disable-next-line no-unsafe-type-assertion -- query is constrained by schema and runtime provider set
-      providerCode: row.providerCode as "wechat_pay" | "alipay",
+      providerCode: row.providerCode as "wechat_pay" | "alipay" | "mock",
     };
   }
 

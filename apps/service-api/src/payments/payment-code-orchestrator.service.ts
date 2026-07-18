@@ -153,7 +153,7 @@ export class PaymentCodeOrchestratorService {
       attempt = admitted.attempt;
       charge = admitted.result;
     } catch (error) {
-      await this.failUnadmittedAttempt(createdAttempt.id, error);
+      await this.deferSubmittedAttempt(createdAttempt.id, error);
       throw error;
     }
 
@@ -277,6 +277,26 @@ export class PaymentCodeOrchestratorService {
         failureCode: "PAYMENT_CODE_ADMISSION_FAILED",
         failureMessage: this.errorMessage(error),
         finishedAt: new Date(),
+      },
+    );
+  }
+
+  private async deferSubmittedAttempt(
+    attemptId: string,
+    error: unknown,
+  ): Promise<void> {
+    const message = this.errorMessage(error);
+    await this.attempts.markStatusIfCurrentStatusIn(
+      attemptId,
+      "querying",
+      ["submitting"],
+      {
+        providerStatus: "PAYMENT_CODE_SUBMISSION_UNKNOWN",
+        failureCode: "PAYMENT_CODE_SUBMISSION_UNKNOWN",
+        failureMessage: message,
+        rawPayloadJson: buildStoredEventPayload({ error: message }),
+        lastCheckedAt: new Date(),
+        recoveryNextAt: new Date(),
       },
     );
   }

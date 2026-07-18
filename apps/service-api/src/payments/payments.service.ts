@@ -638,6 +638,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
+        paymentMethod: payments.method,
         amountCents: payments.amountCents,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -671,6 +672,37 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const results = await Promise.all(
       overduePayments.map(async (payment): Promise<boolean> => {
+        // A submitted payment-code attempt has its own provider transaction
+        // number. Do not query or close it with the parent payment number;
+        // wake the leased attempt worker, which owns query/reversal.
+        if (payment.paymentMethod === "payment_code") {
+          const [activeAttempt] = await this.db
+            .select({
+              id: paymentCodeAttempts.id,
+              status: paymentCodeAttempts.status,
+            })
+            .from(paymentCodeAttempts)
+            .where(
+              and(
+                eq(paymentCodeAttempts.paymentId, payment.paymentId),
+                eq(paymentCodeAttempts.isActive, true),
+              ),
+            )
+            .limit(1);
+          if (activeAttempt && activeAttempt.status !== "created") {
+            await this.db
+              .update(paymentCodeAttempts)
+              .set({ recoveryNextAt: now, updatedAt: new Date() })
+              .where(
+                and(
+                  eq(paymentCodeAttempts.id, activeAttempt.id),
+                  eq(paymentCodeAttempts.isActive, true),
+                ),
+              );
+            return false;
+          }
+        }
+
         // Query-before-close: if a real provider, try to query payment status first
         if (this.paymentProviderRegistry.has(payment.providerCode)) {
           try {
@@ -2842,6 +2874,131 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         });
     }
     return applied;
+  }
+
+  async markPaymentCodeRecoveryManualHandling(input: {
+    attemptId: string;
+    ownerToken: string;
+    fence: number;
+    reason: string;
+  }): Promise<boolean> {
+    return await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pca.id
+        from payment_code_attempts pca
+        inner join payments p on p.id = pca.payment_id
+        inner join orders o on o.id = pca.order_id
+        where pca.id = ${input.attemptId}
+        for update of pca, p, o
+      `);
+      const [current] = await tx
+        .select({
+          attemptId: paymentCodeAttempts.id,
+          paymentId: payments.id,
+          providerId: payments.providerId,
+          orderId: orders.id,
+          orderStatus: orders.status,
+          paymentStatus: payments.status,
+          paymentState: orders.paymentState,
+          fulfillmentState: orders.fulfillmentState,
+          leaseOwnerToken: paymentCodeAttempts.recoveryLeaseOwnerToken,
+          leaseExpiresAt: paymentCodeAttempts.recoveryLeaseExpiresAt,
+          leaseFence: paymentCodeAttempts.recoveryLeaseFence,
+        })
+        .from(paymentCodeAttempts)
+        .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+        .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
+        .where(eq(paymentCodeAttempts.id, input.attemptId))
+        .limit(1);
+      if (
+        !current ||
+        current.leaseOwnerToken !== input.ownerToken ||
+        current.leaseFence !== input.fence ||
+        !current.leaseExpiresAt ||
+        current.leaseExpiresAt.getTime() <= Date.now() ||
+        !canApplyProviderTerminalStatus(current.paymentStatus) ||
+        isPaymentIncidentLocked(current)
+      ) {
+        return false;
+      }
+
+      const now = new Date();
+      const [attempt] = await tx
+        .update(paymentCodeAttempts)
+        .set({
+          status: "manual_handling",
+          isActive: false,
+          manualReason: input.reason,
+          failureCode: "PAYMENT_CODE_RECOVERY_MANUAL_HANDLING",
+          failureMessage: "付款码支付结果无法自动确认，需要人工处理",
+          finishedAt: now,
+          recoveryLeaseOwnerToken: null,
+          recoveryLeaseExpiresAt: null,
+          recoveryNextAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(paymentCodeAttempts.id, input.attemptId),
+            eq(paymentCodeAttempts.recoveryLeaseOwnerToken, input.ownerToken),
+            eq(paymentCodeAttempts.recoveryLeaseFence, input.fence),
+          ),
+        )
+        .returning({ id: paymentCodeAttempts.id });
+      if (!attempt) return false;
+
+      await tx
+        .update(payments)
+        .set({
+          status: "manual_handling",
+          failedReason: input.reason,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(payments.id, current.paymentId),
+            inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
+          ),
+        );
+      await tx
+        .update(orders)
+        .set({
+          status: "manual_handling",
+          paymentState: "manual_handling",
+          fulfillmentState: "manual_handling",
+          updatedAt: now,
+        })
+        .where(eq(orders.id, current.orderId));
+      if (current.orderStatus !== "manual_handling") {
+        await tx.insert(orderStatusEvents).values({
+          orderId: current.orderId,
+          fromStatus: current.orderStatus,
+          toStatus: "manual_handling",
+          reason: "payment_code_recovery_manual_handling",
+          metadata: { attemptId: input.attemptId, reason: input.reason },
+        });
+      }
+      await this.releaseActiveReservationsForOrder(tx, {
+        orderId: current.orderId,
+        reason: "payment_failed",
+      });
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: current.paymentId,
+          providerId: current.providerId,
+          eventType: "payment_code.recovery_manual_handling",
+          providerEventId: `payment_code_recovery_manual:${input.attemptId}`,
+          rawPayloadJson: buildStoredEventPayload({
+            attemptId: input.attemptId,
+            reason: input.reason,
+          }),
+          signatureValid: true,
+          handledAt: now,
+        })
+        .onConflictDoNothing();
+      return true;
+    });
   }
 
   private async canDispatchPaymentSuccess(orderId: string): Promise<boolean> {

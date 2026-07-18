@@ -9,6 +9,7 @@ import { VendingModule } from "../vending/vending.module";
 import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
+import { PaymentCodeRecoveryService } from "./payment-code-recovery.service";
 import { PaymentCodeController } from "./payment-code.controller";
 import { PaymentDrillsController } from "./payment-drills.controller";
 import {
@@ -53,6 +54,7 @@ import { PaymentsService } from "./payments.service";
     PaymentReadinessStartupGateService,
     PaymentCodeAttemptsService,
     PaymentCodeOrchestratorService,
+    PaymentCodeRecoveryService,
   ],
   exports: [
     PaymentsService,
@@ -62,6 +64,7 @@ import { PaymentsService } from "./payments.service";
     PaymentChannelPolicyService,
     PaymentCodeAttemptsService,
     PaymentCodeOrchestratorService,
+    PaymentCodeRecoveryService,
   ],
 })
 export class PaymentsModule {}

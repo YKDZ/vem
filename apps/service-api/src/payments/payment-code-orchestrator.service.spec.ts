@@ -343,6 +343,39 @@ describe("PaymentCodeOrchestratorService", () => {
     expect(provider.chargePaymentCode).not.toHaveBeenCalled();
   });
 
+  it("defers a submitted provider error for durable query instead of making it retryable", async () => {
+    const { service, attempts, provider, getAttempt } = makeHarness({
+      provider: {
+        chargePaymentCode: vi
+          .fn()
+          .mockRejectedValue(new Error("provider request timed out")),
+      },
+    });
+
+    await expect(
+      service.submit({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-submission-unknown",
+        source: "serial_text",
+        clientIp: "127.0.0.1",
+      }),
+    ).rejects.toThrow("provider request timed out");
+
+    expect(provider.chargePaymentCode).toHaveBeenCalledTimes(1);
+    expect(attempts.markStatusIfCurrentStatusIn).toHaveBeenCalledWith(
+      "attempt-1",
+      "querying",
+      ["submitting"],
+      expect.objectContaining({
+        failureCode: "PAYMENT_CODE_SUBMISSION_UNKNOWN",
+        recoveryNextAt: expect.any(Date),
+      }),
+    );
+    expect(getAttempt()).toMatchObject({ status: "querying", isActive: true });
+  });
+
   it("keeps indeterminate charge result active for provider query instead of retry", async () => {
     const { service, attempts, paymentsService } = makeHarness({
       provider: {

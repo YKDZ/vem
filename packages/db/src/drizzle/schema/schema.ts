@@ -1403,6 +1403,21 @@ export const paymentCodeAttempts = t.pgTable(
     reversedAt: t.timestamp("reversed_at", { withTimezone: true }),
     finishedAt: t.timestamp("finished_at", { withTimezone: true }),
     manualReason: t.text("manual_reason"),
+    recoveryLeaseExpiresAt: t.timestamp("recovery_lease_expires_at", {
+      withTimezone: true,
+    }),
+    recoveryLeaseOwnerToken: t.varchar("recovery_lease_owner_token", {
+      length: 64,
+    }),
+    recoveryLeaseFence: t
+      .bigint("recovery_lease_fence", { mode: "number" })
+      .default(0)
+      .notNull(),
+    recoveryAttemptCount: t
+      .integer("recovery_attempt_count")
+      .default(0)
+      .notNull(),
+    recoveryNextAt: t.timestamp("recovery_next_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1423,6 +1438,10 @@ export const paymentCodeAttempts = t.pgTable(
     t.index("payment_code_attempts_payment_id_idx").on(table.paymentId),
     t.index("payment_code_attempts_status_idx").on(table.status),
     t.index("payment_code_attempts_auth_hash_idx").on(table.authCodeHash),
+    t
+      .index("payment_code_attempts_recovery_due_idx")
+      .on(table.recoveryNextAt)
+      .where(sql`${table.isActive} = true`),
     t.check(
       "payment_code_attempts_amount_cents_positive",
       sql`${table.amountCents} > 0`,
