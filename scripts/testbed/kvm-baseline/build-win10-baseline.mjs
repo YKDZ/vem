@@ -17,7 +17,6 @@ import {
 } from "node:fs/promises";
 import { availableParallelism, hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 
 import { renderLibvirtDomainXml } from "./libvirt-runtime-profile.mjs";
 import {
@@ -35,7 +34,6 @@ import {
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
-const execFile = promisify(execFileCallback);
 const BASELINE_ROOT = new URL(".", import.meta.url);
 export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
@@ -81,8 +79,68 @@ function escapeXml(value) {
     .replaceAll("'", "&apos;");
 }
 
+let activeConstructionCommandTracker = null;
+
+function startExecFile(command, args) {
+  let child;
+  const completion = new Promise((resolve, reject) => {
+    child = execFileCallback(
+      command,
+      args,
+      { maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stdout ??= stdout;
+          error.stderr ??= stderr;
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
+  });
+  return { child, completion };
+}
+
+export function createConstructionCommandTracker() {
+  const inFlight = new Map();
+  let abortError = null;
+  let abortPromise = null;
+
+  const runTrackedCommand = (command, args) => {
+    if (abortError) return Promise.reject(abortError);
+    const invocation = startExecFile(command, args);
+    inFlight.set(invocation.child, invocation.completion);
+    void invocation.completion.then(
+      () => inFlight.delete(invocation.child),
+      () => inFlight.delete(invocation.child),
+    );
+    return invocation.completion;
+  };
+
+  const abortAndWait = () => {
+    if (abortPromise) return abortPromise;
+    abortError = new Error("construction command execution was aborted");
+    const pending = [...inFlight.entries()];
+    for (const [child] of pending) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+    }
+    abortPromise = Promise.allSettled(
+      pending.map(([, completion]) => completion),
+    ).then(() => undefined);
+    return abortPromise;
+  };
+
+  return { abortAndWait, run: runTrackedCommand };
+}
+
 function run(command, args, { allowFailure = false } = {}) {
-  return execFile(command, args, { maxBuffer: 1024 * 1024 }).catch((error) => {
+  const completion = activeConstructionCommandTracker
+    ? activeConstructionCommandTracker.run(command, args)
+    : startExecFile(command, args).completion;
+  return completion.catch((error) => {
     if (allowFailure)
       return {
         stdout: error.stdout ?? "",
@@ -255,7 +313,7 @@ ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
 & (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
-& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
@@ -441,7 +499,6 @@ function rearmInteractiveDisplayCommand(config) {
   return prepareVmRuntimeCommand({
     Mode: "RearmInteractiveDisplay",
     InteractiveUser: config.guest.sshUser,
-    SpiceGuestToolsInstallerPath: `C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${SPICE_GUEST_TOOLS_INSTALLER_FILE}`,
     DesktopWidth: 1080,
     DesktopHeight: 1920,
     DesktopScalePercent: config.guest.desktopScalePercent,
@@ -503,9 +560,9 @@ function validateInteractiveDisplayReport(report, config) {
       "interactive display report does not match the requested desktop",
     );
   }
-  if (!/QXL/i.test(String(report.qxlDisplayAdapter ?? ""))) {
+  if (typeof report.displayAdapter !== "string" || report.displayAdapter === "") {
     throw new Error(
-      "interactive display report does not identify the QXL adapter",
+      "interactive display report does not identify the active display adapter",
     );
   }
   return report;
@@ -515,7 +572,6 @@ function formatInteractiveDisplayDiagnostics(diagnostic) {
   const status = diagnostic.status ?? {};
   const task = status.task ?? {};
   const state = status.state ?? {};
-  const spice = status.spiceGuestToolsInstallation ?? {};
   const cleanup = status.cleanup ?? {};
   const parts = [
     `report=${status.reportPresent === true ? "present" : "absent"}`,
@@ -527,7 +583,6 @@ function formatInteractiveDisplayDiagnostics(diagnostic) {
     `taskRemoved=${cleanup.taskRemoved === true}`,
     `RunOnceRemoved=${cleanup.spiceGuestToolsResumeRemoved === true}`,
     `AutoAdminLogonDisabled=${cleanup.automaticLogonDisabled === true}`,
-    `spice phase=${spice.phase ?? "unknown"}`,
   ];
   if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
   if (diagnostic.awaitingReboot) {
@@ -555,13 +610,6 @@ function shouldRearmInteractiveDisplay(status, sshReadyAt, now, delayMs) {
   if (status.reportValid === true) return true;
   if (status.state?.phase === "failed") return true;
   if (now - sshReadyAt < delayMs) return false;
-  if (
-    status.spiceGuestToolsInstallation?.phase === "installing" &&
-    status.spiceGuestToolsInstallation.installBootIdentity ===
-      status.currentBootIdentity
-  ) {
-    return false;
-  }
   return !status.task || status.task.state !== "Running";
 }
 
@@ -599,7 +647,7 @@ export async function waitForInteractiveDisplayReport(
 
   while (true) {
     const currentTime = now();
-    if (currentTime >= availabilityDeadline) {
+    if (displayStageStartedAt === null && currentTime >= availabilityDeadline) {
       throw new Error(
         `guest availability timed out after ${guestAvailabilityTimeoutMs} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
       );
@@ -667,12 +715,17 @@ export async function waitForInteractiveDisplayReport(
       continue;
     }
 
+    const currentBootIdentity =
+      typeof status.currentBootIdentity === "string" &&
+      status.currentBootIdentity.trim() !== ""
+        ? status.currentBootIdentity
+        : null;
+
     if (awaitingReboot) {
       const bootIdentityChanged =
-        typeof awaitingReboot.bootIdentity === "string" &&
-        typeof status.currentBootIdentity === "string" &&
-        awaitingReboot.bootIdentity !== status.currentBootIdentity;
-      if (!awaitingReboot.sshWentDown && !bootIdentityChanged) {
+        currentBootIdentity !== null &&
+        awaitingReboot.bootIdentity !== currentBootIdentity;
+      if (!bootIdentityChanged) {
         diagnostic = {
           status,
           awaitingReboot,
@@ -724,39 +777,43 @@ export async function waitForInteractiveDisplayReport(
         initialRearmDelayMs,
       )
     ) {
-      rearmAttempts += 1;
-      const rearm = await runCommand(
-        "ssh",
-        [...sshOptions, target, rearmInteractiveDisplayCommand(config)],
-        { allowFailure: true },
-      );
-      let rearmCompletion = null;
-      if (!rearm.failed) {
-        try {
-          const response = readJsonWithBom(rearm.stdout ?? "");
-          if (interactiveDisplayCompleted(response)) rearmCompletion = response;
-        } catch {
-          // A reboot can close the SSH channel before PowerShell flushes JSON.
-        }
-      }
-      if (rearmCompletion) {
-        diagnostic = { status: rearmCompletion };
-      } else {
-        awaitingReboot = {
-          bootIdentity:
-            typeof status.currentBootIdentity === "string"
-              ? status.currentBootIdentity
-              : null,
-          sshWentDown: false,
+      if (currentBootIdentity === null) {
+        diagnostic = {
+          status,
+          error: "waiting for a guest boot identity before interactive display re-arm",
         };
-        sshReadyAt = null;
-        diagnostic = rearm.failed
-          ? {
-              status,
-              awaitingReboot,
-              error: `interactive display re-arm ${rearmAttempts} did not complete over SSH`,
-            }
-          : { status, awaitingReboot };
+      } else {
+        rearmAttempts += 1;
+        const rearm = await runCommand(
+          "ssh",
+          [...sshOptions, target, rearmInteractiveDisplayCommand(config)],
+          { allowFailure: true },
+        );
+        let rearmCompletion = null;
+        if (!rearm.failed) {
+          try {
+            const response = readJsonWithBom(rearm.stdout ?? "");
+            if (interactiveDisplayCompleted(response)) rearmCompletion = response;
+          } catch {
+            // A reboot can close the SSH channel before PowerShell flushes JSON.
+          }
+        }
+        if (rearmCompletion) {
+          diagnostic = { status: rearmCompletion };
+        } else {
+          awaitingReboot = {
+            bootIdentity: currentBootIdentity,
+            sshWentDown: false,
+          };
+          sshReadyAt = null;
+          diagnostic = rearm.failed
+            ? {
+                status,
+                awaitingReboot,
+                error: `interactive display re-arm ${rearmAttempts} did not complete over SSH`,
+              }
+            : { status, awaitingReboot };
+        }
       }
     }
     await sleep(pollIntervalMs);
@@ -768,21 +825,11 @@ function xmlAttributeEquals(element, attribute, value) {
   return new RegExp(`\\b${attribute}=(['\"])${escaped}\\1`).test(element);
 }
 
-// Libvirt owns the SPICE backend and pins each otherwise-identical QEMU USB
-// serial device to a distinct controller port. The guest verifies those ports.
+// Libvirt pins each otherwise-identical QEMU USB serial device to a distinct
+// controller port. The guest verifies those ports.
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
-  const audio = [...xml.matchAll(/<audio\b[^>]*\/?>(?:<\/audio>)?/g)];
   const sounds = [...xml.matchAll(/<sound\b[^>]*\/?>(?:<\/sound>)?/g)];
-  if (
-    audio.length !== 1 ||
-    !xmlAttributeEquals(audio[0][0], "id", "1") ||
-    !xmlAttributeEquals(audio[0][0], "type", profile.audio.backend)
-  ) {
-    throw new Error(
-      "defined domain must contain exactly one SPICE audio backend",
-    );
-  }
   if (
     sounds.length !== 1 ||
     !xmlAttributeEquals(sounds[0][0], "model", profile.audio.model) ||
@@ -816,7 +863,6 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
   return {
     audio: {
       model: profile.audio.model,
-      backend: profile.audio.backend,
       defaultDevice: profile.audio.defaultDevice,
     },
     serialRoles,
@@ -966,6 +1012,7 @@ function constructionCleanup({
 }
 
 export async function runWithConstructionSignalCleanup({
+  abortInFlight = async () => {},
   cleanup,
   exitOnSignal = false,
   exitProcess = process.exit,
@@ -984,16 +1031,19 @@ export async function runWithConstructionSignalCleanup({
   const handleSignal = (signal) => {
     if (termination) return;
     termination = new Error(`construction build received ${signal}`);
-    void cleanupOnce().then(
-      () => {
+    void (async () => {
+      try {
+        await abortInFlight();
+        await cleanupOnce();
         if (exitOnSignal) {
           exitProcess(signal === "SIGTERM" ? 143 : 130);
           return;
         }
         rejectTermination(termination);
-      },
-      (error) => rejectTermination(error),
-    );
+      } catch (error) {
+        rejectTermination(error);
+      }
+    })();
   };
   process.once("SIGTERM", handleSignal);
   process.once("SIGINT", handleSignal);
@@ -1002,7 +1052,10 @@ export async function runWithConstructionSignalCleanup({
   } finally {
     process.off("SIGTERM", handleSignal);
     process.off("SIGINT", handleSignal);
-    if (termination) await cleanupOnce();
+    if (termination) {
+      await abortInFlight();
+      await cleanupOnce();
+    }
   }
 }
 
@@ -1017,11 +1070,14 @@ export async function recoverStaleConstructionDomains(
     "--all",
     "--name",
   ]);
-  const constructionPrefix = `${config.vm.name}-build-`;
+  const escapedVmName = config.vm.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const constructionDomainPattern = new RegExp(
+    `^${escapedVmName}-build-[0-9a-f]{8}$`,
+  );
   const constructionDomains = result.stdout
     .split("\n")
     .map((name) => name.trim())
-    .filter((name) => name.startsWith(constructionPrefix));
+    .filter((name) => constructionDomainPattern.test(name));
   for (const domainName of constructionDomains) {
     await runCommand(
       "virsh",
@@ -1092,7 +1148,24 @@ async function rollbackPublishedDefinition(config, previousRelease) {
 
 export async function buildWin10Baseline(
   config,
-  { sourceCommit, execute = false, exitOnSignal = false } = {},
+  options = {},
+) {
+  const commandTracker = createConstructionCommandTracker();
+  const previousCommandTracker = activeConstructionCommandTracker;
+  activeConstructionCommandTracker = commandTracker;
+  try {
+    return await buildWin10BaselineImpl(config, {
+      ...options,
+      commandTracker,
+    });
+  } finally {
+    activeConstructionCommandTracker = previousCommandTracker;
+  }
+}
+
+async function buildWin10BaselineImpl(
+  config,
+  { commandTracker, sourceCommit, execute = false, exitOnSignal = false } = {},
 ) {
   validateBaselineBuildConfig(config);
   if (execute) await recoverStaleConstructionDomains(config);
@@ -1170,6 +1243,7 @@ export async function buildWin10Baseline(
     cacheStagingDirectory,
   });
   return runWithConstructionSignalCleanup({
+    abortInFlight: () => commandTracker.abortAndWait(),
     cleanup,
     exitOnSignal,
     work: async () => {

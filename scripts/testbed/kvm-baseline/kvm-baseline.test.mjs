@@ -18,6 +18,7 @@ import { describe, it } from "node:test";
 import {
   buildWin10Baseline,
   bootstrapScript,
+  createConstructionCommandTracker,
   createConfigurationMedia,
   guestConfigurationFor,
   recoverStaleConstructionDomains,
@@ -378,7 +379,7 @@ function interactiveDisplayReport(config) {
       height: 1920,
       scalePercent: config.guest.desktopScalePercent,
     },
-    qxlDisplayAdapter: "Red Hat QXL controller",
+    displayAdapter: "Bochs Display Adapter",
   };
 }
 
@@ -408,6 +409,63 @@ await runWithConstructionSignalCleanup({
   work: async () => {
     await writeFile(readyPath, "ready");
     await new Promise(() => setInterval(() => {}, 1_000));
+  },
+});
+`;
+}
+
+function trackedConstructionSignalCleanupChildSource() {
+  return `
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  createConstructionCommandTracker,
+  runWithConstructionSignalCleanup,
+} from ${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)};
+
+const [domainPath, systemStagingPath, cacheStagingPath, receiptPath, longChildPath, longChildPidPath, longChildReadyPath, lateDomainCreatorPath, lateDomainMarkerPath] = process.argv.slice(2);
+await Promise.all([
+  mkdir(domainPath, { recursive: true }),
+  mkdir(systemStagingPath, { recursive: true }),
+  mkdir(cacheStagingPath, { recursive: true }),
+]);
+const commandTracker = createConstructionCommandTracker();
+await runWithConstructionSignalCleanup({
+  abortInFlight: () => commandTracker.abortAndWait(),
+  cleanup: async () => {
+    const longChildPid = Number(await readFile(longChildPidPath, "utf8"));
+    let longChildExited = false;
+    try {
+      process.kill(longChildPid, 0);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+      longChildExited = true;
+    }
+    await Promise.all([
+      rm(domainPath, { recursive: true, force: true }),
+      rm(systemStagingPath, { recursive: true, force: true }),
+      rm(cacheStagingPath, { recursive: true, force: true }),
+    ]);
+    await writeFile(
+      receiptPath,
+      JSON.stringify({ longChildExited, lateDomainMarkerPath }),
+    );
+  },
+  exitOnSignal: true,
+  work: async () => {
+    try {
+      await commandTracker.run(process.execPath, [
+        longChildPath,
+        longChildPidPath,
+        longChildReadyPath,
+      ]);
+    } catch (error) {
+      await commandTracker.run(process.execPath, [
+        lateDomainCreatorPath,
+        domainPath,
+        lateDomainMarkerPath,
+      ]);
+      throw error;
+    }
   },
 });
 `;
@@ -454,12 +512,17 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /<memory unit="MiB">16384<\/memory>/);
     assert.match(
       xml,
-      /<model type="qxl" ram="65536" vram="65536" vgamem="16384" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
+      /<graphics type="vnc" autoport="yes"><listen type="none"\/><\/graphics>/,
+    );
+    assert.match(
+      xml,
+      /<model type="bochs" vram="65536" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
     );
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
     assert.match(xml, /<sound model="ich9"\/>/);
+    assert.doesNotMatch(xml, /qxl|spice/i);
     assert.match(xml, /<mac address="52:54:00:12:34:56"\/>/);
     assert.match(xml, /target dev="sdc" bus="sata"/);
     assert.match(xml, /target dev="sdd" bus="sata"/);
@@ -485,7 +548,7 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
-  it("verifies the defined ICH9/SPICE backend and exact USB-port serial role mapping", () => {
+  it("verifies the defined ICH9 audio device and exact USB-port serial role mapping", () => {
     const profile = createRuntimeProfile({
       vmName: "win10-runtime-baseline",
       systemDiskPath: "/srv/vm/win10.qcow2",
@@ -496,7 +559,7 @@ describe("Linux KVM Windows baseline", () => {
     const xml = renderLibvirtDomainXml(profile);
 
     assert.deepEqual(verifyDefinedRuntimeDevices(xml, profile), {
-      audio: { model: "ich9", backend: "spice", defaultDevice: true },
+      audio: { model: "ich9", defaultDevice: true },
       serialRoles: ["lower-controller", "scanner"],
       serialUsbPorts: [1, 2],
     });
@@ -1459,7 +1522,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.equal(parsed.status, 0, parsed.stderr);
   });
 
-  it("copies the caller-provided pinned SPICE installer into configuration media", async () => {
+  it("keeps legacy installer media inert while bootstrapping the bochs/VNC profile", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-media-"));
     try {
       const config = buildConfig(root);
@@ -1501,8 +1564,9 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.match(
         bootstrapScript(),
-        /-SpiceGuestToolsInstallerPath \(Join-Path \$mediaRoot \$config\.spiceGuestToolsInstallerFile\)/,
+        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
       );
+      assert.doesNotMatch(bootstrapScript(), /SpiceGuestToolsInstallerPath/);
       assert.match(
         bootstrapScript(),
         /shared-guest-preparation\.ps1"\) -WebView2InstallerUri[\s\S]*-AuthorizedKeysPath/,
@@ -1566,12 +1630,6 @@ describe("Linux KVM Windows baseline", () => {
     );
     assert.doesNotMatch(shared, /SpiceGuestTools|QXL|actions-runner/i);
     assert.match(runtime, /PrepareKvmGuest/);
-    assert.match(runtime, /SpiceGuestToolsInstallerPath/);
-    assert.match(runtime, /New-ScheduledTaskPrincipal -UserId "SYSTEM"/);
-    assert.match(runtime, /-Argument "\/S"/);
-    assert.match(runtime, /exitCode -eq 3010/);
-    assert.match(runtime, /exitCode -eq 1641/);
-    assert.match(runtime, /QXL/);
     assert.match(runtime, /PrepareInteractiveDisplay/);
     assert.match(runtime, /RearmInteractiveDisplay/);
     assert.match(runtime, /GetInteractiveDisplayPreparationStatus/);
@@ -1581,37 +1639,6 @@ describe("Linux KVM Windows baseline", () => {
       /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,
     );
     assert.match(runtime, /interactive-display-preparation\.json/);
-    const spiceInstallFunction = runtime.slice(
-      runtime.indexOf("function Install-SpiceGuestTools"),
-      runtime.indexOf("function Disable-RemainingAutomaticLogon"),
-    );
-    assert.ok(
-      spiceInstallFunction.indexOf('phase = "installing"') <
-        spiceInstallFunction.indexOf("Invoke-SpiceGuestToolsInstallerAsSystem"),
-      "the reboot resume state must be durable before the installer starts",
-    );
-    assert.ok(
-      spiceInstallFunction.indexOf("Register-SpiceGuestToolsResume") <
-        spiceInstallFunction.indexOf("Invoke-SpiceGuestToolsInstallerAsSystem"),
-      "RunOnce must be registered before the installer can reboot Windows",
-    );
-    assert.match(
-      spiceInstallFunction,
-      /phase -eq "installing"[\s\S]*installBootIdentity -ne \$currentBootIdentity[\s\S]*Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue \$currentBootIdentity -Force/,
-    );
-    assert.doesNotMatch(
-      spiceInstallFunction,
-      /\.resumeBootIdentity\s*=/,
-      "ConvertFrom-Json objects require Add-Member for a new resume field",
-    );
-    assert.match(
-      spiceInstallFunction,
-      /if \(\$exitCode -eq 0\)[\s\S]*Remove-SpiceGuestToolsResume/,
-    );
-    assert.ok(
-      runtime.indexOf("Install-SpiceGuestTools") <
-        runtime.indexOf("Set-ClientDisplayMode -Width"),
-    );
     const prepareKvmGuest = runtime.slice(
       runtime.indexOf("function Prepare-KvmGuest"),
       runtime.indexOf('if ($Mode -eq "PrepareKvmGuest")'),
@@ -1619,7 +1646,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
     assert.doesNotMatch(
       prepareKvmGuest,
-      /Set-ClientDisplayMode|Disable-RemainingAutomaticLogon/,
+      /Set-ClientDisplayMode|Disable-RemainingAutomaticLogon|Install-SpiceGuestTools/,
       "KVM preparation must not fake display state from the bootstrap or SSH session",
     );
     const prepareInteractiveDisplay = runtime.slice(
@@ -1635,6 +1662,17 @@ describe("Linux KVM Windows baseline", () => {
       /WindowsIdentity]::GetCurrent\(\)\.Name/,
     );
     assert.match(prepareInteractiveDisplay, /Set-ClientDisplayMode -Width/);
+    const clientDisplayMode = runtime.slice(
+      runtime.indexOf("function Set-ClientDisplayMode"),
+      runtime.indexOf("function Write-AtomicJson"),
+    );
+    assert.match(clientDisplayMode, /EnumDisplayDevices/);
+    assert.match(clientDisplayMode, /EnumDisplaySettingsEx/);
+    assert.match(clientDisplayMode, /ChangeDisplaySettingsEx/);
+    assert.match(clientDisplayMode, /FindAttachedDisplayDevice/);
+    assert.match(clientDisplayMode, /candidate\.dmPelsWidth == width && candidate\.dmPelsHeight == height/);
+    assert.match(clientDisplayMode, /not advertised by the active virtual adapter/);
+    assert.doesNotMatch(clientDisplayMode, /QXL|SPICE|Restart-SpiceDisplayAgent/);
     assert.match(
       runtime,
       /Move-Item -Force -LiteralPath \$temporaryPath -Destination \$Path/,
@@ -1729,9 +1767,8 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /MFStartup/);
     assert.match(runtime, /FilterGraph/);
     assert.match(verify, /interactive-display-report\.json/);
-    assert.match(verify, /SPICEGuestTools/);
-    assert.match(verify, /QXL/);
-    assert.match(verify, /rebootSemanticsValid/);
+    assert.match(verify, /displayAdapter/);
+    assert.doesNotMatch(verify, /SPICEGuestTools|QXL|rebootSemanticsValid/);
     assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(verify, /ExpectedRunnerUrl/);
     assert.match(verify, /ExpectedRunnerName/);
@@ -1837,7 +1874,7 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
-  it("re-arms interactive display preparation after a SPICE reboot before starting the toolchain", async () => {
+  it("re-arms interactive display preparation from stale same-boot legacy installer state", async () => {
     const stagingDirectory = mkdtempSync(
       join(tmpdir(), "vem-kvm-interactive-display-rearm-"),
     );
@@ -1848,7 +1885,7 @@ describe("Linux KVM Windows baseline", () => {
       interactiveUser: "KVM-BUILDER\\baseline",
       interactiveSessionId: 1,
       desktop: { width: 1080, height: 1920, scalePercent: 100 },
-      qxlDisplayAdapter: "Red Hat QXL controller",
+      displayAdapter: "Bochs Display Adapter",
     };
     let rearmed = false;
     let now = 0;
@@ -1879,7 +1916,7 @@ describe("Linux KVM Windows baseline", () => {
                   stdout: `${JSON.stringify(
                     rearmed
                       ? completedInteractiveDisplayStatus(
-                          "boot-after-spice-restart",
+                          "boot-after-rearm",
                         )
                       : {
                           reportValid: false,
@@ -1887,11 +1924,12 @@ describe("Linux KVM Windows baseline", () => {
                           state: { phase: "installing" },
                           task: null,
                           taskLogTail:
-                            "SPICE reboot resumed before the display task",
-                          currentBootIdentity: "boot-after-spice-restart",
+                            "legacy installer state is stale after product completion",
+                          currentBootIdentity: "boot-current",
                           spiceGuestToolsInstallation: {
                             phase: "installing",
-                            installBootIdentity: "boot-before-spice-restart",
+                            exitCode: null,
+                            installBootIdentity: "boot-current",
                           },
                         },
                   )}\n`,
@@ -1902,7 +1940,7 @@ describe("Linux KVM Windows baseline", () => {
                 return {
                   stdout: `${JSON.stringify(
                     completedInteractiveDisplayStatus(
-                      "boot-after-spice-restart",
+                      "boot-after-rearm",
                     ),
                   )}\n`,
                 };
@@ -1951,7 +1989,13 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.ok(
         rearmIndex >= 0,
-        "the missing report must trigger a bounded re-arm",
+        "stale same-boot legacy installer state must trigger a bounded re-arm",
+      );
+      assert.equal(
+        bindWindowsOpenSshPowerShellCommand(
+          invocations[rearmIndex].args.at(-1),
+        ).parameters.SpiceGuestToolsInstallerPath,
+        undefined,
       );
       assert.ok(interactiveReportIndex > rearmIndex);
       assert.ok(
@@ -1994,7 +2038,7 @@ describe("Linux KVM Windows baseline", () => {
                 );
                 return {
                   stdout:
-                    '{"reportValid":false,"reportPresent":false,"state":{"phase":"running"},"task":{"state":"Running","lastTaskResult":267009},"taskLogTail":"display task is still waiting for the QXL desktop"}\n',
+                    '{"reportValid":false,"reportPresent":false,"state":{"phase":"running"},"task":{"state":"Running","lastTaskResult":267009},"taskLogTail":"display task is still waiting for the portrait desktop"}\n',
                 };
               }
               return {};
@@ -2005,7 +2049,7 @@ describe("Linux KVM Windows baseline", () => {
             timeoutMs: 3,
           },
         ),
-        /interactive display preparation timed out[\s\S]*report=absent[\s\S]*task state=Running[\s\S]*lastTaskResult=267009[\s\S]*display task is still waiting for the QXL desktop/,
+        /interactive display preparation timed out[\s\S]*report=absent[\s\S]*task state=Running[\s\S]*lastTaskResult=267009[\s\S]*display task is still waiting for the portrait desktop/,
       );
       assert.equal(
         invocations.some(
@@ -2195,7 +2239,7 @@ describe("Linux KVM Windows baseline", () => {
               if (bound.parameters.Mode === "RearmInteractiveDisplay") {
                 assert.equal(
                   bound.parameters.SpiceGuestToolsInstallerPath,
-                  "C:\\ProgramData\\WindowsRuntimeBaseline\\media\\spice-guest-tools-0.141.exe",
+                  undefined,
                 );
                 return {
                   stdout: `${JSON.stringify({
@@ -2357,7 +2401,7 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
-  it("waits for a reboot observation before accepting a post-rearm report or issuing another reboot", async () => {
+  it("requires a changed boot identity after rearm despite a transient SSH failure", async () => {
     const stagingDirectory = mkdtempSync(
       join(tmpdir(), "vem-kvm-display-reboot-barrier-"),
     );
@@ -2367,6 +2411,7 @@ describe("Linux KVM Windows baseline", () => {
     let rearmAttempts = 0;
     let statusPolls = 0;
     let copiedBootIdentity = null;
+    let statusBootIdentity = null;
     try {
       await waitForInteractiveDisplayReport(
         config,
@@ -2395,33 +2440,33 @@ describe("Linux KVM Windows baseline", () => {
                 "GetInteractiveDisplayPreparationStatus"
               ) {
                 statusPolls += 1;
+                const status =
+                  statusPolls === 1
+                    ? {
+                        reportPresent: false,
+                        reportValid: false,
+                        state: { phase: "failed" },
+                        task: null,
+                        cleanup: {
+                          taskRemoved: false,
+                          spiceGuestToolsResumeRemoved: false,
+                          automaticLogonDisabled: false,
+                        },
+                        currentBootIdentity: "boot-before-rearm",
+                      }
+                    : completedInteractiveDisplayStatus(
+                        statusPolls <= 3
+                          ? "boot-before-rearm"
+                          : "boot-after-rearm",
+                      );
+                statusBootIdentity = status.currentBootIdentity;
                 return {
-                  stdout: `${JSON.stringify(
-                    statusPolls === 1
-                      ? {
-                          reportPresent: false,
-                          reportValid: false,
-                          state: { phase: "failed" },
-                          task: null,
-                          cleanup: {
-                            taskRemoved: false,
-                            spiceGuestToolsResumeRemoved: false,
-                            automaticLogonDisabled: false,
-                          },
-                          currentBootIdentity: "boot-before-rearm",
-                        }
-                      : completedInteractiveDisplayStatus(
-                          statusPolls === 2
-                            ? "boot-before-rearm"
-                            : "boot-after-rearm",
-                        ),
-                  )}\n`,
+                  stdout: `${JSON.stringify(status)}\n`,
                 };
               }
             }
             if (command === "scp") {
-              copiedBootIdentity =
-                statusPolls === 2 ? "boot-before-rearm" : "boot-after-rearm";
+              copiedBootIdentity = statusBootIdentity;
               writeFileSync(
                 args.at(-1),
                 JSON.stringify(interactiveDisplayReport(config)),
@@ -2444,6 +2489,94 @@ describe("Linux KVM Windows baseline", () => {
         "must not issue an immediate second reboot",
       );
       assert.equal(copiedBootIdentity, "boot-after-rearm");
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("obtains an initial boot identity before rearming interactive display", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-initial-boot-identity-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    let rearmAttempts = 0;
+    let statusPolls = 0;
+    try {
+      await waitForInteractiveDisplayReport(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          initialRearmDelayMs: 0,
+          maxRearmAttempts: 1,
+          now: () => now,
+          pollIntervalMs: 1,
+          runCommand: async (command, args) => {
+            const remoteCommand = args.at(-1) ?? "";
+            if (command === "ssh" && remoteCommand === "exit") return {};
+            if (command === "ssh") {
+              const bound = bindWindowsOpenSshPowerShellCommand(remoteCommand);
+              if (bound.parameters.Mode === "RearmInteractiveDisplay") {
+                rearmAttempts += 1;
+                return { failed: true };
+              }
+              if (
+                bound.parameters.Mode ===
+                "GetInteractiveDisplayPreparationStatus"
+              ) {
+                statusPolls += 1;
+                const status =
+                  statusPolls === 1
+                    ? {
+                        reportPresent: false,
+                        reportValid: false,
+                        state: { phase: "failed" },
+                        task: null,
+                        cleanup: {
+                          taskRemoved: false,
+                          spiceGuestToolsResumeRemoved: false,
+                          automaticLogonDisabled: false,
+                        },
+                        currentBootIdentity: null,
+                      }
+                    : statusPolls === 2
+                      ? {
+                          reportPresent: false,
+                          reportValid: false,
+                          state: { phase: "failed" },
+                          task: null,
+                          cleanup: {
+                            taskRemoved: false,
+                            spiceGuestToolsResumeRemoved: false,
+                            automaticLogonDisabled: false,
+                          },
+                          currentBootIdentity: "boot-before-rearm",
+                        }
+                      : completedInteractiveDisplayStatus("boot-after-rearm");
+                return { stdout: `${JSON.stringify(status)}\n` };
+              }
+            }
+            if (command === "scp") {
+              writeFileSync(
+                args.at(-1),
+                JSON.stringify(interactiveDisplayReport(config)),
+              );
+              return {};
+            }
+            throw new Error(`unexpected command: ${command}`);
+          },
+          sleep: async () => {
+            now += 1;
+          },
+          displayStageTimeoutMs: 20,
+          guestAvailabilityTimeoutMs: 20,
+        },
+      );
+
+      assert.equal(rearmAttempts, 1);
+      assert.equal(statusPolls, 3);
     } finally {
       rmSync(stagingDirectory, { recursive: true, force: true });
     }
@@ -2615,6 +2748,65 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
+  it("gives first SSH readiness at 59:59.999 an independent full display deadline", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-display-boundary-deadline-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    let now = 0;
+    try {
+      await assert.rejects(
+        waitForInteractiveDisplayReport(
+          config,
+          "win10-runtime-baseline-build-test",
+          stagingDirectory,
+          {
+            discoverGuestAddress: async () =>
+              now >= 60 * 60 * 1000 - 1 ? "192.0.2.44" : null,
+            displayStageTimeoutMs: 2,
+            guestAvailabilityTimeoutMs: 60 * 60 * 1000,
+            maxRearmAttempts: 0,
+            now: () => now,
+            pollIntervalMs: 1,
+            runCommand: async (command, args) => {
+              const remoteCommand = args.at(-1) ?? "";
+              if (command === "ssh" && remoteCommand === "exit") return {};
+              if (command === "ssh") {
+                const bound =
+                  bindWindowsOpenSshPowerShellCommand(remoteCommand);
+                assert.equal(
+                  bound.parameters.Mode,
+                  "GetInteractiveDisplayPreparationStatus",
+                );
+                return {
+                  stdout: `${JSON.stringify({
+                    reportPresent: false,
+                    reportValid: false,
+                    state: { phase: "running" },
+                    task: { state: "Running" },
+                    cleanup: {
+                      taskRemoved: false,
+                      spiceGuestToolsResumeRemoved: false,
+                      automaticLogonDisabled: false,
+                    },
+                    currentBootIdentity: "boot-display",
+                  })}\n`,
+                };
+              }
+              throw new Error(`unexpected command: ${command}`);
+            },
+            sleep: async () => {
+              now = now === 0 ? 60 * 60 * 1000 - 1 : now + 1;
+            },
+          },
+        ),
+        /interactive display stage timed out after 2 ms[\s\S]*first SSH readiness at 3599999 ms/,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("retains the 60-minute guest availability deadline before first SSH readiness", async () => {
     const stagingDirectory = mkdtempSync(
       join(tmpdir(), "vem-kvm-guest-availability-deadline-"),
@@ -2688,6 +2880,86 @@ describe("Linux KVM Windows baseline", () => {
         domainName,
         systemStagingPath,
         cacheStagingPath,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates in-flight execFile children before cleanup and blocks a late domain creator", () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-kvm-construction-tracked-sigterm-"),
+    );
+    const childPath = join(root, "construction-tracked-sigterm-child.mjs");
+    const longChildPath = join(root, "long-lived-command.mjs");
+    const lateDomainCreatorPath = join(root, "late-domain-creator.mjs");
+    const domainPath = join(root, "win10-runtime-baseline-build-tracked");
+    const systemStagingPath = join(root, "system-staging");
+    const cacheStagingPath = join(root, "cache-staging");
+    const receiptPath = join(root, "cleanup-receipt.json");
+    const longChildPidPath = join(root, "long-child.pid");
+    const longChildReadyPath = join(root, "long-child.ready");
+    const lateDomainMarkerPath = join(root, "late-domain-created");
+    try {
+      writeFileSync(childPath, trackedConstructionSignalCleanupChildSource());
+      writeFileSync(
+        longChildPath,
+        `
+import { writeFile } from "node:fs/promises";
+const [pidPath, readyPath] = process.argv.slice(2);
+await writeFile(pidPath, String(process.pid));
+await writeFile(readyPath, "ready");
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      writeFileSync(
+        lateDomainCreatorPath,
+        `
+import { mkdir, writeFile } from "node:fs/promises";
+const [domainPath, markerPath] = process.argv.slice(2);
+await mkdir(domainPath, { recursive: true });
+await writeFile(markerPath, "created");
+`,
+      );
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `
+            set -euo pipefail
+            node "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "\${10}" &
+            child="$!"
+            for _ in $(seq 1 200); do
+              test -f "$8" && break
+              sleep 0.01
+            done
+            test -f "$8"
+            kill -TERM "$child"
+            wait "$child"
+          `,
+          "_",
+          childPath,
+          domainPath,
+          systemStagingPath,
+          cacheStagingPath,
+          receiptPath,
+          longChildPath,
+          longChildPidPath,
+          longChildReadyPath,
+          lateDomainCreatorPath,
+          lateDomainMarkerPath,
+        ],
+        { encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 143, result.stderr);
+      assert.equal(existsSync(domainPath), false);
+      assert.equal(existsSync(systemStagingPath), false);
+      assert.equal(existsSync(cacheStagingPath), false);
+      assert.equal(existsSync(lateDomainMarkerPath), false);
+      assert.deepEqual(JSON.parse(readFileSync(receiptPath, "utf8")), {
+        longChildExited: true,
+        lateDomainMarkerPath,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2794,27 +3066,57 @@ describe("Linux KVM Windows baseline", () => {
       assert.doesNotMatch(workflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);
       assert.doesNotMatch(workflow, /rm -rf -- "\$VEM_VM_HOST_LOCK_PATH"/);
     }
-    assert.match(acceptanceWorkflow, /trap "exit 0" TERM INT/);
-    assert.match(acceptanceWorkflow, /kill -TERM "\$VEM_VM_HOST_LOCK_PID"/);
+    assert.match(acceptanceWorkflow, /setsid flock -n/);
+    assert.match(acceptanceWorkflow, /VEM_VM_HOST_LOCK_PGID/);
+    assert.match(
+      acceptanceWorkflow,
+      /kill -TERM -- "-\$VEM_VM_HOST_LOCK_PGID"/,
+    );
   });
 
-  it("releases the host flock when the acceptance lock holder receives SIGTERM", () => {
+  it("terminates the lock holder process group and releases its flock within five seconds", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-flock-"));
     const lockPath = join(root, "vem-windows-runtime-testbed.lock");
+    const ownerPath = join(root, "lock-owner");
     try {
       const cancelled = spawnSync(
         "bash",
         [
           "-c",
           `
-            exec 9>"$1"
-            flock -n 9
-            trap "exit 0" TERM INT
-            kill -TERM "$$"
+            set -euo pipefail
+            lock_path="$1"
+            owner_path="$2"
+            setsid flock -n "$lock_path" bash -c '
+              owner_path="$1"
+              trap "exit 0" TERM INT
+              lock_pgid=$(ps -o pgid= -p "$$" | tr -d "[:space:]")
+              printf "%s %s\\n" "$$" "$lock_pgid" > "$owner_path"
+              while :; do sleep 60 & wait "$!"; done
+            ' _ "$owner_path" &
+            holder="$!"
+            for _ in $(seq 1 50); do
+              [[ -s "$owner_path" ]] && break
+              sleep 0.1
+            done
+            read -r shell_pid lock_pgid < "$owner_path"
+            flock_pid=$(ps -o ppid= -p "$shell_pid" | tr -d "[:space:]")
+            sleep_pid=$(pgrep -P "$shell_pid" sleep)
+            [[ "$(ps -o comm= -p "$flock_pid" | tr -d "[:space:]")" = flock ]]
+            [[ -n "$sleep_pid" ]]
+            kill -TERM -- "-$lock_pgid"
+            for _ in $(seq 1 100); do
+              if flock -n "$lock_path" true; then
+                wait "$holder" || true
+                exit 0
+              fi
+              sleep 0.05
+            done
             exit 1
           `,
           "_",
           lockPath,
+          ownerPath,
         ],
         { encoding: "utf8" },
       );
@@ -2825,7 +3127,7 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
-  it("recovers only stale construction domains for this baseline before starting another build", async () => {
+  it("recovers only exact generated construction domains and preserves deployment and backup names", async () => {
     const config = buildConfig("/var/tmp/vem-kvm-baseline-recovery");
     const invocations = [];
     const runCommand = async (command, args, options) => {
@@ -2833,9 +3135,17 @@ describe("Linux KVM Windows baseline", () => {
       if (args.includes("list")) {
         return {
           stdout: [
-            "win10-runtime-baseline-build-old-a",
-            "win10-runtime-baseline-build-old-b",
+            "win10-runtime-baseline-build-0123abcd",
+            "win10-runtime-baseline-build-deadbeef",
+            "win10-runtime-baseline-deployment",
             "win10-runtime-baseline-backup",
+            "win10-runtime-baseline-build-0123abcd-backup",
+            "win10-runtime-baseline-build-0123abcd-extra",
+            "win10-runtime-baseline-build-0123456",
+            "win10-runtime-baseline-build-012345678",
+            "win10-runtime-baseline-build-0123456g",
+            "win10-runtime-baseline-build-ABCDEF12",
+            "win10-runtime-baseline-build-old-a",
             "win10-runtime-baseline2-build-old",
             "other-build-old",
           ].join("\n"),
@@ -2858,7 +3168,7 @@ describe("Linux KVM Windows baseline", () => {
           "--connect",
           "qemu:///system",
           "destroy",
-          "win10-runtime-baseline-build-old-a",
+          "win10-runtime-baseline-build-0123abcd",
         ],
         options: { allowFailure: true },
       },
@@ -2868,7 +3178,7 @@ describe("Linux KVM Windows baseline", () => {
           "--connect",
           "qemu:///system",
           "undefine",
-          "win10-runtime-baseline-build-old-a",
+          "win10-runtime-baseline-build-0123abcd",
         ],
         options: { allowFailure: true },
       },
@@ -2878,7 +3188,7 @@ describe("Linux KVM Windows baseline", () => {
           "--connect",
           "qemu:///system",
           "destroy",
-          "win10-runtime-baseline-build-old-b",
+          "win10-runtime-baseline-build-deadbeef",
         ],
         options: { allowFailure: true },
       },
@@ -2888,7 +3198,7 @@ describe("Linux KVM Windows baseline", () => {
           "--connect",
           "qemu:///system",
           "undefine",
-          "win10-runtime-baseline-build-old-b",
+          "win10-runtime-baseline-build-deadbeef",
         ],
         options: { allowFailure: true },
       },

@@ -5,7 +5,6 @@ param(
   [string] $RunnerUrl,
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
-  [string] $SpiceGuestToolsInstallerPath,
   [string] $InteractiveUser,
   [int] $DesktopWidth = 1080,
   [int] $DesktopHeight = 1920,
@@ -359,13 +358,29 @@ function Set-ClientDisplayMode {
 using System;
 using System.Runtime.InteropServices;
 public static class Win10Display {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)] public struct DEVMODE { [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName; public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput; public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName; public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency, dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight; }
-  [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE mode, int flags);
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct DISPLAY_DEVICE { public int cb; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString; public int StateFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct DEVMODE { [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName; public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput; public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName; public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency, dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight; }
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplayDevices(string deviceName, uint deviceNumber, ref DISPLAY_DEVICE displayDevice, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettingsEx(string deviceName, int modeNumber, ref DEVMODE mode, int flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int ChangeDisplaySettingsEx(string deviceName, ref DEVMODE mode, IntPtr hwnd, int flags, IntPtr lParam);
   public const int CDS_UPDATEREGISTRY = 0x00000001;
-  public static int Set(int width, int height) { var mode = new DEVMODE(); mode.dmSize = (short)Marshal.SizeOf(mode); mode.dmFields = 0x00080000 | 0x00100000; mode.dmPelsWidth = width; mode.dmPelsHeight = height; return ChangeDisplaySettings(ref mode, CDS_UPDATEREGISTRY); }
+  public const int CDS_GLOBAL = 0x00000008;
+  public const int DISP_CHANGE_SUCCESSFUL = 0;
+  public const int DISP_CHANGE_RESTART = 1;
+  public const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001;
+  public const int DISPLAY_DEVICE_NOT_FOUND = -1001;
+  public const int MODE_UNAVAILABLE = -1002;
+  public static string FindAttachedDisplayDevice() { for (uint index = 0; ; index++) { var device = new DISPLAY_DEVICE(); device.cb = Marshal.SizeOf(device); if (!EnumDisplayDevices(null, index, ref device, 0)) break; if ((device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0) return device.DeviceName; } return null; }
+  public static bool TryGetExactMode(string deviceName, int width, int height, out DEVMODE exactMode) { exactMode = new DEVMODE(); for (int index = 0; ; index++) { var candidate = new DEVMODE(); candidate.dmSize = (short)Marshal.SizeOf(candidate); if (!EnumDisplaySettingsEx(deviceName, index, ref candidate, 0)) break; if (candidate.dmPelsWidth == width && candidate.dmPelsHeight == height) { exactMode = candidate; return true; } } return false; }
+  public static int SetExactDisplayMode(int width, int height) { var deviceName = FindAttachedDisplayDevice(); if (String.IsNullOrWhiteSpace(deviceName)) return DISPLAY_DEVICE_NOT_FOUND; DEVMODE mode; if (!TryGetExactMode(deviceName, width, height, out mode)) return MODE_UNAVAILABLE; return ChangeDisplaySettingsEx(deviceName, ref mode, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_GLOBAL, IntPtr.Zero); }
 }
 '@ -ErrorAction SilentlyContinue
-  if ([Win10Display]::Set($Width, $Height) -ne 0) { throw "Windows client display mode $Width x $Height is unavailable" }
+  $result = [Win10Display]::SetExactDisplayMode($Width, $Height)
+  if ($result -eq [Win10Display]::DISP_CHANGE_SUCCESSFUL) { return }
+  if ($result -eq [Win10Display]::MODE_UNAVAILABLE) { throw "display mode $Width x $Height is not advertised by the active virtual adapter" }
+  if ($result -eq [Win10Display]::DISPLAY_DEVICE_NOT_FOUND) { throw "an active virtual display adapter is unavailable" }
+  if ($result -eq [Win10Display]::DISP_CHANGE_RESTART) { throw "display mode $Width x $Height requires a reboot" }
+  throw "display mode $Width x $Height failed with ChangeDisplaySettingsEx result $result"
 }
 
 function Write-AtomicJson {
@@ -469,7 +484,7 @@ function Test-InteractiveDisplayReport {
   if ([string]$Report.interactiveUser -notmatch ("\\" + [regex]::Escape($InteractiveUser) + "$")) { return $false }
   $sessionId = 0
   if (-not [int]::TryParse([string]$Report.interactiveSessionId, [ref]$sessionId) -or $sessionId -lt 1) { return $false }
-  return $Report.desktop.width -eq $DesktopWidth -and $Report.desktop.height -eq $DesktopHeight -and $Report.desktop.scalePercent -eq $DesktopScalePercent -and $Report.qxlDisplayAdapter -match "QXL"
+  return $Report.desktop.width -eq $DesktopWidth -and $Report.desktop.height -eq $DesktopHeight -and $Report.desktop.scalePercent -eq $DesktopScalePercent -and -not [string]::IsNullOrWhiteSpace([string]$Report.displayAdapter)
 }
 
 function Complete-InteractiveDisplayPreparation {
@@ -518,10 +533,10 @@ function Prepare-InteractiveDisplay {
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Write-InteractiveDisplayPreparationState -Phase "running" -Attempt $attempt
   try {
-    $qxlDisplayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match "QXL" } |
+    $displayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } |
       Select-Object -First 1
-    if ($null -eq $qxlDisplayAdapter) { throw "QXL display adapter is unavailable after SPICE preparation" }
+    if ($null -eq $displayAdapter) { throw "an active virtual display adapter is unavailable" }
     Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
     Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Win8DpiScaling -Type DWord -Value 1
     Set-ClientDisplayMode -Width $DesktopWidth -Height $DesktopHeight
@@ -540,7 +555,7 @@ function Prepare-InteractiveDisplay {
       interactiveUser = $interactiveUser
       interactiveSessionId = $interactiveSessionId
       desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
-      qxlDisplayAdapter = $qxlDisplayAdapter.Name
+      displayAdapter = $displayAdapter.Name
     }
     Complete-InteractiveDisplayPreparation -Report $report
   } catch {
@@ -552,13 +567,8 @@ function Prepare-InteractiveDisplay {
 function Get-InteractiveDisplayPreparationStatus {
   $report = $null
   $reportError = $null
-  $spiceGuestToolsInstallation = $null
   if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
     try { $report = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $reportError = $_.Exception.Message }
-  }
-  $spiceGuestToolsInstallationPath = Join-Path $baselineRoot "spice-guest-tools-installation.json"
-  if (Test-Path -LiteralPath $spiceGuestToolsInstallationPath -PathType Leaf) {
-    try { $spiceGuestToolsInstallation = Get-Content -Raw -LiteralPath $spiceGuestToolsInstallationPath | ConvertFrom-Json } catch { $spiceGuestToolsInstallation = $null }
   }
   $taskLogTail = if (Test-Path -LiteralPath $interactiveDisplayLogPath -PathType Leaf) {
     ((Get-Content -LiteralPath $interactiveDisplayLogPath -Tail 30 -ErrorAction SilentlyContinue) -join "`n")
@@ -577,12 +587,10 @@ function Get-InteractiveDisplayPreparationStatus {
     completionValid = (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.spiceGuestToolsResumeRemoved -and $cleanup.automaticLogonDisabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
-    spiceGuestToolsInstallation = $spiceGuestToolsInstallation
   } | ConvertTo-Json -Depth 6
 }
 
 function Rearm-InteractiveDisplay {
-  Install-SpiceGuestTools
   if (Complete-InteractiveDisplayPreparationFromValidReport) {
     Get-InteractiveDisplayPreparationStatus
     return
@@ -602,7 +610,6 @@ function Rearm-InteractiveDisplay {
 }
 
 function Prepare-KvmGuest {
-  Install-SpiceGuestTools
   Initialize-InteractiveDisplayPreparation
 }
 

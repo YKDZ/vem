@@ -117,10 +117,11 @@ jobs:
           mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
           lock_owner_path="$RUNNER_TEMP/vem-vm-host-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.owner"
           rm -f -- "$lock_owner_path"
-          flock -n "$VEM_VM_HOST_LOCK_PATH" bash -c '
+          setsid flock -n "$VEM_VM_HOST_LOCK_PATH" bash -c '
             owner_path="$1"
             trap "exit 0" TERM INT
-            printf "%s\n" "$$" > "$owner_path"
+            lock_pgid=$(ps -o pgid= -p "$$" | tr -d "[:space:]")
+            printf "%s %s\n" "$$" "$lock_pgid" > "$owner_path"
             while :; do sleep 60 & wait "$!"; done
           ' _ "$lock_owner_path" &
           flock_pid="$!"
@@ -137,7 +138,10 @@ jobs:
             echo "timed out acquiring the host-global flock: $VEM_VM_HOST_LOCK_PATH" >&2
             exit 1
           }
-          echo "VEM_VM_HOST_LOCK_PID=$(<"$lock_owner_path")" >> "$GITHUB_ENV"
+          read -r lock_owner_pid lock_pgid < "$lock_owner_path"
+          [[ "$lock_owner_pid" =~ ^[1-9][0-9]*$ ]]
+          [[ "$lock_pgid" =~ ^[1-9][0-9]*$ ]]
+          echo "VEM_VM_HOST_LOCK_PGID=$lock_pgid" >> "$GITHUB_ENV"
           echo "VEM_VM_HOST_LOCK_OWNER_PATH=$lock_owner_path" >> "$GITHUB_ENV"
 
       - name: Verify Runner Toolchain
@@ -645,8 +649,8 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if [[ -n "${VEM_VM_HOST_LOCK_PID:-}" ]] && kill -0 "$VEM_VM_HOST_LOCK_PID" 2>/dev/null; then
-            kill -TERM "$VEM_VM_HOST_LOCK_PID"
+          if [[ -n "${VEM_VM_HOST_LOCK_PGID:-}" ]] && kill -0 -- "-$VEM_VM_HOST_LOCK_PGID" 2>/dev/null; then
+            kill -TERM -- "-$VEM_VM_HOST_LOCK_PGID"
           fi
           for _ in $(seq 1 50); do
             if flock -n "$VEM_VM_HOST_LOCK_PATH" true; then break; fi

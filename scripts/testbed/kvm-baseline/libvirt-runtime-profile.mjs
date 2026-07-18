@@ -13,7 +13,6 @@ export const DEFAULT_RUNTIME_PROFILE = Object.freeze({
   serialUsbPorts: Object.freeze([1, 2]),
   audio: Object.freeze({
     model: "ich9",
-    backend: "spice",
     defaultDevice: true,
   }),
 });
@@ -89,10 +88,9 @@ export function createRuntimeProfile(options) {
   const audio = { ...DEFAULT_RUNTIME_PROFILE.audio, ...(options.audio ?? {}) };
   if (
     audio.model !== "ich9" ||
-    audio.backend !== "spice" ||
     audio.defaultDevice !== true
   ) {
-    throw new Error("audio must use the default ich9 Spice device");
+    throw new Error("audio must use the default ich9 device");
   }
   const macAddress = requiredString(options.macAddress, "macAddress").toLowerCase();
   if (!/^52:54:00(?::[0-9a-f]{2}){3}$/.test(macAddress)) {
@@ -175,9 +173,8 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
       <target dev="sdb" bus="sata"/>
     </disk>
 ${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(profile.network.macAddress)}"/><source network="${xml(profile.network.name)}"/><model type="e1000e"/></interface>
-    <graphics type="spice" autoport="yes"><listen type="none"/></graphics>
-    <video><model type="qxl" ram="${profile.display.videoMemoryKiB}" vram="${profile.display.videoMemoryKiB}" vgamem="16384" heads="1" primary="yes"><resolution x="${profile.display.width}" y="${profile.display.height}"/></model></video>
-    <audio id="1" type="spice"/>
+    <graphics type="vnc" autoport="yes"><listen type="none"/></graphics>
+    <video><model type="bochs" vram="${profile.display.videoMemoryKiB}" heads="1" primary="yes"><resolution x="${profile.display.width}" y="${profile.display.height}"/></model></video>
     <sound model="ich9"/>
 ${serial}
     <memballoon model="virtio"/>

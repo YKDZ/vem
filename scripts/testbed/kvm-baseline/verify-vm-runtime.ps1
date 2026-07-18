@@ -24,7 +24,6 @@ $rustNamespace = "rust-1.96.0"
 $pnpmNamespace = "pnpm-11.9.0"
 $turboNamespace = "turbo-2.10.0"
 $nodeNamespace = "node-24.16.0"
-$spiceGuestToolsInstallationPath = Join-Path $baselineRoot "spice-guest-tools-installation.json"
 $interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-report.json"
 $runnerRegistrationPath = Join-Path $baselineRoot "runner-registration.json"
 if (-not (Test-Path -LiteralPath $interactiveDisplayReportPath)) { throw "interactive autologon display report is unavailable" }
@@ -53,20 +52,9 @@ $webView2 = Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clien
   Get-ItemProperty -ErrorAction SilentlyContinue |
   Where-Object { $_.pv -and $_.name -match "WebView" } |
   Select-Object -First 1
-$spiceGuestTools = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -match "SPICE Guest Tools" } |
+$displayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+  Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } |
   Select-Object -First 1
-$qxlDisplayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-  Where-Object { $_.Name -match "QXL" } |
-  Select-Object -First 1
-$spiceGuestToolsInstallation = $null
-if (Test-Path -LiteralPath $spiceGuestToolsInstallationPath -PathType Leaf) {
-  $spiceGuestToolsInstallation = Get-Content -Raw -LiteralPath $spiceGuestToolsInstallationPath | ConvertFrom-Json
-}
-$spiceGuestToolsRebootSemantics = $null -ne $spiceGuestToolsInstallation -and $spiceGuestToolsInstallation.schemaVersion -eq "win10-kvm-spice-guest-tools-installation/v1" -and (
-  ($spiceGuestToolsInstallation.exitCode -eq 0 -and -not $spiceGuestToolsInstallation.rebootRequired -and -not $spiceGuestToolsInstallation.rebootApplied) -or
-  ($spiceGuestToolsInstallation.exitCode -eq 3010 -and $spiceGuestToolsInstallation.rebootRequired -and $spiceGuestToolsInstallation.rebootApplied -and $spiceGuestToolsInstallation.installBootIdentity -ne $spiceGuestToolsInstallation.resumeBootIdentity)
-)
 $audioDeviceRoleType = [Windows.Media.Devices.AudioDeviceRole, Windows.Media.Devices, ContentType = WindowsRuntime]
 $audioDeviceRole = [System.Enum]::Parse($audioDeviceRoleType, "Default")
 $audioEndpoint = [Windows.Media.Devices.MediaDevice, Windows.Media.Devices, ContentType = WindowsRuntime]::GetDefaultAudioRenderId($audioDeviceRole)
@@ -146,7 +134,7 @@ $checks = @{
   runner = $null -ne $runnerService -and $runnerService.Status -eq "Running" -and $runnerRegistration.runnerUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerName -ceq $ExpectedRunnerName -and $runnerRegistration.serviceName -ceq $ExpectedRunnerServiceName -and $runnerConfiguration.agentName -ceq $ExpectedRunnerName -and $runnerConfigurationUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerWorkRoot -ceq "C:\actions-runner\_work"
   toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0 -and $exactToolchainVersions -and $machinePathsExact -and $executablesOnSystemDisk -and $cargoDownloadCachesOnD
   WebView2 = $null -ne $webView2
-  SPICEGuestTools = $null -ne $spiceGuestTools -and $null -ne $qxlDisplayAdapter -and $spiceGuestToolsRebootSemantics
+  displayAdapter = $null -ne $displayAdapter -and -not [string]::IsNullOrWhiteSpace([string]$interactiveDisplay.displayAdapter)
   Audio = $ExpectedAudioModel -ceq "ich9" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $hdaAudioDevices.Count -eq 1
   Serial = $serialPorts.Count -eq $ExpectedSerialRole.Count -and $serialRoleDevices.Count -eq $ExpectedSerialRole.Count -and $remainingSerialPorts.Count -eq 0
   cacheDisk = $cacheWritable
@@ -157,8 +145,7 @@ $report = @{
   checks = $checks
   desktop = @{ width = $interactiveDisplay.desktop.width; height = $interactiveDisplay.desktop.height; scalePercent = $interactiveDisplay.desktop.scalePercent; interactiveUser = $interactiveDisplay.interactiveUser; interactiveSessionId = $interactiveDisplay.interactiveSessionId; source = "interactive-autologon-report" }
   runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
-  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; qxlDisplayAdapter = $qxlDisplayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
-  spiceGuestTools = @{ installed = $null -ne $spiceGuestTools; displayName = $spiceGuestTools.DisplayName; qxlDisplayAdapter = $qxlDisplayAdapter.Name; installation = $spiceGuestToolsInstallation; rebootSemanticsValid = $spiceGuestToolsRebootSemantics }
+  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   toolchain = @{ commands = $tools; expectedMachinePaths = $expectedMachinePaths; machinePaths = $machinePaths; exactVersions = $exactToolchainVersions; executablesOnSystemDisk = $executablesOnSystemDisk; cargoDownloadCachesOnD = $cargoDownloadCachesOnD }
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
