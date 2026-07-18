@@ -388,6 +388,18 @@ describe("local testbed orchestration", () => {
       );
       assert.match(rendered.at(-1), /StandardOutput=journal/);
       assert.match(rendered.at(-1), /StandardError=journal/);
+      assert.ok(
+        plan
+          .at(-1)
+          .args.includes(
+            `--property=WorkingDirectory=${join(root, "state", "service-api-runtime")}`,
+          ),
+      );
+      assert.equal(
+        plan.at(-1).args.at(-1),
+        join(root, "apps/service-api/dist/main.js"),
+      );
+      assert.notEqual(plan.at(-1).args.at(-1), "apps/service-api/dist/main.js");
       for (const [name, value] of Object.entries(serviceEnvironment)) {
         assert.ok(plan.at(-1).args.includes(`--setenv=${name}=${value}`));
         assert.equal(migrationEnvironment[name], value);

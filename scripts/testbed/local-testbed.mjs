@@ -498,6 +498,7 @@ export function buildMigrationEnvironment(
 export function buildServiceApiUnitPlan(options) {
   const unit = `${SERVICE_API_UNIT}.service`;
   const environment = buildHostLocalServiceApiEnvironment(options);
+  const workingDirectory = join(options.stateRoot, "service-api-runtime");
   return [
     commandLine("sudo", ["systemctl", "stop", unit]),
     commandLine("sudo", ["systemctl", "reset-failed", unit]),
@@ -509,12 +510,12 @@ export function buildServiceApiUnitPlan(options) {
       "--property=Restart=no",
       "--property=StandardOutput=journal",
       "--property=StandardError=journal",
-      `--property=WorkingDirectory=${options.workspace}`,
+      `--property=WorkingDirectory=${workingDirectory}`,
       ...REQUIRED_SERVICE_API_ENV_KEYS.map(
         (name) => `--setenv=${name}=${environment[name]}`,
       ),
       process.execPath,
-      "apps/service-api/dist/main.js",
+      join(options.workspace, "apps/service-api/dist/main.js"),
     ]),
   ];
 }
@@ -815,7 +816,12 @@ async function reconstruct(options) {
       .then(validateBaselineContract),
     loadFixture(),
   ]);
-  await mkdir(options.stateRoot, { recursive: true });
+  await Promise.all([
+    mkdir(options.stateRoot, { recursive: true }),
+    mkdir(join(options.stateRoot, "service-api-runtime"), {
+      recursive: true,
+    }),
+  ]);
   await writeFile(
     join(options.stateRoot, "mosquitto.conf"),
     "listener 1883 0.0.0.0\nallow_anonymous true\npersistence false\n",
