@@ -107,7 +107,7 @@ jobs:
   reconstruct-local-testbed-pass-2:
     name: Reconstruct Local Testbed Pass 2
     needs: [reconstruct-local-testbed, run-inside-windows-pass-1]
-    if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result != 'cancelled' }}
+    if: ${{ needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result == 'success' }}
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 30
     env:
@@ -187,7 +187,7 @@ jobs:
         reconstruct-local-testbed-pass-2,
         run-inside-windows-pass-2,
       ]
-    if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result != 'cancelled' && needs.run-inside-windows-pass-2.result != 'cancelled' }}
+    if: ${{ needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result == 'success' && needs.run-inside-windows-pass-2.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

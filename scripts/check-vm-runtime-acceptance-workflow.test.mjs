@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { parse } from "yaml";
 
 const workflow = readFileSync(
   ".github/workflows/vm-runtime-acceptance.yml",
   "utf8",
 );
+const parsedWorkflow = parse(workflow);
 const guestRunner = readFileSync(
   "scripts/testbed/run-local-testbed-guest.ps1",
   "utf8",
@@ -119,14 +121,29 @@ describe("VM runtime acceptance workflow", () => {
   });
 
   it("runs a second reconstructed full pass and emits a stability gate report for full mode only", () => {
+    const pass2Job = parsedWorkflow.jobs["reconstruct-local-testbed-pass-2"];
+    const pass2WindowsJob = parsedWorkflow.jobs["run-inside-windows-pass-2"];
+    const gate = parsedWorkflow.jobs["full-workflow-stability-gate"];
     assert.match(workflow, /reconstruct-local-testbed-pass-2:/);
     assert.match(workflow, /run-inside-windows-pass-2:/);
     assert.match(workflow, /full-workflow-stability-gate:/);
+    assert.deepEqual(pass2Job.needs, [
+      "reconstruct-local-testbed",
+      "run-inside-windows-pass-1",
+    ]);
     assert.match(
-      workflow,
-      /needs\.reconstruct-local-testbed\.outputs\.mode == 'full'/,
+      String(pass2Job.if),
+      /needs\.reconstruct-local-testbed\.outputs\.mode == 'full' && needs\.run-inside-windows-pass-1\.result == 'success'/,
     );
-    assert.match(workflow, /always\(\)/);
+    assert.deepEqual(pass2WindowsJob.needs, "reconstruct-local-testbed-pass-2");
+    assert.match(
+      String(pass2WindowsJob.if),
+      /needs\.reconstruct-local-testbed-pass-2\.result == 'success'/,
+    );
+    assert.match(
+      String(gate.if),
+      /needs\.reconstruct-local-testbed\.outputs\.mode == 'full' && needs\.run-inside-windows-pass-1\.result == 'success' && needs\.run-inside-windows-pass-2\.result == 'success'/,
+    );
     assert.match(workflow, /full-workflow-stability-gate\.mjs/);
     assert.match(workflow, /vm-runtime-stability-gate-/);
   });

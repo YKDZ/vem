@@ -423,8 +423,15 @@ if ($Mode -eq "full") {
     -ObservedRetainedCaches $cacheObservation.observedRetainedCaches `
     -RemovedUndeclaredCaches $removedUndeclaredCaches
 }
-node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
-if ($LASTEXITCODE -ne 0) { throw "local testbed workflow aggregate failed" }
+$workflowFailure = $null
+$bundleFailure = $null
+try {
+  node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
+  if ($LASTEXITCODE -ne 0) { $workflowFailure = "local testbed workflow aggregate failed" }
+} catch {
+  $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"
+}
+
 if (Test-Path -LiteralPath $fastRouteOutPath) {
   Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
 }
@@ -446,8 +453,27 @@ if ($Mode -eq "full") {
   }
 }
 if ($Mode -ne "clear_cache") {
-  New-BoundedEvidenceBundle `
-    -ManifestPath (Join-Path $handoffRoot "full-workflow-evidence-manifest.json") `
-    -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle")
+  $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
+  if (Test-Path -LiteralPath $manifestPath) {
+    try {
+      New-BoundedEvidenceBundle `
+        -ManifestPath $manifestPath `
+        -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle")
+    } catch {
+      $bundleFailure = "compact evidence bundle failed: $($_.Exception.Message)"
+    }
+  }
 }
-Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output
+if (Test-Path -LiteralPath $workflowSummaryOutPath) {
+  Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output
+}
+if ($bundleFailure -ne $null) {
+  if ($workflowFailure -ne $null) {
+    throw "${workflowFailure}; ${bundleFailure}"
+  } else {
+    throw $bundleFailure
+  }
+}
+if ($workflowFailure -ne $null) {
+  throw $workflowFailure
+}

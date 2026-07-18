@@ -1126,6 +1126,44 @@ describe("Windows D cache contract", () => {
     );
     assert.doesNotMatch(guest, /\b(factory|iso)\b/i);
   });
+
+  it("keeps workflow aggregate reports on non-zero exit and bundles evidence without masking failures", () => {
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(guest, /\$workflowFailure = \$null/);
+    assert.match(guest, /\$bundleFailure = \$null/);
+    const orchestratorStart = guest.indexOf(
+      "node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath",
+    );
+    const summaryRead = guest.indexOf(
+      "Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output",
+      orchestratorStart,
+    );
+    const bundleSection = guest.indexOf(
+      'if ($Mode -ne "clear_cache")',
+      orchestratorStart,
+    );
+    const manifestCheck = guest.indexOf(
+      '$manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"',
+      bundleSection,
+    );
+    const bundleCall = guest.indexOf(
+      "New-BoundedEvidenceBundle",
+      manifestCheck,
+    );
+    const bundleFailure = guest.indexOf(
+      '$bundleFailure = "compact evidence bundle failed:',
+      manifestCheck,
+    );
+    assert.ok(orchestratorStart >= 0 && summaryRead > orchestratorStart);
+    assert.ok(manifestCheck >= 0 && bundleCall > manifestCheck);
+    assert.ok(bundleFailure > bundleCall);
+    assert.match(guest, /if \(Test-Path -LiteralPath \$manifestPath\)/);
+    assert.match(guest, /\$workflowFailure -ne \$null/);
+    assert.match(guest, /\$bundleFailure -ne \$null/);
+  });
 });
 
 describe("local testbed fixture", () => {
