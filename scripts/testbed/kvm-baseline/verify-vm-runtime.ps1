@@ -6,6 +6,7 @@ param(
   [Parameter(Mandatory = $true)] [string] $ExpectedInteractiveUser,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerUrl,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerName,
+  [Parameter(Mandatory = $true)] [string[]] $ExpectedRunnerLabels,
   [Parameter(Mandatory = $true)] [string] $ExpectedRunnerServiceName,
   [Parameter(Mandatory = $true)] [ValidatePattern("^[0-9a-f]{64}$")] [string] $ExpectedVirtioGpuDriverPackageSha256,
   [Parameter(Mandatory = $true)] [ValidateSet("ich9")] [string] $ExpectedAudioModel,
@@ -51,6 +52,17 @@ $runnerConfiguration = Get-Content -Raw -LiteralPath $runnerConfigurationPath | 
 $runnerConfigurationUrl = [string]$runnerConfiguration.gitHubUrl
 if ([string]::IsNullOrWhiteSpace($runnerConfigurationUrl)) { $runnerConfigurationUrl = [string]$runnerConfiguration.serverUrl }
 $runnerService = Get-Service -Name $ExpectedRunnerServiceName -ErrorAction SilentlyContinue
+$registeredRunnerLabels = @($runnerRegistration.runnerLabels | ForEach-Object { [string]$_ })
+$expectedRunnerLabels = @($ExpectedRunnerLabels | ForEach-Object { [string]$_ })
+$runnerLabelsMatch = $registeredRunnerLabels.Count -eq $expectedRunnerLabels.Count
+if ($runnerLabelsMatch) {
+  for ($index = 0; $index -lt $expectedRunnerLabels.Count; $index += 1) {
+    if ($registeredRunnerLabels[$index] -cne $expectedRunnerLabels[$index]) {
+      $runnerLabelsMatch = $false
+      break
+    }
+  }
+}
 
 function Get-Sha256 {
   param([string] $Path)
@@ -215,7 +227,7 @@ if ($cacheWritable) {
 $checks = @{
   desktop = $interactiveDisplay.desktop.width -eq $ExpectedWidth -and $interactiveDisplay.desktop.height -eq $ExpectedHeight -and $interactiveDisplay.desktop.scalePercent -eq $ExpectedScalePercent
   SSH = (Get-Service sshd -ErrorAction SilentlyContinue).Status -eq "Running"
-  runner = $null -ne $runnerService -and $runnerService.Status -eq "Running" -and $runnerRegistration.runnerUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerName -ceq $ExpectedRunnerName -and $runnerRegistration.serviceName -ceq $ExpectedRunnerServiceName -and $runnerConfiguration.agentName -ceq $ExpectedRunnerName -and $runnerConfigurationUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerWorkRoot -ceq "C:\actions-runner\_work"
+  runner = $null -ne $runnerService -and $runnerService.Status -eq "Running" -and $runnerRegistration.runnerUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerName -ceq $ExpectedRunnerName -and $runnerRegistration.serviceName -ceq $ExpectedRunnerServiceName -and $runnerConfiguration.agentName -ceq $ExpectedRunnerName -and $runnerConfigurationUrl -ceq $ExpectedRunnerUrl -and $runnerRegistration.runnerWorkRoot -ceq "C:\actions-runner\_work" -and $runnerLabelsMatch
   toolchain = @($tools | Where-Object { -not $_.available }).Count -eq 0 -and $exactToolchainVersions -and $machinePathsExact -and $executablesOnSystemDisk -and $cargoDownloadCachesOnD
   WebView2 = $null -ne $webView2
   displayAdapter = $null -ne $displayAdapter -and -not [string]::IsNullOrWhiteSpace([string]$interactiveDisplay.displayAdapter)
@@ -229,7 +241,7 @@ $report = @{
   ok = @($checks.Values | Where-Object { -not $_ }).Count -eq 0
   checks = $checks
   desktop = @{ width = $interactiveDisplay.desktop.width; height = $interactiveDisplay.desktop.height; scalePercent = $interactiveDisplay.desktop.scalePercent; interactiveUser = $interactiveDisplay.interactiveUser; interactiveSessionId = $interactiveDisplay.interactiveSessionId; source = "interactive-autologon-report" }
-  runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
+  runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; labels = $expectedRunnerLabels; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; registrationLabelsMatch = $runnerLabelsMatch; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
   virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; displayDriverBinding = $virtioGpuDriverBinding; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   toolchain = @{ commands = $tools; expectedMachinePaths = $expectedMachinePaths; machinePaths = $machinePaths; exactVersions = $exactToolchainVersions; executablesOnSystemDisk = $executablesOnSystemDisk; cargoDownloadCachesOnD = $cargoDownloadCachesOnD }
 }

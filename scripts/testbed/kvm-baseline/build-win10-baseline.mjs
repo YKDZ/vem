@@ -800,6 +800,7 @@ function verificationCommand({
     ExpectedInteractiveUser: config.guest.sshUser,
     ExpectedRunnerUrl: config.runner.url,
     ExpectedRunnerName: runnerName,
+    ExpectedRunnerLabels: config.runner.labels,
     ExpectedVirtioGpuDriverPackageSha256: expectedVirtioGpuDriverPackageSha256,
     ExpectedAudioModel: "ich9",
     ExpectedSerialRole: ["lower-controller", "scanner"],
@@ -811,7 +812,7 @@ function verificationCommand({
       '$ErrorActionPreference = "Stop"',
       `$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${encodedRequest}")) | ConvertFrom-Json`,
       '$runner = Get-Content -Raw -LiteralPath "C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json" | ConvertFrom-Json',
-      '& "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1" -ExpectedWidth $request.ExpectedWidth -ExpectedHeight $request.ExpectedHeight -ExpectedScalePercent $request.ExpectedScalePercent -ExpectedInteractiveUser $request.ExpectedInteractiveUser -ExpectedRunnerUrl $request.ExpectedRunnerUrl -ExpectedRunnerName $request.ExpectedRunnerName -ExpectedRunnerServiceName $runner.serviceName -ExpectedVirtioGpuDriverPackageSha256 $request.ExpectedVirtioGpuDriverPackageSha256 -ExpectedAudioModel $request.ExpectedAudioModel -ExpectedSerialRole @($request.ExpectedSerialRole) -ExpectedSerialUsbPort @($request.ExpectedSerialUsbPort) -OutputPath $request.OutputPath',
+      '& "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1" -ExpectedWidth $request.ExpectedWidth -ExpectedHeight $request.ExpectedHeight -ExpectedScalePercent $request.ExpectedScalePercent -ExpectedInteractiveUser $request.ExpectedInteractiveUser -ExpectedRunnerUrl $request.ExpectedRunnerUrl -ExpectedRunnerName $request.ExpectedRunnerName -ExpectedRunnerLabels @($request.ExpectedRunnerLabels) -ExpectedRunnerServiceName $runner.serviceName -ExpectedVirtioGpuDriverPackageSha256 $request.ExpectedVirtioGpuDriverPackageSha256 -ExpectedAudioModel $request.ExpectedAudioModel -ExpectedSerialRole @($request.ExpectedSerialRole) -ExpectedSerialUsbPort @($request.ExpectedSerialUsbPort) -OutputPath $request.OutputPath',
       "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
     ].join("\r\n"),
   );

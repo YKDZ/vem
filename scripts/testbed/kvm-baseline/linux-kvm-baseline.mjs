@@ -115,6 +115,17 @@ targetChild = spawn(
   stdio: ["ignore", "inherit", "inherit"],
   },
 );
+const targetRegistrationDelayMs = Number(
+  process.env.VEM_VNC_SUPERVISOR_TARGET_REGISTRATION_DELAY_MS ?? "0",
+);
+if (
+  Number.isFinite(targetRegistrationDelayMs) &&
+  targetRegistrationDelayMs > 0
+) {
+  await new Promise((resolveDelay) =>
+    setTimeout(resolveDelay, targetRegistrationDelayMs),
+  );
+}
 await module.publishVncActivatorTargetIdentity({
   ...registration,
   pid: targetChild.pid,
@@ -384,6 +395,9 @@ export function validateBaselineBuildConfig(input) {
     throw new Error(
       "runner.labels must be a non-empty array of GitHub runner labels",
     );
+  }
+  if (!runner.labels.includes("vem-runtime")) {
+    throw new Error("runner.labels must include the vem-runtime label");
   }
   const testbed = object(config.testbed, "testbed");
   commandArray(testbed.reconstructCommand, "testbed.reconstructCommand");
@@ -858,6 +872,23 @@ async function registeredSupervisorIdentity(handle, metadataPath, role) {
   return identity;
 }
 
+async function registeredTargetIdentity(metadataPath, role, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      const identity = metadata.targets?.[role];
+      if (processIdentityShape(identity)) {
+        return identity;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await delay(25);
+  }
+  throw new Error(`${role} target identity was not registered durably`);
+}
+
 function releaseSupervisor(handle, timeoutMs = 2_000) {
   return new Promise((resolveRelease, rejectRelease) => {
     const timeout = setTimeout(
@@ -1057,6 +1088,7 @@ export async function startHeadlessVncActivator({
     if (!/^\d+$/.test(displayNumber)) {
       throw new Error("Xvfb returned an invalid display number");
     }
+    await registeredTargetIdentity(metadataPath, "xvfb");
     windowManager = startSupervisor(
       "window-manager",
       windowManagerCommand,
@@ -1070,6 +1102,7 @@ export async function startHeadlessVncActivator({
       "window-manager",
     );
     await releaseSupervisor(windowManager);
+    await registeredTargetIdentity(metadataPath, "window-manager");
     viewer = startSupervisor(
       "viewer",
       viewerCommand,
@@ -1083,6 +1116,7 @@ export async function startHeadlessVncActivator({
       "viewer",
     );
     await releaseSupervisor(viewer);
+    await registeredTargetIdentity(metadataPath, "viewer");
     await Promise.race([
       failure,
       new Promise((resolveReady) => setTimeout(resolveReady, readinessDelayMs)),

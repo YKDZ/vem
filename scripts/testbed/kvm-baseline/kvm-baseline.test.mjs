@@ -802,6 +802,113 @@ await new Promise(() => setInterval(() => {}, 1_000));
   );
 
   it(
+    "waits for each VNC target identity to persist before starting the next role",
+    { timeout: 5_000 },
+    async () => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const root = mkdtempSync(
+          join(tmpdir(), `vem-kvm-vnc-target-barrier-${attempt}-`),
+        );
+        const xvfbPath = join(root, "fake-xvfb.mjs");
+        const gatekeeperPath = join(root, "fake-gatekeeper.mjs");
+        const windowManagerStatePath = join(root, "window-manager.json");
+        const viewerStatePath = join(root, "viewer.json");
+        const metadataPath = join(root, ".vnc-activator.json");
+        const owner = {
+          schemaVersion: "win10-kvm-construction-owner/v1",
+          buildId: "facefeed",
+          domainName: "win10-runtime-baseline-build-facefeed",
+          systemStagingPath: root,
+        };
+        let activator;
+        try {
+          writeFileSync(
+            xvfbPath,
+            'process.stdout.write("76\\n"); process.on("SIGTERM", () => {}); await new Promise(() => setInterval(() => {}, 1_000));\n',
+          );
+          writeFileSync(
+            gatekeeperPath,
+            `
+import { readFileSync, writeFileSync } from "node:fs";
+
+const [role, requiredTargetRole, statePath] = process.argv.slice(2);
+const metadata = JSON.parse(readFileSync(process.env.FAKE_METADATA_PATH, "utf8"));
+if (!metadata.targets?.[requiredTargetRole]) {
+  process.exit(42);
+}
+writeFileSync(
+  statePath,
+  JSON.stringify({
+    role,
+    requiredTargetRole,
+    observedTargets: Object.keys(metadata.targets).sort(),
+  }),
+);
+process.on("SIGTERM", () => {});
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+          );
+          const tracker = createConstructionCommandTracker();
+          activator = await startHeadlessVncActivator({
+            domainName: owner.domainName,
+            libvirtUri: "qemu:///system",
+            runCommand: async () => ({ stdout: ":14\n", stderr: "" }),
+            startProcess: tracker.start,
+            commands: {
+              xvfb: process.execPath,
+              xvfbArguments: [xvfbPath],
+              windowManager: process.execPath,
+              windowManagerArguments: [
+                gatekeeperPath,
+                "window-manager",
+                "xvfb",
+                windowManagerStatePath,
+              ],
+              viewer: process.execPath,
+              viewerArguments: [
+                gatekeeperPath,
+                "viewer",
+                "window-manager",
+                viewerStatePath,
+              ],
+            },
+            environment: {
+              ...process.env,
+              FAKE_METADATA_PATH: metadataPath,
+              VEM_VNC_SUPERVISOR_TARGET_REGISTRATION_DELAY_MS: "100",
+            },
+            metadataPath,
+            owner,
+            readinessDelayMs: 25,
+            termination: { termTimeoutMs: 25, killTimeoutMs: 500 },
+          });
+
+          assert.deepEqual(
+            JSON.parse(readFileSync(windowManagerStatePath, "utf8")),
+            {
+              role: "window-manager",
+              requiredTargetRole: "xvfb",
+              observedTargets: ["xvfb"],
+            },
+          );
+          assert.deepEqual(JSON.parse(readFileSync(viewerStatePath, "utf8")), {
+            role: "viewer",
+            requiredTargetRole: "window-manager",
+            observedTargets: ["window-manager", "xvfb"],
+          });
+          const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+          assert.ok(metadata.targets.xvfb);
+          assert.ok(metadata.targets["window-manager"]);
+          assert.ok(metadata.targets.viewer);
+        } finally {
+          await activator?.stop();
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
+  it(
     "aborts and awaits all tracked VNC activator children",
     { timeout: 3_000 },
     async () => {
@@ -1061,6 +1168,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
       assert.throws(
         () => validateBaselineBuildConfig(missingRunnerLabels),
         /runner\.labels/,
+      );
+
+      const runnerLabelsWithoutRuntime = buildConfig(root);
+      runnerLabelsWithoutRuntime.runner.labels = ["custom"];
+      assert.throws(
+        () => validateBaselineBuildConfig(runnerLabelsWithoutRuntime),
+        /runner\.labels must include the vem-runtime label/,
       );
 
       const missingRunnerArchive = buildConfig(root);
@@ -2576,7 +2690,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(verify, /ExpectedRunnerUrl/);
     assert.match(verify, /ExpectedRunnerName/);
+    assert.match(verify, /ExpectedRunnerLabels/);
     assert.match(verify, /ExpectedRunnerServiceName/);
+    assert.match(verify, /registrationLabelsMatch/);
+    assert.match(verify, /\$runnerRegistration\.runnerLabels/);
     assert.match(verify, /ExpectedAudioModel/);
     assert.doesNotMatch(
       verify,
@@ -2610,6 +2727,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(builder, /vncActivator\.runWhileActive/);
     assert.match(builder, /ExpectedSerialUsbPort: \[1, 2\]/);
+    assert.match(builder, /ExpectedRunnerLabels: config\.runner\.labels/);
     assert.match(builder, /actions-runner-win-x64\.zip/);
     assert.doesNotMatch(builder, /RunnerArchiveUri/);
     assert.doesNotMatch(builder, /registrationToken:\s*secrets/);
