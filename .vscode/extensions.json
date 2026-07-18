@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "vitest.explorer",
+    "vue.volar",
+    "bradlc.vscode-tailwindcss",
+    "rust-lang.rust-analyzer",
+    "oxc.oxc-vscode",
+    "ms-azuretools.vscode-docker"
+  ]
+}

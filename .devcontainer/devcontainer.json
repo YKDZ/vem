@@ -38,15 +38,12 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "Selemondev.shadcn-vue",
-        "antfu.iconify",
-        "Vue.volar",
-        "bradlc.vscode-tailwindcss",
-        "oxc.oxc-vscode",
-        "ms-azuretools.vscode-docker",
-        "ms-azuretools.vscode-containers",
         "vitest.explorer",
-        "rust-lang.rust-analyzer"
+        "vue.volar",
+        "bradlc.vscode-tailwindcss",
+        "rust-lang.rust-analyzer",
+        "oxc.oxc-vscode",
+        "ms-azuretools.vscode-docker"
       ],
       "settings": {
         "editor.formatOnSave": true,
