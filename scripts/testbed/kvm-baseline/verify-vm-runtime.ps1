@@ -173,6 +173,30 @@ function Get-ToolVersion {
   return ([string]($output | Select-Object -First 1)).Trim()
 }
 
+$runtimeEnvironmentKeys = @(
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "PNPM_HOME",
+  "COREPACK_HOME",
+  "CARGO_TARGET_DIR",
+  "SCCACHE_DIR",
+  "TURBO_CACHE_DIR",
+  "npm_config_cache",
+  "PNPM_STORE_PATH",
+  "CARGO_REGISTRY_CACHE",
+  "CARGO_GIT_CACHE"
+)
+foreach ($key in $runtimeEnvironmentKeys) {
+  $machineValue = [Environment]::GetEnvironmentVariable($key, "Machine")
+  if (-not [string]::IsNullOrWhiteSpace($machineValue)) {
+    Set-Item -Path "Env:$key" -Value $machineValue
+  }
+}
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
+  $env:Path = $machinePath + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
 $tools = @("git", "node", "corepack", "pnpm", "turbo", "cargo", "rustc", "rustup") | ForEach-Object {
   $command = Get-Command $_ -ErrorAction SilentlyContinue
   @{

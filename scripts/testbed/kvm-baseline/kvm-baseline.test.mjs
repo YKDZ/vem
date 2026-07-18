@@ -2539,6 +2539,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /scriptStackTrace/);
     assert.match(
       verify,
+      /GetEnvironmentVariable\(\$key, "Machine"\)[\s\S]*Set-Item -Path "Env:\$key"/,
+    );
+    assert.match(
+      verify,
+      /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*\$env:Path = \$machinePath/,
+    );
+    assert.match(
+      verify,
       /virtio-gpu-driver-identity\.json[\s\S]*packageIdentity\.files[\s\S]*packageHash -cne \$ExpectedVirtioGpuDriverPackageSha256/,
     );
     assert.match(
