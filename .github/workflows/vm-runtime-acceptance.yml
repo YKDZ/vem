@@ -25,18 +25,27 @@ permissions:
   contents: read
 
 jobs:
-  inspect-published-testbed-contract:
+  admit-testbed-ssh-host-key:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Inspect published testbed contract
+      - name: Record running testbed SSH host key
         run: |
           set -euo pipefail
-          manifest=/opt/vem/runtime-baseline/images/win10-runtime-baseline.qcow2.current.json
-          jq '{releaseId,profileVmName:.profile.vmName,testbed}' "$manifest"
-          xml="$(jq -r .artifacts.domainXmlPath "$manifest")"
-          grep -E '<name>|source file=' "$xml"
-          jq '{vm,testbed}' /opt/vem/runtime-baseline/config.6225f6a6.json
+          host=192.168.122.50
+          known_hosts=/opt/vem/runtime-testbed/known_hosts
+          for attempt in $(seq 1 60); do
+            if ssh-keyscan -T 3 "$host" >"$known_hosts.pending" 2>/dev/null && test -s "$known_hosts.pending"; then
+              mv "$known_hosts.pending" "$known_hosts"
+              chmod 600 "$known_hosts"
+              break
+            fi
+            if test "$attempt" -eq 60; then exit 1; fi
+            sleep 2
+          done
+          ssh -i /opt/vem/runtime-baseline/secrets/administrator-private-key \
+            -o IdentitiesOnly=yes -o UserKnownHostsFile="$known_hosts" \
+            VEMRunner@"$host" hostname
 
   build-windows-runtime:
     name: Build Current Windows Runtime
