@@ -2547,6 +2547,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(
       verify,
+      /\$output = @\(& \$FilePath "--version" 2>&1\)[\s\S]*-notmatch "\^info:"/,
+    );
+    assert.match(
+      verify,
       /virtio-gpu-driver-identity\.json[\s\S]*packageIdentity\.files[\s\S]*packageHash -cne \$ExpectedVirtioGpuDriverPackageSha256/,
     );
     assert.match(

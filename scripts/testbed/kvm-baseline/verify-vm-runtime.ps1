@@ -168,9 +168,21 @@ for ($index = 0; $index -lt $ExpectedSerialRole.Count; $index += 1) {
 }
 function Get-ToolVersion {
   param([string] $FilePath)
-  $output = & $FilePath "--version" 2>$null
-  if ($LASTEXITCODE -ne 0) { return $null }
-  return ([string]($output | Select-Object -First 1)).Trim()
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = @(& $FilePath "--version" 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($exitCode -ne 0) { return $null }
+  $version = $output |
+    ForEach-Object { ([string]$_).Trim() } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch "^info:" } |
+    Select-Object -First 1
+  if ($null -eq $version) { return $null }
+  return [string]$version
 }
 
 $runtimeEnvironmentKeys = @(
