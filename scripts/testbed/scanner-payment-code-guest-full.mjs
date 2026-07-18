@@ -312,8 +312,19 @@ export function pnpObservationMatchesLibvirtTopology(observation, topology) {
   });
 }
 
-export function pnpObservationMatchesDaemonIdentity(observation, identity) {
+export function pnpObservationMatchesDaemonIdentity(
+  observation,
+  identity,
+  expectedCurrentPort,
+) {
   if (!observation || !identity) return false;
+  const currentPort = String(observation.currentPort ?? "").toUpperCase();
+  if (
+    !/^COM[1-9][0-9]*$/.test(currentPort) ||
+    currentPort !== String(expectedCurrentPort ?? "").toUpperCase()
+  ) {
+    return false;
+  }
   const pnpDeviceId = String(observation.pnpDeviceId ?? "").toUpperCase();
   const instanceId = String(identity.instanceId ?? "").toUpperCase();
   if (!pnpDeviceId || pnpDeviceId !== instanceId) return false;
@@ -321,7 +332,8 @@ export function pnpObservationMatchesDaemonIdentity(observation, identity) {
     .replace(/^\{|\}$/g, "")
     .toLowerCase();
   const identityContainer = String(identity.containerId ?? "").toLowerCase();
-  return !observedContainer || observedContainer === identityContainer;
+  if (Boolean(observedContainer) !== Boolean(identityContainer)) return false;
+  return observedContainer === identityContainer;
 }
 
 function observeWindowsSerialPnP() {
@@ -357,7 +369,6 @@ function scannerQemuMapping(sessionStart) {
     const mapping = qemuMappings.find((entry) => entry.role === role);
     if (
       !mapping ||
-      mapping.guestDeviceIdentity !== `guest-device://qemu-usb-serial-${role}` ||
       !mapping.guestUsbTopology?.alias
     ) {
       throw new Error(`QEMU USB mapping for ${role} is missing live libvirt USB topology`);
@@ -488,7 +499,11 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
         candidate.currentPort === scanner.currentPort &&
         scannerPnp &&
         matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity) &&
-        pnpObservationMatchesDaemonIdentity(scannerPnp, candidate.identity),
+        pnpObservationMatchesDaemonIdentity(
+          scannerPnp,
+          candidate.identity,
+          scanner.currentPort,
+        ),
     );
     if (
       lower?.ready === true &&

@@ -235,7 +235,10 @@ describe("repo QEMU USB serial host adapter", () => {
         usbBus: 0,
         usbPort: "3.2",
       });
-      assert.match(scanner.guestDeviceIdentity, /qemu-usb-serial-scanner$/);
+      assert.equal(
+        scanner.guestDeviceIdentity,
+        "guest-device://libvirt-usb-bus-0-port-3-2-target-1",
+      );
       const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
       const state = JSON.parse(
         readFileSync(

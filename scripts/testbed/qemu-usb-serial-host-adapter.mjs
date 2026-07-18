@@ -346,7 +346,10 @@ function dumpMappings() {
 function contractMappings(liveMappings, pid, connectionState = "connected") {
   return liveMappings.map((mapping) => ({
     role: mapping.role,
-    guestDeviceIdentity: `guest-device://qemu-usb-serial-${mapping.role}`,
+    guestDeviceIdentity:
+      `guest-device://libvirt-usb-bus-${mapping.guestUsbTopology.usbBus}` +
+      `-port-${mapping.guestUsbTopology.usbPort.replaceAll(".", "-")}` +
+      `-target-${mapping.guestUsbTopology.targetPort}`,
     guestUsbTopology: mapping.guestUsbTopology,
     simulatorProcessIdentity:
       mapping.role === "lower-controller"

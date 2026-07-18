@@ -698,7 +698,6 @@ describe("host serial control plane", () => {
         session.qemuUsbSerialMappings.every(
           (mapping) =>
             ["lower-controller", "scanner"].includes(mapping.role) &&
-            mapping.guestDeviceIdentity.startsWith("guest-device://qemu-usb-serial-") &&
             typeof mapping.guestUsbTopology?.alias === "string",
         ),
         true,

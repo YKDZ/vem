@@ -50,6 +50,7 @@ describe("scanner payment-code guest full", () => {
     assert.match(source, /scannerQuietBoundary/);
     assert.match(source, /matchesStableGuestUsbIdentity/);
     assert.match(source, /movement\.quantity/);
+    assert.doesNotMatch(source, /guest-device:\/\/qemu-usb-serial/);
     assert.doesNotMatch(source, /scannerEventId !==\s*attemptSnapshot\?\.paymentCodeAttempt\?\.scannerEventId/);
     assert.match(source, /\/v1\/serial-sessions\/.*\/wait-frame/);
   });
@@ -84,14 +85,14 @@ describe("scanner payment-code guest full", () => {
       pnpObservationMatchesDaemonIdentity(observation, {
         instanceId: "usb\\vid_1b36&pid_0001\\5&1234&0&2",
         containerId: null,
-      }),
+      }, "COM17"),
       true,
     );
     assert.equal(
       pnpObservationMatchesDaemonIdentity(observation, {
         instanceId: "USB\\VID_1B36&PID_0001\\OTHER",
         containerId: null,
-      }),
+      }, "COM17"),
       false,
     );
     assert.equal(
@@ -101,6 +102,49 @@ describe("scanner payment-code guest full", () => {
           instanceId: observation.pnpDeviceId,
           containerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         },
+        "COM17",
+      ),
+      false,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(
+        observation,
+        {
+          instanceId: observation.pnpDeviceId,
+          containerId: "11111111-2222-3333-4444-555555555555",
+        },
+        "COM17",
+      ),
+      false,
+      "missing independently observed ContainerId must not match a daemon ContainerId",
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(
+        {
+          ...observation,
+          containerId: "{11111111-2222-3333-4444-555555555555}",
+        },
+        {
+          instanceId: observation.pnpDeviceId,
+          containerId: "11111111-2222-3333-4444-555555555555",
+        },
+        "COM17",
+      ),
+      true,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(
+        { ...observation, currentPort: "" },
+        { instanceId: observation.pnpDeviceId, containerId: null },
+        "COM17",
+      ),
+      false,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(
+        { ...observation, pnpDeviceId: "" },
+        { instanceId: observation.pnpDeviceId, containerId: null },
+        "COM17",
       ),
       false,
     );
