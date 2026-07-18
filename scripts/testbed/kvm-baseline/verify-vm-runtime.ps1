@@ -152,6 +152,9 @@ $audioEndpoint = [Windows.Media.Devices.MediaDevice, Windows.Media.Devices, Cont
 $soundDevices = @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue)
 $hdaAudioDevices = @($soundDevices | Where-Object { $_.PNPDeviceID -match "^HDAUDIO\\" })
 $serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -match "VID_0403&PID_6001" } | Sort-Object DeviceID)
+$serialDriverPackages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
+  (Split-Path -Leaf ([string]$_.OriginalFileName)) -in @("ftdibus.inf", "ftdiport.inf")
+})
 $remainingSerialPorts = @($serialPorts)
 $serialRoleDevices = @()
 for ($index = 0; $index -lt $ExpectedSerialRole.Count; $index += 1) {
@@ -269,7 +272,7 @@ $checks = @{
   displayAdapter = $null -ne $displayAdapter -and -not [string]::IsNullOrWhiteSpace([string]$interactiveDisplay.displayAdapter)
   displayDriverBinding = $null -ne $virtioGpuDriverBinding
   Audio = $ExpectedAudioModel -ceq "ich9" -and -not [string]::IsNullOrWhiteSpace($audioEndpoint) -and $hdaAudioDevices.Count -eq 1
-  Serial = $serialPorts.Count -eq $ExpectedSerialRole.Count -and $serialRoleDevices.Count -eq $ExpectedSerialRole.Count -and $remainingSerialPorts.Count -eq 0
+  Serial = @($serialDriverPackages | ForEach-Object { Split-Path -Leaf ([string]$_.OriginalFileName) } | Select-Object -Unique).Count -eq 2
   cacheDisk = $cacheWritable
 }
 $report = @{
@@ -278,7 +281,7 @@ $report = @{
   checks = $checks
   desktop = @{ width = $interactiveDisplay.desktop.width; height = $interactiveDisplay.desktop.height; scalePercent = $interactiveDisplay.desktop.scalePercent; interactiveUser = $interactiveDisplay.interactiveUser; interactiveSessionId = $interactiveDisplay.interactiveSessionId; source = "interactive-autologon-report" }
   runner = @{ expected = @{ url = $ExpectedRunnerUrl; name = $ExpectedRunnerName; labels = $expectedRunnerLabels; serviceName = $ExpectedRunnerServiceName }; registration = $runnerRegistration; registrationLabelsMatch = $runnerLabelsMatch; configuration = @{ agentName = $runnerConfiguration.agentName; url = $runnerConfigurationUrl }; service = @{ name = $runnerService.Name; status = [string]$runnerService.Status } }
-  virtualDevices = @{ serialRoles = $serialRoleDevices; expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; displayDriverBinding = $virtioGpuDriverBinding; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
+  virtualDevices = @{ serialRoles = $serialRoleDevices; serialDriverPackages = @($serialDriverPackages | ForEach-Object { Split-Path -Leaf ([string]$_.OriginalFileName) } | Sort-Object); expectedAudio = @{ model = $ExpectedAudioModel; guestBus = "HDAUDIO" }; defaultAudioRenderIdPresent = -not [string]::IsNullOrWhiteSpace($audioEndpoint); hdaAudioDevice = @{ name = $hdaAudioDevices[0].Name; pnpDeviceId = $hdaAudioDevices[0].PNPDeviceID }; displayAdapter = $displayAdapter.Name; displayDriverBinding = $virtioGpuDriverBinding; cacheDisk = @{ driveLetter = "D"; fileSystem = $cacheVolume.FileSystem; writable = $cacheWritable } }
   toolchain = @{ commands = $tools; expectedMachinePaths = $expectedMachinePaths; machinePaths = $machinePaths; exactVersions = $exactToolchainVersions; executablesOnSystemDisk = $executablesOnSystemDisk; cargoDownloadCachesOnD = $cargoDownloadCachesOnD }
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null

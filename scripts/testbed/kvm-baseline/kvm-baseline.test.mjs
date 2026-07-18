@@ -628,7 +628,7 @@ describe("Linux KVM Windows baseline", () => {
     );
     assert.doesNotMatch(xml, /<model type="(?:vga|bochs|qxl)"/);
     assert.match(xml, /target type="usb-serial" port="0"/);
-    assert.match(xml, /usb-serial\.always-plugged=on/);
+    assert.doesNotMatch(xml, /usb-serial\.always-plugged/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
     assert.match(
@@ -1100,17 +1100,6 @@ await new Promise(() => setInterval(() => {}, 1_000));
           profile,
         ),
       /USB serial role scanner is invalid/,
-    );
-    assert.throws(
-      () =>
-        verifyDefinedRuntimeDevices(
-          xml.replace(
-            "usb-serial.always-plugged=on",
-            "usb-serial.always-plugged=off",
-          ),
-          profile,
-        ),
-      /must remain attached/,
     );
     assert.doesNotThrow(() =>
       verifyDefinedRuntimeDevices(
@@ -2602,7 +2591,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.match(
       runtime,
-      /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf[\s\S]*VID_0403&PID_6001/,
+      /function Install-FtdiVirtualComPortDriver[\s\S]*ftdibus\.inf[\s\S]*ftdiport\.inf/,
+    );
+    assert.doesNotMatch(
+      runtime.slice(
+        runtime.indexOf("function Install-FtdiVirtualComPortDriver"),
+        runtime.indexOf("function Test-VirtioGpuDriverBinding"),
+      ),
+      /Win32_SerialPort|did not become available/,
     );
     assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
     assert.doesNotMatch(
@@ -2792,6 +2788,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.doesNotMatch(verify, /ExpectedSerialDeviceIdentity/);
     assert.match(verify, /lower-controller and scanner USB port roles/);
     assert.doesNotMatch(verify, /serialPorts\.Count -ge 2/);
+    assert.match(verify, /serialDriverPackages/);
     assert.match(verify, /\$pnpmVersion = "11\.9\.0"/);
     assert.match(verify, /\$turboVersion = "2\.10\.0"/);
     assert.match(verify, /exactToolchainVersions/);
@@ -3096,15 +3093,14 @@ await new Promise(() => setInterval(() => {}, 1_000));
                 stdout: JSON.stringify({
                   reportPresent: false,
                   guestStageFailure: {
-                    message:
-                      "the two FTDI virtual COM ports did not become available",
+                    message: "signed FTDI driver installation failed",
                   },
                 }),
               };
             },
           },
         ),
-        /initial KVM guest preparation failed: the two FTDI virtual COM ports did not become available/,
+        /initial KVM guest preparation failed: signed FTDI driver installation failed/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

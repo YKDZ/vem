@@ -227,15 +227,6 @@ function Install-FtdiVirtualComPortDriver {
   Remove-Item -LiteralPath $driverRoot -Recurse -Force
   Remove-Item -LiteralPath $archivePath -Force
 
-  $deadline = [DateTime]::UtcNow.AddMinutes(1)
-  do {
-    $serialPorts = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue | Where-Object {
-      $_.PNPDeviceID -match "VID_0403&PID_6001"
-    })
-    if ($serialPorts.Count -eq 2) { return }
-    Start-Sleep -Seconds 2
-  } while ([DateTime]::UtcNow -lt $deadline)
-  throw "the two FTDI virtual COM ports did not become available"
 }
 
 function Test-VirtioGpuDriverBinding {

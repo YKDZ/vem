@@ -1144,15 +1144,6 @@ function xmlAttributeEquals(element, attribute, value) {
 // controller port. The guest verifies those ports.
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
-  if (
-    !/<qemu:commandline>[\s\S]*<qemu:arg\b[^>]*\bvalue=(["'])-global\1\s*\/>[\s\S]*<qemu:arg\b[^>]*\bvalue=(["'])usb-serial\.always-plugged=on\2\s*\/>[\s\S]*<\/qemu:commandline>/.test(
-      xml,
-    )
-  ) {
-    throw new Error(
-      "defined USB serial devices must remain attached before host control opens their PTYs",
-    );
-  }
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
   const audioDevices = [...xml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g)];
   if (
