@@ -41,7 +41,7 @@ jobs:
             virsh destroy "$builder" || true
             virsh undefine "$builder" || true
           fi
-          domain=vem-win10-runtime-toolchain-debug
+          domain=vem-win10-runtime-debug-checkpoint
           virsh destroy "$domain" || true
           virsh undefine "$domain" || true
           virsh define /opt/vem/runtime-baseline/checkpoints/last-debug/debug-domain.xml
