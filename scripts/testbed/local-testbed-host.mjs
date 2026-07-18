@@ -12,6 +12,7 @@ import {
 import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 
 import {
   recoverHeadlessVncActivator,
@@ -172,6 +173,12 @@ function quotePowerShell(value) {
 
 function encodedPowerShellCommand(script) {
   return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+}
+
+function compressedPowerShellCommand(script) {
+  const payload = gzipSync(Buffer.from(script, "utf8")).toString("base64");
+  const bootstrap = `$b=[Convert]::FromBase64String('${payload}');$m=[IO.MemoryStream]::new(,$b);$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);$r=[IO.StreamReader]::new($g);try{& ([ScriptBlock]::Create($r.ReadToEnd()))}finally{$r.Dispose();$g.Dispose();$m.Dispose()}`;
+  return encodedPowerShellCommand(bootstrap);
 }
 
 function guestInputAssertion(path, runId) {
@@ -591,7 +598,7 @@ export function buildHostAdmissionPlan({
     {
       type: "restart-runner-and-await-listener",
       command: "ssh",
-      args: sshArgs(config, encodedPowerShellCommand(runnerAssertion)),
+      args: sshArgs(config, compressedPowerShellCommand(runnerAssertion)),
       encodedPowerShell: true,
       input: runnerAssertion,
     },
