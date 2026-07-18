@@ -1042,6 +1042,7 @@ export class OrdersService {
             "submitting",
             "user_confirming",
             "querying",
+            "reversing",
             "unknown",
             "manual_handling",
           ]),

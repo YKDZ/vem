@@ -15,8 +15,10 @@ import {
   gt,
   inArray,
   isNull,
+  isNotNull,
   lte,
   machines,
+  ne,
   or,
   orders,
   paymentCodeAttempts,
@@ -80,12 +82,17 @@ type PaymentCodeAttemptListQuery = z.infer<
   z.infer<typeof pageQuerySchema>;
 
 const RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES: PaymentCodeAttemptStatus[] = [
+  "created",
   "submitting",
   "user_confirming",
   "querying",
   "reversing",
+  // This is a queued manual-handling intent until the worker atomically
+  // projects the parent payment and order into their incident state.
+  "manual_handling",
 ];
 const PAYMENT_CODE_ADMISSION_RECOVERY_LEASE_MS = 30_000;
+const PAYMENT_CODE_UNADMITTED_RECOVERY_DELAY_MS = 30_000;
 
 function isIncidentLocked(row: {
   orderStatus: string;
@@ -291,6 +298,9 @@ export class PaymentCodeAttemptsService {
             source: input.source,
             scannerHealth: input.scannerHealthJson ?? null,
           }),
+          recoveryNextAt: new Date(
+            Date.now() + PAYMENT_CODE_UNADMITTED_RECOVERY_DELAY_MS,
+          ),
         })
         .returning();
 
@@ -303,21 +313,23 @@ export class PaymentCodeAttemptsService {
   }
 
   /**
-   * The provider request is the irrevocable admission point. Keep the
-   * payment/order/attempt locks while it is invoked so expiry or cancellation
-   * cannot close a payment that has a committed submission still able to run.
+   * Commits the provider-admission state before a worker can issue a charge.
+   * The raw payment code never crosses this boundary into durable storage.
    */
-  async admitAndCall<T>(
-    attemptId: string,
-    call: (attempt: PaymentCodeAttemptRow) => Promise<T>,
-  ): Promise<{ attempt: PaymentCodeAttemptRow; result: T }> {
+  async claimSubmission(input: {
+    attemptId: string;
+    ownerToken: string;
+    leaseMs?: number;
+  }): Promise<PaymentCodeRecoveryClaim | null> {
+    const now = new Date();
+    const leaseMs = input.leaseMs ?? PAYMENT_CODE_ADMISSION_RECOVERY_LEASE_MS;
     return await this.db.transaction(async (tx) => {
       await tx.execute(sql`
         select pca.id
         from payment_code_attempts pca
         inner join payments p on p.id = pca.payment_id
         inner join orders o on o.id = pca.order_id
-        where pca.id = ${attemptId}
+        where pca.id = ${input.attemptId}
         for update of pca, p, o
       `);
 
@@ -334,7 +346,7 @@ export class PaymentCodeAttemptsService {
         .from(paymentCodeAttempts)
         .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
         .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
-        .where(eq(paymentCodeAttempts.id, attemptId))
+        .where(eq(paymentCodeAttempts.id, input.attemptId))
         .limit(1);
 
       if (
@@ -349,24 +361,24 @@ export class PaymentCodeAttemptsService {
           paymentStatus: current.paymentStatus,
         })
       ) {
-        throw new ConflictException("payment_code_order_not_payable");
+        return null;
       }
 
       const [attempt] = await tx
         .update(paymentCodeAttempts)
         .set({
           status: "submitting",
-          submittedAt: new Date(),
-          recoveryLeaseExpiresAt: new Date(
-            Date.now() + PAYMENT_CODE_ADMISSION_RECOVERY_LEASE_MS,
-          ),
-          recoveryLeaseOwnerToken: createBusinessNo("PCA"),
-          recoveryNextAt: new Date(),
-          updatedAt: new Date(),
+          submittedAt: now,
+          recoveryLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+          recoveryLeaseOwnerToken: input.ownerToken,
+          recoveryLeaseFence: sql`${paymentCodeAttempts.recoveryLeaseFence} + 1`,
+          recoveryAttemptCount: sql`${paymentCodeAttempts.recoveryAttemptCount} + 1`,
+          recoveryNextAt: now,
+          updatedAt: now,
         })
         .where(
           and(
-            eq(paymentCodeAttempts.id, attemptId),
+            eq(paymentCodeAttempts.id, input.attemptId),
             eq(paymentCodeAttempts.status, "created"),
             eq(paymentCodeAttempts.isActive, true),
             sql`exists (
@@ -384,12 +396,18 @@ export class PaymentCodeAttemptsService {
           ),
         )
         .returning();
-      if (!attempt) {
-        throw new ConflictException("payment_code_order_not_payable");
+      if (
+        !attempt ||
+        !attempt.recoveryLeaseOwnerToken ||
+        attempt.recoveryLeaseFence <= 0
+      ) {
+        return null;
       }
-
-      const result = await call(attempt);
-      return { attempt, result };
+      return {
+        ...attempt,
+        recoveryLeaseOwnerToken: attempt.recoveryLeaseOwnerToken,
+        recoveryLeaseFence: attempt.recoveryLeaseFence,
+      };
     });
   }
 
@@ -429,6 +447,10 @@ export class PaymentCodeAttemptsService {
             RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES,
           ),
           or(
+            ne(paymentCodeAttempts.status, "manual_handling"),
+            isNotNull(paymentCodeAttempts.recoveryNextAt),
+          ),
+          or(
             isNull(paymentCodeAttempts.recoveryNextAt),
             lte(paymentCodeAttempts.recoveryNextAt, now),
           ),
@@ -463,6 +485,10 @@ export class PaymentCodeAttemptsService {
             RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES,
           ),
           or(
+            ne(paymentCodeAttempts.status, "manual_handling"),
+            isNotNull(paymentCodeAttempts.recoveryNextAt),
+          ),
+          or(
             isNull(paymentCodeAttempts.recoveryNextAt),
             lte(paymentCodeAttempts.recoveryNextAt, now),
           ),
@@ -485,6 +511,246 @@ export class PaymentCodeAttemptsService {
       recoveryLeaseOwnerToken: claimed.recoveryLeaseOwnerToken,
       recoveryLeaseFence: claimed.recoveryLeaseFence,
     };
+  }
+
+  async claimRecoveryAttemptById(input: {
+    id: string;
+    ownerToken: string;
+    now?: Date;
+    leaseMs: number;
+  }): Promise<PaymentCodeRecoveryClaim | null> {
+    const now = input.now ?? new Date();
+    const [claimed] = await this.db
+      .update(paymentCodeAttempts)
+      .set({
+        recoveryLeaseOwnerToken: input.ownerToken,
+        recoveryLeaseExpiresAt: new Date(now.getTime() + input.leaseMs),
+        recoveryLeaseFence: sql`${paymentCodeAttempts.recoveryLeaseFence} + 1`,
+        recoveryAttemptCount: sql`${paymentCodeAttempts.recoveryAttemptCount} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(paymentCodeAttempts.id, input.id),
+          eq(paymentCodeAttempts.isActive, true),
+          inArray(
+            paymentCodeAttempts.status,
+            RECOVERABLE_PAYMENT_CODE_ATTEMPT_STATUSES,
+          ),
+          or(
+            ne(paymentCodeAttempts.status, "manual_handling"),
+            isNotNull(paymentCodeAttempts.recoveryNextAt),
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryNextAt),
+            lte(paymentCodeAttempts.recoveryNextAt, now),
+          ),
+          or(
+            isNull(paymentCodeAttempts.recoveryLeaseExpiresAt),
+            lte(paymentCodeAttempts.recoveryLeaseExpiresAt, now),
+          ),
+        ),
+      )
+      .returning();
+    if (
+      !claimed ||
+      !claimed.recoveryLeaseOwnerToken ||
+      claimed.recoveryLeaseFence <= 0
+    ) {
+      return null;
+    }
+    return {
+      ...claimed,
+      recoveryLeaseOwnerToken: claimed.recoveryLeaseOwnerToken,
+      recoveryLeaseFence: claimed.recoveryLeaseFence,
+    };
+  }
+
+  async renewRecoveryClaim(
+    claim: PaymentCodeRecoveryClaim,
+    leaseMs: number,
+  ): Promise<boolean> {
+    const now = new Date();
+    const [renewed] = await this.db
+      .update(paymentCodeAttempts)
+      .set({
+        recoveryLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+        updatedAt: now,
+      })
+      .where(this.recoveryLeaseConditions(claim))
+      .returning({ id: paymentCodeAttempts.id });
+    return Boolean(renewed);
+  }
+
+  /**
+   * A reversal is only started after the worker has queried the provider.
+   * Locking the payment and order here prevents a previously persisted success
+   * from being sent into a reverse call.
+   */
+  async beginReversal(
+    claim: PaymentCodeRecoveryClaim,
+    patch: Partial<typeof paymentCodeAttempts.$inferInsert> = {},
+  ): Promise<PaymentCodeRecoveryClaim | null> {
+    return await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pca.id
+        from payment_code_attempts pca
+        inner join payments p on p.id = pca.payment_id
+        inner join orders o on o.id = pca.order_id
+        where pca.id = ${claim.id}
+        for update of pca, p, o
+      `);
+      const [current] = await tx
+        .select({
+          attemptStatus: paymentCodeAttempts.status,
+          attemptActive: paymentCodeAttempts.isActive,
+          paymentStatus: payments.status,
+          orderStatus: orders.status,
+          leaseOwnerToken: paymentCodeAttempts.recoveryLeaseOwnerToken,
+          leaseExpiresAt: paymentCodeAttempts.recoveryLeaseExpiresAt,
+          leaseFence: paymentCodeAttempts.recoveryLeaseFence,
+        })
+        .from(paymentCodeAttempts)
+        .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+        .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
+        .where(eq(paymentCodeAttempts.id, claim.id))
+        .limit(1);
+      if (
+        !current ||
+        !current.attemptActive ||
+        current.paymentStatus === "succeeded" ||
+        current.orderStatus === "paid" ||
+        current.leaseOwnerToken !== claim.recoveryLeaseOwnerToken ||
+        current.leaseFence !== claim.recoveryLeaseFence ||
+        !current.leaseExpiresAt ||
+        current.leaseExpiresAt.getTime() <= Date.now()
+      ) {
+        return null;
+      }
+      const [updated] = await tx
+        .update(paymentCodeAttempts)
+        .set({
+          ...patch,
+          status: "reversing",
+          recoveryNextAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(this.recoveryLeaseConditions(claim))
+        .returning();
+      if (
+        !updated ||
+        !updated.recoveryLeaseOwnerToken ||
+        updated.recoveryLeaseFence <= 0
+      ) {
+        return null;
+      }
+      return {
+        ...updated,
+        recoveryLeaseOwnerToken: updated.recoveryLeaseOwnerToken,
+        recoveryLeaseFence: updated.recoveryLeaseFence,
+      };
+    });
+  }
+
+  async requestRecoveryAction(
+    id: string,
+    status: "querying" | "reversing" | "manual_handling",
+    reason: string | null,
+  ): Promise<PaymentCodeAttemptRow> {
+    return await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pca.id
+        from payment_code_attempts pca
+        inner join payments p on p.id = pca.payment_id
+        inner join orders o on o.id = pca.order_id
+        where pca.id = ${id}
+        for update of pca, p, o
+      `);
+      const [current] = await tx
+        .select({
+          attempt: paymentCodeAttempts,
+          paymentStatus: payments.status,
+          orderStatus: orders.status,
+        })
+        .from(paymentCodeAttempts)
+        .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+        .innerJoin(orders, eq(orders.id, paymentCodeAttempts.orderId))
+        .where(eq(paymentCodeAttempts.id, id))
+        .limit(1);
+      if (!current)
+        throw new NotFoundException("Payment code attempt not found");
+      if (
+        ["succeeded", "failed", "reversed", "canceled"].includes(
+          current.attempt.status,
+        )
+      ) {
+        return current.attempt;
+      }
+      if (
+        current.paymentStatus === "succeeded" ||
+        ["failed", "expired", "canceled"].includes(current.paymentStatus) ||
+        ["paid", "canceled", "payment_expired"].includes(current.orderStatus)
+      ) {
+        return current.attempt;
+      }
+      const now = new Date();
+      const [updated] = await tx
+        .update(paymentCodeAttempts)
+        .set({
+          status,
+          isActive: true,
+          manualReason: reason ?? current.attempt.manualReason,
+          recoveryLeaseOwnerToken: null,
+          recoveryLeaseExpiresAt: null,
+          recoveryNextAt: now,
+          updatedAt: now,
+        })
+        .where(eq(paymentCodeAttempts.id, id))
+        .returning();
+      if (!updated)
+        throw new NotFoundException("Payment code attempt not found");
+      return updated;
+    });
+  }
+
+  /**
+   * Routes payment-level operator actions back to the active durable attempt.
+   * A payment-code parent may never call a provider or close reservations
+   * without this attempt-level worker fence.
+   */
+  async requestRecoveryActionForPayment(input: {
+    paymentId: string;
+    status: "querying" | "reversing" | "manual_handling";
+    reason: string | null;
+  }): Promise<PaymentCodeAttemptRow | null> {
+    const [attempt] = await this.db
+      .select({ id: paymentCodeAttempts.id })
+      .from(paymentCodeAttempts)
+      .where(
+        and(
+          eq(paymentCodeAttempts.paymentId, input.paymentId),
+          eq(paymentCodeAttempts.isActive, true),
+        ),
+      )
+      .orderBy(desc(paymentCodeAttempts.createdAt))
+      .limit(1);
+    if (!attempt) return null;
+    return await this.requestRecoveryAction(
+      attempt.id,
+      input.status,
+      input.reason,
+    );
+  }
+
+  async requestManualHandlingForPayment(input: {
+    paymentId: string;
+    reason: string;
+  }): Promise<PaymentCodeAttemptRow | null> {
+    return await this.requestRecoveryActionForPayment({
+      paymentId: input.paymentId,
+      status: "manual_handling",
+      reason: input.reason,
+    });
   }
 
   async releaseRecoveryClaim(

@@ -7,6 +7,7 @@ import type { AppConfigService } from "../config/app-config.service";
 import type { InventoryService } from "../inventory/inventory.service";
 import type { RefundsService } from "../refunds/refunds.service";
 import type { VendingService } from "../vending/vending.service";
+import type { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import type { PaymentConfigSecretService } from "./payment-config-secret.service";
 import type { PaymentProviderConfigService } from "./payment-provider-config.service";
 import type { PaymentProviderRegistry } from "./payment-provider.registry";
@@ -83,6 +84,7 @@ function makeService(overrides: {
   inventoryService?: Partial<InventoryService>;
   auditService?: Partial<AuditService>;
   refundsService?: Partial<RefundsService>;
+  attempts?: Partial<PaymentCodeAttemptsService>;
 }) {
   const db = overrides.db ?? makeDb();
   const registry: PaymentProviderRegistry = {
@@ -155,8 +157,15 @@ function makeService(overrides: {
     queryRefund: vi.fn(),
     ...overrides.refundsService,
   } as unknown as RefundsService;
+  const attempts: PaymentCodeAttemptsService = {
+    requestRecoveryActionForPayment: vi.fn(),
+    requestManualHandlingForPayment: vi.fn(),
+    ...overrides.attempts,
+  } as unknown as PaymentCodeAttemptsService;
 
-  return new PaymentsService(
+  return new (PaymentsService as unknown as new (
+    ...args: unknown[]
+  ) => PaymentsService)(
     db as never,
     inventoryService,
     vendingService,
@@ -170,6 +179,7 @@ function makeService(overrides: {
       finish: vi.fn().mockResolvedValue(undefined),
     } as never,
     refundsService,
+    attempts,
   );
 }
 
@@ -736,6 +746,49 @@ describe("PaymentsService", () => {
       expect(queryPayment).not.toHaveBeenCalled();
     });
 
+    it("leaves payment-code reconciliation to the durable attempt worker", async () => {
+      const queryPayment = vi.fn();
+      const provider = { queryPayment };
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-code-001",
+                    paymentNo: "PAY-CODE-001",
+                    method: "payment_code",
+                    providerId: "prov-001",
+                    providerCode: "wechat_pay",
+                    providerTradeNo: null,
+                    orderId: "ord-code-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: false,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(service.reconcilePendingPayments()).resolves.toEqual({
+        reconciled: 0,
+      });
+      expect(queryPayment).not.toHaveBeenCalled();
+    });
+
     it("applies succeeded status and dispatches the durable command once", async () => {
       const dispatchPendingCommandsForOrder = vi
         .fn()
@@ -937,6 +990,54 @@ describe("PaymentsService", () => {
       });
       expect(queryPayment).not.toHaveBeenCalled();
     });
+
+    it("does not query a payment-code parent payment on read", async () => {
+      const queryPayment = vi.fn();
+      const provider = { queryPayment };
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-code-001",
+                    paymentNo: "PAY-CODE-001",
+                    method: "payment_code",
+                    status: "processing",
+                    providerId: "prov-001",
+                    providerCode: "wechat_pay",
+                    providerTradeNo: null,
+                    orderId: "ord-code-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: false,
+                    orderIsDrill: false,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.reconcilePendingPaymentOnRead("pay-code-001"),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "payment_code_worker_owned",
+      });
+      expect(queryPayment).not.toHaveBeenCalled();
+    });
   });
 
   describe("manualReconcile", () => {
@@ -945,6 +1046,7 @@ describe("PaymentsService", () => {
       payment: {
         id?: string;
         paymentNo?: string;
+        method?: string;
         status?: string;
         providerId?: string;
         providerCode?: string;
@@ -965,6 +1067,7 @@ describe("PaymentsService", () => {
                   {
                     id: "pay-001",
                     paymentNo: "PAY001",
+                    method: "qr_code",
                     status: "processing",
                     providerId: "prov-001",
                     providerCode: "alipay",
@@ -999,6 +1102,45 @@ describe("PaymentsService", () => {
         }),
       });
     }
+
+    it("keeps payment-code manual reconciliation in the durable attempt worker", async () => {
+      const db = makeDb();
+      const auditRecord = vi.fn().mockResolvedValue(undefined);
+      const queryPayment = vi.fn();
+      mockManualPaymentSelect(db, {
+        id: "pay-code-001",
+        paymentNo: "PAY-CODE-001",
+        method: "payment_code",
+      });
+      const service = makeService({
+        db,
+        auditService: { record: auditRecord },
+        registry: {
+          get: vi.fn().mockReturnValue({ queryPayment }),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-code-001",
+          "admin-001",
+          "operator_requested",
+        ),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "payment_code_worker_owned",
+      });
+      expect(queryPayment).not.toHaveBeenCalled();
+      expect(auditRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "payments.manual_reconcile",
+          afterJson: expect.objectContaining({
+            outcome: "payment_code_worker_owned",
+          }),
+        }),
+      );
+    });
 
     it("queries payment incidents with the payment-time provider config", async () => {
       const db = makeDb();
@@ -1139,6 +1281,201 @@ describe("PaymentsService", () => {
         expect.objectContaining({ config }),
       );
       expect(createAndDispatchCommands).not.toHaveBeenCalled();
+    });
+
+    it("queues payment-code incident reversal through the durable worker", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    {
+                      paymentId: "pay-code-incident-001",
+                      paymentNo: "PAY-CODE-INCIDENT001",
+                      method: "payment_code",
+                      paymentStatus: "unknown",
+                      providerId: "prov-alipay",
+                      providerCode: "alipay",
+                      providerTradeNo: null,
+                      providerConfigId: "cfg-payment-time",
+                      providerConfigSnapshotJson: {},
+                      orderId: "ord-code-incident-001",
+                      orderStatus: "manual_handling",
+                      machineId: "mach-001",
+                      isDrill: false,
+                      orderIsDrill: false,
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        // The pre-worker implementation performed this extra attempt lookup.
+        // Retain it so this test is red until that provider path is removed.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pca-incident-001",
+                    providerPaymentNo: "PCA-INCIDENT001",
+                    providerTradeNo: null,
+                    providerConfigId: "cfg-payment-time",
+                    status: "querying",
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+      const reversePaymentCode = vi.fn().mockResolvedValue({
+        status: "reversed",
+        rawPayload: {},
+      });
+      const requestRecoveryActionForPayment = vi.fn().mockResolvedValue({
+        id: "pca-incident-001",
+        status: "reversing",
+      });
+      const service = makeService({
+        db,
+        registry: {
+          getPaymentCodeProvider: vi.fn().mockReturnValue({
+            reversePaymentCode,
+          }),
+        } as unknown as PaymentProviderRegistry,
+        attempts: { requestRecoveryActionForPayment },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction(
+          "pay-code-incident-001",
+          "admin-1",
+          {
+            action: "close_or_reverse_uncertain_payment",
+            reason: "operator requests payment-code reversal",
+          },
+        ),
+      ).resolves.toMatchObject({
+        action: "close_or_reverse_uncertain_payment",
+        status: "reversing",
+        handled: false,
+      });
+
+      expect(requestRecoveryActionForPayment).toHaveBeenCalledWith({
+        paymentId: "pay-code-incident-001",
+        status: "reversing",
+        reason: "operator requests payment-code reversal",
+      });
+      expect(reversePaymentCode).not.toHaveBeenCalled();
+    });
+
+    it("queues payment-code incident queries through the durable worker", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-code-query-001",
+                    paymentNo: "PAY-CODE-QUERY001",
+                    amountCents: 100,
+                    method: "payment_code",
+                    status: "unknown",
+                    providerId: "prov-alipay",
+                    providerCode: "alipay",
+                    providerTradeNo: null,
+                    orderId: "ord-code-query-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    providerConfigSnapshotJson: {},
+                    isDrill: false,
+                    orderIsDrill: false,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+      const requestRecoveryActionForPayment = vi.fn().mockResolvedValue({
+        id: "pca-query-001",
+        status: "querying",
+      });
+      const service = makeService({
+        db,
+        attempts: { requestRecoveryActionForPayment },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction("pay-code-query-001", "admin-1", {
+          action: "query_payment",
+          reason: "operator requests durable payment-code query",
+        }),
+      ).resolves.toMatchObject({
+        action: "query_payment",
+        status: "querying",
+        handled: false,
+      });
+
+      expect(requestRecoveryActionForPayment).toHaveBeenCalledWith({
+        paymentId: "pay-code-query-001",
+        status: "querying",
+        reason: "operator requests durable payment-code query",
+      });
+    });
+
+    it("queues payment-code manual handling through the durable worker", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentNo: "PAY-CODE-MANUAL001",
+                  method: "payment_code",
+                  orderId: "ord-code-manual-001",
+                  orderStatus: "pending_payment",
+                  providerId: "prov-alipay",
+                },
+              ]),
+            }),
+          }),
+        }),
+      });
+      const requestManualHandlingForPayment = vi.fn().mockResolvedValue({
+        id: "pca-manual-001",
+        status: "manual_handling",
+      });
+      const service = makeService({
+        db,
+        attempts: { requestManualHandlingForPayment },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction("pay-code-manual-001", "admin-1", {
+          action: "mark_manual_handling",
+          reason: "operator escalates payment-code uncertainty",
+        }),
+      ).resolves.toMatchObject({
+        action: "mark_manual_handling",
+        status: "manual_handling",
+        handled: false,
+        message: "已排入付款码人工处理任务",
+      });
+
+      expect(requestManualHandlingForPayment).toHaveBeenCalledWith({
+        paymentId: "pay-code-manual-001",
+        reason: "operator escalates payment-code uncertainty",
+      });
+      expect(db.transaction).not.toHaveBeenCalled();
     });
 
     it("reports refund handling acceptance as processing until refund is confirmed", async () => {

@@ -6,6 +6,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
 import {
@@ -67,6 +68,7 @@ import { InventoryService } from "../inventory/inventory.service";
 import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 import { VendingService } from "../vending/vending.service";
+import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 import { PaymentProviderRegistry } from "./payment-provider.registry";
@@ -111,6 +113,15 @@ type PaymentTerminalLeaseGuard = {
   fence: number;
 };
 
+type PaymentCodeAttemptLeaseGuard = PaymentTerminalLeaseGuard & {
+  attemptId: string;
+};
+
+type PaymentCodeAttemptTerminalTransition = PaymentCodeAttemptLeaseGuard & {
+  status: "succeeded" | "failed" | "reversed";
+  patch?: Partial<typeof paymentCodeAttempts.$inferInsert>;
+};
+
 type PaymentTerminalTransitionInput = {
   paymentId: string;
   orderId: string;
@@ -127,6 +138,7 @@ type PaymentTerminalTransitionInput = {
   failedOrderEventReason?: string;
   allowIncidentLockedResolution?: boolean;
   leaseGuard?: PaymentTerminalLeaseGuard;
+  paymentCodeAttempt?: PaymentCodeAttemptTerminalTransition;
 };
 
 type PaymentTerminalTransitionResult = {
@@ -264,7 +276,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly webhookAttemptRecorder: PaymentWebhookAttemptRecorderService,
     private readonly refundsService: RefundsService,
+    @Optional()
+    private readonly paymentCodeAttempts?: PaymentCodeAttemptsService,
   ) {}
+
+  private getPaymentCodeAttempts(): PaymentCodeAttemptsService {
+    if (!this.paymentCodeAttempts) {
+      throw new Error("payment_code_attempts_service_not_configured");
+    }
+    return this.paymentCodeAttempts;
+  }
 
   private assertMockPaymentEnabled(): void {
     if (!this.config.paymentMockEnabled) {
@@ -1815,6 +1836,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             orderNo: orders.orderNo,
             paymentNo: payments.paymentNo,
             amountCents: payments.amountCents,
+            method: payments.method,
             machineId: orders.machineId,
             providerConfigId: payments.paymentProviderConfigId,
             providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
@@ -1956,6 +1978,40 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         failureReason: reason,
       });
       return { handled: false, reason };
+    }
+
+    if (payment.method === "payment_code") {
+      const now = new Date();
+      await this.db
+        .update(paymentCodeAttempts)
+        .set({ recoveryNextAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(paymentCodeAttempts.paymentId, payment.id),
+            eq(paymentCodeAttempts.isActive, true),
+          ),
+        );
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: true,
+        handled: true,
+        duplicate: false,
+        failureReason: "payment_code_worker_queued",
+      });
+      return {
+        handled: true,
+        duplicate: false,
+        queued: true,
+      };
     }
 
     let duplicate = false;
@@ -2257,6 +2313,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: payments.id,
         paymentNo: payments.paymentNo,
         amountCents: payments.amountCents,
+        method: payments.method,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
@@ -2272,6 +2329,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           inArray(payments.status, ["pending", "processing"]),
+          sql`${payments.method} <> 'payment_code'`,
           eq(payments.isDrill, false),
           eq(orders.isDrill, false),
           or(
@@ -2296,7 +2354,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await Promise.all(
       pendingPayments.map(async (payment) => {
         try {
-          if (payment.isDrill) return;
+          if (payment.isDrill || payment.method === "payment_code") return;
           if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
 
           // Count previous scheduled attempts for backoff
@@ -2514,6 +2572,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: payments.id,
         paymentNo: payments.paymentNo,
         amountCents: payments.amountCents,
+        method: payments.method,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -2538,6 +2597,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: "not_found",
         reconciled: false,
         reason: "payment_not_found",
+      };
+    }
+
+    if (payment.method === "payment_code") {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "payment_code_worker_owned",
       };
     }
 
@@ -2876,12 +2943,75 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return applied;
   }
 
-  async markPaymentCodeRecoveryManualHandling(input: {
+  /**
+   * Applies a provider-confirmed payment-code terminal fact in the same
+   * transaction as the attempt terminal state. The worker lease is checked
+   * under the same payment/order lock so a stale worker cannot publish a
+   * different business transition after its lease has been taken over.
+   */
+  async applyPaymentCodeAttemptProviderResult(input: {
+    attemptId: string;
+    paymentId: string;
+    orderId: string;
+    providerId: string;
+    providerTradeNo: string | null;
+    paymentStatus: "succeeded" | "failed";
+    attemptStatus: "succeeded" | "failed" | "reversed";
+    ownerToken: string;
+    fence: number;
+    paidAt?: Date | null;
+    failedReason?: string | null;
+    eventType: string;
+    providerEventId: string;
+    rawPayload: Record<string, unknown>;
+    attemptPatch?: Partial<typeof paymentCodeAttempts.$inferInsert>;
+    allowIncidentLockedResolution?: boolean;
+  }): Promise<PaymentTerminalTransitionResult> {
+    const transition = await this.transitionProviderPaymentTerminal({
+      paymentId: input.paymentId,
+      orderId: input.orderId,
+      newStatus: input.paymentStatus,
+      providerEventId: input.providerEventId,
+      providerTradeNo: input.providerTradeNo,
+      rawPayloadJson: input.rawPayload,
+      providerId: input.providerId,
+      occurredAt: input.paidAt ?? null,
+      failedReason: input.failedReason ?? null,
+      eventType: input.eventType,
+      allowIncidentLockedResolution:
+        input.allowIncidentLockedResolution ?? false,
+      paymentCodeAttempt: {
+        attemptId: input.attemptId,
+        status: input.attemptStatus,
+        ownerToken: input.ownerToken,
+        fence: input.fence,
+        patch: input.attemptPatch,
+      },
+    });
+    if (
+      transition.outcome === "applied" &&
+      input.paymentStatus === "succeeded"
+    ) {
+      await this.vendingService
+        .dispatchPendingCommandsForOrder(input.orderId)
+        .catch((_err: unknown) => {
+          // The transaction already owns durable payment success and its outbox.
+        });
+    }
+    return transition;
+  }
+
+  /**
+   * Unknown provider/reversal outcomes are an incident, not evidence that the
+   * original charge failed. Keep the reservation active until a later query or
+   * an operator proves a terminal provider fact.
+   */
+  async markPaymentCodeAttemptManualHandling(input: {
     attemptId: string;
     ownerToken: string;
     fence: number;
     reason: string;
-  }): Promise<boolean> {
+  }): Promise<PaymentTerminalTransitionResult> {
     return await this.db.transaction(async (tx) => {
       await tx.execute(sql`
         select pca.id
@@ -2899,8 +3029,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderId: orders.id,
           orderStatus: orders.status,
           paymentStatus: payments.status,
-          paymentState: orders.paymentState,
-          fulfillmentState: orders.fulfillmentState,
           leaseOwnerToken: paymentCodeAttempts.recoveryLeaseOwnerToken,
           leaseExpiresAt: paymentCodeAttempts.recoveryLeaseExpiresAt,
           leaseFence: paymentCodeAttempts.recoveryLeaseFence,
@@ -2916,55 +3044,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         current.leaseFence !== input.fence ||
         !current.leaseExpiresAt ||
         current.leaseExpiresAt.getTime() <= Date.now() ||
-        !canApplyProviderTerminalStatus(current.paymentStatus) ||
-        isPaymentIncidentLocked(current)
+        current.paymentStatus === "succeeded" ||
+        ["failed", "expired", "canceled", "refunded"].includes(
+          current.paymentStatus,
+        )
       ) {
-        return false;
+        return { outcome: "stale" };
       }
 
       const now = new Date();
-      const [attempt] = await tx
-        .update(paymentCodeAttempts)
-        .set({
-          status: "manual_handling",
-          isActive: false,
-          manualReason: input.reason,
-          failureCode: "PAYMENT_CODE_RECOVERY_MANUAL_HANDLING",
-          failureMessage: "付款码支付结果无法自动确认，需要人工处理",
-          finishedAt: now,
-          recoveryLeaseOwnerToken: null,
-          recoveryLeaseExpiresAt: null,
-          recoveryNextAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(paymentCodeAttempts.id, input.attemptId),
-            eq(paymentCodeAttempts.recoveryLeaseOwnerToken, input.ownerToken),
-            eq(paymentCodeAttempts.recoveryLeaseFence, input.fence),
-          ),
-        )
-        .returning({ id: paymentCodeAttempts.id });
-      if (!attempt) return false;
-
       await tx
         .update(payments)
         .set({
-          status: "manual_handling",
+          status: "unknown",
           failedReason: input.reason,
           updatedAt: now,
         })
-        .where(
-          and(
-            eq(payments.id, current.paymentId),
-            inArray(payments.status, PROVIDER_MUTABLE_PAYMENT_STATUSES),
-          ),
-        );
+        .where(eq(payments.id, current.paymentId));
       await tx
         .update(orders)
         .set({
           status: "manual_handling",
-          paymentState: "manual_handling",
+          paymentState: "payment_unknown",
           fulfillmentState: "manual_handling",
           updatedAt: now,
         })
@@ -2978,17 +3079,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           metadata: { attemptId: input.attemptId, reason: input.reason },
         });
       }
-      await this.releaseActiveReservationsForOrder(tx, {
-        orderId: current.orderId,
-        reason: "payment_failed",
-      });
       await tx
         .insert(paymentEvents)
         .values({
           paymentId: current.paymentId,
           providerId: current.providerId,
           eventType: "payment_code.recovery_manual_handling",
-          providerEventId: `payment_code_recovery_manual:${input.attemptId}`,
+          providerEventId: `payment_code_recovery_manual:${input.attemptId}:${input.fence}`,
           rawPayloadJson: buildStoredEventPayload({
             attemptId: input.attemptId,
             reason: input.reason,
@@ -2997,8 +3094,40 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           handledAt: now,
         })
         .onConflictDoNothing();
-      return true;
+
+      // Keep the attempt actionable until the parent incident projection is
+      // durable. The lease fence remains protected by the row lock above.
+      const [attempt] = await tx
+        .update(paymentCodeAttempts)
+        .set({
+          status: "manual_handling",
+          isActive: true,
+          manualReason: input.reason,
+          failureCode: "PAYMENT_CODE_MANUAL_HANDLING",
+          failureMessage: "付款码支付结果待人工核验",
+          finishedAt: now,
+          recoveryLeaseOwnerToken: null,
+          recoveryLeaseExpiresAt: null,
+          recoveryNextAt: null,
+          updatedAt: now,
+        })
+        .where(eq(paymentCodeAttempts.id, current.attemptId))
+        .returning({ id: paymentCodeAttempts.id });
+      if (!attempt) {
+        throw new Error("payment_code_attempt_manual_update_lost");
+      }
+      return { outcome: "applied" };
     });
+  }
+
+  async markPaymentCodeRecoveryManualHandling(input: {
+    attemptId: string;
+    ownerToken: string;
+    fence: number;
+    reason: string;
+  }): Promise<boolean> {
+    const result = await this.markPaymentCodeAttemptManualHandling(input);
+    return result.outcome === "applied";
   }
 
   private async canDispatchPaymentSuccess(orderId: string): Promise<boolean> {
@@ -3067,6 +3196,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       failedOrderEventReason = "reconcile_payment_failed",
       allowIncidentLockedResolution = false,
       leaseGuard,
+      paymentCodeAttempt,
     } = input;
     return await this.db.transaction(async (tx) => {
       if (!providerId) return { outcome: "stale" };
@@ -3074,13 +3204,26 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       // Serialize every provider terminal transition for this payment and its
       // order. The winner keeps these rows locked until the payment, order,
       // event, reservation and durable command changes commit together.
-      await tx.execute(sql`
-        select p.id
-        from payments p
-        inner join orders o on o.id = p.order_id
-        where p.id = ${paymentId} and o.id = ${orderId}
-        for update of p, o
-      `);
+      if (paymentCodeAttempt) {
+        await tx.execute(sql`
+          select pca.id
+          from payment_code_attempts pca
+          inner join payments p on p.id = pca.payment_id
+          inner join orders o on o.id = pca.order_id
+          where pca.id = ${paymentCodeAttempt.attemptId}
+            and p.id = ${paymentId}
+            and o.id = ${orderId}
+          for update of pca, p, o
+        `);
+      } else {
+        await tx.execute(sql`
+          select p.id
+          from payments p
+          inner join orders o on o.id = p.order_id
+          where p.id = ${paymentId} and o.id = ${orderId}
+          for update of p, o
+        `);
+      }
 
       const [existing] = await tx
         .select({ id: paymentEvents.id })
@@ -3103,6 +3246,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderStatus: orders.status,
           paymentState: orders.paymentState,
           fulfillmentState: orders.fulfillmentState,
+          paymentMethod: payments.method,
           isDrill: payments.isDrill,
           orderIsDrill: orders.isDrill,
           intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
@@ -3114,6 +3258,32 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(payments.id, paymentId));
       if (!r) return { outcome: "stale" };
       if (r.isDrill || r.orderIsDrill) return { outcome: "stale" };
+      if (paymentCodeAttempt) {
+        const [attempt] = await tx
+          .select({
+            status: paymentCodeAttempts.status,
+            isActive: paymentCodeAttempts.isActive,
+            leaseOwnerToken: paymentCodeAttempts.recoveryLeaseOwnerToken,
+            leaseExpiresAt: paymentCodeAttempts.recoveryLeaseExpiresAt,
+            leaseFence: paymentCodeAttempts.recoveryLeaseFence,
+          })
+          .from(paymentCodeAttempts)
+          .where(eq(paymentCodeAttempts.id, paymentCodeAttempt.attemptId))
+          .limit(1);
+        if (
+          !attempt ||
+          !attempt.isActive ||
+          ["succeeded", "failed", "reversed", "canceled"].includes(
+            attempt.status,
+          ) ||
+          attempt.leaseOwnerToken !== paymentCodeAttempt.ownerToken ||
+          attempt.leaseFence !== paymentCodeAttempt.fence ||
+          !attempt.leaseExpiresAt ||
+          attempt.leaseExpiresAt.getTime() <= Date.now()
+        ) {
+          return { outcome: "stale" };
+        }
+      }
       if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
         return { outcome: "stale" };
       }
@@ -3128,6 +3298,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           r.intentCreationLeaseExpiresAt.getTime() <= Date.now())
       ) {
         return { outcome: "stale" };
+      }
+      if (!paymentCodeAttempt && r.paymentMethod === "payment_code") {
+        const [activePaymentCodeAttempt] = await tx
+          .select({ id: paymentCodeAttempts.id })
+          .from(paymentCodeAttempts)
+          .where(
+            and(
+              eq(paymentCodeAttempts.paymentId, paymentId),
+              eq(paymentCodeAttempts.isActive, true),
+            ),
+          )
+          .limit(1);
+        if (activePaymentCodeAttempt) return { outcome: "stale" };
       }
 
       const inserted = await tx
@@ -3236,6 +3419,25 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderId,
           reason: "payment_failed",
         });
+      }
+
+      if (paymentCodeAttempt) {
+        const [attempt] = await tx
+          .update(paymentCodeAttempts)
+          .set({
+            ...paymentCodeAttempt.patch,
+            status: paymentCodeAttempt.status,
+            isActive: false,
+            recoveryLeaseOwnerToken: null,
+            recoveryLeaseExpiresAt: null,
+            recoveryNextAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentCodeAttempts.id, paymentCodeAttempt.attemptId))
+          .returning({ id: paymentCodeAttempts.id });
+        if (!attempt) {
+          throw new Error("payment_code_attempt_terminal_update_lost");
+        }
       }
 
       return { outcome: "applied" };
@@ -3653,8 +3855,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return this.toIncidentActionResponse({
         action: input.action,
         status: result.status,
-        handled: true,
-        message: "已标记人工处理",
+        handled: !result.queued,
+        message: result.queued ? "已排入付款码人工处理任务" : "已标记人工处理",
         protectedDiagnostics: result.protectedDiagnostics,
       });
     }
@@ -3712,11 +3914,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     reason: string,
   ): Promise<{
     status: "manual_handling";
+    queued: boolean;
     protectedDiagnostics: Record<string, unknown>;
   }> {
     const [payment] = await this.db
       .select({
         paymentNo: payments.paymentNo,
+        method: payments.method,
         orderId: payments.orderId,
         orderStatus: orders.status,
         providerId: payments.providerId,
@@ -3726,6 +3930,37 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(payments.id, paymentId))
       .limit(1);
     if (!payment) throw new NotFoundException("Payment not found");
+
+    if (payment.method === "payment_code") {
+      const attempt =
+        await this.getPaymentCodeAttempts().requestManualHandlingForPayment({
+          paymentId,
+          reason,
+        });
+      if (!attempt) {
+        throw new ConflictException("payment_code_attempt_not_recoverable");
+      }
+      await this.auditService.record({
+        adminUserId,
+        action: "payments.incident.mark_manual_handling",
+        resourceType: "payment",
+        resourceId: paymentId,
+        afterJson: {
+          reason,
+          paymentNo: payment.paymentNo,
+          paymentCodeAttemptId: attempt.id,
+          queued: true,
+        },
+      });
+      return {
+        status: "manual_handling",
+        queued: true,
+        protectedDiagnostics: {
+          paymentNo: payment.paymentNo,
+          paymentCodeAttemptId: attempt.id,
+        },
+      };
+    }
 
     await this.db.transaction(async (tx) => {
       await tx
@@ -3779,6 +4014,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     return {
       status: "manual_handling",
+      queued: false,
       protectedDiagnostics: { paymentNo: payment.paymentNo },
     };
   }
@@ -3952,165 +4188,50 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     adminUserId: string,
     reason: string,
   ): Promise<PaymentIncidentActionResponse> {
-    const [attempt] = await this.db
-      .select({
-        id: paymentCodeAttempts.id,
-        providerPaymentNo: paymentCodeAttempts.providerPaymentNo,
-        providerTradeNo: paymentCodeAttempts.providerTradeNo,
-        providerConfigId: paymentCodeAttempts.paymentProviderConfigId,
-        status: paymentCodeAttempts.status,
-      })
-      .from(paymentCodeAttempts)
-      .where(eq(paymentCodeAttempts.paymentId, payment.paymentId))
-      .orderBy(desc(paymentCodeAttempts.createdAt))
-      .limit(1);
-
-    if (
-      !attempt ||
-      ["succeeded", "reversed", "canceled"].includes(attempt.status)
-    ) {
-      return await this.closeProviderPaymentIncident(
-        payment,
-        adminUserId,
+    const attempt =
+      await this.getPaymentCodeAttempts().requestRecoveryActionForPayment({
+        paymentId: payment.paymentId,
+        status: "reversing",
         reason,
-      );
-    }
-
-    const provider = this.paymentProviderRegistry.getPaymentCodeProvider(
-      payment.providerCode,
-    );
-    const config = await this.paymentProviderConfigService
-      .resolveForExistingPayment({
-        providerCode: payment.providerCode,
-        providerConfigId: attempt.providerConfigId ?? payment.providerConfigId,
-        machineId: payment.machineId,
-        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
-      })
-      .catch(() => ({
-        id: "",
-        providerCode: payment.providerCode,
-        merchantNo: null,
-        appId: null,
-        publicConfigJson: {},
-        sensitiveConfigJson: {},
-      }));
-
-    try {
-      const result = await provider.reversePaymentCode({
-        paymentNo: attempt.providerPaymentNo,
-        providerTradeNo: attempt.providerTradeNo ?? payment.providerTradeNo,
-        config,
       });
-      if (result.status === "reversed") {
-        await this.db.transaction(async (tx) => {
-          await tx
-            .update(paymentCodeAttempts)
-            .set({
-              status: "reversed",
-              providerStatus: result.providerStatus ?? "reversed",
-              failureCode: result.failureCode ?? null,
-              failureMessage:
-                result.failureMessage ??
-                "本次付款码交易已撤销，请刷新付款码后重试",
-              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
-              reversedAt: new Date(),
-              finishedAt: new Date(),
-              isActive: false,
-              manualReason: reason,
-              updatedAt: new Date(),
-            })
-            .where(eq(paymentCodeAttempts.id, attempt.id));
-        });
-        await this.markPaymentClosedAfterProviderAction(payment, "canceled");
-        await this.auditService.record({
-          adminUserId,
-          action: "payments.incident.reverse_uncertain_payment",
-          resourceType: "payment",
-          resourceId: payment.paymentId,
-          afterJson: {
-            reason,
-            paymentNo: payment.paymentNo,
-            paymentCodeAttemptId: attempt.id,
-            status: "reversed",
-            providerConfigId: config.id ?? null,
-          },
-        });
-        return this.toIncidentActionResponse({
-          action: "close_or_reverse_uncertain_payment",
-          status: "reversed",
-          handled: true,
-          message: "不确定付款码交易已撤销",
-          protectedDiagnostics: {
-            paymentNo: payment.paymentNo,
-            paymentCodeAttemptId: attempt.id,
-            providerCode: payment.providerCode,
-            providerConfigId: config.id ?? null,
-          },
-        });
-      }
-
-      await this.db
-        .update(paymentCodeAttempts)
-        .set({
-          status: "reversal_unknown",
-          providerStatus: result.providerStatus ?? result.status,
-          failureCode: result.failureCode ?? "PAYMENT_CODE_REVERSE_UNKNOWN",
-          failureMessage: result.failureMessage ?? "付款码撤销结果未知",
-          rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
-          isActive: true,
-          manualReason: reason,
-          updatedAt: new Date(),
-        })
-        .where(eq(paymentCodeAttempts.id, attempt.id));
-      await this.markPaymentUnknownAfterProviderAction(
-        payment,
-        reason,
-        result.failureMessage ?? "payment code reversal unknown",
-      );
+    if (!attempt) {
       return this.toIncidentActionResponse({
         action: "close_or_reverse_uncertain_payment",
-        status: "reversal_unknown",
+        status: "unknown",
         handled: false,
-        message: "付款码撤销结果未知，已转人工处理",
+        message: "未找到可恢复的付款码尝试，已保留支付和库存",
         protectedDiagnostics: {
           paymentNo: payment.paymentNo,
-          paymentCodeAttemptId: attempt.id,
           providerCode: payment.providerCode,
-          providerConfigId: config.id ?? null,
-        },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.db
-        .update(paymentCodeAttempts)
-        .set({
-          status: "reversal_unknown",
-          failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
-          failureMessage: message,
-          isActive: true,
-          manualReason: reason,
-          updatedAt: new Date(),
-        })
-        .where(eq(paymentCodeAttempts.id, attempt.id));
-      await this.markPaymentUnknownAfterProviderAction(
-        payment,
-        reason,
-        message,
-      );
-      return this.toIncidentActionResponse({
-        action: "close_or_reverse_uncertain_payment",
-        status: "reversal_unknown",
-        handled: false,
-        message: "付款码撤销结果未知，已转人工处理",
-        protectedDiagnostics: {
-          paymentNo: payment.paymentNo,
-          paymentCodeAttemptId: attempt.id,
-          providerCode: payment.providerCode,
-          providerConfigId: config.id ?? null,
-          errorCode: "reverse_payment_code_failed",
+          errorCode: "payment_code_attempt_not_recoverable",
         },
       });
     }
+
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.incident.reverse_uncertain_payment",
+      resourceType: "payment",
+      resourceId: payment.paymentId,
+      afterJson: {
+        reason,
+        paymentNo: payment.paymentNo,
+        paymentCodeAttemptId: attempt.id,
+        status: attempt.status,
+        queued: true,
+      },
+    });
+    return this.toIncidentActionResponse({
+      action: "close_or_reverse_uncertain_payment",
+      status: attempt.status,
+      handled: false,
+      message: "已排入付款码查询和撤销任务",
+      protectedDiagnostics: {
+        paymentNo: payment.paymentNo,
+        paymentCodeAttemptId: attempt.id,
+        providerCode: payment.providerCode,
+      },
+    });
   }
 
   private async markPaymentClosedAfterProviderAction(
@@ -4261,6 +4382,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: payments.id,
         paymentNo: payments.paymentNo,
         amountCents: payments.amountCents,
+        method: payments.method,
         status: payments.status,
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
@@ -4280,6 +4402,33 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     if (!payment) {
       throw new NotFoundException("Payment not found");
+    }
+
+    if (payment.method === "payment_code") {
+      const attempt =
+        await this.getPaymentCodeAttempts().requestRecoveryActionForPayment({
+          paymentId: payment.id,
+          status: "querying",
+          reason,
+        });
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: attempt?.status ?? payment.status,
+        applied: false,
+        outcome: attempt
+          ? "payment_code_worker_query_queued"
+          : "payment_code_worker_owned",
+      });
+      return {
+        status: attempt?.status ?? payment.status,
+        reconciled: false,
+        reason: attempt
+          ? "payment_code_worker_query_queued"
+          : "payment_code_worker_owned",
+      };
     }
 
     if (!["pending", "processing", "unknown"].includes(payment.status)) {

@@ -617,12 +617,17 @@ postgresDescribe("payment terminal transition PostgreSQL serialization", () => {
     const providerStarted = new Promise<void>((resolve) => {
       markProviderStarted = resolve;
     });
-    const admitted = attempts.admitAndCall(created.attempt.id, async () => {
+    const admitted = (async () => {
+      const claim = await attempts.claimSubmission({
+        attemptId: created.attempt.id,
+        ownerToken: `terminal-race:${paymentId}`,
+      });
+      if (!claim) throw new Error("payment_code_submission_not_claimed");
       providerCalls += 1;
       markProviderStarted();
       await providerReleased;
-      return { status: "failed" };
-    });
+      return claim;
+    })();
     await providerStarted;
 
     const expiry = service.expireOverduePayments(

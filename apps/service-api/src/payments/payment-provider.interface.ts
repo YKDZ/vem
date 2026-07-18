@@ -71,6 +71,8 @@ export type ProviderPaymentCodeStatus =
 
 export type ProviderPaymentCodeChargeInput = {
   paymentNo: string;
+  /** Durable provider-side idempotency identity (normally out_trade_no). */
+  idempotencyKey?: string;
   orderNo: string;
   amountCents: number;
   authCode: string;
@@ -100,6 +102,8 @@ export type ProviderPaymentCodeQueryResult = ProviderPaymentCodeChargeResult;
 
 export type ProviderPaymentCodeReverseInput = {
   paymentNo: string;
+  /** Reversal retries use the same durable provider operation identity. */
+  idempotencyKey?: string;
   providerTradeNo: string | null;
   config: PaymentProviderRuntimeConfig;
 };
