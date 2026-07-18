@@ -421,7 +421,7 @@ describe("tracked local testbed host lifecycle", () => {
     }).at(-1);
     assert.match(
       proxiedRegistration.input,
-      /\$env:HTTPS_PROXY = 'http:\/\/proxy\.example\.test:8080'.*Invoke-RestMethod/s,
+      /Invoke-RestMethod.*-Proxy 'http:\/\/proxy\.example\.test:8080'/s,
     );
   });
 });
