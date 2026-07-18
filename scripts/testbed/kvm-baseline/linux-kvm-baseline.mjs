@@ -357,6 +357,19 @@ export function validateBaselineBuildConfig(input) {
     );
   }
   string(runner.name, "runner.name");
+  if (
+    !Array.isArray(runner.labels) ||
+    runner.labels.length === 0 ||
+    runner.labels.some(
+      (label) =>
+        typeof label !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(label),
+    )
+  ) {
+    throw new Error(
+      "runner.labels must be a non-empty array of GitHub runner labels",
+    );
+  }
   const testbed = object(config.testbed, "testbed");
   commandArray(testbed.reconstructCommand, "testbed.reconstructCommand");
   commandArray(testbed.admitRunnerCommand, "testbed.admitRunnerCommand");

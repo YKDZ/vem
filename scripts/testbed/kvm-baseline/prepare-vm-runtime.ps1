@@ -5,6 +5,7 @@ param(
   [string] $RunnerUrl,
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
+  [string[]] $RunnerLabels,
   [string] $VirtioGpuDriverPath,
   [string] $VirtioGpuDriverIdentityPath,
   [string] $InteractiveUser,
@@ -318,12 +319,15 @@ function Register-Runner {
   foreach ($required in @("RunnerArchivePath", "RunnerUrl", "RunnerRegistrationToken", "RunnerName")) {
     if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { throw "$required is required for runner registration" }
   }
+  if ($null -eq $RunnerLabels -or $RunnerLabels.Count -eq 0 -or @($RunnerLabels | Where-Object { $_ -notmatch "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$" }).Count -ne 0) {
+    throw "RunnerLabels must contain at least one valid GitHub runner label"
+  }
   if (-not (Test-Path -LiteralPath $RunnerArchivePath -PathType Leaf)) { throw "RunnerArchivePath is unavailable" }
   $archive = (Resolve-Path -LiteralPath $RunnerArchivePath -ErrorAction Stop).Path
   Expand-Archive -Force -Path $archive -DestinationPath $runnerRoot
   Push-Location $runnerRoot
   try {
-    Invoke-Native -FilePath ".\config.cmd" -ArgumentList @("--unattended", "--url", $RunnerUrl, "--token", $RunnerRegistrationToken, "--name", $RunnerName, "--work", $runnerWorkRoot, "--runasservice") -Description "actions runner registration"
+    Invoke-Native -FilePath ".\config.cmd" -ArgumentList @("--unattended", "--url", $RunnerUrl, "--token", $RunnerRegistrationToken, "--name", $RunnerName, "--labels", ($RunnerLabels -join ","), "--work", $runnerWorkRoot, "--runasservice") -Description "actions runner registration"
     $services = @(Get-Service -ErrorAction Stop | Where-Object { $_.Name -like "actions.runner*" })
     if ($services.Count -ne 1) { throw "expected exactly one actions runner service after registration" }
     $runnerConfiguration = Get-Content -Raw -LiteralPath (Join-Path $runnerRoot ".runner") | ConvertFrom-Json
@@ -335,6 +339,7 @@ function Register-Runner {
       schemaVersion = "win10-kvm-runner-registration/v1"
       runnerUrl = $RunnerUrl
       runnerName = $RunnerName
+      runnerLabels = @($RunnerLabels)
       serviceName = $services[0].Name
       runnerRoot = $runnerRoot
       runnerWorkRoot = $runnerWorkRoot

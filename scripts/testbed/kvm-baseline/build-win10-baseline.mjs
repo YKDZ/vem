@@ -1181,10 +1181,13 @@ export async function waitForGuestVerification(
   ]);
   const token = await acquireRunnerRegistrationToken(config, { runCommand });
   const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
+  const runnerLabels = config.runner.labels
+    .map((label) => powershellScriptLiteral(label))
+    .join(", ");
   const runnerScript = join(stagingDirectory, "register-runner.ps1");
   await writeFile(
     runnerScript,
-    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellScriptLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellScriptLiteral(token)} -RunnerName ${powershellScriptLiteral(runnerName)}\n`,
+    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellScriptLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellScriptLiteral(token)} -RunnerName ${powershellScriptLiteral(runnerName)} -RunnerLabels @(${runnerLabels})\n`,
     { mode: 0o600 },
   );
   await runCommand("scp", [

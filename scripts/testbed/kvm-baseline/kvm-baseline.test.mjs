@@ -104,6 +104,7 @@ function buildConfig(root) {
         arguments: ["--repository", "example/runtime"],
       },
       name: "win10-runtime-baseline-runner",
+      labels: ["vem-runtime"],
     },
     testbed: {
       reconstructCommand: [
@@ -991,6 +992,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
       assert.throws(
         () => validateBaselineBuildConfig(config),
         /runner\.registrationTokenProvider/,
+      );
+
+      const missingRunnerLabels = buildConfig(root);
+      delete missingRunnerLabels.runner.labels;
+      assert.throws(
+        () => validateBaselineBuildConfig(missingRunnerLabels),
+        /runner\.labels/,
       );
 
       const missingRunnerArchive = buildConfig(root);
@@ -2402,6 +2410,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.doesNotMatch(shared, /config\.cmd|actions-runner|choco install/i);
     assert.match(runtime, /config\.cmd/);
+    assert.match(runtime, /"--labels", \(\$RunnerLabels -join ","\)/);
     assert.match(runtime, /choco\.exe/);
     assert.ok(runtime.indexOf("choco.exe") < runtime.indexOf("config.cmd"));
     assert.match(runtime, /vswhere\.exe/);
@@ -2628,6 +2637,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
       );
 
       assert.equal(verification.ok, true);
+      assert.match(
+        readFileSync(join(stagingDirectory, "register-runner.ps1"), "utf8"),
+        /-RunnerLabels @\('vem-runtime'\)/,
+      );
       const rearmIndex = invocations.findIndex(
         ({ command, args }) =>
           command === "ssh" &&
