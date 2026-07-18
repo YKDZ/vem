@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)] [ValidateSet("PrepareToolchain", "PrepareKvmGuest", "RegisterRunner")] [string] $Mode,
+  [Parameter(Mandatory = $true)] [ValidateSet("GetInteractiveDisplayPreparationStatus", "PrepareInteractiveDisplay", "PrepareKvmGuest", "PrepareToolchain", "RearmInteractiveDisplay", "RegisterRunner")] [string] $Mode,
   [string] $RunnerArchivePath,
   [string] $RunnerUrl,
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
   [string] $SpiceGuestToolsInstallerPath,
+  [string] $InteractiveUser,
   [int] $DesktopWidth = 1080,
   [int] $DesktopHeight = 1920,
   [int] $DesktopScalePercent = 100
@@ -16,6 +17,11 @@ $cacheRoot = "D:\runtime-cache\v1"
 $toolchainRoot = "C:\ProgramData\VEM\Toolchains"
 $runnerRoot = "C:\actions-runner"
 $runnerWorkRoot = "C:\actions-runner\_work"
+$baselineRoot = "C:\ProgramData\WindowsRuntimeBaseline"
+$interactiveDisplayTaskName = "VemPrepareInteractiveDisplay"
+$interactiveDisplayReportPath = Join-Path $baselineRoot "interactive-display-report.json"
+$interactiveDisplayStatePath = Join-Path $baselineRoot "interactive-display-preparation.json"
+$interactiveDisplayLogPath = Join-Path $baselineRoot "interactive-display-preparation.log"
 $nodeVersion = "24.16.0"
 $pnpmVersion = "11.9.0"
 $turboVersion = "2.10.0"
@@ -247,6 +253,7 @@ function Register-SpiceGuestToolsResume {
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $scriptPath + '"'),
     "-Mode", "PrepareKvmGuest",
     "-SpiceGuestToolsInstallerPath", ('"' + $SpiceGuestToolsInstallerPath + '"'),
+    "-InteractiveUser", ('"' + $InteractiveUser + '"'),
     "-DesktopWidth", $DesktopWidth,
     "-DesktopHeight", $DesktopHeight,
     "-DesktopScalePercent", $DesktopScalePercent
@@ -335,6 +342,17 @@ function Disable-RemainingAutomaticLogon {
   Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "0"
 }
 
+function Enable-InteractiveAutomaticLogon {
+  $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+  $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
+  if ([string]::IsNullOrWhiteSpace($configuredUser)) { throw "Windows autologon does not have a configured user" }
+  if ($configuredUser -notmatch ("(^|\\)" + [regex]::Escape($InteractiveUser) + "$")) {
+    throw "Windows autologon user does not match interactive display user"
+  }
+  Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1"
+  Set-ItemProperty -Path $winlogon -Name "AutoLogonCount" -Type DWord -Value 1
+}
+
 function Set-ClientDisplayMode {
   param([int] $Width, [int] $Height)
   Add-Type -TypeDefinition @'
@@ -350,37 +368,220 @@ public static class Win10Display {
   if ([Win10Display]::Set($Width, $Height) -ne 0) { throw "Windows client display mode $Width x $Height is unavailable" }
 }
 
+function Write-AtomicJson {
+  param([string] $Path, [object] $Value)
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+  $temporaryPath = "$Path.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+  try {
+    $Value | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 -LiteralPath $temporaryPath
+    Move-Item -Force -LiteralPath $temporaryPath -Destination $Path
+  } finally {
+    Remove-Item -Force -LiteralPath $temporaryPath -ErrorAction SilentlyContinue
+  }
+}
+
+function Read-InteractiveDisplayPreparationState {
+  if (-not (Test-Path -LiteralPath $interactiveDisplayStatePath -PathType Leaf)) { return $null }
+  return Get-Content -Raw -LiteralPath $interactiveDisplayStatePath | ConvertFrom-Json
+}
+
+function Write-InteractiveDisplayPreparationState {
+  param([string] $Phase, [string] $ErrorMessage, [int] $Attempt)
+  $state = @{
+    schemaVersion = "win10-kvm-interactive-display-preparation/v1"
+    updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+    phase = $Phase
+    interactiveUser = $InteractiveUser
+    attempt = $Attempt
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) { $state.error = $ErrorMessage }
+  Write-AtomicJson -Path $interactiveDisplayStatePath -Value $state
+}
+
+function Get-QualifiedInteractiveUser {
+  if ([string]::IsNullOrWhiteSpace($InteractiveUser)) { throw "InteractiveUser is required for interactive display preparation" }
+  if ($InteractiveUser.Contains('\')) { return $InteractiveUser }
+  return "$env:COMPUTERNAME\$InteractiveUser"
+}
+
+function Test-ExpectedInteractiveSession {
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+  return $sessionId -ge 1 -and $identity -ieq (Get-QualifiedInteractiveUser)
+}
+
+function Get-InteractiveDisplayTaskStatus {
+  $task = Get-ScheduledTask -TaskName $interactiveDisplayTaskName -ErrorAction SilentlyContinue
+  if ($null -eq $task) { return $null }
+  $info = Get-ScheduledTaskInfo -TaskName $interactiveDisplayTaskName -ErrorAction SilentlyContinue
+  return @{
+    name = $interactiveDisplayTaskName
+    state = [string]$task.State
+    lastRunTime = if ($null -eq $info) { $null } else { $info.LastRunTime.ToUniversalTime().ToString("o") }
+    lastTaskResult = if ($null -eq $info) { $null } else { [int]$info.LastTaskResult }
+  }
+}
+
+function Remove-InteractiveDisplayPreparationTask {
+  Unregister-ScheduledTask -TaskName $interactiveDisplayTaskName -Confirm:$false -ErrorAction SilentlyContinue
+}
+
+function Register-InteractiveDisplayPreparationTask {
+  $scriptPath = "C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1"
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "VM preparation script is unavailable for interactive display preparation" }
+  New-Item -ItemType Directory -Force -Path $baselineRoot | Out-Null
+  $arguments = @(
+    "/d", "/c", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $scriptPath + '"'),
+    "-Mode", "PrepareInteractiveDisplay", "-InteractiveUser", ('"' + $InteractiveUser + '"'),
+    "-DesktopWidth", $DesktopWidth, "-DesktopHeight", $DesktopHeight, "-DesktopScalePercent", $DesktopScalePercent,
+    ">>", ('"' + $interactiveDisplayLogPath + '"'), "2>&1"
+  ) -join " "
+  $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $arguments
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User (Get-QualifiedInteractiveUser)
+  $principal = New-ScheduledTaskPrincipal -UserId (Get-QualifiedInteractiveUser) -LogonType Interactive -RunLevel Highest
+  Register-ScheduledTask -TaskName $interactiveDisplayTaskName -Action $action -Trigger $trigger -Principal $principal -Description "Apply and verify the VEM interactive KVM display" -Force | Out-Null
+}
+
+function Test-InteractiveDisplayReport {
+  param([object] $Report)
+  if ($null -eq $Report -or $Report.schemaVersion -ne "win10-kvm-interactive-display/v1") { return $false }
+  if ([string]$Report.interactiveUser -notmatch ("\\" + [regex]::Escape($InteractiveUser) + "$")) { return $false }
+  $sessionId = 0
+  if (-not [int]::TryParse([string]$Report.interactiveSessionId, [ref]$sessionId) -or $sessionId -lt 1) { return $false }
+  return $Report.desktop.width -eq $DesktopWidth -and $Report.desktop.height -eq $DesktopHeight -and $Report.desktop.scalePercent -eq $DesktopScalePercent -and $Report.qxlDisplayAdapter -match "QXL"
+}
+
+function Complete-InteractiveDisplayPreparation {
+  $state = Read-InteractiveDisplayPreparationState
+  $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
+  Write-InteractiveDisplayPreparationState -Phase "complete" -Attempt $attempt
+  Remove-InteractiveDisplayPreparationTask
+  Remove-SpiceGuestToolsResume
+  Disable-RemainingAutomaticLogon
+}
+
+function Initialize-InteractiveDisplayPreparation {
+  $existingReport = $null
+  if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
+    try { $existingReport = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $existingReport = $null }
+  }
+  if (Test-InteractiveDisplayReport -Report $existingReport) {
+    Complete-InteractiveDisplayPreparation
+    return
+  }
+  $state = Read-InteractiveDisplayPreparationState
+  $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt + 1 }
+  Write-InteractiveDisplayPreparationState -Phase "waiting-for-logon" -Attempt $attempt
+  Register-InteractiveDisplayPreparationTask
+  if (Test-ExpectedInteractiveSession) {
+    Start-ScheduledTask -TaskName $interactiveDisplayTaskName
+  }
+}
+
+function Prepare-InteractiveDisplay {
+  if (-not (Test-ExpectedInteractiveSession)) {
+    throw "interactive display preparation must run in the configured user's interactive session"
+  }
+  $state = Read-InteractiveDisplayPreparationState
+  $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
+  Write-InteractiveDisplayPreparationState -Phase "running" -Attempt $attempt
+  try {
+    $qxlDisplayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match "QXL" } |
+      Select-Object -First 1
+    if ($null -eq $qxlDisplayAdapter) { throw "QXL display adapter is unavailable after SPICE preparation" }
+    Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
+    Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Win8DpiScaling -Type DWord -Value 1
+    Set-ClientDisplayMode -Width $DesktopWidth -Height $DesktopHeight
+    Add-Type -AssemblyName System.Windows.Forms
+    $primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $dpi = Get-ItemPropertyValue -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -ErrorAction Stop
+    $scalePercent = [int]($dpi * 100 / 96)
+    $interactiveUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $interactiveSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($primary.Width -ne $DesktopWidth -or $primary.Height -ne $DesktopHeight -or $scalePercent -ne $DesktopScalePercent) {
+      throw "interactive autologon desktop did not apply $DesktopWidth x $DesktopHeight at $DesktopScalePercent percent scale"
+    }
+    Write-AtomicJson -Path $interactiveDisplayReportPath -Value @{
+      schemaVersion = "win10-kvm-interactive-display/v1"
+      capturedAt = (Get-Date).ToUniversalTime().ToString("o")
+      interactiveUser = $interactiveUser
+      interactiveSessionId = $interactiveSessionId
+      desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
+      qxlDisplayAdapter = $qxlDisplayAdapter.Name
+    }
+    Complete-InteractiveDisplayPreparation
+  } catch {
+    Write-InteractiveDisplayPreparationState -Phase "failed" -ErrorMessage $_.Exception.Message -Attempt $attempt
+    throw
+  }
+}
+
+function Get-InteractiveDisplayPreparationStatus {
+  $report = $null
+  $reportError = $null
+  $spiceGuestToolsInstallation = $null
+  if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
+    try { $report = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $reportError = $_.Exception.Message }
+  }
+  $spiceGuestToolsInstallationPath = Join-Path $baselineRoot "spice-guest-tools-installation.json"
+  if (Test-Path -LiteralPath $spiceGuestToolsInstallationPath -PathType Leaf) {
+    try { $spiceGuestToolsInstallation = Get-Content -Raw -LiteralPath $spiceGuestToolsInstallationPath | ConvertFrom-Json } catch { $spiceGuestToolsInstallation = $null }
+  }
+  $taskLogTail = if (Test-Path -LiteralPath $interactiveDisplayLogPath -PathType Leaf) {
+    ((Get-Content -LiteralPath $interactiveDisplayLogPath -Tail 30 -ErrorAction SilentlyContinue) -join "`n")
+  } else { $null }
+  @{
+    schemaVersion = "win10-kvm-interactive-display-status/v1"
+    reportPresent = $null -ne $report
+    reportValid = Test-InteractiveDisplayReport -Report $report
+    reportError = $reportError
+    state = Read-InteractiveDisplayPreparationState
+    task = Get-InteractiveDisplayTaskStatus
+    taskLogTail = $taskLogTail
+    currentBootIdentity = Get-BootIdentity
+    spiceGuestToolsInstallation = $spiceGuestToolsInstallation
+  } | ConvertTo-Json -Depth 6
+}
+
+function Rearm-InteractiveDisplay {
+  Install-SpiceGuestTools
+  $existingReport = $null
+  if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
+    try { $existingReport = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $existingReport = $null }
+  }
+  if (Test-InteractiveDisplayReport -Report $existingReport) {
+    Complete-InteractiveDisplayPreparation
+    return
+  }
+  Initialize-InteractiveDisplayPreparation
+  Enable-InteractiveAutomaticLogon
+  Restart-Computer -Force
+  throw "interactive display preparation re-arm did not restart Windows"
+}
+
 function Prepare-KvmGuest {
   Install-SpiceGuestTools
-  $qxlDisplayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match "QXL" } |
-    Select-Object -First 1
-  if ($null -eq $qxlDisplayAdapter) { throw "QXL display adapter is unavailable after SPICE preparation" }
-  Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
-  Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Win8DpiScaling -Type DWord -Value 1
-  Set-ClientDisplayMode -Width $DesktopWidth -Height $DesktopHeight
-  Disable-RemainingAutomaticLogon
-  Add-Type -AssemblyName System.Windows.Forms
-  $primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-  $dpi = Get-ItemPropertyValue -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -ErrorAction Stop
-  $scalePercent = [int]($dpi * 100 / 96)
-  $interactiveUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $interactiveSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-  if ($primary.Width -ne $DesktopWidth -or $primary.Height -ne $DesktopHeight -or $scalePercent -ne $DesktopScalePercent) {
-    throw "interactive autologon desktop did not apply $DesktopWidth x $DesktopHeight at $DesktopScalePercent percent scale"
-  }
-  @{
-    schemaVersion = "win10-kvm-interactive-display/v1"
-    capturedAt = (Get-Date).ToUniversalTime().ToString("o")
-    interactiveUser = $interactiveUser
-    interactiveSessionId = $interactiveSessionId
-    desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
-    qxlDisplayAdapter = $qxlDisplayAdapter.Name
-  } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "C:\ProgramData\WindowsRuntimeBaseline\interactive-display-report.json"
+  Initialize-InteractiveDisplayPreparation
+}
+
+if ($Mode -eq "GetInteractiveDisplayPreparationStatus") {
+  Get-InteractiveDisplayPreparationStatus
+  exit 0
+}
+
+if ($Mode -eq "PrepareInteractiveDisplay") {
+  Prepare-InteractiveDisplay
+  exit 0
 }
 
 if ($Mode -eq "PrepareKvmGuest") {
   Prepare-KvmGuest
+  exit 0
+}
+
+if ($Mode -eq "RearmInteractiveDisplay") {
+  Rearm-InteractiveDisplay
   exit 0
 }
 

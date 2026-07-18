@@ -39,6 +39,12 @@ const execFile = promisify(execFileCallback);
 const BASELINE_ROOT = new URL(".", import.meta.url);
 export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
+const INTERACTIVE_DISPLAY_REPORT_PATH =
+  "C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json";
+const INTERACTIVE_DISPLAY_PREPARATION_TIMEOUT_MS = 20 * 60 * 1000;
+const INTERACTIVE_DISPLAY_POLL_INTERVAL_MS = 10 * 1000;
+const INTERACTIVE_DISPLAY_INITIAL_REARM_DELAY_MS = 60 * 1000;
+const INTERACTIVE_DISPLAY_MAX_REARM_ATTEMPTS = 2;
 
 function parseArgs(argv) {
   const options = { execute: false };
@@ -246,7 +252,7 @@ ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
 & (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
-& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -SpiceGuestToolsInstallerPath (Join-Path $mediaRoot $config.spiceGuestToolsInstallerFile) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
@@ -255,6 +261,7 @@ export function guestConfigurationFor(config) {
     webView2InstallerUri: config.media.webView2InstallerUri,
     spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
     runnerArchiveFile: RUNNER_ARCHIVE_FILE,
+    interactiveUser: config.guest.sshUser,
     display: {
       width: 1080,
       height: 1920,
@@ -315,7 +322,10 @@ export async function createConfigurationMedia(
     config.media.runnerArchiveSha256,
     "media.runnerArchivePath",
   );
-  await copyFile(config.media.runnerArchivePath, join(mediaRoot, RUNNER_ARCHIVE_FILE));
+  await copyFile(
+    config.media.runnerArchivePath,
+    join(mediaRoot, RUNNER_ARCHIVE_FILE),
+  );
   const isoPath = join(stagingDirectory, "baseline-configuration.iso");
   await runCommand("xorriso", [
     "-as",
@@ -377,6 +387,214 @@ function guestSshOptions(config, knownHostsPath) {
 
 function powershellLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function interactiveDisplayStatusCommand(config) {
+  return `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1 -Mode GetInteractiveDisplayPreparationStatus -InteractiveUser ${powershellLiteral(config.guest.sshUser)} -DesktopWidth 1080 -DesktopHeight 1920 -DesktopScalePercent ${config.guest.desktopScalePercent}`;
+}
+
+function rearmInteractiveDisplayCommand(config) {
+  return `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1 -Mode RearmInteractiveDisplay -InteractiveUser ${powershellLiteral(config.guest.sshUser)} -SpiceGuestToolsInstallerPath ${powershellLiteral(`C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${SPICE_GUEST_TOOLS_INSTALLER_FILE}`)} -DesktopWidth 1080 -DesktopHeight 1920 -DesktopScalePercent ${config.guest.desktopScalePercent}`;
+}
+
+function validateInteractiveDisplayReport(report, config) {
+  if (!report || typeof report !== "object") {
+    throw new Error("interactive display report is not an object");
+  }
+  if (report.schemaVersion !== "win10-kvm-interactive-display/v1") {
+    throw new Error("interactive display report schema is invalid");
+  }
+  const expectedUser = new RegExp(
+    `\\\\${String(config.guest.sshUser).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+    "i",
+  );
+  if (!expectedUser.test(String(report.interactiveUser ?? ""))) {
+    throw new Error("interactive display report belongs to an unexpected user");
+  }
+  if (
+    !Number.isInteger(report.interactiveSessionId) ||
+    report.interactiveSessionId < 1
+  ) {
+    throw new Error(
+      "interactive display report has an invalid session binding",
+    );
+  }
+  if (
+    report.desktop?.width !== 1080 ||
+    report.desktop?.height !== 1920 ||
+    report.desktop?.scalePercent !== config.guest.desktopScalePercent
+  ) {
+    throw new Error(
+      "interactive display report does not match the requested desktop",
+    );
+  }
+  if (!/QXL/i.test(String(report.qxlDisplayAdapter ?? ""))) {
+    throw new Error(
+      "interactive display report does not identify the QXL adapter",
+    );
+  }
+  return report;
+}
+
+function formatInteractiveDisplayDiagnostics(diagnostic) {
+  const status = diagnostic.status ?? {};
+  const task = status.task ?? {};
+  const state = status.state ?? {};
+  const spice = status.spiceGuestToolsInstallation ?? {};
+  const parts = [
+    `report=${status.reportPresent === true ? "present" : "absent"}`,
+    `reportValid=${status.reportValid === true}`,
+    `phase=${state.phase ?? "unknown"}`,
+    `task state=${task.state ?? "absent"}`,
+    `lastTaskResult=${task.lastTaskResult ?? "unknown"}`,
+    `spice phase=${spice.phase ?? "unknown"}`,
+  ];
+  if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
+  if (status.taskLogTail) parts.push(`task log=${status.taskLogTail}`);
+  return parts.join(", ");
+}
+
+function shouldRearmInteractiveDisplay(status, sshReadyAt, now, delayMs) {
+  if (status.reportValid === true) return false;
+  if (status.state?.phase === "failed") return true;
+  if (now - sshReadyAt < delayMs) return false;
+  if (
+    status.spiceGuestToolsInstallation?.phase === "installing" &&
+    status.spiceGuestToolsInstallation.installBootIdentity ===
+      status.currentBootIdentity
+  ) {
+    return false;
+  }
+  return !status.task || status.task.state !== "Running";
+}
+
+export async function waitForInteractiveDisplayReport(
+  config,
+  domainName,
+  stagingDirectory,
+  {
+    discoverGuestAddress: findGuestAddress = discoverGuestAddress,
+    initialRearmDelayMs = INTERACTIVE_DISPLAY_INITIAL_REARM_DELAY_MS,
+    maxRearmAttempts = INTERACTIVE_DISPLAY_MAX_REARM_ATTEMPTS,
+    now = () => Date.now(),
+    pollIntervalMs = INTERACTIVE_DISPLAY_POLL_INTERVAL_MS,
+    runCommand = run,
+    sleep = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    timeoutMs = INTERACTIVE_DISPLAY_PREPARATION_TIMEOUT_MS,
+  } = {},
+) {
+  const localReport = join(stagingDirectory, "interactive-display-report.json");
+  const knownHostsPath = join(stagingDirectory, "known_hosts");
+  const deadline = now() + timeoutMs;
+  let rearmAttempts = 0;
+  let sshReadyAt = null;
+  let diagnostic = { error: "SSH has not become available" };
+
+  while (now() < deadline) {
+    const address = await findGuestAddress(config, domainName);
+    if (!address) {
+      diagnostic = { error: "guest has no discovered DHCP lease" };
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
+    const target = `${config.guest.sshUser}@${address}`;
+    const sshOptions = guestSshOptions(config, knownHostsPath);
+    const ssh = await runCommand("ssh", [...sshOptions, target, "exit"], {
+      allowFailure: true,
+    });
+    if (ssh.failed) {
+      diagnostic = { error: "guest SSH is unavailable" };
+      await sleep(pollIntervalMs);
+      continue;
+    }
+    if (sshReadyAt === null) sshReadyAt = now();
+
+    const statusResult = await runCommand(
+      "ssh",
+      [...sshOptions, target, interactiveDisplayStatusCommand(config)],
+      { allowFailure: true },
+    );
+    if (statusResult.failed) {
+      diagnostic = { error: "interactive display status command failed" };
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
+    let status;
+    try {
+      status = readJsonWithBom(statusResult.stdout ?? "");
+      if (!status || typeof status !== "object") {
+        throw new Error("status output is not a JSON object");
+      }
+      diagnostic = { status };
+    } catch (error) {
+      diagnostic = {
+        error: `invalid interactive display status: ${error.message}`,
+      };
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
+    if (status.reportValid === true) {
+      const reportCopy = await runCommand("scp", [
+        ...sshOptions,
+        `${target}:${INTERACTIVE_DISPLAY_REPORT_PATH.replaceAll("\\", "/")}`,
+        localReport,
+      ]);
+      if (reportCopy.failed) {
+        diagnostic = {
+          status,
+          error: "interactive display report copy failed",
+        };
+      } else {
+        try {
+          return {
+            address,
+            report: validateInteractiveDisplayReport(
+              readJsonWithBom(await readFile(localReport, "utf8")),
+              config,
+            ),
+            sshOptions,
+            target,
+          };
+        } catch (error) {
+          throw new Error(
+            `interactive display report is invalid: ${error.message}`,
+          );
+        }
+      }
+    }
+
+    if (
+      rearmAttempts < maxRearmAttempts &&
+      shouldRearmInteractiveDisplay(
+        status,
+        sshReadyAt,
+        now(),
+        initialRearmDelayMs,
+      )
+    ) {
+      rearmAttempts += 1;
+      const rearm = await runCommand(
+        "ssh",
+        [...sshOptions, target, rearmInteractiveDisplayCommand(config)],
+        { allowFailure: true },
+      );
+      diagnostic = rearm.failed
+        ? {
+            status,
+            error: `interactive display re-arm ${rearmAttempts} did not complete over SSH`,
+          }
+        : { status };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  throw new Error(
+    `interactive display preparation timed out after ${timeoutMs} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
+  );
 }
 
 function xmlAttributeEquals(element, attribute, value) {
@@ -454,84 +672,79 @@ async function verifyDefinedRuntimeDevicesForDomain(
   return verifyDefinedRuntimeDevices(stdout, profile);
 }
 
-async function waitForGuestVerification(config, domainName, stagingDirectory) {
+export async function waitForGuestVerification(
+  config,
+  domainName,
+  stagingDirectory,
+  dependencies = {},
+) {
   const verificationPath =
     "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
   const localReport = join(stagingDirectory, "verification.json");
-  const knownHostsPath = join(stagingDirectory, "known_hosts");
-  const deadline = Date.now() + 60 * 60 * 1000;
-  while (Date.now() < deadline) {
-    const address = await discoverGuestAddress(config, domainName);
-    if (address) {
-      const target = `${config.guest.sshUser}@${address}`;
-      const sshOptions = guestSshOptions(config, knownHostsPath);
-      const result = await run("ssh", [...sshOptions, target, "exit"], {
-        allowFailure: true,
-      });
-      if (!result.failed) {
-        const preparationScript = join(
-          stagingDirectory,
-          "prepare-toolchain.ps1",
-        );
-        await writeFile(
-          preparationScript,
-          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain\n`,
-          { mode: 0o600 },
-        );
-        await run("scp", [
-          ...sshOptions,
-          preparationScript,
-          `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`,
-        ]);
-        await run("ssh", [
-          ...sshOptions,
-          target,
-          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1",
-        ]);
-        const token = await acquireRunnerRegistrationToken(config);
-        const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
-        const runnerScript = join(stagingDirectory, "register-runner.ps1");
-        await writeFile(
-          runnerScript,
-          `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
-          { mode: 0o600 },
-        );
-        await run("scp", [
-          ...sshOptions,
-          runnerScript,
-          `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`,
-        ]);
-        await run("ssh", [
-          ...sshOptions,
-          target,
-          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1",
-        ]);
-        await run("ssh", [
-          ...sshOptions,
-          target,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialUsbPort '1','2' -OutputPath ${powershellLiteral(verificationPath)}"`,
-        ]);
-        await run("scp", [
-          ...sshOptions,
-          `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
-          localReport,
-        ]);
-        const report = readJsonWithBom(await readFile(localReport, "utf8"));
-        if (report.ok !== true)
-          throw new Error("guest prerequisite verification reported failure");
-        return report;
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10_000));
-  }
-  throw new Error(
-    "timed out waiting for Windows guest prerequisite verification",
+  const runCommand = dependencies.runCommand ?? run;
+  const interactiveDisplay = await waitForInteractiveDisplayReport(
+    config,
+    domainName,
+    stagingDirectory,
+    dependencies,
   );
+  const { sshOptions, target } = interactiveDisplay;
+  const preparationScript = join(stagingDirectory, "prepare-toolchain.ps1");
+  await writeFile(
+    preparationScript,
+    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode PrepareToolchain\n`,
+    { mode: 0o600 },
+  );
+  await runCommand("scp", [
+    ...sshOptions,
+    preparationScript,
+    `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`,
+  ]);
+  await runCommand("ssh", [
+    ...sshOptions,
+    target,
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1",
+  ]);
+  const token = await acquireRunnerRegistrationToken(config, { runCommand });
+  const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
+  const runnerScript = join(stagingDirectory, "register-runner.ps1");
+  await writeFile(
+    runnerScript,
+    `& 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\\ProgramData\\WindowsRuntimeBaseline\\media\\${RUNNER_ARCHIVE_FILE}' -RunnerUrl ${powershellLiteral(config.runner.url)} -RunnerRegistrationToken ${powershellLiteral(token)} -RunnerName ${powershellLiteral(runnerName)}\n`,
+    { mode: 0o600 },
+  );
+  await runCommand("scp", [
+    ...sshOptions,
+    runnerScript,
+    `${target}:C:/ProgramData/WindowsRuntimeBaseline/register-runner.ps1`,
+  ]);
+  await runCommand("ssh", [
+    ...sshOptions,
+    target,
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\register-runner.ps1",
+  ]);
+  await runCommand("ssh", [
+    ...sshOptions,
+    target,
+    `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${"$"}runner = Get-Content -Raw 'C:\\ProgramData\\WindowsRuntimeBaseline\\runner-registration.json' | ConvertFrom-Json; & 'C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\verify-vm-runtime.ps1' -ExpectedWidth 1080 -ExpectedHeight 1920 -ExpectedScalePercent ${config.guest.desktopScalePercent} -ExpectedInteractiveUser ${powershellLiteral(config.guest.sshUser)} -ExpectedRunnerUrl ${powershellLiteral(config.runner.url)} -ExpectedRunnerName ${powershellLiteral(runnerName)} -ExpectedRunnerServiceName ${"$"}runner.serviceName -ExpectedAudioModel 'ich9' -ExpectedSerialRole 'lower-controller','scanner' -ExpectedSerialUsbPort '1','2' -OutputPath ${powershellLiteral(verificationPath)}"`,
+  ]);
+  await runCommand("scp", [
+    ...sshOptions,
+    `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
+    localReport,
+  ]);
+  const report = readJsonWithBom(await readFile(localReport, "utf8"));
+  if (report.ok !== true)
+    throw new Error("guest prerequisite verification reported failure");
+  return report;
 }
 
-async function acquireRunnerRegistrationToken(config) {
+async function acquireRunnerRegistrationToken(
+  config,
+  { runCommand = run } = {},
+) {
   const provider = config.runner.registrationTokenProvider;
-  const result = await run(provider.command, provider.arguments ?? []);
+  const result = await runCommand(provider.command, provider.arguments ?? []);
   const token = result.stdout.trim();
   if (!token || /\s/.test(token)) {
     throw new Error(

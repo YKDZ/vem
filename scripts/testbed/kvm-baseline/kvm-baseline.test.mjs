@@ -24,6 +24,7 @@ import {
   renderUnattendedXml,
   SPICE_GUEST_TOOLS_INSTALLER_FILE,
   verifyDefinedRuntimeDevices,
+  waitForGuestVerification,
 } from "./build-win10-baseline.mjs";
 import {
   createRuntimeProfile,
@@ -1398,6 +1399,7 @@ describe("Linux KVM Windows baseline", () => {
         webView2InstallerUri: config.media.webView2InstallerUri,
         spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
         runnerArchiveFile: "actions-runner-win-x64.zip",
+        interactiveUser: config.guest.sshUser,
         display: { width: 1080, height: 1920, scalePercent: 100 },
       });
       assert.equal(
@@ -1482,6 +1484,15 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /exitCode -eq 3010/);
     assert.match(runtime, /exitCode -eq 1641/);
     assert.match(runtime, /QXL/);
+    assert.match(runtime, /PrepareInteractiveDisplay/);
+    assert.match(runtime, /RearmInteractiveDisplay/);
+    assert.match(runtime, /GetInteractiveDisplayPreparationStatus/);
+    assert.match(runtime, /New-ScheduledTaskTrigger -AtLogOn/);
+    assert.match(
+      runtime,
+      /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,
+    );
+    assert.match(runtime, /interactive-display-preparation\.json/);
     const spiceInstallFunction = runtime.slice(
       runtime.indexOf("function Install-SpiceGuestTools"),
       runtime.indexOf("function Disable-RemainingAutomaticLogon"),
@@ -1512,6 +1523,49 @@ describe("Linux KVM Windows baseline", () => {
     assert.ok(
       runtime.indexOf("Install-SpiceGuestTools") <
         runtime.indexOf("Set-ClientDisplayMode -Width"),
+    );
+    const prepareKvmGuest = runtime.slice(
+      runtime.indexOf("function Prepare-KvmGuest"),
+      runtime.indexOf('if ($Mode -eq "PrepareKvmGuest")'),
+    );
+    assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
+    assert.doesNotMatch(
+      prepareKvmGuest,
+      /Set-ClientDisplayMode|Disable-RemainingAutomaticLogon/,
+      "KVM preparation must not fake display state from the bootstrap or SSH session",
+    );
+    const prepareInteractiveDisplay = runtime.slice(
+      runtime.indexOf("function Prepare-InteractiveDisplay"),
+      runtime.indexOf("function Get-InteractiveDisplayPreparationStatus"),
+    );
+    assert.match(
+      prepareInteractiveDisplay,
+      /\[System\.Diagnostics\.Process\]::GetCurrentProcess\(\)\.SessionId/,
+    );
+    assert.match(
+      prepareInteractiveDisplay,
+      /WindowsIdentity]::GetCurrent\(\)\.Name/,
+    );
+    assert.match(prepareInteractiveDisplay, /Set-ClientDisplayMode -Width/);
+    assert.match(
+      runtime,
+      /Move-Item -Force -LiteralPath \$temporaryPath -Destination \$Path/,
+    );
+    assert.match(
+      prepareInteractiveDisplay,
+      /Complete-InteractiveDisplayPreparation/,
+    );
+    assert.match(runtime, /Remove-InteractiveDisplayPreparationTask/);
+    assert.match(runtime, /Disable-RemainingAutomaticLogon/);
+    const rearmInteractiveDisplay = runtime.slice(
+      runtime.indexOf("function Rearm-InteractiveDisplay"),
+      runtime.indexOf("function Prepare-KvmGuest"),
+    );
+    assert.ok(
+      rearmInteractiveDisplay.indexOf(
+        "Initialize-InteractiveDisplayPreparation",
+      ) < rearmInteractiveDisplay.indexOf("Restart-Computer -Force"),
+      "the host-triggered retry must register the task before rebooting into autologon",
     );
     assert.match(runtime, /CDS_UPDATEREGISTRY/);
     assert.match(runtime, /interactive-display-report\.json/);
@@ -1693,6 +1747,173 @@ describe("Linux KVM Windows baseline", () => {
       readJsonWithBom('\ufeff{"ok":true,"checks":{"SSH":true}}'),
       { ok: true, checks: { SSH: true } },
     );
+  });
+
+  it("re-arms interactive display preparation after a SPICE reboot before starting the toolchain", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-interactive-display-rearm-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    const invocations = [];
+    const interactiveReport = {
+      schemaVersion: "win10-kvm-interactive-display/v1",
+      interactiveUser: "KVM-BUILDER\\baseline",
+      interactiveSessionId: 1,
+      desktop: { width: 1080, height: 1920, scalePercent: 100 },
+      qxlDisplayAdapter: "Red Hat QXL controller",
+    };
+    let rearmed = false;
+    let now = 0;
+    try {
+      const verification = await waitForGuestVerification(
+        config,
+        "win10-runtime-baseline-build-test",
+        stagingDirectory,
+        {
+          discoverGuestAddress: async () => "192.0.2.44",
+          initialRearmDelayMs: 0,
+          now: () => now,
+          pollIntervalMs: 1,
+          runCommand: async (command, args) => {
+            invocations.push({ command, args });
+            const remoteCommand = args.at(-1) ?? "";
+            if (command === "ssh" && remoteCommand === "exit") return {};
+            if (
+              command === "ssh" &&
+              remoteCommand.includes("GetInteractiveDisplayPreparationStatus")
+            ) {
+              return {
+                stdout: `${JSON.stringify(
+                  rearmed
+                    ? { reportValid: true, reportPresent: true }
+                    : {
+                        reportValid: false,
+                        reportPresent: false,
+                        state: { phase: "installing" },
+                        task: null,
+                        taskLogTail:
+                          "SPICE reboot resumed before the display task",
+                        currentBootIdentity: "boot-after-spice-restart",
+                        spiceGuestToolsInstallation: {
+                          phase: "installing",
+                          installBootIdentity: "boot-before-spice-restart",
+                        },
+                      },
+                )}\n`,
+              };
+            }
+            if (
+              command === "ssh" &&
+              remoteCommand.includes("-Mode RearmInteractiveDisplay")
+            ) {
+              rearmed = true;
+              return {};
+            }
+            if (command === "scp") {
+              const source = args.at(-2) ?? "";
+              const destination = args.at(-1);
+              if (source.includes("interactive-display-report.json")) {
+                writeFileSync(destination, JSON.stringify(interactiveReport));
+              }
+              if (source.includes("verification.json")) {
+                writeFileSync(destination, JSON.stringify({ ok: true }));
+              }
+              return {};
+            }
+            if (command === config.runner.registrationTokenProvider.command) {
+              return { stdout: "runner-token\n" };
+            }
+            return {};
+          },
+          sleep: async () => {
+            now += 1;
+          },
+          timeoutMs: 20,
+        },
+      );
+
+      assert.equal(verification.ok, true);
+      const rearmIndex = invocations.findIndex(
+        ({ command, args }) =>
+          command === "ssh" &&
+          (args.at(-1) ?? "").includes("-Mode RearmInteractiveDisplay"),
+      );
+      const interactiveReportIndex = invocations.findIndex(
+        ({ command, args }) =>
+          command === "scp" &&
+          (args.at(-2) ?? "").includes("interactive-display-report.json"),
+      );
+      const toolchainIndex = invocations.findIndex(
+        ({ command, args }) =>
+          command === "ssh" &&
+          (args.at(-1) ?? "").includes("prepare-toolchain.ps1"),
+      );
+      assert.ok(
+        rearmIndex >= 0,
+        "the missing report must trigger a bounded re-arm",
+      );
+      assert.ok(interactiveReportIndex > rearmIndex);
+      assert.ok(
+        toolchainIndex > interactiveReportIndex,
+        "toolchain setup must not start until the interactive report is validated",
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("times out interactive display preparation with remote task diagnostics before toolchain setup", async () => {
+    const stagingDirectory = mkdtempSync(
+      join(tmpdir(), "vem-kvm-interactive-display-timeout-"),
+    );
+    const config = buildConfig(stagingDirectory);
+    const invocations = [];
+    let now = 0;
+    try {
+      await assert.rejects(
+        waitForGuestVerification(
+          config,
+          "win10-runtime-baseline-build-test",
+          stagingDirectory,
+          {
+            discoverGuestAddress: async () => "192.0.2.44",
+            maxRearmAttempts: 0,
+            now: () => now,
+            pollIntervalMs: 1,
+            runCommand: async (command, args) => {
+              invocations.push({ command, args });
+              const remoteCommand = args.at(-1) ?? "";
+              if (command === "ssh" && remoteCommand === "exit") return {};
+              if (
+                command === "ssh" &&
+                remoteCommand.includes("GetInteractiveDisplayPreparationStatus")
+              ) {
+                return {
+                  stdout:
+                    '{"reportValid":false,"reportPresent":false,"state":{"phase":"running"},"task":{"state":"Running","lastTaskResult":267009},"taskLogTail":"display task is still waiting for the QXL desktop"}\n',
+                };
+              }
+              return {};
+            },
+            sleep: async () => {
+              now += 1;
+            },
+            timeoutMs: 3,
+          },
+        ),
+        /interactive display preparation timed out[\s\S]*report=absent[\s\S]*task state=Running[\s\S]*lastTaskResult=267009[\s\S]*display task is still waiting for the QXL desktop/,
+      );
+      assert.equal(
+        invocations.some(
+          ({ command, args }) =>
+            command === "ssh" &&
+            (args.at(-1) ?? "").includes("prepare-toolchain.ps1"),
+        ),
+        false,
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
   });
 
   it("has an independent manual workflow that never uploads a baseline image", () => {
