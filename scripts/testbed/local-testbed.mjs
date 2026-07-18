@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const FIXTURE_PATH = new URL(
@@ -18,6 +18,7 @@ const VOLUME_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres-data",
   mqtt: "vem-local-testbed-mosquitto-data",
 });
+const SERVICE_API_UNIT = "vem-local-testbed-service-api";
 const MODES = new Set(["fast", "full", "clear_cache"]);
 
 function required(value, label) {
@@ -31,6 +32,42 @@ function absolute(value, label) {
   const path = required(value, label);
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   return resolve(path);
+}
+
+function commandArray(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some((part) => typeof part !== "string" || part.trim() === "") ||
+    !isAbsolute(value[0])
+  ) {
+    throw new Error(
+      `${label} must be a non-empty command array with an absolute executable`,
+    );
+  }
+  return value;
+}
+
+function trackedHostCommand(value, action, label) {
+  const command = commandArray(value, label);
+  if (
+    !["node", "nodejs"].includes(basename(command[0])) ||
+    command[1] !== "{repository}/scripts/testbed/local-testbed-host.mjs" ||
+    command[2] !== action
+  ) {
+    throw new Error(
+      `${label} must invoke the tracked local-testbed-host.mjs ${action} action`,
+    );
+  }
+  return command;
+}
+
+function windowsAbsolute(value, label) {
+  const path = required(value, label);
+  if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
+    throw new Error(`${label} must be an absolute Windows path`);
+  }
+  return path;
 }
 
 function option(args, name, optional = false) {
@@ -86,32 +123,36 @@ export function validateBaselineContract(contract) {
       "baseline contract must be the published win10-kvm-baseline-current/v1 manifest",
     );
   }
-  if (
-    !contract.artifacts?.systemPath ||
-    !contract.artifacts?.cachePath ||
-    !contract.testbed
-  ) {
+  if (!/^[a-z0-9][a-z0-9-]{7,127}$/i.test(contract.releaseId ?? "")) {
+    throw new Error("published baseline contract releaseId is invalid");
+  }
+  if (!contract.destinations || !contract.artifacts || !contract.testbed) {
     throw new Error(
-      "published baseline contract must include artifacts and the Issue 14 testbed binding",
+      "published baseline contract must include destinations, artifacts, and testbed",
     );
+  }
+  for (const [container, keys] of [
+    [contract.destinations, ["baselinePath", "cacheDiskPath"]],
+    [
+      contract.artifacts,
+      ["systemPath", "cachePath", "domainXmlPath", "diagnosticPath"],
+    ],
+  ]) {
+    for (const key of keys) {
+      absolute(container[key], `baseline contract ${key}`);
+    }
   }
   const binding = contract.testbed;
-  if (
-    !Array.isArray(binding.reconstructCommand) ||
-    binding.reconstructCommand.length < 1
-  ) {
-    throw new Error(
-      "baseline testbed binding reconstructCommand must be a command array",
-    );
-  }
-  if (
-    !Array.isArray(binding.admitRunnerCommand) ||
-    binding.admitRunnerCommand.length < 1
-  ) {
-    throw new Error(
-      "baseline contract admitRunnerCommand must be a command array",
-    );
-  }
+  trackedHostCommand(
+    binding.reconstructCommand,
+    "reconstruct",
+    "baseline contract testbed.reconstructCommand",
+  );
+  trackedHostCommand(
+    binding.admitRunnerCommand,
+    "admit",
+    "baseline contract testbed.admitRunnerCommand",
+  );
   if (!binding.guest || typeof binding.guest !== "object") {
     throw new Error("baseline contract guest is required");
   }
@@ -125,12 +166,22 @@ export function validateBaselineContract(contract) {
   ]) {
     required(binding.guest[key], `baseline contract guest.${key}`);
   }
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(binding.guest.host)) {
+    throw new Error(
+      "baseline contract guest.host must be a hostname or IP address",
+    );
+  }
   if (
     !isAbsolute(binding.guest.identityFile) ||
     !isAbsolute(binding.guest.knownHostsFile)
   ) {
     throw new Error("baseline contract SSH files must be absolute");
   }
+  windowsAbsolute(
+    binding.guest.stagingPath,
+    "baseline contract guest.stagingPath",
+  );
+  windowsAbsolute(binding.guest.cacheRoot, "baseline contract guest.cacheRoot");
   return contract;
 }
 
@@ -153,6 +204,37 @@ async function loadFixture() {
 
 function commandLine(command, args) {
   return { command, args: args.map(String) };
+}
+
+function renderPublishedCommand(command, options, contract) {
+  const guest = contract.testbed.guest;
+  const replacements = {
+    repository: options.workspace,
+    runId: options.runId,
+    hostPrivateAddress: options.hostPrivateAddress,
+    systemPath: contract.artifacts.systemPath,
+    cachePath: contract.artifacts.cachePath,
+    domainXmlPath: contract.artifacts.domainXmlPath,
+    guestHost: guest.host,
+    guestUser: guest.user,
+    identityFile: guest.identityFile,
+    knownHostsFile: guest.knownHostsFile,
+    guestStagingPath: guest.stagingPath,
+  };
+  const rendered = command.map((part) =>
+    Object.entries(replacements).reduce(
+      (value, [name, replacement]) =>
+        value.replaceAll(`{${name}}`, replacement),
+      part,
+    ),
+  );
+  const unresolved = rendered.find((part) => /\{[^{}]+\}/.test(part));
+  if (unresolved) {
+    throw new Error(
+      `baseline testbed command has an unknown placeholder: ${unresolved}`,
+    );
+  }
+  return commandLine(rendered[0], rendered.slice(1));
 }
 
 export function buildReconstructionPlan(options, contract) {
@@ -179,12 +261,7 @@ export function buildReconstructionPlan(options, contract) {
       VOLUME_NAMES.postgres,
       VOLUME_NAMES.mqtt,
     ]),
-    commandLine(
-      binding.reconstructCommand[0],
-      binding.reconstructCommand
-        .slice(1)
-        .map((part) => part.replaceAll("{runId}", options.runId)),
-    ),
+    renderPublishedCommand(binding.reconstructCommand, options, contract),
     commandLine("docker", ["volume", "create", VOLUME_NAMES.postgres]),
     commandLine("docker", ["volume", "create", VOLUME_NAMES.mqtt]),
     commandLine("docker", [
@@ -244,12 +321,53 @@ export function buildReconstructionPlan(options, contract) {
       join(state, "guest-input.json"),
       `${binding.guest.user}@${binding.guest.host}:${binding.guest.stagingPath}`,
     ]),
-    commandLine(
-      binding.admitRunnerCommand[0],
-      binding.admitRunnerCommand
-        .slice(1)
-        .map((part) => part.replaceAll("{runId}", options.runId)),
-    ),
+    renderPublishedCommand(binding.admitRunnerCommand, options, contract),
+  ];
+}
+
+function serviceApiEnvironment(options) {
+  return {
+    DATABASE_URL:
+      "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+    MQTT_URL: "mqtt://127.0.0.1:18883",
+    MACHINE_MQTT_URL: `mqtt://${options.hostPrivateAddress}:18883`,
+    MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
+    PAYMENT_WEBHOOK_BASE_URL: "http://127.0.0.1:26849",
+    PAYMENT_MOCK_ENABLED: "true",
+    SERVICE_HOST: "0.0.0.0",
+    SERVICE_PORT: "26849",
+    BOOTSTRAP_ADMIN_USERNAME: "local-testbed-admin",
+    BOOTSTRAP_ADMIN_PASSWORD: "LocalTestbedAdminPassword!",
+    JWT_SECRET: "local-testbed-jwt-secret-at-least-32-characters",
+    JWT_REFRESH_SECRET: "local-testbed-refresh-secret-at-least-32-characters",
+    MACHINE_JWT_SECRET: "local-testbed-machine-jwt-secret-at-least-32-chars",
+    MACHINE_CREDENTIAL_ENCRYPTION_KEY:
+      "local-testbed-machine-credential-key-32-chars",
+    MACHINE_CLAIM_LOOKUP_HMAC_KEY: "local-testbed-machine-claim-lookup-key-v1",
+  };
+}
+
+export function buildServiceApiUnitPlan(options) {
+  const unit = `${SERVICE_API_UNIT}.service`;
+  const environment = serviceApiEnvironment(options);
+  return [
+    commandLine("sudo", ["systemctl", "stop", unit]),
+    commandLine("sudo", ["systemctl", "reset-failed", unit]),
+    commandLine("sudo", [
+      "systemd-run",
+      `--unit=${SERVICE_API_UNIT}`,
+      "--collect",
+      "--property=Type=simple",
+      "--property=Restart=no",
+      "--property=StandardOutput=journal",
+      "--property=StandardError=journal",
+      `--property=WorkingDirectory=${options.workspace}`,
+      ...Object.entries(environment).map(
+        ([name, value]) => `--setenv=${name}=${value}`,
+      ),
+      process.execPath,
+      "apps/service-api/dist/main.js",
+    ]),
   ];
 }
 
@@ -259,12 +377,41 @@ function run(command, args, options = {}) {
       cwd: options.cwd,
       env: options.env,
       stdio: options.stdio ?? "inherit",
-      detached: options.detached ?? false,
     });
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise(child);
       else reject(new Error(`${command} exited with ${code ?? "signal"}`));
+    });
+  });
+}
+
+function runCapture(command, args, options = {}) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolvePromise({ stdout, stderr });
+      else
+        reject(
+          new Error(
+            `${command} exited with ${code ?? "signal"}: ${stderr || stdout}`,
+          ),
+        );
     });
   });
 }
@@ -322,11 +469,20 @@ async function waitForApi(baseUrl) {
   throw new Error("local testbed Service API did not become ready");
 }
 
-async function serviceApiFailure(stateRoot, error) {
-  const logPath = join(stateRoot, "service-api.log");
+async function serviceApiFailure(error) {
   let log = "log unavailable";
   try {
-    log = await readFile(logPath, "utf8");
+    const result = await runCapture("sudo", [
+      "journalctl",
+      "--unit",
+      `${SERVICE_API_UNIT}.service`,
+      "--no-pager",
+      "--lines",
+      "200",
+      "--output",
+      "short-iso-precise",
+    ]);
+    log = result.stdout || result.stderr || log;
   } catch {}
   return new Error(
     `${error.message}\n--- local Service API log ---\n${log.slice(-16_000)}`,
@@ -385,12 +541,6 @@ export async function seedThroughSupportedApis({
     token,
     body: {
       status: "enabled",
-      capabilities: {
-        createPaymentIntent: true,
-        paymentCode: true,
-        webhook: true,
-        refund: true,
-      },
     },
   });
   const machine = await request(baseUrl, "/machines", {
@@ -483,69 +633,31 @@ export async function seedThroughSupportedApis({
   };
 }
 
-async function startServiceApi(options) {
-  const logPath = join(options.stateRoot, "service-api.log");
-  const pidPath = join(options.stateRoot, "service-api.pid");
-  await Promise.all([
-    rm(pidPath, { force: true }),
-    rm(logPath, { force: true }),
-  ]);
-  const child = spawn("node", ["apps/service-api/dist/main.js"], {
-    cwd: options.workspace,
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      DATABASE_URL:
-        "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
-      MQTT_URL: "mqtt://127.0.0.1:18883",
-      MACHINE_MQTT_URL: `mqtt://${options.hostPrivateAddress}:18883`,
-      MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
-      PAYMENT_WEBHOOK_BASE_URL: "http://127.0.0.1:26849",
-      PAYMENT_MOCK_ENABLED: "true",
-      SERVICE_HOST: "0.0.0.0",
-      SERVICE_PORT: "26849",
-      BOOTSTRAP_ADMIN_USERNAME: "local-testbed-admin",
-      BOOTSTRAP_ADMIN_PASSWORD: "LocalTestbedAdminPassword!",
-      JWT_SECRET: "local-testbed-jwt-secret-at-least-32-characters",
-      JWT_REFRESH_SECRET: "local-testbed-refresh-secret-at-least-32-characters",
-      MACHINE_JWT_SECRET: "local-testbed-machine-jwt-secret-at-least-32-chars",
-      MACHINE_CREDENTIAL_ENCRYPTION_KEY:
-        "local-testbed-machine-credential-key-32-chars",
-      MACHINE_CLAIM_LOOKUP_HMAC_KEY:
-        "local-testbed-machine-claim-lookup-key-v1",
-    },
-  });
-  child.stdout.pipe(
-    (await import("node:fs")).createWriteStream(logPath, { flags: "a" }),
+async function stopServiceApiUnit(options) {
+  const [stop, reset] = buildServiceApiUnitPlan(options);
+  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+    () => undefined,
   );
-  child.stderr.pipe(
-    (await import("node:fs")).createWriteStream(logPath, { flags: "a" }),
+  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
+    () => undefined,
   );
-  child.unref();
-  await writeFile(pidPath, `${child.pid}\n`, "utf8");
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const state = await runCapture("sudo", [
+      "systemctl",
+      "show",
+      "--property=LoadState",
+      "--value",
+      `${SERVICE_API_UNIT}.service`,
+    ]).catch(() => ({ stdout: "not-found" }));
+    if (state.stdout.trim() === "not-found") return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`fixed Service API unit ${SERVICE_API_UNIT} did not unload`);
 }
 
-async function replacePriorServiceApi(stateRoot) {
-  const pidPath = join(stateRoot, "service-api.pid");
-  try {
-    const pid = Number((await readFile(pidPath, "utf8")).trim());
-    if (Number.isInteger(pid) && pid > 1) {
-      process.kill(pid, "SIGTERM");
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolvePromise) =>
-            setTimeout(resolvePromise, 100),
-          );
-        } catch {
-          break;
-        }
-        if (attempt === 49) process.kill(pid, "SIGKILL");
-      }
-    }
-  } catch {}
-  await rm(pidPath, { force: true });
+async function startServiceApiUnit(options) {
+  const start = buildServiceApiUnitPlan(options).at(-1);
+  await run(start.command, start.args, { cwd: options.workspace });
 }
 
 async function reconstruct(options) {
@@ -569,7 +681,7 @@ async function reconstruct(options) {
       mode: options.mode,
       plan,
     };
-  await replacePriorServiceApi(options.stateRoot);
+  await stopServiceApiUnit(options);
   await run(
     "docker",
     ["rm", "-f", SERVICE_NAMES.postgres, SERVICE_NAMES.mqtt],
@@ -584,12 +696,12 @@ async function reconstruct(options) {
   for (const step of plan.slice(3, 9))
     await run(step.command, step.args, { cwd: options.workspace });
   await waitForPostgres();
-  await startServiceApi(options);
+  await startServiceApiUnit(options);
   const apiBaseUrl = "http://127.0.0.1:26849/api";
   try {
     await waitForApi(apiBaseUrl);
   } catch (error) {
-    throw await serviceApiFailure(options.stateRoot, error);
+    throw await serviceApiFailure(error);
   }
   let seeded;
   try {
@@ -599,10 +711,11 @@ async function reconstruct(options) {
       hostPrivateAddress: options.hostPrivateAddress,
     });
   } catch (error) {
-    throw await serviceApiFailure(options.stateRoot, error);
+    throw await serviceApiFailure(error);
   }
   const guestInput = {
     schemaVersion: "vem-local-testbed-guest-input/v1",
+    runId: options.runId,
     mode: options.mode,
     runtimeBootstrap: {
       schemaVersion: 1,
@@ -613,6 +726,7 @@ async function reconstruct(options) {
     claimCode: seeded.claim.claimCode,
     machineCode: seeded.machine.code,
     planogramVersion: seeded.planogramVersion,
+    interactiveUser: contract.testbed.guest.user,
   };
   await writeFile(
     join(options.stateRoot, "guest-input.json"),

@@ -38,4 +38,23 @@ describe("VM runtime acceptance workflow", () => {
       /runs-on: \[self-hosted, Windows, X64, vem-runtime\]/,
     );
   });
+
+  it("runs clear_cache directly on Windows without reconstructing C or platform state", () => {
+    assert.match(
+      workflow,
+      /clear-declared-windows-caches:[\s\S]*if: .*inputs\.mode == 'clear_cache'[\s\S]*run-local-testbed-guest\.ps1 -Mode clear_cache/,
+    );
+    assert.match(
+      workflow,
+      /reconstruct-local-testbed:[\s\S]*if: .*inputs\.mode != 'clear_cache'/,
+    );
+    const clearJob = workflow.match(
+      /clear-declared-windows-caches:[\s\S]*?(?=\n  [a-z][\w-]+:|$)/,
+    )?.[0];
+    assert.ok(clearJob);
+    assert.doesNotMatch(
+      clearJob,
+      /needs:|local-testbed\.mjs|baseline|host-address/i,
+    );
+  });
 });

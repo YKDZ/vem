@@ -15,7 +15,7 @@
     "check:rust": "cargo check --workspace --all-targets",
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",
     "check:vision-main-consumer": "node --test scripts/windows/vision-main-consumer.test.mjs",
-    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/testbed/local-testbed.test.mjs scripts/check-ci-workflow-needs.test.mjs scripts/check-vm-runtime-acceptance-workflow.test.mjs scripts/check-active-runtime-factory-retirement.test.mjs",
+    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/testbed/local-testbed-host.test.mjs scripts/testbed/local-testbed.test.mjs scripts/testbed/installed-runtime-smoke.test.mjs scripts/check-ci-workflow-needs.test.mjs scripts/check-vm-runtime-acceptance-workflow.test.mjs scripts/check-active-runtime-factory-retirement.test.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "node tools/check-format.mjs",
     "generate:daemon-ipc-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx scripts/daemon-ipc-contracts/generate-contracts.ts",

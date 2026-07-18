@@ -18,8 +18,32 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/local-testbed-host.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/local-testbed-host.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/local-testbed.test.mjs",
     owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/installed-runtime-smoke.mjs",
+    owner: "machine-runtime-console",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/installed-runtime-smoke.test.mjs",
+    owner: "machine-runtime-console",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
@@ -45,13 +69,13 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     owner: "machine-runtime-console",
     category: "test support operation",
-    workflows: ["runtime acceptance", "factory preparation"],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/installed-kiosk-sale-acceptance.test.mjs",
     owner: "machine-runtime-console",
     category: "verifier-test guard",
-    workflows: ["runtime acceptance", "factory preparation"],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/check-machine-customer-payment-copy.mjs",
@@ -141,7 +165,7 @@ const DEFAULT_INVENTORY = [
     path: "scripts/check-factory-image-acceptance-workflow.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance"],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/factory/build-factory-media.mjs",
@@ -440,41 +464,25 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/factory-image-acceptance.mjs",
     owner: "field-operations",
     category: "public runbook operation",
-    workflows: [
-      "factory preparation",
-      "runtime acceptance",
-      "testbed workflows",
-    ],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/factory-image-acceptance.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: [
-      "factory preparation",
-      "runtime acceptance",
-      "testbed workflows",
-    ],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/factory-maintenance-relay-attestation.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: [
-      "factory preparation",
-      "runtime acceptance",
-      "testbed workflows",
-    ],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/factory-maintenance-relay-attestation.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: [
-      "factory preparation",
-      "runtime acceptance",
-      "testbed workflows",
-    ],
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/testbed/win10-vem-e2e.test.mjs",

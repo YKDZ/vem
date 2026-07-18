@@ -6,21 +6,78 @@ import { describe, it } from "node:test";
 
 import {
   buildReconstructionPlan,
+  buildServiceApiUnitPlan,
   parseOptions,
   seedThroughSupportedApis,
   validateBaselineContract,
 } from "./local-testbed.mjs";
 
 function contract(root) {
+  const hostScript = "{repository}/scripts/testbed/local-testbed-host.mjs";
+  const commonHostArguments = [
+    "--run-id",
+    "{runId}",
+    "--libvirt-uri",
+    "qemu:///system",
+    "--domain-name",
+    "win10-runtime-testbed",
+    "--overlay",
+    join(root, "runtime", "system-overlay.qcow2"),
+    "--runtime-xml",
+    join(root, "runtime", "domain.xml"),
+    "--filter-name",
+    "vem-runtime-testbed-admission",
+    "--filter-xml",
+    join(root, "runtime", "admission-filter.xml"),
+    "--host-private-cidr",
+    "{hostPrivateAddress}/32",
+    "--ssh-host",
+    "{guestHost}",
+    "--ssh-port",
+    "22",
+    "--ssh-user",
+    "{guestUser}",
+    "--identity-file",
+    "{identityFile}",
+    "--known-hosts-file",
+    "{knownHostsFile}",
+    "--readiness-timeout-seconds",
+    "120",
+  ];
   return {
     schemaVersion: "win10-kvm-baseline-current/v1",
+    releaseId: "release-testbed-0001",
+    destinations: {
+      baselinePath: join(root, "baseline.qcow2"),
+      cacheDiskPath: join(root, "cache.qcow2"),
+    },
     artifacts: {
-      systemPath: join(root, "system.qcow2"),
-      cachePath: join(root, "cache.qcow2"),
+      systemPath: join(root, "release", "system.qcow2"),
+      cachePath: join(root, "release", "cache.qcow2"),
+      domainXmlPath: join(root, "release", "runtime-profile.xml"),
+      diagnosticPath: join(root, "release", "diagnostic.json"),
     },
     testbed: {
-      reconstructCommand: ["/opt/vem/reset-overlay", "--run", "{runId}"],
-      admitRunnerCommand: ["/opt/vem/admit-runner", "--run", "{runId}"],
+      reconstructCommand: [
+        "/usr/bin/node",
+        hostScript,
+        "reconstruct",
+        ...commonHostArguments,
+        "--baseline-system",
+        "{systemPath}",
+        "--cache-disk",
+        "{cachePath}",
+        "--domain-xml",
+        "{domainXmlPath}",
+      ],
+      admitRunnerCommand: [
+        "/usr/bin/node",
+        hostScript,
+        "admit",
+        ...commonHostArguments,
+        "--guest-input",
+        "{guestStagingPath}",
+      ],
       guest: {
         host: "win10-testbed.local",
         user: "baseline",
@@ -59,10 +116,73 @@ describe("local testbed orchestration", () => {
     try {
       const value = contract(root);
       assert.deepEqual(validateBaselineContract(value), value);
+      assert.throws(
+        () =>
+          validateBaselineContract({
+            ...value,
+            schemaVersion: "vem-local-testbed-baseline/v1",
+          }),
+        /published win10-kvm-baseline-current\/v1/,
+      );
+      delete value.artifacts.domainXmlPath;
+      assert.throws(() => validateBaselineContract(value), /domainXmlPath/);
+      value.artifacts.domainXmlPath = join(
+        root,
+        "release",
+        "runtime-profile.xml",
+      );
+      value.testbed.guest.stagingPath = "ProgramData\\VEM\\guest-input.json";
+      assert.throws(() => validateBaselineContract(value), /stagingPath/);
+      value.testbed.guest.stagingPath =
+        "C:\\ProgramData\\VEM\\testbed\\guest-input.json";
+      value.testbed.reconstructCommand[0] = "node";
+      assert.throws(
+        () => validateBaselineContract(value),
+        /reconstructCommand/,
+      );
+      value.testbed.reconstructCommand[0] = "/usr/bin/node";
+      value.testbed.reconstructCommand[1] = "/opt/vem/opaque-wrapper";
+      assert.throws(
+        () => validateBaselineContract(value),
+        /tracked local-testbed-host\.mjs reconstruct/,
+      );
+      value.testbed.reconstructCommand[1] =
+        "{repository}/scripts/testbed/local-testbed-host.mjs";
       delete value.testbed.admitRunnerCommand;
       assert.throws(
         () => validateBaselineContract(value),
         /admitRunnerCommand/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the fixed Service API systemd unit and keeps readiness diagnostics in journald", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const plan = buildServiceApiUnitPlan(options(root));
+      const rendered = plan.map(
+        (step) => `${step.command} ${step.args.join(" ")}`,
+      );
+      assert.match(
+        rendered[0],
+        /systemctl stop vem-local-testbed-service-api\.service/,
+      );
+      assert.match(
+        rendered.at(-1),
+        /systemd-run --unit=vem-local-testbed-service-api --collect/,
+      );
+      assert.match(rendered.at(-1), /StandardOutput=journal/);
+      assert.match(rendered.at(-1), /StandardError=journal/);
+      const implementation = readFileSync(
+        new URL("./local-testbed.mjs", import.meta.url),
+        "utf8",
+      );
+      assert.match(implementation, /journalctl/);
+      assert.doesNotMatch(
+        implementation,
+        /service-api\.pid|detached:\s*true|child\.stdout\.pipe|child\.stderr\.pipe/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -79,13 +199,13 @@ describe("local testbed orchestration", () => {
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
       const resetIndex = rendered.findIndex((step) =>
-        step.includes("reset-overlay"),
+        step.includes("local-testbed-host.mjs reconstruct"),
       );
       const postgresIndex = rendered.findIndex((step) =>
         step.includes("postgres:16"),
       );
       const admissionIndex = rendered.findIndex((step) =>
-        step.includes("admit-runner"),
+        step.includes("local-testbed-host.mjs admit"),
       );
       assert.ok(
         rendered.some((step) =>
@@ -107,6 +227,23 @@ describe("local testbed orchestration", () => {
           postgresIndex < admissionIndex,
       );
       assert.ok(rendered.some((step) => step.includes("guest-input.json")));
+      assert.match(
+        rendered[resetIndex],
+        new RegExp(value.artifacts.systemPath),
+      );
+      assert.match(rendered[resetIndex], new RegExp(value.artifacts.cachePath));
+      assert.match(
+        rendered[admissionIndex],
+        /--guest-input C:\\ProgramData\\VEM\\testbed\\guest-input\.json/,
+      );
+      const implementation = readFileSync(
+        new URL("./local-testbed.mjs", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        implementation,
+        /interactiveUser:\s*contract\.testbed\.guest\.user/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -188,14 +325,12 @@ describe("supported API seeding", () => {
         token: "admin-token",
         body: {
           status: "enabled",
-          capabilities: {
-            createPaymentIntent: true,
-            paymentCode: true,
-            webhook: true,
-            refund: true,
-          },
         },
       },
+    );
+    assert.equal(
+      calls.some((call) => call.path === "/payments/channel-policy"),
+      false,
     );
     assert.deepEqual(
       calls.find((call) => call.path.endsWith("/claim-codes")).body,
@@ -237,9 +372,27 @@ describe("Windows D cache contract", () => {
       guest,
       /function Clear-DeclaredCaches \{\s+foreach \(\$path in \$declaredCachePaths\) \{\s+Remove-Item -LiteralPath \$path -Recurse -Force -ErrorAction SilentlyContinue/s,
     );
-    assert.equal((guest.match(/Remove-Item -LiteralPath/g) ?? []).length, 1);
+    const clearFunction = guest.match(
+      /function Clear-DeclaredCaches \{[\s\S]*?\n\}/,
+    )?.[0];
+    assert.ok(clearFunction);
+    assert.equal(
+      (clearFunction.match(/Remove-Item -LiteralPath/g) ?? []).length,
+      1,
+    );
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$cacheRoot -Recurse/);
     assert.doesNotMatch(guest, /CARGO_REGISTRY_CACHE|CARGO_GIT_CACHE/);
+  });
+
+  it("does not require reconstructed guest input for clear_cache", () => {
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      guest.indexOf('if ($Mode -eq "clear_cache")') <
+        guest.indexOf("Require-Path $GuestInputPath"),
+    );
   });
 });
 

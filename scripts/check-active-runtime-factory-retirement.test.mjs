@@ -27,6 +27,8 @@ const activeRuntimeFiles = [
 
 const runtimeEntrypoints = [
   "scripts/testbed/local-testbed.mjs",
+  "scripts/testbed/local-testbed-host.mjs",
+  "scripts/testbed/installed-runtime-smoke.mjs",
   "scripts/testbed/run-local-testbed-guest.ps1",
   "scripts/testbed/run-vm-host-adapter.mjs",
   "scripts/testbed/kvm-baseline/build-win10-baseline.mjs",
@@ -241,6 +243,30 @@ describe("active Windows runtime Factory retirement guard", () => {
           /runtime\.psm1 imports retired Factory source: \.\.\/factory\/legacy\.ps1/,
         );
       },
+    );
+  });
+
+  it("keeps legacy and Factory-dependent acceptance scripts out of active runtime inventory", () => {
+    const inventory = readFileSync(
+      "scripts/check-repository-script-inventory.mjs",
+      "utf8",
+    );
+    for (const path of [
+      "scripts/testbed/win10-vem-e2e.mjs",
+      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
+      "scripts/testbed/factory-image-acceptance.mjs",
+      "scripts/testbed/factory-maintenance-relay-attestation.mjs",
+    ]) {
+      const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const block = inventory.match(
+        new RegExp(`path: "${escaped}"[\\s\\S]*?\\n  \\},`),
+      )?.[0];
+      assert.ok(block, `missing inventory block for ${path}`);
+      assert.doesNotMatch(block, /runtime acceptance|testbed workflows/);
+    }
+    assert.match(
+      inventory,
+      /path: "scripts\/testbed\/installed-runtime-smoke\.mjs"[\s\S]*?runtime acceptance/,
     );
   });
 
