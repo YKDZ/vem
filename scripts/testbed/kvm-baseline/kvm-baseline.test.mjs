@@ -2682,7 +2682,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /Microsoft\.VisualStudio\.Workload\.VCTools/);
     assert.match(runtime, /cl\.exe/);
     assert.match(runtime, /MFStartup/);
-    assert.match(runtime, /FilterGraph/);
+    assert.match(runtime, /e436ebb3-524f-11ce-9f53-0020af0ba770/);
     assert.match(verify, /interactive-display-report\.json/);
     assert.match(verify, /displayAdapter/);
     assert.match(verify, /ExpectedVirtioGpuDriverPackageSha256/);
@@ -2758,6 +2758,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.doesNotMatch(runtime, /"E"\.\."Z"/);
     assert.match(runtime, /Join-Path \$cachePaths\.PNPM_HOME "bin"/);
     assert.match(runtime, /SetEnvironmentVariable\("Path", \$machinePath, "Machine"\)/);
+    assert.match(runtime, /e436ebb3-524f-11ce-9f53-0020af0ba770/);
+    assert.doesNotMatch(runtime, /New-Object -ComObject "FilterGraph"/);
     assert.match(shared, /PreserveStartupType/);
     assert.match(
       shared,

@@ -351,7 +351,8 @@ public static class VemMediaSmoke {
 '@
   if ([VemMediaSmoke]::MFStartup(0x00020070, 0) -ne 0) { throw "Media Foundation MFStartup smoke failed" }
   if ([VemMediaSmoke]::MFShutdown() -ne 0) { throw "Media Foundation MFShutdown smoke failed" }
-  $filterGraph = New-Object -ComObject "FilterGraph"
+  $filterGraphType = [Type]::GetTypeFromCLSID([Guid]"e436ebb3-524f-11ce-9f53-0020af0ba770", $true)
+  $filterGraph = [Activator]::CreateInstance($filterGraphType)
   [void][Runtime.InteropServices.Marshal]::ReleaseComObject($filterGraph)
 }
 
