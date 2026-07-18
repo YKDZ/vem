@@ -47,6 +47,7 @@ describe("installed kiosk sale platform raw query", () => {
         reservations: [],
         commands: [],
         movements: [],
+        inventories: [],
       },
     });
 
@@ -66,6 +67,7 @@ describe("installed kiosk sale platform raw query", () => {
         reservations: [],
         commands: [],
         movements: [],
+        inventories: [],
       },
     });
     expect(JSON.stringify(report)).not.toContain("runner-only@127.0.0.1");
