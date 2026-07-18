@@ -37,6 +37,11 @@ jobs:
           user="$(jq -r .guest.sshUser "$config")"
           key="$(jq -r .guest.sshPrivateKeyFile "$config")"
           runner_url="$(jq -r .runner.url "$config")"
+          token_command="$(jq -r .runner.registrationTokenProvider.command "$config")"
+          mapfile -t token_arguments < <(jq -r '.runner.registrationTokenProvider.arguments[]?' "$config")
+          token="$("$token_command" "${token_arguments[@]}")"
+          runner_name="forest-win10-runtime-debug"
+          labels="$(jq -r '.runner.labels | join(",")' "$config")"
           chmod 600 "$key"
           ssh_options=(-i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
           for attempt in $(seq 1 60); do
@@ -47,7 +52,7 @@ jobs:
             sleep 2
           done
           ssh "${ssh_options[@]}" "$user@$host" \
-            "powershell.exe -NoProfile -Command \"Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,DriveType,VolumeName,Size,FreeSpace | ConvertTo-Json; Get-ChildItem C:\\ProgramData\\WindowsRuntimeBaseline -Force -Recurse -ErrorAction SilentlyContinue | Select-Object FullName,Length | ConvertTo-Json\""
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\ProgramData\WindowsRuntimeBaseline\media\actions-runner-win-x64.zip' -RunnerUrl '$runner_url' -RunnerRegistrationToken '$token' -RunnerName '$runner_name' -RunnerLabels @('$labels'.Split(','))\""
 
   build-windows-runtime:
     name: Build Current Windows Runtime
