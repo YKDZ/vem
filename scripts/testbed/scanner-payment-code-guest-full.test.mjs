@@ -6,6 +6,7 @@ import {
   assertNoAttemptOrDuplicatePayment,
   combineCleanupError,
   parseScannerPaymentCodeGuestArgs,
+  pnpObservationMatchesDaemonIdentity,
   pnpObservationMatchesLibvirtTopology,
   scannerFrameBytes,
   runCleanupStep,
@@ -77,6 +78,30 @@ describe("scanner payment-code guest full", () => {
         usbBus: 0,
         usbPort: "3.1",
       }),
+      false,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(observation, {
+        instanceId: "usb\\vid_1b36&pid_0001\\5&1234&0&2",
+        containerId: null,
+      }),
+      true,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(observation, {
+        instanceId: "USB\\VID_1B36&PID_0001\\OTHER",
+        containerId: null,
+      }),
+      false,
+    );
+    assert.equal(
+      pnpObservationMatchesDaemonIdentity(
+        { ...observation, containerId: "{11111111-2222-3333-4444-555555555555}" },
+        {
+          instanceId: observation.pnpDeviceId,
+          containerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        },
+      ),
       false,
     );
   });

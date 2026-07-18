@@ -312,6 +312,18 @@ export function pnpObservationMatchesLibvirtTopology(observation, topology) {
   });
 }
 
+export function pnpObservationMatchesDaemonIdentity(observation, identity) {
+  if (!observation || !identity) return false;
+  const pnpDeviceId = String(observation.pnpDeviceId ?? "").toUpperCase();
+  const instanceId = String(identity.instanceId ?? "").toUpperCase();
+  if (!pnpDeviceId || pnpDeviceId !== instanceId) return false;
+  const observedContainer = String(observation.containerId ?? "")
+    .replace(/^\{|\}$/g, "")
+    .toLowerCase();
+  const identityContainer = String(identity.containerId ?? "").toLowerCase();
+  return !observedContainer || observedContainer === identityContainer;
+}
+
 function observeWindowsSerialPnP() {
   const script = String.raw`$ErrorActionPreference = 'Stop'
 $devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
@@ -345,10 +357,10 @@ function scannerQemuMapping(sessionStart) {
     const mapping = qemuMappings.find((entry) => entry.role === role);
     if (
       !mapping ||
-    mapping.guestDeviceIdentity !== `guest-device://qemu-usb-serial-${role}` ||
+      mapping.guestDeviceIdentity !== `guest-device://qemu-usb-serial-${role}` ||
       !mapping.guestUsbTopology?.alias
     ) {
-      throw new Error(`QEMU USB mapping for ${role} is missing stable guest identity`);
+      throw new Error(`QEMU USB mapping for ${role} is missing live libvirt USB topology`);
     }
   }
   return qemuMappings.find((entry) => entry.role === "scanner");
@@ -474,8 +486,9 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     const scannerCandidate = scanner?.candidates?.find(
       (candidate) =>
         candidate.currentPort === scanner.currentPort &&
-        scannerPnp && matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity) &&
-        candidate.identity.instanceId === scannerPnp.pnpDeviceId,
+        scannerPnp &&
+        matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity) &&
+        pnpObservationMatchesDaemonIdentity(scannerPnp, candidate.identity),
     );
     if (
       lower?.ready === true &&
