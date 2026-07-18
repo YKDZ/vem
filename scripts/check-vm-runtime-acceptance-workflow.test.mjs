@@ -29,6 +29,12 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /VEM_LOCAL_TESTBED_BASELINE_CONTRACT/);
     assert.match(workflow, /VEM_LOCAL_TESTBED_HOST_ADDRESS/);
     assert.match(workflow, /VEM_LOCAL_TESTBED_STATE_ROOT/);
+    assert.match(workflow, /VEM_VM_HOST_LOCK_PATH/);
+    assert.equal(
+      (workflow.match(/flock "\$VEM_VM_HOST_LOCK_PATH"/g) ?? []).length,
+      2,
+    );
+    assert.equal((workflow.match(/toolchain: 1\.96\.0/g) ?? []).length, 2);
     assert.doesNotMatch(
       workflow,
       /Acquire Host Global Lock|Release Host Global Lock/,

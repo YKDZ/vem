@@ -38,8 +38,11 @@ jobs:
       VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
       VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
       VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
+      VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
     steps:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.96.0
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
@@ -51,8 +54,10 @@ jobs:
           test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
           test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
           test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
+          test "${VEM_VM_HOST_LOCK_PATH#/}" != "$VEM_VM_HOST_LOCK_PATH"
           mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          flock "$VEM_LOCAL_TESTBED_STATE_ROOT/reconstruct.lock" \
+          mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
+          flock "$VEM_VM_HOST_LOCK_PATH" \
             node scripts/testbed/local-testbed.mjs reconstruct \
             --mode "$TESTBED_MODE" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -112,8 +117,11 @@ jobs:
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_HTTP_TIMEOUT: "30"
       CARGO_NET_RETRY: "10"
+      VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
     steps:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.96.0
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
@@ -124,8 +132,10 @@ jobs:
           test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
           test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
           test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
+          test "${VEM_VM_HOST_LOCK_PATH#/}" != "$VEM_VM_HOST_LOCK_PATH"
           mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          flock "$VEM_LOCAL_TESTBED_STATE_ROOT/reconstruct.lock" \
+          mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
+          flock "$VEM_VM_HOST_LOCK_PATH" \
             node scripts/testbed/local-testbed.mjs reconstruct \
             --mode full \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-pass-2" \
