@@ -287,11 +287,21 @@ if ([string]$registeredRunner.agentName -ne 'forest-win10-runtime-current') { th
         `NO_PROXY=${runnerProxy.noProxy}`,
       ].filter((line) => !line.endsWith("="))
     : [];
+  const proxyEnvironmentAssignments = runnerProxy?.configured
+    ? [
+        ["HTTP_PROXY", runnerProxy.http],
+        ["HTTPS_PROXY", runnerProxy.https],
+        ["NO_PROXY", runnerProxy.noProxy],
+      ]
+        .map(([name, value]) => `$env:${name} = ${quotePowerShell(value ?? "")}`)
+        .join("\n")
+    : "";
   const updateEnvironment = runnerProxy?.configured
     ? `$proxyLines = @(${proxyLines.map(quotePowerShell).join(", ")})
 $existingLines = if (Test-Path -LiteralPath $environmentPath -PathType Leaf) { @(Get-Content -LiteralPath $environmentPath -Encoding UTF8) } else { @() }
 $preservedLines = @($existingLines | Where-Object { $_ -notmatch '^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY)=' })
 [System.IO.File]::WriteAllLines($environmentPath, @($preservedLines + $proxyLines), [System.Text.UTF8Encoding]::new($false))
+${proxyEnvironmentAssignments}
 `
     : "";
   return `$ErrorActionPreference = 'Stop'
@@ -302,12 +312,12 @@ $phasePath = 'C:\\ProgramData\\VEM\\testbed\\runner-admission-phase.txt'
 function Set-RunnerAdmissionPhase([string]$Phase) { [System.IO.File]::WriteAllText($phasePath, $Phase, [System.Text.UTF8Encoding]::new($false)) }
 Set-RunnerAdmissionPhase 'started'
 Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
-${registrationSetup}Set-RunnerAdmissionPhase 'identity-ready'
+${updateEnvironment}${registrationSetup}Set-RunnerAdmissionPhase 'identity-ready'
 if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
-${updateEnvironment}$diagnosticDirectory = Join-Path $runnerRoot '_diag'
+$diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
 Restart-Service -Name $service.Name -Force -ErrorAction Stop
