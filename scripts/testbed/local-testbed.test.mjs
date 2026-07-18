@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import { mockPaymentCreateGatePaths } from "./host-serial-control-plane.mjs";
@@ -24,7 +24,10 @@ import {
   buildHostControlPlaneUnitPlan,
   buildReconstructionPlan,
   buildServiceApiUnitPlan,
+  ensureLowerControllerSimCached,
   interpretServiceApiJournalCapture,
+  lowerControllerSimCacheLayout,
+  lowerControllerSimSourceFingerprint,
   parseOptions,
   paymentMockCreateGatePaths,
   seedThroughSupportedApis,
@@ -627,10 +630,11 @@ describe("local testbed orchestration", () => {
           postgresIndex < admissionIndex,
       );
       assert.ok(rendered.some((step) => step.includes("guest-input.json")));
-      assert.ok(
+      assert.equal(
         rendered.some((step) =>
           step.includes("cargo build -p lower-controller-sim --locked"),
         ),
+        false,
       );
       assert.match(
         rendered[resetIndex],
@@ -671,6 +675,7 @@ describe("local testbed orchestration", () => {
         implementation,
         /displayLifecycle:[\s\S]*headlessVncActivatorUnit/,
       );
+      assert.match(implementation, /ensureLowerControllerSimCached/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -844,6 +849,87 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
+  it("changes the host simulator cache key when its local runtime sources change", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-local-testbed-simulator-key-"),
+    );
+    try {
+      for (const [path, contents] of [
+        ["Cargo.lock", "lock-v1\n"],
+        ["Cargo.toml", "[workspace]\n"],
+        ["apps/lower-controller-sim/Cargo.toml", "[package]\n"],
+        ["apps/lower-controller-sim/src/main.rs", "fn main() {}\n"],
+        ["crates/vending-core/Cargo.toml", "[package]\n"],
+        ["crates/vending-core/src/lib.rs", "pub fn core() {}\n"],
+      ]) {
+        const destination = join(root, path);
+        mkdirSync(dirname(destination), { recursive: true });
+        writeFileSync(destination, contents);
+      }
+      const original = await lowerControllerSimSourceFingerprint(root);
+      writeFileSync(
+        join(root, "crates/vending-core/src/lib.rs"),
+        "pub fn core() { changed(); }\n",
+      );
+      const changed = await lowerControllerSimSourceFingerprint(root);
+
+      assert.match(original, /^[a-f0-9]{64}$/);
+      assert.notEqual(changed, original);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a source-keyed host simulator binary from the persistent state root", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-local-testbed-simulator-cache-"),
+    );
+    try {
+      const parsedOptions = options(root);
+      const sourceDigest = "a".repeat(64);
+      const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
+      let binaryPresent = false;
+      const commands = [];
+      const dependencies = {
+        ensureDirectory: async () => {},
+        isExecutable: async () => binaryPresent,
+        runCommand: async (command, args, commandOptions) => {
+          commands.push({ command, args, commandOptions });
+          binaryPresent = true;
+        },
+      };
+      const first = await ensureLowerControllerSimCached({
+        options: parsedOptions,
+        sourceDigest,
+        dependencies,
+      });
+      const second = await ensureLowerControllerSimCached({
+        options: parsedOptions,
+        sourceDigest,
+        dependencies,
+      });
+
+      assert.equal(first.cache, "miss");
+      assert.equal(second.cache, "hit");
+      assert.equal(first.binaryPath, layout.binaryPath);
+      assert.equal(commands.length, 1);
+      assert.deepEqual(commands[0].args, [
+        "build",
+        "-p",
+        "lower-controller-sim",
+        "--locked",
+      ]);
+      assert.equal(
+        commands[0].commandOptions.env.CARGO_TARGET_DIR,
+        layout.targetDirectory,
+      );
+      assert.match(layout.binaryPath, /state\/host-lower-controller-sim\//);
+      assert.doesNotMatch(layout.binaryPath, /192\.168\.2\.22/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses tool-supported cache settings and clear_cache removes only declared directories", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),

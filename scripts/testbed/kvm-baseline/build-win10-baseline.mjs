@@ -366,9 +366,16 @@ async function existingParent(path) {
   }
 }
 
-async function availableStorageBytes(path) {
-  const filesystem = await statfs(await existingParent(path));
-  return Number(filesystem.bavail) * Number(filesystem.bsize);
+async function availableStorage(path) {
+  const parent = await existingParent(path);
+  const [filesystem, metadata] = await Promise.all([
+    statfs(parent),
+    stat(parent),
+  ]);
+  return {
+    availableBytes: Number(filesystem.bavail) * Number(filesystem.bsize),
+    filesystemId: `device:${metadata.dev}`,
+  };
 }
 
 async function readable(path) {
@@ -440,6 +447,10 @@ async function collectHostObservation(config) {
   const availableMemoryKiB = Number(
     /^MemAvailable:\s+(\d+)/m.exec(memory)?.[1] ?? 0,
   );
+  const [baselineStorage, cacheStorage] = await Promise.all([
+    availableStorage(config.storage.baselinePath),
+    availableStorage(config.storage.cacheDiskPath),
+  ]);
   return {
     hostIdentity: await collectExecutingHostIdentity(config.host.address),
     kvmAvailable: await kvmDeviceAvailable(),
@@ -448,8 +459,12 @@ async function collectHostObservation(config) {
     cpuCount: availableParallelism(),
     availableMemoryMiB: Math.floor(availableMemoryKiB / 1024),
     storageAvailableBytes: {
-      baseline: await availableStorageBytes(config.storage.baselinePath),
-      cache: await availableStorageBytes(config.storage.cacheDiskPath),
+      baseline: baselineStorage.availableBytes,
+      cache: cacheStorage.availableBytes,
+    },
+    storageFilesystemIds: {
+      baseline: baselineStorage.filesystemId,
+      cache: cacheStorage.filesystemId,
     },
     installationMedia: {
       windowsIso: await readable(config.media.windowsIsoPath),

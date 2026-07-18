@@ -2,8 +2,8 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants, readFileSync } from "node:fs";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -89,6 +89,13 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
   "XDG_RUNTIME_DIR",
 ]);
 const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
+const HOST_SIMULATOR_CACHE_DIRECTORY = "host-lower-controller-sim";
+const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
+  "Cargo.lock",
+  "Cargo.toml",
+  "apps/lower-controller-sim/Cargo.toml",
+  "crates/vending-core/Cargo.toml",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -472,7 +479,6 @@ export function buildReconstructionPlan(options, contract) {
       "--filter",
       "service-api",
     ]),
-    commandLine("cargo", ["build", "-p", "lower-controller-sim", "--locked"]),
     commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: buildMigrationEnvironment(options),
     }),
@@ -490,6 +496,109 @@ export function buildReconstructionPlan(options, contract) {
     ]),
     renderPublishedCommand(binding.admitRunnerCommand, options, contract),
   ];
+}
+
+async function sourceFilesUnder(root, relativeDirectory, listDirectory) {
+  const directory = join(root, relativeDirectory);
+  const entries = await listDirectory(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const relativePath = join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(
+        ...(await sourceFilesUnder(root, relativePath, listDirectory)),
+      );
+    } else if (entry.isFile()) {
+      files.push(relativePath);
+    }
+  }
+  return files;
+}
+
+export async function lowerControllerSimSourceFingerprint(
+  workspace,
+  { listDirectory = readdir, readSource = readFile } = {},
+) {
+  const root = absolute(workspace, "workspace");
+  const sourceFiles = [
+    ...LOWER_CONTROLLER_SIM_SOURCE_PATHS,
+    ...(await sourceFilesUnder(
+      root,
+      "apps/lower-controller-sim/src",
+      listDirectory,
+    )),
+    ...(await sourceFilesUnder(root, "crates/vending-core/src", listDirectory)),
+  ].sort();
+  const digest = createHash("sha256");
+  for (const relativePath of sourceFiles) {
+    digest.update(relativePath);
+    digest.update("\0");
+    digest.update(await readSource(join(root, relativePath)));
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
+export function lowerControllerSimCacheLayout(options, sourceDigest) {
+  if (!/^[a-f0-9]{64}$/.test(sourceDigest ?? "")) {
+    throw new Error(
+      "lower-controller simulator source digest must be a SHA-256 hex string",
+    );
+  }
+  const root = join(
+    absolute(options.stateRoot, "stateRoot"),
+    HOST_SIMULATOR_CACHE_DIRECTORY,
+    sourceDigest,
+  );
+  const targetDirectory = join(root, "target");
+  return {
+    sourceDigest,
+    root,
+    targetDirectory,
+    binaryPath: join(targetDirectory, "debug", "lower-controller-sim"),
+  };
+}
+
+export async function ensureLowerControllerSimCached({
+  options,
+  sourceDigest,
+  dependencies = {},
+}) {
+  const resolvedSourceDigest =
+    sourceDigest ??
+    (await lowerControllerSimSourceFingerprint(
+      options.workspace,
+      dependencies,
+    ));
+  const layout = lowerControllerSimCacheLayout(options, resolvedSourceDigest);
+  const isExecutable =
+    dependencies.isExecutable ??
+    (async (path) =>
+      access(path, constants.X_OK)
+        .then(() => true)
+        .catch(() => false));
+  if (await isExecutable(layout.binaryPath)) {
+    return { ...layout, cache: "hit" };
+  }
+  const ensureDirectory = dependencies.ensureDirectory ?? mkdir;
+  const runCommand = dependencies.runCommand ?? run;
+  await ensureDirectory(layout.targetDirectory, { recursive: true });
+  await runCommand(
+    "cargo",
+    ["build", "-p", "lower-controller-sim", "--locked"],
+    {
+      cwd: options.workspace,
+      env: { ...process.env, CARGO_TARGET_DIR: layout.targetDirectory },
+    },
+  );
+  if (!(await isExecutable(layout.binaryPath))) {
+    throw new Error(
+      "lower-controller simulator build did not publish an executable to its persistent cache",
+    );
+  }
+  return { ...layout, cache: "miss" };
 }
 
 export function buildHostLocalServiceApiEnvironment(options) {
@@ -605,7 +714,16 @@ function baselineDomainName(contract) {
   );
 }
 
-export function buildHostControlPlaneUnitPlan(options, contract) {
+export function buildHostControlPlaneUnitPlan(
+  options,
+  contract,
+  {
+    lowerControllerSimPath = join(
+      options.workspace,
+      "target/debug/lower-controller-sim",
+    ),
+  } = {},
+) {
   const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
   const token = createHash("sha256")
     .update(
@@ -637,7 +755,7 @@ export function buildHostControlPlaneUnitPlan(options, contract) {
       `--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterDigest}`,
       `--setenv=VEM_VM_HOST_ADAPTER_DOMAIN=${baselineDomainName(contract)}`,
       `--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=${join(options.stateRoot, "host-adapter")}`,
-      `--setenv=VEM_LOWER_CONTROLLER_SIM=${join(options.workspace, "target/debug/lower-controller-sim")}`,
+      `--setenv=VEM_LOWER_CONTROLLER_SIM=${lowerControllerSimPath}`,
       process.execPath,
       "scripts/testbed/host-serial-control-plane.mjs",
       "--workspace",
@@ -1093,8 +1211,14 @@ async function stopHostControlPlaneUnit(options, contract) {
   );
 }
 
-async function startHostControlPlaneUnit(options, contract) {
-  const start = buildHostControlPlaneUnitPlan(options, contract).at(-1);
+async function startHostControlPlaneUnit(
+  options,
+  contract,
+  lowerControllerSimPath,
+) {
+  const start = buildHostControlPlaneUnitPlan(options, contract, {
+    lowerControllerSimPath,
+  }).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
 }
 
@@ -1167,6 +1291,7 @@ async function reconstruct(options) {
     { stdio: "ignore" },
   ).catch(() => undefined);
   try {
+    const hostSimulator = await ensureLowerControllerSimCached({ options });
     const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
       cwd: options.workspace,
     });
@@ -1175,7 +1300,7 @@ async function reconstruct(options) {
       "host reconstruction",
     );
     await startHeadlessVncActivatorUnit(options, contract);
-    for (const step of plan.slice(3, 10))
+    for (const step of plan.slice(3, 9))
       await run(step.command, step.args, {
         cwd: options.workspace,
         env: step.env,
@@ -1188,7 +1313,11 @@ async function reconstruct(options) {
     } catch (error) {
       throw await serviceApiFailure(error);
     }
-    await startHostControlPlaneUnit(options, contract);
+    await startHostControlPlaneUnit(
+      options,
+      contract,
+      hostSimulator.binaryPath,
+    );
     let seeded;
     try {
       seeded = await seedThroughSupportedApis({
@@ -1235,7 +1364,7 @@ async function reconstruct(options) {
       `${JSON.stringify(guestInput, null, 2)}\n`,
       "utf8",
     );
-    for (const step of plan.slice(10, -1))
+    for (const step of plan.slice(9, -1))
       await run(step.command, step.args, { cwd: options.workspace });
     const admitRunner = plan.at(-1);
     const admitHost = await runCapture(admitRunner.command, admitRunner.args, {
@@ -1273,6 +1402,11 @@ async function reconstruct(options) {
             )
             .digest("hex"),
           targetIdentity: runtimeTargetIdentity(contract),
+        },
+        hostSimulator: {
+          cache: hostSimulator.cache,
+          sourceDigest: hostSimulator.sourceDigest,
+          binaryPath: hostSimulator.binaryPath,
         },
         guest: {
           remote: `${contract.testbed.guest.user}@${contract.testbed.guest.host}`,

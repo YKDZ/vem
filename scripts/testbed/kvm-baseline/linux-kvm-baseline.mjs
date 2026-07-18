@@ -493,17 +493,45 @@ export function evaluateHostPreflight(config, observed) {
   ) {
     throw new Error(`host memory must satisfy ${profile.memoryMiB} MiB`);
   }
-  const requiredStorageBytes = config.storage.minimumFreeGiB * GiB;
   const storage = observed.storageAvailableBytes ?? {};
-  if (
-    !Number.isFinite(storage.baseline) ||
-    !Number.isFinite(storage.cache) ||
-    storage.baseline < requiredStorageBytes ||
-    storage.cache < requiredStorageBytes
-  ) {
-    throw new Error(
-      `both baseline and cache storage must provide ${config.storage.minimumFreeGiB} GiB free`,
+  const filesystemIds = observed.storageFilesystemIds ?? {};
+  const requestedDiskBytes = {
+    baseline: config.storage.systemDiskGiB * GiB,
+    cache: config.storage.cacheDiskGiB * GiB,
+  };
+  const filesystems = new Map();
+  for (const storageKind of ["baseline", "cache"]) {
+    const availableBytes = storage[storageKind];
+    const filesystemId = filesystemIds[storageKind];
+    if (
+      !Number.isFinite(availableBytes) ||
+      availableBytes < 0 ||
+      typeof filesystemId !== "string" ||
+      filesystemId.trim() === ""
+    ) {
+      throw new Error(
+        `host storage observation for ${storageKind} must include free bytes and a filesystem identity`,
+      );
+    }
+    const filesystem = filesystems.get(filesystemId) ?? {
+      availableBytes,
+      requestedBytes: 0,
+    };
+    filesystem.availableBytes = Math.min(
+      filesystem.availableBytes,
+      availableBytes,
     );
+    filesystem.requestedBytes += requestedDiskBytes[storageKind];
+    filesystems.set(filesystemId, filesystem);
+  }
+  for (const [filesystemId, filesystem] of filesystems) {
+    const requiredBytes =
+      filesystem.requestedBytes + config.storage.minimumFreeGiB * GiB;
+    if (filesystem.availableBytes < requiredBytes) {
+      throw new Error(
+        `shared storage filesystem ${filesystemId} must provide ${requiredBytes / GiB} GiB free for requested disks plus minimum reserve`,
+      );
+    }
   }
   if (observed.installationMedia?.windowsIso !== true) {
     throw new Error(
