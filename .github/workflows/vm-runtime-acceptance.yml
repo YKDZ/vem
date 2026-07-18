@@ -25,17 +25,18 @@ permissions:
   contents: read
 
 jobs:
-  inspect-host-rust-toolchain:
+  inspect-testbed-build-progress:
     if: github.ref == 'refs/heads/ops/inspect-forest-vm-20260718'
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     steps:
-      - name: Inspect host Rust toolchain
+      - name: Inspect testbed build progress
         run: |
           set -euo pipefail
-          id
-          printf 'HOME=%s\nPATH=%s\n' "$HOME" "$PATH"
-          command -v cargo || true
-          find /root /home /opt -path '*/bin/cargo' -type f -print 2>/dev/null | head -20
+          date -Is
+          df -h /opt /
+          du -sh /opt/vem/runtime-testbed/cargo /opt/vem/runtime-testbed/rustup /opt/vem/runtime-testbed/cargo-target 2>/dev/null || true
+          ps -eo pid,etimes,%cpu,%mem,cmd | grep -E 'cargo|rustc|local-testbed|service-api|qemu-system' | grep -v grep || true
+          virsh list --all
 
   build-windows-runtime:
     name: Build Current Windows Runtime
