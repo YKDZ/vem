@@ -57,6 +57,23 @@ function Invoke-Native {
   if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
 }
 
+function Invoke-NativeWithRetry {
+  param(
+    [string] $FilePath,
+    [string[]] $ArgumentList,
+    [string] $Description,
+    [int] $Attempts = 3
+  )
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -eq 0) { return }
+    if ($attempt -eq $Attempts) {
+      throw "$Description failed with exit code $LASTEXITCODE after $Attempts attempts"
+    }
+    Start-Sleep -Seconds (5 * $attempt)
+  }
+}
+
 function Get-Sha256 {
   param([string] $Path)
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
@@ -361,8 +378,8 @@ function Install-Toolchain {
   Set-ExecutionPolicy Bypass -Scope Process -Force
   Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
   Refresh-ProcessPath
-  Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "git", "rustup.install", "visualstudio2022buildtools", "visualstudio2022-workload-vctools") -Description "Windows build toolchain installation"
-  Invoke-Native -FilePath "choco.exe" -ArgumentList @("install", "-y", "nodejs-lts", "--version=24.16.0") -Description "pinned Node.js installation"
+  Invoke-NativeWithRetry -FilePath "choco.exe" -ArgumentList @("install", "-y", "git", "rustup.install", "visualstudio2022buildtools", "visualstudio2022-workload-vctools") -Description "Windows build toolchain installation"
+  Invoke-NativeWithRetry -FilePath "choco.exe" -ArgumentList @("install", "-y", "nodejs-lts", "--version=24.16.0") -Description "pinned Node.js installation"
   Refresh-ProcessPath
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("enable") -Description "Corepack enable"
   Invoke-Native -FilePath "corepack.cmd" -ArgumentList @("prepare", "pnpm@11.9.0", "--activate") -Description "pinned pnpm activation"

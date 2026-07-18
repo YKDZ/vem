@@ -1383,8 +1383,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
         },
         networkActive: true,
         storageAvailableBytes: {
-          baseline: 80 * 1024 ** 3,
-          cache: 80 * 1024 ** 3,
+          baseline: 240 * 1024 ** 3,
+          cache: 240 * 1024 ** 3,
+        },
+        storageFilesystemIds: {
+          baseline: "device:baseline",
+          cache: "device:cache",
         },
       };
       assert.deepEqual(evaluateHostPreflight(config, validObservation), {
@@ -1448,6 +1452,32 @@ await new Promise(() => setInterval(() => {}, 1_000));
             },
           }),
         /host\.address must identify the executing host/,
+      );
+
+      const sharedFilesystemObservation = {
+        ...validObservation,
+        storageAvailableBytes: {
+          baseline: 335 * 1024 ** 3,
+          cache: 335 * 1024 ** 3,
+        },
+        storageFilesystemIds: {
+          baseline: "device:shared",
+          cache: "device:shared",
+        },
+      };
+      assert.throws(
+        () => evaluateHostPreflight(config, sharedFilesystemObservation),
+        /shared storage filesystem device:shared must provide 336 GiB free/,
+      );
+      assert.deepEqual(
+        evaluateHostPreflight(config, {
+          ...sharedFilesystemObservation,
+          storageAvailableBytes: {
+            baseline: 336 * 1024 ** 3,
+            cache: 336 * 1024 ** 3,
+          },
+        }),
+        { ok: true },
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2685,6 +2715,9 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /config\.cmd/);
     assert.match(runtime, /"--labels", \(\$RunnerLabels -join ","\)/);
     assert.match(runtime, /choco\.exe/);
+    assert.match(runtime, /function Invoke-NativeWithRetry/);
+    assert.match(runtime, /for \(\$attempt = 1; \$attempt -le \$Attempts; \$attempt\+\+\)/);
+    assert.match(runtime, /Invoke-NativeWithRetry -FilePath "choco\.exe"/);
     assert.ok(runtime.indexOf("choco.exe") < runtime.indexOf("config.cmd"));
     assert.match(runtime, /vswhere\.exe/);
     assert.match(runtime, /Microsoft\.VisualStudio\.Workload\.VCTools/);
