@@ -129,6 +129,12 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));
     assert.doesNotMatch(xml, /filterref/);
+    const admission = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "display-proof",
+    });
+    assert.match(admission[1].input, /Marshal\]::SizeOf\(\$mode\)/);
   });
 
   it("does not admit the runner until the exact guest input is proven staged", async () => {

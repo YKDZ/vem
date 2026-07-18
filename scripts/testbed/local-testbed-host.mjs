@@ -221,7 +221,7 @@ public static class VemDisplaySettings {
 "@ -ErrorAction Stop
   }
   $mode = New-Object VemDevMode
-  $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([VemDevMode])
+  $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf($mode)
   if (-not [VemDisplaySettings]::EnumDisplaySettings($null, [VemDisplaySettings]::ENUM_CURRENT_SETTINGS, [ref]$mode)) {
     throw 'interactive desktop dimensions were not available'
   }
