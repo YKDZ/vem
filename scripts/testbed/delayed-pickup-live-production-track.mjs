@@ -347,11 +347,19 @@ export async function startDelayedPickupLiveProductionTrack(
         };
       },
       async close() {
-        await Promise.allSettled([client?.close(), sidecar.close()]);
+        await Promise.allSettled([
+          machineCapture?.cancel(),
+          client?.close(),
+          sidecar.close(),
+        ]);
       },
     };
   } catch (error) {
-    await Promise.allSettled([client?.close(), sidecar.close()]);
+    await Promise.allSettled([
+      machineCapture?.cancel(),
+      client?.close(),
+      sidecar.close(),
+    ]);
     throw error;
   }
 }

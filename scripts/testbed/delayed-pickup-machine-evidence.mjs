@@ -133,6 +133,11 @@ export async function startDelayedPickupMachineEvidenceCapture({
   schedule();
   return {
     runtime: { ...runtime },
+    async cancel() {
+      stopped = true;
+      clearInterval(timer);
+      await active;
+    },
     async stop(binding) {
       stopped = true;
       clearInterval(timer);

@@ -205,6 +205,7 @@ describe("delayed pickup live production track", () => {
 
   it("fails closed when F2 arrives before the live F1 release gate", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-delayed-live-gate-"));
+    let failedSampleCount = 0;
     try {
       const track = await startDelayedPickupLiveProductionTrack(
         {
@@ -292,6 +293,7 @@ describe("delayed pickup live production track", () => {
             };
           },
           async readMachineSample() {
+            failedSampleCount += 1;
             return {
               observedAt: "2026-07-18T08:00:30.100Z",
               route: "#/dispensing",
@@ -323,6 +325,9 @@ describe("delayed pickup live production track", () => {
         /F2 control-plane barrier arrived before F1 checkpoint completed/,
       );
       await track.close();
+      const samplesAtClose = failedSampleCount;
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      assert.equal(failedSampleCount, samplesAtClose);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
