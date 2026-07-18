@@ -199,7 +199,11 @@ function Invoke-Claim([object]$GuestInput) {
         $response = Invoke-RestMethod -Method Post -Uri "$($ready.healthzUrl -replace '/healthz$', '')/v1/provisioning/claim" -Headers @{ Authorization = "Bearer $($ready.ipcToken)" } -ContentType "application/json" -Body (@{ claimCode = $claimCode } | ConvertTo-Json -Compress) -TimeoutSec 10
         if ($response.machineCode -ne $GuestInput.machineCode) { throw "claim returned an unexpected machine" }
         return $response
-      } catch { $lastError = $_ }
+      } catch {
+        $lastError = $_
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        if ($statusCode -in @(401, 422)) { throw }
+      }
     }
     Start-Sleep -Seconds 2
   } while ([DateTime]::UtcNow -lt $deadline)
