@@ -2683,6 +2683,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
       runtime,
       /function Enable-InteractiveAutomaticLogon[\s\S]*AutoAdminLogon[\s\S]*Remove-ItemProperty[^\n]+AutoLogonCount/,
     );
+    assert.match(
+      runtime,
+      /InteractiveUser -cne "VEMKiosk"[\s\S]*DefaultUserName" -Value "VEMKiosk"/,
+    );
     const rearmInteractiveDisplay = runtime.slice(
       runtime.indexOf("function Rearm-InteractiveDisplay"),
       runtime.indexOf("function Prepare-KvmGuest"),

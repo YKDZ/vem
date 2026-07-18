@@ -523,11 +523,9 @@ function Get-BootIdentity {
 
 function Enable-InteractiveAutomaticLogon {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-  $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
-  if ([string]::IsNullOrWhiteSpace($configuredUser)) { throw "Windows autologon does not have a configured user" }
-  if ($configuredUser -notmatch ("(^|\\)" + [regex]::Escape($InteractiveUser) + "$")) {
-    throw "Windows autologon user does not match interactive display user"
-  }
+  if ($InteractiveUser -cne "VEMKiosk") { throw "interactive display user must be VEMKiosk" }
+  Set-ItemProperty -Path $winlogon -Name "DefaultUserName" -Value "VEMKiosk"
+  Set-ItemProperty -Path $winlogon -Name "DefaultDomainName" -Value "."
   Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1"
   Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 }
