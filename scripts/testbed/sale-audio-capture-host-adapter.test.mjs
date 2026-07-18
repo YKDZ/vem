@@ -17,7 +17,7 @@ const runtime = {
   principal: "FIELD\\InteractivePrincipal",
   sessionId: 4,
   cdpTargetId: "target-42",
-  cdpSessionId: "cdp-session://42",
+  cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
 };
 
 function report(request) {
@@ -46,7 +46,7 @@ describe("capture-sale-audio host adapter extension", () => {
       targetIdentity: "vm-target://runtime",
       transactionId: "transaction://run-17",
       runtime,
-      operationNonce: "op-1111111111111111",
+      operationNonce: "op-11111111111111111111111111111111",
     });
     const validated = validateSaleAudioCaptureReport(report(request), request);
     assert.equal(validated.request.runtime.principal, runtime.principal);
@@ -73,13 +73,14 @@ describe("capture-sale-audio host adapter extension", () => {
           transactionId: "transaction://run-17",
           runtime,
           captureSessionId: "sale-audio-session://42",
-          startOperationReference: "vm-operation://op-1111111111111111",
+          startOperationReference:
+            "vm-operation://op-11111111111111111111111111111111",
           captureStartedAt: "2026-07-18T08:00:00.000Z",
           sale: {
             saleCorrelationId: "sale-correlation://run-17",
-            orderId: "order-17",
+            orderId: "11111111-1111-4111-8111-111111111111",
             orderNo: "ORDER-17",
-            commandId: "command-17",
+            commandId: "22222222-2222-4222-8222-222222222222",
           },
         }),
       /commandNo/,

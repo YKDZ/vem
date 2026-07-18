@@ -2648,7 +2648,7 @@ public static class VemKioskConsole {
 $activeConsoleSessionId = [int][VemKioskConsole]::WTSGetActiveConsoleSessionId()
 if ($activeConsoleSessionId -lt 0 -or $activeConsoleSessionId -eq 0xffffffff) { throw 'active console session is unavailable' }
 $activeConsolePrincipal = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
-if ($activeConsolePrincipal -notmatch '(?i)\\VEMKiosk$') { throw 'active console principal must be VEMKiosk' }
+if ([string]::IsNullOrWhiteSpace($activeConsolePrincipal)) { throw 'active console principal is unavailable' }
 $daemon = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
 if ([string]$daemon.Status -ne 'Running') { throw 'daemon must remain running before installed kiosk sale acceptance' }
 $normal = @(Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $machinePath) })
@@ -2658,7 +2658,7 @@ $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAct
 if ([string]::IsNullOrWhiteSpace([string]$owner.Domain) -or [string]::IsNullOrWhiteSpace([string]$owner.User)) { throw 'normal machine.exe owner is incomplete' }
 $principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
 $sessionId = [int]$normalProcess.SessionId
-if ($principal -cne $activeConsolePrincipal -or $sessionId -ne $activeConsoleSessionId) { throw 'normal machine.exe must belong exactly to the active console VEMKiosk principal and session' }
+if ($principal -cne $activeConsolePrincipal -or $sessionId -ne $activeConsoleSessionId) { throw 'normal machine.exe must belong exactly to the active console principal and session' }
 $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction SilentlyContinue
 if ($null -ne $normalTaskInstance) { Stop-ScheduledTask -TaskName $normalTask -ErrorAction Stop }
 $launcherOwners = @(Get-CimInstance Win32_Process -Filter "Name = 'wscript.exe'" | Where-Object {
@@ -2684,10 +2684,10 @@ do {
 if ($machines.Count -ne 1 -or $listeners.Count -ne 1) { throw 'temporary CDP-enabled machine.exe did not reach exactly-one process/listener state' }
 $machine = $machines[0]
 $process = Get-Process -Id ([int]$machine.ProcessId) -ErrorAction Stop
-if ($process.SessionId -ne $sessionId) { throw 'debug machine.exe did not launch in active VEMKiosk session' }
+if ($process.SessionId -ne $sessionId) { throw 'debug machine.exe did not launch in active interactive session' }
 $owner = Invoke-CimMethod -InputObject $machine -MethodName GetOwner -ErrorAction Stop
 $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-if ($observedPrincipal -cne $principal) { throw 'debug machine.exe principal differs from active VEMKiosk principal' }
+if ($observedPrincipal -cne $principal) { throw 'debug machine.exe principal differs from active interactive principal' }
 $targets = @(Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 5 | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
 if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id)) { throw 'debug CDP must expose exactly one tauri target' }
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; prelaunch = [ordered]@{ processId = [int]$normalProcess.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal; owner = if ($null -ne $normalTaskInstance) { 'scheduled_task' } else { 'shell_launcher' } }; machine = [ordered]@{ processId = [int]$process.Id; executablePath = $machinePath; sessionId = [int]$sessionId; principal = $principal }; debugTarget = [ordered]@{ id = [string]$targets[0].id; url = [string]$targets[0].url }; debugTask = $debugTask; daemonRunningBefore = $true } | ConvertTo-Json -Compress -Depth 8))
@@ -2700,7 +2700,7 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
   const expectedRoute = String(prelaunch.expectedRoute ?? "#/catalog");
   if (!principal || !Number.isSafeInteger(sessionId) || sessionId < 1) {
     throw new Error(
-      "installed kiosk cleanup requires the saved active VEMKiosk principal and session",
+      "installed kiosk cleanup requires the saved active interactive principal and session",
     );
   }
   return String.raw`
@@ -2732,7 +2732,7 @@ if ($listeners.Count -ne 1) { throw 'live kiosk did not retain exactly one CDP l
 $normalTaskInstance = Get-ScheduledTask -TaskName $normalTask -ErrorAction Stop
 if (-not [bool]$normalTaskInstance.Settings.Enabled) { throw 'normal VEMMachineUI task is disabled during cleanup' }
 $normalTaskPrincipal = [string]$normalTaskInstance.Principal.UserId
-if ($normalTaskPrincipal -notmatch '(?i)VEMKiosk$') { throw 'normal VEMMachineUI task does not target VEMKiosk' }
+if ($normalTaskPrincipal -cne $principal -and $normalTaskPrincipal -cne ($principal -split '\\')[-1]) { throw 'normal VEMMachineUI task does not target the observed interactive principal' }
 if (-not (Test-Path -LiteralPath $debugLauncher -PathType Leaf)) { throw 'installed kiosk sale acceptance CDP launcher is missing' }
 $acceptanceOverlayAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"{0}"' -f $debugLauncher) -WorkingDirectory 'C:\VEM\bringup'
 $acceptanceOverlayPrincipal = New-ScheduledTaskPrincipal -UserId $principal -LogonType Interactive -RunLevel Limited
@@ -2758,9 +2758,9 @@ $acceptanceTarget = $null
   $normalProcess = Get-Process -Id ([int]$normal[0].ProcessId) -ErrorAction Stop
   $owner = Invoke-CimMethod -InputObject $normal[0] -MethodName GetOwner -ErrorAction Stop
   $observedPrincipal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'acceptance overlay machine.exe principal or session differs from saved VEMKiosk owner' }
+  if ($observedPrincipal -cne $principal -or [int]$normalProcess.SessionId -ne $sessionId) { throw 'acceptance overlay machine.exe principal or session differs from saved interactive owner' }
   $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listeners[0].OwningProcess)" -ErrorAction Stop
-  if ([int]$listenerProcess.SessionId -ne $sessionId) { throw 'acceptance overlay CDP listener session differs from VEMKiosk' }
+  if ([int]$listenerProcess.SessionId -ne $sessionId) { throw 'acceptance overlay CDP listener session differs from interactive session' }
   $cursor = $listenerProcess
   $listenerBound = $false
   for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
@@ -3036,8 +3036,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const serialConformanceReport = `${evidenceRoot}/serial-com-scanner-sale-conformance.json`;
   const customerUiSaleNormalRoot = `${evidenceRoot}/installed-kiosk-sale-normal`;
   const customerUiSaleCompetitionRoot = `${evidenceRoot}/installed-kiosk-sale-route-competition`;
+  const delayedPickupNativeAudioRoot = `${evidenceRoot}/installed-kiosk-sale-delayed-pickup-native-audio`;
   const customerUiSaleNormalReport = `${customerUiSaleNormalRoot}/report.json`;
   const customerUiSaleCompetitionReport = `${customerUiSaleCompetitionRoot}/report.json`;
+  const delayedPickupNativeAudioReport = `${delayedPickupNativeAudioRoot}/report.json`;
   const runtimeCommand = buildAcceptanceScriptCommand(
     "runtime-acceptance",
     { ...options, runId, machineCode, platformTarget },
@@ -3190,6 +3192,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const installedKioskSaleCompetitionCommand = buildInstalledKioskSaleCommand(
     "vm-route-competition",
     customerUiSaleCompetitionReport,
+    true,
+  );
+  const delayedPickupNativeAudioCommand = buildInstalledKioskSaleCommand(
+    "vm-delayed-pickup-native-audio",
+    delayedPickupNativeAudioReport,
     true,
   );
   const failureMatrixCommands = {
@@ -3380,6 +3387,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       customerUiSaleNormal: customerUiSaleNormalReport,
       customerUiSaleRouteCompetition: customerUiSaleCompetitionReport,
       customerUiSale: customerUiSaleCompetitionReport,
+      delayedPickupNativeAudio: delayedPickupNativeAudioReport,
     },
     serialRunnerExpectedPublicKey:
       options.expectedSerialRunnerPublicKey ?? null,
@@ -3485,6 +3493,17 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         command: postSaleRuntimeCommand,
         report: postSaleRuntimeAcceptanceReport,
         blocksOnFailure: true,
+      },
+      {
+        name: "delayed pickup native audio live sale",
+        mode: "installed-kiosk-sale",
+        status: "planned",
+        command: delayedPickupNativeAudioCommand,
+        ephemeralPlatformEvidence,
+        report: delayedPickupNativeAudioReport,
+        issue16ControlPlaneProfile: "delayed-pickup-native-audio",
+        blocksOnFailure: true,
+        requiresEphemeralDatabase: true,
       },
     ],
   };
@@ -4523,6 +4542,49 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   };
 }
 
+function evaluateDelayedPickupNativeAudioEvidence(step) {
+  const report = step?.parsed;
+  const acceptance = step?.parsed?.delayedPickupNativeAudio;
+  const diagnostics = [];
+  if (
+    step?.status !== "passed" ||
+    report?.ok !== true ||
+    report?.schemaVersion !== "installed-kiosk-sale-acceptance/v2"
+  )
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "delayed_pickup_installed_sale_failed",
+        "Delayed pickup installed sale step did not complete.",
+      ),
+    );
+  if (
+    acceptance?.schemaVersion !==
+      "delayed-pickup-native-audio-production-acceptance/v3" ||
+    acceptance?.result !== "passed" ||
+    !acceptance?.binding ||
+    !acceptance?.runtime ||
+    acceptance?.audio?.source !== "windows_default_output" ||
+    acceptance?.audio?.physicalSpeakerAudibility !== "hitl_required_issue_22" ||
+    !Array.isArray(acceptance?.audio?.cueWindows) ||
+    acceptance.audio.cueWindows.length !== 5 ||
+    acceptance.audio.cueWindows.some((window) => window?.kind !== "passed") ||
+    !Array.isArray(acceptance?.diagnostics) ||
+    acceptance.diagnostics.length !== 0
+  )
+    diagnostics.push(
+      serialAcceptanceDiagnostic(
+        "delayed_pickup_native_audio_evidence_invalid",
+        "Delayed pickup requires passed production serial, Machine journey, daemon/platform stock, and Windows default-audio evidence.",
+      ),
+    );
+  return {
+    status: diagnostics.length === 0 ? "passed" : "failed",
+    asserted: diagnostics.length === 0,
+    diagnostics,
+    evidence: acceptance ?? null,
+  };
+}
+
 export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
   const cleanBase = stepMap.get("clean-base factory preparation acceptance");
@@ -4532,6 +4594,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleNormal = stepMap.get("installed kiosk sale normal");
   const saleCompetition = stepMap.get("installed kiosk sale route competition");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
+  const delayedPickup = stepMap.get("delayed pickup native audio live sale");
   const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
@@ -4546,22 +4609,28 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     saleCompetition,
     plan,
   );
+  const delayedPickupEvidence =
+    evaluateDelayedPickupNativeAudioEvidence(delayedPickup);
   const installedKioskEvidence = {
     status:
       normalSaleEvidence.status === "passed" &&
-      competitionSaleEvidence.status === "passed"
+      competitionSaleEvidence.status === "passed" &&
+      delayedPickupEvidence.status === "passed"
         ? "passed"
         : "failed",
     asserted:
       normalSaleEvidence.asserted === true &&
-      competitionSaleEvidence.asserted === true,
+      competitionSaleEvidence.asserted === true &&
+      delayedPickupEvidence.asserted === true,
     diagnostics: [
       ...normalSaleEvidence.diagnostics,
       ...competitionSaleEvidence.diagnostics,
+      ...delayedPickupEvidence.diagnostics,
     ],
     evidence: {
       normal: normalSaleEvidence.evidence,
       routeCompetition: competitionSaleEvidence.evidence,
+      delayedPickupNativeAudio: delayedPickupEvidence.evidence,
     },
   };
   const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
@@ -4602,6 +4671,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       installedKioskSaleNormal: saleNormal?.status ?? "missing",
       installedKioskSaleRouteCompetition: saleCompetition?.status ?? "missing",
       postSaleRuntimeAcceptance: postSaleRuntime?.status ?? "missing",
+      delayedPickupNativeAudio: delayedPickup?.status ?? "missing",
     },
     platformSetup: {
       status: ephemeral?.status ?? "missing",
@@ -4632,6 +4702,11 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       routeCompetition: {
         status: saleCompetition?.status ?? "missing",
         evidencePath: plan.artifacts.customerUiSaleRouteCompetition,
+      },
+      delayedPickupNativeAudio: {
+        status: delayedPickupEvidence.status,
+        evidencePath: plan.artifacts.delayedPickupNativeAudio,
+        acceptance: delayedPickupEvidence.evidence,
       },
       serialEvidence: installedKioskEvidence.evidence,
       sellReady: {

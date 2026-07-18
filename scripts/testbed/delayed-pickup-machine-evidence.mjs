@@ -33,16 +33,61 @@ export async function readInstalledMachineProductionSample(
   );
 }
 
-export function startDelayedPickupMachineEvidenceCapture({
+export async function observeInstalledMachineRuntime({
   client,
-  binding,
-  runtime,
+  inspectRuntime,
+}) {
+  if (!client || typeof client.observeIdentity !== "function")
+    throw new Error("connected production CDP client is required");
+  if (typeof inspectRuntime !== "function")
+    throw new Error("Windows runtime inspector is required");
+  const [windows, cdp] = await Promise.all([
+    inspectRuntime(),
+    client.observeIdentity(),
+  ]);
+  const machine = windows?.machine;
+  const listener = windows?.cdpListener;
+  if (
+    !Number.isSafeInteger(machine?.processId) ||
+    machine.processId < 1 ||
+    !Number.isSafeInteger(machine?.sessionId) ||
+    machine.sessionId < 1 ||
+    typeof machine?.executablePath !== "string" ||
+    typeof machine?.principal !== "string" ||
+    listener?.machineAncestorProcessId !== machine.processId ||
+    listener?.sessionId !== machine.sessionId ||
+    listener?.principal !== machine.principal ||
+    typeof cdp?.targetId !== "string" ||
+    typeof cdp?.sessionId !== "string"
+  )
+    throw new Error("installed Windows process/CDP identity is incomplete");
+  return {
+    processId: machine.processId,
+    executablePath: machine.executablePath,
+    principal: machine.principal,
+    sessionId: machine.sessionId,
+    cdpTargetId: cdp.targetId,
+    cdpSessionId: cdp.sessionId,
+    observedAt: cdp.connectedAt,
+    source: "windows_process_and_live_cdp_client",
+  };
+}
+
+export async function startDelayedPickupMachineEvidenceCapture({
+  client,
+  inspectRuntime,
   intervalMs = 100,
   readSample = readInstalledMachineProductionSample,
+  onSample,
 }) {
   if (!client) throw new Error("installed canonical CDP client is required");
   if (!Number.isInteger(intervalMs) || intervalMs < 25 || intervalMs > 1_000)
     throw new Error("machine evidence interval must be 25 through 1000ms");
+  const runtime = await observeInstalledMachineRuntime({
+    client,
+    inspectRuntime,
+  });
+  const captureStartedAt = new Date().toISOString();
   const uiObservations = [];
   let runtimeTrace = [];
   let stopped = false;
@@ -56,23 +101,22 @@ export function startDelayedPickupMachineEvidenceCapture({
       const sample = await readSample(client, { timeoutMs: 5_000 });
       if (!sample || !Array.isArray(sample.runtimeTrace))
         throw new Error("installed Machine production sample is invalid");
+      if (typeof onSample === "function") await onSample(sample);
       runtimeTrace = sample.runtimeTrace;
       if (REQUIRED_SURFACES.has(sample.surface)) {
-        if (
-          sample.route !== "#/dispensing" ||
-          sample.orderId !== binding.orderId ||
-          sample.orderNo !== binding.orderNo ||
-          sample.commandId !== binding.commandId ||
-          sample.commandNo !== binding.commandNo
-        )
+        if (sample.route !== "#/dispensing")
           throw new Error("installed Machine DOM sale binding is invalid");
         if (!uiObservations.some((entry) => entry.surface === sample.surface))
           uiObservations.push({
             surface: sample.surface,
             route: sample.route,
             observedAt: sample.observedAt,
-            binding: { ...binding },
-            runtime: { ...runtime },
+            observedSale: {
+              orderId: sample.orderId,
+              orderNo: sample.orderNo,
+              commandId: sample.commandId,
+              commandNo: sample.commandNo,
+            },
           });
       }
     } catch (error) {
@@ -88,16 +132,23 @@ export function startDelayedPickupMachineEvidenceCapture({
   active = poll();
   schedule();
   return {
-    async stop() {
+    runtime: { ...runtime },
+    async stop(binding) {
       stopped = true;
       clearInterval(timer);
       await active;
       if (failure) throw failure;
+      for (const observation of uiObservations)
+        for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
+          if (observation.observedSale[name] !== binding?.[name])
+            throw new Error("installed Machine DOM sale binding is invalid");
       return {
-        schemaVersion: "machine-production-evidence/v1",
+        schemaVersion: "machine-production-evidence/v2",
         source: "installed_canonical_machine_cdp",
         binding: { ...binding },
         runtime: { ...runtime },
+        captureStartedAt,
+        captureCompletedAt: new Date().toISOString(),
         uiObservations,
         runtimeTrace,
       };

@@ -22,6 +22,11 @@ export const SALE_AUDIO_REPORT_SCHEMA_VERSION =
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const EVIDENCE_ID = /^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const URI_ID =
+  /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[A-Za-z0-9][A-Za-z0-9._:/-]{1,254}$/;
 
 function requiredString(value, name) {
   if (typeof value !== "string" || value.trim() === "")
@@ -37,8 +42,20 @@ function positiveInteger(value, name) {
 }
 
 function timestamp(value, name) {
-  if (typeof value !== "string" || !ISO_TIMESTAMP.test(value))
+  if (
+    typeof value !== "string" ||
+    !ISO_TIMESTAMP.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(Date.parse(value)).toISOString() !== value
+  )
     throw new Error(`${name} must be an ISO timestamp`);
+  return value;
+}
+
+function canonical(value, pattern, name) {
+  const normalized = requiredString(value, name);
+  if (normalized !== value || !pattern.test(value))
+    throw new Error(`${name} format is invalid`);
   return value;
 }
 
@@ -178,15 +195,16 @@ export function validateSaleAudioCaptureRequest(request) {
     !new Set(["start", "stop"]).has(request.phase)
   )
     throw new Error("sale audio capture request operation is invalid");
-  for (const name of [
-    "runId",
-    "operationNonce",
-    "operationReference",
-    "lifecycleReference",
-    "targetIdentity",
-    "transactionId",
-  ])
-    requiredString(request[name], `request.${name}`);
+  canonical(request.runId, TOKEN_ID, "request.runId");
+  canonical(
+    request.operationNonce,
+    /^op-[a-f0-9]{32}$/,
+    "request.operationNonce",
+  );
+  if (request.operationReference !== `vm-operation://${request.operationNonce}`)
+    throw new Error("request.operationReference format is invalid");
+  for (const name of ["lifecycleReference", "targetIdentity", "transactionId"])
+    canonical(request[name], URI_ID, `request.${name}`);
   const runtime = request.runtime;
   exactKeys(
     runtime,
@@ -209,6 +227,12 @@ export function validateSaleAudioCaptureRequest(request) {
     "cdpSessionId",
   ])
     requiredString(runtime?.[name], `request.runtime.${name}`);
+  canonical(runtime.cdpTargetId, TOKEN_ID, "request.runtime.cdpTargetId");
+  canonical(
+    runtime.cdpSessionId,
+    /^cdp-connection:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    "request.runtime.cdpSessionId",
+  );
   if (request.phase === "start") {
     if (request.captureSession !== null || request.sale !== null)
       throw new Error(
@@ -229,18 +253,29 @@ export function validateSaleAudioCaptureRequest(request) {
         request.captureSession?.[name],
         `request.captureSession.${name}`,
       );
+    canonical(
+      request.captureSession.captureSessionId,
+      URI_ID,
+      "request.captureSession.captureSessionId",
+    );
+    canonical(
+      request.captureSession.startOperationReference,
+      URI_ID,
+      "request.captureSession.startOperationReference",
+    );
     timestamp(
       request.captureSession.startedAt,
       "request.captureSession.startedAt",
     );
-    for (const name of [
-      "saleCorrelationId",
-      "orderId",
-      "orderNo",
-      "commandId",
-      "commandNo",
-    ])
-      requiredString(request.sale?.[name], `request.sale.${name}`);
+    canonical(
+      request.sale?.saleCorrelationId,
+      URI_ID,
+      "request.sale.saleCorrelationId",
+    );
+    canonical(request.sale?.orderId, UUID, "request.sale.orderId");
+    canonical(request.sale?.orderNo, TOKEN_ID, "request.sale.orderNo");
+    canonical(request.sale?.commandId, UUID, "request.sale.commandId");
+    canonical(request.sale?.commandNo, TOKEN_ID, "request.sale.commandNo");
     exactKeys(
       request.sale,
       ["saleCorrelationId", "orderId", "orderNo", "commandId", "commandNo"],

@@ -25,7 +25,7 @@ $saleView = Invoke-RestMethod -Method Get -Uri "$baseUrl/v1/sale-view" -Headers 
 $binding = ${psLiteral(bindingJson)} | ConvertFrom-Json
 [Console]::Out.WriteLine(([ordered]@{
   stage = ${psLiteral(stage)}
-  capturedAt = [DateTime]::UtcNow.ToString('o')
+  capturedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
   binding = $binding
   transaction = $transaction
   saleView = $saleView

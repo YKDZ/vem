@@ -39,6 +39,7 @@ describe("installed kiosk sale platform raw query", () => {
     const report = buildInstalledKioskSalePlatformRawReport({
       options,
       machineId: "machine-204",
+      capturedAt: "2026-07-18T08:00:00.000Z",
       raw: {
         orders: [],
         orderItems: [],
@@ -50,8 +51,9 @@ describe("installed kiosk sale platform raw query", () => {
     });
 
     expect(report).toEqual({
-      schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+      schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
       source: "authoritative_ephemeral_platform_database",
+      capturedAt: "2026-07-18T08:00:00.000Z",
       scope: {
         runId: "RUN-204",
         machineCode: "VEM-TESTBED-FACTORY-RUN-204",
@@ -92,6 +94,9 @@ describe("installed kiosk sale platform raw query", () => {
     expect(source).toContain(
       'eq(machineRawStockMovements.movementType, "dispense_succeeded")',
     );
+    expect(source).toContain("database.client.transaction");
+    expect(source).toContain('isolationLevel: "repeatable read"');
+    expect(source).toContain("clock_timestamp()");
     expect(source).not.toMatch(
       /options\.(?:orderId|paymentId|orderNo|commandId|movementId)/,
     );

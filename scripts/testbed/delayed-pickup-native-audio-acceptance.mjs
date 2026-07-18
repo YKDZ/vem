@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   DEFAULT_DELAYED_PICKUP_TIMING,
@@ -75,18 +75,14 @@ function deriveSerialSaleBinding(serial) {
   return { correlationId, sale };
 }
 
-function canonicalRuntime(installedSale, machineEvidence) {
-  const debug = installedSale?.runtimeBinding?.debug;
-  const machine = debug?.machine;
-  const runtime = {
-    processId: machine?.processId,
-    executablePath: machine?.executablePath,
-    principal: machine?.principal,
-    sessionId: machine?.sessionId,
-    cdpTargetId: debug?.targetId,
-    cdpSessionId: machineEvidence?.runtime?.cdpSessionId,
-  };
+function canonicalRuntime(_installedSale, machineEvidence) {
+  const runtime = machineEvidence?.runtime;
   if (
+    machineEvidence?.schemaVersion !== "machine-production-evidence/v2" ||
+    runtime?.source !== "windows_process_and_live_cdp_client" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+      runtime?.observedAt ?? "",
+    ) ||
     !Number.isSafeInteger(runtime.processId) ||
     runtime.processId < 1 ||
     !Number.isSafeInteger(runtime.sessionId) ||
@@ -101,14 +97,16 @@ function canonicalRuntime(installedSale, machineEvidence) {
     throw new Error(
       "installed canonical machine process/CDP handoff is incomplete",
     );
-  if (
-    installedSale.runtimeBinding.prelaunch?.principal !== runtime.principal ||
-    installedSale.runtimeBinding.prelaunch?.sessionId !== runtime.sessionId
-  )
-    throw new Error(
-      "installed interactive principal changed during CDP handoff",
-    );
-  return runtime;
+  return Object.fromEntries(
+    [
+      "processId",
+      "executablePath",
+      "principal",
+      "sessionId",
+      "cdpTargetId",
+      "cdpSessionId",
+    ].map((name) => [name, runtime[name]]),
+  );
 }
 
 function evidencePath(installedSale, name) {
@@ -291,6 +289,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
           artifacts.machine.value,
           expectedBinding,
           runtime,
+          timing,
         )
       : { diagnostics: [diagnostic("runtime_trace_missing")], cues: {} };
   const daemon =
@@ -317,8 +316,6 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
   if (controller.events) {
     const platformF1At = Date.parse(platform.f1Capture?.capturedAt ?? "");
     if (
-      JSON.stringify(platform.f1Capture?.binding) !==
-        JSON.stringify(expectedBinding) ||
       !Number.isFinite(platformF1At) ||
       platformF1At <= controller.events.f1.atMs ||
       platformF1At >= controller.events.f2.atMs
@@ -370,6 +367,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       ["dispense_succeeded", controller.events.f2],
     ]) {
       const traceAt = Date.parse(trace.cues?.[label]?.journey?.at ?? "");
+      const cueStartedAt = Date.parse(trace.cues?.[label]?.started?.at ?? "");
       if (
         event &&
         (!Number.isFinite(traceAt) ||
@@ -378,6 +376,21 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       )
         diagnostics.push(
           diagnostic("runtime_trace_timing_not_correlated", { label }),
+        );
+      if (
+        event &&
+        (!Number.isFinite(cueStartedAt) ||
+          cueStartedAt < event.atMs ||
+          cueStartedAt - event.atMs > timing.maxCueStartLatencyMs)
+      )
+        diagnostics.push(
+          diagnostic("audio_cue_start_after_frame_latency_invalid", {
+            label,
+            latencyMs: Number.isFinite(cueStartedAt)
+              ? cueStartedAt - event.atMs
+              : null,
+            maximumMs: timing.maxCueStartLatencyMs,
+          }),
         );
     }
   }
@@ -392,6 +405,37 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       captureEnd <= controller.events.f2.atMs
     )
       diagnostics.push(diagnostic("sale_audio_capture_does_not_cover_sale"));
+    const boundedEvidenceTimes = [
+      ["platform_baseline", artifacts.platformBaseline.value?.capturedAt],
+      ["platform_f1", artifacts.platformF1.value?.capturedAt],
+      ["platform_post_f2", artifacts.platformPost.value?.capturedAt],
+      ...Object.entries(daemon.checkpointTimes ?? {}).map(([name, value]) => [
+        `daemon_${name}`,
+        value,
+      ]),
+      ...(ui.observations ?? []).map((entry) => [
+        `ui_${entry.surface}`,
+        entry.observedAt,
+      ]),
+    ];
+    for (const [name, value] of boundedEvidenceTimes) {
+      const at = Date.parse(value ?? "");
+      if (!Number.isFinite(at) || at < captureStart || at > captureEnd)
+        diagnostics.push(
+          diagnostic("evidence_timestamp_outside_audio_capture", { name }),
+        );
+    }
+    if (
+      audioCapture.serial.frames.some((frame) => {
+        const capturedAt = Date.parse(frame.capturedAt ?? "");
+        return (
+          !Number.isFinite(capturedAt) ||
+          capturedAt < captureStart ||
+          capturedAt > captureEnd
+        );
+      })
+    )
+      diagnostics.push(diagnostic("serial_frame_outside_audio_capture"));
     cueWindows = correlateDelayedPickupCueWindows({
       captureBytes: audioCapture.wavBytes,
       captureStartedAt: capture.startedAt,
@@ -408,7 +452,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     ]),
   );
   return {
-    schemaVersion: "delayed-pickup-native-audio-production-acceptance/v2",
+    schemaVersion: "delayed-pickup-native-audio-production-acceptance/v3",
     kind: "delayed-pickup-native-audio-production-acceptance",
     runId,
     result: diagnostics.length === 0 ? "passed" : "failed",
@@ -416,12 +460,18 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     runtime,
     controller: {
       timing: controller.timing ?? null,
+      cueStartLatencyMs: Object.fromEntries(
+        Object.entries(trace.cues ?? {}).map(([label, cue]) => [
+          label,
+          cue.startLatencyMs ?? null,
+        ]),
+      ),
       frameCounts: audioCapture
         ? Object.fromEntries(
             ["f0", "e5", "f1", "af", "f2"].map((code) => [
               code.toUpperCase(),
               audioCapture.serial.frames.filter(
-                (frame) => String(frame.bytesHex).toLowerCase() === `80${code}`,
+                (frame) => String(frame.bytesHex).toLowerCase() === `55${code}`,
               ).length,
             ]),
           )
@@ -442,43 +492,4 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     evidenceSources: compactSources,
     diagnostics,
   };
-}
-
-function option(argv, name) {
-  const index = argv.indexOf(name);
-  const value = index < 0 ? null : argv[index + 1];
-  if (typeof value !== "string" || value.startsWith("--"))
-    throw new Error(`${name} is required`);
-  return value;
-}
-
-export function runDelayedPickupNativeAudioTrackCli(argv) {
-  const artifacts = collectDelayedPickupProductionEvidence({
-    installedSaleReportPath: option(argv, "--installed-sale-report"),
-    machineEvidencePath: option(argv, "--machine-evidence"),
-    daemonEvidencePath: option(argv, "--daemon-evidence"),
-    platformF1Path: option(argv, "--platform-f1"),
-    audioStartReportPath: option(argv, "--audio-start-report"),
-    audioStopReportPath: option(argv, "--audio-stop-report"),
-  });
-  const report = verifyDelayedPickupNativeAudioProductionEvidence({
-    artifacts,
-    audioEvidenceDirectory: option(argv, "--audio-evidence-dir"),
-  });
-  const out = option(argv, "--out");
-  mkdirSync(dirname(resolve(out)), { recursive: true });
-  writeFileSync(resolve(out), `${JSON.stringify(report, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  return report;
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  try {
-    const report = runDelayedPickupNativeAudioTrackCli(process.argv.slice(2));
-    process.exitCode = report.result === "passed" ? 0 : 1;
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
 }

@@ -15,6 +15,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildDaemonFulfillmentStoreCheckpointScript } from "./delayed-pickup-daemon-evidence.mjs";
+import { startDelayedPickupLiveProductionTrack } from "./delayed-pickup-live-production-track.mjs";
+import {
+  collectDelayedPickupProductionEvidence,
+  verifyDelayedPickupNativeAudioProductionEvidence,
+} from "./delayed-pickup-native-audio-acceptance.mjs";
 import {
   routeFromTauriUrl,
   runVisibleMachineSaleScenario,
@@ -34,6 +40,7 @@ const PROFILE_NAMES = new Set([
   "vm-normal",
   "vm-route-competition",
   "factory-route-competition",
+  "vm-delayed-pickup-native-audio",
 ]);
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 
@@ -109,7 +116,7 @@ function parseArgs(argv) {
   if (options.profile == null) options.profile = "vm-normal";
   if (!PROFILE_NAMES.has(options.profile)) {
     throw new Error(
-      "--profile must be vm-normal, vm-route-competition, or factory-route-competition",
+      "--profile must be vm-normal, vm-route-competition, factory-route-competition, or vm-delayed-pickup-native-audio",
     );
   }
   if (options.ssh_port != null) {
@@ -138,13 +145,15 @@ function readRuntimeBinding(path) {
   if (
     report?.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
-    kiosk?.sessionUser?.toLowerCase() !== "vemkiosk" ||
+    typeof kiosk?.sessionUser !== "string" ||
+    kiosk.sessionUser.trim() !== kiosk.sessionUser ||
+    kiosk.sessionUser.length === 0 ||
     !Number.isInteger(kiosk?.sessionId) ||
     kiosk.sessionId < 1 ||
     (!cdpRoute && !productionNormalUi)
   ) {
     throw new Error(
-      "runtime acceptance report must prove an active VEMKiosk session",
+      "runtime acceptance report must prove an active interactive session",
     );
   }
   return {
@@ -152,7 +161,7 @@ function readRuntimeBinding(path) {
       cdpRoute && typeof kiosk.cdpTargetId === "string" && kiosk.cdpTargetId
         ? kiosk.cdpTargetId
         : null,
-    sessionUser: "VEMKiosk",
+    sessionUser: kiosk.sessionUser,
     sessionId: kiosk.sessionId,
     route: cdpRoute ? routeFromTauriUrl(kiosk.url) : "#/catalog",
     url: kiosk.url,
@@ -274,15 +283,17 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
 export function buildInstalledKioskSaleLaunchFailureRecoveryScript(runtime) {
   if (!Number.isSafeInteger(runtime?.sessionId) || runtime.sessionId < 1) {
     throw new Error(
-      "installed kiosk launch failure recovery requires the saved VEMKiosk session",
+      "installed kiosk launch failure recovery requires the saved interactive session",
     );
   }
+  const sessionUser = String(runtime.sessionUser ?? "").replaceAll("'", "''");
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = 'VEMInstalledKioskSaleDebug'
 $normalTask = 'VEMMachineUI'
 $machinePath = '${MACHINE_PATH}'
 $sessionId = ${runtime.sessionId}
+$expectedSessionUser = '${sessionUser}'
 Stop-ScheduledTask -TaskName $debugTask -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $debugTask -Confirm:$false -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
@@ -317,7 +328,8 @@ if ($machines.Count -ne 1 -or $listeners.Count -ne 0) { throw 'launch failure cl
 $normalProcess = Get-Process -Id ([int]$machines[0].ProcessId) -ErrorAction Stop
 $owner = Invoke-CimMethod -InputObject $machines[0] -MethodName GetOwner -ErrorAction Stop
 $principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
-if ($principal -notmatch '(?i)\\VEMKiosk$' -or $normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup restored the wrong kiosk ownership or session' }
+if ([string]$owner.User -cne $expectedSessionUser -and $principal -cne $expectedSessionUser) { throw 'launch failure cleanup restored the wrong interactive principal' }
+if ($normalProcess.SessionId -ne $sessionId) { throw 'launch failure cleanup restored the wrong interactive session' }
 [Console]::Out.WriteLine(([ordered]@{ ok = $true; recovery = 'launch_failure_normal_task_restart'; normalTask = $normalTask; cdpListenerCount = $listeners.Count; normal = [ordered]@{ processId = [int]$normalProcess.Id; principal = $principal; sessionId = [int]$normalProcess.SessionId; machineCount = $machines.Count } } | ConvertTo-Json -Compress))
 `.trim();
 }
@@ -477,7 +489,7 @@ function observedIdentity(values, name) {
 function requiredRawRecords(platformRaw) {
   if (
     platformRaw?.schemaVersion !==
-      "installed-kiosk-sale-platform-raw-records/v2" ||
+      "installed-kiosk-sale-platform-raw-records/v3" ||
     platformRaw?.source !== "authoritative_ephemeral_platform_database" ||
     !platformRaw.raw ||
     typeof platformRaw.raw !== "object"
@@ -922,6 +934,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
   }
   let launch;
   let cleanup;
+  let delayedPickupTrack;
   let primaryError;
   let report;
   try {
@@ -969,11 +982,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
       launch?.prelaunch?.principal == null ||
       launch.prelaunch.sessionId !== runtime.sessionId ||
       launch.prelaunch.executablePath !== MACHINE_PATH ||
-      !String(launch.prelaunch.principal).endsWith("\\VEMKiosk") ||
+      !String(launch.prelaunch.principal)
+        .toLowerCase()
+        .endsWith(`\\${runtime.sessionUser.toLowerCase()}`) ||
       typeof launch?.debugTarget?.id !== "string"
     ) {
       throw new Error(
-        "temporary CDP launch did not preserve the active VEMKiosk process binding",
+        "temporary CDP launch did not preserve the active interactive process binding",
       );
     }
     const attestation = {
@@ -993,12 +1008,50 @@ export async function runInstalledKioskSaleAcceptanceCli(
       "--out",
       out,
     ];
+    if (options.profile === "vm-delayed-pickup-native-audio") {
+      const delayedRoot = join(
+        dirname(resolve(options.out)),
+        "delayed-pickup-native-audio",
+      );
+      delayedPickupTrack = await startDelayedPickupLiveProductionTrack({
+        outputRoot: delayedRoot,
+        runId: options.run_id,
+        lifecycleReference:
+          options.lifecycle_reference ??
+          `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
+        transactionId: `transaction://${options.run_id.toLowerCase()}.delayed-pickup`,
+        saleCorrelationId,
+        targetIdentity: options.target_identity,
+        remote,
+        async captureDaemon(stage, binding) {
+          return runRemote(
+            remote,
+            buildDaemonFulfillmentStoreCheckpointScript({ stage, binding }),
+          );
+        },
+        async queryPlatform(stage) {
+          const out =
+            stage === "baseline"
+              ? plan.artifacts.platformRawBaselineReport
+              : join(delayedRoot, "platform-raw-at-f1.json");
+          await run(
+            platformRawQuery(out),
+            `authoritative platform ${stage} query`,
+            {
+              env: queryEnvironment,
+            },
+          );
+          return JSON.parse(readFileSync(out, "utf8"));
+        },
+      });
+    }
     // This must precede the first customer activation, including checkout submit.
-    await run(
-      platformRawQuery(plan.artifacts.platformRawBaselineReport),
-      "authoritative platform raw baseline query",
-      { env: queryEnvironment },
-    );
+    if (!delayedPickupTrack)
+      await run(
+        platformRawQuery(plan.artifacts.platformRawBaselineReport),
+        "authoritative platform raw baseline query",
+        { env: queryEnvironment },
+      );
     let payment;
     let serial;
     let completion;
@@ -1198,11 +1251,56 @@ export async function runInstalledKioskSaleAcceptanceCli(
         platformRawBaselinePath: plan.artifacts.platformRawBaselineReport,
       },
     };
+    if (delayedPickupTrack) {
+      const command = platformRawPost.raw.commands.find(
+        (entry) => entry.id === fulfillment.commandId,
+      );
+      if (typeof command?.commandNo !== "string")
+        throw new Error("delayed pickup terminal command number is missing");
+      const liveEvidence = await delayedPickupTrack.finish({
+        runId: options.run_id,
+        lifecycleReference:
+          options.lifecycle_reference ??
+          `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
+        transactionId: `transaction://${options.run_id.toLowerCase()}.delayed-pickup`,
+        saleCorrelationId,
+        orderId: fulfillment.orderId,
+        orderNo: fulfillment.orderNo,
+        commandId: fulfillment.commandId,
+        commandNo: command.commandNo,
+      });
+      const handoffPath = join(
+        dirname(resolve(options.out)),
+        "delayed-pickup-native-audio",
+        "installed-sale-production-handoff.json",
+      );
+      writeJson(handoffPath, report, 0o600);
+      const artifacts = collectDelayedPickupProductionEvidence({
+        installedSaleReportPath: handoffPath,
+        machineEvidencePath: liveEvidence.paths.machine,
+        daemonEvidencePath: liveEvidence.paths.daemon,
+        platformF1Path: liveEvidence.paths.platformF1,
+        audioStartReportPath: liveEvidence.paths.audioStart,
+        audioStopReportPath: liveEvidence.paths.audioStop,
+      });
+      const delayedAcceptance =
+        verifyDelayedPickupNativeAudioProductionEvidence({
+          artifacts,
+          audioEvidenceDirectory: liveEvidence.evidenceDirectory,
+        });
+      if (delayedAcceptance.result !== "passed")
+        throw new Error(
+          `delayed pickup native audio acceptance failed: ${JSON.stringify(delayedAcceptance.diagnostics)}`,
+        );
+      report.delayedPickupNativeAudio = delayedAcceptance;
+      report.evidence.delayedPickupProductionHandoffPath = handoffPath;
+    }
   } catch (error) {
     primaryError = error;
     throw error;
   } finally {
     try {
+      await delayedPickupTrack?.close();
       if (launch?.prelaunch) {
         cleanup = runRemote(
           remote,
@@ -1220,7 +1318,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup?.normal?.task?.name !== "VEMMachineUI" ||
           cleanup.normal.task.exists !== true ||
           cleanup.normal.task.enabled !== true ||
-          !String(cleanup.normal.task.runAsUser ?? "").endsWith("VEMKiosk") ||
+          ![
+            String(launch.prelaunch.principal).toLowerCase(),
+            String(launch.prelaunch.principal).split("\\").at(-1).toLowerCase(),
+          ].includes(String(cleanup.normal.task.runAsUser).toLowerCase()) ||
           cleanup.normal.cdpListenerCount !== 1 ||
           cleanup.normal.acceptanceOverlayCdp !== true ||
           cleanup.normal.task.acceptanceOverlayCdp !== true ||
@@ -1246,7 +1347,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
           )
         ) {
           throw new Error(
-            "installed kiosk cleanup did not restore the acceptance-overlay VEMKiosk CDP binding",
+            "installed kiosk cleanup did not restore the acceptance-overlay interactive CDP binding",
           );
         }
       } else {
@@ -1260,10 +1361,12 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanup?.cdpListenerCount !== 0 ||
           cleanup?.normal?.machineCount !== 1 ||
           cleanup.normal.sessionId !== runtime.sessionId ||
-          !String(cleanup.normal.principal ?? "").endsWith("\\VEMKiosk")
+          !String(cleanup.normal.principal ?? "")
+            .toLowerCase()
+            .endsWith(`\\${runtime.sessionUser.toLowerCase()}`)
         ) {
           throw new Error(
-            "installed kiosk launch failure cleanup did not restore normal VEMKiosk ownership",
+            "installed kiosk launch failure cleanup did not restore normal interactive ownership",
           );
         }
       }

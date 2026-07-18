@@ -225,7 +225,8 @@ function snapshot({ includeSecondOrder = false } = {}) {
     }
   }
   return {
-    schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+    capturedAt: "2026-07-18T08:00:00.000Z",
     source: "authoritative_ephemeral_platform_database",
     scope: {
       runId: "RUN-DELTA",

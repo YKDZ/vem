@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -13,6 +13,7 @@ const MAX_URL_LENGTH = 2_048;
 const MAX_LABEL_LENGTH = 160;
 const MAX_SELECTOR_LENGTH = 512;
 const MAX_TARGET_ID_LENGTH = 512;
+const CANONICAL_CDP_TARGET_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,511}$/;
 const MAX_REMOTE_OUTPUT_BYTES = 64 * 1024;
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 const MAX_SCENARIO_STEPS = 32;
@@ -273,6 +274,40 @@ export async function discoverMachineUiTarget({
     ...target,
     route: routeFromTauriUrl(target.url),
   };
+}
+
+export async function discoverCanonicalMachineUiTarget({
+  endpoint,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+} = {}) {
+  if (!endpoint) throw new Error("endpoint is required");
+  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
+  const jsonEndpoint = new URL("/json", normalizeEndpoint(endpoint));
+  const response = await withTimeout(
+    fetchImpl(jsonEndpoint),
+    timeoutMs,
+    "CDP target discovery",
+  );
+  if (!response.ok)
+    throw new Error(`CDP target discovery failed with HTTP ${response.status}`);
+  const targets = await withTimeout(
+    response.json(),
+    timeoutMs,
+    "CDP target discovery JSON",
+  );
+  const candidates = Array.isArray(targets)
+    ? targets.filter((candidate) => isStrictTauriHashRouteUrl(candidate?.url))
+    : [];
+  if (candidates.length !== 1)
+    throw new Error(
+      `CDP target discovery requires exactly one strict tauri target; found ${candidates.length}`,
+    );
+  const target = candidates[0];
+  if (typeof target.id !== "string" || !CANONICAL_CDP_TARGET_ID.test(target.id))
+    throw new Error("CDP target identity is invalid");
+  assertTargetDebuggerWebSocketUrl(target.webSocketDebuggerUrl, target.id);
+  return { ...target, route: routeFromTauriUrl(target.url) };
 }
 
 export async function inspectWindowsMachineUiRuntime({
@@ -625,6 +660,7 @@ export class CdpClient {
     this.eventHandlers = new Map();
     this.closed = false;
     this.socket = null;
+    this.connectionIdentity = null;
   }
 
   async connect({ timeoutMs = this.defaultTimeoutMs } = {}) {
@@ -645,7 +681,10 @@ export class CdpClient {
     socket.addEventListener("message", (event) => this.#handleMessage(event));
     socket.addEventListener("close", () => this.#handleClose());
     socket.addEventListener("error", (event) => this.#handleError(event));
-    if (socket.readyState === 1) return this;
+    if (socket.readyState === 1) {
+      this.#markConnected();
+      return this;
+    }
     try {
       await waitForSocketEvent(socket, "open", {
         timeoutMs,
@@ -655,7 +694,29 @@ export class CdpClient {
       await this.close({ timeoutMs }).catch(() => {});
       throw error;
     }
+    this.#markConnected();
     return this;
+  }
+
+  #markConnected() {
+    if (this.connectionIdentity) return;
+    const targetId = decodeURIComponent(
+      new URL(this.webSocketUrl).pathname.replace(/^\/devtools\/page\//, ""),
+    );
+    this.connectionIdentity = Object.freeze({
+      targetId,
+      sessionId: `cdp-connection:${randomUUID()}`,
+      connectedAt: new Date().toISOString(),
+    });
+  }
+
+  async observeIdentity({ timeoutMs = this.defaultTimeoutMs } = {}) {
+    if (!this.connectionIdentity)
+      throw new Error("CDP client is not connected");
+    const observed = await this.send("Target.getTargetInfo", {}, { timeoutMs });
+    if (observed?.targetInfo?.targetId !== this.connectionIdentity.targetId)
+      throw new Error("CDP client target identity changed during capture");
+    return { ...this.connectionIdentity };
   }
 
   async send(method, params = {}, { timeoutMs = this.defaultTimeoutMs } = {}) {

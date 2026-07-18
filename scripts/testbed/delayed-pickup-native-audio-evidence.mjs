@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { inspectWavPcmWindows } from "./default-audio-evidence.mjs";
 
 export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
@@ -6,6 +8,7 @@ export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
   resetStartAfterF0Ms: 30_000,
   controllerTimingToleranceMs: 1_500,
   traceTimingToleranceMs: 3_000,
+  maxCueStartLatencyMs: 2_000,
   repeatedFrameWindowMs: 250,
 });
 
@@ -31,14 +34,40 @@ const TRACE_CUES = [
   ["reset_progress", "pickup-completed"],
   ["dispense_succeeded", "dispense-succeeded"],
 ];
+const CANONICAL_UTC_RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const AUDIO_REQUEST_ID = /^audio-request-[1-9]\d*$/;
+const REFERENCES = Object.freeze({
+  lifecycleReference: /^vm-lifecycle:\/\/[a-z0-9][a-z0-9._-]{2,127}$/,
+  transactionId: /^transaction:\/\/[a-z0-9][a-z0-9._:-]{2,127}$/,
+  saleCorrelationId: /^sale-correlation:\/\/[a-z0-9][a-z0-9._:-]{2,127}$/,
+});
 
 function diagnostic(code, detail = null) {
   return detail === null ? { code } : { code, detail };
 }
 
 function timestamp(value) {
+  if (typeof value !== "string" || !CANONICAL_UTC_RFC3339.test(value))
+    return null;
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+    ? parsed
+    : null;
+}
+
+export function isCanonicalUtcTimestamp(value) {
+  return timestamp(value) !== null;
+}
+
+function canonicalId(name, value) {
+  if (typeof value !== "string" || value !== value.trim()) return false;
+  if (["orderId", "commandId"].includes(name)) return UUID.test(value);
+  if (name === "runId" || name === "orderNo" || name === "commandNo")
+    return TOKEN_ID.test(value);
+  return REFERENCES[name]?.test(value) === true;
 }
 
 function completeBinding(value, expected) {
@@ -53,9 +82,7 @@ function completeBinding(value, expected) {
     "commandNo",
   ].every(
     (name) =>
-      typeof value?.[name] === "string" &&
-      value[name].length > 0 &&
-      value[name] === expected?.[name],
+      canonicalId(name, value?.[name]) && value[name] === expected?.[name],
   );
 }
 
@@ -63,9 +90,65 @@ function same(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeHex(value) {
+  const normalized = String(value ?? "").toLowerCase();
+  return normalized.length > 0 &&
+    normalized.length % 2 === 0 &&
+    /^[a-f0-9]+$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function frameDigest(bytesHex) {
+  return `sha256:${createHash("sha256")
+    .update(Buffer.from(bytesHex, "hex"))
+    .digest("hex")}`;
+}
+
+function crc8(bytes) {
+  let crc = 0;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1)
+      crc = crc & 0x80 ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
+  }
+  return crc;
+}
+
 function decodeControllerCode(bytesHex) {
-  const match = /^80(f0|e5|f1|af|f2)$/i.exec(String(bytesHex ?? ""));
+  const match = /^55(f0|e5|f1|af|f2)$/i.exec(String(bytesHex ?? ""));
   return match ? CODES.get(match[1].toLowerCase()) : null;
+}
+
+function validDispenseCommand(bytesHex) {
+  const normalized = normalizeHex(bytesHex);
+  if (!normalized || normalized.length !== 8 || !normalized.startsWith("55"))
+    return false;
+  const bytes = Buffer.from(normalized, "hex");
+  const maxCell =
+    bytes[1] <= 6 ? 5 : bytes[1] <= 8 ? 4 : bytes[1] === 9 ? 3 : 0;
+  return (
+    bytes[1] >= 1 &&
+    bytes[2] >= 1 &&
+    bytes[2] <= maxCell &&
+    crc8([bytes[1], bytes[2]]) === bytes[3]
+  );
+}
+
+function validLowerFrameStructure(bytesHex) {
+  if (/^55(?:00|e[1-6]|f[012]|a[abcf])$/i.test(bytesHex)) return true;
+  if (/^55b0[0-9a-f]{4}$/i.test(bytesHex)) return true;
+  if (/^55b1[0-9a-f]{4}$/i.test(bytesHex)) return true;
+  return /^55b[23][0-9a-f]{2}$/i.test(bytesHex);
+}
+
+function validUpperControlFrame(bytesHex) {
+  return (
+    /^55(?:a0|b1|b2|b3)$/i.test(bytesHex) ||
+    /^55b0[0-9a-f]{2}$/i.test(bytesHex) ||
+    /^55b1[0-9a-f]{4}$/i.test(bytesHex) ||
+    /^55b[23][0-9a-f]{2}$/i.test(bytesHex)
+  );
 }
 
 function collapseRepeated(events, code, timing) {
@@ -101,12 +184,52 @@ export function analyzeDelayedPickupControllerFrames(
     };
   }
   const events = [];
+  const commands = [];
   let previousSequence = 0;
   let previousAt = -Infinity;
   const seenSequences = new Set();
   serialCapture.frames.forEach((frame, index) => {
-    const code = decodeControllerCode(frame?.bytesHex);
-    if (!code || frame?.role !== "lower-controller") return;
+    const bytesHex = normalizeHex(frame?.bytesHex);
+    if (
+      !bytesHex ||
+      frame?.digest !== frameDigest(bytesHex) ||
+      timestamp(frame?.capturedAt) === null
+    ) {
+      diagnostics.push(diagnostic("serial_frame_integrity_invalid", { index }));
+      return;
+    }
+    if (frame?.direction === "host_to_guest") {
+      if (
+        frame?.role === "upper-controller" &&
+        validDispenseCommand(bytesHex) &&
+        completeBinding(frame.binding, expectedBinding)
+      )
+        commands.push(frame);
+      else if (
+        frame?.role !== "upper-controller" ||
+        !validUpperControlFrame(bytesHex)
+      )
+        diagnostics.push(
+          diagnostic("dispense_command_frame_invalid", { index }),
+        );
+      return;
+    }
+    if (
+      frame?.direction !== "guest_to_host" ||
+      frame?.role !== "lower-controller" ||
+      !validLowerFrameStructure(bytesHex)
+    ) {
+      diagnostics.push(diagnostic("lower_controller_frame_invalid", { index }));
+      return;
+    }
+    if (!completeBinding(frame.binding, expectedBinding)) {
+      diagnostics.push(
+        diagnostic("controller_frame_sale_binding_incomplete", { index }),
+      );
+      return;
+    }
+    const code = decodeControllerCode(bytesHex);
+    if (!code) return;
     const atMs = timestamp(frame.capturedAt);
     if (
       !Number.isSafeInteger(frame.sequence) ||
@@ -117,10 +240,6 @@ export function analyzeDelayedPickupControllerFrames(
       atMs < previousAt
     )
       diagnostics.push(diagnostic("controller_frame_order_invalid", { index }));
-    if (!completeBinding(frame.binding, expectedBinding))
-      diagnostics.push(
-        diagnostic("controller_frame_sale_binding_incomplete", { index, code }),
-      );
     if (frame.direction !== "guest_to_host")
       diagnostics.push(
         diagnostic("controller_frame_direction_invalid", { index }),
@@ -136,6 +255,12 @@ export function analyzeDelayedPickupControllerFrames(
       digest: frame.digest ?? null,
     });
   });
+  if (commands.length !== 1)
+    diagnostics.push(
+      diagnostic("dispense_command_frame_count_invalid", {
+        count: commands.length,
+      }),
+    );
   const f0Groups = collapseRepeated(events, "F0", timing);
   const f1Groups = collapseRepeated(events, "F1", timing);
   const f2Groups = collapseRepeated(events, "F2", timing);
@@ -164,6 +289,13 @@ export function analyzeDelayedPickupControllerFrames(
   const f2 = f2Groups[0]?.[0] ?? null;
   if (!f0 || !e5[0] || !e5[1] || !f1 || !f2)
     diagnostics.push(diagnostic("controller_timeline_incomplete"));
+  if (
+    commands[0] &&
+    f0 &&
+    (commands[0].sequence >= f0.sequence ||
+      timestamp(commands[0].capturedAt) >= f0.atMs)
+  )
+    diagnostics.push(diagnostic("dispense_command_order_invalid"));
   const ordered = [f0, e5[0], e5[1], f1, f2].filter(Boolean);
   if (
     ordered.length === 5 &&
@@ -212,7 +344,15 @@ export function analyzeDelayedPickupControllerFrames(
   return {
     ok: diagnostics.length === 0,
     diagnostics,
-    events: { f0, firstE5: e5[0] ?? null, secondE5: e5[1] ?? null, f1, af, f2 },
+    events: {
+      command: commands[0] ?? null,
+      f0,
+      firstE5: e5[0] ?? null,
+      secondE5: e5[1] ?? null,
+      f1,
+      af,
+      f2,
+    },
     timing: deltas,
   };
 }
@@ -235,7 +375,7 @@ export function analyzeDelayedPickupUiEvidence(
 ) {
   const diagnostics = [];
   if (
-    machineEvidence?.schemaVersion !== "machine-production-evidence/v1" ||
+    machineEvidence?.schemaVersion !== "machine-production-evidence/v2" ||
     machineEvidence.source !== "installed_canonical_machine_cdp" ||
     !completeBinding(machineEvidence.binding, expectedBinding) ||
     !runtimeMatches(machineEvidence.runtime, canonicalRuntime) ||
@@ -249,14 +389,25 @@ export function analyzeDelayedPickupUiEvidence(
     };
   }
   const observations = [];
+  const captureStartMs = timestamp(machineEvidence.captureStartedAt);
+  const captureEndMs = timestamp(machineEvidence.captureCompletedAt);
+  if (
+    captureStartMs === null ||
+    captureEndMs === null ||
+    captureEndMs <= captureStartMs
+  )
+    diagnostics.push(diagnostic("machine_capture_window_invalid"));
   machineEvidence.uiObservations.forEach((entry, index) => {
     const atMs = timestamp(entry?.observedAt);
     if (
       !UI_SURFACES.includes(entry?.surface) ||
       entry.route !== "#/dispensing" ||
       atMs === null ||
-      !completeBinding(entry.binding, expectedBinding) ||
-      !runtimeMatches(entry.runtime, canonicalRuntime)
+      (captureStartMs !== null && atMs < captureStartMs) ||
+      (captureEndMs !== null && atMs > captureEndMs) ||
+      !["orderId", "orderNo", "commandId", "commandNo"].every(
+        (name) => entry?.observedSale?.[name] === expectedBinding[name],
+      )
     ) {
       diagnostics.push(diagnostic("ui_observation_binding_invalid", { index }));
       return;
@@ -293,10 +444,11 @@ export function analyzeDelayedPickupRuntimeTrace(
   machineEvidence,
   expectedBinding,
   canonicalRuntime,
+  timing = DEFAULT_DELAYED_PICKUP_TIMING,
 ) {
   const diagnostics = [];
   if (
-    machineEvidence?.schemaVersion !== "machine-production-evidence/v1" ||
+    machineEvidence?.schemaVersion !== "machine-production-evidence/v2" ||
     !completeBinding(machineEvidence.binding, expectedBinding) ||
     !runtimeMatches(machineEvidence.runtime, canonicalRuntime) ||
     !Array.isArray(machineEvidence.runtimeTrace)
@@ -307,8 +459,25 @@ export function analyzeDelayedPickupRuntimeTrace(
       cues: {},
     };
   }
-  const trace = machineEvidence.runtimeTrace;
+  const captureStartMs = timestamp(machineEvidence.captureStartedAt);
+  const captureEndMs = timestamp(machineEvidence.captureCompletedAt);
+  if (
+    captureStartMs === null ||
+    captureEndMs === null ||
+    captureEndMs <= captureStartMs
+  )
+    diagnostics.push(diagnostic("machine_capture_window_invalid"));
+  const trace = machineEvidence.runtimeTrace.filter((entry) =>
+    [
+      "journey_transition",
+      "audio_queued",
+      "audio_started",
+      "audio_terminal",
+      "audio_rejected",
+    ].includes(entry?.type),
+  );
   const ids = new Set();
+  const journeyTransitionIds = new Set();
   const terminalOutcomeIds = new Set();
   let previousId = 0;
   let previousAt = -Infinity;
@@ -324,14 +493,23 @@ export function analyzeDelayedPickupRuntimeTrace(
       recordedAtMs === null ||
       atMs !== recordedAtMs ||
       atMs < previousAt ||
-      typeof entry.transitionId !== "string" ||
-      entry.transitionId.length === 0
+      (captureStartMs !== null && atMs < captureStartMs) ||
+      (captureEndMs !== null && atMs > captureEndMs) ||
+      !TOKEN_ID.test(entry?.transitionId ?? "") ||
+      (entry.requestId !== null &&
+        !AUDIO_REQUEST_ID.test(entry.requestId ?? ""))
     )
       diagnostics.push(diagnostic("runtime_trace_entry_invalid", { index }));
+    if (entry?.type === "journey_transition") {
+      if (journeyTransitionIds.has(entry.transitionId))
+        diagnostics.push(
+          diagnostic("runtime_transition_id_duplicate", { index }),
+        );
+      journeyTransitionIds.add(entry.transitionId);
+    }
     if (entry?.type === "audio_terminal") {
       if (
-        typeof entry.terminalOutcomeId !== "string" ||
-        entry.terminalOutcomeId.length === 0 ||
+        !TOKEN_ID.test(entry.terminalOutcomeId ?? "") ||
         terminalOutcomeIds.has(entry.terminalOutcomeId)
       )
         diagnostics.push(
@@ -351,7 +529,7 @@ export function analyzeDelayedPickupRuntimeTrace(
     .map((entry) => entry.requestId);
   if (
     queuedRequestIds.some(
-      (requestId) => typeof requestId !== "string" || requestId.length === 0,
+      (requestId) => !AUDIO_REQUEST_ID.test(requestId ?? ""),
     ) ||
     new Set(queuedRequestIds).size !== queuedRequestIds.length
   )
@@ -364,6 +542,10 @@ export function analyzeDelayedPickupRuntimeTrace(
     const entries = trace.filter(
       (entry) => entry?.transitionId === transitionId,
     );
+    if (entries.some((entry) => entry.type === "audio_rejected"))
+      diagnostics.push(
+        diagnostic("runtime_audio_request_rejected", { transitionId }),
+      );
     const byType = Object.fromEntries(
       [
         "journey_transition",
@@ -389,9 +571,7 @@ export function analyzeDelayedPickupRuntimeTrace(
       (entry) => entry?.requestId,
     );
     if (
-      requestIds.some(
-        (value) => typeof value !== "string" || value.length === 0,
-      ) ||
+      requestIds.some((value) => !AUDIO_REQUEST_ID.test(value ?? "")) ||
       new Set(requestIds).size !== 1 ||
       journey?.requestId !== null
     )
@@ -400,7 +580,8 @@ export function analyzeDelayedPickupRuntimeTrace(
       );
     if (
       terminal?.outcome !== "completed" ||
-      typeof terminal?.terminalOutcomeId !== "string"
+      !TOKEN_ID.test(terminal?.terminalOutcomeId ?? "") ||
+      terminal?.terminalOutcomeId !== `audio-terminal:${requestIds[0]}`
     )
       diagnostics.push(
         diagnostic("runtime_audio_terminal_outcome_invalid", { transitionId }),
@@ -415,15 +596,36 @@ export function analyzeDelayedPickupRuntimeTrace(
       diagnostics.push(
         diagnostic("runtime_audio_trace_order_invalid", { transitionId }),
       );
-    cues[label] = { transitionId, journey, queued, started, terminal };
+    if (
+      times[0] !== null &&
+      times[2] !== null &&
+      (times[2] < times[0] || times[2] - times[0] > timing.maxCueStartLatencyMs)
+    )
+      diagnostics.push(
+        diagnostic("runtime_audio_cue_start_latency_invalid", {
+          transitionId,
+          latencyMs: times[2] - times[0],
+          maximumMs: timing.maxCueStartLatencyMs,
+        }),
+      );
+    cues[label] = {
+      transitionId,
+      journey,
+      queued,
+      started,
+      terminal,
+      startLatencyMs:
+        times[0] === null || times[2] === null ? null : times[2] - times[0],
+    };
   }
   return { ok: diagnostics.length === 0, diagnostics, cues };
 }
 
 function rawSnapshot(value, label, expectedRunId) {
   if (
-    value?.schemaVersion !== "installed-kiosk-sale-platform-raw-records/v2" ||
+    value?.schemaVersion !== "installed-kiosk-sale-platform-raw-records/v3" ||
     value.source !== "authoritative_ephemeral_platform_database" ||
+    timestamp(value.capturedAt) === null ||
     value.scope?.runId !== expectedRunId ||
     typeof value.scope?.machineId !== "string" ||
     !value.raw
@@ -454,16 +656,9 @@ export function analyzeAuthoritativePlatformEvidence({
   postF2,
 }) {
   const diagnostics = [];
-  const f1Envelope = atF1;
   try {
     baseline = rawSnapshot(baseline, "baseline", runId);
-    if (
-      f1Envelope?.schemaVersion !== "delayed-pickup-platform-f1-evidence/v1" ||
-      f1Envelope.source !== "authoritative_ephemeral_platform_database" ||
-      timestamp(f1Envelope.capturedAt) === null
-    )
-      throw new Error("F1 authoritative platform capture envelope is invalid");
-    atF1 = rawSnapshot(f1Envelope.snapshot, "F1", runId);
+    atF1 = rawSnapshot(atF1, "F1", runId);
     postF2 = rawSnapshot(postF2, "post-F2", runId);
   } catch (error) {
     return {
@@ -481,8 +676,28 @@ export function analyzeAuthoritativePlatformEvidence({
     baseline.scope.machineId !== postF2.scope.machineId
   )
     diagnostics.push(diagnostic("authoritative_platform_scope_mismatch"));
+  if (
+    timestamp(baseline.capturedAt) >= timestamp(atF1.capturedAt) ||
+    timestamp(atF1.capturedAt) >= timestamp(postF2.capturedAt)
+  )
+    diagnostics.push(
+      diagnostic("authoritative_platform_capture_order_invalid"),
+    );
   if (deltaRecords(baseline, atF1, "movements").length !== 0)
     diagnostics.push(diagnostic("platform_inventory_decremented_before_f2"));
+  const f1 = Object.fromEntries(
+    ["orders", "orderItems", "payments", "reservations", "commands"].map(
+      (name) => [name, deltaRecords(baseline, atF1, name)],
+    ),
+  );
+  for (const [name, records] of Object.entries(f1))
+    if (records.length !== 1)
+      diagnostics.push(
+        diagnostic("platform_f1_exact_once_invalid", {
+          name,
+          count: records.length,
+        }),
+      );
   const post = Object.fromEntries(
     [
       "orders",
@@ -504,20 +719,49 @@ export function analyzeAuthoritativePlatformEvidence({
   const order = post.orders[0];
   const item = post.orderItems[0];
   const payment = post.payments[0];
+  const reservation = post.reservations[0];
   const command = post.commands[0];
   const movement = post.movements[0];
+  if (
+    f1.orders[0]?.id !== order?.id ||
+    f1.orderItems[0]?.id !== item?.id ||
+    f1.payments[0]?.id !== payment?.id ||
+    f1.reservations[0]?.id !== reservation?.id ||
+    f1.commands[0]?.id !== command?.id ||
+    f1.commands[0]?.commandNo !== command?.commandNo ||
+    f1.reservations[0]?.orderId !== order?.id
+  )
+    diagnostics.push(diagnostic("platform_f1_sale_binding_invalid"));
+  if (
+    f1.orders[0]?.status !== "dispensing" ||
+    f1.payments[0]?.status !== "succeeded" ||
+    f1.reservations[0]?.status !== "active" ||
+    !new Set(["pending", "sent", "acknowledged", "dispensing"]).has(
+      f1.commands[0]?.status,
+    )
+  )
+    diagnostics.push(diagnostic("platform_f1_not_nonterminal"));
   if (
     !order ||
     !item ||
     !payment ||
+    !reservation ||
     !command ||
     !movement ||
+    order.status !== "fulfilled" ||
     item.orderId !== order.id ||
     item.quantity !== 1 ||
     payment.orderId !== order.id ||
+    payment.status !== "succeeded" ||
+    reservation.orderId !== order.id ||
+    reservation.orderItemId !== item.id ||
+    reservation.inventoryId !== item.inventoryId ||
+    reservation.quantity !== 1 ||
+    reservation.status !== "confirmed" ||
     command.orderId !== order.id ||
     command.orderItemId !== item.id ||
     command.slotId !== item.slotId ||
+    command.status !== "succeeded" ||
     movement.orderNo !== order.orderNo ||
     movement.orderItemId !== item.id ||
     movement.inventoryId !== item.inventoryId ||
@@ -552,8 +796,7 @@ export function analyzeAuthoritativePlatformEvidence({
       platformStockDelta: movement ? -movement.quantity : null,
     },
     f1Capture: {
-      capturedAt: f1Envelope?.capturedAt ?? null,
-      binding: f1Envelope?.binding ?? null,
+      capturedAt: atF1.capturedAt,
     },
   };
 }
@@ -590,6 +833,15 @@ export function analyzeDaemonFulfillmentStoreEvidence(
       evidence.checkpoints.filter((entry) => entry?.stage === stage),
     ]),
   );
+  let previousCheckpointAt = -Infinity;
+  for (const [index, checkpoint] of evidence.checkpoints.entries()) {
+    const at = timestamp(checkpoint?.capturedAt);
+    if (at === null || at <= previousCheckpointAt)
+      diagnostics.push(
+        diagnostic("daemon_checkpoint_order_invalid", { index }),
+      );
+    if (at !== null) previousCheckpointAt = at;
+  }
   for (const [stage, matches] of Object.entries(byStage)) {
     if (matches.length !== 1)
       diagnostics.push(

@@ -605,6 +605,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/delayed-pickup-live-production-track.mjs",
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "Issue16 full-mode control plane"],
+  },
+  {
+    path: "scripts/testbed/delayed-pickup-live-production-track.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "Issue16 full-mode control plane"],
+  },
+  {
     path: "scripts/testbed/delayed-pickup-machine-evidence.mjs",
     owner: "field-operations",
     category: "verifier-test guard",

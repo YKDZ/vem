@@ -13,9 +13,9 @@ const binding = {
   lifecycleReference: "vm-lifecycle://run-17.runtime",
   transactionId: "transaction://run-17",
   saleCorrelationId: "sale-correlation://run-17",
-  orderId: "order-17",
+  orderId: "11111111-1111-4111-8111-111111111111",
   orderNo: "ORDER-17",
-  commandId: "command-17",
+  commandId: "22222222-2222-4222-8222-222222222222",
   commandNo: "CMD-17",
 };
 const runtime = {
@@ -24,7 +24,7 @@ const runtime = {
   principal: "FIELD\\Operator",
   sessionId: 6,
   cdpTargetId: "target-17",
-  cdpSessionId: "cdp-session://17",
+  cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
 };
 
 describe("delayed pickup production evidence producers", () => {
@@ -45,10 +45,26 @@ describe("delayed pickup production evidence producers", () => {
   it("polls the installed CDP target and retains raw Machine Runtime Trace", async () => {
     const samples = ["ordinary_warning", "urgent_warning", "reset_progress"];
     let sequence = 0;
-    const capture = startDelayedPickupMachineEvidenceCapture({
-      client: {},
-      binding,
-      runtime,
+    const capture = await startDelayedPickupMachineEvidenceCapture({
+      client: {
+        async observeIdentity() {
+          return {
+            targetId: runtime.cdpTargetId,
+            sessionId: runtime.cdpSessionId,
+            connectedAt: "2026-07-18T08:00:00.000Z",
+          };
+        },
+      },
+      async inspectRuntime() {
+        return {
+          machine: runtime,
+          cdpListener: {
+            machineAncestorProcessId: runtime.processId,
+            sessionId: runtime.sessionId,
+            principal: runtime.principal,
+          },
+        };
+      },
       intervalMs: 25,
       async readSample() {
         const surface = samples[Math.min(sequence, samples.length - 1)];
@@ -80,7 +96,7 @@ describe("delayed pickup production evidence producers", () => {
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 90));
-    const evidence = await capture.stop();
+    const evidence = await capture.stop(binding);
     assert.deepEqual(
       evidence.uiObservations.map((entry) => entry.surface),
       samples,
@@ -90,11 +106,16 @@ describe("delayed pickup production evidence producers", () => {
       "audio-terminal:audio-request-1",
     );
     assert.equal(evidence.runtime.principal, runtime.principal);
+    assert.equal(
+      evidence.runtime.source,
+      "windows_process_and_live_cdp_client",
+    );
   });
 
   it("wraps the F1-time authoritative raw query without replacing its records", () => {
     const snapshot = {
-      schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+      schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+      capturedAt: "2026-07-18T08:00:00.000Z",
       source: "authoritative_ephemeral_platform_database",
       scope: { runId: binding.runId, machineId: "machine-17" },
       raw: { movements: [] },
@@ -104,7 +125,8 @@ describe("delayed pickup production evidence producers", () => {
       snapshot,
       capturedAt: "2026-07-18T08:00:30.500Z",
     });
-    assert.deepEqual(evidence.snapshot, snapshot);
-    assert.equal(evidence.binding.commandId, binding.commandId);
+    assert.deepEqual(evidence.raw, snapshot.raw);
+    assert.equal(evidence.capturedAt, snapshot.capturedAt);
+    assert.equal(Object.hasOwn(evidence, "binding"), false);
   });
 });

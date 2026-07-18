@@ -196,7 +196,8 @@ function platformRawRecords({
 } = {}) {
   const machineId = "MACHINE-180";
   return {
-    schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+    capturedAt: "2026-07-18T08:00:00.000Z",
     source: "authoritative_ephemeral_platform_database",
     scope: { runId, machineCode, machineId },
     raw: {
@@ -4538,6 +4539,7 @@ if ($errors.Count -gt 0) {
           "installed kiosk sale normal",
           "installed kiosk sale route competition",
           "post-sale runtime acceptance",
+          "delayed pickup native audio live sale",
         ],
       );
       assert.equal(plan.artifacts.source, "approved-preclaim-base");
@@ -4721,9 +4723,10 @@ if ($errors.Count -gt 0) {
       /temporary CDP-enabled machine\.exe did not reach exactly-one process\/listener state/,
     );
     assert.match(launch, /WTSGetActiveConsoleSessionId/);
+    assert.doesNotMatch(launch, /VEMKiosk/);
     assert.match(
       launch,
-      /normal machine\.exe must belong exactly to the active console VEMKiosk principal and session/,
+      /normal machine\.exe must belong exactly to the active console principal and session/,
     );
     assert.match(
       launch,
@@ -4749,7 +4752,7 @@ if ($errors.Count -gt 0) {
     assert.doesNotMatch(cleanup, /Set-ScheduledTask -TaskName \$normalTask/);
     assert.match(
       cleanup,
-      /acceptance overlay machine\.exe principal or session differs from saved VEMKiosk owner/,
+      /acceptance overlay machine\.exe principal or session differs from saved interactive owner/,
     );
     assert.match(
       cleanup,
@@ -5905,6 +5908,9 @@ if ($errors.Count -gt 0) {
     const normalSaleStep = plan.steps.find(
       (step) => step.name === "installed kiosk sale normal",
     );
+    const delayedSaleStep = plan.steps.find(
+      (step) => step.name === "delayed pickup native audio live sale",
+    );
     assert.equal(
       saleStep.command[1],
       "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
@@ -5914,6 +5920,14 @@ if ($errors.Count -gt 0) {
       "vm-route-competition",
     );
     assert.equal(commandArg(normalSaleStep.command, "--profile"), "vm-normal");
+    assert.equal(
+      commandArg(delayedSaleStep.command, "--profile"),
+      "vm-delayed-pickup-native-audio",
+    );
+    assert.equal(
+      delayedSaleStep.issue16ControlPlaneProfile,
+      "delayed-pickup-native-audio",
+    );
     assert.equal(
       commandArg(saleStep.command, "--runtime-acceptance-report"),
       plan.artifacts.runtimeAcceptance,
@@ -6024,6 +6038,13 @@ if ($errors.Count -gt 0) {
             const runtime =
               command.includes("--mode") &&
               command[command.indexOf("--mode") + 1] === "runtime-acceptance";
+            const installedSale = command.some((argument) =>
+              argument.endsWith("installed-kiosk-sale-acceptance.mjs"),
+            );
+            const delayedPickup =
+              installedSale &&
+              command[command.indexOf("--profile") + 1] ===
+                "vm-delayed-pickup-native-audio";
             const output = runtime
               ? {
                   ok: true,
@@ -6039,7 +6060,7 @@ if ($errors.Count -gt 0) {
                     },
                   },
                 }
-              : command.includes("installed-kiosk-sale-acceptance.mjs")
+              : installedSale
                 ? {
                     ok: true,
                     schemaVersion: "installed-kiosk-sale-acceptance/v2",
@@ -6047,6 +6068,26 @@ if ($errors.Count -gt 0) {
                       platform: { observations: {} },
                       exactOnce: {},
                     },
+                    ...(delayedPickup
+                      ? {
+                          delayedPickupNativeAudio: {
+                            schemaVersion:
+                              "delayed-pickup-native-audio-production-acceptance/v3",
+                            result: "passed",
+                            binding: { orderNo: "ORDER-17" },
+                            runtime: { processId: 17 },
+                            audio: {
+                              source: "windows_default_output",
+                              physicalSpeakerAudibility:
+                                "hitl_required_issue_22",
+                              cueWindows: Array.from({ length: 5 }, () => ({
+                                kind: "passed",
+                              })),
+                            },
+                            diagnostics: [],
+                          },
+                        }
+                      : {}),
                   }
                 : {};
             if (out) {
@@ -6061,8 +6102,17 @@ if ($errors.Count -gt 0) {
         report.steps.every((step) => step.status === "passed"),
         true,
       );
-      assert.equal(scannerCopies.length, 2);
-      assert.equal(new Set(scannerCopies).size, 2);
+      assert.equal(scannerCopies.length, 3);
+      assert.equal(new Set(scannerCopies).size, 3);
+      assert.equal(
+        report.installedKioskSale.delayedPickupNativeAudio.status,
+        "passed",
+        JSON.stringify(report.diagnostics),
+      );
+      assert.equal(
+        report.installedKioskSale.delayedPickupNativeAudio.acceptance.result,
+        "passed",
+      );
       assert.equal(report.displayBinding.cdpTargetId, "refreshed-cdp-target");
       assert.equal(
         JSON.stringify(report).includes("SCANNER-CODE-MUST-NOT-LEAK"),
@@ -6164,6 +6214,7 @@ if ($errors.Count -gt 0) {
         "installed kiosk sale normal",
         "installed kiosk sale route competition",
         "post-sale runtime acceptance",
+        "delayed pickup native audio live sale",
       ],
     );
     assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");

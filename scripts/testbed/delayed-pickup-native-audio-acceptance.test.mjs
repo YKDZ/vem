@@ -7,7 +7,6 @@ import { describe, it } from "node:test";
 
 import {
   collectDelayedPickupProductionEvidence,
-  runDelayedPickupNativeAudioTrackCli,
   verifyDelayedPickupNativeAudioProductionEvidence,
 } from "./delayed-pickup-native-audio-acceptance.mjs";
 import {
@@ -48,9 +47,10 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function platformSnapshot(runId, raw) {
+function platformSnapshot(runId, raw, at = "2026-07-18T08:00:00.000Z") {
   return {
-    schemaVersion: "installed-kiosk-sale-platform-raw-records/v2",
+    schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+    capturedAt: at,
     source: "authoritative_ephemeral_platform_database",
     scope: {
       runId,
@@ -69,16 +69,16 @@ function fixture(root) {
     principal: "FIELD-DOMAIN\\InteractiveOperator",
     sessionId: 7,
     cdpTargetId: "target-17",
-    cdpSessionId: "cdp-session://run-17",
+    cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
   };
   const binding = {
     runId,
     lifecycleReference: "vm-lifecycle://run-17-production.runtime",
     transactionId: "transaction://run-17-production",
     saleCorrelationId: "sale-correlation://installed-kiosk-run-17-production",
-    orderId: "order-17",
+    orderId: "11111111-1111-4111-8111-111111111111",
     orderNo: "ORDER-17",
-    commandId: "command-17",
+    commandId: "22222222-2222-4222-8222-222222222222",
     commandNo: "CMD-17",
   };
   const platformBaseRaw = {
@@ -95,7 +95,7 @@ function fixture(root) {
         id: binding.orderId,
         orderNo: binding.orderNo,
         machineId: "machine-17",
-        status: "paid",
+        status: "fulfilled",
       },
     ],
     orderItems: [
@@ -109,7 +109,7 @@ function fixture(root) {
     ],
     payments: [
       {
-        id: "payment-17",
+        id: "55555555-5555-4555-8555-555555555555",
         orderId: binding.orderId,
         paymentNo: "PAY-17",
         status: "succeeded",
@@ -138,6 +138,10 @@ function fixture(root) {
     ],
     movements: [],
   };
+  const platformF1Raw = structuredClone(platformSaleRaw);
+  platformF1Raw.orders[0].status = "dispensing";
+  platformF1Raw.reservations[0].status = "active";
+  platformF1Raw.commands[0].status = "dispensing";
   const platformPostRaw = {
     ...platformSaleRaw,
     movements: [
@@ -159,15 +163,18 @@ function fixture(root) {
   const platformBaselinePath = join(root, "platform-baseline.json");
   const platformF1Path = join(root, "platform-f1.json");
   const platformPostPath = join(root, "platform-post.json");
-  writeJson(platformBaselinePath, platformSnapshot(runId, platformBaseRaw));
-  writeJson(platformF1Path, {
-    schemaVersion: "delayed-pickup-platform-f1-evidence/v1",
-    source: "authoritative_ephemeral_platform_database",
-    capturedAt: "2026-07-18T08:00:30.300Z",
-    binding: { ...binding },
-    snapshot: platformSnapshot(runId, platformSaleRaw),
-  });
-  writeJson(platformPostPath, platformSnapshot(runId, platformPostRaw));
+  writeJson(
+    platformBaselinePath,
+    platformSnapshot(runId, platformBaseRaw, "2026-07-18T07:59:59.500Z"),
+  );
+  writeJson(
+    platformF1Path,
+    platformSnapshot(runId, platformF1Raw, "2026-07-18T08:00:30.300Z"),
+  );
+  writeJson(
+    platformPostPath,
+    platformSnapshot(runId, platformPostRaw, "2026-07-18T08:00:31.600Z"),
+  );
 
   const serialPath = join(root, "serial.json");
   writeJson(serialPath, {
@@ -182,7 +189,7 @@ function fixture(root) {
               {
                 saleCorrelationId: binding.saleCorrelationId,
                 orderId: binding.orderId,
-                paymentId: "payment-17",
+                paymentId: "55555555-5555-4555-8555-555555555555",
                 vendingCommandId: binding.commandId,
               },
             ],
@@ -236,15 +243,30 @@ function fixture(root) {
     [31_250, "f2"],
     [31_300, "f2"],
   ];
-  const frames = controller.map(([offset, code], index) => ({
-    sequence: index + 1,
-    role: "lower-controller",
-    direction: "guest_to_host",
-    bytesHex: `80${code}`,
-    capturedAt: new Date(base + offset).toISOString(),
-    digest: `sha256:${createHash("sha256").update(`${index}:${code}`).digest("hex")}`,
-    binding: { ...binding },
-  }));
+  const commandBytes = "55020531";
+  const frames = [
+    {
+      sequence: 1,
+      role: "upper-controller",
+      direction: "host_to_guest",
+      bytesHex: commandBytes,
+      capturedAt: "2026-07-18T07:59:59.900Z",
+      digest: `sha256:${createHash("sha256").update(Buffer.from(commandBytes, "hex")).digest("hex")}`,
+      binding: { ...binding },
+    },
+    ...controller.map(([offset, code], index) => {
+      const bytesHex = `55${code}`;
+      return {
+        sequence: index + 2,
+        role: "lower-controller",
+        direction: "guest_to_host",
+        bytesHex,
+        capturedAt: new Date(base + offset).toISOString(),
+        digest: `sha256:${createHash("sha256").update(Buffer.from(bytesHex, "hex")).digest("hex")}`,
+        binding: { ...binding },
+      };
+    }),
+  ];
   const serialCapture = {
     schemaVersion: "host-production-serial-frame-capture/v1",
     binding: { ...binding },
@@ -271,7 +293,7 @@ function fixture(root) {
     targetIdentity: "vm-target://runtime-testbed",
     transactionId: binding.transactionId,
     runtime,
-    operationNonce: "op-1111111111111111",
+    operationNonce: "op-11111111111111111111111111111111",
   });
   const captureSession = {
     captureSessionId: "sale-audio-session://run-17",
@@ -308,7 +330,7 @@ function fixture(root) {
       commandId: binding.commandId,
       commandNo: binding.commandNo,
     },
-    operationNonce: "op-2222222222222222",
+    operationNonce: "op-22222222222222222222222222222222",
   });
   const audioEvidence = {
     role: "sale-default-audio-capture",
@@ -391,10 +413,16 @@ function fixture(root) {
   );
   const machinePath = join(root, "machine.json");
   writeJson(machinePath, {
-    schemaVersion: "machine-production-evidence/v1",
+    schemaVersion: "machine-production-evidence/v2",
     source: "installed_canonical_machine_cdp",
     binding: { ...binding },
-    runtime,
+    runtime: {
+      ...runtime,
+      observedAt: "2026-07-18T07:59:59.500Z",
+      source: "windows_process_and_live_cdp_client",
+    },
+    captureStartedAt: "2026-07-18T07:59:59.500Z",
+    captureCompletedAt: "2026-07-18T08:00:32.000Z",
     uiObservations: [
       ["ordinary_warning", 15_300],
       ["urgent_warning", 25_300],
@@ -403,8 +431,12 @@ function fixture(root) {
       surface,
       route: "#/dispensing",
       observedAt: new Date(base + offset).toISOString(),
-      binding: { ...binding },
-      runtime: { ...runtime },
+      observedSale: {
+        orderId: binding.orderId,
+        orderNo: binding.orderNo,
+        commandId: binding.commandId,
+        commandNo: binding.commandNo,
+      },
     })),
     runtimeTrace,
   });
@@ -495,6 +527,7 @@ describe("delayed pickup native audio production track", () => {
       const input = fixture(root);
       const artifacts = collectDelayedPickupProductionEvidence(input.paths);
       artifacts.daemon.value.checkpoints[1].saleView.items[0].physicalStock = 3;
+      artifacts.platformF1.value.raw.orders[0].status = "fulfilled";
       const serialFile = artifacts.audioStop.value.evidence[1].fileName;
       const serial = JSON.parse(
         Buffer.from(
@@ -530,6 +563,11 @@ describe("delayed pickup native audio production track", () => {
       );
       assert.ok(
         report.diagnostics.some(
+          (entry) => entry.code === "platform_f1_not_nonterminal",
+        ),
+      );
+      assert.ok(
+        report.diagnostics.some(
           (entry) => entry.code === "controller_frame_sale_binding_incomplete",
         ),
       );
@@ -538,35 +576,6 @@ describe("delayed pickup native audio production track", () => {
           (entry) => entry.code === "runtime_terminal_outcome_id_invalid",
         ),
       );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("provides one CLI entry that Issue16 fast/full orchestration can invoke", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-delayed-production-cli-"));
-    try {
-      const input = fixture(root);
-      const out = join(root, "acceptance.json");
-      const report = runDelayedPickupNativeAudioTrackCli([
-        "--installed-sale-report",
-        input.paths.installedSaleReportPath,
-        "--machine-evidence",
-        input.paths.machineEvidencePath,
-        "--daemon-evidence",
-        input.paths.daemonEvidencePath,
-        "--platform-f1",
-        input.paths.platformF1Path,
-        "--audio-start-report",
-        input.paths.audioStartReportPath,
-        "--audio-stop-report",
-        input.paths.audioStopReportPath,
-        "--audio-evidence-dir",
-        root,
-        "--out",
-        out,
-      ]);
-      assert.equal(report.result, "passed", JSON.stringify(report.diagnostics));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

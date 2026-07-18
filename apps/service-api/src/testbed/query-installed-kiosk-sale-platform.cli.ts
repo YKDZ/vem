@@ -18,7 +18,7 @@ import {
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
-const SCHEMA_VERSION = "installed-kiosk-sale-platform-raw-records/v2";
+const SCHEMA_VERSION = "installed-kiosk-sale-platform-raw-records/v3";
 export const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
@@ -103,6 +103,7 @@ type PlatformRawRecords = {
 export type InstalledKioskSalePlatformRawReport = {
   schemaVersion: typeof SCHEMA_VERSION;
   source: "authoritative_ephemeral_platform_database";
+  capturedAt: string;
   scope: {
     runId: string;
     machineCode: string;
@@ -151,14 +152,17 @@ export function buildInstalledKioskSalePlatformRawReport({
   options,
   machineId,
   raw,
+  capturedAt,
 }: {
   options: InstalledKioskSalePlatformQueryOptions;
   machineId: string | null;
   raw: PlatformRawRecords;
+  capturedAt: string;
 }): InstalledKioskSalePlatformRawReport {
   return {
     schemaVersion: SCHEMA_VERSION,
     source: "authoritative_ephemeral_platform_database",
+    capturedAt,
     scope: {
       runId: options.runId,
       machineCode: options.machineCode,
@@ -173,156 +177,179 @@ export async function queryInstalledKioskSalePlatform(
 ): Promise<InstalledKioskSalePlatformRawReport> {
   const database = new DrizzleDB(options.databaseUrl);
   try {
-    const [machine] = await database.client
-      .select({ id: machines.id })
-      .from(machines)
-      .where(eq(machines.code, options.machineCode));
-    if (!machine) {
-      return buildInstalledKioskSalePlatformRawReport({
-        options,
-        machineId: null,
-        raw: {
-          orders: [],
+    return await database.client.transaction(
+      async (client) => {
+        const [machine] = await client
+          .select({ id: machines.id })
+          .from(machines)
+          .where(eq(machines.code, options.machineCode));
+        if (!machine) {
+          const capturedAtResult = await client.execute(
+            sql<{
+              capturedAt: string;
+            }>`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt"`,
+          );
+          const capturedAt = capturedAtResult.rows[0]?.capturedAt;
+          if (typeof capturedAt !== "string" || !capturedAt)
+            throw new Error("platform database timestamp is missing");
+          return buildInstalledKioskSalePlatformRawReport({
+            options,
+            machineId: null,
+            capturedAt,
+            raw: {
+              orders: [],
+              orderItems: [],
+              payments: [],
+              reservations: [],
+              commands: [],
+              movements: [],
+              inventories: [],
+            },
+          });
+        }
+
+        const orderRows = await client
+          .select({
+            id: orders.id,
+            orderNo: orders.orderNo,
+            machineId: orders.machineId,
+            status: orders.status,
+          })
+          .from(orders)
+          .where(eq(orders.machineId, machine.id));
+        const orderIds = orderRows.map((row) => row.id);
+        const emptyRaw = {
           orderItems: [],
           payments: [],
           reservations: [],
           commands: [],
-            movements: [],
-            inventories: [],
-        },
-      });
-    }
+        };
+        const related =
+          orderIds.length === 0
+            ? emptyRaw
+            : await Promise.all([
+                client
+                  .select({
+                    id: orderItems.id,
+                    orderId: orderItems.orderId,
+                    inventoryId: orderItems.inventoryId,
+                    slotId: orderItems.slotId,
+                    quantity: orderItems.quantity,
+                  })
+                  .from(orderItems)
+                  .where(inArray(orderItems.orderId, orderIds)),
+                client
+                  .select({
+                    id: payments.id,
+                    orderId: payments.orderId,
+                    paymentNo: payments.paymentNo,
+                    status: payments.status,
+                  })
+                  .from(payments)
+                  .where(inArray(payments.orderId, orderIds)),
+                client
+                  .select({
+                    id: inventoryReservations.id,
+                    orderId: inventoryReservations.orderId,
+                    orderItemId: inventoryReservations.orderItemId,
+                    inventoryId: inventoryReservations.inventoryId,
+                    quantity: inventoryReservations.quantity,
+                    status: inventoryReservations.status,
+                  })
+                  .from(inventoryReservations)
+                  .where(inArray(inventoryReservations.orderId, orderIds)),
+                client
+                  .select({
+                    id: vendingCommands.id,
+                    commandNo: vendingCommands.commandNo,
+                    orderId: vendingCommands.orderId,
+                    machineId: vendingCommands.machineId,
+                    orderItemId: vendingCommands.orderItemId,
+                    slotId: vendingCommands.slotId,
+                    status: vendingCommands.status,
+                  })
+                  .from(vendingCommands)
+                  .where(
+                    and(
+                      eq(vendingCommands.machineId, machine.id),
+                      inArray(vendingCommands.orderId, orderIds),
+                    ),
+                  ),
+              ]);
+        const [orderItemRows, paymentRows, reservationRows, commandRows] =
+          Array.isArray(related)
+            ? related
+            : [
+                related.orderItems,
+                related.payments,
+                related.reservations,
+                related.commands,
+              ];
+        const movementRows = await client
+          .select({
+            id: machineRawStockMovements.id,
+            movementId: machineRawStockMovements.movementId,
+            machineId: machineRawStockMovements.machineId,
+            movementType: machineRawStockMovements.movementType,
+            quantity: machineRawStockMovements.quantity,
+            status: machineRawStockMovements.status,
+            slotId: machineRawStockMovements.slotId,
+            orderNo: sql<
+              string | null
+            >`${machineRawStockMovements.payloadJson}->'orderContext'->>'orderNo'`,
+            orderItemId: sql<
+              string | null
+            >`${machineRawStockMovements.payloadJson}->'orderContext'->>'orderItemId'`,
+            inventoryId: sql<
+              string | null
+            >`${machineRawStockMovements.payloadJson}->'orderContext'->>'inventoryId'`,
+            commandNo: sql<
+              string | null
+            >`${machineRawStockMovements.payloadJson}->'orderContext'->>'vendingCommandNo'`,
+          })
+          .from(machineRawStockMovements)
+          .where(
+            and(
+              eq(machineRawStockMovements.machineId, machine.id),
+              eq(machineRawStockMovements.movementType, "dispense_succeeded"),
+            ),
+          );
+        const inventoryRows = await client
+          .select({
+            id: inventories.id,
+            machineId: inventories.machineId,
+            slotId: inventories.slotId,
+            onHandQty: inventories.onHandQty,
+            reservedQty: inventories.reservedQty,
+          })
+          .from(inventories)
+          .where(eq(inventories.machineId, machine.id));
 
-    const orderRows = await database.client
-      .select({
-        id: orders.id,
-        orderNo: orders.orderNo,
-        machineId: orders.machineId,
-        status: orders.status,
-      })
-      .from(orders)
-      .where(eq(orders.machineId, machine.id));
-    const orderIds = orderRows.map((row) => row.id);
-    const emptyRaw = {
-      orderItems: [],
-      payments: [],
-      reservations: [],
-      commands: [],
-    };
-    const related =
-      orderIds.length === 0
-        ? emptyRaw
-        : await Promise.all([
-            database.client
-              .select({
-                id: orderItems.id,
-                orderId: orderItems.orderId,
-                inventoryId: orderItems.inventoryId,
-                slotId: orderItems.slotId,
-                quantity: orderItems.quantity,
-              })
-              .from(orderItems)
-              .where(inArray(orderItems.orderId, orderIds)),
-            database.client
-              .select({
-                id: payments.id,
-                orderId: payments.orderId,
-                paymentNo: payments.paymentNo,
-                status: payments.status,
-              })
-              .from(payments)
-              .where(inArray(payments.orderId, orderIds)),
-            database.client
-              .select({
-                id: inventoryReservations.id,
-                orderId: inventoryReservations.orderId,
-                orderItemId: inventoryReservations.orderItemId,
-                inventoryId: inventoryReservations.inventoryId,
-                quantity: inventoryReservations.quantity,
-                status: inventoryReservations.status,
-              })
-              .from(inventoryReservations)
-              .where(inArray(inventoryReservations.orderId, orderIds)),
-            database.client
-              .select({
-                id: vendingCommands.id,
-                commandNo: vendingCommands.commandNo,
-                orderId: vendingCommands.orderId,
-                machineId: vendingCommands.machineId,
-                orderItemId: vendingCommands.orderItemId,
-                slotId: vendingCommands.slotId,
-                status: vendingCommands.status,
-              })
-              .from(vendingCommands)
-              .where(
-                and(
-                  eq(vendingCommands.machineId, machine.id),
-                  inArray(vendingCommands.orderId, orderIds),
-                ),
-              ),
-          ]);
-    const [orderItemRows, paymentRows, reservationRows, commandRows] =
-      Array.isArray(related)
-        ? related
-        : [
-            related.orderItems,
-            related.payments,
-            related.reservations,
-            related.commands,
-          ];
-    const movementRows = await database.client
-      .select({
-        id: machineRawStockMovements.id,
-        movementId: machineRawStockMovements.movementId,
-        machineId: machineRawStockMovements.machineId,
-        movementType: machineRawStockMovements.movementType,
-        quantity: machineRawStockMovements.quantity,
-        status: machineRawStockMovements.status,
-        slotId: machineRawStockMovements.slotId,
-        orderNo: sql<
-          string | null
-        >`${machineRawStockMovements.payloadJson}->'orderContext'->>'orderNo'`,
-        orderItemId: sql<
-          string | null
-        >`${machineRawStockMovements.payloadJson}->'orderContext'->>'orderItemId'`,
-        inventoryId: sql<
-          string | null
-        >`${machineRawStockMovements.payloadJson}->'orderContext'->>'inventoryId'`,
-        commandNo: sql<
-          string | null
-        >`${machineRawStockMovements.payloadJson}->'orderContext'->>'vendingCommandNo'`,
-      })
-      .from(machineRawStockMovements)
-      .where(
-        and(
-          eq(machineRawStockMovements.machineId, machine.id),
-          eq(machineRawStockMovements.movementType, "dispense_succeeded"),
-        ),
-      );
-    const inventoryRows = await database.client
-      .select({
-        id: inventories.id,
-        machineId: inventories.machineId,
-        slotId: inventories.slotId,
-        onHandQty: inventories.onHandQty,
-        reservedQty: inventories.reservedQty,
-      })
-      .from(inventories)
-      .where(eq(inventories.machineId, machine.id));
-
-    return buildInstalledKioskSalePlatformRawReport({
-      options,
-      machineId: machine.id,
-      raw: {
-        orders: orderRows,
-        orderItems: orderItemRows,
-        payments: paymentRows,
-        reservations: reservationRows,
-        commands: commandRows,
-        movements: movementRows,
-        inventories: inventoryRows,
+        const capturedAtResult = await client.execute(
+          sql<{
+            capturedAt: string;
+          }>`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt"`,
+        );
+        const capturedAt = capturedAtResult.rows[0]?.capturedAt;
+        if (typeof capturedAt !== "string" || !capturedAt)
+          throw new Error("platform database timestamp is missing");
+        return buildInstalledKioskSalePlatformRawReport({
+          options,
+          machineId: machine.id,
+          capturedAt,
+          raw: {
+            orders: orderRows,
+            orderItems: orderItemRows,
+            payments: paymentRows,
+            reservations: reservationRows,
+            commands: commandRows,
+            movements: movementRows,
+            inventories: inventoryRows,
+          },
+        });
       },
-    });
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   } finally {
     await database.disconnect();
   }
