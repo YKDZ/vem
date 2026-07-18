@@ -183,7 +183,7 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
 ${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(profile.network.macAddress)}"/><source network="${xml(profile.network.name)}"/><model type="e1000e"/></interface>
     <graphics type="vnc" autoport="yes" listen="127.0.0.1"><listen type="address" address="127.0.0.1"/></graphics>
     <video><model type="virtio" vram="${profile.display.videoMemoryKiB}" heads="1" primary="yes"><resolution x="${profile.display.width}" y="${profile.display.height}"/></model></video>
-    <audio id="1" type="file"><output file="${xml(profile.audio.capturePath)}"/></audio>
+    <audio id="1" type="file" path="${xml(profile.audio.capturePath)}"/>
     <sound model="ich9"><audio id="1"/></sound>
 ${serial}
     <memballoon model="virtio"/>

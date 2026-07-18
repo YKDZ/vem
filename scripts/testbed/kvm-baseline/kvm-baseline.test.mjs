@@ -633,7 +633,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
     assert.match(
       xml,
-      /<audio id="1" type="file"><output file="\/srv\/vm\/win10\.qcow2\.default-audio\.wav"\/><\/audio>/,
+      /<audio id="1" type="file" path="\/srv\/vm\/win10\.qcow2\.default-audio\.wav"\/>/,
     );
     assert.match(xml, /<sound model="ich9"><audio id="1"\/><\/sound>/);
     assert.doesNotMatch(xml, /qxl|spice/i);
@@ -1079,11 +1079,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
         ),
       /default ICH9 audio device/,
     );
-    assert.doesNotThrow(() =>
-      verifyDefinedRuntimeDevices(
-        xml.replace(/<output file="[^"]+"\/>/, ""),
-        profile,
-      ),
+    assert.throws(
+      () =>
+        verifyDefinedRuntimeDevices(
+          xml.replace(/ path="[^"]+"/, ""),
+          profile,
+        ),
+      /default ICH9 audio device/,
     );
     assert.throws(
       () =>

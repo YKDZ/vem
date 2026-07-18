@@ -1145,14 +1145,17 @@ function xmlAttributeEquals(element, attribute, value) {
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
-  const audioDevices = [...xml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g)];
+  const audioDevices = [
+    ...xml.matchAll(/<audio\b(?=[^>]*\btype=)[^>]*\/?>/g),
+  ];
   if (
     sounds.length !== 1 ||
     !xmlAttributeEquals(sounds[0][0], "model", profile.audio.model) ||
     !/<audio\b[^>]*\bid=(['"])1\1\s*\/>/.test(sounds[0][0]) ||
     audioDevices.length !== 1 ||
     !xmlAttributeEquals(audioDevices[0][0], "id", "1") ||
-    !xmlAttributeEquals(audioDevices[0][0], "type", "file")
+    !xmlAttributeEquals(audioDevices[0][0], "type", "file") ||
+    !xmlAttributeEquals(audioDevices[0][0], "path", profile.audio.capturePath)
   ) {
     throw new Error("defined domain must use the default ICH9 audio device");
   }
