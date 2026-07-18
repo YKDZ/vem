@@ -13,12 +13,12 @@ function Test-CachedPowerShell {
   if (-not (Test-Path -LiteralPath $candidateExecutable -PathType Leaf)) { return $false }
 
   try {
-    $probeOutput = @(& $candidateExecutable -NoProfile -Command @'
+    $probeScript = @'
 if ($PSVersionTable.PSVersion.ToString() -ne "7.4.6") { exit 1 }
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $null = '{}' | ConvertFrom-Json -ErrorAction Stop
 '@
-    2>&1)
+    $probeOutput = @(& $candidateExecutable -NoProfile -Command $probeScript 2>&1)
     $probeExitCode = $LASTEXITCODE
   } catch {
     Write-Warning "PowerShell cache probe could not start: $($_.Exception.Message)"
