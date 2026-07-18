@@ -29,10 +29,14 @@ jobs:
     env:
       TESTBED_MODE: ${{ inputs.mode || 'full' }}
       GITHUB_SHA: ${{ github.sha }}
+      CARGO_HOME: /opt/vem/runtime-testbed/cargo
+      RUSTUP_HOME: /opt/vem/runtime-testbed/rustup
+      CARGO_TARGET_DIR: /opt/vem/runtime-testbed/cargo-target
       VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
       VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
       VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
     steps:
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
@@ -96,7 +100,12 @@ jobs:
     if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result != 'cancelled' }}
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 30
+    env:
+      CARGO_HOME: /opt/vem/runtime-testbed/cargo
+      RUSTUP_HOME: /opt/vem/runtime-testbed/rustup
+      CARGO_TARGET_DIR: /opt/vem/runtime-testbed/cargo-target
     steps:
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
