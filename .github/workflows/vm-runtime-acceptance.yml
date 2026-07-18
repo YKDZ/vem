@@ -52,6 +52,8 @@ jobs:
             sleep 2
           done
           ssh "${ssh_options[@]}" "$user@$host" \
+            "powershell.exe -NoProfile -Command \"Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue | ForEach-Object { Stop-Service -Name \$_.Name -Force -ErrorAction SilentlyContinue; sc.exe delete \$_.Name | Out-Null }; Start-Sleep -Seconds 2\""
+          ssh "${ssh_options[@]}" "$user@$host" \
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1' -Mode RegisterRunner -RunnerArchivePath 'C:\ProgramData\WindowsRuntimeBaseline\media\actions-runner-win-x64.zip' -RunnerUrl '$runner_url' -RunnerRegistrationToken '$token' -RunnerName '$runner_name' -RunnerLabels @('$labels'.Split(','))\""
 
   build-windows-runtime:
