@@ -5,6 +5,12 @@ import { watch, type WatchStopHandle } from "vue";
 
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import {
+  createMachineRuntimeTrace,
+  type MachineRuntimeNavigationTraceRecord,
+  type MachineRuntimeTrace as SharedMachineRuntimeTrace,
+  type MachineRuntimeTraceEntry,
+} from "@/runtime/machine-runtime-trace";
 
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
@@ -13,7 +19,6 @@ const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
   "checkout",
   "payment",
 ]);
-const MAX_RUNTIME_TRACE_RECORDS = 200;
 
 export type MachineNavigationIntent =
   | { type: "customer.navigate"; target: RouteLocationRaw }
@@ -27,45 +32,25 @@ export type MachineNavigationIntent =
   | { type: "browser.navigate"; target: RouteLocationRaw }
   | { type: "transaction.projection" };
 
-export type MachineRuntimeTraceRecord = {
-  id: number;
-  at: string;
-  intentType: MachineNavigationIntent["type"];
-  decision: "accepted" | "rejected" | "delayed";
-  reasonCode: string;
-  fromRoute: string;
-  requestedRoute: string | null;
-  decidedRoute: string | null;
-  finalRoute: string | null;
-  targetRoute: string | null;
-  transactionOrderNo: string | null;
-  transactionStage: string;
-  readinessRevision: string | null;
-  touchscreenSessionActive: boolean;
-};
+export type MachineRuntimeTraceRecord = MachineRuntimeNavigationTraceRecord;
 
 export class MachineRuntimeTrace {
-  private records: MachineRuntimeTraceRecord[] = [];
-  private nextId = 1;
+  readonly runtimeTrace: SharedMachineRuntimeTrace;
 
-  record(record: Omit<MachineRuntimeTraceRecord, "id" | "at">): void {
-    this.records.push(
-      Object.freeze({
-        id: this.nextId,
-        at: new Date().toISOString(),
-        ...record,
-      }),
-    );
-    this.nextId += 1;
-    if (this.records.length > MAX_RUNTIME_TRACE_RECORDS) {
-      this.records.splice(0, this.records.length - MAX_RUNTIME_TRACE_RECORDS);
-    }
+  constructor(runtimeTrace: SharedMachineRuntimeTrace = createMachineRuntimeTrace()) {
+    this.runtimeTrace = runtimeTrace;
+  }
+
+  record(record: Omit<MachineRuntimeTraceRecord, "id" | "at" | "type">): void {
+    this.runtimeTrace.recordNavigation(record);
   }
 
   snapshot(): readonly MachineRuntimeTraceRecord[] {
-    return Object.freeze(
-      this.records.map((record) => Object.freeze({ ...record })),
-    );
+    return this.runtimeTrace.navigationEntries();
+  }
+
+  entries(): readonly MachineRuntimeTraceEntry[] {
+    return this.runtimeTrace.entries();
   }
 }
 
@@ -364,8 +349,12 @@ export function createMachineNavigationAuthority(
 
 let installedAuthority: MachineNavigationAuthority | null = null;
 
-export function machineRuntimeTrace(): readonly MachineRuntimeTraceRecord[] {
-  return installedAuthority?.trace.snapshot() ?? [];
+export function machineRuntimeTrace(): readonly MachineRuntimeTraceEntry[] {
+  return installedAuthority?.trace.entries() ?? [];
+}
+
+export function installedMachineRuntimeTrace(): SharedMachineRuntimeTrace | null {
+  return installedAuthority?.trace.runtimeTrace ?? null;
 }
 
 export function installTransactionRouteAuthority(

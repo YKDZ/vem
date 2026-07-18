@@ -134,6 +134,35 @@ describe("customer checkout projection architecture", () => {
     expect(coordinator).toContain("onTerminal");
   });
 
+  it("forbids page and runtime callers from bypassing the audio coordinator boundary", () => {
+    const audioBoundaryAllowlist = new Set([
+      "src/audio-coordinator/audio-coordinator.ts",
+      "src/audio-playback/machine-audio-playback.ts",
+      "src/runtime/customer-journey-audio-runtime.ts",
+    ]);
+    for (const path of machineSourceFiles()) {
+      if (path.endsWith(".spec.ts") || audioBoundaryAllowlist.has(path)) {
+        continue;
+      }
+      const source = readSource(path);
+      const offenders = [
+        [/\bnew\s+Audio\s*\(/, "new Audio"],
+        [/\.playLocal\s*\(/, "playLocal"],
+        [
+          /callTauriCommand\s*<[^>]*>\s*\(\s*["'](?:play|stop)_machine_audio["']/,
+          "native audio command",
+        ],
+        [
+          /create(?:Browser|TauriNative)MachineAudioPlaybackDriver\s*\(/,
+          "playback driver",
+        ],
+      ].flatMap(([pattern, label]) =>
+        (pattern as RegExp).test(source) ? [label as string] : [],
+      );
+      expect({ path, offenders }).toEqual({ path, offenders: [] });
+    }
+  });
+
   it("detects direct daemon event-stream consumption in customer checkout surfaces", () => {
     expect(
       daemonEventConsumptionOffenders(`

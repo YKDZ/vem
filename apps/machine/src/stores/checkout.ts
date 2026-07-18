@@ -548,7 +548,9 @@ export const useCheckoutStore = defineStore("checkout", {
         this.loading = false;
       }
     },
-    async invalidateCurrentTransaction(): Promise<TransactionRefreshOutcome> {
+    async invalidateCurrentTransaction(input?: {
+      restored?: boolean;
+    }): Promise<TransactionRefreshOutcome> {
       this.transactionRefreshGeneration += 1;
       const coordinator = transactionRefreshCoordinator(this);
       if (coordinator.running) return coordinator.running;
@@ -580,11 +582,12 @@ export const useCheckoutStore = defineStore("checkout", {
               this.transactionRefreshLastAcceptedRequestNo = generation;
               return { status: "refreshed", snapshot: null };
             }
+            const restored = input?.restored === true;
             const incomingView = projectCustomerCheckoutView({
               transaction: snapshot,
               nowMs: this.nowMs,
               dismissedTerminalOrderNos: this.dismissedTerminalOrderNos,
-              restored: true,
+              restored,
               loading: this.loading,
               readiness: customerCheckoutReadinessContext(),
             });
@@ -602,7 +605,7 @@ export const useCheckoutStore = defineStore("checkout", {
             ) {
               return { status: "refreshed", snapshot: this.transaction };
             }
-            this.applyTransaction(snapshot, { restored: true });
+            this.applyTransaction(snapshot, { restored });
             this.transactionRefreshLastAcceptedRequestNo = generation;
             return { status: "refreshed", snapshot };
           } catch (error) {
@@ -625,8 +628,10 @@ export const useCheckoutStore = defineStore("checkout", {
       coordinator.running = running;
       return running;
     },
-    async refreshCurrentTransaction(): Promise<TransactionRefreshOutcome> {
-      return this.invalidateCurrentTransaction();
+    async refreshCurrentTransaction(input?: {
+      restored?: boolean;
+    }): Promise<TransactionRefreshOutcome> {
+      return this.invalidateCurrentTransaction(input);
     },
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;

@@ -991,6 +991,24 @@ describe("checkout store", () => {
     });
   });
 
+  it("marks daemon refreshes as live after a boot-restored transaction", async () => {
+    const restored = makeTransactionSnapshot({ nextAction: "wait_payment" });
+    const live = makeTransactionSnapshot({
+      nextAction: "dispensing",
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      updatedAt: "2026-07-18T08:35:00.000Z",
+    });
+    getCurrentTransactionMock.mockResolvedValue(live);
+    const store = useCheckoutStore();
+    store.applyTransaction(restored, { restored: true });
+
+    await store.refreshCurrentTransaction();
+
+    expect(store.lastTransactionRestored).toBe(false);
+    expect(store.transaction?.nextAction).toBe("dispensing");
+  });
+
   it("reports an explicit transaction refresh failure while retaining recovery state", async () => {
     const failure = new Error("daemon IPC disconnected");
     getCurrentTransactionMock.mockRejectedValueOnce(failure);

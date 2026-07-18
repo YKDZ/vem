@@ -6,6 +6,7 @@ import {
   createAudioCoordinator,
   type AudioCoordinatorPlaybackDriver,
 } from "./audio-coordinator";
+import type { MachineRuntimeAudioTraceEntry } from "@/runtime/machine-runtime-trace";
 
 function transition(
   transitionId: string,
@@ -72,10 +73,13 @@ describe("Audio Coordinator", () => {
   });
 
   it("records one stopped outcome for every accepted request during runtime teardown", async () => {
+    let stopActive: (() => void) | null = null;
     const driver: AudioCoordinatorPlaybackDriver = {
       name: "mock",
-      playLocal: vi.fn(async () => undefined),
-      stop: vi.fn(async () => undefined),
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        stopActive = () => options?.onTerminal?.({ status: "stopped" });
+      }),
+      stop: vi.fn(async () => stopActive?.()),
     };
     const coordinator = createAudioCoordinator({
       driver,
@@ -98,7 +102,10 @@ describe("Audio Coordinator", () => {
     expect(
       coordinator
         .trace()
-        .filter((entry) => entry.type === "audio_terminal")
+        .filter(
+          (entry): entry is MachineRuntimeAudioTraceEntry =>
+            entry.type === "audio_terminal",
+        )
         .map((entry) => [entry.requestId, entry.outcome]),
     ).toEqual([
       ["audio-request-1", "stopped"],
@@ -392,6 +399,49 @@ describe("Audio Coordinator", () => {
         onTerminal: expect.any(Function),
       },
     );
+  });
+
+  it("gives Local Operations test playback maximum priority and waits to interrupt", async () => {
+    let terminal:
+      | ((outcome: { status: "completed" | "failed" | "stopped" }) => void)
+      | null = null;
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        terminal = (outcome) => options?.onTerminal?.(outcome);
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: () => ({ sourceUrl: "/audio/normal.mp3", priority: 999 }),
+    });
+
+    await coordinator.accept([transition("normal")]);
+    const testRequestId = await coordinator.requestTestPlayback(
+      "/audio/maintenance-test.mp3",
+      0.35,
+    );
+
+    expect(driver.stop).toHaveBeenCalledOnce();
+    expect(driver.playLocal).toHaveBeenCalledOnce();
+    expect(coordinator.activeRequest()?.transitionId).toBe("normal");
+
+    const stopActive = terminal as
+      | ((outcome: { status: "completed" | "failed" | "stopped" }) => void)
+      | null;
+    if (!stopActive) throw new Error("mock playback did not retain terminal callback");
+    stopActive({ status: "stopped" });
+    await vi.waitFor(() => {
+      expect(driver.playLocal).toHaveBeenCalledTimes(2);
+    });
+    expect(coordinator.activeRequest()?.requestId).toBe(testRequestId);
   });
 
   it("terminalizes an interrupted request as failed when the stop command fails", async () => {

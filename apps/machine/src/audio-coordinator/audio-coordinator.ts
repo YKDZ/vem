@@ -271,9 +271,6 @@ export function createAudioCoordinator(
           message: error instanceof Error ? error.message : String(error),
         });
       }
-      if (active?.requestId === request.requestId) {
-        finishActive({ status: "stopped", message: "runtime disposed" });
-      }
     }
     for (const queued of queue.splice(0)) {
       recordTerminal(queued, {

@@ -387,6 +387,7 @@ function defaultBrowserAudioFactory(
 
 export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlaybackDriver | null {
   if (!isTauriRuntime()) return null;
+  const terminalTimeoutMs = 30_000;
   let activePlayback: {
     requestId: string;
     commandAccepted: boolean;
@@ -398,6 +399,9 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
     onTerminal?: MachineAudioPlaybackDriverPlayOptions["onTerminal"];
     unlisten: UnlistenFn | null;
     stopRequested: boolean;
+    terminalTimer: ReturnType<typeof globalThis.setTimeout> | null;
+    resolveTerminal: () => void;
+    terminalPromise: Promise<void>;
   } | null = null;
   const terminalEvents = [
     { eventName: "machine-audio-completed", status: "completed" },
@@ -411,9 +415,25 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
   ): void {
     if (!outcome || activePlayback !== playback) return;
     activePlayback = null;
+    if (playback.terminalTimer !== null) {
+      globalThis.clearTimeout(playback.terminalTimer);
+      playback.terminalTimer = null;
+    }
     playback.unlisten?.();
     if (outcome.status === "completed") playback.onCompleted?.();
     playback.onTerminal?.(outcome);
+    playback.resolveTerminal();
+  }
+
+  function armTerminalTimeout(
+    playback: NonNullable<typeof activePlayback>,
+  ): void {
+    playback.terminalTimer = globalThis.setTimeout(() => {
+      finishActivePlayback(playback, {
+        status: "failed",
+        message: "native playback terminal event timed out",
+      });
+    }, terminalTimeoutMs);
   }
 
   return {
@@ -425,6 +445,13 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
       const requestId =
         playOptions?.requestId ?? `tauri-machine-audio-${requestSequence}`;
       requestSequence += 1;
+      if (activePlayback) {
+        throw new Error("native playback is awaiting a terminal event");
+      }
+      let resolveTerminal: (() => void) | null = null;
+      const terminalPromise = new Promise<void>((resolve) => {
+        resolveTerminal = resolve;
+      });
       const playback = {
         requestId,
         commandAccepted: false,
@@ -436,8 +463,10 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
         onTerminal: playOptions?.onTerminal,
         unlisten: null as UnlistenFn | null,
         stopRequested: false,
+        terminalTimer: null as ReturnType<typeof globalThis.setTimeout> | null,
+        resolveTerminal: () => resolveTerminal?.(),
+        terminalPromise,
       };
-      activePlayback?.unlisten?.();
       activePlayback = playback;
       try {
         const unlistens = await Promise.all(
@@ -479,30 +508,38 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
         if (activePlayback !== playback) return;
         playback.commandAccepted = true;
         if (playback.terminal) {
-          setTimeout(() => {
-            finishActivePlayback(playback, playback.terminal);
-          }, 0);
+          finishActivePlayback(playback, playback.terminal);
+          return;
         }
+        armTerminalTimeout(playback);
       } catch (error: unknown) {
         if (activePlayback === playback) {
           activePlayback = null;
+          if (playback.terminalTimer !== null) {
+            globalThis.clearTimeout(playback.terminalTimer);
+          }
           playback.unlisten?.();
+          playback.resolveTerminal();
         }
         throw error;
       }
     },
-    stop(): void {
+    async stop(): Promise<void> {
       const playback = activePlayback;
       if (!playback || playback.stopRequested) return;
       playback.stopRequested = true;
-      void callTauriCommand<void>("stop_machine_audio").catch(
-        (error: unknown) => {
-          finishActivePlayback(playback, {
-            status: "failed",
-            message: error instanceof Error ? error.message : String(error),
-          });
-        },
-      );
+      try {
+        await callTauriCommand<void>("stop_machine_audio", {
+          requestId: playback.requestId,
+        });
+      } catch (error: unknown) {
+        finishActivePlayback(playback, {
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      await playback.terminalPromise;
     },
   };
 }

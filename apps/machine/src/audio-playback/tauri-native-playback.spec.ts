@@ -118,7 +118,7 @@ describe("Tauri native Machine Audio playback driver", () => {
       volume: 0.7,
       onTerminal: (outcome) => outcomes.push(outcome.status),
     });
-    void driver?.stop();
+    const stopping = driver?.stop();
 
     listeners.get("machine-audio-stopped")?.({
       payload: { requestId: "another-request" },
@@ -126,9 +126,64 @@ describe("Tauri native Machine Audio playback driver", () => {
     listeners.get("machine-audio-stopped")?.({
       payload: { requestId: "native-stop-1" },
     });
+    await stopping;
 
     expect(outcomes).toEqual(["stopped"]);
-    expect(callTauriCommandMock).toHaveBeenCalledWith("stop_machine_audio");
+    expect(callTauriCommandMock).toHaveBeenCalledWith("stop_machine_audio", {
+      requestId: "native-stop-1",
+    });
+  });
+
+  it("waits for the matching native terminal event when stop races command acceptance", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+    const listeners = new Map<
+      string,
+      (event: { payload: { requestId: string; message?: string } }) => void
+    >();
+    listenMock.mockImplementation(async (eventName, listener) => {
+      listeners.set(eventName, listener);
+      return vi.fn();
+    });
+    let resolvePlay: (() => void) | null = null;
+    callTauriCommandMock.mockImplementation((command: string) => {
+      if (command === "play_machine_audio") {
+        return new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+    const outcomes: string[] = [];
+    const driver = createTauriNativeMachineAudioPlaybackDriver();
+    const starting = driver?.playLocal("/assets/payment-succeeded.wav", {
+      requestId: "native-race-1",
+      volume: 0.7,
+      onTerminal: (outcome) => outcomes.push(outcome.status),
+    });
+
+    await vi.waitFor(() => {
+      expect(listeners.get("machine-audio-stopped")).toBeTypeOf("function");
+    });
+    await vi.waitFor(() => {
+      expect(callTauriCommandMock).toHaveBeenCalledWith("play_machine_audio", {
+        requestId: "native-race-1",
+        sourceUrl: "/assets/payment-succeeded.wav",
+        volume: 0.7,
+      });
+    });
+    const stopping = driver?.stop();
+    listeners.get("machine-audio-stopped")?.({
+      payload: { requestId: "native-race-1" },
+    });
+    expect(outcomes).toEqual([]);
+
+    const completeStart = resolvePlay as unknown as (() => void) | null;
+    if (!completeStart) throw new Error("native play command did not start");
+    completeStart();
+    await starting;
+    await stopping;
+
+    expect(outcomes).toEqual(["stopped"]);
   });
 
   it("automatically prefers native playback in Tauri with browser fallback available", async () => {

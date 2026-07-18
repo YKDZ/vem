@@ -333,6 +333,75 @@ describe("Customer Journey Transition Projector", () => {
     ).toEqual([]);
   });
 
+  it("uses semantic touch, presence profile, and departure edges instead of observation times", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    const touch = projector.project({
+      touchscreen: {
+        personPresent: true,
+        source: "local_interaction",
+        lastInteractionAt: "2026-07-18T08:20:00.000Z",
+      },
+    });
+    const repeatedTouch = projector.project({
+      touchscreen: {
+        personPresent: true,
+        source: "local_interaction",
+        lastInteractionAt: "2026-07-18T08:20:10.000Z",
+      },
+    });
+    expect(touch).toMatchObject([
+      { transitionId: "touchscreen:session-1:awakened" },
+    ]);
+    expect(repeatedTouch).toEqual([]);
+
+    const welcome = projector.project({
+      vision: {
+        personPresent: true,
+        occupancyState: "single",
+        lastSeenAt: "2026-07-18T08:21:00.000Z",
+        departedAt: null,
+        lastChangedAt: "2026-07-18T08:21:00.000Z",
+      },
+    });
+    const repeatedPresence = projector.project({
+      vision: {
+        personPresent: true,
+        occupancyState: "single",
+        lastSeenAt: "2026-07-18T08:21:10.000Z",
+        departedAt: null,
+        lastChangedAt: "2026-07-18T08:21:10.000Z",
+      },
+    });
+    const departure = projector.project({
+      vision: {
+        personPresent: false,
+        occupancyState: "none",
+        lastSeenAt: "2026-07-18T08:21:10.000Z",
+        departedAt: "2026-07-18T08:21:20.000Z",
+        lastChangedAt: "2026-07-18T08:21:20.000Z",
+      },
+    });
+    const repeatedDeparture = projector.project({
+      vision: {
+        personPresent: false,
+        occupancyState: "none",
+        lastSeenAt: "2026-07-18T08:21:10.000Z",
+        departedAt: "2026-07-18T08:21:30.000Z",
+        lastChangedAt: "2026-07-18T08:21:30.000Z",
+      },
+    });
+
+    expect(welcome).toMatchObject([
+      { transitionId: "vision:presence-1:welcome" },
+    ]);
+    expect(repeatedPresence).toEqual([]);
+    expect(departure).toMatchObject([
+      { transitionId: "vision:presence-2:departed" },
+    ]);
+    expect(repeatedDeparture).toEqual([]);
+  });
+
   it("remembers a restored product selection without replaying it", () => {
     const projector = createCustomerJourneyTransitionProjector();
     const facts = {

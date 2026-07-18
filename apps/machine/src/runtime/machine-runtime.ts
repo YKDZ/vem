@@ -12,6 +12,7 @@ import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
+import { installedMachineRuntimeTrace } from "@/router/transaction-route-authority";
 
 import {
   createCustomerJourneyAudioRuntime,
@@ -205,7 +206,10 @@ export function startMachineRuntime(pinia: Pinia): void {
 
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
-  coordinator.journeyAudio = createCustomerJourneyAudioRuntime(pinia);
+  coordinator.journeyAudio = createCustomerJourneyAudioRuntime(
+    pinia,
+    installedMachineRuntimeTrace() ?? undefined,
+  );
   void saleCapabilityStore.refresh();
   coordinator.subscription = daemonClient.subscribeEvents({
     onEvent: (event) => {

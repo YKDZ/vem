@@ -23,6 +23,7 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
+import type { MachineRuntimeTrace } from "@/runtime/machine-runtime-trace";
 
 export type CustomerJourneyAudioRuntime = {
   requestTestPlayback(
@@ -35,6 +36,7 @@ export type CustomerJourneyAudioRuntime = {
 
 export function createCustomerJourneyAudioRuntime(
   pinia: Pinia,
+  trace?: MachineRuntimeTrace,
 ): CustomerJourneyAudioRuntime {
   const scope = effectScope();
   const projector = createCustomerJourneyTransitionProjector();
@@ -48,6 +50,7 @@ export function createCustomerJourneyAudioRuntime(
         transition,
         presentationContext(useNaturalContextStore(pinia)),
       ),
+    trace,
   });
 
   scope.run(() => {

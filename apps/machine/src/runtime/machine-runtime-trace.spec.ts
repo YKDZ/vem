@@ -40,4 +40,52 @@ describe("Machine Runtime Trace", () => {
       }),
     ]);
   });
+
+  it("orders navigation and correlated audio records in one runtime trace", () => {
+    const trace = createMachineRuntimeTrace();
+    trace.recordNavigation({
+      intentType: "customer.touch",
+      decision: "accepted",
+      reasonCode: "touchscreen_session_renewed",
+      fromRoute: "/catalog",
+      requestedRoute: null,
+      decidedRoute: null,
+      finalRoute: null,
+      targetRoute: null,
+      transactionOrderNo: null,
+      transactionStage: "none",
+      readinessRevision: "machine-test:1",
+      touchscreenSessionActive: true,
+    });
+    trace.record({
+      type: "journey_transition",
+      transitionId: "touchscreen:session-1:awakened",
+      requestId: null,
+      outcome: null,
+      message: null,
+      recordedAt: "2026-07-18T08:30:00.000Z",
+    });
+    trace.record({
+      type: "audio_terminal",
+      transitionId: "touchscreen:session-1:awakened",
+      requestId: "audio-request-1",
+      outcome: "completed",
+      message: null,
+      recordedAt: "2026-07-18T08:30:01.000Z",
+    });
+
+    expect(trace.entries()).toEqual([
+      expect.objectContaining({ id: 1, type: "navigation" }),
+      expect.objectContaining({
+        id: 2,
+        transitionId: "touchscreen:session-1:awakened",
+      }),
+      expect.objectContaining({
+        id: 3,
+        transitionId: "touchscreen:session-1:awakened",
+        requestId: "audio-request-1",
+        outcome: "completed",
+      }),
+    ]);
+  });
 });

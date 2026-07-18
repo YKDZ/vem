@@ -14,7 +14,7 @@ use serde::Serialize;
 
 #[cfg(windows)]
 use {
-    rodio::{source::EmptyCallback, Decoder, OutputStream, OutputStreamBuilder, Player},
+    rodio::{source::EmptyCallback, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player},
     std::fs::File,
     std::io::{BufReader, Cursor},
     tauri::Emitter,
@@ -32,7 +32,7 @@ struct ActiveMachineAudio {
     #[cfg(windows)]
     player: Arc<Player>,
     #[cfg(windows)]
-    sink: OutputStream,
+    sink: MixerDeviceSink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,7 @@ struct PlaybackLifecycleState<T> {
     active: Option<ActivePlayback<T>>,
     completion_generation: Option<u64>,
     claimed_completions: Vec<CompletionClaim>,
+    stop_before_start_request_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +82,7 @@ impl<T> Default for PlaybackLifecycle<T> {
                 active: None,
                 completion_generation: None,
                 claimed_completions: Vec::new(),
+                stop_before_start_request_ids: Vec::new(),
             })),
             next_generation: AtomicU64::new(1),
         }
@@ -99,10 +101,18 @@ impl<T> PlaybackLifecycle<T> {
         request_id: String,
         payload: T,
         stop_replaced: impl FnOnce(ActivePlayback<T>),
-    ) -> Result<u64, String> {
+    ) -> Result<PlaybackStart, String> {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let replaced = {
             let mut state = self.state.lock().map_err(|_| "audio state poisoned")?;
+            if let Some(index) = state
+                .stop_before_start_request_ids
+                .iter()
+                .position(|pending| pending == &request_id)
+            {
+                state.stop_before_start_request_ids.remove(index);
+                return Ok(PlaybackStart::StoppedBeforeStart);
+            }
             for claimed in &mut state.claimed_completions {
                 claimed.terminal = CompletionTerminal::Stopped;
             }
@@ -117,22 +127,68 @@ impl<T> PlaybackLifecycle<T> {
         if let Some(replaced) = replaced {
             stop_replaced(replaced);
         }
-        Ok(generation)
+        Ok(PlaybackStart::Started(generation))
     }
 
-    fn stop(&self, stop_active: impl FnOnce(ActivePlayback<T>)) {
+    fn stop(&self, request_id: String, stop_active: impl FnOnce(ActivePlayback<T>)) {
+        let stopped = self.state.lock().ok().and_then(|mut state| {
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.request_id == request_id)
+            {
+                state.completion_generation = None;
+                return state.active.take();
+            }
+            if let Some(claimed) = state
+                .claimed_completions
+                .iter_mut()
+                .find(|claimed| claimed.request_id == request_id)
+            {
+                claimed.terminal = CompletionTerminal::Stopped;
+                return None;
+            }
+            remember_stop_before_start(&mut state.stop_before_start_request_ids, request_id);
+            None
+        });
+        if let Some(stopped) = stopped {
+            stop_active(stopped);
+        }
+    }
+
+    fn stop_active(&self, stop_active: impl FnOnce(ActivePlayback<T>)) {
         let stopped = self.state.lock().ok().and_then(|mut state| {
             state.completion_generation = None;
-            if state.active.is_none() {
-                for claimed in &mut state.claimed_completions {
-                    claimed.terminal = CompletionTerminal::Stopped;
-                }
-            }
             state.active.take()
         });
         if let Some(stopped) = stopped {
             stop_active(stopped);
         }
+    }
+}
+
+enum PlaybackStart {
+    Started(u64),
+    StoppedBeforeStart,
+}
+
+#[cfg(test)]
+impl PlaybackStart {
+    fn expect_started(self) -> u64 {
+        match self {
+            Self::Started(generation) => generation,
+            Self::StoppedBeforeStart => panic!("playback was stopped before start"),
+        }
+    }
+}
+
+fn remember_stop_before_start(memory: &mut Vec<String>, request_id: String) {
+    if memory.iter().any(|pending| pending == &request_id) {
+        return;
+    }
+    memory.push(request_id);
+    if memory.len() > 32 {
+        memory.remove(0);
     }
 }
 
@@ -392,10 +448,10 @@ impl MachineAudioState {
 
         #[cfg(windows)]
         {
-            self.stop();
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
-            let sink = OutputStreamBuilder::open_default_stream()
+            let mut sink = DeviceSinkBuilder::open_default_sink()
                 .map_err(|error| format!("open Windows default audio output failed: {error}"))?;
+            sink.log_on_drop(false);
             let player = Arc::new(Player::connect_new(&sink.mixer()));
             player.set_volume(normalize_volume(input.volume));
             player.pause();
@@ -421,7 +477,7 @@ impl MachineAudioState {
     fn start_player<S>(
         &self,
         app: tauri::AppHandle,
-        sink: OutputStream,
+        sink: MixerDeviceSink,
         player: Arc<Player>,
         request_id: String,
         source: S,
@@ -429,7 +485,9 @@ impl MachineAudioState {
     where
         S: rodio::Source<Item = f32> + Send + 'static,
     {
-        let generation = self.lifecycle.replace(
+        let stopped_request_id = request_id.clone();
+        let terminal_app = app.clone();
+        let start = self.lifecycle.replace(
             request_id,
             ActiveMachineAudio {
                 app,
@@ -447,6 +505,16 @@ impl MachineAudioState {
                 );
             },
         )?;
+        let PlaybackStart::Started(generation) = start else {
+            let _ = terminal_app.emit(
+                "machine-audio-stopped",
+                MachineAudioTerminalEvent {
+                    request_id: stopped_request_id,
+                    message: Some("stop requested before native playback started".to_string()),
+                },
+            );
+            return Ok(());
+        };
         let completion = OnceCompletionSignal::new(self.completion_tx.clone(), generation);
         player.append(source);
         // This closure runs on the audio thread and must remain signal-only.
@@ -457,9 +525,9 @@ impl MachineAudioState {
         Ok(())
     }
 
-    fn stop(&self) {
+    fn stop(&self, request_id: String) {
         #[cfg(windows)]
-        self.lifecycle.stop(|current| {
+        self.lifecycle.stop(request_id, |current| {
             current.payload.player.stop();
             let _ = current.payload.app.emit(
                 "machine-audio-stopped",
@@ -470,13 +538,22 @@ impl MachineAudioState {
             );
         });
         #[cfg(not(windows))]
-        self.lifecycle.stop(|_| {});
+        self.lifecycle.stop(request_id, |_| {});
+    }
+
+    fn stop_all(&self) {
+        #[cfg(windows)]
+        self.lifecycle.stop_active(|current| {
+            current.payload.player.stop();
+        });
+        #[cfg(not(windows))]
+        self.lifecycle.stop_active(|_| {});
     }
 }
 
 impl Drop for MachineAudioState {
     fn drop(&mut self) {
-        self.stop();
+        self.stop_all();
     }
 }
 
@@ -509,9 +586,12 @@ pub fn play_machine_audio(
     )
 }
 
-#[tauri::command]
-pub fn stop_machine_audio(state: tauri::State<'_, MachineAudioState>) -> Result<(), String> {
-    state.stop();
+#[tauri::command(rename_all = "camelCase")]
+pub fn stop_machine_audio(
+    state: tauri::State<'_, MachineAudioState>,
+    request_id: String,
+) -> Result<(), String> {
+    state.stop(normalize_request_id(request_id)?);
     Ok(())
 }
 
@@ -650,7 +730,8 @@ mod tests {
         };
         let generation = lifecycle
             .replace("request-1".to_string(), probe, |_| {})
-            .expect("install playback");
+            .expect("install playback")
+            .expect_started();
         let (completion_tx, completion_rx) = mpsc::channel();
         let worker_active = Arc::clone(&active);
         let worker_observations = Arc::clone(&observations);
@@ -711,7 +792,7 @@ mod tests {
             )
             .expect("install playback");
 
-        lifecycle.stop(|_| {
+        lifecycle.stop("request-1".to_string(), |_| {
             observations
                 .lock()
                 .expect("observations")
@@ -751,7 +832,7 @@ mod tests {
                 },
             )
             .expect("replace playback");
-        lifecycle.stop(|_| {});
+        lifecycle.stop("request-3".to_string(), |_| {});
 
         let observations = observations.lock().expect("observations");
         assert_eq!(
@@ -771,10 +852,12 @@ mod tests {
         let lifecycle = PlaybackLifecycle::default();
         let first_generation = lifecycle
             .replace("request-1".to_string(), "first", |_| {})
-            .expect("install first playback");
+            .expect("install first playback")
+            .expect_started();
         let second_generation = lifecycle
             .replace("request-1".to_string(), "second", |_| {})
-            .expect("replace playback");
+            .expect("replace playback")
+            .expect_started();
 
         assert!(take_completed(
             &lifecycle.state_handle(),
@@ -799,8 +882,9 @@ mod tests {
         let lifecycle = PlaybackLifecycle::default();
         let generation = lifecycle
             .replace("request-1".to_string(), (), |_| {})
-            .expect("install playback");
-        lifecycle.stop(|_| {});
+            .expect("install playback")
+            .expect_started();
+        lifecycle.stop("request-1".to_string(), |_| {});
         let (completion_tx, completion_rx) = mpsc::channel();
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let worker_emitted = Arc::clone(&emitted);
@@ -827,7 +911,8 @@ mod tests {
         let lifecycle = PlaybackLifecycle::default();
         let generation = lifecycle
             .replace("request-1".to_string(), (), |_| {})
-            .expect("install playback");
+            .expect("install playback")
+            .expect_started();
         let (completion_tx, completion_rx) = mpsc::channel();
         let (claimed_tx, claimed_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
@@ -852,7 +937,7 @@ mod tests {
         claimed_rx
             .recv()
             .expect("completion worker claims playback");
-        lifecycle.stop(|_| {});
+        lifecycle.stop("request-1".to_string(), |_| {});
         assert!(emitted.lock().expect("emitted requests").is_empty());
         resume_tx.send(()).expect("resume completion worker");
         worker.join().expect("completion worker");
@@ -868,7 +953,8 @@ mod tests {
         let lifecycle = PlaybackLifecycle::default();
         let generation = lifecycle
             .replace("request-1".to_string(), (), |_| {})
-            .expect("install playback");
+            .expect("install playback")
+            .expect_started();
         let (completion_tx, completion_rx) = mpsc::channel();
         let (claimed_tx, claimed_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
@@ -903,6 +989,27 @@ mod tests {
             *emitted.lock().expect("emitted requests"),
             vec![("request-1".to_string(), CompletionTerminal::Stopped)]
         );
+    }
+
+    #[test]
+    fn stop_request_before_playback_start_is_claimed_by_that_request() {
+        let lifecycle = PlaybackLifecycle::default();
+        lifecycle.stop("request-race".to_string(), |_| {
+            panic!("a request that has not started cannot be stopped directly")
+        });
+
+        assert!(matches!(
+            lifecycle
+                .replace("request-race".to_string(), (), |_| {})
+                .expect("claim stop-before-start request"),
+            PlaybackStart::StoppedBeforeStart
+        ));
+        assert!(lifecycle
+            .state_handle()
+            .lock()
+            .expect("lifecycle state")
+            .active
+            .is_none());
     }
 
     #[test]
