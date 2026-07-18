@@ -17,7 +17,6 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { validateProductionTransactionTrace } from "./production-transaction-trace.mjs";
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
@@ -26,6 +25,13 @@ function required(value, label) {
     throw new Error(`${label} is required`);
   }
   return value.trim();
+}
+
+function timestamp(value, label) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed))
+    throw new Error(`${label} must be an ISO timestamp`);
+  return parsed;
 }
 
 function windowsAbsolute(value, label) {
@@ -343,15 +349,6 @@ export function validateFastRouteStressSaleEvidence(input) {
       "daemon and platform vending command identities must match the order slot",
     );
   }
-  const productionTransactionTrace = validateProductionTransactionTrace({
-    entries: input.productionTransactionTrace,
-    binding: {
-      orderId: order.id,
-      paymentId: payment.id,
-      commandId: command.id,
-      sessionId: required(input.controlPlaneSessionId, "controlPlaneSessionId"),
-    },
-  });
   if (
     deltaRows(baseline, afterF2, "orders").length !== 1 ||
     deltaRows(baseline, afterF2, "payments").length !== 1 ||
@@ -368,6 +365,17 @@ export function validateFastRouteStressSaleEvidence(input) {
   ) {
     throw new Error(
       "before inbound F0 the correlated order, payment, and vending command must already exist exactly once",
+    );
+  }
+  const beforeF0Payment = matchingRowById(beforeF0, "payments", payment.id);
+  const beforeF0Command = matchingRowById(beforeF0, "commands", command.id);
+  if (
+    beforeF0Payment?.orderId !== order.id ||
+    beforeF0Command?.orderId !== order.id ||
+    beforeF0Command?.orderItemId !== orderItem.id
+  ) {
+    throw new Error(
+      "authoritative platform payment and command facts must bind the same sale before host raw F0",
     );
   }
   const identity = {
@@ -495,6 +503,41 @@ export function validateFastRouteStressSaleEvidence(input) {
       "raw inbound serial protocol must expose exact production 55 F0/F1/F2 frames",
     );
   }
+  const serialSessionId = required(
+    input.serial?.sessionId,
+    "serial session identity",
+  );
+  const frameBoundaries = protocolFrames.slice(1);
+  let previousFrameCapturedAt = -Infinity;
+  for (const frame of frameBoundaries) {
+    if (
+      frame.provenance !== "host_pty_raw_serial_journal" ||
+      frame.sessionId !== serialSessionId ||
+      frame.boundaryId !== `host-pty:${serialSessionId}:${frame.sequence}`
+    ) {
+      throw new Error(
+        "F0/F1/F2 must retain host PTY raw-journal provenance and boundary/session identity",
+      );
+    }
+    const capturedAt = timestamp(
+      frame.capturedAt,
+      `host raw ${frame.parsedOpcode} capturedAt`,
+    );
+    if (capturedAt <= previousFrameCapturedAt) {
+      throw new Error(
+        "host raw F0/F1/F2 capturedAt values must be strictly ordered",
+      );
+    }
+    previousFrameCapturedAt = capturedAt;
+  }
+  const f0CapturedAt = timestamp(
+    frameBoundaries[0].capturedAt,
+    "host raw F0 capturedAt",
+  );
+  const f2CapturedAt = timestamp(
+    frameBoundaries.at(-1).capturedAt,
+    "host raw F2 capturedAt",
+  );
   const uiViewport = input.uiViewport ?? {};
   if (
     uiViewport.innerWidth !== 1080 ||
@@ -547,14 +590,26 @@ export function validateFastRouteStressSaleEvidence(input) {
     input.platform?.afterF2,
   ]) {
     if (
+      report?.source !== "authoritative_ephemeral_platform_database" ||
+      !Number.isFinite(Date.parse(report?.capturedAt)) ||
       report?.scope?.machineCode !== machineCode ||
       typeof report?.scope?.machineId !== "string" ||
       report.scope.machineId === ""
     ) {
       throw new Error(
-        "platform evidence must preserve correlated machine scope at every boundary",
+        "platform evidence must retain authoritative provenance, capturedAt, and correlated machine scope at every boundary",
       );
     }
+  }
+  if (
+    timestamp(
+      input.platform.beforeF0.capturedAt,
+      "platform payment snapshot capturedAt",
+    ) > f0CapturedAt
+  ) {
+    throw new Error(
+      "platform payment snapshot must be captured no later than host raw F0",
+    );
   }
   if (!input.serial?.sessionId)
     throw new Error("serial session identity is required");
@@ -588,9 +643,18 @@ export function validateFastRouteStressSaleEvidence(input) {
       "Vision departure must occur while payment creation is explicitly pending",
     );
   }
-  const guardedDeparture = (
-    Array.isArray(input.runtimeTrace) ? input.runtimeTrace : []
-  ).find(
+  const machineRuntimeTrace = input.machineRuntimeTrace ?? {};
+  if (
+    machineRuntimeTrace.source !== "installed_machine_runtime_trace_cdp" ||
+    !Number.isFinite(Date.parse(machineRuntimeTrace.capturedAt)) ||
+    !Array.isArray(machineRuntimeTrace.entries)
+  ) {
+    throw new Error(
+      "Machine Runtime Trace must retain direct installed-CDP provenance and capture timestamp",
+    );
+  }
+  const runtimeTrace = machineRuntimeTrace.entries;
+  const guardedDeparture = runtimeTrace.find(
     (entry) =>
       entry.type === "navigation" &&
       entry.intentType === "presence.departed" &&
@@ -608,9 +672,6 @@ export function validateFastRouteStressSaleEvidence(input) {
       "installed runtime trace must contain the guarded Vision departure navigation effect for the accepted eventId",
     );
   }
-  const runtimeTrace = Array.isArray(input.runtimeTrace)
-    ? input.runtimeTrace
-    : [];
   const projectionRefresh = runtimeTrace.find(
     (entry) =>
       entry?.type === "navigation" &&
@@ -650,7 +711,7 @@ export function validateFastRouteStressSaleEvidence(input) {
       "successful UI result must correlate order, payment, and command after inbound F2",
     );
   }
-  const correlatedResultTrace = runtimeTrace.find(
+  const correlatedResultTraces = runtimeTrace.filter(
     (entry) =>
       entry?.type === "transaction_surface" &&
       entry?.stage === "result" &&
@@ -660,9 +721,28 @@ export function validateFastRouteStressSaleEvidence(input) {
       entry?.commandId === command.id &&
       entry?.resultKind === "success",
   );
+  const resultBeforeF2 = correlatedResultTraces.find(
+    (entry) =>
+      timestamp(
+        entry?.recordedAt,
+        "Machine Runtime Trace success recordedAt",
+      ) <= f2CapturedAt,
+  );
+  if (resultBeforeF2) {
+    throw new Error(
+      "Machine Runtime Trace rejects success at or before host raw F2 capturedAt",
+    );
+  }
+  const correlatedResultTrace = correlatedResultTraces.find((entry) => {
+    const recordedAt = timestamp(
+      entry?.recordedAt,
+      "Machine Runtime Trace success recordedAt",
+    );
+    return entry.at === entry.recordedAt && recordedAt > f2CapturedAt;
+  });
   if (!correlatedResultTrace) {
     throw new Error(
-      "runtime trace must expose a correlated result surface for order, payment, and command",
+      "runtime trace must expose a correlated post-F2 result surface with its raw timestamp",
     );
   }
   return {
@@ -674,7 +754,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     paymentNo: payment.paymentNo,
     vendingCommandId: command.id,
     commandNo: command.commandNo,
-    serialSessionId: input.serial.sessionId,
+    serialSessionId,
     inventoryId: orderItem.inventoryId,
     slotId: orderItem.slotId,
     slotCode: daemonBefore.slotCode,
@@ -707,10 +787,12 @@ export function validateFastRouteStressSaleEvidence(input) {
         .map((frame) => ({
           parsedOpcode: frame.parsedOpcode,
           rawFrameHex: frame.rawFrameHex,
+          capturedAt: frame.capturedAt,
+          boundaryId: frame.boundaryId,
+          sessionId: frame.sessionId,
+          provenance: frame.provenance,
         })),
-      productionTraceBoundaryIds: productionTransactionTrace.map(
-        (entry) => entry.boundaryId,
-      ),
+      resultRecordedAt: correlatedResultTrace.recordedAt,
     },
     createOrderGateObservedAt: createOrderGate.pendingObservedAt,
     createOrderGateReleasedAt: createOrderGate.releasedAt,
@@ -1343,16 +1425,6 @@ async function runFastRouteStressSale(options) {
     stage = "complete-mock-payment";
     await completeMockPayment(guestInput, pendingCreate.paymentNo);
     liveSale = await waitForCommand(handoff, renderedSale);
-    await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/observe-payment`,
-      {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        commandId: liveSale.vendingCommandId,
-        paymentNo: pendingCreate.paymentNo,
-      },
-    );
     stage = "snapshot-before-f0";
     const vendBoundary = await controlPlaneRequest(
       guestInput,
@@ -1440,11 +1512,6 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
-    const observedResult = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/observe-result`,
-      { surface: resultSurface },
-    );
     stage = "collect-raw-serial-evidence";
     const collect = await controlPlaneRequest(
       guestInput,
@@ -1471,7 +1538,11 @@ async function runFastRouteStressSale(options) {
       saleCorrelationId,
       controlPlaneSessionId: sessionStart.sessionId,
       machineCode,
-      runtimeTrace,
+      machineRuntimeTrace: {
+        source: "installed_machine_runtime_trace_cdp",
+        capturedAt: new Date().toISOString(),
+        entries: runtimeTrace,
+      },
       createOrderGate: {
         controlPlane: createOrderGate.controlPlane,
         armedAt: createOrderGate.armedAt,
@@ -1506,7 +1577,6 @@ async function runFastRouteStressSale(options) {
         sessionId: sessionStart.binding.serialSessionId,
         rawFrames: collect.rawFrames ?? [],
       },
-      productionTransactionTrace: observedResult.entries,
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
     stage = "stop-host-serial-session";

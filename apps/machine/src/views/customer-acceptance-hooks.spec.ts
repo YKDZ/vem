@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, nextTick, type App } from "vue";
+import { createApp, nextTick, ref, type App } from "vue";
 
 const {
   createOrderMock,
@@ -59,8 +59,8 @@ vi.mock("@/composables/usePresenceInteraction", () => ({
 
 vi.mock("@/composables/useVisionRecommendations", () => ({
   useVisionRecommendations: () => ({
-    currentProfile: { value: null },
-    lastVisionResult: { value: null },
+    currentProfile: ref(null),
+    lastVisionResult: ref(null),
   }),
 }));
 

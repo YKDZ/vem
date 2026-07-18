@@ -51,6 +51,24 @@ function validEvidence() {
     inventories: [inventory],
   };
   const inFlightRaw = structuredClone(beforeF0Raw);
+  const platformReport = (raw, capturedAt) => ({
+    source: "authoritative_ephemeral_platform_database",
+    capturedAt,
+    scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
+    raw,
+  });
+  const rawFrame = (sequence, parsedOpcode, capturedAt) => ({
+    sequence,
+    direction:
+      parsedOpcode === "VEND" ? "daemon-to-controller" : "controller-to-daemon",
+    rawFrameHex: parsedOpcode === "VEND" ? "55020531" : `55${parsedOpcode}`,
+    opcode: parsedOpcode === "VEND" ? 2 : Number.parseInt(parsedOpcode, 16),
+    parsedOpcode,
+    capturedAt,
+    sessionId: "serial-session-1",
+    boundaryId: `host-pty:serial-session-1:${sequence}`,
+    provenance: "host_pty_raw_serial_journal",
+  });
   return {
     saleCorrelationId: "sale-1",
     controlPlaneSessionId: "fast-sale-session-1",
@@ -97,21 +115,11 @@ function validEvidence() {
       visualViewportHeight: 1920,
     },
     platform: {
-      baseline: {
-        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
-        raw: baselineRaw,
-      },
-      beforeF0: {
-        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
-        raw: beforeF0Raw,
-      },
-      afterF1BeforeF2: {
-        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
-        raw: inFlightRaw,
-      },
-      afterF2: {
-        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
-        raw: {
+      baseline: platformReport(baselineRaw, "2026-07-18T04:00:00.200Z"),
+      beforeF0: platformReport(beforeF0Raw, "2026-07-18T04:00:00.900Z"),
+      afterF1BeforeF2: platformReport(inFlightRaw, "2026-07-18T04:00:02.500Z"),
+      afterF2: platformReport(
+        {
           ...inFlightRaw,
           movements: [
             {
@@ -126,7 +134,8 @@ function validEvidence() {
           ],
           inventories: [{ ...inventory, onHandQty: 2 }],
         },
-      },
+        "2026-07-18T04:00:04.500Z",
+      ),
     },
     daemon: {
       baseline: {
@@ -199,43 +208,46 @@ function validEvidence() {
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
     },
-    runtimeTrace: [
-      {
-        type: "navigation",
-        intentType: "presence.departed",
-        sourceEventId: "departure-event-1",
-        decision: "rejected",
-        reasonCode: "touchscreen_session_active",
-        fromRoute: "#/checkout",
-        finalRoute: "#/checkout",
-        at: "2026-07-18T04:00:00.100Z",
-        transactionOrderNo: "ORD-1",
-      },
-      {
-        type: "navigation",
-        intentType: "transaction.projection",
-        decision: "accepted",
-        reasonCode: "transaction_projection",
-        fromRoute: "#/checkout",
-        finalRoute: "#/payment",
-        at: "2026-07-18T04:00:00.150Z",
-        transactionOrderNo: "ORD-1",
-      },
-      {
-        type: "transaction_surface",
-        id: 2,
-        at: "2026-07-18T04:00:01.000Z",
-        recordedAt: "2026-07-18T04:00:01.000Z",
-        route: "#/result/success",
-        stage: "result",
-        orderId: "order-1",
-        paymentId: "payment-1",
-        orderNo: "ORD-1",
-        commandId: "command-1",
-        resultKind: "success",
-        resultDisplayIntent: "success",
-      },
-    ],
+    machineRuntimeTrace: {
+      source: "installed_machine_runtime_trace_cdp",
+      capturedAt: "2026-07-18T04:00:04.100Z",
+      entries: [
+        {
+          type: "navigation",
+          intentType: "presence.departed",
+          sourceEventId: "departure-event-1",
+          decision: "rejected",
+          reasonCode: "touchscreen_session_active",
+          fromRoute: "#/checkout",
+          finalRoute: "#/checkout",
+          at: "2026-07-18T04:00:00.100Z",
+        },
+        {
+          type: "navigation",
+          intentType: "transaction.projection",
+          decision: "accepted",
+          reasonCode: "transaction_projection",
+          fromRoute: "#/checkout",
+          finalRoute: "#/payment",
+          at: "2026-07-18T04:00:00.150Z",
+          transactionOrderNo: "ORD-1",
+        },
+        {
+          type: "transaction_surface",
+          id: 2,
+          at: "2026-07-18T04:00:04.000Z",
+          recordedAt: "2026-07-18T04:00:04.000Z",
+          route: "#/result/success",
+          stage: "result",
+          orderId: "order-1",
+          paymentId: "payment-1",
+          orderNo: "ORD-1",
+          commandId: "command-1",
+          resultKind: "success",
+          resultDisplayIntent: "success",
+        },
+      ],
+    },
     mqttMessages: [
       {
         topic: "vem/machines/VEM-TESTBED-LOCAL/commands/dispense",
@@ -254,74 +266,12 @@ function validEvidence() {
     serial: {
       sessionId: "serial-session-1",
       rawFrames: [
-        {
-          sequence: 1,
-          direction: "daemon-to-controller",
-          rawFrameHex: "55020531",
-          opcode: 2,
-          parsedOpcode: "VEND",
-        },
-        {
-          sequence: 2,
-          direction: "controller-to-daemon",
-          rawFrameHex: "55F0",
-          opcode: 240,
-          parsedOpcode: "F0",
-        },
-        {
-          sequence: 3,
-          direction: "controller-to-daemon",
-          rawFrameHex: "55F1",
-          opcode: 241,
-          parsedOpcode: "F1",
-        },
-        {
-          sequence: 4,
-          direction: "controller-to-daemon",
-          rawFrameHex: "55F2",
-          opcode: 242,
-          parsedOpcode: "F2",
-        },
+        rawFrame(1, "VEND", "2026-07-18T04:00:00.950Z"),
+        rawFrame(2, "F0", "2026-07-18T04:00:01.000Z"),
+        rawFrame(3, "F1", "2026-07-18T04:00:02.000Z"),
+        rawFrame(4, "F2", "2026-07-18T04:00:03.000Z"),
       ],
     },
-    productionTransactionTrace: [
-      {
-        type: "payment",
-        boundaryId: "payment:1",
-        at: "2026-07-18T04:00:00.300Z",
-        orderId: "order-1",
-        paymentId: "payment-1",
-        commandId: "command-1",
-        sessionId: "fast-sale-session-1",
-        paymentNo: "PAY-1",
-      },
-      ...["F0", "F1", "F2"].map((type, index) => ({
-        type,
-        boundaryId: `${type.toLowerCase()}:${index + 2}`,
-        at: `2026-07-18T04:00:0${index + 1}.000Z`,
-        orderId: "order-1",
-        paymentId: "payment-1",
-        commandId: "command-1",
-        sessionId: "fast-sale-session-1",
-        rawFrame: {
-          direction: "controller-to-daemon",
-          rawFrameHex: `55${type}`,
-          sequence: index + 2,
-          observedAt: `2026-07-18T04:00:0${index + 1}.000Z`,
-          boundaryId: `${type.toLowerCase()}:${index + 2}`,
-        },
-      })),
-      {
-        type: "result",
-        boundaryId: "result:5",
-        at: "2026-07-18T04:00:04.000Z",
-        orderId: "order-1",
-        paymentId: "payment-1",
-        commandId: "command-1",
-        sessionId: "fast-sale-session-1",
-        surface: { route: "#/result/success", kind: "success" },
-      },
-    ],
   };
 }
 
@@ -419,9 +369,30 @@ describe("fast route stress sale tracer", () => {
     assert.equal(summary.projectionRefreshRoute, "#/payment");
     assert.deepEqual(summary.uiViewport, { width: 1080, height: 1920 });
     assert.deepEqual(summary.runtimeTraceCorrelation.rawFrames, [
-      { parsedOpcode: "F0", rawFrameHex: "55F0" },
-      { parsedOpcode: "F1", rawFrameHex: "55F1" },
-      { parsedOpcode: "F2", rawFrameHex: "55F2" },
+      {
+        parsedOpcode: "F0",
+        rawFrameHex: "55F0",
+        capturedAt: "2026-07-18T04:00:01.000Z",
+        boundaryId: "host-pty:serial-session-1:2",
+        sessionId: "serial-session-1",
+        provenance: "host_pty_raw_serial_journal",
+      },
+      {
+        parsedOpcode: "F1",
+        rawFrameHex: "55F1",
+        capturedAt: "2026-07-18T04:00:02.000Z",
+        boundaryId: "host-pty:serial-session-1:3",
+        sessionId: "serial-session-1",
+        provenance: "host_pty_raw_serial_journal",
+      },
+      {
+        parsedOpcode: "F2",
+        rawFrameHex: "55F2",
+        capturedAt: "2026-07-18T04:00:03.000Z",
+        boundaryId: "host-pty:serial-session-1:4",
+        sessionId: "serial-session-1",
+        provenance: "host_pty_raw_serial_journal",
+      },
     ]);
   });
 
@@ -481,7 +452,7 @@ describe("fast route stress sale tracer", () => {
     const evidence = validEvidence();
     evidence.visionDelivery.connectedRuntimeClients = 0;
     evidence.visionDelivery.acceptedDeliveries = 0;
-    evidence.runtimeTrace = [];
+    evidence.machineRuntimeTrace.entries = [];
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /Vision departure requires a connected installed runtime client/,
@@ -490,7 +461,8 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when runtime trace does not bind the exact departed eventId", () => {
     const evidence = validEvidence();
-    evidence.runtimeTrace[0].sourceEventId = "departure-event-other";
+    evidence.machineRuntimeTrace.entries[0].sourceEventId =
+      "departure-event-other";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /guarded Vision departure navigation effect for the accepted eventId/,
@@ -508,26 +480,33 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when the runtime trace has no correlated result surface", () => {
     const evidence = validEvidence();
-    evidence.runtimeTrace = evidence.runtimeTrace.filter(
-      (entry) => entry.type !== "transaction_surface",
-    );
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) => entry.type !== "transaction_surface",
+      );
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
-      /runtime trace must expose a correlated result surface/,
+      /runtime trace must expose a correlated post-F2 result surface/,
     );
   });
 
-  it("fails closed when the central production trace reports success before F2", () => {
+  it("fails closed when Machine Runtime Trace reports success before host raw F2", () => {
     const evidence = validEvidence();
-    evidence.productionTransactionTrace[3] = {
-      ...evidence.productionTransactionTrace[3],
-      type: "result",
-      boundaryId: "result:4",
-      at: "2026-07-18T04:00:03.000Z",
-    };
+    evidence.machineRuntimeTrace.entries[1].at = "2026-07-18T04:00:02.000Z";
+    evidence.machineRuntimeTrace.entries[1].recordedAt =
+      "2026-07-18T04:00:02.000Z";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
-      /payment -> F0 -> F1 -> F2 -> result/,
+      /rejects success at or before host raw F2 capturedAt/,
+    );
+  });
+
+  it("fails closed when F0/F1/F2 do not retain host raw journal provenance", () => {
+    const evidence = validEvidence();
+    evidence.serial.rawFrames[2].capturedAt = "2026-07-18T04:00:01.000Z";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /host raw F0\/F1\/F2 capturedAt values must be strictly ordered/,
     );
   });
 
@@ -671,8 +650,10 @@ describe("fast route stress sale tracer", () => {
       implementation,
       /sale-start-capability must expose a ready mock:mock payment option/,
     );
-    assert.match(implementation, /observe-payment/);
-    assert.match(implementation, /observe-result/);
+    assert.match(implementation, /installed_machine_runtime_trace_cdp/);
+    assert.match(implementation, /host_pty_raw_serial_journal/);
+    assert.doesNotMatch(implementation, /observe-payment/);
+    assert.doesNotMatch(implementation, /observe-result/);
     assert.doesNotMatch(implementation, /fastSale\.createOrderGate\.statePath/);
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);

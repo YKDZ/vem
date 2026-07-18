@@ -19,7 +19,6 @@ import {
   readPaymentMockCreateGateStatus,
   writePaymentMockCreateGateState,
 } from "./mock-payment-create-gate.mjs";
-import { createProductionTransactionTrace } from "./production-transaction-trace.mjs";
 import {
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
@@ -689,7 +688,6 @@ async function waitForSessionFrame(server, input) {
     ),
     timeoutMs: Number(input.timeoutMs ?? 30_000),
   });
-  session.productionTrace.controllerFrame(boundary.frame);
   return boundary;
 }
 
@@ -759,8 +757,14 @@ function boundedSessionEvidence(server, input) {
     : "";
   return {
     serialSessionId: session.binding.serialSessionId,
-    rawFrames: readRawSerialJournal(paths.journalPath).slice(-64),
-    productionTransactionTrace: session.productionTrace.entries(),
+    rawFrames: readRawSerialJournal(paths.journalPath)
+      .slice(-64)
+      .map((frame) => ({
+        ...frame,
+        boundaryId: `host-pty:${session.binding.serialSessionId}:${frame.sequence}`,
+        sessionId: session.binding.serialSessionId,
+        provenance: "host_pty_raw_serial_journal",
+      })),
     mqtt: {
       ...session.mqttCapture.snapshot(),
       messages: session.mqttCapture.snapshot().messages.slice(-4),
@@ -947,22 +951,6 @@ function audioCaptureDiagnostics(server, input) {
   };
 }
 
-function observePaymentBoundary(server, input) {
-  const session = requireSession(server, input.sessionId);
-  return session.productionTrace.payment({
-    orderId: input.orderId,
-    paymentId: input.paymentId,
-    commandId: input.commandId,
-    paymentNo: input.paymentNo,
-  });
-}
-
-function observeResultBoundary(server, input) {
-  const session = requireSession(server, input.sessionId);
-  const entry = session.productionTrace.result(input.surface);
-  return { entry, entries: session.productionTrace.validate() };
-}
-
 async function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
@@ -1055,10 +1043,6 @@ async function createSerialSession(server, input) {
     injectReport: null,
     collectReport: null,
     stopReports: [],
-    productionTrace: createProductionTransactionTrace({
-      stateRoot: server.options.stateRoot,
-      sessionId,
-    }),
   };
   server.sessions.set(sessionId, session);
   return {
@@ -1325,7 +1309,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|observe-payment|observe-result|platform-log|evidence|abort|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|platform-log|evidence|abort|collect|stop))?$/,
       );
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
@@ -1401,22 +1385,6 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           ok: true,
           sessionId,
           ...releaseSessionF2(serverState, body),
-        });
-        return;
-      }
-      if (request.method === "POST" && action === "observe-payment") {
-        jsonResponse(response, 200, {
-          ok: true,
-          sessionId,
-          entry: observePaymentBoundary(serverState, body),
-        });
-        return;
-      }
-      if (request.method === "POST" && action === "observe-result") {
-        jsonResponse(response, 200, {
-          ok: true,
-          sessionId,
-          ...observeResultBoundary(serverState, body),
         });
         return;
       }
