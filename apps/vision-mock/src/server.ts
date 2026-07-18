@@ -7,8 +7,12 @@ import {
   type VisionErrorCode,
   type VisionServerMessage,
 } from "@vem/shared/schemas/vision";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
@@ -41,6 +45,19 @@ export interface MockVisionServer {
   ready: Promise<string>;
   close: () => Promise<void>;
 }
+
+type VisionHelloPayload = Extract<
+  VisionClientMessage,
+  { type: "vision.hello" }
+>["payload"];
+type VisionPresenceStatusMessage = Extract<
+  VisionServerMessage,
+  { type: "vision.presence_status" }
+>;
+type VisionPersonDepartedMessage = Extract<
+  VisionServerMessage,
+  { type: "vision.person_departed" }
+>;
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 7892;
@@ -133,7 +150,7 @@ function createResultMessage(): VisionServerMessage {
 
 function createPresenceMessage(
   state: "approach" | "empty",
-): VisionServerMessage {
+): VisionPresenceStatusMessage {
   const detectedAt = nowIso();
   const personPresent = state !== "empty";
   const payload = {
@@ -167,7 +184,7 @@ function createPresenceMessage(
 
 function createPersonDepartedMessage(
   lastSeenAt: string | null,
-): VisionServerMessage {
+): VisionPersonDepartedMessage {
   const detectedAt = nowIso();
   const payload = {
     source: "top",
@@ -229,7 +246,11 @@ function createTryOnStoppedMessage(sessionId: string): VisionServerMessage {
   return message;
 }
 
-function json(response: ServerResponse, status: number, payload: unknown): void {
+function json(
+  response: ServerResponse,
+  status: number,
+  payload: unknown,
+): void {
   response.statusCode = status;
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.end(`${JSON.stringify(payload)}\n`);
@@ -344,7 +365,7 @@ function handleClientRawMessage(
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   > & {
     disconnectOnceServed: { value: boolean };
-    runtimeClients: Map<WebSocket, VisionClientMessage["payload"]>;
+    runtimeClients: Map<WebSocket, VisionHelloPayload>;
   },
 ): void {
   const message = parseClientMessage(data);
@@ -447,12 +468,15 @@ export function startMockVisionServer(
   const server = new WebSocketServer({ host, port, path: wsPath });
   const disconnectOnceServed = { value: false };
   const sockets = new Set<WebSocket>();
-  const runtimeClients = new Map<WebSocket, VisionClientMessage["payload"]>();
+  const runtimeClients = new Map<WebSocket, VisionHelloPayload>();
   const controlServer =
     controlPort == null
       ? null
       : createServer(async (request, response) => {
-          if (request.method === "GET" && request.url === `${DEFAULT_CONTROL_PATH}/status`) {
+          if (
+            request.method === "GET" &&
+            request.url === `${DEFAULT_CONTROL_PATH}/status`
+          ) {
             json(response, 200, {
               ok: true,
               scenario,
@@ -500,7 +524,8 @@ export function startMockVisionServer(
                 body &&
                 typeof body === "object" &&
                 "lastSeenAt" in body &&
-                (typeof body.lastSeenAt === "string" || body.lastSeenAt === null)
+                (typeof body.lastSeenAt === "string" ||
+                  body.lastSeenAt === null)
                   ? body.lastSeenAt
                   : null;
               const message = createPersonDepartedMessage(lastSeenAt);
@@ -537,7 +562,9 @@ export function startMockVisionServer(
             json(response, 400, {
               ok: false,
               error:
-                error instanceof Error ? error.message : "invalid_control_request",
+                error instanceof Error
+                  ? error.message
+                  : "invalid_control_request",
             });
           }
         });
@@ -572,7 +599,7 @@ export function startMockVisionServer(
       : new Promise<void>((resolve, reject) => {
           controlServer.once("listening", () => resolve());
           controlServer.once("error", (error) => reject(error));
-          controlServer.listen(controlPort, DEFAULT_HOST);
+          controlServer.listen(controlPort!, DEFAULT_HOST);
         }),
   ]).then(([url]) => url);
 

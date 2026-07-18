@@ -9,6 +9,8 @@ import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
+
 const FIXTURE_PATH = new URL(
   "./fixtures/local-testbed-catalog.json",
   import.meta.url,
@@ -428,12 +430,7 @@ export function buildReconstructionPlan(options, contract) {
       "--filter",
       "service-api",
     ]),
-    commandLine("cargo", [
-      "build",
-      "-p",
-      "lower-controller-sim",
-      "--locked",
-    ]),
+    commandLine("cargo", ["build", "-p", "lower-controller-sim", "--locked"]),
     commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: buildMigrationEnvironment(options),
     }),
@@ -502,13 +499,7 @@ export function buildHostLocalServiceApiEnvironment(options) {
   };
 }
 
-export function paymentMockCreateGatePaths(stateRoot) {
-  const root = resolve(required(stateRoot, "stateRoot"));
-  return {
-    statePath: join(root, "fast-route", "mock-payment-create-gate.json"),
-    pendingPath: join(root, "fast-route", "mock-payment-create-gate.json.pending.json"),
-  };
-}
+export { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
 
 function mergeCommandEnvironment(
   explicitEnvironment,
@@ -566,13 +557,18 @@ export function buildServiceApiUnitPlan(options) {
 function baselineDomainName(contract) {
   const command = contract?.testbed?.reconstructCommand;
   const index = Array.isArray(command) ? command.indexOf("--domain-name") : -1;
-  return required(index >= 0 ? command[index + 1] : null, "baseline domain name");
+  return required(
+    index >= 0 ? command[index + 1] : null,
+    "baseline domain name",
+  );
 }
 
 export function buildHostControlPlaneUnitPlan(options, contract) {
   const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
   const token = createHash("sha256")
-    .update(`${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`)
+    .update(
+      `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
+    )
     .digest("hex");
   const adapterPath = join(
     options.workspace,
@@ -802,9 +798,7 @@ async function serviceApiFailure(error) {
     journal.kind === "journal"
       ? `--- local Service API log ---\n${journal.text}`
       : `--- local Service API log unavailable ---\n${journal.text}`;
-  return new Error(
-    `${error.message}\n${suffix}`,
-  );
+  return new Error(`${error.message}\n${suffix}`);
 }
 
 export async function seedThroughSupportedApis({

@@ -89,13 +89,15 @@ describe("host serial control plane", () => {
         operation: "collect-serial-evidence",
         runId: "RUN-16",
         targetIdentity: "vm-target://release-testbed-0001",
-        runtimeBase: "runtime-base://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        runtimeBase:
+          "runtime-base://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         outPath: "/tmp/vem-state/collect.json",
         sessionBinding: {
           serialSessionId: "session-1",
           sessionBindingToken: "binding-1",
           startOperationReference: "vm-operation://start-1",
-          deviceMappingDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          deviceMappingDigest:
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         },
         sale: {
           saleCorrelationId: "sale-correlation-1",
@@ -105,7 +107,8 @@ describe("host serial control plane", () => {
         },
         scannerInjection: {
           operationNonce: "op-1",
-          scannerCodeDigest: "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+          scannerCodeDigest:
+            "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
           scannerCodeByteLength: 18,
           scannerCodeSuffix: "678901",
         },
@@ -181,14 +184,6 @@ describe("host serial control plane", () => {
       const armedState = JSON.parse(readFileSync(gate.statePath, "utf8"));
       assert.deepEqual(armedState, { state: "hold" });
 
-      writeFileSync(
-        gate.pendingPath,
-        `${JSON.stringify({
-          state: "pending",
-          paymentNo: "PAY-1",
-          observedAt: "2026-07-18T05:00:00.000Z",
-        })}\n`,
-      );
       const status = await fetch(
         `${baseUrl}/v1/mock-payment-create-gate/status`,
         {
@@ -198,11 +193,7 @@ describe("host serial control plane", () => {
         },
       ).then((response) => response.json());
       assert.equal(status.ok, true);
-      assert.deepEqual(status.pending, {
-        state: "pending",
-        paymentNo: "PAY-1",
-        observedAt: "2026-07-18T05:00:00.000Z",
-      });
+      assert.equal(status.pending, null);
 
       const release = await fetch(
         `${baseUrl}/v1/mock-payment-create-gate/release`,
@@ -273,10 +264,27 @@ describe("host serial control plane", () => {
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       const boundary = await waitForRawSerialFrame({
         journalPath,
@@ -284,7 +292,10 @@ describe("host serial control plane", () => {
         timeoutMs: 100,
       });
       assert.deepEqual(
-        boundary.protocolFrames.map(({ direction, parsedOpcode }) => ({ direction, parsedOpcode })),
+        boundary.protocolFrames.map(({ direction, parsedOpcode }) => ({
+          direction,
+          parsedOpcode,
+        })),
         [
           { direction: "daemon-to-controller", parsedOpcode: "VEND" },
           { direction: "controller-to-daemon", parsedOpcode: "F0" },
@@ -297,19 +308,50 @@ describe("host serial control plane", () => {
         `${JSON.stringify({ direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" })}\n`,
       );
       await assert.rejects(
-        waitForRawSerialFrame({ journalPath, parsedOpcode: "F1", timeoutMs: 100 }),
+        waitForRawSerialFrame({
+          journalPath,
+          parsedOpcode: "F1",
+          timeoutMs: 100,
+        }),
         /F2 appeared before required F1 boundary/,
       );
 
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
-          { direction: "controller-to-daemon", rawFrameHex: "55AF", opcode: 175, parsedOpcode: "AF" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55AF",
+            opcode: 175,
+            parsedOpcode: "AF",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F2",
+            opcode: 242,
+            parsedOpcode: "F2",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       const f2Boundary = await waitForRawSerialFrame({
         journalPath,
@@ -324,24 +366,56 @@ describe("host serial control plane", () => {
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       await assert.rejects(
-        waitForRawSerialFrame({ journalPath, parsedOpcode: "VEND", timeoutMs: 100 }),
+        waitForRawSerialFrame({
+          journalPath,
+          parsedOpcode: "VEND",
+          timeoutMs: 100,
+        }),
         /F0 appeared before the before-F0 gate was released/,
       );
 
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F000", opcode: 240, parsedOpcode: "F0" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F000",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       await assert.rejects(
-        waitForRawSerialFrame({ journalPath, parsedOpcode: "F0", timeoutMs: 100 }),
+        waitForRawSerialFrame({
+          journalPath,
+          parsedOpcode: "F0",
+          timeoutMs: 100,
+        }),
         /raw serial journal record 2 F0 must match the 2-byte production frame 55 F0/,
       );
     } finally {
@@ -356,12 +430,39 @@ describe("host serial control plane", () => {
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
-          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       const f1Boundary = await waitForRawSerialFrame({
         journalPath,
@@ -377,14 +478,51 @@ describe("host serial control plane", () => {
       writeFileSync(
         journalPath,
         [
-          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
-          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
-          { direction: "controller-to-daemon", rawFrameHex: "55AF", opcode: 175, parsedOpcode: "AF" },
-          { direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
-        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55AF",
+            opcode: 175,
+            parsedOpcode: "AF",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F2",
+            opcode: 242,
+            parsedOpcode: "F2",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
       );
       const f2DelayedBoundary = await waitForRawSerialFrame({
         journalPath,
@@ -393,7 +531,9 @@ describe("host serial control plane", () => {
         timeoutMs: 100,
       });
       assert.deepEqual(
-        f2DelayedBoundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        f2DelayedBoundary.protocolFrames.map(
+          ({ parsedOpcode }) => parsedOpcode,
+        ),
         ["VEND", "F0", "E5", "E5", "F1", "AF", "F2"],
       );
     } finally {

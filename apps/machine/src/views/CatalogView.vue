@@ -351,7 +351,7 @@ onUnmounted(() => {
       class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
       :class="presenceClass"
       data-test="catalog-page"
-      :data-vision-recommendation-active="currentProfile?.value ? 'true' : 'false'"
+      :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -562,7 +562,7 @@ onUnmounted(() => {
       :class="presenceClass"
       data-test="catalog-page"
       :data-category-key="selectedTopCategoryKey"
-      :data-vision-recommendation-active="currentProfile?.value ? 'true' : 'false'"
+      :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>

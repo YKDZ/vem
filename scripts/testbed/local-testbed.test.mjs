@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { mockPaymentCreateGatePaths } from "./host-serial-control-plane.mjs";
 import {
   baselinePublicationLayout,
   publishVerifiedBaselineRelease,
@@ -440,8 +441,18 @@ describe("local testbed orchestration", () => {
       const parsedOptions = options(root);
       const environment = buildHostLocalServiceApiEnvironment(parsedOptions);
       const gate = paymentMockCreateGatePaths(parsedOptions.stateRoot);
-      assert.equal(environment.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH, gate.statePath);
-      assert.match(gate.pendingPath, /mock-payment-create-gate\.json\.pending\.json$/);
+      assert.equal(
+        environment.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH,
+        gate.statePath,
+      );
+      assert.deepEqual(
+        mockPaymentCreateGatePaths(parsedOptions.stateRoot),
+        gate,
+      );
+      assert.match(
+        gate.pendingPath,
+        /mock-payment-create-gate\.json\.pending\.json$/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -469,11 +480,14 @@ describe("local testbed orchestration", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const value = contract(root);
-      const adapterRelativePath = "scripts/testbed/qemu-usb-serial-host-adapter.mjs";
+      const adapterRelativePath =
+        "scripts/testbed/qemu-usb-serial-host-adapter.mjs";
       mkdirSync(join(root, "scripts/testbed"), { recursive: true });
       writeFileSync(
         join(root, adapterRelativePath),
-        readFileSync(new URL(`./qemu-usb-serial-host-adapter.mjs`, import.meta.url)),
+        readFileSync(
+          new URL(`./qemu-usb-serial-host-adapter.mjs`, import.meta.url),
+        ),
       );
       const plan = buildHostControlPlaneUnitPlan(options(root), value);
       const rendered = plan.map(
@@ -496,7 +510,9 @@ describe("local testbed orchestration", () => {
         .digest("hex");
       assert.match(
         rendered.at(-1),
-        new RegExp(`--setenv=VEM_VM_HOST_ADAPTER=${adapterPath.replaceAll("/", "\\/")}`),
+        new RegExp(
+          `--setenv=VEM_VM_HOST_ADAPTER=${adapterPath.replaceAll("/", "\\/")}`,
+        ),
       );
       assert.match(
         rendered.at(-1),
@@ -504,7 +520,9 @@ describe("local testbed orchestration", () => {
       );
       assert.match(
         rendered.at(-1),
-        new RegExp(`--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterSha256}`),
+        new RegExp(
+          `--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterSha256}`,
+        ),
       );
       assert.match(
         rendered.at(-1),
@@ -836,7 +854,10 @@ describe("Windows D cache contract", () => {
     );
     assert.match(guest, /function Write-RecordedVisionSiteConfiguration/);
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
-    assert.match(guest, /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/);
+    assert.match(
+      guest,
+      /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/,
+    );
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(
       guest,
@@ -845,7 +866,10 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /vision-try-on-acceptance\.mjs --mode full/);
     assert.match(guest, /full-workflow-tracks\.json/);
-    assert.match(guest, /\$trackFailures = \[System\.Collections\.Generic\.List\[object\]\]::new\(\)/);
+    assert.match(
+      guest,
+      /\$trackFailures = \[System\.Collections\.Generic\.List\[object\]\]::new\(\)/,
+    );
     assert.match(guest, /\$trackSummary = \[ordered\]@\{/);
     assert.match(guest, /track = "fast"/);
     assert.match(guest, /track = "delayedPickup"/);

@@ -17,6 +17,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { validateProductionTransactionTrace } from "./production-transaction-trace.mjs";
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
 
 const MODES = new Set(["fast", "full"]);
@@ -49,7 +50,10 @@ export function parseFastRouteStressSaleArgs(args) {
   if (!MODES.has(mode)) throw new Error("--mode must be fast or full");
   return {
     mode,
-    guestInputPath: windowsAbsolute(option(args, "guest-input"), "--guest-input"),
+    guestInputPath: windowsAbsolute(
+      option(args, "guest-input"),
+      "--guest-input",
+    ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
   };
@@ -148,7 +152,9 @@ async function waitForCreateOrderGatePending(guestInput, timeoutMs = 30_000) {
     } catch {}
     await sleep(25);
   } while (Date.now() < deadline);
-  throw new Error("mock create-order gate did not observe a pending payment creation");
+  throw new Error(
+    "mock create-order gate did not observe a pending payment creation",
+  );
 }
 
 async function releaseCreateOrderGate(guestInput, paymentNo) {
@@ -164,7 +170,10 @@ async function releaseCreateOrderGate(guestInput, paymentNo) {
 }
 
 async function openCreateOrderGate(guestInput) {
-  return await controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open");
+  return await controlPlaneRequest(
+    guestInput,
+    "/v1/mock-payment-create-gate/open",
+  );
 }
 
 function rows(raw, key) {
@@ -192,7 +201,8 @@ function matchingItem(view, identity) {
 function matchingInventory(raw, identity) {
   return rows(raw, "inventories").find(
     (inventory) =>
-      inventory.id === identity.inventoryId && inventory.slotId === identity.slotId,
+      inventory.id === identity.inventoryId &&
+      inventory.slotId === identity.slotId,
   );
 }
 
@@ -209,13 +219,20 @@ function compactPlatformBoundary(report, summary) {
   return {
     scope: report?.scope ?? null,
     order: matchingRowById(raw, "orders", summary.orderId) ?? null,
-    orderItem: rows(raw, "orderItems").find((row) => row.inventoryId === summary.inventoryId && row.slotId === summary.slotId) ?? null,
+    orderItem:
+      rows(raw, "orderItems").find(
+        (row) =>
+          row.inventoryId === summary.inventoryId &&
+          row.slotId === summary.slotId,
+      ) ?? null,
     payment: matchingRowById(raw, "payments", summary.paymentId) ?? null,
     command: matchingRowById(raw, "commands", summary.vendingCommandId) ?? null,
     movement: matchingRowById(raw, "movements", summary.movementId) ?? null,
-    inventory: rows(raw, "inventories").find(
-      (row) => row.id === summary.inventoryId && row.slotId === summary.slotId,
-    ) ?? null,
+    inventory:
+      rows(raw, "inventories").find(
+        (row) =>
+          row.id === summary.inventoryId && row.slotId === summary.slotId,
+      ) ?? null,
   };
 }
 
@@ -223,7 +240,9 @@ function compactDaemonBoundary(view, summary) {
   return {
     item:
       rows(view, "items").find(
-        (row) => row.inventoryId === summary.inventoryId && row.slotId === summary.slotId,
+        (row) =>
+          row.inventoryId === summary.inventoryId &&
+          row.slotId === summary.slotId,
       ) ?? null,
   };
 }
@@ -241,22 +260,32 @@ function compactEvidenceForReport(evidence, summary) {
     platform: {
       baseline: compactPlatformBoundary(evidence.platform?.baseline, summary),
       beforeF0: compactPlatformBoundary(evidence.platform?.beforeF0, summary),
-      afterF1BeforeF2: compactPlatformBoundary(evidence.platform?.afterF1BeforeF2, summary),
+      afterF1BeforeF2: compactPlatformBoundary(
+        evidence.platform?.afterF1BeforeF2,
+        summary,
+      ),
       afterF2: compactPlatformBoundary(evidence.platform?.afterF2, summary),
     },
     daemon: {
       baseline: compactDaemonBoundary(evidence.daemon?.baseline, summary),
       beforeF0: compactDaemonBoundary(evidence.daemon?.beforeF0, summary),
-      afterF1BeforeF2: compactDaemonBoundary(evidence.daemon?.afterF1BeforeF2, summary),
+      afterF1BeforeF2: compactDaemonBoundary(
+        evidence.daemon?.afterF1BeforeF2,
+        summary,
+      ),
       afterF2: compactDaemonBoundary(evidence.daemon?.afterF2, summary),
     },
     ui: evidence.ui,
-    mqttMessages: Array.isArray(evidence.mqttMessages) ? evidence.mqttMessages.slice(-2) : [],
+    mqttMessages: Array.isArray(evidence.mqttMessages)
+      ? evidence.mqttMessages.slice(-2)
+      : [],
     serial: {
       sessionId: evidence.serial?.sessionId ?? null,
       rawFrames: Array.isArray(evidence.serial?.rawFrames)
         ? evidence.serial.rawFrames
-            .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame?.parsedOpcode))
+            .filter((frame) =>
+              ["VEND", "F0", "F1", "F2"].includes(frame?.parsedOpcode),
+            )
             .slice(-4)
         : [],
     },
@@ -275,19 +304,30 @@ export function validateFastRouteStressSaleEvidence(input) {
     deltaRows(baseline, afterF1, "orders"),
     "expected exactly one correlated order",
   );
-  if (order.id !== rendered.orderId || order.id !== live.orderId || order.orderNo !== rendered.orderNo || order.orderNo !== live.orderNo) {
-    throw new Error("rendered, daemon, and platform order identities must match");
+  if (
+    order.id !== rendered.orderId ||
+    order.id !== live.orderId ||
+    order.orderNo !== rendered.orderNo ||
+    order.orderNo !== live.orderNo
+  ) {
+    throw new Error(
+      "rendered, daemon, and platform order identities must match",
+    );
   }
   const orderItem = exactlyOne(
     rows(afterF1, "orderItems").filter((row) => row.orderId === order.id),
     "expected exactly one correlated order item",
   );
   const payment = exactlyOne(
-    deltaRows(baseline, afterF1, "payments").filter((row) => row.orderId === order.id),
+    deltaRows(baseline, afterF1, "payments").filter(
+      (row) => row.orderId === order.id,
+    ),
     "expected exactly one correlated payment",
   );
   if (payment.id !== rendered.paymentId || payment.id !== live.paymentId) {
-    throw new Error("rendered, daemon, and platform payment identities must match");
+    throw new Error(
+      "rendered, daemon, and platform payment identities must match",
+    );
   }
   const command = exactlyOne(
     deltaRows(baseline, afterF1, "commands").filter(
@@ -295,22 +335,40 @@ export function validateFastRouteStressSaleEvidence(input) {
     ),
     "expected exactly one correlated vending command",
   );
-  if (command.id !== live.vendingCommandId || command.slotId !== orderItem.slotId) {
-    throw new Error("daemon and platform vending command identities must match the order slot");
+  if (
+    command.id !== live.vendingCommandId ||
+    command.slotId !== orderItem.slotId
+  ) {
+    throw new Error(
+      "daemon and platform vending command identities must match the order slot",
+    );
   }
+  const productionTransactionTrace = validateProductionTransactionTrace({
+    entries: input.productionTransactionTrace,
+    binding: {
+      orderId: order.id,
+      paymentId: payment.id,
+      commandId: command.id,
+      sessionId: required(input.controlPlaneSessionId, "controlPlaneSessionId"),
+    },
+  });
   if (
     deltaRows(baseline, afterF2, "orders").length !== 1 ||
     deltaRows(baseline, afterF2, "payments").length !== 1 ||
     deltaRows(baseline, afterF2, "commands").length !== 1
   ) {
-    throw new Error("duplicate order, payment, or vending command appeared after inbound F2");
+    throw new Error(
+      "duplicate order, payment, or vending command appeared after inbound F2",
+    );
   }
   if (
     deltaRows(baseline, beforeF0, "orders").length !== 1 ||
     deltaRows(baseline, beforeF0, "payments").length !== 1 ||
     deltaRows(baseline, beforeF0, "commands").length !== 1
   ) {
-    throw new Error("before inbound F0 the correlated order, payment, and vending command must already exist exactly once");
+    throw new Error(
+      "before inbound F0 the correlated order, payment, and vending command must already exist exactly once",
+    );
   }
   const identity = {
     inventoryId: orderItem.inventoryId,
@@ -323,8 +381,18 @@ export function validateFastRouteStressSaleEvidence(input) {
   const platformBefore = matchingInventory(beforeF0, identity);
   const platformMiddle = matchingInventory(afterF1, identity);
   const platformAfter = matchingInventory(afterF2, identity);
-  if (!baselineInventory || !daemonBefore || !daemonMiddle || !daemonAfter || !platformBefore || !platformMiddle || !platformAfter) {
-    throw new Error("all temporal boundaries require the correlated slot inventory snapshot");
+  if (
+    !baselineInventory ||
+    !daemonBefore ||
+    !daemonMiddle ||
+    !daemonAfter ||
+    !platformBefore ||
+    !platformMiddle ||
+    !platformAfter
+  ) {
+    throw new Error(
+      "all temporal boundaries require the correlated slot inventory snapshot",
+    );
   }
   if (input.ui?.beforeF0?.result?.kind === "success") {
     throw new Error("UI must not show success before inbound F0");
@@ -338,13 +406,19 @@ export function validateFastRouteStressSaleEvidence(input) {
     deltaRows(beforeF0, afterF1, "movements").length !== 0 ||
     deltaRows(baseline, beforeF0, "movements").length !== 0
   ) {
-    throw new Error("correlated daemon and platform stock must remain unchanged through inbound F1");
+    throw new Error(
+      "correlated daemon and platform stock must remain unchanged through inbound F1",
+    );
   }
   if (daemonAfter.saleableStock - daemonMiddle.saleableStock !== -1) {
-    throw new Error("correlated daemon slot stock must decrement exactly once after inbound F2");
+    throw new Error(
+      "correlated daemon slot stock must decrement exactly once after inbound F2",
+    );
   }
   if (platformAfter.onHandQty - platformMiddle.onHandQty !== -1) {
-    throw new Error("correlated platform inventory must decrement exactly once after inbound F2");
+    throw new Error(
+      "correlated platform inventory must decrement exactly once after inbound F2",
+    );
   }
   const movement = exactlyOne(
     deltaRows(afterF1, afterF2, "movements"),
@@ -358,7 +432,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     movement.slotId !== orderItem.slotId ||
     Number(movement.quantity) !== 1
   ) {
-    throw new Error("platform movement must correlate order, command, item, inventory, and slot");
+    throw new Error(
+      "platform movement must correlate order, command, item, inventory, and slot",
+    );
   }
   const mqtt = exactlyOne(
     Array.isArray(input.mqttMessages) ? input.mqttMessages : [],
@@ -372,7 +448,9 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   const mqttPayload = mqtt?.payload?.payload;
   if (mqttPayload?.commandNo !== command.commandNo) {
-    throw new Error(`MQTT vend command must correlate commandNo ${command.commandNo}`);
+    throw new Error(
+      `MQTT vend command must correlate commandNo ${command.commandNo}`,
+    );
   }
   if (mqttPayload.orderNo !== order.orderNo || mqttPayload.quantity !== 1) {
     throw new Error("MQTT vend command must correlate order and quantity");
@@ -382,20 +460,29 @@ export function validateFastRouteStressSaleEvidence(input) {
     mqttPayload.slot?.layerNo !== daemonBefore.layerNo ||
     mqttPayload.slot?.cellNo !== daemonBefore.cellNo
   ) {
-    throw new Error("MQTT vend command must correlate the daemon slot coordinates");
+    throw new Error(
+      "MQTT vend command must correlate the daemon slot coordinates",
+    );
   }
-  const rawFrames = Array.isArray(input.serial?.rawFrames) ? input.serial.rawFrames : [];
+  const rawFrames = Array.isArray(input.serial?.rawFrames)
+    ? input.serial.rawFrames
+    : [];
   const protocolFrames = rawFrames
     .map((frame, index) =>
       validateProductionRawSerialFrame(frame, `raw serial frame ${index + 1}`),
     )
     .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame.parsedOpcode));
-  if (JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !== JSON.stringify(["VEND", "F0", "F1", "F2"])) {
+  if (
+    JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !==
+    JSON.stringify(["VEND", "F0", "F1", "F2"])
+  ) {
     throw new Error("raw serial protocol must be VEND -> F0 -> F1 -> F2");
   }
   if (
     protocolFrames[0].direction !== "daemon-to-controller" ||
-    protocolFrames.slice(1).some((frame) => frame.direction !== "controller-to-daemon")
+    protocolFrames
+      .slice(1)
+      .some((frame) => frame.direction !== "controller-to-daemon")
   ) {
     throw new Error("raw serial protocol directions are invalid");
   }
@@ -404,7 +491,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     protocolFrames[2].rawFrameHex !== "55F1" ||
     protocolFrames[3].rawFrameHex !== "55F2"
   ) {
-    throw new Error("raw inbound serial protocol must expose exact production 55 F0/F1/F2 frames");
+    throw new Error(
+      "raw inbound serial protocol must expose exact production 55 F0/F1/F2 frames",
+    );
   }
   const uiViewport = input.uiViewport ?? {};
   if (
@@ -443,8 +532,13 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const vendBytes = protocolFrames[0].bytes;
-  if (vendBytes[1] !== daemonBefore.layerNo || vendBytes[2] !== daemonBefore.cellNo) {
-    throw new Error("outbound serial vend frame must correlate the slot coordinates");
+  if (
+    vendBytes[1] !== daemonBefore.layerNo ||
+    vendBytes[2] !== daemonBefore.cellNo
+  ) {
+    throw new Error(
+      "outbound serial vend frame must correlate the slot coordinates",
+    );
   }
   for (const report of [
     input.platform?.baseline,
@@ -452,11 +546,18 @@ export function validateFastRouteStressSaleEvidence(input) {
     input.platform?.afterF1BeforeF2,
     input.platform?.afterF2,
   ]) {
-    if (report?.scope?.machineCode !== machineCode || typeof report?.scope?.machineId !== "string" || report.scope.machineId === "") {
-      throw new Error("platform evidence must preserve correlated machine scope at every boundary");
+    if (
+      report?.scope?.machineCode !== machineCode ||
+      typeof report?.scope?.machineId !== "string" ||
+      report.scope.machineId === ""
+    ) {
+      throw new Error(
+        "platform evidence must preserve correlated machine scope at every boundary",
+      );
     }
   }
-  if (!input.serial?.sessionId) throw new Error("serial session identity is required");
+  if (!input.serial?.sessionId)
+    throw new Error("serial session identity is required");
   const createOrderGate = input.createOrderGate ?? {};
   const gateObservedAt = Date.parse(createOrderGate.pendingObservedAt);
   const gateReleasedAt = Date.parse(createOrderGate.releasedAt);
@@ -465,7 +566,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     !Number.isFinite(gateReleasedAt) ||
     gateReleasedAt < gateObservedAt
   ) {
-    throw new Error("create-order gate must expose a pending boundary before release");
+    throw new Error(
+      "create-order gate must expose a pending boundary before release",
+    );
   }
   const vision = input.visionDelivery ?? {};
   if (
@@ -475,34 +578,47 @@ export function validateFastRouteStressSaleEvidence(input) {
     vision.connectedRuntimeClients < 1 ||
     vision.acceptedDeliveries < 1
   ) {
-    throw new Error("Vision departure requires a connected installed runtime client and accepted delivery");
+    throw new Error(
+      "Vision departure requires a connected installed runtime client and accepted delivery",
+    );
   }
   const visionAt = Date.parse(vision.timestamp);
   if (!(gateObservedAt <= visionAt && visionAt <= gateReleasedAt)) {
-    throw new Error("Vision departure must occur while payment creation is explicitly pending");
+    throw new Error(
+      "Vision departure must occur while payment creation is explicitly pending",
+    );
   }
-  const guardedDeparture = (Array.isArray(input.runtimeTrace) ? input.runtimeTrace : []).find(
+  const guardedDeparture = (
+    Array.isArray(input.runtimeTrace) ? input.runtimeTrace : []
+  ).find(
     (entry) =>
       entry.type === "navigation" &&
       entry.intentType === "presence.departed" &&
       entry.sourceEventId === vision.eventId &&
-      ["touchscreen_session_active", "active_transaction_route"].includes(entry.reasonCode) &&
+      ["touchscreen_session_active", "active_transaction_route"].includes(
+        entry.reasonCode,
+      ) &&
       entry.decision === "rejected" &&
       entry.finalRoute !== "#/catalog" &&
       Number.isFinite(visionAt) &&
       Date.parse(entry.at) >= visionAt,
   );
   if (!guardedDeparture) {
-    throw new Error("installed runtime trace must contain the guarded Vision departure navigation effect for the accepted eventId");
+    throw new Error(
+      "installed runtime trace must contain the guarded Vision departure navigation effect for the accepted eventId",
+    );
   }
-  const runtimeTrace = Array.isArray(input.runtimeTrace) ? input.runtimeTrace : [];
+  const runtimeTrace = Array.isArray(input.runtimeTrace)
+    ? input.runtimeTrace
+    : [];
   const spontaneousCatalog = runtimeTrace.some(
     (entry) =>
       entry.type === "navigation" &&
       Date.parse(entry.at) >= visionAt &&
       entry.finalRoute === "#/catalog",
   );
-  if (spontaneousCatalog) throw new Error("runtime returned spontaneously to Catalog");
+  if (spontaneousCatalog)
+    throw new Error("runtime returned spontaneously to Catalog");
   const result = input.ui?.afterF2?.result;
   if (
     input.ui?.afterF2?.route !== "#/result/success" ||
@@ -512,7 +628,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     result.orderNo !== order.orderNo ||
     result.commandId !== command.id
   ) {
-    throw new Error("successful UI result must correlate order, payment, and command after inbound F2");
+    throw new Error(
+      "successful UI result must correlate order, payment, and command after inbound F2",
+    );
   }
   const correlatedResultTrace = runtimeTrace.find(
     (entry) =>
@@ -543,8 +661,10 @@ export function validateFastRouteStressSaleEvidence(input) {
     slotId: orderItem.slotId,
     slotCode: daemonBefore.slotCode,
     protocol: protocolFrames.map((frame) => frame.parsedOpcode),
-    daemonStockDeltaAfterF2: daemonAfter.saleableStock - daemonMiddle.saleableStock,
-    platformStockDeltaAfterF2: platformAfter.onHandQty - platformMiddle.onHandQty,
+    daemonStockDeltaAfterF2:
+      daemonAfter.saleableStock - daemonMiddle.saleableStock,
+    platformStockDeltaAfterF2:
+      platformAfter.onHandQty - platformMiddle.onHandQty,
     movementId: movement.id,
     visionEventId: vision.eventId,
     guardedNavigationReason: guardedDeparture.reasonCode,
@@ -568,6 +688,9 @@ export function validateFastRouteStressSaleEvidence(input) {
           parsedOpcode: frame.parsedOpcode,
           rawFrameHex: frame.rawFrameHex,
         })),
+      productionTraceBoundaryIds: productionTransactionTrace.map(
+        (entry) => entry.boundaryId,
+      ),
     },
     createOrderGateObservedAt: createOrderGate.pendingObservedAt,
     createOrderGateReleasedAt: createOrderGate.releasedAt,
@@ -577,7 +700,9 @@ export function validateFastRouteStressSaleEvidence(input) {
 function localPath(path) {
   return process.platform === "win32"
     ? path
-    : resolve(`/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`);
+    : resolve(
+        `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
+      );
 }
 
 function readJson(path, label) {
@@ -585,7 +710,10 @@ function readJson(path, label) {
 }
 
 function daemonBaseUrl(handoff) {
-  const healthzUrl = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
+  const healthzUrl = required(
+    handoff.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -602,7 +730,9 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`${options.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`);
+    throw new Error(
+      `${options.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
+    );
   }
   return payload;
 }
@@ -617,9 +747,10 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
   while (Date.now() < deadline) {
-    const transaction = await daemonGet(handoff, "/v1/transactions/current").catch(
-      () => null,
-    );
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
     lastTransaction = transaction;
     const commandId =
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
@@ -671,7 +802,10 @@ async function waitForSuccessfulResultSurface(
 }
 
 async function readRuntimeTrace(client) {
-  return evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []");
+  return evaluateExpression(
+    client,
+    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+  );
 }
 
 async function readInstalledUiViewport(client) {
@@ -728,17 +862,23 @@ async function readUiBoundary(client) {
   );
 }
 
-async function waitForPlatformMovement(guestInput, input, baselineCount, timeoutMs = 30_000) {
+async function waitForPlatformMovement(
+  guestInput,
+  input,
+  baselineCount,
+  timeoutMs = 30_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   do {
-    last = (
-      await controlPlaneRequest(guestInput, "/v1/platform/query", input)
-    ).report;
+    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
+      .report;
     if (rows(last?.raw, "movements").length > baselineCount) return last;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   } while (Date.now() < deadline);
-  throw new Error(`platform movement did not appear after inbound F2: ${JSON.stringify(last?.raw?.movements ?? [])}`);
+  throw new Error(
+    `platform movement did not appear after inbound F2: ${JSON.stringify(last?.raw?.movements ?? [])}`,
+  );
 }
 
 async function waitForBeforeF0Boundary(
@@ -756,13 +896,18 @@ async function waitForBeforeF0Boundary(
   const deadline = Date.now() + timeoutMs;
   let last = null;
   do {
-    last = (
-      await controlPlaneRequest(guestInput, "/v1/platform/query", input)
-    ).report;
+    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
+      .report;
     const raw = last?.raw ?? {};
-    const order = rows(raw, "orders").find((row) => row.id === renderedSale.orderId);
-    const payment = rows(raw, "payments").find((row) => row.id === renderedSale.paymentId);
-    const command = rows(raw, "commands").find((row) => row.id === liveSale.vendingCommandId);
+    const order = rows(raw, "orders").find(
+      (row) => row.id === renderedSale.orderId,
+    );
+    const payment = rows(raw, "payments").find(
+      (row) => row.id === renderedSale.paymentId,
+    );
+    const command = rows(raw, "commands").find(
+      (row) => row.id === liveSale.vendingCommandId,
+    );
     if (
       order &&
       payment &&
@@ -788,10 +933,16 @@ function writeReport(outPath, report) {
 }
 
 function screenshotSink(outPath) {
-  const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
+  const root = join(
+    dirname(localPath(outPath)),
+    "fast-route-stress-sale-artifacts",
+  );
   mkdirSync(root, { recursive: true });
   return async ({ bytes, sha256, label, format }) => {
-    const file = join(root, `${String(label).replaceAll(/[^a-z0-9-]+/gi, "-")}.${format}`);
+    const file = join(
+      root,
+      `${String(label).replaceAll(/[^a-z0-9-]+/gi, "-")}.${format}`,
+    );
     writeFileSync(file, bytes);
     return { ref: file, sha256 };
   };
@@ -801,22 +952,38 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
   if (typeof sourcePath !== "string" || sourcePath === "") return null;
   try {
     const bytes = readFileSync(localPath(sourcePath));
-    const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
+    const root = join(
+      dirname(localPath(outPath)),
+      "fast-route-stress-sale-artifacts",
+    );
     mkdirSync(root, { recursive: true });
     const destination = join(root, `${label}.tail.log`);
-    writeFileSync(destination, bytes.subarray(Math.max(0, bytes.length - maxBytes)));
-    return { ref: destination, source: sourcePath, byteLength: Math.min(bytes.length, maxBytes) };
+    writeFileSync(
+      destination,
+      bytes.subarray(Math.max(0, bytes.length - maxBytes)),
+    );
+    return {
+      ref: destination,
+      source: sourcePath,
+      byteLength: Math.min(bytes.length, maxBytes),
+    };
   } catch {
     return { ref: null, source: sourcePath, byteLength: 0 };
   }
 }
 
 function writeTextArtifact(outPath, label, text) {
-  const root = join(dirname(localPath(outPath)), "fast-route-stress-sale-artifacts");
+  const root = join(
+    dirname(localPath(outPath)),
+    "fast-route-stress-sale-artifacts",
+  );
   mkdirSync(root, { recursive: true });
   const destination = join(root, `${label}.log`);
   writeFileSync(destination, String(text ?? ""));
-  return { ref: destination, byteLength: Buffer.byteLength(String(text ?? ""), "utf8") };
+  return {
+    ref: destination,
+    byteLength: Buffer.byteLength(String(text ?? ""), "utf8"),
+  };
 }
 
 function sleep(ms) {
@@ -872,7 +1039,9 @@ export function buildFastRouteStressSaleFailureReport(input) {
 async function controlPlaneRequest(guestInput, path, body = {}) {
   const controlPlane = guestInput.hostControlPlane;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
-    throw new Error("guest input is missing hostControlPlane endpoint and token");
+    throw new Error(
+      "guest input is missing hostControlPlane endpoint and token",
+    );
   }
   // The Linux host control plane is the runner-owned bridge to run-vm-host-adapter.mjs.
   return fetchJson(`${controlPlane.endpoint}${path}`, {
@@ -894,7 +1063,11 @@ async function collectPlatformLog(guestInput, sessionId, outPath) {
   return {
     reference: result.reference ?? null,
     unit: result.unit,
-    artifact: writeTextArtifact(outPath, "platform-service-api", result.log ?? ""),
+    artifact: writeTextArtifact(
+      outPath,
+      "platform-service-api",
+      result.log ?? "",
+    ),
   };
 }
 
@@ -902,22 +1075,30 @@ async function ensureControlledVisionMock(controlPort) {
   const healthUrl = "http://127.0.0.1:7892/health";
   try {
     await fetchJson(healthUrl);
-    const status = await fetchJson(`http://127.0.0.1:${controlPort}/control/status`);
-    if (status.scenario === "controlled") return { child: null, started: false };
+    const status = await fetchJson(
+      `http://127.0.0.1:${controlPort}/control/status`,
+    );
+    if (status.scenario === "controlled")
+      return { child: null, started: false };
   } catch {}
   const child = spawn(
     process.execPath,
-    ["--conditions=vem-source", "--import", "tsx", "apps/vision-mock/src/server.ts"],
+    [
+      "--conditions=vem-source",
+      "--import",
+      "tsx",
+      "apps/vision-mock/src/server.ts",
+    ],
     {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      VISION_MOCK_SCENARIO: "controlled",
-      VISION_MOCK_CONTROL_PORT: String(controlPort),
-      VISION_MOCK_PORT: "7892",
-      VISION_MOCK_PATH: "/ws",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        VISION_MOCK_SCENARIO: "controlled",
+        VISION_MOCK_CONTROL_PORT: String(controlPort),
+        VISION_MOCK_PORT: "7892",
+        VISION_MOCK_PATH: "/ws",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
   );
   child.stdout.resume();
@@ -956,11 +1137,15 @@ export async function shutdownControlledVisionMock(child, timeoutMs = 10_000) {
       return;
     }
   }
-  throw new Error("controlled vision mock did not release port 7892 after SIGTERM");
+  throw new Error(
+    "controlled vision mock did not release port 7892 after SIGTERM",
+  );
 }
 
 async function dispatchVisionDeparture(guestInput) {
-  const port = guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort;
+  const port =
+    guestInput.hostControlPlane?.visionMockControlPort ??
+    guestInput.visionMockControlPort;
   const controlPort = Number(port);
   if (!Number.isInteger(controlPort) || controlPort < 1) {
     throw new Error("guest input is missing vision mock control port");
@@ -1022,7 +1207,8 @@ async function runFastRouteStressSale(options) {
     createOrderGate = await armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
-      guestInput.hostControlPlane?.visionMockControlPort ?? guestInput.visionMockControlPort,
+      guestInput.hostControlPlane?.visionMockControlPort ??
+        guestInput.visionMockControlPort,
     );
     stage = "connect-installed-tauri-cdp";
     const target = await discoverMachineUiTarget({
@@ -1030,7 +1216,10 @@ async function runFastRouteStressSale(options) {
       expectedTargetId: handoff.cdp.targetId,
     });
     client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, "http://127.0.0.1:9222"),
+      rewriteWebSocketDebuggerUrl(
+        target.webSocketDebuggerUrl,
+        "http://127.0.0.1:9222",
+      ),
     );
     await client.connect();
     await enablePageRuntime(client);
@@ -1072,7 +1261,10 @@ async function runFastRouteStressSale(options) {
     );
     stage = "physical-catalog-to-checkout";
     for (const step of steps.slice(0, 4)) {
-      await waitForRoute(client, step.routeBefore, { timeoutMs: 30_000, pollMs: 250 });
+      await waitForRoute(client, step.routeBefore, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
       // activateVisibleSelector hard-fails unless the UI action is dispatched via
       // the real Chrome DevTools Input.dispatchTouchEvent path.
       const activation = await activateVisibleSelector(client, step.selector, {
@@ -1080,9 +1272,15 @@ async function runFastRouteStressSale(options) {
         timeoutMs: 30_000,
       });
       assert.match(activation.input.method, /Input\.dispatchTouchEvent/);
-      await waitForRoute(client, step.routeAfter, { timeoutMs: 30_000, pollMs: 250 });
+      await waitForRoute(client, step.routeAfter, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
     }
-    await waitForRoute(client, "#/checkout", { timeoutMs: 30_000, pollMs: 250 });
+    await waitForRoute(client, "#/checkout", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     const firstSubmit = await activateVisibleSelector(
       client,
       steps[4].selector,
@@ -1093,13 +1291,19 @@ async function runFastRouteStressSale(options) {
     const pendingCreate = await waitForCreateOrderGatePending(guestInput);
     stage = "vision-departure-during-create-order";
     const visionDelivery = await dispatchVisionDeparture(guestInput);
-    const secondSubmit = await dispatchRepeatedPaymentTouch(client, firstSubmit);
+    const secondSubmit = await dispatchRepeatedPaymentTouch(
+      client,
+      firstSubmit,
+    );
     assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
     const releasedCreateOrderGate = await releaseCreateOrderGate(
       guestInput,
       pendingCreate.paymentNo,
     );
-    await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
+    await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "payment-creation", {
         screenshot: true,
@@ -1107,13 +1311,28 @@ async function runFastRouteStressSale(options) {
       }),
     );
     const renderedSale = await readRenderedPaymentSurface(client);
-    const pendingTransaction = await daemonGet(handoff, "/v1/transactions/current");
+    const pendingTransaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    );
     if (pendingTransaction?.paymentNo !== pendingCreate.paymentNo) {
-      throw new Error("released create-order gate paymentNo must match the rendered payment surface");
+      throw new Error(
+        "released create-order gate paymentNo must match the rendered payment surface",
+      );
     }
     stage = "complete-mock-payment";
     await completeMockPayment(guestInput, pendingCreate.paymentNo);
     liveSale = await waitForCommand(handoff, renderedSale);
+    await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/observe-payment`,
+      {
+        orderId: liveSale.orderId,
+        paymentId: liveSale.paymentId,
+        commandId: liveSale.vendingCommandId,
+        paymentNo: pendingCreate.paymentNo,
+      },
+    );
     stage = "snapshot-before-f0";
     const vendBoundary = await controlPlaneRequest(
       guestInput,
@@ -1184,11 +1403,6 @@ async function runFastRouteStressSale(options) {
       `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
       { parsedOpcode: "F2", timeoutMs: 30_000 },
     );
-    stage = "collect-raw-serial-evidence";
-    const collect = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-    );
     stage = "wait-success-result";
     const resultSurface = await waitForSuccessfulResultSurface(
       client,
@@ -1205,6 +1419,16 @@ async function runFastRouteStressSale(options) {
         screenshot: true,
         screenshotSink: sink,
       }),
+    );
+    const observedResult = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/observe-result`,
+      { surface: resultSurface },
+    );
+    stage = "collect-raw-serial-evidence";
+    const collect = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
     );
     afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
     afterF2Platform = await waitForPlatformMovement(
@@ -1225,6 +1449,7 @@ async function runFastRouteStressSale(options) {
     );
     const evidence = {
       saleCorrelationId,
+      controlPlaneSessionId: sessionStart.sessionId,
       machineCode,
       runtimeTrace,
       createOrderGate: {
@@ -1261,6 +1486,7 @@ async function runFastRouteStressSale(options) {
         sessionId: sessionStart.binding.serialSessionId,
         rawFrames: collect.rawFrames ?? [],
       },
+      productionTransactionTrace: observedResult.entries,
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
     stage = "stop-host-serial-session";
@@ -1344,24 +1570,26 @@ async function runFastRouteStressSale(options) {
     const runtimeTrace = clientReady
       ? await readRuntimeTrace(client).catch(() => [])
       : [];
-    const platformLog = guestInput && sessionStart
-      ? await collectPlatformLog(
-          guestInput,
-          sessionStart.sessionId,
-          options.outPath,
-        ).catch((platformError) => ({
-          error:
-            platformError instanceof Error
-              ? platformError.message
-              : String(platformError),
-        }))
-      : null;
-    const hostEvidence = guestInput && sessionStart
-      ? await controlPlaneRequest(
-          guestInput,
-          `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-        ).catch(() => null)
-      : null;
+    const platformLog =
+      guestInput && sessionStart
+        ? await collectPlatformLog(
+            guestInput,
+            sessionStart.sessionId,
+            options.outPath,
+          ).catch((platformError) => ({
+            error:
+              platformError instanceof Error
+                ? platformError.message
+                : String(platformError),
+          }))
+        : null;
+    const hostEvidence =
+      guestInput && sessionStart
+        ? await controlPlaneRequest(
+            guestInput,
+            `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+          ).catch(() => null)
+        : null;
     if (guestInput && sessionStart) {
       await controlPlaneRequest(
         guestInput,

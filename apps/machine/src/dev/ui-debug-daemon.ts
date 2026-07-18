@@ -658,21 +658,9 @@ async function injectInstalledKioskSaleDisturbance(
       case "ipc_interruption":
         {
           const checkoutStore = useCheckoutStore();
-          const retainedOrderCredential =
-            checkoutStore.currentTransaction?.orderNo ?? null;
           currentTransactionFailuresRemaining = 1;
           await checkoutStore.refreshCurrentTransaction();
-          const overlayObserved = checkoutStore.customerCheckoutRecovery.active;
-          const overlayOrderCredential =
-            checkoutStore.customerCheckoutRecovery.orderCredential ?? null;
           await checkoutStore.refreshCurrentTransaction();
-          injection.recovery = {
-            overlayObserved,
-            retainedOrderCredential:
-              overlayOrderCredential ?? retainedOrderCredential,
-            resumedOrderCredential:
-              checkoutStore.currentTransaction?.orderNo ?? null,
-          };
         }
         break;
     }

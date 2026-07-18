@@ -68,12 +68,21 @@ type MachineRuntimeRecordedEntry =
   | MachineRuntimeAudioTraceEntry
   | MachineRuntimeTransactionSurfaceTraceEntry;
 
+// Omit must distribute over this discriminated union. A plain Omit collapses
+// the member-specific fields and makes valid trace records fail type checking.
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
+type MachineRuntimeRecordedEntryInput = DistributiveOmit<
+  MachineRuntimeRecordedEntry,
+  "id" | "at" | "recordedAt"
+> & {
+  recordedAt?: string;
+};
+
 export type MachineRuntimeTrace = {
-  record(
-    entry: Omit<MachineRuntimeRecordedEntry, "id" | "at" | "recordedAt"> & {
-      recordedAt?: string;
-    },
-  ): void;
+  record(entry: MachineRuntimeRecordedEntryInput): void;
   recordNavigation(
     entry: Omit<MachineRuntimeNavigationTraceRecord, "id" | "at" | "type">,
   ): void;

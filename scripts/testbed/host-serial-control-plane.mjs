@@ -2,12 +2,24 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:http";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  paymentMockCreateGatePaths,
+  readPaymentMockCreateGateStatus,
+  writePaymentMockCreateGateState,
+} from "./mock-payment-create-gate.mjs";
+import { createProductionTransactionTrace } from "./production-transaction-trace.mjs";
 import {
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
@@ -146,7 +158,10 @@ export function buildSerialOperationCommand({ workspace, stateRoot, request }) {
   if (request.operation === "start-serial-session") {
     args.push("--sale-correlation-id", request.saleCorrelationId);
   } else {
-    args.push(...sessionArgs(request.sessionBinding), ...saleArgs(request.sale));
+    args.push(
+      ...sessionArgs(request.sessionBinding),
+      ...saleArgs(request.sale),
+    );
     if (request.operation === "inject-scanner-code") {
       args.push("--scanner-code-file", request.scannerCodeFile);
     } else if (request.operation === "collect-serial-evidence") {
@@ -323,7 +338,14 @@ function runJsonCommand(command) {
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise({ stdout, stderr });
-      else reject(new Error(stderr || stdout || `${command.command} exited with ${code ?? "signal"}`));
+      else
+        reject(
+          new Error(
+            stderr ||
+              stdout ||
+              `${command.command} exited with ${code ?? "signal"}`,
+          ),
+        );
     });
   });
 }
@@ -365,28 +387,10 @@ function runnerTempRoot(stateRoot) {
   return path;
 }
 
-export function mockPaymentCreateGatePaths(stateRoot) {
-  const statePath = join(resolve(stateRoot), "mock-payment-create-gate.json");
-  return {
-    statePath,
-    pendingPath: `${statePath}.pending.json`,
-  };
-}
-
-function writeMockPaymentCreateGateState(stateRoot, value) {
-  const gate = mockPaymentCreateGatePaths(stateRoot);
-  mkdirSync(dirname(gate.statePath), { recursive: true });
-  writeFileSync(gate.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  return gate;
-}
-
-function readOptionalJsonFile(path) {
-  if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8"));
-}
+export { paymentMockCreateGatePaths as mockPaymentCreateGatePaths } from "./mock-payment-create-gate.mjs";
 
 function armMockPaymentCreateGate(server) {
-  writeMockPaymentCreateGateState(server.options.stateRoot, { state: "hold" });
+  writePaymentMockCreateGateState(server.options.stateRoot, { state: "hold" });
   return {
     armedAt: new Date().toISOString(),
     state: "hold",
@@ -394,28 +398,11 @@ function armMockPaymentCreateGate(server) {
 }
 
 function readMockPaymentCreateGateStatus(server) {
-  const gate = mockPaymentCreateGatePaths(server.options.stateRoot);
-  const state = readOptionalJsonFile(gate.statePath);
-  const pending = readOptionalJsonFile(gate.pendingPath);
-  return {
-    state:
-      state && typeof state.state === "string" ? String(state.state) : "open",
-    pending:
-      pending &&
-      pending.state === "pending" &&
-      typeof pending.paymentNo === "string" &&
-      typeof pending.observedAt === "string"
-        ? {
-            state: "pending",
-            paymentNo: pending.paymentNo,
-            observedAt: pending.observedAt,
-          }
-        : null,
-  };
+  return readPaymentMockCreateGateStatus(server.options.stateRoot);
 }
 
 function releaseMockPaymentCreateGate(server, input) {
-  writeMockPaymentCreateGateState(server.options.stateRoot, {
+  writePaymentMockCreateGateState(server.options.stateRoot, {
     state: "release",
     paymentNo: required(input.paymentNo, "paymentNo"),
   });
@@ -426,7 +413,7 @@ function releaseMockPaymentCreateGate(server, input) {
 }
 
 function openMockPaymentCreateGate(server) {
-  writeMockPaymentCreateGateState(server.options.stateRoot, { state: "open" });
+  writePaymentMockCreateGateState(server.options.stateRoot, { state: "open" });
   return {
     openedAt: new Date().toISOString(),
     state: "open",
@@ -486,7 +473,8 @@ function spawnMqttCapture({ machineCode }) {
 function summarizeReport(report) {
   return {
     result: report?.result ?? null,
-    operation: report?.request?.operation ?? report?.request?.operationReference ?? null,
+    operation:
+      report?.request?.operation ?? report?.request?.operationReference ?? null,
     serialSessionId: report?.serialSession?.serialSessionId ?? null,
   };
 }
@@ -526,27 +514,39 @@ export async function waitForRawSerialFrame({
   const deadline = Date.now() + timeoutMs;
   do {
     const raw = readRawSerialJournal(journalPath);
-    if (raw.length > 256) throw new Error("raw serial evidence exceeded 256 records");
+    if (raw.length > 256)
+      throw new Error("raw serial evidence exceeded 256 records");
     const protocolFrames = raw.filter((frame) =>
       Object.hasOwn(RAW_PROTOCOL_DIRECTIONS, frame.parsedOpcode),
     );
     for (const frame of protocolFrames) {
       if (frame.direction !== RAW_PROTOCOL_DIRECTIONS[frame.parsedOpcode]) {
-        throw new Error(`${frame.parsedOpcode} has invalid serial direction ${frame.direction}`);
+        throw new Error(
+          `${frame.parsedOpcode} has invalid serial direction ${frame.direction}`,
+        );
       }
     }
     const opcodes = protocolFrames.map((frame) => frame.parsedOpcode);
     if (parsedOpcode === "VEND" && opcodes.includes("F0")) {
       throw new Error("F0 appeared before the before-F0 gate was released");
     }
-    if (parsedOpcode !== "F2" && opcodes.includes("F2") && !opcodes.includes(parsedOpcode)) {
+    if (
+      parsedOpcode !== "F2" &&
+      opcodes.includes("F2") &&
+      !opcodes.includes(parsedOpcode)
+    ) {
       throw new Error(`F2 appeared before required ${parsedOpcode} boundary`);
     }
     const boundaryIndex = opcodes.indexOf(parsedOpcode);
     if (boundaryIndex >= 0) {
       const prefix = protocolFrames.slice(0, boundaryIndex + 1);
-      if (JSON.stringify(prefix.map((frame) => frame.parsedOpcode)) !== JSON.stringify(expected)) {
-        throw new Error(`raw serial protocol order must be ${expected.join(" -> ")}`);
+      if (
+        JSON.stringify(prefix.map((frame) => frame.parsedOpcode)) !==
+        JSON.stringify(expected)
+      ) {
+        throw new Error(
+          `raw serial protocol order must be ${expected.join(" -> ")}`,
+        );
       }
       return { parsedOpcode, frame: prefix.at(-1), protocolFrames: prefix };
     }
@@ -558,7 +558,10 @@ export async function waitForRawSerialFrame({
 function releaseSessionF0(server, input) {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF0Path;
-  writeFileSync(path, `${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+  writeFileSync(path, `${new Date().toISOString()}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
   return { released: true, releaseFile: path };
 }
 
@@ -567,12 +570,15 @@ function adapterSessionPaths(session) {
     process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
     "VEM_VM_HOST_ADAPTER_STATE_ROOT",
   );
-  return qemuUsbSerialSessionPaths(adapterRoot, session.binding.serialSessionId);
+  return qemuUsbSerialSessionPaths(
+    adapterRoot,
+    session.binding.serialSessionId,
+  );
 }
 
 async function waitForSessionFrame(server, input) {
   const session = requireSession(server, input.sessionId);
-  return waitForRawSerialFrame({
+  const boundary = await waitForRawSerialFrame({
     journalPath: adapterSessionPaths(session).journalPath,
     parsedOpcode: required(input.parsedOpcode, "parsedOpcode"),
     serialScenario: normalizeSerialScenario(
@@ -580,18 +586,26 @@ async function waitForSessionFrame(server, input) {
     ),
     timeoutMs: Number(input.timeoutMs ?? 30_000),
   });
+  session.productionTrace.controllerFrame(boundary.frame);
+  return boundary;
 }
 
 function releaseSessionF2(server, input) {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF2Path;
-  writeFileSync(path, `${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+  writeFileSync(path, `${new Date().toISOString()}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
   return { released: true, releaseFile: path };
 }
 
 function collectPlatformLog(server, input) {
-  const lines = Number.isInteger(input.lines) ? input.lines : Number(input.lines ?? 200);
-  const lineCount = Number.isInteger(lines) && lines > 0 ? Math.min(lines, 400) : 200;
+  const lines = Number.isInteger(input.lines)
+    ? input.lines
+    : Number(input.lines ?? 200);
+  const lineCount =
+    Number.isInteger(lines) && lines > 0 ? Math.min(lines, 400) : 200;
   const result = spawnSync(
     "journalctl",
     [
@@ -618,9 +632,13 @@ function collectPlatformLog(server, input) {
   if (boundedStdout.trim() === "") {
     throw new Error("journalctl returned empty stdout");
   }
-  const session = input.sessionId ? requireSession(server, input.sessionId) : null;
+  const session = input.sessionId
+    ? requireSession(server, input.sessionId)
+    : null;
   const paths = session ? adapterSessionPaths(session) : null;
-  const logPath = paths ? join(paths.directory, "platform-service-api.log") : null;
+  const logPath = paths
+    ? join(paths.directory, "platform-service-api.log")
+    : null;
   if (logPath) writeFileSync(logPath, boundedStdout, { mode: 0o600 });
   return {
     unit: "vem-local-testbed-service-api.service",
@@ -639,6 +657,7 @@ function boundedSessionEvidence(server, input) {
   return {
     serialSessionId: session.binding.serialSessionId,
     rawFrames: readRawSerialJournal(paths.journalPath).slice(-64),
+    productionTransactionTrace: session.productionTrace.entries(),
     mqtt: {
       ...session.mqttCapture.snapshot(),
       messages: session.mqttCapture.snapshot().messages.slice(-4),
@@ -773,6 +792,22 @@ function audioCaptureDiagnostics(server, input) {
   };
 }
 
+function observePaymentBoundary(server, input) {
+  const session = requireSession(server, input.sessionId);
+  return session.productionTrace.payment({
+    orderId: input.orderId,
+    paymentId: input.paymentId,
+    commandId: input.commandId,
+    paymentNo: input.paymentNo,
+  });
+}
+
+function observeResultBoundary(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const entry = session.productionTrace.result(input.surface);
+  return { entry, entries: session.productionTrace.validate() };
+}
+
 function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
@@ -786,7 +821,9 @@ function abortSession(server, input) {
       }
       state.active = false;
       state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
-      writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
+        mode: 0o600,
+      });
     }
   }
   session.mqttCapture.stop();
@@ -794,7 +831,9 @@ function abortSession(server, input) {
 }
 
 async function executePlatformQuery(server, input) {
-  const sessionId = input.sessionId ? required(input.sessionId, "sessionId") : null;
+  const sessionId = input.sessionId
+    ? required(input.sessionId, "sessionId")
+    : null;
   const session = sessionId ? server.sessions.get(sessionId) : null;
   const outPath =
     input.outPath && typeof input.outPath === "string"
@@ -807,7 +846,10 @@ async function executePlatformQuery(server, input) {
   const command = buildPlatformQueryCommand({
     workspace: server.options.workspace,
     runId: required(input.runId ?? session?.runId, "runId"),
-    machineCode: required(input.machineCode ?? session?.machineCode, "machineCode"),
+    machineCode: required(
+      input.machineCode ?? session?.machineCode,
+      "machineCode",
+    ),
     outPath,
   });
   const { stdout } = await runJsonCommand(command);
@@ -862,6 +904,10 @@ async function createSerialSession(server, input) {
     injectReport: null,
     collectReport: null,
     stopReports: [],
+    productionTrace: createProductionTransactionTrace({
+      stateRoot: server.options.stateRoot,
+      sessionId,
+    }),
   };
   server.sessions.set(sessionId, session);
   return {
@@ -926,7 +972,8 @@ async function collectSerialEvidence(server, input) {
   if (!session.injectReport) {
     throw new Error("inject-scanner-code must complete before collect");
   }
-  const scannerInjection = session.injectReport.request.serialSession.scannerInjection;
+  const scannerInjection =
+    session.injectReport.request.serialSession.scannerInjection;
   const sale = {
     saleCorrelationId: session.saleCorrelationId,
     orderId: required(input.orderId, "orderId"),
@@ -1025,25 +1072,37 @@ export function createHostSerialControlPlane(options) {
       if (request.method === "POST" && request.url === "/v1/platform/query") {
         jsonResponse(response, 200, {
           ok: true,
-          report: await executePlatformQuery(serverState, await readRequestBody(request)),
+          report: await executePlatformQuery(
+            serverState,
+            await readRequestBody(request),
+          ),
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/arm") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-create-gate/arm"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
           ...armMockPaymentCreateGate(serverState),
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/status") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-create-gate/status"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
           ...readMockPaymentCreateGateStatus(serverState),
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/release") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-create-gate/release"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
           ...releaseMockPaymentCreateGate(
@@ -1053,17 +1112,26 @@ export function createHostSerialControlPlane(options) {
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/mock-payment-create-gate/open") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-create-gate/open"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
           ...openMockPaymentCreateGate(serverState),
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/serial-sessions/start") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/serial-sessions/start"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
-          ...(await createSerialSession(serverState, await readRequestBody(request))),
+          ...(await createSerialSession(
+            serverState,
+            await readRequestBody(request),
+          )),
         });
         return;
       }
@@ -1075,7 +1143,7 @@ export function createHostSerialControlPlane(options) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|platform-log|evidence|abort|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|observe-payment|observe-result|platform-log|evidence|abort|collect|stop))?$/,
       );
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|diagnostics)$/,
@@ -1151,6 +1219,22 @@ export function createHostSerialControlPlane(options) {
           ok: true,
           sessionId,
           ...releaseSessionF2(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "observe-payment") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          entry: observePaymentBoundary(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "observe-result") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...observeResultBoundary(serverState, body),
         });
         return;
       }

@@ -12,24 +12,60 @@ import {
 } from "./fast-route-stress-sale.mjs";
 
 function validEvidence() {
-  const inventory = { id: "inventory-1", slotId: "slot-1", onHandQty: 3, reservedQty: 0 };
+  const inventory = {
+    id: "inventory-1",
+    slotId: "slot-1",
+    onHandQty: 3,
+    reservedQty: 0,
+  };
   const baselineRaw = {
-    orders: [], orderItems: [], payments: [], commands: [], movements: [], inventories: [inventory],
+    orders: [],
+    orderItems: [],
+    payments: [],
+    commands: [],
+    movements: [],
+    inventories: [inventory],
   };
   const beforeF0Raw = {
     orders: [{ id: "order-1", orderNo: "ORD-1" }],
-    orderItems: [{ id: "item-1", orderId: "order-1", inventoryId: "inventory-1", slotId: "slot-1", quantity: 1 }],
+    orderItems: [
+      {
+        id: "item-1",
+        orderId: "order-1",
+        inventoryId: "inventory-1",
+        slotId: "slot-1",
+        quantity: 1,
+      },
+    ],
     payments: [{ id: "payment-1", orderId: "order-1", paymentNo: "PAY-1" }],
-    commands: [{ id: "command-1", commandNo: "CMD-1", orderId: "order-1", orderItemId: "item-1", slotId: "slot-1" }],
+    commands: [
+      {
+        id: "command-1",
+        commandNo: "CMD-1",
+        orderId: "order-1",
+        orderItemId: "item-1",
+        slotId: "slot-1",
+      },
+    ],
     movements: [],
     inventories: [inventory],
   };
   const inFlightRaw = structuredClone(beforeF0Raw);
   return {
     saleCorrelationId: "sale-1",
+    controlPlaneSessionId: "fast-sale-session-1",
     machineCode: "VEM-TESTBED-LOCAL",
-    renderedSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1" },
-    liveSale: { orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1", vendingCommandId: "command-1" },
+    renderedSale: {
+      orderId: "order-1",
+      paymentId: "payment-1",
+      orderNo: "ORD-1",
+    },
+    liveSale: {
+      orderId: "order-1",
+      paymentId: "payment-1",
+      orderNo: "ORD-1",
+      vendingCommandId: "command-1",
+    },
     createOrderGate: {
       controlPlane: "mock-payment-create-gate",
       armedAt: "2026-07-18T03:59:59.800Z",
@@ -61,28 +97,100 @@ function validEvidence() {
       visualViewportHeight: 1920,
     },
     platform: {
-      baseline: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: baselineRaw },
-      beforeF0: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: beforeF0Raw },
-      afterF1BeforeF2: { scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" }, raw: inFlightRaw },
+      baseline: {
+        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
+        raw: baselineRaw,
+      },
+      beforeF0: {
+        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
+        raw: beforeF0Raw,
+      },
+      afterF1BeforeF2: {
+        scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
+        raw: inFlightRaw,
+      },
       afterF2: {
         scope: { machineCode: "VEM-TESTBED-LOCAL", machineId: "machine-1" },
         raw: {
           ...inFlightRaw,
-          movements: [{ id: "movement-1", orderItemId: "item-1", orderNo: "ORD-1", commandNo: "CMD-1", inventoryId: "inventory-1", slotId: "slot-1", quantity: 1 }],
+          movements: [
+            {
+              id: "movement-1",
+              orderItemId: "item-1",
+              orderNo: "ORD-1",
+              commandNo: "CMD-1",
+              inventoryId: "inventory-1",
+              slotId: "slot-1",
+              quantity: 1,
+            },
+          ],
           inventories: [{ ...inventory, onHandQty: 2 }],
         },
       },
     },
     daemon: {
-      baseline: { items: [{ inventoryId: "inventory-1", slotId: "slot-1", slotCode: "R2C5", layerNo: 2, cellNo: 5, saleableStock: 3 }] },
-      beforeF0: { items: [{ inventoryId: "inventory-1", slotId: "slot-1", slotCode: "R2C5", layerNo: 2, cellNo: 5, saleableStock: 3 }] },
-      afterF1BeforeF2: { items: [{ inventoryId: "inventory-1", slotId: "slot-1", slotCode: "R2C5", layerNo: 2, cellNo: 5, saleableStock: 3 }] },
-      afterF2: { items: [{ inventoryId: "inventory-1", slotId: "slot-1", slotCode: "R2C5", layerNo: 2, cellNo: 5, saleableStock: 2 }] },
+      baseline: {
+        items: [
+          {
+            inventoryId: "inventory-1",
+            slotId: "slot-1",
+            slotCode: "R2C5",
+            layerNo: 2,
+            cellNo: 5,
+            saleableStock: 3,
+          },
+        ],
+      },
+      beforeF0: {
+        items: [
+          {
+            inventoryId: "inventory-1",
+            slotId: "slot-1",
+            slotCode: "R2C5",
+            layerNo: 2,
+            cellNo: 5,
+            saleableStock: 3,
+          },
+        ],
+      },
+      afterF1BeforeF2: {
+        items: [
+          {
+            inventoryId: "inventory-1",
+            slotId: "slot-1",
+            slotCode: "R2C5",
+            layerNo: 2,
+            cellNo: 5,
+            saleableStock: 3,
+          },
+        ],
+      },
+      afterF2: {
+        items: [
+          {
+            inventoryId: "inventory-1",
+            slotId: "slot-1",
+            slotCode: "R2C5",
+            layerNo: 2,
+            cellNo: 5,
+            saleableStock: 2,
+          },
+        ],
+      },
     },
     ui: {
       beforeF0: { route: "#/payment", result: null },
       afterF1BeforeF2: { route: "#/dispensing", result: null },
-      afterF2: { route: "#/result/success", result: { kind: "success", orderId: "order-1", paymentId: "payment-1", orderNo: "ORD-1", commandId: "command-1" } },
+      afterF2: {
+        route: "#/result/success",
+        result: {
+          kind: "success",
+          orderId: "order-1",
+          paymentId: "payment-1",
+          orderNo: "ORD-1",
+          commandId: "command-1",
+        },
+      },
     },
     visionDelivery: {
       ok: true,
@@ -91,42 +199,118 @@ function validEvidence() {
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
     },
-    runtimeTrace: [{
-      type: "navigation",
-      intentType: "presence.departed",
-      sourceEventId: "departure-event-1",
-      decision: "rejected",
-      reasonCode: "touchscreen_session_active",
-      fromRoute: "#/checkout",
-      finalRoute: "#/checkout",
-      at: "2026-07-18T04:00:00.100Z",
-    }, {
-      type: "transaction_surface",
-      id: 2,
-      at: "2026-07-18T04:00:01.000Z",
-      recordedAt: "2026-07-18T04:00:01.000Z",
-      route: "#/result/success",
-      stage: "result",
-      orderId: "order-1",
-      paymentId: "payment-1",
-      orderNo: "ORD-1",
-      commandId: "command-1",
-      resultKind: "success",
-      resultDisplayIntent: "success",
-    }],
-    mqttMessages: [{
-      topic: "vem/machines/VEM-TESTBED-LOCAL/commands/dispense",
-      payload: { messageId: "command:CMD-1", machineCode: "VEM-TESTBED-LOCAL", payload: { commandNo: "CMD-1", orderNo: "ORD-1", slot: { slotCode: "R2C5", layerNo: 2, cellNo: 5 }, quantity: 1 } },
-    }],
+    runtimeTrace: [
+      {
+        type: "navigation",
+        intentType: "presence.departed",
+        sourceEventId: "departure-event-1",
+        decision: "rejected",
+        reasonCode: "touchscreen_session_active",
+        fromRoute: "#/checkout",
+        finalRoute: "#/checkout",
+        at: "2026-07-18T04:00:00.100Z",
+      },
+      {
+        type: "transaction_surface",
+        id: 2,
+        at: "2026-07-18T04:00:01.000Z",
+        recordedAt: "2026-07-18T04:00:01.000Z",
+        route: "#/result/success",
+        stage: "result",
+        orderId: "order-1",
+        paymentId: "payment-1",
+        orderNo: "ORD-1",
+        commandId: "command-1",
+        resultKind: "success",
+        resultDisplayIntent: "success",
+      },
+    ],
+    mqttMessages: [
+      {
+        topic: "vem/machines/VEM-TESTBED-LOCAL/commands/dispense",
+        payload: {
+          messageId: "command:CMD-1",
+          machineCode: "VEM-TESTBED-LOCAL",
+          payload: {
+            commandNo: "CMD-1",
+            orderNo: "ORD-1",
+            slot: { slotCode: "R2C5", layerNo: 2, cellNo: 5 },
+            quantity: 1,
+          },
+        },
+      },
+    ],
     serial: {
       sessionId: "serial-session-1",
       rawFrames: [
-        { sequence: 1, direction: "daemon-to-controller", rawFrameHex: "55020531", opcode: 2, parsedOpcode: "VEND" },
-        { sequence: 2, direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
-        { sequence: 3, direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
-        { sequence: 4, direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
+        {
+          sequence: 1,
+          direction: "daemon-to-controller",
+          rawFrameHex: "55020531",
+          opcode: 2,
+          parsedOpcode: "VEND",
+        },
+        {
+          sequence: 2,
+          direction: "controller-to-daemon",
+          rawFrameHex: "55F0",
+          opcode: 240,
+          parsedOpcode: "F0",
+        },
+        {
+          sequence: 3,
+          direction: "controller-to-daemon",
+          rawFrameHex: "55F1",
+          opcode: 241,
+          parsedOpcode: "F1",
+        },
+        {
+          sequence: 4,
+          direction: "controller-to-daemon",
+          rawFrameHex: "55F2",
+          opcode: 242,
+          parsedOpcode: "F2",
+        },
       ],
     },
+    productionTransactionTrace: [
+      {
+        type: "payment",
+        boundaryId: "payment:1",
+        at: "2026-07-18T04:00:00.300Z",
+        orderId: "order-1",
+        paymentId: "payment-1",
+        commandId: "command-1",
+        sessionId: "fast-sale-session-1",
+        paymentNo: "PAY-1",
+      },
+      ...["F0", "F1", "F2"].map((type, index) => ({
+        type,
+        boundaryId: `${type.toLowerCase()}:${index + 2}`,
+        at: `2026-07-18T04:00:0${index + 1}.000Z`,
+        orderId: "order-1",
+        paymentId: "payment-1",
+        commandId: "command-1",
+        sessionId: "fast-sale-session-1",
+        rawFrame: {
+          direction: "controller-to-daemon",
+          rawFrameHex: `55${type}`,
+          sequence: index + 2,
+          observedAt: `2026-07-18T04:00:0${index + 1}.000Z`,
+          boundaryId: `${type.toLowerCase()}:${index + 2}`,
+        },
+      })),
+      {
+        type: "result",
+        boundaryId: "result:5",
+        at: "2026-07-18T04:00:04.000Z",
+        orderId: "order-1",
+        paymentId: "payment-1",
+        commandId: "command-1",
+        sessionId: "fast-sale-session-1",
+        surface: { route: "#/result/success", kind: "success" },
+      },
+    ],
   };
 }
 
@@ -230,7 +414,10 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when raw serial direction/order is inferred from semantic event names", () => {
     const evidence = validEvidence();
-    evidence.serial.rawFrames[0] = { ...evidence.serial.rawFrames[0], parsedOpcode: "F0" };
+    evidence.serial.rawFrames[0] = {
+      ...evidence.serial.rawFrames[0],
+      parsedOpcode: "F0",
+    };
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /raw serial frame 1 F0 must match the 2-byte production frame 55 F0/,
@@ -239,7 +426,10 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when the raw inbound production bytes are not exact 55 F0/F1/F2 frames", () => {
     const evidence = validEvidence();
-    evidence.serial.rawFrames[1] = { ...evidence.serial.rawFrames[1], rawFrameHex: "55F000" };
+    evidence.serial.rawFrames[1] = {
+      ...evidence.serial.rawFrames[1],
+      rawFrameHex: "55F000",
+    };
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /raw serial frame 2 F0 must match the 2-byte production frame 55 F0/,
@@ -311,6 +501,20 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /runtime trace must expose a correlated result surface/,
+    );
+  });
+
+  it("fails closed when the central production trace reports success before F2", () => {
+    const evidence = validEvidence();
+    evidence.productionTransactionTrace[3] = {
+      ...evidence.productionTransactionTrace[3],
+      type: "result",
+      boundaryId: "result:4",
+      at: "2026-07-18T04:00:03.000Z",
+    };
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /payment -> F0 -> F1 -> F2 -> result/,
     );
   });
 
@@ -417,7 +621,10 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /Input\.dispatchTouchEvent/);
     assert.match(implementation, /__VEM_MACHINE_RUNTIME_TRACE__/);
     assert.match(implementation, /mock:mock/);
-    assert.match(implementation, /payments\/mock\/\$\{encodeURIComponent\(paymentNo\)\}\/complete/);
+    assert.match(
+      implementation,
+      /payments\/mock\/\$\{encodeURIComponent\(paymentNo\)\}\/complete/,
+    );
     assert.match(implementation, /vision\/control\/departure/);
     assert.match(implementation, /mock-payment-create-gate\/arm/);
     assert.match(implementation, /mock-payment-create-gate\/status/);
@@ -425,18 +632,23 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /release-f0/);
     assert.match(implementation, /platform-log/);
     assert.match(implementation, /snapshots:/);
-    assert.match(implementation, /--import", "tsx", "apps\/vision-mock\/src\/server\.ts/);
-    assert.match(implementation, /control\/status/);
-    assert.match(implementation, /shutdownControlledVisionMock/);
     assert.match(
       implementation,
-      /did not release port 7892 after SIGTERM/,
+      /--import",\s*"tsx",\s*"apps\/vision-mock\/src\/server\.ts/,
     );
-    assert.match(implementation, /installed UI viewport must be exactly 1080x1920/);
+    assert.match(implementation, /control\/status/);
+    assert.match(implementation, /shutdownControlledVisionMock/);
+    assert.match(implementation, /did not release port 7892 after SIGTERM/);
+    assert.match(
+      implementation,
+      /installed UI viewport must be exactly 1080x1920/,
+    );
     assert.match(
       implementation,
       /sale-start-capability must expose a ready mock:mock payment option/,
     );
+    assert.match(implementation, /observe-payment/);
+    assert.match(implementation, /observe-result/);
     assert.doesNotMatch(implementation, /fastSale\.createOrderGate\.statePath/);
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
