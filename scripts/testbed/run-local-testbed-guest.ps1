@@ -9,6 +9,12 @@ $runtimeRoot = "C:\ProgramData\VEM"
 $daemonDataRoot = Join-Path $runtimeRoot "vending-daemon"
 $deploymentRoot = "C:\VEM\bringup"
 $handoffRoot = Join-Path $runtimeRoot "testbed"
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = @($machinePath, $userPath, $env:Path) |
+  Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+  Select-Object -Unique |
+  Join-String -Separator ";"
 $declaredCachePaths = @(
   (Join-Path $cacheRoot "pnpm-store"),
   (Join-Path $cacheRoot "cargo-home"),

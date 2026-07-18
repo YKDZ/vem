@@ -1121,6 +1121,10 @@ describe("Windows D cache contract", () => {
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
+    assert.match(
+      guest,
+      /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,
+    );
     for (const required of [
       "$env:CARGO_HOME",
       "$env:RUSTC_WRAPPER",
