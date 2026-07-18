@@ -412,6 +412,8 @@ describe("tracked local testbed host lifecycle", () => {
     assert.doesNotMatch(dynamicRegistration.input, /sc\.exe stop/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
+    assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);
+    assert.match(dynamicRegistration.input, /registered unexpected identity/);
 
     const proxiedRegistration = buildHostAdmissionPlan({
       config: config(),

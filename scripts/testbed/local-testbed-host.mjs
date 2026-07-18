@@ -275,12 +275,17 @@ $ErrorActionPreference = 'SilentlyContinue'
 & taskkill.exe /F /T /IM Runner.Worker.exe 2>$null | Out-Null
 $ErrorActionPreference = $savedErrorActionPreference
 Start-Sleep -Seconds 1
-Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue
+$runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
+$runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
+$remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
+if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
 $registrationJson = & curl.exe '--fail' '--silent' '--show-error'${registrationProxyArguments} '--request' 'POST' '--header' ${quotePowerShell(`Authorization: Bearer ${runnerRegistration.adminToken}`)} '--header' 'Accept: application/vnd.github+json' '--header' 'X-GitHub-Api-Version: 2022-11-28' ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)}
 if ($LASTEXITCODE -ne 0) { throw "actions runner registration token request failed with exit code $LASTEXITCODE" }
 $registration = $registrationJson | ConvertFrom-Json
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url ${quotePowerShell(`https://github.com/${runnerRegistration.repository}`)} --token ([string]$registration.token) --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
+$registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]$registeredRunner.agentName -ne 'forest-win10-runtime-current') { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
 `
     : "";
   const proxyLines = runnerProxy?.configured
