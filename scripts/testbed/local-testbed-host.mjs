@@ -267,8 +267,8 @@ function runnerAdmissionAssertion(runnerProxy, runnerRegistration) {
   const registrationSetup = runnerRegistration
     ? `${registrationProxySetup}
 $existingServices = @(Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue)
+$existingServices | ForEach-Object { & sc.exe delete $_.Name | Out-Null }
 Get-Process -Name 'RunnerService','Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$existingServices | ForEach-Object { & sc.exe stop $_.Name | Out-Null; & sc.exe delete $_.Name | Out-Null }
 Start-Sleep -Seconds 1
 Remove-Item -LiteralPath (Join-Path $runnerRoot '.service'), (Join-Path $runnerRoot '.runner'), (Join-Path $runnerRoot '.credentials'), (Join-Path $runnerRoot '.credentials_rsaparams') -Force -ErrorAction SilentlyContinue
 $registrationJson = & curl.exe '--fail' '--silent' '--show-error'${registrationProxyArguments} '--request' 'POST' '--header' ${quotePowerShell(`Authorization: Bearer ${runnerRegistration.adminToken}`)} '--header' 'Accept: application/vnd.github+json' '--header' 'X-GitHub-Api-Version: 2022-11-28' ${quotePowerShell(`https://api.github.com/repos/${runnerRegistration.repository}/actions/runners/registration-token`)}
