@@ -492,9 +492,11 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when Machine Runtime Trace reports success before host raw F2", () => {
     const evidence = validEvidence();
-    evidence.machineRuntimeTrace.entries[1].at = "2026-07-18T04:00:02.000Z";
-    evidence.machineRuntimeTrace.entries[1].recordedAt =
-      "2026-07-18T04:00:02.000Z";
+    const resultSurface = evidence.machineRuntimeTrace.entries.find(
+      (entry) => entry.type === "transaction_surface",
+    );
+    resultSurface.at = "2026-07-18T04:00:02.000Z";
+    resultSurface.recordedAt = "2026-07-18T04:00:02.000Z";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /rejects success at or before host raw F2 capturedAt/,
@@ -512,9 +514,10 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when the real transaction projection refresh is missing after Vision departure", () => {
     const evidence = validEvidence();
-    evidence.runtimeTrace = evidence.runtimeTrace.filter(
-      (entry) => entry.intentType !== "transaction.projection",
-    );
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) => entry.intentType !== "transaction.projection",
+      );
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /real transaction projection refresh/,
