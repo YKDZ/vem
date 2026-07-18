@@ -6,12 +6,17 @@ $executable = Join-Path $root "pwsh.exe"
 
 function Test-CachedPowerShell {
   if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { return $false }
-  & $executable -NoProfile -Command @'
+  $probeOutput = @(& $executable -NoProfile -Command @'
 if ($PSVersionTable.PSVersion.ToString() -ne "7.4.6") { exit 1 }
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $null = '{}' | ConvertFrom-Json -ErrorAction Stop
 '@
-  return $LASTEXITCODE -eq 0
+  2>&1)
+  $probeExitCode = $LASTEXITCODE
+  if ($probeExitCode -ne 0) {
+    $probeOutput | ForEach-Object { Write-Warning "PowerShell cache probe: $_" }
+  }
+  return ($probeExitCode -eq 0)
 }
 
 if (-not (Test-CachedPowerShell)) {
