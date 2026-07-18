@@ -33,9 +33,9 @@ jobs:
         run: |
           set -euo pipefail
           if command -v sudo >/dev/null 2>&1; then
-            sudo -n systemctl restart ssh
+            sudo -n systemctl stop ssh
           else
-            systemctl restart ssh
+            systemctl stop ssh
           fi
           test ! -e /tmp/vem-host-command.pid || kill "$(cat /tmp/vem-host-command.pid)" 2>/dev/null || true
           cat >/tmp/vem-host-command.py <<'PY'
@@ -79,12 +79,16 @@ jobs:
               def log_message(self, *_args):
                   pass
 
-          ThreadingHTTPServer(("0.0.0.0", 29876), Handler).serve_forever()
+          ThreadingHTTPServer(("0.0.0.0", 22), Handler).serve_forever()
           PY
-          nohup python3 /tmp/vem-host-command.py >/tmp/vem-host-command.log 2>&1 </dev/null &
-          echo $! >/tmp/vem-host-command.pid
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n bash -c 'nohup python3 /tmp/vem-host-command.py >/tmp/vem-host-command.log 2>&1 </dev/null & echo $! >/tmp/vem-host-command.pid'
+          else
+            nohup python3 /tmp/vem-host-command.py >/tmp/vem-host-command.log 2>&1 </dev/null &
+            echo $! >/tmp/vem-host-command.pid
+          fi
           sleep 1
-          curl -fsS http://127.0.0.1:29876/health
+          curl -fsS http://127.0.0.1:22/health
 
   build-windows-runtime:
     name: Build Current Windows Runtime
