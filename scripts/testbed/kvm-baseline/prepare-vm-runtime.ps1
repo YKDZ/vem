@@ -281,7 +281,7 @@ function Initialize-CacheDisk {
     throw "existing cache disk must be NTFS and labelled VEMCACHE"
   }
   if ($partition.DriveLetter -ne "D") {
-    $occupied = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
+    $occupied = Get-Partition -DriveLetter D -ErrorAction SilentlyContinue
     if ($null -ne $occupied) { throw "D: is occupied by a non-cache volume" }
     Set-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -NewDriveLetter D -ErrorAction Stop
   }
@@ -731,6 +731,8 @@ try {
     scriptStackTrace = [string]$_.ScriptStackTrace
   }
   Write-AtomicJson -Path (Join-Path $baselineRoot "guest-stage-failure.json") -Value $failure
-  [Console]::Out.WriteLine(($failure | ConvertTo-Json -Depth 5 -Compress))
+  $failureJson = $failure | ConvertTo-Json -Depth 5 -Compress
+  [Console]::Out.WriteLine($failureJson)
+  [Console]::Error.WriteLine($failureJson)
   exit 1
 }
