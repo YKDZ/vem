@@ -300,7 +300,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(runner.input, /Restart-Service/);
     assert.match(runner.input, /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/);
     assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
-    assert.match(runner.input, /A session for this runner already exists/);
+    assert.doesNotMatch(runner.input, /A session for this runner already exists/);
     assert.doesNotMatch(runner.input, /Session created/);
     assert.match(runner.input, /\$diagnosticOffsets/);
     assert.match(runner.input, /\.Length/);
@@ -392,6 +392,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.doesNotMatch(dynamicRegistration.input, /config\.cmd'\) remove/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /sc\.exe config .*obj= LocalSystem/s);
+    assert.match(dynamicRegistration.input, /Get-Process -Name 'Runner\.Listener'.*Stop-Process -Force/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
     assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);
     assert.match(dynamicRegistration.input, /registered unexpected identity/);

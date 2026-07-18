@@ -320,6 +320,8 @@ $service = Get-Service -Name $serviceName -ErrorAction Stop
 Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
 & sc.exe config $service.Name obj= LocalSystem | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "actions runner LocalSystem configuration failed with exit code $LASTEXITCODE" }
+Get-Process -Name 'Runner.Listener' -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
 $diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
@@ -340,7 +342,7 @@ while ((Get-Date).ToUniversalTime() -lt $deadline) {
       try { $tail = $reader.ReadToEnd() } finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
-    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected|A session for this runner already exists')
+    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected')
     if ($marker.Success) {
       Set-RunnerAdmissionPhase 'listener-ready'
       [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name; diagnosticOffset = $offset } | ConvertTo-Json -Compress
@@ -814,7 +816,6 @@ export async function executeHostAdmissionPlan(
         ![
           "Listening for Jobs",
           "Runner reconnected",
-          "A session for this runner already exists",
         ].includes(
           runnerAdmission.listenerMarker,
         )
