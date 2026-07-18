@@ -33,9 +33,9 @@ jobs:
         run: |
           set -euo pipefail
           if command -v sudo >/dev/null 2>&1; then
-            sudo -n systemctl stop ssh
+            sudo -n systemctl stop ssh.socket ssh.service
           else
-            systemctl stop ssh
+            systemctl stop ssh.socket ssh.service
           fi
           test ! -e /tmp/vem-host-command.pid || kill "$(cat /tmp/vem-host-command.pid)" 2>/dev/null || true
           cat >/tmp/vem-host-command.py <<'PY'
