@@ -53,7 +53,7 @@ $webView2 = Get-ChildItem "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clien
   Where-Object { $_.pv -and $_.name -match "WebView" } |
   Select-Object -First 1
 $displayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-  Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } |
+  Where-Object { $_.Status -eq "OK" -and -not [string]::IsNullOrWhiteSpace($_.Name) } |
   Select-Object -First 1
 $audioDeviceRoleType = [Windows.Media.Devices.AudioDeviceRole, Windows.Media.Devices, ContentType = WindowsRuntime]
 $audioDeviceRole = [System.Enum]::Parse($audioDeviceRoleType, "Default")

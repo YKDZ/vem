@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,12 +20,12 @@ import { describe, it } from "node:test";
 import {
   buildWin10Baseline,
   bootstrapScript,
+  constructionCleanup,
   createConstructionCommandTracker,
   createConfigurationMedia,
   guestConfigurationFor,
   recoverStaleConstructionDomains,
   renderUnattendedXml,
-  SPICE_GUEST_TOOLS_INSTALLER_FILE,
   runWithConstructionSignalCleanup,
   verifyDefinedRuntimeDevices,
   waitForInteractiveDisplayReport,
@@ -73,11 +75,6 @@ function buildConfig(root) {
       windowsImageIndex: 1,
       runnerArchivePath: join(root, "media", "actions-runner-win-x64.zip"),
       runnerArchiveSha256: "a".repeat(64),
-      spiceGuestToolsInstallerPath: join(
-        root,
-        "media",
-        "spice-guest-tools-0.141.exe",
-      ),
       webView2InstallerUri: "https://downloads.example.test/webview2.exe",
     },
     guest: {
@@ -337,7 +334,6 @@ function completedInteractiveDisplayStatus(bootIdentity = "boot-complete") {
     task: null,
     cleanup: {
       taskRemoved: true,
-      spiceGuestToolsResumeRemoved: true,
       automaticLogonDisabled: true,
     },
     currentBootIdentity: bootIdentity,
@@ -379,7 +375,7 @@ function interactiveDisplayReport(config) {
       height: 1920,
       scalePercent: config.guest.desktopScalePercent,
     },
-    displayAdapter: "Bochs Display Adapter",
+    displayAdapter: "Microsoft Basic Display Adapter",
   };
 }
 
@@ -416,40 +412,25 @@ await runWithConstructionSignalCleanup({
 
 function trackedConstructionSignalCleanupChildSource() {
   return `
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import {
+const baseline = await import(${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)});
+const {
+  constructionCleanup,
   createConstructionCommandTracker,
   runWithConstructionSignalCleanup,
-} from ${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)};
+} = baseline;
 
-const [domainPath, systemStagingPath, cacheStagingPath, receiptPath, longChildPath, longChildPidPath, longChildReadyPath, lateDomainCreatorPath, lateDomainMarkerPath] = process.argv.slice(2);
-await Promise.all([
-  mkdir(domainPath, { recursive: true }),
-  mkdir(systemStagingPath, { recursive: true }),
-  mkdir(cacheStagingPath, { recursive: true }),
-]);
+const [domainName, systemStagingPath, cacheStagingPath, longChildPath, longChildPidPath, longChildReadyPath, lateDomainCreatorPath, lateDomainMarkerPath] = process.argv.slice(2);
 const commandTracker = createConstructionCommandTracker();
+const cleanup = constructionCleanup({
+  cacheStagingDirectory: cacheStagingPath,
+  config: { host: { libvirtUri: "qemu:///system" } },
+  constructionDomain: domainName,
+  runCommand: commandTracker.runCleanup,
+  stagingDirectory: systemStagingPath,
+});
 await runWithConstructionSignalCleanup({
   abortInFlight: () => commandTracker.abortAndWait(),
-  cleanup: async () => {
-    const longChildPid = Number(await readFile(longChildPidPath, "utf8"));
-    let longChildExited = false;
-    try {
-      process.kill(longChildPid, 0);
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-      longChildExited = true;
-    }
-    await Promise.all([
-      rm(domainPath, { recursive: true, force: true }),
-      rm(systemStagingPath, { recursive: true, force: true }),
-      rm(cacheStagingPath, { recursive: true, force: true }),
-    ]);
-    await writeFile(
-      receiptPath,
-      JSON.stringify({ longChildExited, lateDomainMarkerPath }),
-    );
-  },
+  cleanup,
   exitOnSignal: true,
   work: async () => {
     try {
@@ -461,7 +442,7 @@ await runWithConstructionSignalCleanup({
     } catch (error) {
       await commandTracker.run(process.execPath, [
         lateDomainCreatorPath,
-        domainPath,
+        process.env.FAKE_DOMAIN_PATH,
         lateDomainMarkerPath,
       ]);
       throw error;
@@ -512,11 +493,11 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /<memory unit="MiB">16384<\/memory>/);
     assert.match(
       xml,
-      /<graphics type="vnc" autoport="yes"><listen type="none"\/><\/graphics>/,
+      /<graphics type="vnc" autoport="yes" listen="127\.0\.0\.1"><listen type="address" address="127\.0\.0\.1"\/><\/graphics>/,
     );
     assert.match(
       xml,
-      /<model type="bochs" vram="65536" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
+      /<model type="vga" vram="65536" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
     );
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
@@ -639,13 +620,6 @@ describe("Linux KVM Windows baseline", () => {
         /runner\.registrationTokenProvider/,
       );
 
-      const missingSpiceInstaller = buildConfig(root);
-      delete missingSpiceInstaller.media.spiceGuestToolsInstallerPath;
-      assert.throws(
-        () => validateBaselineBuildConfig(missingSpiceInstaller),
-        /media\.spiceGuestToolsInstallerPath/,
-      );
-
       const missingRunnerArchive = buildConfig(root);
       delete missingRunnerArchive.media.runnerArchivePath;
       assert.throws(
@@ -661,6 +635,30 @@ describe("Linux KVM Windows baseline", () => {
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("has no SPICE or QXL installer contract, media, state, or cleanup plumbing", () => {
+    const config = buildConfig("/var/tmp/vem-kvm-no-spice-contract");
+    assert.doesNotThrow(() => validateBaselineBuildConfig(config));
+    assert.deepEqual(guestConfigurationFor(config), {
+      webView2InstallerUri: config.media.webView2InstallerUri,
+      runnerArchiveFile: "actions-runner-win-x64.zip",
+      interactiveUser: config.guest.sshUser,
+      display: { width: 1080, height: 1920, scalePercent: 100 },
+    });
+    for (const file of [
+      "build-win10-baseline.mjs",
+      "linux-kvm-baseline.mjs",
+      "prepare-vm-runtime.ps1",
+      "verify-vm-runtime.ps1",
+      "libvirt-runtime-profile.mjs",
+    ]) {
+      assert.doesNotMatch(
+        readFileSync(new URL(`./${file}`, import.meta.url), "utf8"),
+        /spice|qxl/i,
+        `${file} retains retired SPICE/QXL plumbing`,
+      );
     }
   });
 
@@ -688,7 +686,6 @@ describe("Linux KVM Windows baseline", () => {
             availableStorageBytes: 200 * 1024 ** 3,
             installationMedia: {
               windowsIso: true,
-              spiceGuestToolsInstaller: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -719,7 +716,6 @@ describe("Linux KVM Windows baseline", () => {
             availableStorageBytes: 79 * 1024 ** 3,
             installationMedia: {
               windowsIso: true,
-              spiceGuestToolsInstaller: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -749,7 +745,6 @@ describe("Linux KVM Windows baseline", () => {
           availableStorageBytes: 80 * 1024 ** 3,
           installationMedia: {
             windowsIso: true,
-            spiceGuestToolsInstaller: true,
             runnerArchive: true,
           },
           networkActive: true,
@@ -783,7 +778,6 @@ describe("Linux KVM Windows baseline", () => {
             availableMemoryMiB: 16 * 1024,
             installationMedia: {
               windowsIso: true,
-              spiceGuestToolsInstaller: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -917,6 +911,85 @@ describe("Linux KVM Windows baseline", () => {
       assert.equal(
         (await resolvePublishedBaselineRelease(config)).releaseId,
         "release-new-post-publish",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a recoverable current pointer when directory fsync fails after manifest rename", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "vem-kvm-baseline-current-fsync-failure-"),
+    );
+    try {
+      const config = buildConfig(root);
+      const oldRelease = await publishRelease(
+        config,
+        "release-old-current-fsync",
+        "old",
+      );
+      const staged = stagedRelease(config, "current-fsync", "new");
+      const layout = baselinePublicationLayout(config);
+      const operations = [];
+
+      await assert.rejects(
+        publishVerifiedBaselineRelease({
+          config,
+          releaseId: "release-new-current-fsync",
+          stagedSystemPath: staged.system,
+          stagedCachePath: staged.cache,
+          stagedDomainXmlPath: staged.domainXml,
+          stagedDiagnosticPath: staged.diagnostic,
+          profile: runtimeProfileForPublishedRelease(
+            config,
+            "release-new-current-fsync",
+          ),
+          verified: true,
+          commitDefinition: async (release) => {
+            operations.push(`define:${release.releaseId}`);
+          },
+          rollbackDefinition: async (release) => {
+            operations.push(`restore:${release.releaseId}`);
+          },
+          syncCurrentManifestDirectory: async () => {
+            const error = new Error("simulated current manifest fsync failure");
+            error.code = "EIO";
+            throw error;
+          },
+        }),
+        /simulated current manifest fsync failure/,
+      );
+
+      assert.deepEqual(operations, ["define:release-new-current-fsync"]);
+      assert.equal(
+        JSON.parse(readFileSync(layout.currentManifestPath, "utf8")).releaseId,
+        "release-new-current-fsync",
+      );
+      assert.equal(
+        existsSync(
+          join(layout.systemReleaseRoot, "release-new-current-fsync"),
+        ),
+        true,
+      );
+      assert.equal(
+        existsSync(join(layout.cacheReleaseRoot, "release-new-current-fsync")),
+        true,
+      );
+      assert.equal(existsSync(layout.publicationJournalPath), true);
+      assert.equal(existsSync(layout.previousReleasePath), true);
+
+      const recoveredDefinitions = [];
+      const recovered = await recoverPublishedBaseline(config, {
+        recoverDefinition: async (release) => {
+          recoveredDefinitions.push(release.releaseId);
+        },
+        rollbackDefinition: async () => {},
+      });
+      assert.equal(recovered.releaseId, "release-new-current-fsync");
+      assert.deepEqual(recoveredDefinitions, ["release-new-current-fsync"]);
+      assert.equal(
+        existsSync(join(layout.systemReleaseRoot, oldRelease.releaseId)),
+        false,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1522,19 +1595,16 @@ describe("Linux KVM Windows baseline", () => {
     assert.equal(parsed.status, 0, parsed.stderr);
   });
 
-  it("keeps legacy installer media inert while bootstrapping the bochs/VNC profile", async () => {
+  it("builds configuration media without a display-driver installer", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-media-"));
     try {
       const config = buildConfig(root);
       mkdirSync(dirname(config.guest.administratorPasswordFile), {
         recursive: true,
       });
-      mkdirSync(dirname(config.media.spiceGuestToolsInstallerPath), {
-        recursive: true,
-      });
+      mkdirSync(dirname(config.media.runnerArchivePath), { recursive: true });
       writeFileSync(config.guest.administratorPasswordFile, "test-password\n");
       writeFileSync(config.guest.authorizedKeysFile, "ssh-ed25519 test\n");
-      writeFileSync(config.media.spiceGuestToolsInstallerPath, "spice-tools");
       writeFileSync(config.media.runnerArchivePath, "runner-archive");
       config.media.runnerArchiveSha256 = createHash("sha256")
         .update("runner-archive")
@@ -1548,15 +1618,10 @@ describe("Linux KVM Windows baseline", () => {
       const mediaRoot = join(stagingDirectory, "configuration-media");
       assert.deepEqual(guestConfigurationFor(config), {
         webView2InstallerUri: config.media.webView2InstallerUri,
-        spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
         runnerArchiveFile: "actions-runner-win-x64.zip",
         interactiveUser: config.guest.sshUser,
         display: { width: 1080, height: 1920, scalePercent: 100 },
       });
-      assert.equal(
-        readFileSync(join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE), "utf8"),
-        "spice-tools",
-      );
       assert.equal(existsSync(join(mediaRoot, "prepare-vm-runtime.ps1")), true);
       assert.equal(
         readFileSync(join(mediaRoot, "actions-runner-win-x64.zip"), "utf8"),
@@ -1662,6 +1727,10 @@ describe("Linux KVM Windows baseline", () => {
       /WindowsIdentity]::GetCurrent\(\)\.Name/,
     );
     assert.match(prepareInteractiveDisplay, /Set-ClientDisplayMode -Width/);
+    assert.match(
+      prepareInteractiveDisplay,
+      /Where-Object \{ \$_.Status -eq "OK" -and -not \[string\]::IsNullOrWhiteSpace\(\$_.Name\) \}/,
+    );
     const clientDisplayMode = runtime.slice(
       runtime.indexOf("function Set-ClientDisplayMode"),
       runtime.indexOf("function Write-AtomicJson"),
@@ -1768,6 +1837,10 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(runtime, /FilterGraph/);
     assert.match(verify, /interactive-display-report\.json/);
     assert.match(verify, /displayAdapter/);
+    assert.match(
+      verify,
+      /Where-Object \{ \$_.Status -eq "OK" -and -not \[string\]::IsNullOrWhiteSpace\(\$_.Name\) \}/,
+    );
     assert.doesNotMatch(verify, /SPICEGuestTools|QXL|rebootSemanticsValid/);
     assert.doesNotMatch(verify, /PrimaryScreen/);
     assert.match(verify, /ExpectedRunnerUrl/);
@@ -1874,7 +1947,7 @@ describe("Linux KVM Windows baseline", () => {
     );
   });
 
-  it("re-arms interactive display preparation from stale same-boot legacy installer state", async () => {
+  it("re-arms interactive display preparation when its task is absent", async () => {
     const stagingDirectory = mkdtempSync(
       join(tmpdir(), "vem-kvm-interactive-display-rearm-"),
     );
@@ -1885,7 +1958,7 @@ describe("Linux KVM Windows baseline", () => {
       interactiveUser: "KVM-BUILDER\\baseline",
       interactiveSessionId: 1,
       desktop: { width: 1080, height: 1920, scalePercent: 100 },
-      displayAdapter: "Bochs Display Adapter",
+      displayAdapter: "Microsoft Basic Display Adapter",
     };
     let rearmed = false;
     let now = 0;
@@ -1921,16 +1994,11 @@ describe("Linux KVM Windows baseline", () => {
                       : {
                           reportValid: false,
                           reportPresent: false,
-                          state: { phase: "installing" },
+                          state: { phase: "waiting-for-logon" },
                           task: null,
                           taskLogTail:
-                            "legacy installer state is stale after product completion",
+                            "interactive display task is unexpectedly absent",
                           currentBootIdentity: "boot-current",
-                          spiceGuestToolsInstallation: {
-                            phase: "installing",
-                            exitCode: null,
-                            installBootIdentity: "boot-current",
-                          },
                         },
                   )}\n`,
                 };
@@ -1989,13 +2057,7 @@ describe("Linux KVM Windows baseline", () => {
       );
       assert.ok(
         rearmIndex >= 0,
-        "stale same-boot legacy installer state must trigger a bounded re-arm",
-      );
-      assert.equal(
-        bindWindowsOpenSshPowerShellCommand(
-          invocations[rearmIndex].args.at(-1),
-        ).parameters.SpiceGuestToolsInstallerPath,
-        undefined,
+        "a missing interactive display task must trigger a bounded re-arm",
       );
       assert.ok(interactiveReportIndex > rearmIndex);
       assert.ok(
@@ -2228,7 +2290,6 @@ describe("Linux KVM Windows baseline", () => {
                           task: { state: "Running" },
                           cleanup: {
                             taskRemoved: false,
-                            spiceGuestToolsResumeRemoved: false,
                             automaticLogonDisabled: false,
                           },
                         }
@@ -2237,10 +2298,6 @@ describe("Linux KVM Windows baseline", () => {
                 };
               }
               if (bound.parameters.Mode === "RearmInteractiveDisplay") {
-                assert.equal(
-                  bound.parameters.SpiceGuestToolsInstallerPath,
-                  undefined,
-                );
                 return {
                   stdout: `${JSON.stringify({
                     action: "completed",
@@ -2304,7 +2361,6 @@ describe("Linux KVM Windows baseline", () => {
         ...completedInteractiveDisplayStatus(),
         cleanup: {
           taskRemoved: false,
-          spiceGuestToolsResumeRemoved: true,
           automaticLogonDisabled: true,
         },
       },
@@ -2312,15 +2368,6 @@ describe("Linux KVM Windows baseline", () => {
         ...completedInteractiveDisplayStatus(),
         cleanup: {
           taskRemoved: true,
-          spiceGuestToolsResumeRemoved: false,
-          automaticLogonDisabled: true,
-        },
-      },
-      {
-        ...completedInteractiveDisplayStatus(),
-        cleanup: {
-          taskRemoved: true,
-          spiceGuestToolsResumeRemoved: true,
           automaticLogonDisabled: false,
         },
       },
@@ -2449,7 +2496,6 @@ describe("Linux KVM Windows baseline", () => {
                         task: null,
                         cleanup: {
                           taskRemoved: false,
-                          spiceGuestToolsResumeRemoved: false,
                           automaticLogonDisabled: false,
                         },
                         currentBootIdentity: "boot-before-rearm",
@@ -2536,7 +2582,6 @@ describe("Linux KVM Windows baseline", () => {
                         task: null,
                         cleanup: {
                           taskRemoved: false,
-                          spiceGuestToolsResumeRemoved: false,
                           automaticLogonDisabled: false,
                         },
                         currentBootIdentity: null,
@@ -2549,7 +2594,6 @@ describe("Linux KVM Windows baseline", () => {
                           task: null,
                           cleanup: {
                             taskRemoved: false,
-                            spiceGuestToolsResumeRemoved: false,
                             automaticLogonDisabled: false,
                           },
                           currentBootIdentity: "boot-before-rearm",
@@ -2635,7 +2679,6 @@ describe("Linux KVM Windows baseline", () => {
                       task: null,
                       cleanup: {
                         taskRemoved: false,
-                        spiceGuestToolsResumeRemoved: false,
                         automaticLogonDisabled: false,
                       },
                       currentBootIdentity: "boot-before-rearm",
@@ -2655,7 +2698,6 @@ describe("Linux KVM Windows baseline", () => {
                     task: null,
                     cleanup: {
                       taskRemoved: false,
-                      spiceGuestToolsResumeRemoved: true,
                       automaticLogonDisabled: false,
                     },
                     currentBootIdentity: "boot-after-rearm",
@@ -2725,7 +2767,6 @@ describe("Linux KVM Windows baseline", () => {
                     task: { state: "Running", lastTaskResult: 267009 },
                     cleanup: {
                       taskRemoved: false,
-                      spiceGuestToolsResumeRemoved: false,
                       automaticLogonDisabled: false,
                     },
                     currentBootIdentity: "boot-display",
@@ -2786,7 +2827,6 @@ describe("Linux KVM Windows baseline", () => {
                     task: { state: "Running" },
                     cleanup: {
                       taskRemoved: false,
-                      spiceGuestToolsResumeRemoved: false,
                       automaticLogonDisabled: false,
                     },
                     currentBootIdentity: "boot-display",
@@ -2886,22 +2926,70 @@ describe("Linux KVM Windows baseline", () => {
     }
   });
 
+  it("retains construction staging when domain absence cannot be confirmed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-cleanup-confirmation-"));
+    const systemStagingPath = join(root, "system-staging");
+    const cacheStagingPath = join(root, "cache-staging");
+    mkdirSync(systemStagingPath, { recursive: true });
+    mkdirSync(cacheStagingPath, { recursive: true });
+    const cleanup = constructionCleanup({
+      cacheStagingDirectory: cacheStagingPath,
+      config: { host: { libvirtUri: "qemu:///system" } },
+      constructionDomain: "win10-runtime-baseline-build-deadbeef",
+      runCommand: async (_command, args) => {
+        if (args[2] === "dominfo") return { stdout: "", failed: true };
+        if (args[2] === "list") throw new Error("libvirt unavailable");
+        return { stdout: "" };
+      },
+      stagingDirectory: systemStagingPath,
+    });
+    try {
+      await assert.rejects(cleanup(), /libvirt unavailable/);
+      assert.equal(existsSync(systemStagingPath), true);
+      assert.equal(existsSync(cacheStagingPath), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("terminates in-flight execFile children before cleanup and blocks a late domain creator", () => {
     const root = mkdtempSync(
       join(tmpdir(), "vem-kvm-construction-tracked-sigterm-"),
     );
     const childPath = join(root, "construction-tracked-sigterm-child.mjs");
+    const fakeVirshPath = join(root, "bin", "virsh");
     const longChildPath = join(root, "long-lived-command.mjs");
     const lateDomainCreatorPath = join(root, "late-domain-creator.mjs");
-    const domainPath = join(root, "win10-runtime-baseline-build-tracked");
+    const domainName = "win10-runtime-baseline-build-deadbeef";
+    const domainPath = join(root, "domain-defined");
     const systemStagingPath = join(root, "system-staging");
     const cacheStagingPath = join(root, "cache-staging");
-    const receiptPath = join(root, "cleanup-receipt.json");
+    const virshLogPath = join(root, "virsh.log");
+    const domainGoneReceiptPath = join(root, "domain-gone-before-staging-cleanup");
     const longChildPidPath = join(root, "long-child.pid");
     const longChildReadyPath = join(root, "long-child.ready");
     const lateDomainMarkerPath = join(root, "late-domain-created");
     try {
       writeFileSync(childPath, trackedConstructionSignalCleanupChildSource());
+      mkdirSync(dirname(fakeVirshPath), { recursive: true });
+      writeFileSync(
+        fakeVirshPath,
+        `#!/usr/bin/env node
+import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+const operation = process.argv[4];
+appendFileSync(process.env.FAKE_VIRSH_LOG, operation + "\\n");
+if (operation === "undefine") rmSync(process.env.FAKE_DOMAIN_PATH, { force: true });
+if (operation === "list") {
+  if (existsSync(process.env.FAKE_DOMAIN_PATH)) {
+    process.stdout.write(process.env.FAKE_DOMAIN_NAME + "\\n");
+    process.exit(0);
+  }
+  if (!existsSync(process.env.FAKE_SYSTEM_STAGING) || !existsSync(process.env.FAKE_CACHE_STAGING)) process.exit(9);
+  writeFileSync(process.env.FAKE_DOMAIN_GONE_RECEIPT, "confirmed");
+}
+`,
+      );
+      chmodSync(fakeVirshPath, 0o755);
       writeFileSync(
         longChildPath,
         `
@@ -2921,35 +3009,49 @@ await mkdir(domainPath, { recursive: true });
 await writeFile(markerPath, "created");
 `,
       );
+      writeFileSync(domainPath, domainName);
+      mkdirSync(systemStagingPath, { recursive: true });
+      mkdirSync(cacheStagingPath, { recursive: true });
       const result = spawnSync(
         "bash",
         [
           "-c",
           `
             set -euo pipefail
-            node "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "\${10}" &
+            node "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" &
             child="$!"
             for _ in $(seq 1 200); do
-              test -f "$8" && break
+              test -f "$7" && break
               sleep 0.01
             done
-            test -f "$8"
+            test -f "$7"
             kill -TERM "$child"
             wait "$child"
           `,
           "_",
           childPath,
-          domainPath,
+          domainName,
           systemStagingPath,
           cacheStagingPath,
-          receiptPath,
           longChildPath,
           longChildPidPath,
           longChildReadyPath,
           lateDomainCreatorPath,
           lateDomainMarkerPath,
         ],
-        { encoding: "utf8" },
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${dirname(fakeVirshPath)}:${process.env.PATH}`,
+            FAKE_VIRSH_LOG: virshLogPath,
+            FAKE_DOMAIN_PATH: domainPath,
+            FAKE_DOMAIN_NAME: domainName,
+            FAKE_SYSTEM_STAGING: systemStagingPath,
+            FAKE_CACHE_STAGING: cacheStagingPath,
+            FAKE_DOMAIN_GONE_RECEIPT: domainGoneReceiptPath,
+          },
+        },
       );
 
       assert.equal(result.status, 143, result.stderr);
@@ -2957,10 +3059,14 @@ await writeFile(markerPath, "created");
       assert.equal(existsSync(systemStagingPath), false);
       assert.equal(existsSync(cacheStagingPath), false);
       assert.equal(existsSync(lateDomainMarkerPath), false);
-      assert.deepEqual(JSON.parse(readFileSync(receiptPath, "utf8")), {
-        longChildExited: true,
-        lateDomainMarkerPath,
-      });
+      assert.equal(readFileSync(domainGoneReceiptPath, "utf8"), "confirmed");
+      assert.deepEqual(readFileSync(virshLogPath, "utf8").trim().split("\n"), [
+        "destroy",
+        "undefine",
+        "list",
+      ]);
+      const longChildPid = Number(readFileSync(longChildPidPath, "utf8"));
+      assert.throws(() => process.kill(longChildPid, 0), /ESRCH/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3003,12 +3109,6 @@ await writeFile(markerPath, "created");
     );
     assert.ok(
       completion.indexOf("Remove-InteractiveDisplayPreparationTask") <
-        completion.indexOf(
-          "Write-AtomicJson -Path $interactiveDisplayReportPath",
-        ),
-    );
-    assert.ok(
-      completion.indexOf("Remove-SpiceGuestToolsResume") <
         completion.indexOf(
           "Write-AtomicJson -Path $interactiveDisplayReportPath",
         ),
@@ -3130,27 +3230,31 @@ await writeFile(markerPath, "created");
   it("recovers only exact generated construction domains and preserves deployment and backup names", async () => {
     const config = buildConfig("/var/tmp/vem-kvm-baseline-recovery");
     const invocations = [];
+    const definedDomains = new Set([
+      "win10-runtime-baseline-build-0123abcd",
+      "win10-runtime-baseline-build-deadbeef",
+    ]);
+    const protectedDomains = [
+      "win10-runtime-baseline-deployment",
+      "win10-runtime-baseline-backup",
+      "win10-runtime-baseline-build-0123abcd-backup",
+      "win10-runtime-baseline-build-0123abcd-extra",
+      "win10-runtime-baseline-build-0123456",
+      "win10-runtime-baseline-build-012345678",
+      "win10-runtime-baseline-build-0123456g",
+      "win10-runtime-baseline-build-ABCDEF12",
+      "win10-runtime-baseline-build-old-a",
+      "win10-runtime-baseline2-build-old",
+      "other-build-old",
+    ];
     const runCommand = async (command, args, options) => {
       invocations.push({ command, args, options });
       if (args.includes("list")) {
         return {
-          stdout: [
-            "win10-runtime-baseline-build-0123abcd",
-            "win10-runtime-baseline-build-deadbeef",
-            "win10-runtime-baseline-deployment",
-            "win10-runtime-baseline-backup",
-            "win10-runtime-baseline-build-0123abcd-backup",
-            "win10-runtime-baseline-build-0123abcd-extra",
-            "win10-runtime-baseline-build-0123456",
-            "win10-runtime-baseline-build-012345678",
-            "win10-runtime-baseline-build-0123456g",
-            "win10-runtime-baseline-build-ABCDEF12",
-            "win10-runtime-baseline-build-old-a",
-            "win10-runtime-baseline2-build-old",
-            "other-build-old",
-          ].join("\n"),
+          stdout: [...definedDomains, ...protectedDomains].join("\n"),
         };
       }
+      if (args[2] === "undefine") definedDomains.delete(args[3]);
       return { stdout: "" };
     };
 
@@ -3184,6 +3288,11 @@ await writeFile(markerPath, "created");
       },
       {
         command: "virsh",
+        args: ["--connect", "qemu:///system", "list", "--all", "--name"],
+        options: undefined,
+      },
+      {
+        command: "virsh",
         args: [
           "--connect",
           "qemu:///system",
@@ -3202,7 +3311,160 @@ await writeFile(markerPath, "created");
         ],
         options: { allowFailure: true },
       },
+      {
+        command: "virsh",
+        args: ["--connect", "qemu:///system", "list", "--all", "--name"],
+        options: undefined,
+      },
     ]);
+  });
+
+  it("reclaims only metadata-owned construction staging after a hard crash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-hard-crash-recovery-"));
+    const config = buildConfig(root);
+    config.storage.cacheDiskPath = join(
+      root,
+      "cache",
+      "win10-runtime-cache.qcow2",
+    );
+    const buildId = "deadbeef";
+    const domainName = `${config.vm.name}-build-${buildId}`;
+    const systemStagingPath = join(
+      dirname(config.storage.baselinePath),
+      `.${config.vm.name}.staging-${buildId}`,
+    );
+    const cacheStagingPath = join(
+      dirname(config.storage.cacheDiskPath),
+      `.${config.vm.name}.cache-staging-${buildId}`,
+    );
+    const unownedSystemPath = join(
+      dirname(config.storage.baselinePath),
+      `.${config.vm.name}.staging-0123abcd`,
+    );
+    const unownedCachePath = join(
+      dirname(config.storage.cacheDiskPath),
+      `.${config.vm.name}.cache-staging-0123abcd`,
+    );
+    const orphanBuildId = "cafebabe";
+    const orphanSystemPath = join(
+      dirname(config.storage.baselinePath),
+      `.${config.vm.name}.staging-${orphanBuildId}`,
+    );
+    const orphanCachePath = join(
+      dirname(config.storage.cacheDiskPath),
+      `.${config.vm.name}.cache-staging-${orphanBuildId}`,
+    );
+    const backupPath = `${systemStagingPath}-backup`;
+    const metadata = {
+      schemaVersion: "win10-kvm-construction-owner/v1",
+      buildId,
+      vmName: config.vm.name,
+      domainName,
+      baselinePath: config.storage.baselinePath,
+      cacheDiskPath: config.storage.cacheDiskPath,
+      systemStagingPath,
+      cacheStagingPath,
+    };
+    const orphanMetadata = {
+      ...metadata,
+      buildId: orphanBuildId,
+      domainName: `${config.vm.name}-build-${orphanBuildId}`,
+      systemStagingPath: orphanSystemPath,
+      cacheStagingPath: orphanCachePath,
+    };
+    const definedDomains = new Set([domainName]);
+    const invocations = [];
+    const runCommand = async (command, args, options) => {
+      invocations.push({ command, args, options });
+      const operation = args[2];
+      if (operation === "list") {
+        return { stdout: [...definedDomains].join("\n") };
+      }
+      if (operation === "undefine") definedDomains.delete(args[3]);
+      return { stdout: "" };
+    };
+
+    try {
+      for (const path of [
+        systemStagingPath,
+        cacheStagingPath,
+        unownedSystemPath,
+        unownedCachePath,
+        orphanSystemPath,
+        orphanCachePath,
+        backupPath,
+      ]) {
+        mkdirSync(path, { recursive: true });
+        const remnant = join(path, "large-remnant.qcow2");
+        writeFileSync(remnant, "");
+        truncateSync(remnant, 64 * 1024 * 1024);
+      }
+      writeFileSync(
+        join(systemStagingPath, ".construction-owner.json"),
+        `${JSON.stringify(metadata)}\n`,
+      );
+      writeFileSync(
+        join(cacheStagingPath, ".construction-owner.json"),
+        `${JSON.stringify(metadata)}\n`,
+      );
+      writeFileSync(
+        join(orphanSystemPath, ".construction-owner.json"),
+        `${JSON.stringify(orphanMetadata)}\n`,
+      );
+      writeFileSync(
+        join(orphanCachePath, ".construction-owner.json"),
+        `${JSON.stringify(orphanMetadata)}\n`,
+      );
+
+      await recoverStaleConstructionDomains(config, { runCommand });
+
+      assert.equal(existsSync(systemStagingPath), false);
+      assert.equal(existsSync(cacheStagingPath), false);
+      assert.equal(existsSync(orphanSystemPath), false);
+      assert.equal(existsSync(orphanCachePath), false);
+      assert.equal(existsSync(unownedSystemPath), true);
+      assert.equal(existsSync(unownedCachePath), true);
+      assert.equal(existsSync(backupPath), true);
+      assert.deepEqual(
+        invocations.map(({ args }) => args[2]),
+        ["list", "destroy", "undefine", "list"],
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an unowned cache staging collision while allocating a new build identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-workspace-collision-"));
+    const config = buildConfig(root);
+    config.storage.cacheDiskPath = join(
+      root,
+      "cache",
+      "win10-runtime-cache.qcow2",
+    );
+    const collidedCachePath = join(
+      dirname(config.storage.cacheDiskPath),
+      `.${config.vm.name}.cache-staging-deadbeef`,
+    );
+    const sentinelPath = join(collidedCachePath, "operator-remnant.qcow2");
+    const buildIds = ["deadbeef", "cafebabe"];
+    try {
+      mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
+      mkdirSync(collidedCachePath, { recursive: true });
+      writeFileSync(sentinelPath, "preserve");
+      const baseline = await import("./build-win10-baseline.mjs");
+
+      const workspace = await baseline.createConstructionWorkspace(config, {
+        nextBuildId: () => buildIds.shift(),
+      });
+
+      assert.equal(workspace.buildId, "cafebabe");
+      assert.equal(readFileSync(sentinelPath, "utf8"), "preserve");
+      rmSync(workspace.systemStagingPath, { recursive: true, force: true });
+      rmSync(workspace.cacheStagingPath, { recursive: true, force: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps the new baseline boundary independent of historical image tooling", () => {

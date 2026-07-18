@@ -7,9 +7,11 @@ import { constants } from "node:fs";
 import {
   access,
   copyFile,
-  mkdtemp,
+  lstat,
   mkdir,
+  open,
   readFile,
+  readdir,
   rm,
   stat,
   statfs,
@@ -35,7 +37,8 @@ import {
 } from "./linux-kvm-baseline.mjs";
 
 const BASELINE_ROOT = new URL(".", import.meta.url);
-export const SPICE_GUEST_TOOLS_INSTALLER_FILE = "spice-guest-tools-0.141.exe";
+const CONSTRUCTION_OWNER_FILE = ".construction-owner.json";
+const CONSTRUCTION_OWNER_SCHEMA = "win10-kvm-construction-owner/v1";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
 const INTERACTIVE_DISPLAY_REPORT_PATH =
   "C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json";
@@ -79,6 +82,122 @@ function escapeXml(value) {
     .replaceAll("'", "&apos;");
 }
 
+function constructionWorkspace(config, buildId) {
+  const domainName = `${config.vm.name}-build-${buildId}`;
+  const systemStagingPath = join(
+    dirname(config.storage.baselinePath),
+    `.${config.vm.name}.staging-${buildId}`,
+  );
+  const cacheStagingPath = join(
+    dirname(config.storage.cacheDiskPath),
+    `.${config.vm.name}.cache-staging-${buildId}`,
+  );
+  return {
+    schemaVersion: CONSTRUCTION_OWNER_SCHEMA,
+    buildId,
+    vmName: config.vm.name,
+    domainName,
+    baselinePath: config.storage.baselinePath,
+    cacheDiskPath: config.storage.cacheDiskPath,
+    systemStagingPath,
+    cacheStagingPath,
+  };
+}
+
+async function syncPath(path) {
+  const handle = await open(path, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeConstructionOwner(path, owner) {
+  const metadataPath = join(path, CONSTRUCTION_OWNER_FILE);
+  await writeFile(metadataPath, `${JSON.stringify(owner, null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  await syncPath(metadataPath);
+  await syncPath(path);
+}
+
+export async function createConstructionWorkspace(
+  config,
+  {
+    nextBuildId = () => randomUUID().replaceAll("-", "").slice(0, 8),
+  } = {},
+) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const buildId = nextBuildId();
+    if (!/^[0-9a-f]{8}$/.test(buildId)) {
+      throw new Error(
+        "construction build identity must be eight lowercase hex characters",
+      );
+    }
+    const owner = constructionWorkspace(config, buildId);
+    try {
+      await mkdir(owner.systemStagingPath, { mode: 0o700 });
+    } catch (error) {
+      if (error.code === "EEXIST") continue;
+      throw error;
+    }
+    let cacheCreated = false;
+    try {
+      await mkdir(owner.cacheStagingPath, { mode: 0o700 });
+      cacheCreated = true;
+      await writeConstructionOwner(owner.systemStagingPath, owner);
+      await writeConstructionOwner(owner.cacheStagingPath, owner);
+      return owner;
+    } catch (error) {
+      await rm(owner.systemStagingPath, { recursive: true, force: true });
+      if (cacheCreated) {
+        await rm(owner.cacheStagingPath, { recursive: true, force: true });
+      }
+      if (error.code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error("could not allocate a unique construction workspace");
+}
+
+function constructionOwnerMatches(observed, expected) {
+  return (
+    observed &&
+    typeof observed === "object" &&
+    Object.keys(expected).every((key) => observed[key] === expected[key]) &&
+    Object.keys(observed).length === Object.keys(expected).length
+  );
+}
+
+async function isOwnedConstructionDirectory(path, owner) {
+  try {
+    const metadata = await lstat(path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
+    const observed = JSON.parse(
+      await readFile(join(path, CONSTRUCTION_OWNER_FILE), "utf8"),
+    );
+    return constructionOwnerMatches(observed, owner);
+  } catch {
+    return false;
+  }
+}
+
+async function reclaimConstructionWorkspace(config, buildId) {
+  const owner = constructionWorkspace(config, buildId);
+  const [systemOwned, cacheOwned] = await Promise.all([
+    isOwnedConstructionDirectory(owner.systemStagingPath, owner),
+    isOwnedConstructionDirectory(owner.cacheStagingPath, owner),
+  ]);
+  if (!systemOwned || !cacheOwned) return false;
+  await Promise.all([
+    rm(owner.systemStagingPath, { recursive: true, force: true }),
+    rm(owner.cacheStagingPath, { recursive: true, force: true }),
+  ]);
+  return true;
+}
+
 let activeConstructionCommandTracker = null;
 
 function startExecFile(command, args) {
@@ -107,8 +226,12 @@ export function createConstructionCommandTracker() {
   let abortError = null;
   let abortPromise = null;
 
-  const runTrackedCommand = (command, args) => {
-    if (abortError) return Promise.reject(abortError);
+  const runTrackedCommand = (
+    command,
+    args,
+    { allowAfterAbort = false } = {},
+  ) => {
+    if (abortError && !allowAfterAbort) return Promise.reject(abortError);
     const invocation = startExecFile(command, args);
     inFlight.set(invocation.child, invocation.completion);
     void invocation.completion.then(
@@ -117,6 +240,18 @@ export function createConstructionCommandTracker() {
     );
     return invocation.completion;
   };
+
+  const runCleanupCommand = (command, args, { allowFailure = false } = {}) =>
+    runTrackedCommand(command, args, { allowAfterAbort: true }).catch(
+      (error) => {
+        if (!allowFailure) throw error;
+        return {
+          stdout: error.stdout ?? "",
+          stderr: error.stderr ?? "",
+          failed: true,
+        };
+      },
+    );
 
   const abortAndWait = () => {
     if (abortPromise) return abortPromise;
@@ -133,7 +268,11 @@ export function createConstructionCommandTracker() {
     return abortPromise;
   };
 
-  return { abortAndWait, run: runTrackedCommand };
+  return {
+    abortAndWait,
+    run: runTrackedCommand,
+    runCleanup: runCleanupCommand,
+  };
 }
 
 function run(command, args, { allowFailure = false } = {}) {
@@ -253,9 +392,6 @@ async function collectHostObservation(config) {
     },
     installationMedia: {
       windowsIso: await readable(config.media.windowsIsoPath),
-      spiceGuestToolsInstaller: await readable(
-        config.media.spiceGuestToolsInstallerPath,
-      ),
       runnerArchive: await assertFileSha256(
         config.media.runnerArchivePath,
         config.media.runnerArchiveSha256,
@@ -320,7 +456,6 @@ Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
 export function guestConfigurationFor(config) {
   return {
     webView2InstallerUri: config.media.webView2InstallerUri,
-    spiceGuestToolsInstallerFile: SPICE_GUEST_TOOLS_INSTALLER_FILE,
     runnerArchiveFile: RUNNER_ARCHIVE_FILE,
     interactiveUser: config.guest.sshUser,
     display: {
@@ -373,10 +508,6 @@ export async function createConfigurationMedia(
   await copyFile(
     config.guest.authorizedKeysFile,
     join(mediaRoot, "administrators_authorized_keys"),
-  );
-  await copyFile(
-    config.media.spiceGuestToolsInstallerPath,
-    join(mediaRoot, SPICE_GUEST_TOOLS_INSTALLER_FILE),
   );
   await assertFileSha256(
     config.media.runnerArchivePath,
@@ -468,13 +599,6 @@ function prepareVmRuntimeCommand(request) {
     "-DesktopHeight $request.DesktopHeight",
     "-DesktopScalePercent $request.DesktopScalePercent",
   ];
-  if (request.SpiceGuestToolsInstallerPath !== undefined) {
-    bindings.splice(
-      2,
-      0,
-      "-SpiceGuestToolsInstallerPath $request.SpiceGuestToolsInstallerPath",
-    );
-  }
   return encodedPowerShellCommand(
     [
       '$ErrorActionPreference = "Stop"',
@@ -581,7 +705,6 @@ function formatInteractiveDisplayDiagnostics(diagnostic) {
     `task state=${task.state ?? "absent"}`,
     `lastTaskResult=${task.lastTaskResult ?? "unknown"}`,
     `taskRemoved=${cleanup.taskRemoved === true}`,
-    `RunOnceRemoved=${cleanup.spiceGuestToolsResumeRemoved === true}`,
     `AutoAdminLogonDisabled=${cleanup.automaticLogonDisabled === true}`,
   ];
   if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
@@ -600,7 +723,6 @@ function interactiveDisplayCompleted(status) {
     status.state?.phase === "complete" &&
     status.task === null &&
     status.cleanup?.taskRemoved === true &&
-    status.cleanup?.spiceGuestToolsResumeRemoved === true &&
     status.cleanup?.automaticLogonDisabled === true
   );
 }
@@ -990,9 +1112,26 @@ async function destroyAndUndefine(
     ["--connect", config.host.libvirtUri, "undefine", domainName],
     { allowFailure: true },
   );
+  const remaining = await runCommand("virsh", [
+    "--connect",
+    config.host.libvirtUri,
+    "list",
+    "--all",
+    "--name",
+  ]);
+  if (
+    remaining.stdout
+      .split("\n")
+      .map((name) => name.trim())
+      .includes(domainName)
+  ) {
+    throw new Error(
+      `construction domain still exists after cleanup: ${domainName}`,
+    );
+  }
 }
 
-function constructionCleanup({
+export function constructionCleanup({
   cacheStagingDirectory,
   config,
   constructionDomain,
@@ -1074,21 +1213,36 @@ export async function recoverStaleConstructionDomains(
   const constructionDomainPattern = new RegExp(
     `^${escapedVmName}-build-[0-9a-f]{8}$`,
   );
-  const constructionDomains = result.stdout
+  const listedDomains = result.stdout
     .split("\n")
     .map((name) => name.trim())
+    .filter(Boolean);
+  const remainingDomains = new Set(listedDomains);
+  const constructionDomains = listedDomains
     .filter((name) => constructionDomainPattern.test(name));
   for (const domainName of constructionDomains) {
-    await runCommand(
-      "virsh",
-      ["--connect", config.host.libvirtUri, "destroy", domainName],
-      { allowFailure: true },
-    );
-    await runCommand(
-      "virsh",
-      ["--connect", config.host.libvirtUri, "undefine", domainName],
-      { allowFailure: true },
-    );
+    await destroyAndUndefine(config, domainName, { runCommand });
+    remainingDomains.delete(domainName);
+  }
+
+  let stagingEntries = [];
+  try {
+    stagingEntries = await readdir(dirname(config.storage.baselinePath), {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const stagingPattern = new RegExp(
+    `^\\.${escapedVmName}\\.staging-([0-9a-f]{8})$`,
+  );
+  for (const entry of stagingEntries) {
+    if (!entry.isDirectory()) continue;
+    const match = stagingPattern.exec(entry.name);
+    if (!match) continue;
+    const domainName = `${config.vm.name}-build-${match[1]}`;
+    if (remainingDomains.has(domainName)) continue;
+    await reclaimConstructionWorkspace(config, match[1]);
   }
 }
 
@@ -1212,33 +1366,21 @@ async function buildWin10BaselineImpl(
     config.guest.sshPrivateKeyFile,
     "guest.sshPrivateKeyFile",
   );
-  await assertReadableRegularFile(
-    config.media.spiceGuestToolsInstallerPath,
-    "media.spiceGuestToolsInstallerPath",
-  );
   await assertFileSha256(
     config.media.runnerArchivePath,
     config.media.runnerArchiveSha256,
     "media.runnerArchivePath",
   );
-  const stagingDirectory = await mkdtemp(
-    join(
-      dirname(config.storage.baselinePath),
-      "." + config.vm.name + ".staging-",
-    ),
-  );
-  const cacheStagingDirectory = await mkdtemp(
-    join(
-      dirname(config.storage.cacheDiskPath),
-      "." + config.vm.name + ".cache-staging-",
-    ),
-  );
+  const construction = await createConstructionWorkspace(config);
+  const stagingDirectory = construction.systemStagingPath;
+  const cacheStagingDirectory = construction.cacheStagingPath;
   const stagedPath = join(stagingDirectory, "system.qcow2");
   const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
-  const constructionDomain = `${config.vm.name}-build-${randomUUID().slice(0, 8)}`;
+  const constructionDomain = construction.domainName;
   const cleanup = constructionCleanup({
     config,
     constructionDomain,
+    runCommand: commandTracker.runCleanup,
     stagingDirectory,
     cacheStagingDirectory,
   });

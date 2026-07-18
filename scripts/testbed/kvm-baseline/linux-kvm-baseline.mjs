@@ -195,17 +195,6 @@ export function validateBaselineBuildConfig(input) {
   if (!pathInside(windowsIsoPath, largeFileRoot)) {
     throw new Error("media.windowsIsoPath must stay under host.largeFileRoot");
   }
-  // Seed this caller-owned local file from the pinned 0.141 release:
-  // https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-0.141/spice-guest-tools-0.141.exe
-  const spiceGuestToolsInstallerPath = absolutePath(
-    media.spiceGuestToolsInstallerPath,
-    "media.spiceGuestToolsInstallerPath",
-  );
-  if (!pathInside(spiceGuestToolsInstallerPath, largeFileRoot)) {
-    throw new Error(
-      "media.spiceGuestToolsInstallerPath must stay under host.largeFileRoot",
-    );
-  }
   integer(media.windowsImageIndex, "media.windowsImageIndex");
   const webView2InstallerUri = string(
     media.webView2InstallerUri,
@@ -351,11 +340,6 @@ export function evaluateHostPreflight(config, observed) {
   if (observed.installationMedia?.windowsIso !== true) {
     throw new Error(
       "Windows installation media must be a readable regular file",
-    );
-  }
-  if (observed.installationMedia?.spiceGuestToolsInstaller !== true) {
-    throw new Error(
-      "SPICE guest tools installer must be a readable regular file",
     );
   }
   if (observed.installationMedia?.runnerArchive !== true) {
@@ -561,15 +545,15 @@ async function writeCurrentRelease(
   config,
   layout,
   id,
-  { onStaged, onRenamed } = {},
+  { onStaged, onRenamed, syncDirectory = fsyncDirectory } = {},
 ) {
   const paths = releasePaths(layout, id);
   const pendingPath = `${layout.currentManifestPath}.pending-${process.pid}-${randomUUID()}`;
   await writeJsonDurably(pendingPath, currentManifest(config, paths));
   if (onStaged) await onStaged();
   await rename(pendingPath, layout.currentManifestPath);
-  await fsyncDirectory(dirname(layout.currentManifestPath));
   if (onRenamed) await onRenamed();
+  await syncDirectory(dirname(layout.currentManifestPath));
 }
 
 const PUBLICATION_JOURNAL_SCHEMA = "win10-kvm-baseline-publication-journal/v2";
@@ -1009,6 +993,7 @@ export async function publishVerifiedBaselineRelease({
   commitDefinition,
   rollbackDefinition,
   onStage = async () => {},
+  syncCurrentManifestDirectory = fsyncDirectory,
 }) {
   if (verified !== true)
     throw new Error("baseline verification must pass before publication");
@@ -1084,7 +1069,7 @@ export async function publishVerifiedBaselineRelease({
   await mkdir(cacheStagingDirectory, { mode: 0o700 });
   await onStage("release-staging-created");
   let definitionAttempted = false;
-  let currentManifestPublished = false;
+  let currentManifestRenamed = false;
   let journal = null;
   try {
     for (const [
@@ -1143,9 +1128,10 @@ export async function publishVerifiedBaselineRelease({
     await writeCurrentRelease(config, layout, id, {
       onStaged: async () => onStage("current-manifest-staged"),
       onRenamed: async () => {
-        currentManifestPublished = true;
+        currentManifestRenamed = true;
         await onStage("current-manifest-renamed");
       },
+      syncDirectory: syncCurrentManifestDirectory,
     });
     journal = { ...journal, phase: "current-manifest-published" };
     await writePublicationJournal(layout, journal);
@@ -1155,14 +1141,14 @@ export async function publishVerifiedBaselineRelease({
     await onStage("current-manifest-published");
     return readCompleteRelease(config, layout, id);
   } catch (error) {
-    if (!currentManifestPublished && definitionAttempted) {
+    if (!currentManifestRenamed && definitionAttempted) {
       await rollbackDefinition(previousRelease);
       await removeRelease(layout, id);
       await rm(systemStagingDirectory, { recursive: true, force: true });
       await rm(cacheStagingDirectory, { recursive: true, force: true });
       await removePublicationJournal(layout);
       await removePreviousReleasePointer(layout);
-    } else if (!currentManifestPublished) {
+    } else if (!currentManifestRenamed) {
       await removeRelease(layout, id);
       await rm(systemStagingDirectory, { recursive: true, force: true });
       await rm(cacheStagingDirectory, { recursive: true, force: true });

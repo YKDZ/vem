@@ -240,101 +240,6 @@ function Get-BootIdentity {
   return (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString("o")
 }
 
-function Write-SpiceGuestToolsInstallationState {
-  param([object] $State)
-  $State | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "C:\ProgramData\WindowsRuntimeBaseline\spice-guest-tools-installation.json"
-}
-
-function Register-SpiceGuestToolsResume {
-  $scriptPath = "C:\ProgramData\WindowsRuntimeBaseline\scripts\prepare-vm-runtime.ps1"
-  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "VM preparation script is unavailable for SPICE reboot resume" }
-  $arguments = @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $scriptPath + '"'),
-    "-Mode", "PrepareKvmGuest",
-    "-SpiceGuestToolsInstallerPath", ('"' + $SpiceGuestToolsInstallerPath + '"'),
-    "-InteractiveUser", ('"' + $InteractiveUser + '"'),
-    "-DesktopWidth", $DesktopWidth,
-    "-DesktopHeight", $DesktopHeight,
-    "-DesktopScalePercent", $DesktopScalePercent
-  ) -join " "
-  New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Force | Out-Null
-  Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "VemResumeSpiceGuestToolsPreparation" -Value ("powershell.exe " + $arguments)
-}
-
-function Remove-SpiceGuestToolsResume {
-  Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "VemResumeSpiceGuestToolsPreparation" -ErrorAction SilentlyContinue
-}
-
-function Invoke-SpiceGuestToolsInstallerAsSystem {
-  param([string] $InstallerPath)
-  if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "SPICE guest tools installer is unavailable: $InstallerPath" }
-  $taskName = "VemInstallSpiceGuestTools-$PID"
-  $startedAt = Get-Date
-  $action = New-ScheduledTaskAction -Execute $InstallerPath -Argument "/S"
-  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-  Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
-  try {
-    Start-ScheduledTask -TaskName $taskName
-    $deadline = (Get-Date).AddMinutes(10)
-    do {
-      Start-Sleep -Seconds 1
-      $task = Get-ScheduledTask -TaskName $taskName
-      $info = Get-ScheduledTaskInfo -TaskName $taskName
-      if ($task.State -ne "Running" -and $info.LastRunTime -ge $startedAt.AddSeconds(-2)) { return [int] $info.LastTaskResult }
-    } while ((Get-Date) -lt $deadline)
-    throw "SPICE guest tools installer timed out"
-  } finally {
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-  }
-}
-
-function Install-SpiceGuestTools {
-  if ([string]::IsNullOrWhiteSpace($SpiceGuestToolsInstallerPath)) { throw "SpiceGuestToolsInstallerPath is required for KVM guest preparation" }
-  $statePath = "C:\ProgramData\WindowsRuntimeBaseline\spice-guest-tools-installation.json"
-  $currentBootIdentity = Get-BootIdentity
-  if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    if ($state.schemaVersion -ne "win10-kvm-spice-guest-tools-installation/v1") { throw "SPICE guest tools installation state schema is invalid" }
-    if ($state.exitCode -eq 0 -and -not $state.rebootRequired -and -not $state.rebootApplied) { return }
-    if ($state.phase -eq "installing" -and $state.installBootIdentity -ne $currentBootIdentity) {
-      $state.phase = "complete"
-      $state.exitCode = 3010
-      $state.rebootRequired = $true
-      $state.rebootApplied = $true
-      $state | Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue $currentBootIdentity -Force
-      Write-SpiceGuestToolsInstallationState -State $state
-      Remove-SpiceGuestToolsResume
-      return
-    }
-    if ($state.exitCode -eq 3010 -and $state.rebootRequired -and $state.installBootIdentity -ne $currentBootIdentity) {
-      $state.rebootApplied = $true
-      $state | Add-Member -NotePropertyName "resumeBootIdentity" -NotePropertyValue $currentBootIdentity -Force
-      Write-SpiceGuestToolsInstallationState -State $state
-      Remove-SpiceGuestToolsResume
-      return
-    }
-    throw "SPICE guest tools installation state has invalid reboot semantics"
-  }
-
-  # The installer may reboot Windows before its scheduled task reports an exit
-  # code, so persist the resume contract before starting it.
-  Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "installing"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = $null; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
-  Register-SpiceGuestToolsResume
-  $exitCode = Invoke-SpiceGuestToolsInstallerAsSystem -InstallerPath $SpiceGuestToolsInstallerPath
-  if ($exitCode -eq 0) {
-    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "complete"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 0; rebootRequired = $false; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
-    Remove-SpiceGuestToolsResume
-    return
-  }
-  if ($exitCode -eq 3010 -or $exitCode -eq 1641) {
-    Write-SpiceGuestToolsInstallationState -State @{ schemaVersion = "win10-kvm-spice-guest-tools-installation/v1"; phase = "complete"; installerFile = (Split-Path -Leaf $SpiceGuestToolsInstallerPath); exitCode = 3010; rebootRequired = $true; rebootApplied = $false; installBootIdentity = $currentBootIdentity }
-    Restart-Computer -Force
-    throw "SPICE guest tools requested a reboot but Windows did not restart"
-  }
-  Remove-SpiceGuestToolsResume
-  throw "SPICE guest tools installer failed with exit code $exitCode"
-}
-
 function Disable-RemainingAutomaticLogon {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
   Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
@@ -441,12 +346,6 @@ function Remove-InteractiveDisplayPreparationTask {
   Unregister-ScheduledTask -TaskName $interactiveDisplayTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-function Test-SpiceGuestToolsResumeRemoved {
-  $runOnce = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
-  $resume = Get-ItemPropertyValue -Path $runOnce -Name "VemResumeSpiceGuestToolsPreparation" -ErrorAction SilentlyContinue
-  return $null -eq $resume
-}
-
 function Test-RemainingAutomaticLogonDisabled {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
   return [string](Get-ItemPropertyValue -Path $winlogon -Name "AutoAdminLogon" -ErrorAction SilentlyContinue) -eq "0"
@@ -457,7 +356,6 @@ function Get-InteractiveDisplayCleanupStatus {
   if ($null -eq $Task) { $Task = Get-InteractiveDisplayTaskStatus }
   return @{
     taskRemoved = $null -eq $Task
-    spiceGuestToolsResumeRemoved = Test-SpiceGuestToolsResumeRemoved
     automaticLogonDisabled = Test-RemainingAutomaticLogonDisabled
   }
 }
@@ -492,10 +390,9 @@ function Complete-InteractiveDisplayPreparation {
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Remove-InteractiveDisplayPreparationTask
-  Remove-SpiceGuestToolsResume
   Disable-RemainingAutomaticLogon
   $cleanup = Get-InteractiveDisplayCleanupStatus
-  if (-not $cleanup.taskRemoved -or -not $cleanup.spiceGuestToolsResumeRemoved -or -not $cleanup.automaticLogonDisabled) {
+  if (-not $cleanup.taskRemoved -or -not $cleanup.automaticLogonDisabled) {
     throw "interactive display completion cleanup is incomplete"
   }
   # The report is durable before the complete state commits it. A crash between
@@ -534,7 +431,7 @@ function Prepare-InteractiveDisplay {
   Write-InteractiveDisplayPreparationState -Phase "running" -Attempt $attempt
   try {
     $displayAdapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-      Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } |
+      Where-Object { $_.Status -eq "OK" -and -not [string]::IsNullOrWhiteSpace($_.Name) } |
       Select-Object -First 1
     if ($null -eq $displayAdapter) { throw "an active virtual display adapter is unavailable" }
     Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name LogPixels -Type DWord -Value ([int](96 * $DesktopScalePercent / 100))
@@ -584,7 +481,7 @@ function Get-InteractiveDisplayPreparationStatus {
     state = $state
     task = $task
     cleanup = $cleanup
-    completionValid = (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.spiceGuestToolsResumeRemoved -and $cleanup.automaticLogonDisabled
+    completionValid = (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonDisabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
   } | ConvertTo-Json -Depth 6
