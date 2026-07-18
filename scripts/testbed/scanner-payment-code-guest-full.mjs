@@ -27,6 +27,7 @@ const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from(
   "utf8",
 );
 const CLEANUP_TIMEOUT_MS = 10_000;
+const SCANNER_QUIET_BOUNDARY_MS = 750;
 
 export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
   const bytes = Buffer.isBuffer(value)
@@ -216,38 +217,103 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
   let socket = null;
   let settled = false;
   let timer = null;
+  let resolveOpen;
+  let rejectOpen;
+  let resolveEvent;
+  let rejectEvent;
+  const events = [];
   const close = () => {
     if (timer) clearTimeout(timer);
     socket?.close();
   };
-  const promise = new Promise((resolvePromise, reject) => {
-    socket = new WebSocket(daemonEventsUrl(handoff));
-    timer = setTimeout(() => {
-      if (!settled) reject(new Error("timed out waiting for a daemon scanner_code event"));
-    }, timeoutMs);
-    socket.addEventListener("error", () => {
-      if (!settled) reject(new Error("daemon scanner event stream failed"));
-    });
-    socket.addEventListener("message", (message) => {
-      let event;
-      try {
-        event = JSON.parse(String(message.data));
-      } catch {
-        return;
-      }
-      if (
-        event?.type === "scanner_code" &&
-        event.source === "serial_text" &&
-        typeof event.eventId === "string" &&
-        event.eventId.length > 0
-      ) {
-        settled = true;
-        close();
-        resolvePromise(event);
-      }
-    });
+  const opened = new Promise((resolvePromise, reject) => {
+    resolveOpen = resolvePromise;
+    rejectOpen = reject;
   });
-  return { promise, close };
+  const nextEvent = new Promise((resolvePromise, reject) => {
+    resolveEvent = resolvePromise;
+    rejectEvent = reject;
+  });
+  void nextEvent.catch(() => undefined);
+  socket = new WebSocket(daemonEventsUrl(handoff));
+  timer = setTimeout(() => {
+    const error = new Error("timed out waiting for daemon scanner event stream");
+    if (!settled) {
+      rejectOpen(error);
+      rejectEvent(error);
+    }
+  }, timeoutMs);
+  socket.addEventListener("open", () => resolveOpen());
+  socket.addEventListener("error", () => {
+    const error = new Error("daemon scanner event stream failed");
+    if (!settled) {
+      rejectOpen(error);
+      rejectEvent(error);
+    }
+  });
+  socket.addEventListener("message", (message) => {
+    let event;
+    try {
+      event = JSON.parse(String(message.data));
+    } catch {
+      return;
+    }
+    if (
+      event?.type === "scanner_code" &&
+      event.source === "serial_text" &&
+      typeof event.eventId === "string" &&
+      event.eventId.length > 0
+    ) {
+      events.push(event);
+      if (!settled) {
+        settled = true;
+        resolveEvent(event);
+      }
+    }
+  });
+  return {
+    opened,
+    nextEvent,
+    events,
+    async assertQuiet(timeoutMs = SCANNER_QUIET_BOUNDARY_MS) {
+      await opened;
+      await sleep(timeoutMs);
+      if (events.length > 0) {
+        throw new Error("scanner binding probe left a serial scanner event before sale scans");
+      }
+      return { quietForMs: timeoutMs, scannerEventCount: events.length };
+    },
+    close,
+  };
+}
+
+function matchesStableGuestUsbIdentity(expected, actual) {
+  if (!expected || !actual || expected.identityKey !== actual.identityKey) {
+    return false;
+  }
+  if (expected.containerId) return expected.containerId === actual.containerId;
+  return (
+    expected.serialNumber === actual.serialNumber &&
+    expected.hardwareIds.every((hardwareId) => actual.hardwareIds?.includes(hardwareId))
+  );
+}
+
+function scannerQemuMapping(sessionStart) {
+  const qemuMappings = sessionStart?.qemuUsbSerialMappings;
+  if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
+    throw new Error("serial session did not expose the real QEMU USB device mappings");
+  }
+  for (const role of ["lower-controller", "scanner"]) {
+    const mapping = qemuMappings.find((entry) => entry.role === role);
+    if (
+      !mapping ||
+    mapping.guestDeviceIdentity !== `guest-device://qemu-usb-serial-${role}` ||
+      !mapping.guestUsbIdentity?.identityKey
+    ) {
+      throw new Error(`QEMU USB mapping for ${role} is missing stable guest identity`);
+    }
+  }
+  return qemuMappings.find((entry) => entry.role === "scanner");
 }
 
 async function fetchJson(url, options = {}) {
@@ -300,17 +366,21 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
     lastTransaction = transaction;
     const commandId =
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
+    const commandNo = transaction?.vending?.commandNo ?? null;
     if (
       transaction?.orderId === renderedSale.orderId &&
       transaction?.paymentId === renderedSale.paymentId &&
       typeof commandId === "string" &&
-      commandId
+      commandId &&
+      typeof commandNo === "string" &&
+      commandNo
     ) {
       return {
         orderId: transaction.orderId,
         paymentId: transaction.paymentId,
         orderNo: transaction.orderNo,
         vendingCommandId: commandId,
+        vendingCommandNo: commandNo,
         vendingStatus: transaction?.vending?.status ?? null,
       };
     }
@@ -356,6 +426,15 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     const resolved = Object.fromEntries(roles.map((role) => [role.role, role]));
     const lower = resolved.lower_controller;
     const scanner = resolved.scanner;
+    const scannerMapping = scannerQemuMapping(sessionStart);
+    const scannerCandidate = scanner?.candidates?.find(
+      (candidate) =>
+        candidate.currentPort === scanner.currentPort &&
+        matchesStableGuestUsbIdentity(
+          scannerMapping?.guestUsbIdentity,
+          candidate.identity,
+        ),
+    );
     if (
       lower?.ready === true &&
       scanner?.ready === true &&
@@ -363,18 +442,23 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
       /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
       lower.currentPort !== scanner.currentPort &&
       typeof lower.binding?.identity?.identityKey === "string" &&
-      typeof scanner.binding?.identity?.identityKey === "string"
+      matchesStableGuestUsbIdentity(
+        scannerMapping?.guestUsbIdentity,
+        scanner.binding?.identity,
+      ) &&
+      scannerCandidate
     ) {
       const qemuMappings = sessionStart?.qemuUsbSerialMappings;
-      if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
-        throw new Error("serial session did not expose the real QEMU USB device mappings");
-      }
-      for (const role of ["lower-controller", "scanner"]) {
-        if (!qemuMappings.some((mapping) => mapping.role === role && /^qemu-usb-serial:\/\//.test(mapping.guestDeviceIdentity ?? ""))) {
-          throw new Error(`QEMU USB mapping for ${role} is missing`);
-        }
-      }
-      return { daemon: snapshot, qemuUsbSerialMappings: qemuMappings };
+      return {
+        daemon: snapshot,
+        qemuUsbSerialMappings: qemuMappings,
+        scanner: {
+          qemuGuestUsbIdentity: scannerMapping.guestUsbIdentity,
+          daemonBindingIdentity: scanner.binding.identity,
+          currentPort: scanner.currentPort,
+          observedCandidate: scannerCandidate,
+        },
+      };
     }
     await sleep(250);
   }
@@ -516,6 +600,17 @@ export function validateSuccessfulOutcome({
   scannerEvent,
   afterF2Ui,
 }) {
+  const order = rows(post?.raw, "orders").filter(
+    (entry) => entry.id === renderedSale.orderId && entry.orderNo === renderedSale.orderNo,
+  );
+  if (
+    order.length !== 1 ||
+    order[0].paymentState !== "paid" ||
+    order[0].status !== "fulfilled" ||
+    order[0].fulfillmentState !== "dispensed"
+  ) {
+    throw new Error("successful scan must persist one paid and fulfilled order");
+  }
   const attempts = attemptRowsByOrder(post, renderedSale.orderId);
   if (attempts.length !== 1) {
     throw new Error("valid scan must produce exactly one payment-code attempt");
@@ -529,15 +624,54 @@ export function validateSuccessfulOutcome({
   ) {
     throw new Error("successful attempt did not converge to one succeeded serial-text attempt");
   }
-  const paymentIds = new Set(
-    paymentRowsByOrder(post, renderedSale.orderId).map((entry) => entry.id),
-  );
-  if (paymentIds.size !== 1 || !paymentIds.has(renderedSale.paymentId)) {
-    throw new Error("successful scan duplicated or replaced the payment row");
+  const paymentRows = paymentRowsByOrder(post, renderedSale.orderId);
+  if (
+    paymentRows.length !== 1 ||
+    paymentRows[0].id !== renderedSale.paymentId ||
+    paymentRows[0].status !== "succeeded"
+  ) {
+    throw new Error("successful scan must persist one authorized payment row");
   }
-  const movements = movementRowsByOrderNo(post, renderedSale.orderNo);
+  const orderItems = rows(post?.raw, "orderItems").filter(
+    (entry) => entry.orderId === renderedSale.orderId,
+  );
+  if (
+    orderItems.length !== 1 ||
+    orderItems[0].quantity !== 1 ||
+    orderItems[0].fulfillmentStatus !== "dispensed"
+  ) {
+    throw new Error("successful scan must persist one dispensed order item");
+  }
+  const commands = rows(post?.raw, "commands").filter(
+    (entry) => entry.orderId === renderedSale.orderId,
+  );
+  if (
+    commands.length !== 1 ||
+    commands[0].id !== command.vendingCommandId ||
+    commands[0].commandNo !== command.vendingCommandNo ||
+    commands[0].orderItemId !== orderItems[0].id ||
+    commands[0].slotId !== orderItems[0].slotId ||
+    commands[0].commandKind !== "dispatch" ||
+    commands[0].status !== "succeeded"
+  ) {
+    throw new Error("successful scan must complete exactly one correlated vending command");
+  }
+  const movements = movementRowsByOrderNo(post, renderedSale.orderNo).filter(
+    (entry) => entry.commandNo === commands[0].commandNo,
+  );
   if (movements.length !== 1) {
-    throw new Error("successful scan must produce exactly one movement");
+    throw new Error("successful scan must produce exactly one command-bound movement");
+  }
+  const movement = movements[0];
+  if (
+    movement.orderItemId !== orderItems[0].id ||
+    movement.inventoryId !== orderItems[0].inventoryId ||
+    movement.slotId !== orderItems[0].slotId ||
+    movement.quantity !== orderItems[0].quantity ||
+    movement.movementType !== "dispense_succeeded" ||
+    movement.status !== "accepted"
+  ) {
+    throw new Error("successful movement is not bound to the completed command order item and inventory");
   }
   if (
     afterF2Ui.route !== "#/result/success" ||
@@ -561,21 +695,25 @@ export function validateSuccessfulOutcome({
     throw new Error("ScannerCode event id does not strictly correlate daemon and platform payment attempts");
   }
   const baselineInventory = rows(baseline?.raw, "inventories").find(
-    (entry) => entry.id === movements[0].inventoryId,
+    (entry) => entry.id === movement.inventoryId,
   );
   const finalInventory = rows(post?.raw, "inventories").find(
-    (entry) => entry.id === movements[0].inventoryId,
+    (entry) => entry.id === movement.inventoryId,
   );
   if (
     !baselineInventory ||
     !finalInventory ||
-    baselineInventory.onHandQty - finalInventory.onHandQty !== 1
+    baselineInventory.id !== finalInventory.id ||
+    baselineInventory.onHandQty - finalInventory.onHandQty !== movement.quantity
   ) {
-    throw new Error("successful scan must decrement the same platform inventory by exactly one from baseline to final");
+    throw new Error("successful scan must decrement the same platform inventory by the completed movement quantity");
   }
   return {
     attempt,
-    movement: movements[0],
+    order: order[0],
+    payment: paymentRows[0],
+    command: commands[0],
+    movement,
     baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId).length,
     finalPaymentCount: paymentRowsByOrder(post, renderedSale.orderId).length,
     inventory: {
@@ -610,6 +748,7 @@ export async function runScannerPaymentCodeGuest(options) {
   let client = null;
   let sessionStart = null;
   let scannerEventCapture = null;
+  let quietScannerCapture = null;
   let stage = "connect";
   let successReport = null;
   let failureReport = null;
@@ -633,6 +772,24 @@ export async function runScannerPaymentCodeGuest(options) {
     stage = "start-session";
     sessionStart = await startSession(guestInput, runId, machineCode);
     const hardwareBindings = await waitForHardwareBindings(handoff, sessionStart);
+    quietScannerCapture = captureNextSerialScannerEvent(handoff);
+    await quietScannerCapture.opened;
+    const scannerBindingProbe = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/stop-scanner-probe`,
+    );
+    if (
+      scannerBindingProbe?.scannerBindingProbe?.purpose !==
+        "non_payment_scanner_binding_probe" ||
+      scannerBindingProbe.scannerBindingProbe.stopReason !==
+        "daemon_binding_confirmed" ||
+      typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
+    ) {
+      throw new Error("scanner binding probe did not stop after daemon binding confirmation");
+    }
+    const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
+    quietScannerCapture.close();
+    quietScannerCapture = null;
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-scanner-payment-code");
     for (const step of steps) {
@@ -711,6 +868,7 @@ export async function runScannerPaymentCodeGuest(options) {
       guestInput?.scannerAcceptance?.validCode ?? DEFAULT_VALID_SCANNER_CODE,
     );
     scannerEventCapture = captureNextSerialScannerEvent(handoff);
+    await scannerEventCapture.opened;
     await injectSessionCode(
       guestInput,
       sessionStart.sessionId,
@@ -718,7 +876,8 @@ export async function runScannerPaymentCodeGuest(options) {
       validScannerBytes,
     );
 
-    const scannerEvent = await scannerEventCapture.promise;
+    const scannerEvent = await scannerEventCapture.nextEvent;
+    scannerEventCapture.close();
     scannerEventCapture = null;
 
     const attemptSnapshot = await waitForPaymentCodeAttempt(
@@ -835,6 +994,7 @@ export async function runScannerPaymentCodeGuest(options) {
         scannedAtMs: scannerEvent.scannedAtMs,
       },
       hardwareBindings,
+      scannerBindingProbe: scannerBindingProbe.scannerBindingProbe,
       platformAssertions: success,
       checkpoints,
       boundaries: {
@@ -862,6 +1022,7 @@ export async function runScannerPaymentCodeGuest(options) {
             paymentRowsByOrder(postTimeout, renderedSale.orderId).length -
             paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
         },
+        scannerQuietBoundary,
       },
       final: {
         route: afterF2Ui.route,
@@ -928,6 +1089,8 @@ export async function runScannerPaymentCodeGuest(options) {
   });
   if (successReport) successReport.cleanup = cleanup;
   if (failureReport) failureReport.cleanup = cleanup;
+  scannerEventCapture?.close();
+  quietScannerCapture?.close();
   const finalError = combineCleanupError(primaryError, cleanupErrors);
   if (finalError) {
     if (!failureReport) {

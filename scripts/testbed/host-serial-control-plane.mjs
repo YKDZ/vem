@@ -22,6 +22,7 @@ import {
 import {
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
+  stopQemuScannerBindingProbe,
 } from "./qemu-usb-serial-host-adapter.mjs";
 import {
   abortSaleAudioCaptureSession,
@@ -698,6 +699,21 @@ async function waitForSessionFrame(server, input) {
     timeoutMs: Number(input.timeoutMs ?? 30_000),
   });
   return boundary;
+}
+
+async function stopScannerBindingProbe(server, input) {
+  const session = requireSession(server, input.sessionId);
+  return {
+    sessionId: session.id,
+    scannerBindingProbe: await stopQemuScannerBindingProbe({
+      stateRoot: required(
+        process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+        "VEM_VM_HOST_ADAPTER_STATE_ROOT",
+      ),
+      serialSessionId: session.binding.serialSessionId,
+      reason: "daemon_binding_confirmed",
+    }),
+  };
 }
 
 function releaseSessionF2(server, input) {
@@ -1413,7 +1429,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|abort|collect|stop))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|abort|collect|stop|stop-scanner-probe))?$/,
       );
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
@@ -1473,6 +1489,13 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           ok: true,
           sessionId,
           ...(await waitForSessionFrame(serverState, body)),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "stop-scanner-probe") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...(await stopScannerBindingProbe(serverState, body)),
         });
         return;
       }

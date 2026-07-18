@@ -262,6 +262,12 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY ??
         "guest-device://fake-lower-controller-001",
+      guestUsbIdentity: {
+        identityKey: "usb:usb\\vid_1a86&pid_55d3:fake-controller-001",
+        containerId: null,
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: "FAKE-CONTROLLER-001",
+      },
       simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
       connectionState: state,
@@ -271,6 +277,12 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY ??
         "guest-device://fake-scanner-001",
+      guestUsbIdentity: {
+        identityKey: "usb:usb\\vid_1a86&pid_55d4:fake-scanner-001",
+        containerId: null,
+        hardwareIds: ["USB\\VID_1A86&PID_55D4"],
+        serialNumber: "FAKE-SCANNER-001",
+      },
       simulatorProcessIdentity: "simulator-process://fake-scanner-001",
       simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
       connectionState: state,
@@ -423,6 +435,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     deviceMappings.push({
       role: "lower-controller",
       guestDeviceIdentity: mappings[0].guestDeviceIdentity,
+      guestUsbIdentity: mappings[0].guestUsbIdentity,
     });
   if (
     negotiatedCapabilities.includes("serial:scanner") ||
@@ -431,6 +444,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     deviceMappings.push({
       role: "scanner",
       guestDeviceIdentity: mappings[1].guestDeviceIdentity,
+      guestUsbIdentity: mappings[1].guestUsbIdentity,
     });
   const evidenceEntries =
     request.operation === "capture-display"

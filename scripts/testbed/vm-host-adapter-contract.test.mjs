@@ -356,6 +356,12 @@ function serialDeviceMappings(connectionState) {
     {
       role: "lower-controller",
       guestDeviceIdentity: "guest-device://lower-controller-001",
+      guestUsbIdentity: {
+        identityKey: "usb:usb\\vid_1a86&pid_55d3:controller-001",
+        containerId: null,
+        hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+        serialNumber: "CONTROLLER-001",
+      },
       simulatorProcessIdentity: "simulator-process://lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://lower-controller-001",
       connectionState,
@@ -363,6 +369,12 @@ function serialDeviceMappings(connectionState) {
     {
       role: "scanner",
       guestDeviceIdentity: "guest-device://scanner-001",
+      guestUsbIdentity: {
+        identityKey: "usb:usb\\vid_1a86&pid_55d4:scanner-001",
+        containerId: null,
+        hardwareIds: ["USB\\VID_1A86&PID_55D4"],
+        serialNumber: "SCANNER-001",
+      },
       simulatorProcessIdentity: "simulator-process://scanner-001",
       simulatorSocketIdentity: "simulator-socket://scanner-001",
       connectionState,
@@ -599,16 +611,13 @@ function reportFor(request, overrides = {}) {
       deviceMappings:
         request.requestedCapabilities.includes("serial:lower-controller") ||
         (isV2 && request.serialSession !== null)
-          ? [
-              {
-                role: "lower-controller",
-                guestDeviceIdentity: "guest-device://lower-controller-001",
-              },
-              {
-                role: "scanner",
-                guestDeviceIdentity: "guest-device://scanner-001",
-              },
-            ]
+          ? serialMappings.map(
+              ({ role, guestDeviceIdentity, guestUsbIdentity }) => ({
+                role,
+                guestDeviceIdentity,
+                guestUsbIdentity,
+              }),
+            )
           : [],
       defaultAudioIdentity: "guest-audio://runtime-testbed-001",
     },

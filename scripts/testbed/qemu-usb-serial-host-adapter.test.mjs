@@ -15,6 +15,7 @@ import { describe, it } from "node:test";
 
 import {
   parseLibvirtUsbSerialMappings,
+  QEMU_USB_SERIAL_GUEST_IDENTITIES,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
   readRawSerialJournal,
   validateProductionRawSerialFrame,
@@ -57,6 +58,21 @@ describe("repo QEMU USB serial host adapter", () => {
           domainXml().replace("serial-scanner", "serial-lower-controller"),
         ),
       /exactly one lower-controller/,
+    );
+  });
+
+  it("publishes stable guest USB identity tuples for the QEMU scanner and lower-controller roles", () => {
+    assert.deepEqual(QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner, {
+      identityKey: "usb:usb\\vid_1a86&pid_55d4:qemu-scanner-01",
+      containerId: null,
+      hardwareIds: ["USB\\VID_1A86&PID_55D4"],
+      serialNumber: "QEMU-SCANNER-01",
+    });
+    assert.equal(
+      QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner.hardwareIds.includes(
+        "USB\\VID_1A86&PID_55D4",
+      ),
+      true,
     );
   });
 
@@ -199,6 +215,11 @@ describe("repo QEMU USB serial host adapter", () => {
           { role: "scanner", connectionState: "connected" },
         ],
       );
+      const scanner = report.serialSession.deviceMappings.find(
+        (mapping) => mapping.role === "scanner",
+      );
+      assert.deepEqual(scanner.guestUsbIdentity, QEMU_USB_SERIAL_GUEST_IDENTITIES.scanner);
+      assert.match(scanner.guestDeviceIdentity, /qemu-usb-serial-scanner$/);
       const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
       const state = JSON.parse(
         readFileSync(

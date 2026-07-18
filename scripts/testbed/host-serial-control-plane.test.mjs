@@ -698,10 +698,23 @@ describe("host serial control plane", () => {
         session.qemuUsbSerialMappings.every(
           (mapping) =>
             ["lower-controller", "scanner"].includes(mapping.role) &&
-            mapping.guestDeviceIdentity.startsWith("qemu-usb-serial://"),
+            mapping.guestDeviceIdentity.startsWith("guest-device://qemu-usb-serial-") &&
+            typeof mapping.guestUsbIdentity?.identityKey === "string",
         ),
         true,
       );
+      const probe = await requestJson(
+        baseUrl,
+        token,
+        `/v1/serial-sessions/${session.sessionId}/stop-scanner-probe`,
+        {},
+      );
+      assert.equal(
+        probe.scannerBindingProbe.purpose,
+        "non_payment_scanner_binding_probe",
+      );
+      assert.equal(probe.scannerBindingProbe.stopReason, "daemon_binding_confirmed");
+      assert.equal(typeof probe.scannerBindingProbe.stoppedAt, "string");
       const sessionPaths = qemuUsbSerialSessionPaths(
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
         session.binding.serialSessionId,

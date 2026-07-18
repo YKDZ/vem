@@ -32,7 +32,7 @@ const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
 const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
-const SCANNER_BINDING_PROBE_BYTES = Buffer.from("621234567890123456\r\n", "utf8");
+const SCANNER_BINDING_PROBE_BYTES = Buffer.from("VEM-BINDING-PROBE\r\n", "utf8");
 const TERMINATE_GRACE_MS = 3_000;
 const KILL_GRACE_MS = 1_000;
 const SALE_AUDIO_THRESHOLD = Object.freeze({
@@ -40,6 +40,21 @@ const SALE_AUDIO_THRESHOLD = Object.freeze({
   minimumNonSilentFrames: 4_800,
   minimumDurationMs: 100,
   minimumDistinctNonSilentSampleMagnitudes: 2,
+});
+
+export const QEMU_USB_SERIAL_GUEST_IDENTITIES = Object.freeze({
+  "lower-controller": Object.freeze({
+    identityKey: "usb:usb\\vid_1a86&pid_55d3:qemu-controller-01",
+    containerId: null,
+    hardwareIds: ["USB\\VID_1A86&PID_55D3"],
+    serialNumber: "QEMU-CONTROLLER-01",
+  }),
+  scanner: Object.freeze({
+    identityKey: "usb:usb\\vid_1a86&pid_55d4:qemu-scanner-01",
+    containerId: null,
+    hardwareIds: ["USB\\VID_1A86&PID_55D4"],
+    serialNumber: "QEMU-SCANNER-01",
+  }),
 });
 
 function required(value, label) {
@@ -329,7 +344,8 @@ function dumpMappings() {
 function contractMappings(liveMappings, pid, connectionState = "connected") {
   return liveMappings.map((mapping) => ({
     role: mapping.role,
-    guestDeviceIdentity: `qemu-usb-serial://${mapping.alias}`,
+    guestDeviceIdentity: `guest-device://qemu-usb-serial-${mapping.role}`,
+    guestUsbIdentity: QEMU_USB_SERIAL_GUEST_IDENTITIES[mapping.role],
     simulatorProcessIdentity:
       mapping.role === "lower-controller"
         ? `linux-process://pid-${pid}`
@@ -397,7 +413,7 @@ function startScannerBindingProbe(scannerPath, logPath) {
     process.execPath,
     [
       "-e",
-      "const { appendFileSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const timer = setInterval(() => appendFileSync(path, bytes), 100); setTimeout(() => { clearInterval(timer); process.exit(0); }, 4000);",
+      "const { appendFileSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); setTimeout(() => { appendFileSync(path, bytes); process.exit(0); }, 100);",
       scannerPath,
       SCANNER_BINDING_PROBE_BYTES.toString("base64"),
     ],
@@ -413,7 +429,37 @@ function startScannerBindingProbe(scannerPath, logPath) {
     byteLength: SCANNER_BINDING_PROBE_BYTES.length,
     digest: `sha256:${sha256(SCANNER_BINDING_PROBE_BYTES)}`,
     suffix: "crlf",
+    purpose: "non_payment_scanner_binding_probe",
+    startedAt: new Date().toISOString(),
+    stoppedAt: null,
+    stopReason: null,
   };
+}
+
+export async function stopQemuScannerBindingProbe({
+  stateRoot: root,
+  serialSessionId,
+  reason = "daemon_binding_confirmed",
+}) {
+  const paths = qemuUsbSerialSessionPaths(root, serialSessionId);
+  if (!existsSync(paths.statePath)) {
+    throw new Error("serial session state was not found");
+  }
+  const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
+  const probe = state.scannerBindingProbe;
+  if (!probe) throw new Error("scanner binding probe was not started");
+  if (probe.stoppedAt) return { ...probe, alreadyStopped: true };
+  const termination = await terminateProcessGroup("scanner binding probe", probe.pid);
+  state.scannerBindingProbe = {
+    ...probe,
+    stoppedAt: new Date().toISOString(),
+    stopReason: reason,
+    termination,
+  };
+  writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  return { ...state.scannerBindingProbe, alreadyStopped: false };
 }
 
 function startSession(request) {
@@ -865,7 +911,11 @@ function reportFor(request, state, rawFrames = []) {
         reachability: "discovered",
       },
       deviceMappings: serialSession.deviceMappings.map(
-        ({ role, guestDeviceIdentity }) => ({ role, guestDeviceIdentity }),
+        ({ role, guestDeviceIdentity, guestUsbIdentity }) => ({
+          role,
+          guestDeviceIdentity,
+          guestUsbIdentity,
+        }),
       ),
       defaultAudioIdentity: "guest-audio://qemu-ich9-default",
     },
