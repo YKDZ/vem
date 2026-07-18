@@ -222,8 +222,12 @@ function Assert-VirtioGpuDriverBinding {
 }
 
 function Get-FreeDriveLetter {
-  foreach ($letter in [char[]]("E".."Z")) {
-    if ($null -eq (Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue)) { return [string]$letter }
+  foreach ($codePoint in 69..90) {
+    $letter = [char]$codePoint
+    $deviceId = "${letter}:"
+    if ($null -eq (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID = '$deviceId'" -ErrorAction SilentlyContinue)) {
+      return [string]$letter
+    }
   }
   throw "no free drive letter is available to move an optical volume away from D:"
 }

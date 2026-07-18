@@ -2745,6 +2745,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(verify, /cacheDisk/);
     assert.match(verify, /Get-Partition -DriveLetter D/);
     assert.doesNotMatch(verify, /Get-Volume -DriveLetter D/);
+    assert.match(runtime, /foreach \(\$codePoint in 69\.\.90\)/);
+    assert.doesNotMatch(runtime, /"E"\.\."Z"/);
     assert.match(shared, /PreserveStartupType/);
     assert.match(
       shared,
