@@ -14,11 +14,6 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { inspectWavPcm } from "./default-audio-evidence.mjs";
-import {
-  SALE_AUDIO_REPORT_SCHEMA_VERSION,
-  validateSaleAudioCaptureRequest,
-} from "./sale-audio-capture-host-adapter.mjs";
 import {
   createScannerCodeDescriptor,
   deriveSerialDeviceMappingDigest,
@@ -30,7 +25,8 @@ import {
 } from "./vm-host-adapter-contract.mjs";
 
 export const QEMU_USB_SERIAL_ADAPTER_VERSION = "1.0.0";
-export const QEMU_USB_SERIAL_ADAPTER_IDENTITY = `vm-host-adapter://repo-qemu-usb-serial@${QEMU_USB_SERIAL_ADAPTER_VERSION}`;
+export const QEMU_USB_SERIAL_ADAPTER_IDENTITY =
+  `vm-host-adapter://repo-qemu-usb-serial@${QEMU_USB_SERIAL_ADAPTER_VERSION}`;
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
@@ -241,6 +237,42 @@ function stateRoot() {
   return root;
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Number.isInteger(pid) && processAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  return !Number.isInteger(pid) || !processAlive(pid);
+}
+
+async function terminateProcessGroup(pid) {
+  if (!Number.isInteger(pid)) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (await waitForProcessExit(pid)) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (!(await waitForProcessExit(pid, 2_000))) {
+    throw new Error("lower-controller simulator did not exit");
+  }
+}
+
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -252,38 +284,6 @@ function waitForFile(path, timeoutMs, label) {
     sleep(25);
   }
   throw new Error(`${label} did not become ready before deadline`);
-}
-
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error.code === "ESRCH") return false;
-    throw error;
-  }
-}
-
-function terminateProcessGroup(pid, label, graceMs = 2_000) {
-  if (!Number.isInteger(pid) || pid < 1) return;
-  const alive = () => {
-    try {
-      process.kill(-pid, 0);
-      return true;
-    } catch (error) {
-      if (error.code === "ESRCH") return false;
-      throw error;
-    }
-  };
-  if (!alive()) return;
-  process.kill(-pid, "SIGTERM");
-  const deadline = Date.now() + graceMs;
-  while (alive() && Date.now() < deadline) sleep(25);
-  if (alive()) process.kill(-pid, "SIGKILL");
-  const killDeadline = Date.now() + graceMs;
-  while (alive() && Date.now() < killDeadline) sleep(25);
-  if (alive())
-    throw new Error(`${label} did not exit before termination deadline`);
 }
 
 export function qemuUsbSerialSessionPaths(root, serialSessionId) {
@@ -332,25 +332,6 @@ function dumpMappings() {
     "VEM_VM_HOST_ADAPTER_DOMAIN",
   );
   return parseLibvirtUsbSerialMappings(run("virsh", ["dumpxml", domain]));
-}
-
-function qemuDefaultAudioSinkPath() {
-  if (process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE)
-    return resolve(process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE);
-  const domain = required(
-    process.env.VEM_VM_HOST_ADAPTER_DOMAIN,
-    "VEM_VM_HOST_ADAPTER_DOMAIN",
-  );
-  const domainXml = run("virsh", ["dumpxml", domain]);
-  const audio = domainXml.match(
-    /<audio\b[^>]*\btype=(?:"file"|'file')[^>]*>[\s\S]*?<output\b[^>]*\bfile=(?:"([^"]+)"|'([^']+)')[^>]*\/>[\s\S]*?<\/audio>/,
-  );
-  const path = audio?.[1] ?? audio?.[2];
-  if (!path)
-    throw new Error(
-      "running libvirt domain does not expose a capturable default audio sink",
-    );
-  return resolve(path);
 }
 
 function contractMappings(liveMappings, pid, connectionState = "connected") {
@@ -693,8 +674,11 @@ async function stopSession(request) {
   state.cleanupAttemptCount += 1;
   if (state.active) {
     await terminateProcessGroup(state.simulatorPid);
+    await terminateProcessGroup(state.ptyCapturePid);
   }
   state.active = false;
+  state.simulatorPid = null;
+  state.ptyCapturePid = null;
   writeState(state);
   return state;
 }

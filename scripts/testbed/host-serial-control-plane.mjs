@@ -985,8 +985,9 @@ async function abortSession(server, input) {
   const paths = adapterSessionPaths(session);
   if (existsSync(paths.statePath)) {
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
-    if (state.active && Number.isInteger(state.simulatorPid)) {
+    if (state.active) {
       await terminateProcessGroup(state.simulatorPid);
+      await terminateProcessGroup(state.ptyCapturePid);
       state.active = false;
       state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
       writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
@@ -1226,10 +1227,12 @@ function authorize(request, token) {
 export function createHostSerialControlPlane(options, dependencies = {}) {
   const sessions = new Map();
   const audioCaptures = new Map();
+  const audioCapturesByOperation = new Map();
   const serverState = {
     options,
     sessions,
     audioCaptures,
+    audioCapturesByOperation,
     dependencies: {
       executeSaleAudioCapture:
         dependencies.executeSaleAudioCapture ?? executeSaleAudioCaptureHostAdapter,

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
-  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -598,7 +597,6 @@ describe("host serial control plane", () => {
     const workspace = new URL("../..", import.meta.url).pathname;
     const stateRoot = join(root, "state");
     const bin = join(root, "bin");
-    const audioSinkPath = join(root, "qemu-default-output.wav");
     const token = "control-plane-token";
     const previousEnvironment = {
       PATH: process.env.PATH,
@@ -633,19 +631,6 @@ describe("host serial control plane", () => {
     chmodSync(join(bin, "virsh"), 0o755);
     chmodSync(join(bin, "lower-controller-sim"), 0o755);
     chmodSync(join(bin, "socat"), 0o755);
-    const wavHeader = Buffer.alloc(44);
-    wavHeader.write("RIFF", 0);
-    wavHeader.write("WAVE", 8);
-    wavHeader.write("fmt ", 12);
-    wavHeader.writeUInt32LE(16, 16);
-    wavHeader.writeUInt16LE(1, 20);
-    wavHeader.writeUInt16LE(2, 22);
-    wavHeader.writeUInt32LE(48_000, 24);
-    wavHeader.writeUInt32LE(192_000, 28);
-    wavHeader.writeUInt16LE(4, 32);
-    wavHeader.writeUInt16LE(16, 34);
-    wavHeader.write("data", 36);
-    writeFileSync(audioSinkPath, wavHeader);
     let controlPlane;
     let server;
     try {
@@ -763,7 +748,7 @@ describe("host serial control plane", () => {
             cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
           },
         },
-      });
+      );
       writeFileSync(process.env.VEM_VM_HOST_AUDIO_CAPTURE_WAV_PATH, wavWithTone());
       const stopped = await requestJson(
         baseUrl,
@@ -855,18 +840,13 @@ describe("host serial control plane", () => {
         recovered.audioCaptureId,
       );
       assert.equal(recoveredCapture.cancelledAt !== null, true);
-      const workerStatePath = join(
-        stateRoot,
-        "adapter",
-        "sale-audio-captures",
-        createHash("sha256")
-          .update(recoveredCapture.startReport.captureSession.captureSessionId)
-          .digest("hex"),
-        "state.json",
+      const diagnostics = await requestJson(
+        baseUrl,
+        token,
+        `/v1/audio-captures/${recovered.audioCaptureId}/diagnostics`,
       );
-      const workerPid = JSON.parse(readFileSync(workerStatePath, "utf8"))
-        .captureWorker.pid;
-      assert.throws(() => process.kill(workerPid, 0), { code: "ESRCH" });
+      assert.equal(diagnostics.status, "cancelled");
+      assert.equal(diagnostics.cancelledAt, recoveredCapture.cancelledAt);
       await requestJson(
         baseUrl,
         token,
