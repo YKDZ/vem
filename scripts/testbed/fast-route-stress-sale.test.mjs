@@ -10,6 +10,7 @@ import {
   parseFastRouteStressSaleArgs,
   runCleanupStep,
   shutdownControlledVisionMock,
+  startContinuousCdpLocationHashObservation,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -247,6 +248,40 @@ function validEvidence() {
         capturedAt: "2026-07-18T04:00:00.110Z",
       },
     },
+    continuousCdpLocationHash: {
+      source: "cdp_page_navigation_events_and_location_hash",
+      startedAt: "2026-07-18T03:59:59.700Z",
+      initialHash: "#/catalog",
+      armedAt: "2026-07-18T03:59:59.710Z",
+      terminalAt: "2026-07-18T04:00:04.010Z",
+      terminalHash: "#/result/success",
+      entries: [
+        {
+          sequence: 1,
+          method: "Page.navigatedWithinDocument",
+          locationHash: "#/products/product-1",
+          observedAt: "2026-07-18T03:59:59.710Z",
+        },
+        {
+          sequence: 2,
+          method: "Page.navigatedWithinDocument",
+          locationHash: "#/checkout",
+          observedAt: "2026-07-18T03:59:59.800Z",
+        },
+        {
+          sequence: 3,
+          method: "Page.navigatedWithinDocument",
+          locationHash: "#/payment",
+          observedAt: "2026-07-18T04:00:00.150Z",
+        },
+        {
+          sequence: 4,
+          method: "Page.navigatedWithinDocument",
+          locationHash: "#/result/success",
+          observedAt: "2026-07-18T04:00:04.000Z",
+        },
+      ],
+    },
     machineRuntimeTrace: {
       source: "installed_machine_runtime_trace_cdp",
       capturedAt: "2026-07-18T04:00:04.100Z",
@@ -421,6 +456,40 @@ describe("fast route stress sale tracer", () => {
     assert.deepEqual(result.originalPoint, { x: 412.5, y: 1711.25 });
   });
 
+  it("captures root as the first CDP transition away from Catalog without runtime trace input", async () => {
+    const handlers = new Map();
+    let locationHash = "#/catalog";
+    let tick = 0;
+    const client = {
+      on(method, handler) {
+        handlers.set(method, handler);
+        return () => handlers.delete(method);
+      },
+      async send(method) {
+        assert.equal(method, "Runtime.evaluate");
+        return { result: { value: locationHash } };
+      },
+    };
+    const observer = await startContinuousCdpLocationHashObservation(client, {
+      clock: () => new Date(1_000 + tick++),
+    });
+
+    handlers.get("Page.navigatedWithinDocument")({
+      url: "http://tauri.localhost/",
+    });
+    locationHash = "#/result/success";
+
+    assert.throws(
+      () => observer.throwIfFailed(),
+      /continuous CDP location\.hash observation reached Catalog or root/,
+    );
+    assert.deepEqual(
+      observer.snapshot().entries.map((entry) => entry.locationHash),
+      [""],
+    );
+    observer.stop();
+  });
+
   it("accepts exactly one fully correlated sale across real temporal boundaries", () => {
     const summary = validateFastRouteStressSaleEvidence(validEvidence());
     assert.deepEqual(summary.protocol, ["VEND", "F0", "F1", "F2"]);
@@ -578,6 +647,23 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("fails closed on transient Catalog or root CDP location.hash even when the runtime trace reset hides it", () => {
+    for (const forbiddenHash of ["#/catalog", "", "#/"]) {
+      const evidence = validEvidence();
+      evidence.noCatalogTraceBoundary.entryCount = 99;
+      evidence.continuousCdpLocationHash.entries.splice(2, 0, {
+        sequence: 99,
+        method: "Page.navigatedWithinDocument",
+        locationHash: forbiddenHash,
+        observedAt: "2026-07-18T04:00:00.120Z",
+      });
+      assert.throws(
+        () => validateFastRouteStressSaleEvidence(evidence),
+        /continuous CDP location\.hash observation reached Catalog or root/,
+      );
+    }
+  });
+
   it("fails closed when the runtime trace has no correlated result surface", () => {
     const evidence = validEvidence();
     evidence.machineRuntimeTrace.entries =
@@ -659,7 +745,7 @@ describe("fast route stress sale tracer", () => {
     wrongStatus.platform.beforeF0.raw.payments[0].status = "pending";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(wrongStatus),
-      /authoritative pre-F0 payment must be authorized or succeeded/,
+      /authoritative pre-F0 payment status must be succeeded/,
     );
 
     const wrongPaymentNo = validEvidence();
@@ -667,6 +753,31 @@ describe("fast route stress sale tracer", () => {
     assert.throws(
       () => validateFastRouteStressSaleEvidence(wrongPaymentNo),
       /authoritative pre-F0 paymentNo must match the create-order gate paymentNo/,
+    );
+  });
+
+  it("rejects synthetic authorized as a pre-F0 payment status", () => {
+    const evidence = validEvidence();
+    evidence.platform.beforeF0.raw.payments[0].status = "authorized";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(evidence),
+      /authoritative pre-F0 payment status must be succeeded/,
+    );
+  });
+
+  it("fails closed when post-F2 paymentNo or succeeded status drifts from pre-F0", () => {
+    const wrongPaymentNo = validEvidence();
+    wrongPaymentNo.platform.afterF2.raw.payments[0].paymentNo = "PAY-OTHER";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(wrongPaymentNo),
+      /authoritative post-F2 payment must retain the gated paymentNo and succeeded status/,
+    );
+
+    const wrongStatus = validEvidence();
+    wrongStatus.platform.afterF2.raw.payments[0].status = "pending";
+    assert.throws(
+      () => validateFastRouteStressSaleEvidence(wrongStatus),
+      /authoritative post-F2 payment must retain the gated paymentNo and succeeded status/,
     );
   });
 
@@ -783,7 +894,10 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /pre-dispatch trace boundary/);
     assert.match(implementation, /no-Catalog trace boundary/);
     assert.match(implementation, /actual or decided Catalog navigation/);
-    assert.match(implementation, /authorized or succeeded/);
+    assert.match(implementation, /Page\.navigatedWithinDocument/);
+    assert.match(implementation, /Page\.frameNavigated/);
+    assert.match(implementation, /Runtime\.evaluate\(location\.hash\)/);
+    assert.doesNotMatch(implementation, /\["authorized", "succeeded"\]/);
     assert.match(implementation, /terminal post-F2 order\/command state/);
     assert.match(implementation, /host_pty_raw_serial_journal/);
     assert.doesNotMatch(implementation, /observe-payment/);

@@ -254,6 +254,42 @@ function isCatalogRoute(route) {
   return route.replace(/^#/, "") === "/catalog";
 }
 
+function isCatalogOrRootLocationHash(value) {
+  const hash = String(value ?? "");
+  if (hash === "" || hash === "#" || hash === "#/") return true;
+  if (!hash.startsWith("#/")) {
+    throw new Error(`invalid CDP location.hash observation: ${hash}`);
+  }
+  const route = new URL(hash.slice(1), "http://machine-route.invalid");
+  return route.pathname.toLowerCase() === "/catalog";
+}
+
+function isCatalogLocationHash(value) {
+  const hash = String(value ?? "");
+  if (!hash.startsWith("#/")) return false;
+  const route = new URL(hash.slice(1), "http://machine-route.invalid");
+  return route.pathname.toLowerCase() === "/catalog";
+}
+
+function locationHashFromCdpUrl(value, label) {
+  let url;
+  try {
+    url = new URL(String(value));
+  } catch {
+    throw new Error(`${label} must expose an absolute CDP page URL`);
+  }
+  if (
+    url.protocol !== "http:" ||
+    url.hostname !== "tauri.localhost" ||
+    url.port !== "" ||
+    url.pathname !== "/" ||
+    url.search !== ""
+  ) {
+    throw new Error(`${label} must retain the installed Tauri page origin`);
+  }
+  return url.hash;
+}
+
 function compactPlatformBoundary(report, summary) {
   const raw = report?.raw ?? {};
   return {
@@ -296,6 +332,7 @@ function compactEvidenceForReport(evidence, summary) {
     createOrderGate: evidence.createOrderGate,
     noCatalogTraceBoundary: evidence.noCatalogTraceBoundary,
     repeatedPaymentTouch: evidence.repeatedPaymentTouch,
+    continuousCdpLocationHash: evidence.continuousCdpLocationHash,
     saleStartCapability: evidence.saleStartCapability,
     uiViewport: evidence.uiViewport,
     visionDelivery: evidence.visionDelivery,
@@ -423,10 +460,8 @@ export function validateFastRouteStressSaleEvidence(input) {
       "authoritative pre-F0 paymentNo must match the create-order gate paymentNo",
     );
   }
-  if (!new Set(["authorized", "succeeded"]).has(beforeF0Payment.status)) {
-    throw new Error(
-      "authoritative pre-F0 payment must be authorized or succeeded",
-    );
+  if (beforeF0Payment.status !== "succeeded") {
+    throw new Error("authoritative pre-F0 payment status must be succeeded");
   }
   const identity = {
     inventoryId: orderItem.inventoryId,
@@ -495,7 +530,18 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const afterF2Order = matchingRowById(afterF2, "orders", order.id);
+  const afterF2Payment = matchingRowById(afterF2, "payments", payment.id);
   const afterF2Command = matchingRowById(afterF2, "commands", command.id);
+  if (
+    afterF2Payment?.orderId !== order.id ||
+    afterF2Payment?.paymentNo !== createOrderGate.paymentNo ||
+    afterF2Payment.paymentNo !== beforeF0Payment.paymentNo ||
+    afterF2Payment?.status !== "succeeded"
+  ) {
+    throw new Error(
+      "authoritative post-F2 payment must retain the gated paymentNo and succeeded status",
+    );
+  }
   if (
     afterF2Order?.status !== "fulfilled" ||
     afterF2Order?.paymentState !== "paid" ||
@@ -703,6 +749,65 @@ export function validateFastRouteStressSaleEvidence(input) {
   if (!(gateObservedAt <= visionAt && visionAt <= gateReleasedAt)) {
     throw new Error(
       "Vision departure must occur while payment creation is explicitly pending",
+    );
+  }
+  const continuousHash = input.continuousCdpLocationHash ?? {};
+  if (
+    continuousHash.source !== "cdp_page_navigation_events_and_location_hash" ||
+    continuousHash.initialHash !== "#/catalog" ||
+    !Number.isFinite(Date.parse(continuousHash.startedAt)) ||
+    !Number.isFinite(Date.parse(continuousHash.armedAt)) ||
+    !Number.isFinite(Date.parse(continuousHash.terminalAt)) ||
+    !Array.isArray(continuousHash.entries) ||
+    continuousHash.entries.length < 2
+  ) {
+    throw new Error(
+      "continuous CDP location.hash observation must span Catalog exit through terminal result",
+    );
+  }
+  let previousHashSequence = 0;
+  let previousHashObservedAt = -Infinity;
+  for (const entry of continuousHash.entries) {
+    const observedAt = timestamp(
+      entry?.observedAt,
+      "continuous CDP location.hash observedAt",
+    );
+    if (
+      !Number.isInteger(entry?.sequence) ||
+      entry.sequence <= previousHashSequence ||
+      observedAt < previousHashObservedAt ||
+      ![
+        "Page.navigatedWithinDocument",
+        "Page.frameNavigated",
+        "Runtime.evaluate(location.hash)",
+      ].includes(entry?.method)
+    ) {
+      throw new Error(
+        "continuous CDP location.hash entries must retain ordered protocol provenance",
+      );
+    }
+    if (isCatalogOrRootLocationHash(entry.locationHash)) {
+      throw new Error(
+        "continuous CDP location.hash observation reached Catalog or root",
+      );
+    }
+    previousHashSequence = entry.sequence;
+    previousHashObservedAt = observedAt;
+  }
+  const firstHashEntry = continuousHash.entries[0];
+  const terminalHashEntry = continuousHash.entries.at(-1);
+  if (
+    firstHashEntry.method === "Runtime.evaluate(location.hash)" ||
+    firstHashEntry.observedAt !== continuousHash.armedAt ||
+    continuousHash.terminalHash !== "#/result/success" ||
+    terminalHashEntry.locationHash !== continuousHash.terminalHash ||
+    timestamp(continuousHash.armedAt, "continuous CDP armedAt") <
+      timestamp(continuousHash.startedAt, "continuous CDP startedAt") ||
+    timestamp(continuousHash.terminalAt, "continuous CDP terminalAt") <
+      previousHashObservedAt
+  ) {
+    throw new Error(
+      "continuous CDP location.hash observation must arm on Catalog exit and end at terminal result",
     );
   }
   const machineRuntimeTrace = input.machineRuntimeTrace ?? {};
@@ -1020,6 +1125,117 @@ async function readRuntimeTrace(client) {
   );
 }
 
+async function readCdpLocationHash(client) {
+  return evaluateExpression(client, "location.hash");
+}
+
+export async function startContinuousCdpLocationHashObservation(
+  client,
+  { clock = () => new Date() } = {},
+) {
+  const entries = [];
+  const startedAt = clock().toISOString();
+  let armedAt = null;
+  let terminalAt = null;
+  let terminalHash = null;
+  let stopped = false;
+  let failure = null;
+
+  const recordHash = (method, locationHash) => {
+    if (stopped || failure) return;
+    try {
+      if (armedAt === null && isCatalogLocationHash(locationHash)) return;
+      const observedAt = clock().toISOString();
+      if (armedAt === null) armedAt = observedAt;
+      const entry = {
+        sequence: entries.length + 1,
+        method,
+        locationHash,
+        observedAt,
+      };
+      entries.push(entry);
+      if (isCatalogOrRootLocationHash(locationHash)) {
+        failure = new Error(
+          "continuous CDP location.hash observation reached Catalog or root",
+        );
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    }
+  };
+  const recordUrl = (method, url) => {
+    try {
+      recordHash(method, locationHashFromCdpUrl(url, method));
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    }
+  };
+  const offWithinDocument = client.on(
+    "Page.navigatedWithinDocument",
+    (params) => recordUrl("Page.navigatedWithinDocument", params?.url),
+  );
+  const offFrameNavigated = client.on("Page.frameNavigated", (params) => {
+    if (params?.frame?.parentId == null) {
+      recordUrl("Page.frameNavigated", params?.frame?.url);
+    }
+  });
+  const initialHash = await readCdpLocationHash(client);
+  if (initialHash !== "#/catalog") {
+    offWithinDocument();
+    offFrameNavigated();
+    throw new Error(
+      `continuous CDP location.hash observation must start at #/catalog, got ${initialHash}`,
+    );
+  }
+
+  const snapshot = () => ({
+    source: "cdp_page_navigation_events_and_location_hash",
+    startedAt,
+    initialHash,
+    armedAt,
+    terminalAt,
+    terminalHash,
+    entries: entries.map((entry) => ({ ...entry })),
+  });
+  const stop = () => {
+    if (!stopped) {
+      stopped = true;
+      offWithinDocument();
+      offFrameNavigated();
+    }
+    return snapshot();
+  };
+  return {
+    assertArmed() {
+      if (failure) throw failure;
+      if (armedAt === null) {
+        throw new Error(
+          "continuous CDP location.hash observation did not observe Catalog exit",
+        );
+      }
+    },
+    throwIfFailed() {
+      if (failure) throw failure;
+    },
+    async finish(expectedTerminalHash) {
+      const observedTerminalHash = await readCdpLocationHash(client);
+      recordHash("Runtime.evaluate(location.hash)", observedTerminalHash);
+      terminalAt = clock().toISOString();
+      terminalHash = observedTerminalHash;
+      stop();
+      if (failure) throw failure;
+      if (observedTerminalHash !== expectedTerminalHash) {
+        throw new Error(
+          `continuous CDP location.hash terminal mismatch: expected ${expectedTerminalHash}, got ${observedTerminalHash}`,
+        );
+      }
+      return snapshot();
+    },
+    snapshot,
+    stop,
+  };
+}
+
 async function captureRuntimeTraceBoundary(client, label) {
   return traceBoundary(await readRuntimeTrace(client), label);
 }
@@ -1127,12 +1343,15 @@ async function waitForPlatformMovement(
       .report;
     const raw = last?.raw ?? {};
     const order = matchingRowById(raw, "orders", expected.orderId);
+    const payment = matchingRowById(raw, "payments", expected.paymentId);
     const command = matchingRowById(raw, "commands", expected.commandId);
     if (
       rows(raw, "movements").length > baselineCount &&
       order?.status === "fulfilled" &&
       order?.paymentState === "paid" &&
       order?.fulfillmentState === "dispensed" &&
+      payment?.paymentNo === expected.paymentNo &&
+      payment?.status === "succeeded" &&
       command?.commandKind === "dispatch" &&
       command?.status === "succeeded"
     ) {
@@ -1151,6 +1370,7 @@ async function waitForBeforeF0Boundary(
   baselineRaw,
   renderedSale,
   liveSale,
+  expectedPaymentNo,
   timeoutMs = 30_000,
 ) {
   const baselineOrders = rows(baselineRaw, "orders").length;
@@ -1176,6 +1396,8 @@ async function waitForBeforeF0Boundary(
       order &&
       payment &&
       command &&
+      payment.paymentNo === expectedPaymentNo &&
+      payment.status === "succeeded" &&
       rows(raw, "orders").length === baselineOrders + 1 &&
       rows(raw, "payments").length === baselinePayments + 1 &&
       rows(raw, "commands").length === baselineCommands + 1 &&
@@ -1326,6 +1548,7 @@ export function buildFastRouteStressSaleFailureReport(input) {
     controlPlaneSessionId: input.controlPlaneSessionId ?? null,
     liveSale: input.liveSale ?? null,
     runtimeTrace: compactRuntimeTrace(input.runtimeTrace ?? [], 256),
+    continuousCdpLocationHash: input.continuousCdpLocationHash ?? null,
     snapshots: {
       platform: {
         baseline: input.snapshots?.platform?.baseline ?? null,
@@ -1520,6 +1743,8 @@ async function runFastRouteStressSale(options) {
   let createOrderGate = null;
   let noCatalogTraceBoundary = null;
   let repeatedPaymentTouch = null;
+  let continuousCdpLocationHashObserver = null;
+  let continuousCdpLocationHash = null;
   let successReport = null;
   let failureReport = null;
   let primaryError = null;
@@ -1585,6 +1810,8 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
+    continuousCdpLocationHashObserver =
+      await startContinuousCdpLocationHashObservation(client);
     stage = "physical-catalog-to-checkout";
     for (const step of steps.slice(0, 4)) {
       await waitForRoute(client, step.routeBefore, {
@@ -1603,6 +1830,7 @@ async function runFastRouteStressSale(options) {
         pollMs: 250,
       });
       if (step.name === "catalog product") {
+        continuousCdpLocationHashObserver.assertArmed();
         noCatalogTraceBoundary = await captureRuntimeTraceBoundary(
           client,
           "no-Catalog trace boundary",
@@ -1683,6 +1911,7 @@ async function runFastRouteStressSale(options) {
       baselinePlatform.raw,
       renderedSale,
       liveSale,
+      pendingCreate.paymentNo,
     );
     beforeF0SaleView = await daemonGet(handoff, "/v1/sale-view");
     const beforeF0Ui = await readUiBoundary(client);
@@ -1748,6 +1977,9 @@ async function runFastRouteStressSale(options) {
       },
       60_000,
     );
+    continuousCdpLocationHash = await continuousCdpLocationHashObserver.finish(
+      resultSurface.route,
+    );
     checkpoints.push(
       await captureCheckpoint(client, "result", {
         screenshot: true,
@@ -1770,6 +2002,8 @@ async function runFastRouteStressSale(options) {
       rows(afterF1Platform.raw, "movements").length,
       {
         orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        paymentNo: pendingCreate.paymentNo,
         commandId: liveSale.vendingCommandId,
       },
     );
@@ -1798,6 +2032,7 @@ async function runFastRouteStressSale(options) {
       },
       noCatalogTraceBoundary,
       repeatedPaymentTouch,
+      continuousCdpLocationHash,
       saleStartCapability,
       uiViewport,
       visionDelivery,
@@ -1907,6 +2142,10 @@ async function runFastRouteStressSale(options) {
     const runtimeTrace = clientReady
       ? await readRuntimeTrace(client).catch(() => [])
       : [];
+    continuousCdpLocationHash =
+      continuousCdpLocationHash ??
+      continuousCdpLocationHashObserver?.snapshot() ??
+      null;
     const platformLog =
       guestInput && sessionStart
         ? await collectPlatformLog(
@@ -1940,6 +2179,7 @@ async function runFastRouteStressSale(options) {
       controlPlaneSessionId: sessionStart?.sessionId ?? null,
       liveSale,
       runtimeTrace,
+      continuousCdpLocationHash,
       snapshots: {
         platform: {
           baseline: baselinePlatform,
@@ -2033,6 +2273,25 @@ async function runFastRouteStressSale(options) {
     }
   }
   if (client) {
+    if (continuousCdpLocationHashObserver) {
+      try {
+        cleanup.push(
+          await runCleanupStep(
+            "stop continuous CDP location.hash observation",
+            async () => continuousCdpLocationHashObserver.stop(),
+          ),
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+        cleanup.push({
+          label:
+            error.cleanupLabel ??
+            "stop continuous CDP location.hash observation",
+          ok: false,
+          error: serializeError(error),
+        });
+      }
+    }
     try {
       cleanup.push(
         await runCleanupStep("close CDP client", async () => {
@@ -2079,6 +2338,10 @@ async function runFastRouteStressSale(options) {
         controlPlaneSessionId: sessionStart?.sessionId ?? null,
         liveSale,
         runtimeTrace: [],
+        continuousCdpLocationHash:
+          continuousCdpLocationHash ??
+          continuousCdpLocationHashObserver?.snapshot() ??
+          null,
         snapshots: {
           platform: {
             baseline: baselinePlatform,
