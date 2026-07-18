@@ -1074,6 +1074,12 @@ describe("Windows D cache contract", () => {
         new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
+    assert.match(guest, /function Get-TestbedSccache/);
+    assert.match(
+      guest,
+      /sccache-v\$version-x86_64-pc-windows-msvc\.zip/,
+    );
+    assert.match(guest, /Join-Path \$cacheRoot "sccache\\bin\\\$version"/);
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(

@@ -22,6 +22,35 @@ function Require-Path([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "missing required testbed input: $Path" }
 }
 
+function Get-TestbedSccache {
+  $version = "0.16.0"
+  $toolRoot = Join-Path $cacheRoot "sccache\bin\$version"
+  $executable = Join-Path $toolRoot "sccache.exe"
+  if (Test-Path -LiteralPath $executable -PathType Leaf) {
+    return $executable
+  }
+
+  $archive = Join-Path $env:TEMP "sccache-v$version-x86_64-pc-windows-msvc.zip"
+  $pending = "$toolRoot.pending"
+  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pending -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $pending | Out-Null
+  try {
+    $url = "https://github.com/mozilla/sccache/releases/download/v$version/sccache-v$version-x86_64-pc-windows-msvc.zip"
+    & curl.exe --fail --location --retry 3 --output $archive $url
+    if ($LASTEXITCODE -ne 0) { throw "sccache download failed with curl exit code $LASTEXITCODE" }
+    Expand-Archive -LiteralPath $archive -DestinationPath $pending -Force
+    $downloaded = Get-ChildItem -LiteralPath $pending -Filter "sccache.exe" -Recurse | Select-Object -First 1
+    if ($null -eq $downloaded) { throw "sccache archive did not contain sccache.exe" }
+    New-Item -ItemType Directory -Force -Path $toolRoot | Out-Null
+    Copy-Item -LiteralPath $downloaded.FullName -Destination $executable -Force
+  } finally {
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pending -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  return $executable
+}
+
 function Clear-DeclaredCaches {
   foreach ($path in $declaredCachePaths) {
     Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
@@ -295,7 +324,7 @@ $env:SCCACHE_DIR = Join-Path $cacheRoot "sccache"
 $env:TURBO_CACHE_DIR = Join-Path $cacheRoot "turbo"
 $env:PNPM_STORE_PATH = Join-Path $cacheRoot "pnpm-store"
 $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
-$sccache = (Get-Command sccache -ErrorAction Stop).Source
+$sccache = Get-TestbedSccache
 $env:RUSTC_WRAPPER = $sccache
 $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
