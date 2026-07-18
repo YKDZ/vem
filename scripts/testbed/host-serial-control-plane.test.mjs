@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -19,6 +20,7 @@ import {
   createHostSerialControlPlane,
   mockPaymentCreateGatePaths,
   parseHostSerialControlPlaneArgs,
+  runJsonCommand,
   waitForRawSerialFrame,
 } from "./host-serial-control-plane.mjs";
 import {
@@ -26,8 +28,12 @@ import {
   QEMU_USB_SERIAL_ADAPTER_VERSION,
 } from "./qemu-usb-serial-host-adapter.mjs";
 
-const adapterPath = new URL("./qemu-usb-serial-host-adapter.mjs", import.meta.url)
-  .pathname;
+process.env.VEM_TEST_ALLOW_JSON_PTY_FIXTURE = "1";
+
+const adapterPath = new URL(
+  "./qemu-usb-serial-host-adapter.mjs",
+  import.meta.url,
+).pathname;
 
 function makeTempDir(prefix) {
   const path = join(
@@ -546,6 +552,7 @@ describe("host serial control plane", () => {
     const workspace = new URL("../..", import.meta.url).pathname;
     const stateRoot = join(root, "state");
     const bin = join(root, "bin");
+    const audioSinkPath = join(root, "qemu-default-output.wav");
     const token = "control-plane-token";
     const previousEnvironment = {
       PATH: process.env.PATH,
@@ -554,18 +561,45 @@ describe("host serial control plane", () => {
       VEM_VM_HOST_ADAPTER_VERSION: process.env.VEM_VM_HOST_ADAPTER_VERSION,
       VEM_VM_HOST_ADAPTER_SHA256: process.env.VEM_VM_HOST_ADAPTER_SHA256,
       VEM_VM_HOST_ADAPTER_DOMAIN: process.env.VEM_VM_HOST_ADAPTER_DOMAIN,
-      VEM_VM_HOST_ADAPTER_STATE_ROOT: process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+      VEM_VM_HOST_ADAPTER_STATE_ROOT:
+        process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
       VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
+      VEM_VM_HOST_AUDIO_CAPTURE_SOURCE:
+        process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE,
     };
     const domainXml = `<domain type="kvm"><devices>
       <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
       <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/></serial>
     </devices></domain>`;
     mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, "virsh"), `#!/bin/sh\ncat <<'XML'\n${domainXml}\nXML\n`);
-    writeFileSync(join(bin, "lower-controller-sim"), "#!/bin/sh\nexec sleep 60\n");
+    writeFileSync(
+      join(bin, "virsh"),
+      `#!/bin/sh\ncat <<'XML'\n${domainXml}\nXML\n`,
+    );
+    writeFileSync(
+      join(bin, "lower-controller-sim"),
+      "#!/bin/sh\nexec sleep 60\n",
+    );
+    writeFileSync(
+      join(bin, "socat"),
+      '#!/bin/sh\nfor value in "$@"; do case "$value" in PTY,link=*) path=${value#PTY,link=}; path=${path%%,*}; touch "$path";; esac; done\nexec sleep 60\n',
+    );
     chmodSync(join(bin, "virsh"), 0o755);
     chmodSync(join(bin, "lower-controller-sim"), 0o755);
+    chmodSync(join(bin, "socat"), 0o755);
+    const wavHeader = Buffer.alloc(44);
+    wavHeader.write("RIFF", 0);
+    wavHeader.write("WAVE", 8);
+    wavHeader.write("fmt ", 12);
+    wavHeader.writeUInt32LE(16, 16);
+    wavHeader.writeUInt16LE(1, 20);
+    wavHeader.writeUInt16LE(2, 22);
+    wavHeader.writeUInt32LE(48_000, 24);
+    wavHeader.writeUInt32LE(192_000, 28);
+    wavHeader.writeUInt16LE(4, 32);
+    wavHeader.writeUInt16LE(16, 34);
+    wavHeader.write("data", 36);
+    writeFileSync(audioSinkPath, wavHeader);
     let controlPlane;
     let server;
     try {
@@ -577,6 +611,7 @@ describe("host serial control plane", () => {
       process.env.VEM_VM_HOST_ADAPTER_DOMAIN = "win10-runtime-testbed";
       process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT = join(stateRoot, "adapter");
       process.env.VEM_LOWER_CONTROLLER_SIM = join(bin, "lower-controller-sim");
+      process.env.VEM_VM_HOST_AUDIO_CAPTURE_SOURCE = audioSinkPath;
       controlPlane = createHostSerialControlPlane({
         workspace,
         stateRoot,
@@ -588,14 +623,19 @@ describe("host serial control plane", () => {
       await new Promise((resolve) => server.once("listening", resolve));
       const address = server.address();
       const baseUrl = `http://127.0.0.1:${address.port}`;
-      const session = await requestJson(baseUrl, token, "/v1/serial-sessions/start", {
-        runId: "RUN-17-CONTROL-PLANE",
-        machineCode: "MACHINE-17",
-        targetIdentity: "vm-target://runtime-testbed",
-        runtimeBase: `runtime-base://sha256/${"a".repeat(64)}`,
-        saleCorrelationId: "sale-correlation://run-17-control-plane",
-        serialScenario: "delayed-pickup",
-      });
+      const session = await requestJson(
+        baseUrl,
+        token,
+        "/v1/serial-sessions/start",
+        {
+          runId: "RUN-17-CONTROL-PLANE",
+          machineCode: "MACHINE-17",
+          targetIdentity: "vm-target://runtime-testbed",
+          runtimeBase: `runtime-base://sha256/${"a".repeat(64)}`,
+          saleCorrelationId: "sale-correlation://run-17-control-plane",
+          serialScenario: "delayed-pickup",
+        },
+      );
       const sessionPaths = qemuUsbSerialSessionPaths(
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
         session.binding.serialSessionId,
@@ -656,21 +696,33 @@ describe("host serial control plane", () => {
           .map((record) => JSON.stringify(record))
           .join("\n") + "\n",
       );
-      const started = await requestJson(baseUrl, token, "/v1/audio-captures/start", {
-        sessionId: session.sessionId,
-        runId: "RUN-17-CONTROL-PLANE",
-        lifecycleReference: "vm-lifecycle://run-17-control-plane.runtime",
-        transactionId: "transaction://run-17-control-plane.sale",
-        targetIdentity: "vm-target://runtime-testbed",
-        runtime: {
-          processId: 42,
-          executablePath: "C:\\VEM\\bringup\\machine.exe",
-          principal: "FIELD\\Operator",
-          sessionId: 7,
-          cdpTargetId: "target-17",
-          cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+      const started = await requestJson(
+        baseUrl,
+        token,
+        "/v1/audio-captures/start",
+        {
+          sessionId: session.sessionId,
+          runId: "RUN-17-CONTROL-PLANE",
+          lifecycleReference: "vm-lifecycle://run-17-control-plane.runtime",
+          transactionId: "transaction://run-17-control-plane.sale",
+          targetIdentity: "vm-target://runtime-testbed",
+          operationId: "audio-operation-17",
+          runtime: {
+            processId: 42,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            principal: "FIELD\\Operator",
+            sessionId: 7,
+            cdpTargetId: "target-17",
+            cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          },
         },
-      });
+      );
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
+      const pcm = Buffer.alloc(19_200);
+      for (let offset = 0; offset < pcm.length; offset += 2)
+        pcm.writeInt16LE(1_024, offset);
+      appendFileSync(audioSinkPath, pcm);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
       const stopped = await requestJson(
         baseUrl,
         token,
@@ -691,16 +743,88 @@ describe("host serial control plane", () => {
       const serialCapture = JSON.parse(
         readFileSync(
           join(
-            controlPlane.audioCaptures.get(started.audioCaptureId).evidenceDirectory,
+            controlPlane.audioCaptures.get(started.audioCaptureId)
+              .evidenceDirectory,
             serialFile.fileName,
           ),
           "utf8",
         ),
       );
       assert.equal(
-        serialCapture.frames.every((frame) => typeof frame.capturedAt === "string"),
+        serialCapture.frames.every(
+          (frame) => typeof frame.capturedAt === "string",
+        ),
         true,
       );
+      const recovered = await requestJson(
+        baseUrl,
+        token,
+        "/v1/audio-captures/start",
+        {
+          sessionId: session.sessionId,
+          runId: "RUN-17-CONTROL-PLANE",
+          lifecycleReference: "vm-lifecycle://run-17-control-plane.runtime",
+          transactionId: "transaction://run-17-control-plane.recovered",
+          targetIdentity: "vm-target://runtime-testbed",
+          operationId: "audio-operation-response-lost",
+          runtime: {
+            processId: 42,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            principal: "FIELD\\Operator",
+            sessionId: 7,
+            cdpTargetId: "target-17",
+            cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          },
+        },
+      );
+      const retried = await requestJson(
+        baseUrl,
+        token,
+        "/v1/audio-captures/start",
+        {
+          sessionId: session.sessionId,
+          runId: "RUN-17-CONTROL-PLANE",
+          lifecycleReference: "vm-lifecycle://run-17-control-plane.runtime",
+          transactionId: "transaction://run-17-control-plane.recovered",
+          targetIdentity: "vm-target://runtime-testbed",
+          operationId: "audio-operation-response-lost",
+          runtime: {
+            processId: 42,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            principal: "FIELD\\Operator",
+            sessionId: 7,
+            cdpTargetId: "target-17",
+            cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          },
+        },
+      );
+      assert.equal(retried.audioCaptureId, recovered.audioCaptureId);
+      assert.equal(retried.repeated, true);
+      const cancelled = await requestJson(
+        baseUrl,
+        token,
+        "/v1/audio-captures/cancel",
+        {
+          operationId: "audio-operation-response-lost",
+        },
+      );
+      assert.equal(cancelled.status, "cancelled");
+      const recoveredCapture = controlPlane.audioCaptures.get(
+        recovered.audioCaptureId,
+      );
+      assert.equal(recoveredCapture.cancelledAt !== null, true);
+      const workerStatePath = join(
+        stateRoot,
+        "adapter",
+        "sale-audio-captures",
+        createHash("sha256")
+          .update(recoveredCapture.startReport.captureSession.captureSessionId)
+          .digest("hex"),
+        "state.json",
+      );
+      const workerPid = JSON.parse(readFileSync(workerStatePath, "utf8"))
+        .captureWorker.pid;
+      assert.throws(() => process.kill(workerPid, 0), { code: "ESRCH" });
       await requestJson(
         baseUrl,
         token,
@@ -713,6 +837,33 @@ describe("host serial control plane", () => {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces a deadline and escalates a SIGTERM-resistant host command to SIGKILL", async () => {
+    const root = makeTempDir("vem-run-json-command-timeout");
+    const childPath = join(root, "resistant-child.mjs");
+    writeFileSync(
+      childPath,
+      'process.on("SIGTERM", () => {}); setInterval(() => {}, 1_000);\n',
+    );
+    const startedAt = Date.now();
+    try {
+      await assert.rejects(
+        runJsonCommand(
+          {
+            command: process.execPath,
+            args: [childPath],
+            cwd: root,
+            env: process.env,
+          },
+          { timeoutMs: 100, terminationGraceMs: 100 },
+        ),
+        /exceeded 100ms deadline/,
+      );
+      assert.ok(Date.now() - startedAt < 2_000);
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

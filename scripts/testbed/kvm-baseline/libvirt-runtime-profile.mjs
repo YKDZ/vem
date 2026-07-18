@@ -14,6 +14,7 @@ export const DEFAULT_RUNTIME_PROFILE = Object.freeze({
   audio: Object.freeze({
     model: "ich9",
     defaultDevice: true,
+    capturePath: null,
   }),
 });
 
@@ -86,15 +87,22 @@ export function createRuntimeProfile(options) {
     );
   }
   const audio = { ...DEFAULT_RUNTIME_PROFILE.audio, ...(options.audio ?? {}) };
-  if (
-    audio.model !== "ich9" ||
-    audio.defaultDevice !== true
-  ) {
+  if (audio.model !== "ich9" || audio.defaultDevice !== true) {
     throw new Error("audio must use the default ich9 device");
   }
-  const macAddress = requiredString(options.macAddress, "macAddress").toLowerCase();
+  const defaultAudioCapturePath = `${requiredString(options.systemDiskPath, "systemDiskPath")}.default-audio.wav`;
+  audio.capturePath = requiredString(
+    audio.capturePath ?? defaultAudioCapturePath,
+    "audio.capturePath",
+  );
+  const macAddress = requiredString(
+    options.macAddress,
+    "macAddress",
+  ).toLowerCase();
   if (!/^52:54:00(?::[0-9a-f]{2}){3}$/.test(macAddress)) {
-    throw new Error("macAddress must be a stable libvirt locally administered MAC");
+    throw new Error(
+      "macAddress must be a stable libvirt locally administered MAC",
+    );
   }
 
   return {
@@ -175,7 +183,8 @@ export function renderLibvirtDomainXml(profile, { cdromPaths = [] } = {}) {
 ${cdroms}${cdroms ? "\n" : ""}    <interface type="network"><mac address="${xml(profile.network.macAddress)}"/><source network="${xml(profile.network.name)}"/><model type="e1000e"/></interface>
     <graphics type="vnc" autoport="yes" listen="127.0.0.1"><listen type="address" address="127.0.0.1"/></graphics>
     <video><model type="virtio" vram="${profile.display.videoMemoryKiB}" heads="1" primary="yes"><resolution x="${profile.display.width}" y="${profile.display.height}"/></model></video>
-    <sound model="ich9"/>
+    <audio id="1" type="file"><output file="${xml(profile.audio.capturePath)}"/></audio>
+    <sound model="ich9"><audio id="1"/></sound>
 ${serial}
     <memballoon model="virtio"/>
   </devices>

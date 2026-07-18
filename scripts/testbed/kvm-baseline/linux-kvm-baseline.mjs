@@ -29,6 +29,7 @@ const REQUIRED_COMMANDS = [
   "openbox",
   "gvncviewer",
   "setpriv",
+  "socat",
 ];
 
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
@@ -408,6 +409,11 @@ export function runtimeProfileForConfig(config) {
     vcpus: config.runtime?.vcpus,
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
+    audio: {
+      capturePath:
+        config.storage.audioCapturePath ??
+        `${config.storage.baselinePath}.default-audio.wav`,
+    },
   });
 }
 
@@ -441,6 +447,11 @@ export function runtimeProfileForPublishedRelease(config, id) {
     vcpus: config.runtime?.vcpus,
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
+    audio: {
+      capturePath:
+        config.storage.audioCapturePath ??
+        `${config.storage.baselinePath}.default-audio.wav`,
+    },
   });
 }
 

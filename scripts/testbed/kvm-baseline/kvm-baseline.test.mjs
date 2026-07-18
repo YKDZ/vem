@@ -630,7 +630,11 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
-    assert.match(xml, /<sound model="ich9"\/>/);
+    assert.match(
+      xml,
+      /<audio id="1" type="file"><output file="\/srv\/vm\/win10\.qcow2\.default-audio\.wav"\/><\/audio>/,
+    );
+    assert.match(xml, /<sound model="ich9"><audio id="1"\/><\/sound>/);
     assert.doesNotMatch(xml, /qxl|spice/i);
     assert.match(xml, /<mac address="52:54:00:12:34:56"\/>/);
     assert.match(xml, /target dev="sdc" bus="sata"/);
@@ -951,14 +955,18 @@ await new Promise(() => setInterval(() => {}, 1_000));
     const xml = renderLibvirtDomainXml(profile);
 
     assert.deepEqual(verifyDefinedRuntimeDevices(xml, profile), {
-      audio: { model: "ich9", defaultDevice: true },
+      audio: {
+        model: "ich9",
+        defaultDevice: true,
+        capturePath: "/srv/vm/win10.qcow2.default-audio.wav",
+      },
       serialRoles: ["lower-controller", "scanner"],
       serialUsbPorts: [1, 2],
     });
     assert.throws(
       () =>
         verifyDefinedRuntimeDevices(
-          xml.replace('<sound model="ich9"/>', '<sound model="ac97"/>'),
+          xml.replace('sound model="ich9"', 'sound model="ac97"'),
           profile,
         ),
       /default ICH9 audio device/,
@@ -1176,6 +1184,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "openbox",
               "gvncviewer",
               "setpriv",
+              "socat",
             ],
             cpuCount: 32,
             availableMemoryMiB: 64 * 1024,
@@ -1211,6 +1220,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "openbox",
               "gvncviewer",
               "setpriv",
+              "socat",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
@@ -2194,10 +2204,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         bootstrapScript(),
         /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
       );
-      assert.match(
-        bootstrapScript(),
-        /win10-kvm-bootstrap-failure\/v1/,
-      );
+      assert.match(bootstrapScript(), /win10-kvm-bootstrap-failure\/v1/);
       assert.match(bootstrapScript(), /bootstrap-failure\.json/);
       assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
       assert.deepEqual(commands[0], [

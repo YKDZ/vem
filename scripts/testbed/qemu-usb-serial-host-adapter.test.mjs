@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -15,10 +16,14 @@ import { describe, it } from "node:test";
 import {
   parseLibvirtUsbSerialMappings,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
+  readRawSerialJournal,
   validateProductionRawSerialFrame,
 } from "./qemu-usb-serial-host-adapter.mjs";
 
-const adapterPath = new URL("./qemu-usb-serial-host-adapter.mjs", import.meta.url).pathname;
+const adapterPath = new URL(
+  "./qemu-usb-serial-host-adapter.mjs",
+  import.meta.url,
+).pathname;
 
 function makeTempDir(prefix) {
   const path = join(
@@ -40,11 +45,17 @@ function domainXml() {
 describe("repo QEMU USB serial host adapter", () => {
   it("rejects missing or duplicate live libvirt USB serial role mappings", () => {
     assert.throws(
-      () => parseLibvirtUsbSerialMappings(domainXml().replace("serial-scanner", "serial-other")),
+      () =>
+        parseLibvirtUsbSerialMappings(
+          domainXml().replace("serial-scanner", "serial-other"),
+        ),
       /exactly one scanner/,
     );
     assert.throws(
-      () => parseLibvirtUsbSerialMappings(domainXml().replace("serial-scanner", "serial-lower-controller")),
+      () =>
+        parseLibvirtUsbSerialMappings(
+          domainXml().replace("serial-scanner", "serial-lower-controller"),
+        ),
       /exactly one lower-controller/,
     );
   });
@@ -72,6 +83,45 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
+  it("parses timestamped bytes from the host PTY bridge rather than simulator JSONL", () => {
+    const root = makeTempDir("vem-qemu-pty-trace");
+    const tracePath = join(root, "qemu-pty.trace");
+    try {
+      writeFileSync(
+        tracePath,
+        [
+          "> 2026/07/18 08:00:00.123456 length=2",
+          " 55 f0",
+          "< 2026/07/18 08:00:01.000001 length=4",
+          " 55 02 05 31",
+        ].join("\n"),
+      );
+      assert.deepEqual(
+        readRawSerialJournal(tracePath).map(
+          ({ direction, rawFrameHex, capturedAt }) => ({
+            direction,
+            rawFrameHex,
+            capturedAt,
+          }),
+        ),
+        [
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            capturedAt: "2026-07-18T08:00:00.123Z",
+          },
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55020531",
+            capturedAt: "2026-07-18T08:00:01.000Z",
+          },
+        ],
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes the production VM host adapter contract for a live serial-session start", () => {
     const root = makeTempDir("vem-qemu-adapter");
     const bin = join(root, "bin");
@@ -80,23 +130,36 @@ describe("repo QEMU USB serial host adapter", () => {
     mkdirSync(bin, { recursive: true });
     const virsh = join(bin, "virsh");
     const simulator = join(bin, "lower-controller-sim");
+    const socat = join(bin, "socat");
     writeFileSync(virsh, `#!/bin/sh\ncat <<'XML'\n${domainXml()}\nXML\n`);
     writeFileSync(simulator, "#!/bin/sh\nexec sleep 60\n");
+    writeFileSync(
+      socat,
+      '#!/bin/sh\nfor value in "$@"; do case "$value" in PTY,link=*) path=${value#PTY,link=}; path=${path%%,*}; touch "$path";; esac; done\nexec sleep 60\n',
+    );
     chmodSync(virsh, 0o755);
     chmodSync(simulator, 0o755);
+    chmodSync(socat, 0o755);
     chmodSync(adapterPath, 0o755);
     let simulatorPid = null;
+    let bridgePid = null;
     try {
       const result = spawnSync(
         process.execPath,
         [
           "scripts/testbed/run-vm-host-adapter.mjs",
-          "--operation", "start-serial-session",
-          "--run-id", "RUN-ISSUE16-ADAPTER",
-          "--target-identity", "vm-target://release-testbed-0001",
-          "--runtime-base", `runtime-base://sha256/${"a".repeat(64)}`,
-          "--sale-correlation-id", "sale-correlation://issue16-adapter",
-          "--out", out,
+          "--operation",
+          "start-serial-session",
+          "--run-id",
+          "RUN-ISSUE16-ADAPTER",
+          "--target-identity",
+          "vm-target://release-testbed-0001",
+          "--runtime-base",
+          `runtime-base://sha256/${"a".repeat(64)}`,
+          "--sale-correlation-id",
+          "sale-correlation://issue16-adapter",
+          "--out",
+          out,
         ],
         {
           cwd: new URL("../..", import.meta.url).pathname,
@@ -114,24 +177,46 @@ describe("repo QEMU USB serial host adapter", () => {
           },
         },
       );
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(
+        result.status,
+        0,
+        result.stderr ||
+          result.stdout ||
+          (existsSync(out) ? readFileSync(out, "utf8") : ""),
+      );
       const report = JSON.parse(readFileSync(out, "utf8"));
       assert.equal(report.result, "succeeded");
-      assert.equal(report.adapter.identity, "vm-host-adapter://repo-qemu-usb-serial@1.0.0");
+      assert.equal(
+        report.adapter.identity,
+        "vm-host-adapter://repo-qemu-usb-serial@1.0.0",
+      );
       assert.deepEqual(
-        report.serialSession.deviceMappings.map(({ role, connectionState }) => ({ role, connectionState })),
+        report.serialSession.deviceMappings.map(
+          ({ role, connectionState }) => ({ role, connectionState }),
+        ),
         [
           { role: "lower-controller", connectionState: "connected" },
           { role: "scanner", connectionState: "connected" },
         ],
       );
       const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
-      const state = JSON.parse(readFileSync(join(stateRoot, "sessions", sessionDirectory, "state.json"), "utf8"));
+      const state = JSON.parse(
+        readFileSync(
+          join(stateRoot, "sessions", sessionDirectory, "state.json"),
+          "utf8",
+        ),
+      );
       simulatorPid = state.simulatorPid;
+      bridgePid = state.ptyCapturePid;
     } finally {
       if (Number.isInteger(simulatorPid)) {
         try {
           process.kill(-simulatorPid, "SIGTERM");
+        } catch {}
+      }
+      if (Number.isInteger(bridgePid)) {
+        try {
+          process.kill(-bridgePid, "SIGKILL");
         } catch {}
       }
       rmSync(root, { recursive: true, force: true });
@@ -147,15 +232,22 @@ describe("repo QEMU USB serial host adapter", () => {
     mkdirSync(bin, { recursive: true });
     const virsh = join(bin, "virsh");
     const simulator = join(bin, "lower-controller-sim");
+    const socat = join(bin, "socat");
     writeFileSync(virsh, `#!/bin/sh\ncat <<'XML'\n${domainXml()}\nXML\n`);
     writeFileSync(
       simulator,
       `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvLog}"\nexec sleep 60\n`,
     );
+    writeFileSync(
+      socat,
+      '#!/bin/sh\nfor value in "$@"; do case "$value" in PTY,link=*) path=${value#PTY,link=}; path=${path%%,*}; touch "$path";; esac; done\nexec sleep 60\n',
+    );
     chmodSync(virsh, 0o755);
     chmodSync(simulator, 0o755);
+    chmodSync(socat, 0o755);
     chmodSync(adapterPath, 0o755);
     let simulatorPid = null;
+    let bridgePid = null;
     try {
       const result = spawnSync(
         process.execPath,
@@ -200,12 +292,21 @@ describe("repo QEMU USB serial host adapter", () => {
         ),
       );
       simulatorPid = state.simulatorPid;
+      bridgePid = state.ptyCapturePid;
       assert.equal(state.serialScenario, "delayed-pickup");
-      assert.match(readFileSync(argvLog, "utf8"), /--scenario\npickup-timeout-success\n/);
+      assert.match(
+        readFileSync(argvLog, "utf8"),
+        /--scenario\npickup-timeout-success\n/,
+      );
     } finally {
       if (Number.isInteger(simulatorPid)) {
         try {
           process.kill(-simulatorPid, "SIGTERM");
+        } catch {}
+      }
+      if (Number.isInteger(bridgePid)) {
+        try {
+          process.kill(-bridgePid, "SIGKILL");
         } catch {}
       }
       rmSync(root, { recursive: true, force: true });

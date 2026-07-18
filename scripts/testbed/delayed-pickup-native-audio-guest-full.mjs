@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  delayedPickupIssue16ControlPlaneContract,
+  startDelayedPickupLiveProductionTrack,
+} from "./delayed-pickup-live-production-track.mjs";
+import { readInstalledMachineProductionSample } from "./delayed-pickup-machine-evidence.mjs";
+import {
+  collectDelayedPickupProductionEvidence,
+  verifyDelayedPickupNativeAudioProductionEvidence,
+} from "./delayed-pickup-native-audio-acceptance.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -14,15 +24,6 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { readInstalledMachineProductionSample } from "./delayed-pickup-machine-evidence.mjs";
-import {
-  delayedPickupIssue16ControlPlaneContract,
-  startDelayedPickupLiveProductionTrack,
-} from "./delayed-pickup-live-production-track.mjs";
-import {
-  collectDelayedPickupProductionEvidence,
-  verifyDelayedPickupNativeAudioProductionEvidence,
-} from "./delayed-pickup-native-audio-acceptance.mjs";
 
 const MODES = new Set(["full"]);
 const DEFAULT_SCANNER_CODE = "6901234567892";
@@ -44,7 +45,9 @@ function windowsAbsolute(value, label) {
 function localPath(path) {
   return process.platform === "win32"
     ? path
-    : resolve(`/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`);
+    : resolve(
+        `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
+      );
 }
 
 function readJson(path, label) {
@@ -78,7 +81,10 @@ function parseArgs(args) {
   if (!MODES.has(mode)) throw new Error("--mode must be full");
   return {
     mode,
-    guestInputPath: windowsAbsolute(option(args, "guest-input"), "--guest-input"),
+    guestInputPath: windowsAbsolute(
+      option(args, "guest-input"),
+      "--guest-input",
+    ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
   };
@@ -97,7 +103,12 @@ function screenshotSink(root) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const { timeoutMs: _timeoutMs, ...requestOptions } = options;
+  const response = await fetch(url, {
+    ...requestOptions,
+    signal: options.signal ?? AbortSignal.timeout(timeoutMs),
+  });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
@@ -107,8 +118,28 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+async function withinDeadline(callback, label, timeoutMs = 10_000) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      callback(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} deadline exceeded`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function daemonBaseUrl(handoff) {
-  const healthzUrl = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
+  const healthzUrl = required(
+    handoff.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
@@ -127,8 +158,14 @@ async function daemonGet(handoff, path) {
 }
 
 async function controlPlaneRequest(guestInput, path, body = {}) {
-  const endpoint = required(guestInput.hostControlPlane?.endpoint, "hostControlPlane.endpoint");
-  const token = required(guestInput.hostControlPlane?.token, "hostControlPlane.token");
+  const endpoint = required(
+    guestInput.hostControlPlane?.endpoint,
+    "hostControlPlane.endpoint",
+  );
+  const token = required(
+    guestInput.hostControlPlane?.token,
+    "hostControlPlane.token",
+  );
   return fetchJson(`${endpoint}${path}`, {
     method: "POST",
     headers: {
@@ -136,6 +173,7 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    timeoutMs: body.timeoutMs ?? 30_000,
   });
 }
 
@@ -143,9 +181,10 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
   while (Date.now() < deadline) {
-    const transaction = await daemonGet(handoff, "/v1/transactions/current").catch(
-      () => null,
-    );
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
     lastTransaction = transaction;
     const commandId =
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
@@ -214,7 +253,11 @@ async function waitForResultRoute(client, timeoutMs = 60_000) {
 }
 
 async function queryPlatform(guestInput, input, outPath) {
-  const result = await controlPlaneRequest(guestInput, "/v1/platform/query", input);
+  const result = await controlPlaneRequest(
+    guestInput,
+    "/v1/platform/query",
+    input,
+  );
   writeJson(outPath, result.report);
   return result.report;
 }
@@ -229,7 +272,8 @@ async function waitForPlatformMovement(
   const deadline = Date.now() + timeoutMs;
   let last = null;
   do {
-    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input)).report;
+    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
+      .report;
     if ((last?.raw?.movements ?? []).length > baselineCount) {
       writeJson(outPath, last);
       return last;
@@ -253,7 +297,9 @@ function daemonTerminalReady(transaction, liveSale) {
 }
 
 function platformTerminalReady(report, liveSale) {
-  const order = report?.raw?.orders?.find((entry) => entry?.id === liveSale.orderId);
+  const order = report?.raw?.orders?.find(
+    (entry) => entry?.id === liveSale.orderId,
+  );
   const command = report?.raw?.commands?.find(
     (entry) => entry?.id === liveSale.vendingCommandId,
   );
@@ -302,10 +348,12 @@ async function waitForTerminalSale({
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   } while (Date.now() < deadline);
   throw new Error(
-    `sale did not reach terminal daemon/platform settlement after F2: ${JSON.stringify({
-      transaction: lastTransaction,
-      commands: lastPlatform?.raw?.commands ?? [],
-    })}`,
+    `sale did not reach terminal daemon/platform settlement after F2: ${JSON.stringify(
+      {
+        transaction: lastTransaction,
+        commands: lastPlatform?.raw?.commands ?? [],
+      },
+    )}`,
   );
 }
 
@@ -348,7 +396,10 @@ function issue17EvidenceIndex({
       evidencePath: join(delayedRoot, "daemon-fulfillment-store-evidence.json"),
     },
     serial: {
-      conformancePath: join(dirname(localPath(installedSalePath)), "serial-conformance.json"),
+      conformancePath: join(
+        dirname(localPath(installedSalePath)),
+        "serial-conformance.json",
+      ),
       controlPlaneEvidencePath,
     },
     audio: {
@@ -360,7 +411,10 @@ function issue17EvidenceIndex({
       rawSerialCapturePath: null,
     },
     trace: {
-      machineEvidencePath: join(delayedRoot, "machine-production-evidence.json"),
+      machineEvidencePath: join(
+        delayedRoot,
+        "machine-production-evidence.json",
+      ),
       daemonSnapshotPath,
       uiSnapshotPath,
     },
@@ -368,8 +422,12 @@ function issue17EvidenceIndex({
   };
   const audioStop = liveEvidence?.audioStop;
   for (const artifact of audioStop?.evidence ?? []) {
-    const resolved = join(localPath(liveEvidence.evidenceDirectory), artifact.fileName);
-    if (artifact.role === "sale-default-audio-capture") index.audio.wavPath = resolved;
+    const resolved = join(
+      localPath(liveEvidence.evidenceDirectory),
+      artifact.fileName,
+    );
+    if (artifact.role === "sale-default-audio-capture")
+      index.audio.wavPath = resolved;
     if (artifact.role === "sale-serial-frame-capture")
       index.audio.rawSerialCapturePath = resolved;
   }
@@ -387,8 +445,14 @@ async function runDelayedPickupGuestFull(options) {
   const artifactRoot = join(outRoot, "delayed-pickup-native-audio-artifacts");
   const delayedRoot = join(artifactRoot, "live-production-track");
   const screenshotRoot = join(artifactRoot, "screenshots");
-  const installedSalePath = join(artifactRoot, "installed-sale-production-handoff.json");
-  const platformBaselinePath = join(artifactRoot, "platform-raw-records-baseline.json");
+  const installedSalePath = join(
+    artifactRoot,
+    "installed-sale-production-handoff.json",
+  );
+  const platformBaselinePath = join(
+    artifactRoot,
+    "platform-raw-records-baseline.json",
+  );
   const platformPostPath = join(artifactRoot, "platform-raw-records.json");
   const controlPlaneEvidencePath = join(
     artifactRoot,
@@ -401,8 +465,7 @@ async function runDelayedPickupGuestFull(options) {
   const daemonSnapshotPath = join(artifactRoot, "daemon-last-snapshot.json");
   const uiSnapshotPath = join(artifactRoot, "ui-last-snapshot.json");
   const screenshotRefs = [];
-  const saleCorrelationId =
-    `sale-correlation://${guestInput.runId.toLowerCase()}.delayed-pickup`;
+  const saleCorrelationId = `sale-correlation://${guestInput.runId.toLowerCase()}.delayed-pickup`;
   const report = {
     schemaVersion: "local-testbed-delayed-pickup-native-audio/v1",
     kind: "local-testbed-delayed-pickup-native-audio",
@@ -436,6 +499,7 @@ async function runDelayedPickupGuestFull(options) {
   let liveEvidence = null;
   let primaryError = null;
   let audioCaptureId = null;
+  const audioOperationId = `audio-capture-${randomUUID()}`;
   let sessionStopped = false;
   let sink = null;
   try {
@@ -470,10 +534,8 @@ async function runDelayedPickupGuestFull(options) {
       {
         outputRoot: delayedRoot,
         runId: guestInput.runId,
-        lifecycleReference:
-          `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
-        transactionId:
-          `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
+        lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
+        transactionId: `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
         saleCorrelationId,
         targetIdentity: guestInput.hostControlPlane.targetIdentity,
         remote: {
@@ -527,10 +589,7 @@ async function runDelayedPickupGuestFull(options) {
           };
         },
         readMachineSample: readInstalledMachineProductionSample,
-        async startAudioCapture({
-          baseBinding,
-          runtime,
-        }) {
+        async startAudioCapture({ baseBinding, runtime }) {
           const result = await controlPlaneRequest(
             guestInput,
             "/v1/audio-captures/start",
@@ -541,6 +600,7 @@ async function runDelayedPickupGuestFull(options) {
               transactionId: baseBinding.transactionId,
               targetIdentity: guestInput.hostControlPlane.targetIdentity,
               runtime,
+              operationId: audioOperationId,
             },
           );
           audioCaptureId = result.audioCaptureId;
@@ -561,7 +621,14 @@ async function runDelayedPickupGuestFull(options) {
           return result.stopReport;
         },
         async cancelAudioCapture() {
-          if (!audioCaptureId) return null;
+          if (!audioCaptureId)
+            return controlPlaneRequest(
+              guestInput,
+              "/v1/audio-captures/cancel",
+              {
+                operationId: audioOperationId,
+              },
+            );
           return controlPlaneRequest(
             guestInput,
             `/v1/audio-captures/${audioCaptureId}/cancel`,
@@ -601,13 +668,17 @@ async function runDelayedPickupGuestFull(options) {
       screenshot: true,
       screenshotSink: sink,
     }).then((checkpoint) => {
-      if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
+      if (checkpoint?.screenshot?.ref)
+        screenshotRefs.push(checkpoint.screenshot.ref);
     });
     await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
+    await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     const paymentSurface = await readRenderedPaymentSurface(client);
     liveSale = await waitForCommand(handoff, paymentSurface);
     await controlPlaneRequest(
@@ -623,7 +694,11 @@ async function runDelayedPickupGuestFull(options) {
     await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "VEND", timeoutMs: 30_000, serialScenario: "delayed-pickup" },
+      {
+        parsedOpcode: "VEND",
+        timeoutMs: 30_000,
+        serialScenario: "delayed-pickup",
+      },
     );
     await controlPlaneRequest(
       guestInput,
@@ -632,12 +707,20 @@ async function runDelayedPickupGuestFull(options) {
     await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F0", timeoutMs: 30_000, serialScenario: "delayed-pickup" },
+      {
+        parsedOpcode: "F0",
+        timeoutMs: 30_000,
+        serialScenario: "delayed-pickup",
+      },
     );
     const f1Boundary = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F1", timeoutMs: 45_000, serialScenario: "delayed-pickup" },
+      {
+        parsedOpcode: "F1",
+        timeoutMs: 45_000,
+        serialScenario: "delayed-pickup",
+      },
     );
     await delayedTrack.observeControllerFrame(f1Boundary.frame);
     const afterF1Ui = await readUiBoundary(client);
@@ -647,7 +730,8 @@ async function runDelayedPickupGuestFull(options) {
       screenshot: true,
       screenshotSink: sink,
     }).then((checkpoint) => {
-      if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
+      if (checkpoint?.screenshot?.ref)
+        screenshotRefs.push(checkpoint.screenshot.ref);
     });
     await controlPlaneRequest(
       guestInput,
@@ -656,7 +740,11 @@ async function runDelayedPickupGuestFull(options) {
     const f2Boundary = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F2", timeoutMs: 30_000, serialScenario: "delayed-pickup" },
+      {
+        parsedOpcode: "F2",
+        timeoutMs: 30_000,
+        serialScenario: "delayed-pickup",
+      },
     );
     await delayedTrack.observeControllerFrame(f2Boundary.frame);
     const collect = await controlPlaneRequest(
@@ -681,24 +769,28 @@ async function runDelayedPickupGuestFull(options) {
       screenshot: true,
       screenshotSink: sink,
     }).then((checkpoint) => {
-      if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
+      if (checkpoint?.screenshot?.ref)
+        screenshotRefs.push(checkpoint.screenshot.ref);
     });
     const platformPost = terminal.platform;
     const command = platformPost?.raw?.commands?.find(
       (entry) => entry.id === liveSale.vendingCommandId,
     );
-    if (typeof command?.commandNo !== "string" || command.commandNo.length === 0)
-      throw new Error("authoritative platform post-F2 command number is missing");
+    if (
+      typeof command?.commandNo !== "string" ||
+      command.commandNo.length === 0
+    )
+      throw new Error(
+        "authoritative platform post-F2 command number is missing",
+      );
     liveEvidence = await delayedTrack.finish({
-        runId: guestInput.runId,
-        lifecycleReference:
-          `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
-        transactionId:
-          `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
-        saleCorrelationId,
-        orderId: liveSale.orderId,
-        orderNo: liveSale.orderNo,
-        commandId: liveSale.vendingCommandId,
+      runId: guestInput.runId,
+      lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
+      transactionId: `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
+      saleCorrelationId,
+      orderId: liveSale.orderId,
+      orderNo: liveSale.orderNo,
+      commandId: liveSale.vendingCommandId,
       commandNo: command.commandNo,
     });
     const controlPlaneEvidence = await controlPlaneRequest(
@@ -789,7 +881,7 @@ async function runDelayedPickupGuestFull(options) {
     const cleanupErrors = report.errors.cleanup;
     const collectBestEffort = async (label, callback) => {
       try {
-        await callback();
+        await withinDeadline(callback, "collection");
       } catch (error) {
         collectionErrors.push(`${label}: ${formatError(error)}`);
       }
@@ -823,7 +915,10 @@ async function runDelayedPickupGuestFull(options) {
     });
     await collectBestEffort("ui-snapshot", async () => {
       if (!client) return;
-      writeJson(uiSnapshotPath, await readInstalledMachineProductionSample(client));
+      writeJson(
+        uiSnapshotPath,
+        await readInstalledMachineProductionSample(client),
+      );
     });
     await collectBestEffort("finally-screenshot", async () => {
       if (!client) return;
@@ -831,7 +926,8 @@ async function runDelayedPickupGuestFull(options) {
         screenshot: true,
         screenshotSink: sink,
       });
-      if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
+      if (checkpoint?.screenshot?.ref)
+        screenshotRefs.push(checkpoint.screenshot.ref);
     });
     report.evidence = issue17EvidenceIndex({
       guestInputPath: options.guestInputPath,
@@ -850,7 +946,7 @@ async function runDelayedPickupGuestFull(options) {
     });
     const cleanupBestEffort = async (label, callback) => {
       try {
-        await callback();
+        await withinDeadline(callback, "cleanup");
       } catch (error) {
         cleanupErrors.push(`${label}: ${formatError(error)}`);
       }
@@ -879,6 +975,12 @@ async function runDelayedPickupGuestFull(options) {
           `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
         );
       }
+    });
+    await cleanupBestEffort("audio-capture", async () => {
+      if (liveEvidence?.audioStop) return;
+      await controlPlaneRequest(guestInput, "/v1/audio-captures/cancel", {
+        operationId: audioOperationId,
+      });
     });
     await cleanupBestEffort("live-track-close", async () => {
       await delayedTrack?.close();

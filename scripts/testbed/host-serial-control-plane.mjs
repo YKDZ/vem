@@ -66,7 +66,11 @@ function positiveInteger(value, label) {
 }
 
 function runtimeBinding(runtime) {
-  if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) {
+  if (
+    runtime === null ||
+    typeof runtime !== "object" ||
+    Array.isArray(runtime)
+  ) {
     throw new Error("runtime binding is required");
   }
   const processId = Number(runtime.processId);
@@ -79,10 +83,7 @@ function runtimeBinding(runtime) {
   }
   return {
     processId,
-    executablePath: required(
-      runtime.executablePath,
-      "runtime.executablePath",
-    ),
+    executablePath: required(runtime.executablePath, "runtime.executablePath"),
     principal: required(runtime.principal, "runtime.principal"),
     sessionId,
     cdpTargetId: required(runtime.cdpTargetId, "runtime.cdpTargetId"),
@@ -281,7 +282,13 @@ function audioStartArgs({ input, outPath, evidenceDirectory, runtime }) {
   });
 }
 
-function audioStopArgs({ capture, input, outPath, evidenceDirectory, runtime }) {
+function audioStopArgs({
+  capture,
+  input,
+  outPath,
+  evidenceDirectory,
+  runtime,
+}) {
   return [
     ...audioBaseArgs({
       input: {
@@ -318,7 +325,32 @@ function audioStopArgs({ capture, input, outPath, evidenceDirectory, runtime }) 
   ];
 }
 
-function runJsonCommand(command) {
+function audioCancelArgs({ capture, outPath, evidenceDirectory, runtime }) {
+  return [
+    ...audioBaseArgs({
+      input: capture.startInput,
+      outPath,
+      evidenceDirectory,
+      runtime,
+      phase: "cancel",
+    }).slice(0, -4),
+    "--capture-session-id",
+    capture.startReport.captureSession.captureSessionId,
+    "--start-operation-reference",
+    capture.startReport.captureSession.startOperationReference,
+    "--capture-started-at",
+    capture.startReport.captureSession.startedAt,
+    "--evidence-dir",
+    evidenceDirectory,
+    "--out",
+    outPath,
+  ];
+}
+
+export function runJsonCommand(
+  command,
+  { timeoutMs = 60_000, terminationGraceMs = 2_000 } = {},
+) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command.command, command.args, {
       cwd: command.cwd,
@@ -335,11 +367,36 @@ function runJsonCommand(command) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.once("error", reject);
+    let settled = false;
+    let timedOut = false;
+    let killTimer = null;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      callback(value);
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+      }, terminationGraceMs);
+    }, timeoutMs);
+    child.once("error", (error) => settle(reject, error));
     child.once("exit", (code) => {
-      if (code === 0) resolvePromise({ stdout, stderr });
+      if (timedOut)
+        settle(
+          reject,
+          new Error(`${command.command} exceeded ${timeoutMs}ms deadline`),
+        );
+      else if (code === 0) settle(resolvePromise, { stdout, stderr });
       else
-        reject(
+        settle(
+          reject,
           new Error(
             stderr ||
               stdout ||
@@ -684,7 +741,9 @@ function audioCaptureEnvironment(session) {
 }
 
 function requireAudioCapture(server, audioCaptureId) {
-  const capture = server.audioCaptures.get(required(audioCaptureId, "audioCaptureId"));
+  const capture = server.audioCaptures.get(
+    required(audioCaptureId, "audioCaptureId"),
+  );
   if (!capture) throw new Error("audio capture session was not found");
   return capture;
 }
@@ -692,13 +751,26 @@ function requireAudioCapture(server, audioCaptureId) {
 async function startAudioCapture(server, input) {
   const session = requireSession(server, input.sessionId);
   const runtime = runtimeBinding(input.runtime);
+  const operationId = required(input.operationId, "operationId");
+  const existingId = server.audioCapturesByOperation.get(operationId);
+  if (existingId) {
+    const existing = requireAudioCapture(server, existingId);
+    return {
+      audioCaptureId: existing.id,
+      startReport: existing.startReport,
+      repeated: true,
+    };
+  }
   const audioCaptureId = `audio-capture-${randomUUID()}`;
   const evidenceDirectory = join(session.dir, "host-default-audio");
   mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
   const outPath = join(session.dir, "audio-capture-start.json");
   const startInput = {
     runId: required(input.runId, "runId"),
-    lifecycleReference: required(input.lifecycleReference, "lifecycleReference"),
+    lifecycleReference: required(
+      input.lifecycleReference,
+      "lifecycleReference",
+    ),
     targetIdentity: required(input.targetIdentity, "targetIdentity"),
     transactionId: required(input.transactionId, "transactionId"),
   };
@@ -715,6 +787,7 @@ async function startAudioCapture(server, input) {
   );
   server.audioCaptures.set(audioCaptureId, {
     id: audioCaptureId,
+    operationId,
     sessionId: session.id,
     startInput,
     startReport,
@@ -723,9 +796,11 @@ async function startAudioCapture(server, input) {
     cancelledAt: null,
     stopReport: null,
   });
+  server.audioCapturesByOperation.set(operationId, audioCaptureId);
   return {
     audioCaptureId,
     startReport,
+    repeated: false,
   };
 }
 
@@ -759,7 +834,7 @@ async function stopAudioCapture(server, input) {
   };
 }
 
-function cancelAudioCapture(server, input) {
+async function cancelAudioCapture(server, input) {
   const capture = requireAudioCapture(server, input.audioCaptureId);
   if (capture.stopReport) {
     return {
@@ -768,12 +843,35 @@ function cancelAudioCapture(server, input) {
       cancelled: false,
     };
   }
-  if (!capture.cancelledAt) capture.cancelledAt = new Date().toISOString();
+  if (!capture.cancelledAt) {
+    const session = requireSession(server, capture.sessionId);
+    await runSaleAudioCaptureHostAdapterCli(
+      audioCancelArgs({
+        capture,
+        outPath: join(session.dir, "audio-capture-cancel.json"),
+        evidenceDirectory: capture.evidenceDirectory,
+        runtime: capture.runtime,
+      }),
+      { environment: audioCaptureEnvironment(session), timeoutMs: 10_000 },
+    );
+    capture.cancelledAt = new Date().toISOString();
+  }
   return {
     audioCaptureId: capture.id,
     status: "cancelled",
     cancelled: true,
     cancelledAt: capture.cancelledAt,
+  };
+}
+
+async function cancelAudioCaptureByOperation(server, input) {
+  const operationId = required(input.operationId, "operationId");
+  const captureId = server.audioCapturesByOperation.get(operationId);
+  if (!captureId)
+    return { operationId, status: "not-started", cancelled: false };
+  return {
+    operationId,
+    ...(await cancelAudioCapture(server, { audioCaptureId: captureId })),
   };
 }
 
@@ -1065,7 +1163,13 @@ function authorize(request, token) {
 export function createHostSerialControlPlane(options) {
   const sessions = new Map();
   const audioCaptures = new Map();
-  const serverState = { options, sessions, audioCaptures };
+  const audioCapturesByOperation = new Map();
+  const serverState = {
+    options,
+    sessions,
+    audioCaptures,
+    audioCapturesByOperation,
+  };
   const server = createServer(async (request, response) => {
     try {
       if (!authorize(request, options.token)) {
@@ -1142,10 +1246,29 @@ export function createHostSerialControlPlane(options) {
         });
         return;
       }
-      if (request.method === "POST" && request.url === "/v1/audio-captures/start") {
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/audio-captures/start"
+      ) {
         jsonResponse(response, 200, {
           ok: true,
-          ...(await startAudioCapture(serverState, await readRequestBody(request))),
+          ...(await startAudioCapture(
+            serverState,
+            await readRequestBody(request),
+          )),
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/audio-captures/cancel"
+      ) {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...(await cancelAudioCaptureByOperation(
+            serverState,
+            await readRequestBody(request),
+          )),
         });
         return;
       }
@@ -1172,7 +1295,7 @@ export function createHostSerialControlPlane(options) {
         if (request.method === "POST" && action === "cancel") {
           jsonResponse(response, 200, {
             ok: true,
-            ...cancelAudioCapture(serverState, body),
+            ...(await cancelAudioCapture(serverState, body)),
           });
           return;
         }
@@ -1294,6 +1417,7 @@ export function createHostSerialControlPlane(options) {
   return {
     sessions,
     audioCaptures,
+    audioCapturesByOperation,
     listen() {
       mkdirSync(options.stateRoot, { recursive: true });
       server.listen(options.port, options.bind);

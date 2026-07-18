@@ -125,8 +125,8 @@ function saleBinding(options) {
 
 export function createSaleAudioCaptureRequest(options) {
   const phase = requiredString(options.phase, "--capture-phase");
-  if (!new Set(["start", "stop"]).has(phase))
-    throw new Error("--capture-phase must be start or stop");
+  if (!new Set(["start", "stop", "cancel"]).has(phase))
+    throw new Error("--capture-phase must be start, stop, or cancel");
   const operationNonce =
     options.operationNonce ?? `op-${randomBytes(16).toString("hex")}`;
   const request = {
@@ -161,7 +161,7 @@ export function createSaleAudioCaptureRequest(options) {
               "--capture-started-at",
             ),
           },
-    sale: phase === "start" ? null : options.sale,
+    sale: phase === "stop" ? options.sale : null,
   };
   validateSaleAudioCaptureRequest(request);
   return request;
@@ -192,7 +192,7 @@ export function validateSaleAudioCaptureRequest(request) {
   if (
     request.kind !== "vm-sale-audio-capture-request" ||
     request.operation !== "capture-sale-audio" ||
-    !new Set(["start", "stop"]).has(request.phase)
+    !new Set(["start", "stop", "cancel"]).has(request.phase)
   )
     throw new Error("sale audio capture request operation is invalid");
   canonical(request.runId, TOKEN_ID, "request.runId");
@@ -267,20 +267,25 @@ export function validateSaleAudioCaptureRequest(request) {
       request.captureSession.startedAt,
       "request.captureSession.startedAt",
     );
-    canonical(
-      request.sale?.saleCorrelationId,
-      URI_ID,
-      "request.sale.saleCorrelationId",
-    );
-    canonical(request.sale?.orderId, UUID, "request.sale.orderId");
-    canonical(request.sale?.orderNo, TOKEN_ID, "request.sale.orderNo");
-    canonical(request.sale?.commandId, UUID, "request.sale.commandId");
-    canonical(request.sale?.commandNo, TOKEN_ID, "request.sale.commandNo");
-    exactKeys(
-      request.sale,
-      ["saleCorrelationId", "orderId", "orderNo", "commandId", "commandNo"],
-      "request.sale",
-    );
+    if (request.phase === "cancel") {
+      if (request.sale !== null)
+        throw new Error("capture cancel must not claim sale identifiers");
+    } else {
+      canonical(
+        request.sale?.saleCorrelationId,
+        URI_ID,
+        "request.sale.saleCorrelationId",
+      );
+      canonical(request.sale?.orderId, UUID, "request.sale.orderId");
+      canonical(request.sale?.orderNo, TOKEN_ID, "request.sale.orderNo");
+      canonical(request.sale?.commandId, UUID, "request.sale.commandId");
+      canonical(request.sale?.commandNo, TOKEN_ID, "request.sale.commandNo");
+      exactKeys(
+        request.sale,
+        ["saleCorrelationId", "orderId", "orderNo", "commandId", "commandNo"],
+        "request.sale",
+      );
+    }
   }
   return structuredClone(request);
 }
@@ -338,9 +343,10 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
     "report.captureSession.startOperationReference",
   );
   timestamp(session?.startedAt, "report.captureSession.startedAt");
-  if (request.phase === "start") {
+  if (request.phase === "start" || request.phase === "cancel") {
     if (
-      session.startOperationReference !== request.operationReference ||
+      (request.phase === "start" &&
+        session.startOperationReference !== request.operationReference) ||
       report.capture !== null ||
       !Array.isArray(report.evidence) ||
       report.evidence.length !== 0
@@ -498,7 +504,16 @@ function invokeAdapter(
     child.stderr.on("data", (chunk) => {
       stderr = `${stderr}${chunk}`.slice(-4096);
     });
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    let settled = false;
+    const terminate = () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+      }, 2_000).unref();
+    };
+    const timer = setTimeout(terminate, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
       rmSync(root, { recursive: true, force: true });

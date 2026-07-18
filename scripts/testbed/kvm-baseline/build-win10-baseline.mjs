@@ -1120,11 +1120,16 @@ function xmlAttributeEquals(element, attribute, value) {
 // controller port. The guest verifies those ports.
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
-  const sounds = [...xml.matchAll(/<sound\b[^>]*\/?>(?:<\/sound>)?/g)];
+  const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
+  const audioDevices = [...xml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g)];
   if (
     sounds.length !== 1 ||
     !xmlAttributeEquals(sounds[0][0], "model", profile.audio.model) ||
-    /\baudio=(['"])/.test(sounds[0][0])
+    !/<audio\b[^>]*\bid=(['"])1\1\s*\/>/.test(sounds[0][0]) ||
+    audioDevices.length !== 1 ||
+    !xmlAttributeEquals(audioDevices[0][0], "id", "1") ||
+    !xmlAttributeEquals(audioDevices[0][0], "type", "file") ||
+    !xmlAttributeEquals(audioDevices[0][0], "file", profile.audio.capturePath)
   ) {
     throw new Error("defined domain must use the default ICH9 audio device");
   }
@@ -1155,6 +1160,7 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
     audio: {
       model: profile.audio.model,
       defaultDevice: profile.audio.defaultDevice,
+      capturePath: profile.audio.capturePath,
     },
     serialRoles,
     serialUsbPorts: [...profile.serialUsbPorts],
