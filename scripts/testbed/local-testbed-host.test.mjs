@@ -224,6 +224,7 @@ describe("tracked local testbed host lifecycle", () => {
     );
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(plan.at(-1).type, "restart-runner-and-await-listener");
+    assert.ok(plan.at(-1).args.at(-1).length < 8_000);
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {

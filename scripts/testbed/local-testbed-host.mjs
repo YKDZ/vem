@@ -177,7 +177,7 @@ function encodedPowerShellCommand(script) {
 
 function compressedPowerShellCommand(script) {
   const payload = gzipSync(Buffer.from(script, "utf8")).toString("base64");
-  const bootstrap = `$b=[Convert]::FromBase64String('${payload}');$m=[IO.MemoryStream]::new(,$b);$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);$r=[IO.StreamReader]::new($g);try{& ([ScriptBlock]::Create($r.ReadToEnd()))}finally{$r.Dispose();$g.Dispose();$m.Dispose()}`;
+  const bootstrap = `$b=[Convert]::FromBase64String('${payload}');$m=[IO.MemoryStream]::new($b);$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);$r=[IO.StreamReader]::new($g);try{& ([ScriptBlock]::Create($r.ReadToEnd()))}finally{$r.Dispose();$g.Dispose();$m.Dispose()}`;
   return encodedPowerShellCommand(bootstrap);
 }
 
