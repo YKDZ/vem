@@ -4,6 +4,20 @@ $version = "7.4.6"
 $root = "D:\runtime-cache\v1\powershell\$version"
 $executable = Join-Path $root "pwsh.exe"
 
+function Test-CachedPowerShell {
+  if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { return $false }
+  & $executable -NoProfile -Command @'
+if ($PSVersionTable.PSVersion.ToString() -ne "7.4.6") { exit 1 }
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+$null = '{}' | ConvertFrom-Json -ErrorAction Stop
+'@
+  return $LASTEXITCODE -eq 0
+}
+
+if (-not (Test-CachedPowerShell)) {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
   $archive = Join-Path $env:TEMP "PowerShell-$version-win-x64.zip"
   $pending = "$root.pending"
@@ -29,7 +43,7 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
   }
 }
 
-if ((& $executable -NoProfile -Command '$PSVersionTable.PSVersion.ToString()').Trim() -ne $version) {
-  throw "cached PowerShell version is invalid"
+if (-not (Test-CachedPowerShell)) {
+  throw "cached PowerShell installation is invalid"
 }
 $root | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

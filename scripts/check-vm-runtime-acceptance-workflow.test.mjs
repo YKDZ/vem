@@ -33,6 +33,21 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /VEM_LOCAL_TESTBED_STATE_ROOT/);
     assert.match(workflow, /VEM_VM_HOST_LOCK_PATH/);
     assert.equal(
+      (workflow.match(/VEM_RUNNER_HTTP_PROXY: \$\{\{ vars\.VEM_RUNNER_HTTP_PROXY \}\}/g) ?? [])
+        .length,
+      2,
+    );
+    assert.equal(
+      (workflow.match(/VEM_RUNNER_HTTPS_PROXY: \$\{\{ vars\.VEM_RUNNER_HTTPS_PROXY \}\}/g) ?? [])
+        .length,
+      2,
+    );
+    assert.equal(
+      (workflow.match(/VEM_RUNNER_NO_PROXY: \$\{\{ vars\.VEM_RUNNER_NO_PROXY \}\}/g) ?? [])
+        .length,
+      2,
+    );
+    assert.equal(
       (workflow.match(/flock "\$VEM_VM_HOST_LOCK_PATH"/g) ?? []).length,
       2,
     );
@@ -76,6 +91,12 @@ describe("VM runtime acceptance workflow", () => {
         .length,
       2,
     );
+    const bootstrap = readFileSync(
+      new URL("./testbed/ensure-testbed-pwsh.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(bootstrap, /Import-Module Microsoft\.PowerShell\.Utility/);
+    assert.match(bootstrap, /ConvertFrom-Json -ErrorAction Stop/);
   });
 
   it("uploads only the bounded evidence bundle plus the clear-cache report without forbidden media", () => {
