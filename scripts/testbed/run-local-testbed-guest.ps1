@@ -185,15 +185,19 @@ function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
   }
 }
 
-function Invoke-Claim([object]$Input) {
+function Invoke-Claim([object]$GuestInput) {
+  $claimCode = [string]$GuestInput.claimCode
+  if ($claimCode -notmatch '^[A-Z0-9]{4}-[A-Z0-9]{4}$') {
+    throw "testbed claim code is invalid: $claimCode"
+  }
   $readyPath = Join-Path $daemonDataRoot "daemon-ready.json"
   $deadline = [DateTime]::UtcNow.AddMinutes(2)
   do {
     if (Test-Path -LiteralPath $readyPath) {
       $ready = Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json
       try {
-        $response = Invoke-RestMethod -Method Post -Uri "$($ready.healthzUrl -replace '/healthz$', '')/v1/provisioning/claim" -Headers @{ Authorization = "Bearer $($ready.ipcToken)" } -ContentType "application/json" -Body (@{ claimCode = [string]$Input.claimCode } | ConvertTo-Json -Compress) -TimeoutSec 10
-        if ($response.machineCode -ne $Input.machineCode) { throw "claim returned an unexpected machine" }
+        $response = Invoke-RestMethod -Method Post -Uri "$($ready.healthzUrl -replace '/healthz$', '')/v1/provisioning/claim" -Headers @{ Authorization = "Bearer $($ready.ipcToken)" } -ContentType "application/json" -Body (@{ claimCode = $claimCode } | ConvertTo-Json -Compress) -TimeoutSec 10
+        if ($response.machineCode -ne $GuestInput.machineCode) { throw "claim returned an unexpected machine" }
         return $response
       } catch { $lastError = $_ }
     }
