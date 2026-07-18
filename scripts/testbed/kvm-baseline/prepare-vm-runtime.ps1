@@ -65,7 +65,7 @@ function Get-VirtioGpuPackageIdentity {
   param([string] $DriverRoot, [string] $IdentityPath)
   if (-not (Test-Path -LiteralPath $IdentityPath -PathType Leaf)) { throw "VirtIO GPU driver identity is unavailable" }
   $identity = Get-Content -Raw -LiteralPath $IdentityPath | ConvertFrom-Json
-  if ($identity.schemaVersion -ne "win10-kvm-virtio-gpu-driver-package/v1" -or $identity.sourceDirectory -cne "viogpudo/w10/amd64" -or [string]$identity.packageSha256 -notmatch "^[0-9a-f]{64}$") {
+  if ($identity.schemaVersion -ne "win10-kvm-virtio-gpu-driver-package/v2" -or $identity.sourceDirectory -cne "viogpudo/w10/amd64" -or [string]$identity.packageSha256 -notmatch "^[0-9a-f]{64}$") {
     throw "VirtIO GPU driver package identity is invalid"
   }
   $root = (Resolve-Path -LiteralPath $DriverRoot -ErrorAction Stop).Path.TrimEnd("\")
@@ -95,6 +95,19 @@ function Get-VirtioGpuPackageIdentity {
     $sha256.Dispose()
   }
   if ($packageHash -cne [string]$identity.packageSha256) { throw "VirtIO GPU driver aggregate identity does not match package files" }
+  $driverStoreFiles = @($identity.driverStoreFiles | Sort-Object path)
+  if ($driverStoreFiles.Count -lt 3 -or @($driverStoreFiles.path | Select-Object -Unique).Count -ne $driverStoreFiles.Count) {
+    throw "VirtIO GPU DriverStore file identity is invalid"
+  }
+  foreach ($extension in @(".inf", ".cat", ".sys")) {
+    if (@($driverStoreFiles | Where-Object { [IO.Path]::GetExtension([string]$_.path) -ieq $extension }).Count -lt 1) {
+      throw "VirtIO GPU DriverStore file identity is incomplete"
+    }
+  }
+  foreach ($file in $driverStoreFiles) {
+    $distributionFile = @($expectedFiles | Where-Object { [string]$_.path -ceq [string]$file.path -and [string]$_.sha256 -ceq [string]$file.sha256 })
+    if ($distributionFile.Count -ne 1) { throw "VirtIO GPU DriverStore identity is not bound to the distribution package" }
+  }
   return $identity
 }
 
@@ -114,7 +127,15 @@ function Install-VirtioGpuDisplayDriver {
       throw "VirtIO GPU driver catalog signature is invalid"
     }
   }
-  Invoke-Native -FilePath "pnputil.exe" -ArgumentList @("/add-driver", $driverInf.FullName, "/install") -Description "signed VirtIO GPU driver installation"
+  & "pnputil.exe" @("/add-driver", $driverInf.FullName, "/install")
+  $driverInstallExitCode = $LASTEXITCODE
+  # pnputil can report ERROR_NO_MORE_ITEMS when the exact package is already
+  # current, or ERROR_SUCCESS_REBOOT_REQUIRED after accepting it. Neither is
+  # trusted on its own: the signed PnP and DriverStore identity below remains
+  # the acceptance boundary.
+  if ($driverInstallExitCode -notin @(0, 259, 3010)) {
+    throw "signed VirtIO GPU driver installation failed with exit code $driverInstallExitCode"
+  }
 
   $deadline = [DateTime]::UtcNow.AddMinutes(2)
   do {
@@ -134,7 +155,7 @@ function Install-VirtioGpuDisplayDriver {
         if ($null -ne $driverPackage -and (Split-Path -Leaf ([string]$driverPackage.OriginalFileName)) -ieq $driverInf.Name) {
           $driverStoreRoot = Split-Path -Parent ([string]$driverPackage.OriginalFileName)
           $storeMatches = $true
-          foreach ($file in @($identity.files)) {
+          foreach ($file in @($identity.driverStoreFiles)) {
             $storePath = Join-Path $driverStoreRoot ([string]$file.path).Replace("/", "\")
             if (-not (Test-Path -LiteralPath $storePath -PathType Leaf) -or (Get-Sha256 -Path $storePath) -cne [string]$file.sha256) {
               $storeMatches = $false
@@ -145,7 +166,7 @@ function Install-VirtioGpuDisplayDriver {
             Write-AtomicJson -Path $virtioGpuDriverBindingPath -Value @{
               schemaVersion = "win10-kvm-virtio-gpu-driver-binding/v1"
               packageSha256 = [string]$identity.packageSha256
-              files = @($identity.files)
+              files = @($identity.driverStoreFiles)
               pnpDeviceId = [string]$adapter.PNPDeviceID
               infName = [string]$signedDriver.InfName
               provider = [string]$signedDriver.DriverProviderName
@@ -160,6 +181,43 @@ function Install-VirtioGpuDisplayDriver {
     Start-Sleep -Seconds 2
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "signed VirtIO GPU driver did not bind to a healthy display adapter"
+}
+
+function Test-VirtioGpuDriverBinding {
+  if (-not (Test-Path -LiteralPath $virtioGpuDriverBindingPath -PathType Leaf)) { return $false }
+  try {
+    $binding = Get-Content -Raw -LiteralPath $virtioGpuDriverBindingPath | ConvertFrom-Json
+    if (
+      $binding.schemaVersion -ne "win10-kvm-virtio-gpu-driver-binding/v1" -or
+      [string]$binding.packageSha256 -notmatch "^[0-9a-f]{64}$" -or
+      [string]::IsNullOrWhiteSpace([string]$binding.pnpDeviceId) -or
+      [string]::IsNullOrWhiteSpace([string]$binding.infName)
+    ) { return $false }
+    $adapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Status -eq "OK" -and
+        $_.ConfigManagerErrorCode -eq 0 -and
+        $_.PNPDeviceID -eq [string]$binding.pnpDeviceId
+      } |
+      Select-Object -First 1
+    if ($null -eq $adapter) { return $false }
+    $signedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.DeviceID -eq [string]$binding.pnpDeviceId -and
+        $_.IsSigned -eq $true -and
+        $_.InfName -ieq [string]$binding.infName
+      } |
+      Select-Object -First 1
+    return $null -ne $signedDriver
+  } catch {
+    return $false
+  }
+}
+
+function Assert-VirtioGpuDriverBinding {
+  if (-not (Test-VirtioGpuDriverBinding)) {
+    throw "a verified VirtIO GPU driver binding is required before interactive display preparation"
+  }
 }
 
 function Get-FreeDriveLetter {
@@ -501,6 +559,7 @@ function Test-InteractiveDisplayReport {
 
 function Complete-InteractiveDisplayPreparation {
   param([Parameter(Mandatory = $true)] [object] $Report)
+  Assert-VirtioGpuDriverBinding
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
   Remove-InteractiveDisplayPreparationTask
@@ -516,6 +575,7 @@ function Complete-InteractiveDisplayPreparation {
 }
 
 function Complete-InteractiveDisplayPreparationFromValidReport {
+  if (-not (Test-VirtioGpuDriverBinding)) { return $false }
   $existingReport = $null
   if (Test-Path -LiteralPath $interactiveDisplayReportPath -PathType Leaf) {
     try { $existingReport = Get-Content -Raw -LiteralPath $interactiveDisplayReportPath | ConvertFrom-Json } catch { $existingReport = $null }
@@ -526,6 +586,7 @@ function Complete-InteractiveDisplayPreparationFromValidReport {
 }
 
 function Initialize-InteractiveDisplayPreparation {
+  Assert-VirtioGpuDriverBinding
   if (Complete-InteractiveDisplayPreparationFromValidReport) { return }
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt + 1 }
@@ -537,6 +598,7 @@ function Initialize-InteractiveDisplayPreparation {
 }
 
 function Prepare-InteractiveDisplay {
+  Assert-VirtioGpuDriverBinding
   if (-not (Test-ExpectedInteractiveSession)) {
     throw "interactive display preparation must run in the configured user's interactive session"
   }
@@ -587,6 +649,7 @@ function Get-InteractiveDisplayPreparationStatus {
   $state = Read-InteractiveDisplayPreparationState
   $task = Get-InteractiveDisplayTaskStatus
   $cleanup = Get-InteractiveDisplayCleanupStatus -Task $task
+  $driverBindingValid = Test-VirtioGpuDriverBinding
   @{
     schemaVersion = "win10-kvm-interactive-display-status/v1"
     reportPresent = $null -ne $report
@@ -595,7 +658,8 @@ function Get-InteractiveDisplayPreparationStatus {
     state = $state
     task = $task
     cleanup = $cleanup
-    completionValid = (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonDisabled
+    driverBindingValid = $driverBindingValid
+    completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonDisabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
   } | ConvertTo-Json -Depth 6
@@ -616,8 +680,9 @@ function Rearm-InteractiveDisplay {
     Get-InteractiveDisplayPreparationStatus
     return
   }
-  Restart-Computer -Force
-  throw "interactive display preparation re-arm did not restart Windows"
+  Invoke-Native -FilePath "shutdown.exe" -ArgumentList @("/r", "/t", "0", "/f") -Description "interactive display preparation reboot"
+  Start-Sleep -Seconds 60
+  throw "interactive display preparation reboot did not disconnect the initiating session"
 }
 
 function Prepare-KvmGuest {

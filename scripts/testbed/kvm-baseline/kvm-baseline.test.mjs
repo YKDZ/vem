@@ -484,7 +484,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 const builder = await import(${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)});
 const linux = await import(${JSON.stringify(new URL("./linux-kvm-baseline.mjs", import.meta.url).href)});
-const [configPath, xvfbPath, viewerPath, readyPath] = process.argv.slice(2);
+const [configPath, xvfbPath, windowManagerPath, viewerPath, readyPath] = process.argv.slice(2);
 const config = JSON.parse(await readFile(configPath, "utf8"));
 const owner = await builder.createConstructionWorkspace(config, {
   nextBuildId: () => "deadbeef",
@@ -499,6 +499,8 @@ await linux.startHeadlessVncActivator({
   commands: {
     xvfb: process.execPath,
     xvfbArguments: [xvfbPath],
+    windowManager: process.execPath,
+    windowManagerArguments: [windowManagerPath],
     viewer: process.execPath,
     viewerArguments: [viewerPath],
   },
@@ -518,7 +520,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const builder = await import(${JSON.stringify(new URL("./build-win10-baseline.mjs", import.meta.url).href)});
 const linux = await import(${JSON.stringify(new URL("./linux-kvm-baseline.mjs", import.meta.url).href)});
-const [configPath, xvfbPath, viewerPath, statePath, crashRole] = process.argv.slice(2);
+const [configPath, xvfbPath, windowManagerPath, viewerPath, statePath, crashRole] = process.argv.slice(2);
 const config = JSON.parse(readFileSync(configPath, "utf8"));
 const owner = await builder.createConstructionWorkspace(config, {
   nextBuildId: () => "deadbeef",
@@ -529,7 +531,7 @@ let launchIndex = 0;
 const startProcess = (...arguments_) => {
   const handle = tracker.start(...arguments_);
   launchIndex += 1;
-  const role = launchIndex === 1 ? "xvfb" : "viewer";
+  const role = ["xvfb", "window-manager", "viewer"][launchIndex - 1];
   if (role === crashRole) {
     process.kill(handle.child.pid, "SIGSTOP");
     writeFileSync(statePath, JSON.stringify({ launchPid: handle.child.pid, metadataPath, owner, role }));
@@ -545,6 +547,8 @@ await linux.startHeadlessVncActivator({
   commands: {
     xvfb: process.execPath,
     xvfbArguments: [xvfbPath],
+    windowManager: process.execPath,
+    windowManagerArguments: [windowManagerPath],
     viewer: process.execPath,
     viewerArguments: [viewerPath],
   },
@@ -566,6 +570,13 @@ function assertProcessIsNotRunning(pid) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
+}
+
+function writePersistentFakeWindowManager(path) {
+  writeFileSync(
+    path,
+    'process.on("SIGTERM", () => {}); await new Promise(() => setInterval(() => {}, 1_000));\n',
+  );
 }
 
 const REQUIRED_PRE_PHASE_KILL_STAGES = Object.freeze([
@@ -647,11 +658,12 @@ describe("Linux KVM Windows baseline", () => {
   });
 
   it(
-    "activates the dynamic loopback VNC display with tracked headless children and stops both",
+    "activates the dynamic loopback VNC display with tracked headless children and stops all",
     { timeout: 3_000 },
     async () => {
       const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-activator-"));
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-gvncviewer.mjs");
       const xvfbPidPath = join(root, "xvfb.pid");
       const viewerStatePath = join(root, "viewer.json");
@@ -687,6 +699,7 @@ process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
         );
+        writePersistentFakeWindowManager(windowManagerPath);
         const tracker = createConstructionCommandTracker();
         const commands = [];
         const startProcessWithStalledCompletion = (...arguments_) => {
@@ -704,6 +717,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
           commands: {
             xvfb: process.execPath,
             xvfbArguments: [xvfbPath],
+            windowManager: process.execPath,
+            windowManagerArguments: [windowManagerPath],
             viewer: process.execPath,
             viewerArguments: [viewerPath],
           },
@@ -738,8 +753,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
         const xvfbPid = Number(readFileSync(xvfbPidPath, "utf8"));
         const viewerPid = JSON.parse(readFileSync(viewerStatePath, "utf8")).pid;
         const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-        assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v1");
+        assert.equal(metadata.schemaVersion, "win10-kvm-vnc-activator/v2");
         assert.deepEqual(metadata.owner, owner);
+        assert.deepEqual(Object.keys(metadata.processes), [
+          "xvfb",
+          "window-manager",
+          "viewer",
+        ]);
         assert.notEqual(metadata.processes.xvfb.pid, xvfbPid);
         assert.notEqual(metadata.processes.viewer.pid, viewerPid);
         for (const identity of Object.values(metadata.processes)) {
@@ -765,11 +785,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
   );
 
   it(
-    "aborts and awaits both tracked VNC activator children",
+    "aborts and awaits all tracked VNC activator children",
     { timeout: 3_000 },
     async () => {
       const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-cancel-"));
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-gvncviewer.mjs");
       const xvfbPidPath = join(root, "xvfb.pid");
       const viewerStatePath = join(root, "viewer.json");
@@ -800,6 +821,7 @@ process.on("SIGTERM", () => {});
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
         );
+        writePersistentFakeWindowManager(windowManagerPath);
         const tracker = createConstructionCommandTracker({
           terminationGraceMs: 25,
         });
@@ -811,6 +833,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
           commands: {
             xvfb: process.execPath,
             xvfbArguments: [xvfbPath],
+            windowManager: process.execPath,
+            windowManagerArguments: [windowManagerPath],
             viewer: process.execPath,
             viewerArguments: [viewerPath],
           },
@@ -843,6 +867,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     async () => {
       const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-late-exit-"));
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-gvncviewer.mjs");
       const metadataPath = join(root, ".vnc-activator.json");
       const owner = {
@@ -861,6 +886,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
           viewerPath,
           "await new Promise((resolve) => setTimeout(resolve, 75));\n",
         );
+        writePersistentFakeWindowManager(windowManagerPath);
         const tracker = createConstructionCommandTracker();
         const startProcessWithStalledCompletion = (...arguments_) => {
           const handle = tracker.start(...arguments_);
@@ -880,6 +906,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
           commands: {
             xvfb: process.execPath,
             xvfbArguments: [xvfbPath],
+            windowManager: process.execPath,
+            windowManagerArguments: [windowManagerPath],
             viewer: process.execPath,
             viewerArguments: [viewerPath],
           },
@@ -1132,6 +1160,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "scp",
               "flock",
               "Xvfb",
+              "openbox",
               "gvncviewer",
             ],
             cpuCount: 32,
@@ -1165,6 +1194,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "scp",
               "flock",
               "Xvfb",
+              "openbox",
               "gvncviewer",
             ],
             cpuCount: 8,
@@ -1244,6 +1274,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "scp",
               "flock",
               "Xvfb",
+              "openbox",
               "gvncviewer",
             ],
             cpuCount: 8,
@@ -2128,7 +2159,12 @@ await new Promise(() => setInterval(() => {}, 1_000));
         configurationMedia.virtioGpuDriverIdentity,
         driverIdentity,
       );
+      assert.equal(
+        driverIdentity.schemaVersion,
+        "win10-kvm-virtio-gpu-driver-package/v2",
+      );
       assert.match(driverIdentity.packageSha256, /^[0-9a-f]{64}$/);
+      assert.deepEqual(driverIdentity.driverStoreFiles, driverIdentity.files);
       assert.match(
         bootstrapScript(),
         /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest -VirtioGpuDriverPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverDirectory\) -VirtioGpuDriverIdentityPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverIdentityFile\)/,
@@ -2179,6 +2215,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
         mkdirSync(directory, { recursive: true });
         writeFileSync(join(directory, "viogpudo.inf"), "same inf name");
         writeFileSync(join(directory, "viogpudo.cat"), "signed catalog");
+        writeFileSync(join(directory, "viogpudo.pdb"), "distribution symbols");
       }
       writeFileSync(join(first, "viogpudo.sys"), "release one");
       writeFileSync(join(second, "viogpudo.sys"), "release two");
@@ -2196,6 +2233,16 @@ await new Promise(() => setInterval(() => {}, 1_000));
         secondIdentity.packageSha256,
       );
       assert.match(firstIdentity.packageSha256, /^[0-9a-f]{64}$/);
+      assert.deepEqual(
+        firstIdentity.driverStoreFiles.map(({ path }) => path),
+        ["viogpudo.cat", "viogpudo.inf", "viogpudo.sys"],
+      );
+      assert.equal(
+        firstIdentity.driverStoreFiles.some(({ path }) =>
+          path.endsWith(".pdb"),
+        ),
+        false,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2257,6 +2304,20 @@ await new Promise(() => setInterval(() => {}, 1_000));
       runtime,
       /function Install-VirtioGpuDisplayDriver[\s\S]*pnputil\.exe[\s\S]*@\("\/add-driver", \$driverInf\.FullName, "\/install"\)/,
     );
+    assert.match(runtime, /\$driverInstallExitCode -notin @\(0, 259, 3010\)/);
+    assert.match(
+      runtime,
+      /function Test-VirtioGpuDriverBinding[\s\S]*Win32_VideoController[\s\S]*Win32_PnPSignedDriver/,
+    );
+    assert.match(
+      runtime,
+      /function Initialize-InteractiveDisplayPreparation \{[\s\S]*Assert-VirtioGpuDriverBinding/,
+    );
+    assert.match(
+      runtime,
+      /function Prepare-InteractiveDisplay \{[\s\S]*Assert-VirtioGpuDriverBinding/,
+    );
+    assert.match(runtime, /driverBindingValid = \$driverBindingValid/);
     assert.match(
       runtime,
       /Win32_VideoController[\s\S]*Status -eq "OK"[\s\S]*ConfigManagerErrorCode -eq 0[\s\S]*PNPDeviceID -match "\^PCI\\\\VEN_1AF4&"/,
@@ -2270,6 +2331,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(
       runtime,
       /packageSha256[\s\S]*Get-Sha256[\s\S]*driverStoreRoot/,
+    );
+    assert.match(
+      runtime,
+      /driverStoreFiles[\s\S]*DriverStore identity is not bound to the distribution package/,
     );
     assert.match(runtime, /virtio-gpu-driver-binding\.json/);
     assert.doesNotMatch(
@@ -2340,7 +2405,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.ok(
       rearmInteractiveDisplay.indexOf(
         "Initialize-InteractiveDisplayPreparation",
-      ) < rearmInteractiveDisplay.indexOf("Restart-Computer -Force"),
+      ) < rearmInteractiveDisplay.indexOf('"shutdown.exe"'),
       "the host-triggered retry must register the task before rebooting into autologon",
     );
     assert.match(runtime, /CDS_UPDATEREGISTRY/);
@@ -3728,9 +3793,12 @@ await writeFile(markerPath, "created");
       completionChecks[1].index >
         rearm.indexOf("Initialize-InteractiveDisplayPreparation"),
     );
-    assert.ok(
-      completionChecks[1].index < rearm.indexOf("Restart-Computer -Force"),
+    assert.ok(completionChecks[1].index < rearm.indexOf('"shutdown.exe"'));
+    assert.match(
+      rearm,
+      /Invoke-Native -FilePath "shutdown\.exe" -ArgumentList @\("\/r", "\/t", "0", "\/f"\)/,
     );
+    assert.match(rearm, /Start-Sleep -Seconds 60/);
   });
 
   it("publishes the final display report only after cleanup and commits complete state last", () => {
@@ -3764,7 +3832,10 @@ await writeFile(markerPath, "created");
           'Write-InteractiveDisplayPreparationState -Phase "complete"',
         ),
     );
-    assert.match(runtime, /completionValid = \(Test-InteractiveDisplayReport/);
+    assert.match(
+      runtime,
+      /completionValid = \$driverBindingValid -and \(Test-InteractiveDisplayReport/,
+    );
   });
 
   it("has an independent manual workflow that never uploads a baseline image", () => {
@@ -4078,10 +4149,12 @@ await writeFile(markerPath, "created");
       const configPath = join(root, "config.json");
       const childPath = join(root, "hard-crash-child.mjs");
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-viewer.mjs");
       const unrelatedPath = join(root, "unrelated.pid");
       const readyPath = join(root, "ready.json");
       const xvfbTargetPath = join(root, "xvfb-target.pid");
+      const windowManagerTargetPath = join(root, "window-manager-target.pid");
       const viewerTargetPath = join(root, "viewer-target.pid");
       let builderChild;
       let unrelated;
@@ -4104,17 +4177,29 @@ if (process.env.VIEWER_TARGET_PATH) await writeFile(process.env.VIEWER_TARGET_PA
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
         );
+        writeFileSync(
+          windowManagerPath,
+          'import { writeFileSync } from "node:fs"; writeFileSync(process.env.WINDOW_MANAGER_TARGET_PATH, String(process.pid)); await new Promise(() => setInterval(() => {}, 1_000));\n',
+        );
         unrelated = spawn(process.execPath, [viewerPath], {
           env: { ...process.env, UNRELATED_PID_PATH: unrelatedPath },
           stdio: "ignore",
         });
         builderChild = spawn(
           process.execPath,
-          [childPath, configPath, xvfbPath, viewerPath, readyPath],
+          [
+            childPath,
+            configPath,
+            xvfbPath,
+            windowManagerPath,
+            viewerPath,
+            readyPath,
+          ],
           {
             env: {
               ...process.env,
               VIEWER_TARGET_PATH: viewerTargetPath,
+              WINDOW_MANAGER_TARGET_PATH: windowManagerTargetPath,
               XVFB_TARGET_PATH: xvfbTargetPath,
             },
             stdio: ["ignore", "pipe", "pipe"],
@@ -4137,9 +4222,11 @@ await new Promise(() => setInterval(() => {}, 1_000));
           (identity) => identity.pid,
         );
         const unrelatedPid = Number(readFileSync(unrelatedPath, "utf8"));
-        targetPids = [xvfbTargetPath, viewerTargetPath].map((path) =>
-          Number(readFileSync(path, "utf8")),
-        );
+        targetPids = [
+          xvfbTargetPath,
+          windowManagerTargetPath,
+          viewerTargetPath,
+        ].map((path) => Number(readFileSync(path, "utf8")));
 
         builderChild.kill("SIGKILL");
         await once(builderChild, "exit");
@@ -4201,6 +4288,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
       const configPath = join(root, "config.json");
       const childPath = join(root, "launch-window-child.mjs");
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-viewer.mjs");
       const statePath = join(root, "launch-state.json");
       const xvfbTargetPath = join(root, "xvfb-target.json");
@@ -4236,7 +4324,15 @@ await new Promise(() => setInterval(() => {}, 1_000));
         });
         builderChild = spawn(
           process.execPath,
-          [childPath, configPath, xvfbPath, viewerPath, statePath, "xvfb"],
+          [
+            childPath,
+            configPath,
+            xvfbPath,
+            viewerPath,
+            viewerPath,
+            statePath,
+            "xvfb",
+          ],
           {
             env: { ...process.env, XVFB_TARGET_PATH: xvfbTargetPath },
             stdio: ["ignore", "pipe", "pipe"],
@@ -4324,15 +4420,18 @@ await new Promise(() => setInterval(() => {}, 1_000));
       const configPath = join(root, "config.json");
       const childPath = join(root, "launch-window-child.mjs");
       const xvfbPath = join(root, "fake-xvfb.mjs");
+      const windowManagerPath = join(root, "fake-window-manager.mjs");
       const viewerPath = join(root, "fake-viewer.mjs");
       const statePath = join(root, "launch-state.json");
       const xvfbTargetPath = join(root, "xvfb-target.json");
+      const windowManagerTargetPath = join(root, "window-manager-target.json");
       const viewerTargetPath = join(root, "viewer-target.json");
       const unrelatedPath = join(root, "unrelated.pid");
       let builderChild;
       let unrelated;
       let launchPid;
       let xvfbTargetPid;
+      let windowManagerTargetPid;
       try {
         mkdirSync(dirname(config.storage.baselinePath), { recursive: true });
         mkdirSync(dirname(config.storage.cacheDiskPath), { recursive: true });
@@ -4356,17 +4455,34 @@ if (process.env.VIEWER_TARGET_PATH) writeFileSync(process.env.VIEWER_TARGET_PATH
 await new Promise(() => setInterval(() => {}, 1_000));
 `,
         );
+        writeFileSync(
+          windowManagerPath,
+          `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.WINDOW_MANAGER_TARGET_PATH, JSON.stringify({ pid: process.pid }));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+        );
         unrelated = spawn(process.execPath, [viewerPath], {
           env: { ...process.env, UNRELATED_PID_PATH: unrelatedPath },
           stdio: "ignore",
         });
         builderChild = spawn(
           process.execPath,
-          [childPath, configPath, xvfbPath, viewerPath, statePath, "viewer"],
+          [
+            childPath,
+            configPath,
+            xvfbPath,
+            windowManagerPath,
+            viewerPath,
+            statePath,
+            "viewer",
+          ],
           {
             env: {
               ...process.env,
               VIEWER_TARGET_PATH: viewerTargetPath,
+              WINDOW_MANAGER_TARGET_PATH: windowManagerTargetPath,
               XVFB_TARGET_PATH: xvfbTargetPath,
             },
             stdio: ["ignore", "pipe", "pipe"],
@@ -4376,7 +4492,8 @@ await new Promise(() => setInterval(() => {}, 1_000));
         while (
           (!existsSync(statePath) ||
             !existsSync(unrelatedPath) ||
-            !existsSync(xvfbTargetPath)) &&
+            !existsSync(xvfbTargetPath) ||
+            !existsSync(windowManagerTargetPath)) &&
           Date.now() < deadline
         ) {
           await new Promise((resolveWait) => setTimeout(resolveWait, 20));
@@ -4384,13 +4501,20 @@ await new Promise(() => setInterval(() => {}, 1_000));
         assert.equal(existsSync(statePath), true);
         assert.equal(existsSync(unrelatedPath), true);
         assert.equal(existsSync(xvfbTargetPath), true);
+        assert.equal(existsSync(windowManagerTargetPath), true);
         const state = JSON.parse(readFileSync(statePath, "utf8"));
         launchPid = state.launchPid;
         xvfbTargetPid = JSON.parse(readFileSync(xvfbTargetPath, "utf8")).pid;
+        windowManagerTargetPid = JSON.parse(
+          readFileSync(windowManagerTargetPath, "utf8"),
+        ).pid;
         const beforeCrash = JSON.parse(
           readFileSync(state.metadataPath, "utf8"),
         );
-        assert.deepEqual(Object.keys(beforeCrash.processes), ["xvfb"]);
+        assert.deepEqual(Object.keys(beforeCrash.processes), [
+          "xvfb",
+          "window-manager",
+        ]);
 
         builderChild.kill("SIGKILL");
         await once(builderChild, "exit");
@@ -4413,6 +4537,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
 
         assertProcessIsNotRunning(launchPid);
         assertProcessIsNotRunning(xvfbTargetPid);
+        assertProcessIsNotRunning(windowManagerTargetPid);
         assert.equal(existsSync(viewerTargetPath), false);
         assert.doesNotThrow(() =>
           process.kill(Number(readFileSync(unrelatedPath, "utf8")), 0),
@@ -4428,7 +4553,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
           builderChild.kill("SIGKILL");
           await once(builderChild, "exit");
         }
-        for (const pid of [launchPid, xvfbTargetPid]) {
+        for (const pid of [launchPid, xvfbTargetPid, windowManagerTargetPid]) {
           if (!pid) continue;
           try {
             process.kill(pid, "SIGKILL");

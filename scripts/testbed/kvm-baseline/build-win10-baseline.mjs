@@ -565,11 +565,26 @@ export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
       "utf8",
     )
     .digest("hex");
+  const driverStoreFiles = identityFiles.filter(({ path }) =>
+    /\.(?:inf|cat|sys)$/i.test(path),
+  );
+  for (const extension of [".inf", ".cat", ".sys"]) {
+    if (
+      !driverStoreFiles.some(({ path }) =>
+        path.toLowerCase().endsWith(extension),
+      )
+    ) {
+      throw new Error(
+        `VirtIO GPU driver payload cannot identify its DriverStore ${extension} file`,
+      );
+    }
+  }
   return {
-    schemaVersion: "win10-kvm-virtio-gpu-driver-package/v1",
+    schemaVersion: "win10-kvm-virtio-gpu-driver-package/v2",
     sourceDirectory: "viogpudo/w10/amd64",
     packageSha256,
     files: identityFiles,
+    driverStoreFiles,
   };
 }
 

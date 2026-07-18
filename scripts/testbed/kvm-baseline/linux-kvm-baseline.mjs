@@ -26,13 +26,15 @@ const REQUIRED_COMMANDS = [
   "scp",
   "flock",
   "Xvfb",
+  "openbox",
   "gvncviewer",
 ];
 
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
 const CURRENT_MANIFEST_SCHEMA = "win10-kvm-baseline-current/v1";
 export const VNC_ACTIVATOR_METADATA_FILE = ".vnc-activator.json";
-const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v1";
+const VNC_ACTIVATOR_METADATA_SCHEMA = "win10-kvm-vnc-activator/v2";
+const VNC_ACTIVATOR_ROLES = Object.freeze(["xvfb", "window-manager", "viewer"]);
 const VNC_LAUNCH_SUPERVISOR_READY = "VEM_VNC_LAUNCH_SUPERVISOR_READY/v1";
 const VNC_LAUNCH_SUPERVISOR_SOURCE = String.raw`
 import { spawn } from "node:child_process";
@@ -691,7 +693,7 @@ export async function recoverHeadlessVncActivator({
     !ownerMatches(metadata.owner, owner) ||
     !metadata.processes ||
     Object.keys(metadata.processes).some(
-      (role) => !["xvfb", "viewer"].includes(role),
+      (role) => !VNC_ACTIVATOR_ROLES.includes(role),
     ) ||
     Object.values(metadata.processes).some(
       (identity) => !processIdentityShape(identity),
@@ -699,7 +701,7 @@ export async function recoverHeadlessVncActivator({
   ) {
     return { present: true, recovered: false };
   }
-  for (const role of ["viewer", "xvfb"]) {
+  for (const role of ["viewer", "window-manager", "xvfb"]) {
     const identity = metadata.processes[role];
     if (identity) await terminateExactProcessIdentity(identity, termination);
   }
@@ -713,7 +715,7 @@ export async function publishVncActivatorSupervisorIdentity({
   pid,
   role,
 }) {
-  if (!["xvfb", "viewer"].includes(role)) {
+  if (!VNC_ACTIVATOR_ROLES.includes(role)) {
     throw new Error("VNC activator supervisor role is invalid");
   }
   const expectedMetadataPath = resolve(
@@ -738,7 +740,7 @@ export async function publishVncActivatorSupervisorIdentity({
     !ownerMatches(metadata.owner, owner) ||
     !metadata.processes ||
     Object.keys(metadata.processes).some(
-      (observedRole) => !["xvfb", "viewer"].includes(observedRole),
+      (observedRole) => !VNC_ACTIVATOR_ROLES.includes(observedRole),
     ) ||
     Object.values(metadata.processes).some(
       (identity) => !processIdentityShape(identity),
@@ -875,10 +877,13 @@ export async function startHeadlessVncActivator({
   const width = commands.width ?? 1080;
   const height = commands.height ?? 1920;
   const xvfbCommand = commands.xvfb ?? "Xvfb";
+  const windowManagerCommand = commands.windowManager ?? "openbox";
   const viewerCommand = commands.viewer ?? "gvncviewer";
   let xvfb;
+  let windowManager;
   let viewer;
   let xvfbIdentity;
+  let windowManagerIdentity;
   let viewerIdentity;
   let stopping = false;
   let rejectFailure;
@@ -929,6 +934,7 @@ export async function startHeadlessVncActivator({
       stopping = true;
       stopPromise = (async () => {
         await stopProcess(viewer, viewerIdentity, termination);
+        await stopProcess(windowManager, windowManagerIdentity, termination);
         await stopProcess(xvfb, xvfbIdentity, termination);
         await removeActivatorMetadata(metadataPath);
       })();
@@ -964,6 +970,19 @@ export async function startHeadlessVncActivator({
     if (!/^\d+$/.test(displayNumber)) {
       throw new Error("Xvfb returned an invalid display number");
     }
+    windowManager = startSupervisor(
+      "window-manager",
+      windowManagerCommand,
+      [...(commands.windowManagerArguments ?? [])],
+      { ...environment, DISPLAY: `:${displayNumber}` },
+    );
+    monitor(windowManager, "openbox");
+    windowManagerIdentity = await registeredSupervisorIdentity(
+      windowManager,
+      metadataPath,
+      "window-manager",
+    );
+    await releaseSupervisor(windowManager);
     viewer = startSupervisor(
       "viewer",
       viewerCommand,
