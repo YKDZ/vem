@@ -405,6 +405,10 @@ describe("tracked local testbed host lifecycle", () => {
     assert.doesNotMatch(dynamicRegistration.input, /\$existingServices =/);
     assert.match(dynamicRegistration.input, /taskkill\.exe \/F \/T \/IM RunnerService\.exe/);
     assert.doesNotMatch(dynamicRegistration.input, /Stop-Process/);
+    assert.match(
+      dynamicRegistration.input,
+      /\$ErrorActionPreference = 'SilentlyContinue'.*\$ErrorActionPreference = \$savedErrorActionPreference/s,
+    );
     assert.doesNotMatch(dynamicRegistration.input, /sc\.exe stop/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
     assert.match(dynamicRegistration.input, /forest-win10-runtime-current/);
