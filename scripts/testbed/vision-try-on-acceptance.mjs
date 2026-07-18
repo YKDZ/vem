@@ -21,11 +21,14 @@ import {
 
 const MODES = new Set(["full"]);
 const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
+const VISION_LAUNCHER_PATH = "C:\\VEM\\bringup\\start_vision.bat";
 const VISION_RUNTIME_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const VISION_SITE_CONFIGURATION_PATH = "C:\\ProgramData\\VEM\\vision\\site.json";
 const VISION_INSTALLED_RECORD_PATH =
   "C:\\ProgramData\\VEM\\vision\\installed.json";
 const VISION_FIXTURE_ROOT = "C:\\ProgramData\\VEM\\vision\\fixtures";
+const VISION_TASK_PATH = "\\VEM\\";
+const VISION_TASK_NAME = "StartVisionServer";
 const PLATFORM_LOG_REFERENCE = Object.freeze({
   unit: "vem-local-testbed-service-api",
   command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
@@ -193,6 +196,106 @@ function positiveNumber(value, label) {
     throw new Error(`${label} must be a positive number`);
   }
   return value;
+}
+
+function nonNegativeInteger(value, label) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function sha256Hex(value, label) {
+  const normalized = required(String(value ?? ""), label).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(`${label} must be a lowercase sha256 hex digest`);
+  }
+  return normalized;
+}
+
+function windowsPathEquals(left, right) {
+  return (
+    typeof left === "string" &&
+    typeof right === "string" &&
+    left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0
+  );
+}
+
+function normalizeFrameSourceBinding(binding, label = "Vision frame-source binding") {
+  const facts = requiredObject(binding, label);
+  return {
+    adapter: required(facts.adapter, `${label} adapter`),
+    configSha256: sha256Hex(facts.configSha256, `${label} configSha256`),
+    top: {
+      path: windowsAbsolute(facts.top?.path, `${label} top path`),
+      sha256: sha256Hex(facts.top?.sha256, `${label} top sha256`),
+    },
+    front: {
+      path: windowsAbsolute(facts.front?.path, `${label} front path`),
+      sha256: sha256Hex(facts.front?.sha256, `${label} front sha256`),
+    },
+    expectedResults: {
+      path: windowsAbsolute(
+        facts.expectedResults?.path,
+        `${label} expected-results path`,
+      ),
+      sha256: sha256Hex(
+        facts.expectedResults?.sha256,
+        `${label} expected-results sha256`,
+      ),
+    },
+  };
+}
+
+function validateSourceFrameEvidence(
+  value,
+  label,
+  { role, configSha256, fixtureSha256, sessionId = null } = {},
+) {
+  const evidence = requiredObject(value, label);
+  if (required(evidence.adapter, `${label} adapter`) !== "recorded_video") {
+    throw new Error(`${label} must use the recorded_video adapter`);
+  }
+  if (required(evidence.role, `${label} role`) !== role) {
+    throw new Error(`${label} must bind the ${role} source role`);
+  }
+  const normalized = {
+    adapter: evidence.adapter,
+    role: evidence.role,
+    configSha256: sha256Hex(
+      evidence.configSha256,
+      `${label} configSha256`,
+    ),
+    fixtureSha256: sha256Hex(
+      evidence.fixtureSha256,
+      `${label} fixtureSha256`,
+    ),
+    frameIndex: nonNegativeInteger(evidence.frameIndex, `${label} frameIndex`),
+    decodedFrameCount: positiveNumber(
+      evidence.decodedFrameCount,
+      `${label} decodedFrameCount`,
+    ),
+    eventId: optionalString(evidence.eventId),
+    sessionId: optionalString(evidence.sessionId),
+    synthetic: evidence.synthetic === true,
+    relabeled: evidence.relabeled === true,
+  };
+  if (normalized.synthetic || normalized.relabeled) {
+    throw new Error(`${label} cannot be synthetic or relabeled`);
+  }
+  if (normalized.frameIndex >= normalized.decodedFrameCount) {
+    throw new Error(`${label} frameIndex must be smaller than decodedFrameCount`);
+  }
+  if (normalized.configSha256 !== configSha256) {
+    throw new Error(`${label} configSha256 drifted from the installed site configuration`);
+  }
+  if (normalized.fixtureSha256 !== fixtureSha256) {
+    throw new Error(`${label} fixtureSha256 drifted from the committed fixture`);
+  }
+  if (sessionId && normalized.sessionId !== sessionId) {
+    throw new Error(`${label} sessionId drifted from the try-on session`);
+  }
+  return normalized;
 }
 
 function serializeError(error) {
@@ -422,10 +525,14 @@ export function normalizeVisionExpectedResults(raw) {
 export function compareObservedVisionProtocolToExpected({
   expectedResults,
   protocolEvidence,
+  installedBinding = null,
   freshnessWindowMs = 5 * 60 * 1000,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
-  const summary = validateVisionProtocolEvidence(protocolEvidence);
+  const summary = validateVisionProtocolEvidence(
+    protocolEvidence,
+    installedBinding,
+  );
   if (summary.healthStatus !== "ok") {
     throw new Error("Vision happy-path protocol evidence must report health status ok");
   }
@@ -617,6 +724,7 @@ export function validateTryOnPresentation({
   expectedResults,
   runtimeExpectation = null,
   silhouetteEvidence = null,
+  installedBinding = null,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
@@ -727,12 +835,22 @@ export function validateTryOnPresentation({
   if (mjpegEvidence.nonBlackPixelCount < 1) {
     throw new Error("try-on preview frame decoded but remained fully black");
   }
+  const sourceFrame =
+    installedBinding?.frameSourceBinding &&
+    mjpegEvidence.sourceFrame &&
+    validateSourceFrameEvidence(mjpegEvidence.sourceFrame, "try-on source frame", {
+      role: "front",
+      configSha256: installedBinding.frameSourceBinding.configSha256,
+      fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
+      sessionId: mjpegEvidence.sessionId,
+    });
   return {
     sessionId: mjpegEvidence.sessionId,
     contentType: mjpegEvidence.contentType,
     width: mjpegEvidence.width,
     height: mjpegEvidence.height,
     nonBlackPixelCount: mjpegEvidence.nonBlackPixelCount,
+    sourceFrame,
     silhouetteHttpStatus: silhouetteEvidence.httpStatus,
     silhouetteNaturalWidth: tryOnState.silhouetteNaturalWidth,
     silhouetteNaturalHeight: tryOnState.silhouetteNaturalHeight,
@@ -741,26 +859,130 @@ export function validateTryOnPresentation({
 
 export function validateVisionInstalledBinding(binding) {
   const facts = requiredObject(binding, "Vision installed binding");
-  if (facts.installedRecord?.schemaVersion !== "vem-vision-installed/v1") {
+  const installedRecord = requiredObject(
+    facts.installedRecord,
+    "Vision installed record",
+  );
+  if (installedRecord.schemaVersion !== "vem-vision-installed/v1") {
     throw new Error("Vision installed record schema is invalid");
   }
-  if (!/^[a-f0-9]{40}$/.test(String(facts.installedRecord.commit ?? ""))) {
+  if (!/^[a-f0-9]{40}$/.test(String(installedRecord.commit ?? ""))) {
     throw new Error("Vision installed record commit is invalid");
   }
-  if (facts.installedRecord.appDirectory !== "C:\\VEM\\vision\\app") {
+  if (!windowsPathEquals(installedRecord.appDirectory, "C:\\VEM\\vision\\app")) {
     throw new Error("Vision installed record appDirectory drifted");
   }
-  if (facts.installedRecord.runtime !== "vending-vision.exe") {
+  if (installedRecord.runtime !== "vending-vision.exe") {
     throw new Error("Vision installed record runtime drifted");
   }
-  if (facts.installedRecord.runtimeWorkDirectory !== VISION_RUNTIME_WORK_DIRECTORY) {
+  if (
+    !windowsPathEquals(
+      installedRecord.runtimeWorkDirectory,
+      VISION_RUNTIME_WORK_DIRECTORY,
+    )
+  ) {
     throw new Error("Vision installed record runtime work directory drifted");
   }
-  if (facts.executablePath !== VISION_ENTRYPOINT_PATH) {
+  if (!windowsPathEquals(installedRecord.executablePath, VISION_ENTRYPOINT_PATH)) {
+    throw new Error("Vision installed record executablePath drifted");
+  }
+  const siteConfiguration = requiredObject(
+    installedRecord.siteConfiguration,
+    "Vision installed siteConfiguration",
+  );
+  if (!windowsPathEquals(siteConfiguration.path, VISION_SITE_CONFIGURATION_PATH)) {
+    throw new Error("Vision installed record site configuration path drifted");
+  }
+  const siteConfigurationSha256 = sha256Hex(
+    facts.siteConfigurationSha256,
+    "Vision site configuration digest",
+  );
+  if (
+    sha256Hex(siteConfiguration.sha256, "Vision installed record site configuration sha256") !==
+    siteConfigurationSha256
+  ) {
+    throw new Error("Vision installed record site configuration digest drifted");
+  }
+  const downloadManifest = requiredObject(
+    installedRecord.downloadManifest,
+    "Vision installed download manifest",
+  );
+  if (!windowsAbsolute(downloadManifest.path, "Vision download manifest path")) {
+    throw new Error("Vision download manifest path is invalid");
+  }
+  const downloadManifestSha256 = sha256Hex(
+    facts.downloadManifestSha256,
+    "Vision download manifest digest",
+  );
+  if (
+    sha256Hex(downloadManifest.sha256, "Vision installed record download manifest sha256") !==
+    downloadManifestSha256
+  ) {
+    throw new Error("Vision download manifest digest drifted");
+  }
+  sha256Hex(
+    downloadManifest.runtimeArchive?.sha256,
+    "Vision runtime archive sha256",
+  );
+  sha256Hex(
+    downloadManifest.fixtureArchive?.sha256,
+    "Vision fixture archive sha256",
+  );
+  const frameSourceBinding = normalizeFrameSourceBinding(
+    {
+      adapter: "recorded_video",
+      configSha256: siteConfigurationSha256,
+      top: installedRecord.fixtureSet?.top,
+      front: installedRecord.fixtureSet?.front,
+      expectedResults: installedRecord.fixtureSet?.expectedResults,
+    },
+    "Vision installed fixture binding",
+  );
+  const fixtureManifestPath = windowsAbsolute(
+    installedRecord.fixtureSet?.manifestPath,
+    "Vision fixture manifest path",
+  );
+  if (
+    sha256Hex(
+      installedRecord.fixtureSet?.manifestSha256,
+      "Vision fixture manifest sha256",
+    ) !== sha256Hex(facts.fixtureManifestSha256, "Vision fixture manifest digest")
+  ) {
+    throw new Error("Vision fixture manifest digest drifted");
+  }
+  const siteConfigurationObject = requiredObject(
+    facts.siteConfiguration,
+    "Vision site configuration",
+  );
+  if (siteConfigurationObject.cameras?.top?.source !== "recorded_video") {
+    throw new Error("Vision site configuration top camera must use recorded_video");
+  }
+  if (siteConfigurationObject.cameras?.front?.source !== "recorded_video") {
+    throw new Error("Vision site configuration front camera must use recorded_video");
+  }
+  if (siteConfigurationObject.cameras?.top?.role !== "presence") {
+    throw new Error("Vision site configuration top role drifted");
+  }
+  if (siteConfigurationObject.cameras?.front?.role !== "profile_tryon") {
+    throw new Error("Vision site configuration front role drifted");
+  }
+  if (
+    !windowsPathEquals(
+      siteConfigurationObject.cameras?.top?.video_path,
+      frameSourceBinding.top.path,
+    ) ||
+    !windowsPathEquals(
+      siteConfigurationObject.cameras?.front?.video_path,
+      frameSourceBinding.front.path,
+    )
+  ) {
+    throw new Error("Vision site configuration is not bound to the committed top/front fixtures");
+  }
+  if (!windowsPathEquals(facts.executablePath, VISION_ENTRYPOINT_PATH)) {
     throw new Error("Vision listener is not bound to the fixed installed executable");
   }
-  if (!/^[a-f0-9]{64}$/.test(String(facts.executableSha256 ?? ""))) {
-    throw new Error("Vision executable hash is invalid");
+  if (sha256Hex(facts.executableSha256, "Vision executable hash") !== installedRecord.executableSha256) {
+    throw new Error("Vision executable hash drifted from the installed record");
   }
   if (
     !Number.isInteger(facts.processId) ||
@@ -770,13 +992,58 @@ export function validateVisionInstalledBinding(binding) {
   ) {
     throw new Error("Vision loopback listener must resolve to exactly one installed process");
   }
+  if (required(facts.listenerBindingSource, "Vision listener binding source") !== "Get-NetTCPConnection") {
+    throw new Error("Vision listener binding source drifted");
+  }
+  if (required(facts.commandLine, "Vision process commandLine") !== `"${VISION_ENTRYPOINT_PATH}" --config "${VISION_SITE_CONFIGURATION_PATH}"`) {
+    throw new Error("Vision process command line is not bound to the fixed --config site path");
+  }
+  if (!windowsPathEquals(facts.taskCommand, "C:\\Windows\\System32\\cmd.exe")) {
+    throw new Error("Vision scheduled task command drifted");
+  }
+  if (required(facts.taskArguments, "Vision scheduled task arguments").includes(VISION_LAUNCHER_PATH) === false) {
+    throw new Error("Vision scheduled task arguments drifted");
+  }
+  if (!windowsPathEquals(facts.taskWorkingDirectory, "C:\\VEM\\vision\\app")) {
+    throw new Error("Vision scheduled task workingDirectory drifted");
+  }
+  if (required(facts.taskUser, "Vision scheduled task user") !== "VEMKiosk") {
+    throw new Error("Vision scheduled task user drifted");
+  }
+  if (required(facts.processOwner, "Vision process owner") !== required(facts.taskUser, "Vision scheduled task user")) {
+    throw new Error("Vision process owner drifted from the scheduled task user");
+  }
+  if (!windowsPathEquals(fixtureManifestPath, `${VISION_FIXTURE_ROOT}\\${installedRecord.commit}\\recorded-video\\fixture-manifest.json`)) {
+    throw new Error("Vision fixture manifest path drifted");
+  }
+  if (
+    sha256Hex(facts.fixtureTopSha256, "Vision top fixture sha256") !==
+      frameSourceBinding.top.sha256 ||
+    sha256Hex(facts.fixtureFrontSha256, "Vision front fixture sha256") !==
+      frameSourceBinding.front.sha256 ||
+    sha256Hex(
+      facts.fixtureExpectedResultsSha256,
+      "Vision expected-results sha256",
+    ) !== frameSourceBinding.expectedResults.sha256
+  ) {
+    throw new Error("Vision fixture digests drifted from the committed fixture manifest");
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(facts.executableSha256 ?? ""))) {
+    throw new Error("Vision executable hash is invalid");
+  }
   return {
-    installedCommit: facts.installedRecord.commit,
+    installedCommit: installedRecord.commit,
     executablePath: facts.executablePath,
     executableSha256: facts.executableSha256,
     processId: facts.processId,
+    processOwner: facts.processOwner,
+    commandLine: facts.commandLine,
+    taskUser: facts.taskUser,
     listenerProcessId: facts.listenerProcessId,
     listenerOwnerCount: facts.listenerOwnerCount,
+    listenerBindingSource: facts.listenerBindingSource,
+    siteConfigurationSha256,
+    frameSourceBinding,
   };
 }
 
@@ -902,7 +1169,10 @@ async function nextVisionMessage(socket, timeoutMs) {
   });
 }
 
-export function validateVisionProtocolEvidence(evidence) {
+export function validateVisionProtocolEvidence(
+  evidence,
+  installedBinding = null,
+) {
   const health = evidence?.health ?? {};
   if (
     !["ok", "degraded"].includes(health.status) ||
@@ -913,6 +1183,10 @@ export function validateVisionProtocolEvidence(evidence) {
     throw new Error("vision health evidence is invalid");
   }
   const ready = evidence?.ready ?? {};
+  const healthFrameSource = normalizeFrameSourceBinding(
+    health.frameSource ?? ready.payload?.frameSource,
+    "Vision health frame-source binding",
+  );
   if (
     ready.protocol !== "vem.vision.v1" ||
     ready.type !== "vision.ready" ||
@@ -923,10 +1197,15 @@ export function validateVisionProtocolEvidence(evidence) {
     ready.payload.serverName.trim() === "" ||
     ready.payload.modelReady !== true ||
     typeof ready.payload.cameraReady !== "boolean" ||
-    !Array.isArray(ready.payload.capabilities)
+    !Array.isArray(ready.payload.capabilities) ||
+    !ready.payload.frameSource
   ) {
     throw new Error("vision ready handshake is invalid");
   }
+  const readyFrameSource = normalizeFrameSourceBinding(
+    ready.payload.frameSource,
+    "Vision ready frame-source binding",
+  );
   for (const capability of [
     "profile_push",
     "presence_status",
@@ -935,6 +1214,21 @@ export function validateVisionProtocolEvidence(evidence) {
   ]) {
     if (!ready.payload.capabilities.includes(capability)) {
       throw new Error(`vision ready handshake is missing ${capability}`);
+    }
+  }
+  if (
+    JSON.stringify(healthFrameSource) !== JSON.stringify(readyFrameSource)
+  ) {
+    throw new Error("vision health and ready frame-source bindings drifted");
+  }
+  if (installedBinding?.frameSourceBinding) {
+    if (
+      JSON.stringify(healthFrameSource) !==
+      JSON.stringify(installedBinding.frameSourceBinding)
+    ) {
+      throw new Error(
+        "vision frame-source binding drifted from the installed recorded-video fixture",
+      );
     }
   }
   const presence = evidence?.presence ?? {};
@@ -946,6 +1240,15 @@ export function validateVisionProtocolEvidence(evidence) {
   ) {
     throw new Error("vision presence evidence is invalid");
   }
+  const presenceSourceFrame = validateSourceFrameEvidence(
+    presence.payload?.sourceFrame,
+    "vision presence source frame",
+    {
+      role: "top",
+      configSha256: healthFrameSource.configSha256,
+      fixtureSha256: healthFrameSource.top.sha256,
+    },
+  );
   const profile = evidence?.profile ?? {};
   if (
     profile.type !== "vision.profile_result" ||
@@ -956,6 +1259,15 @@ export function validateVisionProtocolEvidence(evidence) {
   ) {
     throw new Error("vision profile evidence is invalid");
   }
+  const profileSourceFrame = validateSourceFrameEvidence(
+    profile.payload?.sourceFrame,
+    "vision profile source frame",
+    {
+      role: "front",
+      configSha256: healthFrameSource.configSha256,
+      fixtureSha256: healthFrameSource.front.sha256,
+    },
+  );
   const departure = evidence?.departure ?? {};
   if (
     departure.type !== "vision.person_departed" ||
@@ -963,6 +1275,21 @@ export function validateVisionProtocolEvidence(evidence) {
     !isVisionProtocolTimestamp(departure.payload?.detectedAt)
   ) {
     throw new Error("vision departure evidence is invalid");
+  }
+  const departureSourceFrame = validateSourceFrameEvidence(
+    departure.payload?.sourceFrame,
+    "vision departure source frame",
+    {
+      role: "top",
+      configSha256: healthFrameSource.configSha256,
+      fixtureSha256: healthFrameSource.top.sha256,
+    },
+  );
+  if (departureSourceFrame.frameIndex < presenceSourceFrame.frameIndex) {
+    throw new Error("vision departure frame index regressed behind presence");
+  }
+  if (departureSourceFrame.decodedFrameCount < presenceSourceFrame.decodedFrameCount) {
+    throw new Error("vision departure decoded frame count regressed");
   }
   return {
     healthStatus: health.status,
@@ -972,9 +1299,13 @@ export function validateVisionProtocolEvidence(evidence) {
         ? ready.payload.serverVersion
         : null,
     capabilities: ready.payload.capabilities,
+    frameSourceBinding: healthFrameSource,
     presenceDetectedAt: presence.payload.detectedAt,
     profileDetectedAt: profile.payload.detectedAt,
     departureDetectedAt: departure.payload.detectedAt,
+    presenceFrameIndex: presenceSourceFrame.frameIndex,
+    profileFrameIndex: profileSourceFrame.frameIndex,
+    departureFrameIndex: departureSourceFrame.frameIndex,
     profileUsable: true,
   };
 }
@@ -1230,14 +1561,23 @@ async function collectVisionInstalledBinding() {
     VISION_INSTALLED_RECORD_PATH,
     "installed Vision record",
   );
+  const siteConfiguration = readJson(
+    VISION_SITE_CONFIGURATION_PATH,
+    "installed Vision site configuration",
+  );
   const command = [
     "$ErrorActionPreference = 'Stop'",
+    `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
+    "$action = @($task.Actions | Select-Object -First 1)",
     "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
     "if ($listener.Count -ne 1) { throw \"Vision must have exactly one 127.0.0.1:7892 listener\" }",
     "$pid = [int]$listener[0].OwningProcess",
     "$process = Get-Process -Id $pid -ErrorAction Stop",
+    "$processWmi = Get-CimInstance Win32_Process -Filter \"ProcessId = $pid\" -ErrorAction Stop",
+    "$owner = Invoke-CimMethod -InputObject $processWmi -MethodName GetOwner -ErrorAction Stop",
     "$path = [string]$process.Path",
-    "[Console]::Out.Write((@{ processId = $pid; listenerProcessId = $pid; listenerOwnerCount = $listener.Count; executablePath = $path } | ConvertTo-Json -Compress))",
+    "$commandLine = [string]$processWmi.CommandLine",
+    "[Console]::Out.Write((@{ processId = $pid; listenerProcessId = $pid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
   ].join("; ");
   const runtimeBinding = await new Promise((resolvePromise, reject) => {
     let stdout = "";
@@ -1272,15 +1612,24 @@ async function collectVisionInstalledBinding() {
   });
   return {
     installedRecord,
+    siteConfiguration,
     ...runtimeBinding,
     executableSha256: fileSha256(VISION_ENTRYPOINT_PATH),
+    siteConfigurationSha256: fileSha256(VISION_SITE_CONFIGURATION_PATH),
+    downloadManifestSha256: fileSha256(installedRecord.downloadManifest.path),
+    fixtureManifestSha256: fileSha256(installedRecord.fixtureSet.manifestPath),
+    fixtureTopSha256: fileSha256(installedRecord.fixtureSet.top.path),
+    fixtureFrontSha256: fileSha256(installedRecord.fixtureSet.front.path),
+    fixtureExpectedResultsSha256: fileSha256(
+      installedRecord.fixtureSet.expectedResults.path,
+    ),
   };
 }
 
 async function stopVisionRuntime() {
   const command = [
     "$ErrorActionPreference = 'Stop'",
-    "Stop-ScheduledTask -TaskName 'StartVisionServer' -TaskPath '\\VEM\\' -ErrorAction SilentlyContinue",
+    `Stop-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
     "Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
   ].join("; ");
   await new Promise((resolvePromise, reject) => {
@@ -1291,6 +1640,23 @@ async function stopVisionRuntime() {
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
       else reject(new Error(`pwsh exited with ${code ?? "signal"} while stopping Vision runtime`));
+    });
+  });
+}
+
+async function startInstalledVisionRuntime() {
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    `Start-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
+  ].join("; ");
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`pwsh exited with ${code ?? "signal"} while starting Vision runtime`));
     });
   });
 }
@@ -1608,6 +1974,15 @@ async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
                 height: canvas.height,
                 nonBlackPixelCount,
                 sessionId: ${JSON.stringify(previewUrl)}.split("/").pop()?.replace(/\\.mjpeg$/i, "") ?? null,
+                sourceFrame: {
+                  adapter: response.headers.get("x-vem-frame-source-adapter"),
+                  role: response.headers.get("x-vem-frame-source-role"),
+                  configSha256: response.headers.get("x-vem-frame-source-config-sha256"),
+                  fixtureSha256: response.headers.get("x-vem-frame-source-file-sha256"),
+                  frameIndex: Number(response.headers.get("x-vem-frame-source-frame-index") ?? "-1"),
+                  decodedFrameCount: Number(response.headers.get("x-vem-frame-source-decoded-frame-count") ?? "0"),
+                  sessionId: response.headers.get("x-vem-frame-source-session-id"),
+                },
               };
             }
             return { ok: false, reason: "no-jpeg" };
@@ -1636,6 +2011,8 @@ async function runVisionTryOnAcceptance(options) {
   let stage = "connect-installed-tauri-cdp";
   let report = null;
   let pendingError = null;
+  let realVisionStopped = false;
+  let restoredRuntimeVerification = null;
   try {
     const installedBinding = await collectVisionInstalledBinding();
     const installedBindingSummary =
@@ -1676,6 +2053,7 @@ async function runVisionTryOnAcceptance(options) {
     const protocolSummary = compareObservedVisionProtocolToExpected({
       expectedResults,
       protocolEvidence,
+      installedBinding: installedBindingSummary,
     });
 
     stage = "wait-catalog-recommendation-projection";
@@ -1748,6 +2126,7 @@ async function runVisionTryOnAcceptance(options) {
       expectedResults,
       runtimeExpectation,
       silhouetteEvidence,
+      installedBinding: installedBindingSummary,
     });
     checkpoints.push(
       await captureCheckpoint(client, "try-on-preview", {
@@ -1776,6 +2155,7 @@ async function runVisionTryOnAcceptance(options) {
 
     stage = "stop-real-vision-runtime";
     await stopVisionRuntime();
+    realVisionStopped = true;
     await waitForVisionPortRelease();
     const degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
     const degradedProductDetail = await waitForTryOnButtonDisabled(
@@ -1864,6 +2244,7 @@ async function runVisionTryOnAcceptance(options) {
         vision: {
           protocolSummary,
           observedMessages: protocolEvidence.observedMessages.slice(0, 8),
+          restoredRuntime: restoredRuntimeVerification,
         },
       },
       ui: {
@@ -1965,6 +2346,37 @@ async function runVisionTryOnAcceptance(options) {
         `machine UI CDP shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
+  }
+  if (realVisionStopped) {
+    try {
+      await startInstalledVisionRuntime();
+      const daemonVision = await waitForVisionOnline(handoff, 45_000);
+      const restoredBinding = await collectVisionInstalledBinding();
+      const restoredBindingSummary =
+        validateVisionInstalledBinding(restoredBinding);
+      const restoredProtocolEvidence = await collectVisionProtocolEvidence({
+        machineCode: guestInput.machineCode,
+        timeoutMs: 45_000,
+      });
+      const restoredProtocolSummary = validateVisionProtocolEvidence(
+        restoredProtocolEvidence,
+        restoredBindingSummary,
+      );
+      restoredRuntimeVerification = {
+        daemonVision,
+        installedBinding: restoredBindingSummary,
+        protocolSummary: restoredProtocolSummary,
+      };
+      if (report?.health?.vision) {
+        report.health.vision.restoredRuntime = restoredRuntimeVerification;
+      }
+    } catch (error) {
+      cleanupErrors.push(
+        new Error(
+          `vision runtime restore failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
   }
   if (cleanupErrors.length > 0) {
     const cleanupError =

@@ -24,6 +24,64 @@ function Read-VisionJson([string]$Path, [string]$Label) {
   catch { throw "Vision main artifact: $Label is not valid JSON" }
 }
 
+function New-VisionDirectoryDigest([string]$Path) {
+  Assert-VisionMainCondition (Test-Path -LiteralPath $Path -PathType Leaf) "missing file for digest: $Path"
+  return [pscustomobject]@{
+    path = [IO.Path]::GetFullPath($Path)
+    sha256 = Get-VisionSha256 $Path
+  }
+}
+
+function Get-VisionFixtureCommitManifestPath([string]$FixtureRoot) {
+  return Join-Path $FixtureRoot "recorded-video\fixture-manifest.json"
+}
+
+function Get-VisionFixtureCommitDigests([string]$FixtureRoot) {
+  $recordedRoot = Join-Path $FixtureRoot "recorded-video"
+  return [ordered]@{
+    top = New-VisionDirectoryDigest (Join-Path $recordedRoot "top.mp4")
+    front = New-VisionDirectoryDigest (Join-Path $recordedRoot "front.mp4")
+    expectedResults = New-VisionDirectoryDigest (Join-Path $recordedRoot "expected-results.json")
+  }
+}
+
+function Write-VisionFixtureCommitManifest([string]$FixtureRoot, [string]$Commit) {
+  $manifestPath = Get-VisionFixtureCommitManifestPath $FixtureRoot
+  $digests = Get-VisionFixtureCommitDigests $FixtureRoot
+  $manifest = [ordered]@{
+    schemaVersion = "vem-vision-recorded-fixture/v1"
+    commit = $Commit
+    root = [IO.Path]::GetFullPath($FixtureRoot)
+    recordedVideo = [ordered]@{
+      top = $digests.top
+      front = $digests.front
+      expectedResults = $digests.expectedResults
+    }
+  }
+  [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+  return Read-VisionJson $manifestPath "fixture manifest"
+}
+
+function Assert-VisionFixtureCommitState([string]$FixtureRoot, [string]$Commit) {
+  $Commit = Assert-VisionCommit $Commit
+  $manifestPath = Get-VisionFixtureCommitManifestPath $FixtureRoot
+  Assert-VisionMainCondition (Test-Path -LiteralPath $manifestPath -PathType Leaf) "fixture manifest is missing for $Commit"
+  $manifest = Read-VisionJson $manifestPath "fixture manifest"
+  Assert-VisionMainCondition ($manifest.schemaVersion -ceq "vem-vision-recorded-fixture/v1") "fixture manifest schema is invalid"
+  Assert-VisionMainCondition ($manifest.commit -ceq $Commit) "fixture manifest does not bind commit $Commit"
+  $digests = Get-VisionFixtureCommitDigests $FixtureRoot
+  Assert-VisionMainCondition ($manifest.recordedVideo.top.sha256 -ceq $digests.top.sha256) "fixture manifest top digest drifted"
+  Assert-VisionMainCondition ($manifest.recordedVideo.front.sha256 -ceq $digests.front.sha256) "fixture manifest front digest drifted"
+  Assert-VisionMainCondition ($manifest.recordedVideo.expectedResults.sha256 -ceq $digests.expectedResults.sha256) "fixture manifest expected-results digest drifted"
+  return [pscustomobject]@{
+    root = [IO.Path]::GetFullPath($FixtureRoot)
+    manifestPath = $manifestPath
+    manifestSha256 = Get-VisionSha256 $manifestPath
+    manifest = $manifest
+    digests = [pscustomobject]$digests
+  }
+}
+
 function Get-VisionArchiveManifest([string]$ArchivePath) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
@@ -189,6 +247,40 @@ function Expand-VisionRuntimeArchive([string]$ArchivePath, [string]$Destination,
   Assert-VisionMainCondition (Test-Path -LiteralPath (Join-Path $Destination "vending-vision.exe") -PathType Leaf) "runtime extraction did not produce vending-vision.exe"
 }
 
+function Install-VisionFixtureArchive([string]$ArchivePath, [string]$FixtureDirectory, [string]$Commit) {
+  Assert-VisionArchive $ArchivePath $Commit fixtures
+  $destination = Join-Path $FixtureDirectory $Commit
+  if (Test-Path -LiteralPath $destination) {
+    try {
+      return Assert-VisionFixtureCommitState $destination $Commit
+    } catch {
+      Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  New-Item -ItemType Directory -Force -Path $FixtureDirectory | Out-Null
+  $staging = Join-Path $FixtureDirectory (".$Commit.staging-" + [guid]::NewGuid().ToString("N"))
+  $backup = Join-Path $FixtureDirectory (".$Commit.backup-" + [guid]::NewGuid().ToString("N"))
+  try {
+    Expand-VisionActionArtifact $ArchivePath $staging
+    Write-VisionFixtureCommitManifest $staging $Commit | Out-Null
+    if (Test-Path -LiteralPath $destination) {
+      Move-Item -LiteralPath $destination -Destination $backup -Force -ErrorAction Stop
+    }
+    Move-Item -LiteralPath $staging -Destination $destination -ErrorAction Stop
+    if (Test-Path -LiteralPath $backup) {
+      Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return Assert-VisionFixtureCommitState $destination $Commit
+  } catch {
+    if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backup)) {
+      Move-Item -LiteralPath $backup -Destination $destination -Force -ErrorAction SilentlyContinue
+    }
+    throw
+  } finally {
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+}
+
 function Get-VisionRecordedCameras([object]$Configuration) {
   $cameras = @($Configuration.cameras.top, $Configuration.cameras.front)
   return @($cameras | Where-Object { $_.source -ceq "recorded_video" })
@@ -214,9 +306,17 @@ function Assert-VisionSiteConfiguration([string]$ConfigurationPath, [string]$Fix
   if ($recorded.Count -gt 0) {
     Assert-VisionMainCondition ($recorded.Count -eq 2) "recorded-video configuration must configure both cameras"
     Assert-VisionMainCondition (-not [string]::IsNullOrWhiteSpace($FixtureRoot)) "recorded-video configuration requires a fixture root"
-    foreach ($camera in $recorded) {
-      Assert-VisionMainCondition (-not [string]::IsNullOrWhiteSpace([string]$camera.video_path)) "recorded-video configuration is missing video_path"
-      $configuredVideo = [string]$camera.video_path
+    $fixtureState = Assert-VisionFixtureCommitState $FixtureRoot ([string](Split-Path -Leaf $FixtureRoot))
+    Assert-VisionMainCondition ($configuration.cameras.top.source -ceq "recorded_video") "site configuration must bind the top camera to recorded_video"
+    Assert-VisionMainCondition ($configuration.cameras.front.source -ceq "recorded_video") "site configuration must bind the front camera to recorded_video"
+    Assert-VisionMainCondition ($configuration.cameras.top.role -ceq "presence") "site configuration top camera role must remain presence"
+    Assert-VisionMainCondition ($configuration.cameras.front.role -ceq "profile_tryon") "site configuration front camera role must remain profile_tryon"
+    foreach ($binding in @(
+      @{ camera = $configuration.cameras.top; expected = $fixtureState.digests.top.path; label = "top" },
+      @{ camera = $configuration.cameras.front; expected = $fixtureState.digests.front.path; label = "front" }
+    )) {
+      Assert-VisionMainCondition (-not [string]::IsNullOrWhiteSpace([string]$binding.camera.video_path)) "recorded-video configuration is missing $($binding.label) video_path"
+      $configuredVideo = [string]$binding.camera.video_path
       $video = if ([IO.Path]::IsPathRooted($configuredVideo)) {
         [IO.Path]::GetFullPath($configuredVideo)
       } else {
@@ -224,6 +324,7 @@ function Assert-VisionSiteConfiguration([string]$ConfigurationPath, [string]$Fix
       }
       $root = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
       Assert-VisionMainCondition ($video.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $video -PathType Leaf)) "recorded-video path must be an extracted fixture"
+      Assert-VisionMainCondition ($video -ceq $binding.expected) "recorded-video path must bind the committed $($binding.label) fixture"
     }
   }
   return $configuration
@@ -397,6 +498,10 @@ function Install-VisionMainArtifact {
   )
   $Commit = Assert-VisionCommit $Commit
   Assert-VisionArchive $RuntimeArchive $Commit runtime
+  $deliveryManifestPath = Join-Path (Split-Path -Parent $RuntimeArchive) $script:VisionDeliveryManifest
+  Assert-VisionMainCondition (Test-Path -LiteralPath $deliveryManifestPath -PathType Leaf) "download manifest is missing next to the runtime archive"
+  $deliveryManifest = Read-VisionJson $deliveryManifestPath "download manifest"
+  Assert-VisionMainCondition ($deliveryManifest.commit -ceq $Commit) "download manifest does not bind commit $Commit"
   $staging = "$AppDirectory.staging-$([guid]::NewGuid().ToString('N'))"
   Stop-VisionMainTask $TaskName $TaskPath
   try {
@@ -406,11 +511,12 @@ function Install-VisionMainArtifact {
     $recordedSourceCameras = @(Get-VisionRecordedCameras $sourceConfiguration)
     $usesFixtures = $recordedSourceCameras.Count -gt 0
     $resolvedFixtureRoot = $null
+    $fixtureState = $null
     if ($usesFixtures) {
       Assert-VisionMainCondition (-not [string]::IsNullOrWhiteSpace($FixtureArchive)) "recorded-video configuration requires the separate fixture archive"
       $resolvedFixtureRoot = Join-Path $FixtureDirectory $Commit
-      Assert-VisionArchive $FixtureArchive $Commit fixtures
-      if (-not (Test-Path -LiteralPath $resolvedFixtureRoot)) { Expand-VisionActionArtifact $FixtureArchive $resolvedFixtureRoot }
+      $fixtureState = Install-VisionFixtureArchive $FixtureArchive $FixtureDirectory $Commit
+      $resolvedFixtureRoot = [string]$fixtureState.root
     }
     if (Test-Path -LiteralPath $AppDirectory) { Remove-Item -LiteralPath $AppDirectory -Recurse -Force -ErrorAction Stop }
     Move-Item -LiteralPath $staging -Destination $AppDirectory -ErrorAction Stop
@@ -428,7 +534,62 @@ function Install-VisionMainArtifact {
     Start-VisionMainTask $TaskName $TaskPath
     $probe = Invoke-VisionMainProbe $SiteConfigurationDestination $ProbeTimeoutSeconds $resolvedFixtureRoot
     $healthVersion = if ($null -ne $probe.health.PSObject.Properties["version"]) { [string]$probe.health.version } else { $null }
-    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $SiteConfigurationDestination) "installed.json"), (@{ schemaVersion = "vem-vision-installed/v1"; commit = $Commit; installedAt = [DateTime]::UtcNow.ToString("o"); appDirectory = $AppDirectory; runtime = "vending-vision.exe"; runtimeWorkDirectory = $RuntimeWorkDirectory; health = @{ version = $healthVersion } } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $launcherArguments = "/c `"`"$LauncherPath`"`""
+    $installedRecord = [ordered]@{
+      schemaVersion = "vem-vision-installed/v1"
+      commit = $Commit
+      installedAt = [DateTime]::UtcNow.ToString("o")
+      appDirectory = $AppDirectory
+      runtime = "vending-vision.exe"
+      executablePath = (Join-Path $AppDirectory "vending-vision.exe")
+      executableSha256 = (Get-VisionSha256 (Join-Path $AppDirectory "vending-vision.exe"))
+      runtimeWorkDirectory = $RuntimeWorkDirectory
+      siteConfiguration = [ordered]@{
+        path = $SiteConfigurationDestination
+        sha256 = Get-VisionSha256 $SiteConfigurationDestination
+      }
+      launcher = [ordered]@{
+        path = $LauncherPath
+        command = "C:\Windows\System32\cmd.exe"
+        arguments = $launcherArguments
+        workingDirectory = $AppDirectory
+      }
+      startTask = [ordered]@{
+        path = $TaskPath
+        name = $TaskName
+        user = $TaskUser
+      }
+      downloadManifest = [ordered]@{
+        path = $deliveryManifestPath
+        sha256 = Get-VisionSha256 $deliveryManifestPath
+        runtimeArchive = [ordered]@{
+          path = $RuntimeArchive
+          sha256 = [string]$deliveryManifest.runtime.sha256
+        }
+        fixtureArchive = if ($usesFixtures) {
+          [ordered]@{
+            path = $FixtureArchive
+            sha256 = [string]$deliveryManifest.fixtures.sha256
+          }
+        } else {
+          $null
+        }
+      }
+      fixtureSet = if ($null -ne $fixtureState) {
+        [ordered]@{
+          root = [string]$fixtureState.root
+          manifestPath = [string]$fixtureState.manifestPath
+          manifestSha256 = [string]$fixtureState.manifestSha256
+          top = $fixtureState.digests.top
+          front = $fixtureState.digests.front
+          expectedResults = $fixtureState.digests.expectedResults
+        }
+      } else {
+        $null
+      }
+      health = @{ version = $healthVersion }
+    }
+    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $SiteConfigurationDestination) "installed.json"), ($installedRecord | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
     return [pscustomobject]@{ commit = $Commit; appDirectory = $AppDirectory; siteConfiguration = $SiteConfigurationDestination; probe = $probe }
   } finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }

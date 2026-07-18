@@ -83,6 +83,50 @@ export const visionEnvelopeBaseSchema = z.object({
   timestamp: z.iso.datetime(),
 });
 
+export const visionSha256HexSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/, "expected lowercase sha256 hex");
+
+export const visionFrameSourceEvidenceSchema = z
+  .object({
+    adapter: z.string().min(1).max(64),
+    role: z.enum(["top", "front"]),
+    configSha256: visionSha256HexSchema,
+    fixtureSha256: visionSha256HexSchema,
+    frameIndex: z.number().int().nonnegative(),
+    decodedFrameCount: z.number().int().positive(),
+    synthetic: z.literal(false).optional(),
+    relabeled: z.literal(false).optional(),
+    eventId: z.string().min(1).max(128).optional(),
+    sessionId: z.string().min(1).max(128).optional(),
+  })
+  .loose();
+
+export const visionFrameSourceBindingSchema = z
+  .object({
+    adapter: z.string().min(1).max(64),
+    configSha256: visionSha256HexSchema,
+    top: z
+      .object({
+        path: z.string().min(1).max(512),
+        sha256: visionSha256HexSchema,
+      })
+      .loose(),
+    front: z
+      .object({
+        path: z.string().min(1).max(512),
+        sha256: visionSha256HexSchema,
+      })
+      .loose(),
+    expectedResults: z
+      .object({
+        path: z.string().min(1).max(512),
+        sha256: visionSha256HexSchema,
+      })
+      .loose(),
+  })
+  .loose();
+
 export const visionHelloPayloadSchema = z.object({
   clientRole: z.literal("machine"),
   machineCode: z.string().min(1).max(64).nullable().optional(),
@@ -98,6 +142,7 @@ export const visionReadyPayloadSchema = z.object({
   cameraReady: z.boolean(),
   modelReady: z.boolean(),
   capabilities: z.array(z.string().min(1).max(64)).default([]),
+  frameSource: visionFrameSourceBindingSchema.optional(),
 });
 
 export const visionProfileSchema = z
@@ -126,6 +171,7 @@ export const visionProfileResultPayloadSchema = z.object({
   source: z.literal("front"),
   eventId: z.string().min(1).max(128),
   detectedAt: z.iso.datetime(),
+  sourceFrame: visionFrameSourceEvidenceSchema.optional(),
   occupancy: visionPresenceOccupancySchema.optional(),
   profile: visionProfileSchema,
   quality: z
@@ -150,6 +196,7 @@ export const visionPresenceStatusPayloadSchema = z
     closeNow: z.boolean().optional(),
     close: z.boolean().optional(),
     closeTrigger: z.string().min(1).max(64).nullable().optional(),
+    sourceFrame: visionFrameSourceEvidenceSchema.optional(),
     proximity: z.record(z.string(), z.unknown()).default({}),
   })
   .loose();
@@ -171,6 +218,7 @@ export const visionPersonDepartedPayloadSchema = z
       ])
       .default("unknown"),
     absenceDurationMs: z.number().int().nonnegative().optional(),
+    sourceFrame: visionFrameSourceEvidenceSchema.optional(),
   })
   .loose();
 
@@ -216,6 +264,7 @@ export const visionTryOnStartedPayloadSchema = z
     sessionId: z.string().min(1).max(128),
     previewUrl: visionTryOnPreviewUrlSchema,
     streamType: z.literal("mjpeg").default("mjpeg"),
+    sourceFrame: visionFrameSourceEvidenceSchema.optional(),
   })
   .loose();
 

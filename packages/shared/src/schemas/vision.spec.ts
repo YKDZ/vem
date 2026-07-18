@@ -66,11 +66,23 @@ describe("vision protocol schemas", () => {
         sessionId: "try-on-session-001",
         previewUrl: "http://127.0.0.1:7892/try-on/session-001.mjpeg",
         streamType: "mjpeg",
+        sourceFrame: {
+          adapter: "recorded_video",
+          role: "front",
+          configSha256: "a".repeat(64),
+          fixtureSha256: "b".repeat(64),
+          frameIndex: 18,
+          decodedFrameCount: 19,
+          synthetic: false,
+          relabeled: false,
+          sessionId: "try-on-session-001",
+        },
       },
     });
 
     expect(message.type).toBe("vision.try_on.started");
     expect(message.payload.streamType).toBe("mjpeg");
+    expect(message.payload.sourceFrame?.decodedFrameCount).toBe(19);
   });
 
   it("accepts only the fixed local Vision loopback preview origin", () => {
@@ -120,6 +132,17 @@ describe("vision protocol schemas", () => {
         source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-05-29T12:00:00.000Z",
+        sourceFrame: {
+          adapter: "recorded_video",
+          role: "front",
+          configSha256: "a".repeat(64),
+          fixtureSha256: "b".repeat(64),
+          frameIndex: 12,
+          decodedFrameCount: 13,
+          synthetic: false,
+          relabeled: false,
+          eventId: "vision-event-001",
+        },
         profile: {
           personPresent: true,
           heightCm: 172,
@@ -149,6 +172,17 @@ describe("vision protocol schemas", () => {
         state: "approach",
         reason: "person_present_but_not_close",
         detectedAt: "2026-06-29T10:00:00.000Z",
+        sourceFrame: {
+          adapter: "recorded_video",
+          role: "top",
+          configSha256: "a".repeat(64),
+          fixtureSha256: "c".repeat(64),
+          frameIndex: 4,
+          decodedFrameCount: 5,
+          synthetic: false,
+          relabeled: false,
+          eventId: "presence-event-001",
+        },
         personPresent: true,
         closeNow: false,
         close: false,
@@ -203,12 +237,48 @@ describe("vision protocol schemas", () => {
         lastSeenAt: "2026-06-29T10:03:10.000Z",
         reason: "left_frame",
         absenceDurationMs: 1200,
+        sourceFrame: {
+          adapter: "recorded_video",
+          role: "top",
+          configSha256: "a".repeat(64),
+          fixtureSha256: "c".repeat(64),
+          frameIndex: 17,
+          decodedFrameCount: 18,
+          synthetic: false,
+          relabeled: false,
+          eventId: "departure-event-001",
+        },
       },
     });
 
     expect(message.type).toBe("vision.person_departed");
     expect(message.payload.reason).toBe("left_frame");
     expect(message.payload.lastSeenAt).toBe("2026-06-29T10:03:10.000Z");
+  });
+
+  it("rejects synthetic frame-source evidence in protocol payloads", () => {
+    expect(() =>
+      visionPresenceStatusMessageSchema.parse({
+        ...BASE_ENVELOPE,
+        type: "vision.presence_status",
+        payload: {
+          source: "top",
+          eventId: "presence-event-synthetic",
+          detectedAt: "2026-06-29T10:00:00.000Z",
+          state: "approach",
+          personPresent: true,
+          sourceFrame: {
+            adapter: "recorded_video",
+            role: "top",
+            configSha256: "a".repeat(64),
+            fixtureSha256: "c".repeat(64),
+            frameIndex: 0,
+            decodedFrameCount: 1,
+            synthetic: true,
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   it("marks multiple-person profile results as machine-readable unusable", () => {

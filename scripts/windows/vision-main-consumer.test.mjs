@@ -29,8 +29,10 @@ test("keeps the runtime and recorded-video fixture archives separate", () => {
   const module = source(modulePath);
   assert.match(module, /runtime archive must not contain recorded-video fixtures/);
   assert.match(module, /recorded-video\/top\.mp4/);
+  assert.match(module, /fixture-manifest\.json/);
   assert.match(module, /recorded-video configuration requires the separate fixture archive/);
   assert.match(module, /recorded-video path must be an extracted fixture/);
+  assert.match(module, /recorded-video path must bind the committed \$\(\$binding\.label\) fixture/);
 });
 
 test("installs one fixed app directory and probes health plus machine protocol", () => {
@@ -53,6 +55,10 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /profile_push", "presence_status", "person_departed", "try_on_session/);
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
+  assert.match(module, /vending-vision\.exe`" --config/);
+  assert.match(module, /downloadManifest/);
+  assert.match(module, /siteConfiguration = \[ordered\]@\{/);
+  assert.match(module, /executableSha256 = \(Get-VisionSha256/);
   assert.match(module, /health\s*=\s*@\{\s*version\s*=\s*\$healthVersion/);
   assert.match(
     module,

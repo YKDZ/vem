@@ -9,6 +9,10 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
 }
 
+function Get-Sha256([string]$Path) {
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 function New-Zip([string]$Source, [string]$Destination) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [IO.Compression.ZipFile]::CreateFromDirectory($Source, $Destination)
@@ -242,15 +246,31 @@ try {
   Assert-True $recordedCameraRejected "recorded-video install accepted degraded camera readiness"
   $server = Start-VisionProbeServer 17893 "ok" $true "9.8.9"
   Start-Sleep -Milliseconds 200
+  $fixtureCommitRoot = Join-Path $root "program-data\vision\fixtures\$commit"
+  New-Item -ItemType Directory -Force -Path (Join-Path $fixtureCommitRoot "recorded-video") | Out-Null
+  [IO.File]::WriteAllText((Join-Path $fixtureCommitRoot "recorded-video\top.mp4"), "stale", [Text.Encoding]::UTF8)
   $recordedInstall = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $cache.fixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 5
   Wait-Job $server | Out-Null; Receive-Job $server | Out-Null; Remove-Job $server
   Assert-True (Test-Path -LiteralPath (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4")) "recorded-video fixture was not extracted outside the app"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $recordedInstall.appDirectory "recorded-video"))) "recorded-video fixture entered the production app"
+  Assert-True ((Get-Content -LiteralPath (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4") -Raw) -eq "fixture") "stale fixture directory was trusted instead of atomically replaced"
   $installedRecordedConfig = Get-Content -LiteralPath $recordedInstall.siteConfiguration -Raw | ConvertFrom-Json
   $expectedTopVideo = [IO.Path]::GetFullPath((Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4"))
   $expectedFrontVideo = [IO.Path]::GetFullPath((Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\front.mp4"))
   Assert-True ($installedRecordedConfig.cameras.top.video_path -eq $expectedTopVideo) "top video_path was not normalized to the extracted fixture"
   Assert-True ($installedRecordedConfig.cameras.front.video_path -eq $expectedFrontVideo) "front video_path was not normalized to the extracted fixture"
+  $fixtureManifestPath = Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\fixture-manifest.json"
+  Assert-True (Test-Path -LiteralPath $fixtureManifestPath) "recorded-video fixture manifest was not written"
+  $recordedInstallRecord = Get-Content -LiteralPath (Join-Path $root "program-data\vision\installed.json") -Raw | ConvertFrom-Json
+  Assert-True ($recordedInstallRecord.executablePath -eq (Join-Path $root "vision\app\vending-vision.exe")) "installed record omitted the fixed executablePath"
+  Assert-True ($recordedInstallRecord.siteConfiguration.path -eq (Join-Path $root "program-data\vision\site.json")) "installed record omitted the fixed site configuration path"
+  Assert-True ($recordedInstallRecord.siteConfiguration.sha256 -eq (Get-Sha256 (Join-Path $root "program-data\vision\site.json"))) "installed record omitted the site configuration digest"
+  Assert-True ($recordedInstallRecord.downloadManifest.sha256 -eq (Get-Sha256 (Join-Path $root "artifact-source\vending-vision-main-artifacts.json"))) "installed record omitted the download manifest digest"
+  Assert-True ($recordedInstallRecord.fixtureSet.manifestPath -eq $fixtureManifestPath) "installed record omitted the fixture manifest path"
+  Assert-True ($recordedInstallRecord.fixtureSet.manifestSha256 -eq (Get-Sha256 $fixtureManifestPath)) "installed record omitted the fixture manifest digest"
+  Assert-True ($recordedInstallRecord.fixtureSet.top.sha256 -eq (Get-Sha256 $expectedTopVideo)) "installed record omitted the top fixture digest"
+  Assert-True ($recordedInstallRecord.fixtureSet.front.sha256 -eq (Get-Sha256 $expectedFrontVideo)) "installed record omitted the front fixture digest"
+  Assert-True ($recordedInstallRecord.fixtureSet.expectedResults.sha256 -eq (Get-Sha256 (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\expected-results.json"))) "installed record omitted the expected-results digest"
   $installedRecordedConfig.cameras.top.video_path = "fixtures/$commit/recorded-video/top.mp4"
   $installedRecordedConfig.cameras.front.video_path = "fixtures/$commit/recorded-video/front.mp4"
   $relativeConfigPath = Join-Path $root "program-data\vision\relative-site.json"
