@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   reconstruct-local-testbed:
-    name: Reconstruct Local Testbed
+    name: Reconstruct Local Testbed Pass 1
     runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 30
     outputs:
@@ -53,8 +53,8 @@ jobs:
             --out "$RUNNER_TEMP/vem-local-testbed-reconstruction.json"
           echo "mode=$TESTBED_MODE" >> "$GITHUB_OUTPUT"
 
-  run-inside-windows:
-    name: Build Deploy And Test Inside Windows
+  run-inside-windows-pass-1:
+    name: Build Deploy And Test Inside Windows Pass 1
     needs: reconstruct-local-testbed
     if: ${{ needs.reconstruct-local-testbed.result == 'success' }}
     runs-on: [self-hosted, Windows, X64, vem-runtime]
@@ -71,60 +71,141 @@ jobs:
           VISION_GITHUB_TOKEN: ${{ github.token }}
         run: |
           & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
-      - name: Collect Compact Fast Sale Evidence
+      - name: Collect Compact Runtime Acceptance Evidence Pass 1
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: vm-fast-route-stress-sale-${{ github.run_id }}-${{ github.run_attempt }}
+          name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
+            C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Collect Compact Vision Experience Evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-vision-try-on-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.png
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Collect Scanner Payment-Code Evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-scanner-payment-code-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
-            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Collect Bounded Issue17 Delayed Pickup Evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-issue17-delayed-pickup-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.wav
             C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\screenshots\*.png
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\*.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\host-default-audio\*.json
-            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\host-default-audio\*.wav
           if-no-files-found: warn
           retention-days: 7
-      - name: Collect Full Workflow Track Summary
+
+  reconstruct-local-testbed-pass-2:
+    name: Reconstruct Local Testbed Pass 2
+    needs: [reconstruct-local-testbed, run-inside-windows-pass-1]
+    if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result != 'cancelled' }}
+    runs-on: [self-hosted, Linux, X64, vem-runtime]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reconstruct C Drive And Local Platform Again
+        run: |
+          set -euo pipefail
+          test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
+          test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
+          test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
+          node scripts/testbed/local-testbed.mjs reconstruct \
+            --mode full \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-pass-2" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --state-root "$VEM_LOCAL_TESTBED_STATE_ROOT" \
+            --baseline-contract "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT" \
+            --host-private-address "$VEM_LOCAL_TESTBED_HOST_ADDRESS" \
+            --out "$RUNNER_TEMP/vem-local-testbed-reconstruction-pass-2.json"
+        env:
+          VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
+          VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
+          VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
+
+  run-inside-windows-pass-2:
+    name: Build Deploy And Test Inside Windows Pass 2
+    needs: reconstruct-local-testbed-pass-2
+    if: ${{ needs.reconstruct-local-testbed-pass-2.result == 'success' }}
+    runs-on: [self-hosted, Windows, X64, vem-runtime]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build Deploy Claim And Test Again
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VISION_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          & scripts/testbed/run-local-testbed-guest.ps1 -Mode 'full'
+      - name: Collect Compact Runtime Acceptance Evidence Pass 2
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: vm-full-workflow-tracks-${{ github.run_id }}-${{ github.run_attempt }}
+          name: vm-runtime-acceptance-pass-2-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            C:\ProgramData\VEM\runtime\testbed\installed-runtime-smoke.json
             C:\ProgramData\VEM\runtime\testbed\full-workflow-tracks.json
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale.json
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\fast-route-stress-sale-artifacts\*.log
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code.json
+            C:\ProgramData\VEM\runtime\testbed\scanner-payment-code-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance.json
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.png
+            C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\screenshots\*.png
           if-no-files-found: warn
+          retention-days: 7
+
+  full-workflow-stability-gate:
+    name: Full Workflow Stability Gate
+    needs:
+      [
+        reconstruct-local-testbed,
+        run-inside-windows-pass-1,
+        reconstruct-local-testbed-pass-2,
+        run-inside-windows-pass-2,
+      ]
+    if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result != 'cancelled' && needs.run-inside-windows-pass-2.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Download pass 1 runtime evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vm-runtime-pass-1
+      - name: Download pass 2 runtime evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: vm-runtime-acceptance-pass-2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vm-runtime-pass-2
+      - name: Validate same-commit two-pass stability gate
+        run: |
+          PASS_A="$(find "${RUNNER_TEMP}/vm-runtime-pass-1" -name full-workflow-tracks.json | head -n1)"
+          PASS_B="$(find "${RUNNER_TEMP}/vm-runtime-pass-2" -name full-workflow-tracks.json | head -n1)"
+          test -n "$PASS_A"
+          test -n "$PASS_B"
+          node scripts/testbed/full-workflow-stability-gate.mjs \
+            --commit "${GITHUB_SHA}" \
+            --pass-a "$PASS_A" \
+            --pass-b "$PASS_B" \
+            --out "${RUNNER_TEMP}/full-workflow-stability-gate.json"
+      - name: Upload stability gate report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-runtime-stability-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/full-workflow-stability-gate.json
+          if-no-files-found: error
           retention-days: 7

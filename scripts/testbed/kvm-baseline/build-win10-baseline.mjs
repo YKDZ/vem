@@ -1214,11 +1214,33 @@ export async function waitForGuestVerification(
     preparationScript,
     `${target}:C:/ProgramData/WindowsRuntimeBaseline/prepare-toolchain.ps1`,
   ]);
-  await runCommand("ssh", [
-    ...sshOptions,
-    target,
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1",
-  ]);
+  try {
+    await runCommand("ssh", [
+      ...sshOptions,
+      target,
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\WindowsRuntimeBaseline\\prepare-toolchain.ps1",
+    ]);
+  } catch (error) {
+    const guestFailurePath = join(stagingDirectory, "guest-stage-failure.json");
+    const copied = await runCommand(
+      "scp",
+      [
+        ...sshOptions,
+        `${target}:C:/ProgramData/WindowsRuntimeBaseline/guest-stage-failure.json`,
+        guestFailurePath,
+      ],
+      { allowFailure: true },
+    );
+    let guestFailure = null;
+    if (!copied.failed) {
+      guestFailure = await readFile(guestFailurePath, "utf8").catch(() => null);
+    }
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${
+        guestFailure ? `\nguest stage failure:\n${guestFailure}` : ""
+      }`,
+    );
+  }
   const token = await acquireRunnerRegistrationToken(config, { runCommand });
   const runnerName = `${config.runner.name}-${randomUUID().slice(0, 8)}`;
   const runnerLabels = config.runner.labels

@@ -300,66 +300,12 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 
 node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
-$trackFailures = [System.Collections.Generic.List[object]]::new()
-$trackSummary = [ordered]@{
-  schemaVersion = "vem-local-testbed-full-workflow/v1"
-  mode = $Mode
-  ok = $true
-  tracks = [ordered]@{
-    fast = $null
-    scanner = $null
-    delayedPickup = $null
-    vision = $null
-  }
-  failures = @()
-}
-
-try {
-  node scripts/testbed/fast-route-stress-sale.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $fastRouteOutPath
-  if ($LASTEXITCODE -ne 0) { throw "fast route stress sale failed" }
-} catch {
-  $trackFailures.Add([ordered]@{ track = "fast"; message = $_.Exception.Message }) | Out-Null
-} finally {
-  if (Test-Path -LiteralPath $fastRouteOutPath) {
-    $trackSummary.tracks.fast = Get-Content -Raw -LiteralPath $fastRouteOutPath | ConvertFrom-Json
-  }
-}
-
-if ($Mode -eq "full") {
-  try {
-    node scripts/testbed/scanner-payment-code-guest-full.mjs --mode full --guest-input $GuestInputPath --handoff $handoffPath --out $scannerPaymentCodeOutPath
-    if ($LASTEXITCODE -ne 0) { throw "scanner payment-code guest acceptance failed" }
-  } catch {
-    $trackFailures.Add([ordered]@{ track = "scanner"; message = $_.Exception.Message }) | Out-Null
-  } finally {
-    if (Test-Path -LiteralPath $scannerPaymentCodeOutPath) {
-      $trackSummary.tracks.scanner = Get-Content -Raw -LiteralPath $scannerPaymentCodeOutPath | ConvertFrom-Json
-    }
-  }
-  try {
-    node scripts/testbed/delayed-pickup-native-audio-guest-full.mjs --mode full --guest-input $GuestInputPath --handoff $handoffPath --out $delayedPickupOutPath
-    if ($LASTEXITCODE -ne 0) { throw "delayed pickup native audio failed" }
-  } catch {
-    $trackFailures.Add([ordered]@{ track = "delayedPickup"; message = $_.Exception.Message }) | Out-Null
-  } finally {
-    if (Test-Path -LiteralPath $delayedPickupOutPath) {
-      $trackSummary.tracks.delayedPickup = Get-Content -Raw -LiteralPath $delayedPickupOutPath | ConvertFrom-Json
-    }
-  }
-  try {
-    Invoke-FullVisionTryOnAcceptance $GuestInputPath $HandoffPath $visionTryOnOutPath
-  } catch {
-    $trackFailures.Add([ordered]@{ track = "vision"; message = $_.Exception.Message }) | Out-Null
-  } finally {
-    if (Test-Path -LiteralPath $visionTryOnOutPath) {
-      $trackSummary.tracks.vision = Get-Content -Raw -LiteralPath $visionTryOnOutPath | ConvertFrom-Json
-    }
-  }
-}
-$trackSummary.ok = ($trackFailures.Count -eq 0)
-$trackSummary.failures = @($trackFailures)
-$trackSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workflowSummaryOutPath -Encoding utf8
 Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
+if ($Mode -eq "full") {
+  Write-RecordedVisionSiteConfiguration (Join-Path $handoffRoot "vision-recorded-site-config.json")
+}
+node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
+if ($LASTEXITCODE -ne 0) { throw "local testbed workflow aggregate failed" }
 if (Test-Path -LiteralPath $fastRouteOutPath) {
   Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
 }
@@ -375,6 +321,3 @@ if ($Mode -eq "full") {
   }
 }
 Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output
-if ($trackFailures.Count -gt 0) {
-  throw "local testbed workflow tracks failed: $((@($trackFailures | ForEach-Object { "" + $_.track + "=" + $_.message }) -join '; '))"
-}

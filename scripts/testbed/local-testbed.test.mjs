@@ -893,6 +893,10 @@ describe("Windows D cache contract", () => {
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
+    const orchestrator = readFileSync(
+      new URL("./full-workflow-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
     assert.match(guest, /function Write-RecordedVisionSiteConfiguration/);
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(
@@ -900,27 +904,17 @@ describe("Windows D cache contract", () => {
       /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/,
     );
     assert.match(guest, /Install-VisionMainArtifact/);
-    assert.match(
-      guest,
-      /delayed-pickup-native-audio-guest-full\.mjs --mode full/,
-    );
+    assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /delayed-pickup-native-audio\.json/);
-    assert.match(guest, /vision-try-on-acceptance\.mjs --mode full/);
+    assert.match(guest, /scanner-payment-code\.json/);
     assert.match(guest, /full-workflow-tracks\.json/);
     assert.match(
-      guest,
-      /\$trackFailures = \[System\.Collections\.Generic\.List\[object\]\]::new\(\)/,
+      orchestrator,
+      /scanner-payment-code-guest-full\.mjs[\s\S]*"--mode",[\s\S]*"full"/,
     );
-    assert.match(guest, /\$trackSummary = \[ordered\]@\{/);
-    assert.match(guest, /track = "fast"/);
-    assert.match(guest, /track = "scanner"/);
-    assert.match(guest, /track = "delayedPickup"/);
-    assert.match(guest, /track = "vision"/);
-    assert.match(guest, /scanner-payment-code-guest-full\.mjs --mode full/);
-    assert.match(guest, /if \(\$trackFailures\.Count -gt 0\) \{/);
     assert.match(
       guest,
-      /if \(\$Mode -eq "full"\) \{[\s\S]*Invoke-FullVisionTryOnAcceptance \$GuestInputPath \$HandoffPath \$visionTryOnOutPath[\s\S]*\}/s,
+      /if \(\$Mode -eq "full"\) \{\s+Write-RecordedVisionSiteConfiguration/,
     );
     assert.doesNotMatch(guest, /\b(factory|iso)\b/i);
   });
