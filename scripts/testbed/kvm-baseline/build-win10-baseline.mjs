@@ -33,6 +33,7 @@ import {
   recoverPublishedBaseline,
   runtimeProfileForConfig,
   runtimeProfileForPublishedRelease,
+  startHeadlessVncActivator,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
@@ -40,6 +41,7 @@ const BASELINE_ROOT = new URL(".", import.meta.url);
 const CONSTRUCTION_OWNER_FILE = ".construction-owner.json";
 const CONSTRUCTION_OWNER_SCHEMA = "win10-kvm-construction-owner/v1";
 export const RUNNER_ARCHIVE_FILE = "actions-runner-win-x64.zip";
+export const VIRTIO_GPU_DRIVER_DIRECTORY = "virtio-gpu-driver";
 const INTERACTIVE_DISPLAY_REPORT_PATH =
   "C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json";
 const GUEST_AVAILABILITY_TIMEOUT_MS = 60 * 60 * 1000;
@@ -200,13 +202,13 @@ async function reclaimConstructionWorkspace(config, buildId) {
 
 let activeConstructionCommandTracker = null;
 
-function startExecFile(command, args) {
+function startExecFile(command, args, options = {}) {
   let child;
   const completion = new Promise((resolve, reject) => {
     child = execFileCallback(
       command,
       args,
-      { maxBuffer: 1024 * 1024 },
+      { maxBuffer: 1024 * 1024, ...options },
       (error, stdout, stderr) => {
         if (error) {
           error.stdout ??= stdout;
@@ -226,19 +228,27 @@ export function createConstructionCommandTracker() {
   let abortError = null;
   let abortPromise = null;
 
-  const runTrackedCommand = (
+  const startTrackedProcess = (
     command,
     args,
-    { allowAfterAbort = false } = {},
+    { allowAfterAbort = false, ...options } = {},
   ) => {
-    if (abortError && !allowAfterAbort) return Promise.reject(abortError);
-    const invocation = startExecFile(command, args);
+    if (abortError && !allowAfterAbort) throw abortError;
+    const invocation = startExecFile(command, args, options);
     inFlight.set(invocation.child, invocation.completion);
     void invocation.completion.then(
       () => inFlight.delete(invocation.child),
       () => inFlight.delete(invocation.child),
     );
-    return invocation.completion;
+    return invocation;
+  };
+
+  const runTrackedCommand = (command, args, options) => {
+    try {
+      return startTrackedProcess(command, args, options).completion;
+    } catch (error) {
+      return Promise.reject(error);
+    }
   };
 
   const runCleanupCommand = (command, args, { allowFailure = false } = {}) =>
@@ -272,6 +282,7 @@ export function createConstructionCommandTracker() {
     abortAndWait,
     run: runTrackedCommand,
     runCleanup: runCleanupCommand,
+    start: startTrackedProcess,
   };
 }
 
@@ -392,6 +403,7 @@ async function collectHostObservation(config) {
     },
     installationMedia: {
       windowsIso: await readable(config.media.windowsIsoPath),
+      virtioWinIso: await readable(config.media.virtioWinIsoPath),
       runnerArchive: await assertFileSha256(
         config.media.runnerArchivePath,
         config.media.runnerArchiveSha256,
@@ -449,7 +461,7 @@ ${"$scriptRoot"} = "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts"
 New-Item -ItemType Directory -Force -Path ${"$scriptRoot"} | Out-Null
 Copy-Item -Force (Join-Path $mediaRoot "*.ps1") ${"$scriptRoot"}
 & (Join-Path $mediaRoot "shared-guest-preparation.ps1") -WebView2InstallerUri $config.webView2InstallerUri -AuthorizedKeysPath (Join-Path $mediaRoot "administrators_authorized_keys")
-& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
+& (Join-Path $mediaRoot "prepare-vm-runtime.ps1") -Mode PrepareKvmGuest -VirtioGpuDriverPath (Join-Path $mediaRoot $config.virtioGpuDriverDirectory) -InteractiveUser $config.interactiveUser -DesktopWidth $config.display.width -DesktopHeight $config.display.height -DesktopScalePercent $config.display.scalePercent
 `;
 }
 
@@ -457,6 +469,7 @@ export function guestConfigurationFor(config) {
   return {
     webView2InstallerUri: config.media.webView2InstallerUri,
     runnerArchiveFile: RUNNER_ARCHIVE_FILE,
+    virtioGpuDriverDirectory: VIRTIO_GPU_DRIVER_DIRECTORY,
     interactiveUser: config.guest.sshUser,
     display: {
       width: 1080,
@@ -471,8 +484,38 @@ export async function createConfigurationMedia(
   stagingDirectory,
   { runCommand = run } = {},
 ) {
+  await assertFileSha256(
+    config.media.runnerArchivePath,
+    config.media.runnerArchiveSha256,
+    "media.runnerArchivePath",
+  );
   const mediaRoot = join(stagingDirectory, "configuration-media");
   await mkdir(mediaRoot, { recursive: true, mode: 0o700 });
+  const virtioGpuDriverRoot = join(mediaRoot, VIRTIO_GPU_DRIVER_DIRECTORY);
+  await runCommand("xorriso", [
+    "-osirrox",
+    "on",
+    "-indev",
+    config.media.virtioWinIsoPath,
+    "-extract",
+    "/viogpudo/w10/amd64",
+    virtioGpuDriverRoot,
+  ]);
+  const driverPayload = await readdir(virtioGpuDriverRoot, {
+    withFileTypes: true,
+  });
+  for (const extension of [".inf", ".cat", ".sys"]) {
+    if (
+      !driverPayload.some(
+        (entry) =>
+          entry.isFile() && entry.name.toLowerCase().endsWith(extension),
+      )
+    ) {
+      throw new Error(
+        `VirtIO GPU driver payload is missing a signed ${extension} file`,
+      );
+    }
+  }
   for (const name of [
     "shared-guest-preparation.ps1",
     "prepare-vm-runtime.ps1",
@@ -508,11 +551,6 @@ export async function createConfigurationMedia(
   await copyFile(
     config.guest.authorizedKeysFile,
     join(mediaRoot, "administrators_authorized_keys"),
-  );
-  await assertFileSha256(
-    config.media.runnerArchivePath,
-    config.media.runnerArchiveSha256,
-    "media.runnerArchivePath",
   );
   await copyFile(
     config.media.runnerArchivePath,
@@ -1137,11 +1175,13 @@ export function constructionCleanup({
   constructionDomain,
   runCommand = run,
   stagingDirectory,
+  stopActivator = async () => {},
 }) {
   let cleanupPromise = null;
   return () => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
+      await stopActivator();
       await destroyAndUndefine(config, constructionDomain, { runCommand });
       await rm(stagingDirectory, { recursive: true, force: true });
       await rm(cacheStagingDirectory, { recursive: true, force: true });
@@ -1377,12 +1417,17 @@ async function buildWin10BaselineImpl(
   const stagedPath = join(stagingDirectory, "system.qcow2");
   const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
   const constructionDomain = construction.domainName;
+  let vncActivator = null;
   const cleanup = constructionCleanup({
     config,
     constructionDomain,
     runCommand: commandTracker.runCleanup,
     stagingDirectory,
     cacheStagingDirectory,
+    stopActivator: async () => {
+      await vncActivator?.stop();
+      vncActivator = null;
+    },
   });
   return runWithConstructionSignalCleanup({
     abortInFlight: () => commandTracker.abortAndWait(),
@@ -1452,6 +1497,16 @@ async function buildWin10BaselineImpl(
           "start",
           constructionDomain,
         ]);
+        vncActivator = await startHeadlessVncActivator({
+          domainName: constructionDomain,
+          libvirtUri: config.host.libvirtUri,
+          runCommand: run,
+          startProcess: commandTracker.start,
+          commands: {
+            width: profile.display.width,
+            height: profile.display.height,
+          },
+        });
         const verification = await waitForGuestVerification(
           config,
           constructionDomain,
@@ -1462,6 +1517,8 @@ async function buildWin10BaselineImpl(
           constructionDomain,
           constructionProfile,
         );
+        await vncActivator.stop();
+        vncActivator = null;
         await shutdownGuestAndWait(
           config,
           constructionDomain,

@@ -37,6 +37,7 @@ import {
 } from "./libvirt-runtime-profile.mjs";
 import {
   BASELINE_PUBLICATION_STAGES,
+  REQUIRED_COMMANDS,
   baselinePublicationLayout,
   evaluateHostPreflight,
   parseGuestAddress,
@@ -46,6 +47,7 @@ import {
   resolvePublishedBaselineRelease,
   runtimeProfileForConfig,
   runtimeProfileForPublishedRelease,
+  startHeadlessVncActivator,
   validateBaselineBuildConfig,
 } from "./linux-kvm-baseline.mjs";
 
@@ -72,6 +74,7 @@ function buildConfig(root) {
     },
     media: {
       windowsIsoPath: join(root, "media", "windows-10.iso"),
+      virtioWinIsoPath: join(root, "media", "virtio-win.iso"),
       windowsImageIndex: 1,
       runnerArchivePath: join(root, "media", "actions-runner-win-x64.zip"),
       runnerArchiveSha256: "a".repeat(64),
@@ -497,8 +500,9 @@ describe("Linux KVM Windows baseline", () => {
     );
     assert.match(
       xml,
-      /<model type="vga" vram="65536" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
+      /<model type="virtio" vram="65536" heads="1" primary="yes"><resolution x="1080" y="1920"\/><\/model>/,
     );
+    assert.doesNotMatch(xml, /<model type="(?:vga|bochs|qxl)"/);
     assert.match(xml, /target type="usb-serial" port="0"/);
     assert.match(xml, /<address type="usb" bus="0" port="1"\/>/);
     assert.match(xml, /<address type="usb" bus="0" port="2"\/>/);
@@ -527,6 +531,144 @@ describe("Linux KVM Windows baseline", () => {
       renderLibvirtDomainXml(alternateProfile),
       /<resolution x="1200" y="1600"\/>/,
     );
+  });
+
+  it("activates the dynamic loopback VNC display with tracked headless children and stops both", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-activator-"));
+    const xvfbPath = join(root, "fake-xvfb.mjs");
+    const viewerPath = join(root, "fake-gvncviewer.mjs");
+    const xvfbPidPath = join(root, "xvfb.pid");
+    const viewerStatePath = join(root, "viewer.json");
+    try {
+      writeFileSync(
+        xvfbPath,
+        `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.FAKE_XVFB_PID, String(process.pid));
+process.stdout.write("73\\n");
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      writeFileSync(
+        viewerPath,
+        `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.FAKE_VIEWER_STATE, JSON.stringify({
+  pid: process.pid,
+  endpoint: process.argv[2],
+  display: process.env.DISPLAY,
+}));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      const tracker = createConstructionCommandTracker();
+      const commands = [];
+      const activator = await startHeadlessVncActivator({
+        domainName: "win10-runtime-baseline-build-deadbeef",
+        libvirtUri: "qemu:///system",
+        runCommand: async (command, args) => {
+          commands.push([command, args]);
+          return { stdout: "127.0.0.1:9\n", stderr: "" };
+        },
+        startProcess: tracker.start,
+        commands: {
+          xvfb: process.execPath,
+          xvfbArguments: [xvfbPath],
+          viewer: process.execPath,
+          viewerArguments: [viewerPath],
+        },
+        environment: {
+          ...process.env,
+          FAKE_XVFB_PID: xvfbPidPath,
+          FAKE_VIEWER_STATE: viewerStatePath,
+        },
+        readinessDelayMs: 25,
+      });
+
+      assert.deepEqual(commands, [
+        [
+          "virsh",
+          [
+            "--connect",
+            "qemu:///system",
+            "vncdisplay",
+            "win10-runtime-baseline-build-deadbeef",
+          ],
+        ],
+      ]);
+      assert.equal(activator.endpoint, "127.0.0.1:9");
+      assert.deepEqual(JSON.parse(readFileSync(viewerStatePath, "utf8")), {
+        pid: JSON.parse(readFileSync(viewerStatePath, "utf8")).pid,
+        endpoint: "127.0.0.1:9",
+        display: ":73",
+      });
+      const xvfbPid = Number(readFileSync(xvfbPidPath, "utf8"));
+      const viewerPid = JSON.parse(
+        readFileSync(viewerStatePath, "utf8"),
+      ).pid;
+      await activator.stop();
+      assert.throws(() => process.kill(xvfbPid, 0), /ESRCH/);
+      assert.throws(() => process.kill(viewerPid, 0), /ESRCH/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts and awaits both tracked VNC activator children", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-vnc-cancel-"));
+    const xvfbPath = join(root, "fake-xvfb.mjs");
+    const viewerPath = join(root, "fake-gvncviewer.mjs");
+    const xvfbPidPath = join(root, "xvfb.pid");
+    const viewerStatePath = join(root, "viewer.json");
+    try {
+      writeFileSync(
+        xvfbPath,
+        `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.FAKE_XVFB_PID, String(process.pid));
+process.stdout.write("74\\n");
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      writeFileSync(
+        viewerPath,
+        `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.FAKE_VIEWER_STATE, JSON.stringify({ pid: process.pid }));
+await new Promise(() => setInterval(() => {}, 1_000));
+`,
+      );
+      const tracker = createConstructionCommandTracker();
+      const activator = await startHeadlessVncActivator({
+        domainName: "win10-runtime-baseline-build-cafebabe",
+        libvirtUri: "qemu:///system",
+        runCommand: async () => ({ stdout: ":12\n", stderr: "" }),
+        startProcess: tracker.start,
+        commands: {
+          xvfb: process.execPath,
+          xvfbArguments: [xvfbPath],
+          viewer: process.execPath,
+          viewerArguments: [viewerPath],
+        },
+        environment: {
+          ...process.env,
+          FAKE_XVFB_PID: xvfbPidPath,
+          FAKE_VIEWER_STATE: viewerStatePath,
+        },
+        readinessDelayMs: 25,
+      });
+      const xvfbPid = Number(readFileSync(xvfbPidPath, "utf8"));
+      const viewerPid = JSON.parse(
+        readFileSync(viewerStatePath, "utf8"),
+      ).pid;
+
+      await tracker.abortAndWait();
+      await activator.stop();
+      assert.throws(() => process.kill(xvfbPid, 0), /ESRCH/);
+      assert.throws(() => process.kill(viewerPid, 0), /ESRCH/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("verifies the defined ICH9 audio device and exact USB-port serial role mapping", () => {
@@ -627,6 +769,20 @@ describe("Linux KVM Windows baseline", () => {
         /media\.runnerArchivePath/,
       );
 
+      const missingVirtioWinIso = buildConfig(root);
+      delete missingVirtioWinIso.media.virtioWinIsoPath;
+      assert.throws(
+        () => validateBaselineBuildConfig(missingVirtioWinIso),
+        /media\.virtioWinIsoPath/,
+      );
+
+      const externalVirtioWinIso = buildConfig(root);
+      externalVirtioWinIso.media.virtioWinIsoPath = "/outside/virtio-win.iso";
+      assert.throws(
+        () => validateBaselineBuildConfig(externalVirtioWinIso),
+        /media\.virtioWinIsoPath must stay under host\.largeFileRoot/,
+      );
+
       const invalidRunnerArchiveHash = buildConfig(root);
       invalidRunnerArchiveHash.media.runnerArchiveSha256 = "not-a-sha256";
       assert.throws(
@@ -644,6 +800,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.deepEqual(guestConfigurationFor(config), {
       webView2InstallerUri: config.media.webView2InstallerUri,
       runnerArchiveFile: "actions-runner-win-x64.zip",
+      virtioGpuDriverDirectory: "virtio-gpu-driver",
       interactiveUser: config.guest.sshUser,
       display: { width: 1080, height: 1920, scalePercent: 100 },
     });
@@ -680,12 +837,15 @@ describe("Linux KVM Windows baseline", () => {
               "ssh",
               "scp",
               "flock",
+              "Xvfb",
+              "gvncviewer",
             ],
             cpuCount: 32,
             availableMemoryMiB: 64 * 1024,
             availableStorageBytes: 200 * 1024 ** 3,
             installationMedia: {
               windowsIso: true,
+              virtioWinIso: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -710,12 +870,15 @@ describe("Linux KVM Windows baseline", () => {
               "ssh",
               "scp",
               "flock",
+              "Xvfb",
+              "gvncviewer",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
             availableStorageBytes: 79 * 1024 ** 3,
             installationMedia: {
               windowsIso: true,
+              virtioWinIso: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -726,34 +889,47 @@ describe("Linux KVM Windows baseline", () => {
           }),
         /storage/,
       );
-      assert.deepEqual(
-        evaluateHostPreflight(config, {
-          hostIdentity: hostIdentity(),
-          kvmAvailable: true,
-          libvirtAvailable: true,
-          commands: [
-            "virsh",
-            "virt-install",
-            "qemu-img",
-            "xorriso",
-            "ssh",
-            "scp",
-            "flock",
-          ],
-          cpuCount: 8,
-          availableMemoryMiB: 16 * 1024,
-          availableStorageBytes: 80 * 1024 ** 3,
-          installationMedia: {
-            windowsIso: true,
-            runnerArchive: true,
-          },
-          networkActive: true,
-          storageAvailableBytes: {
-            baseline: 80 * 1024 ** 3,
-            cache: 80 * 1024 ** 3,
-          },
-        }),
-        { ok: true },
+      const validObservation = {
+        hostIdentity: hostIdentity(),
+        kvmAvailable: true,
+        libvirtAvailable: true,
+        commands: [...REQUIRED_COMMANDS],
+        cpuCount: 8,
+        availableMemoryMiB: 16 * 1024,
+        installationMedia: {
+          windowsIso: true,
+          virtioWinIso: true,
+          runnerArchive: true,
+        },
+        networkActive: true,
+        storageAvailableBytes: {
+          baseline: 80 * 1024 ** 3,
+          cache: 80 * 1024 ** 3,
+        },
+      };
+      assert.deepEqual(evaluateHostPreflight(config, validObservation), {
+        ok: true,
+      });
+      assert.throws(
+        () =>
+          evaluateHostPreflight(config, {
+            ...validObservation,
+            installationMedia: {
+              ...validObservation.installationMedia,
+              virtioWinIso: false,
+            },
+          }),
+        /VirtIO Windows driver media must be a readable regular file/,
+      );
+      assert.throws(
+        () =>
+          evaluateHostPreflight(config, {
+            ...validObservation,
+            commands: validObservation.commands.filter(
+              (command) => command !== "gvncviewer",
+            ),
+          }),
+        /missing host tools: gvncviewer/,
       );
       assert.throws(
         () =>
@@ -773,11 +949,14 @@ describe("Linux KVM Windows baseline", () => {
               "ssh",
               "scp",
               "flock",
+              "Xvfb",
+              "gvncviewer",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
             installationMedia: {
               windowsIso: true,
+              virtioWinIso: true,
               runnerArchive: true,
             },
             networkActive: true,
@@ -1595,7 +1774,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.equal(parsed.status, 0, parsed.stderr);
   });
 
-  it("builds configuration media without a display-driver installer", async () => {
+  it("extracts only the signed Win10 amd64 VirtIO GPU driver payload into configuration media", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-config-media-"));
     try {
       const config = buildConfig(root);
@@ -1612,13 +1791,24 @@ describe("Linux KVM Windows baseline", () => {
       const commands = [];
       const stagingDirectory = join(root, "staging");
       await createConfigurationMedia(config, stagingDirectory, {
-        runCommand: async (...command) => commands.push(command),
+        runCommand: async (...command) => {
+          commands.push(command);
+          const [program, args] = command;
+          if (program === "xorriso" && args.includes("-extract")) {
+            const destination = args.at(-1);
+            mkdirSync(destination, { recursive: true });
+            writeFileSync(join(destination, "viogpudo.inf"), "signed inf");
+            writeFileSync(join(destination, "viogpudo.cat"), "catalog");
+            writeFileSync(join(destination, "viogpudo.sys"), "driver");
+          }
+        },
       });
 
       const mediaRoot = join(stagingDirectory, "configuration-media");
       assert.deepEqual(guestConfigurationFor(config), {
         webView2InstallerUri: config.media.webView2InstallerUri,
         runnerArchiveFile: "actions-runner-win-x64.zip",
+        virtioGpuDriverDirectory: "virtio-gpu-driver",
         interactiveUser: config.guest.sshUser,
         display: { width: 1080, height: 1920, scalePercent: 100 },
       });
@@ -1627,9 +1817,13 @@ describe("Linux KVM Windows baseline", () => {
         readFileSync(join(mediaRoot, "actions-runner-win-x64.zip"), "utf8"),
         "runner-archive",
       );
+      assert.deepEqual(
+        readdirSync(join(mediaRoot, "virtio-gpu-driver")).sort(),
+        ["viogpudo.cat", "viogpudo.inf", "viogpudo.sys"],
+      );
       assert.match(
         bootstrapScript(),
-        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
+        /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest -VirtioGpuDriverPath \(Join-Path \$mediaRoot \$config\.virtioGpuDriverDirectory\)/,
       );
       assert.doesNotMatch(bootstrapScript(), /SpiceGuestToolsInstallerPath/);
       assert.match(
@@ -1641,8 +1835,20 @@ describe("Linux KVM Windows baseline", () => {
         /prepare-vm-runtime\.ps1"\) -Mode PrepareKvmGuest/,
       );
       assert.doesNotMatch(bootstrapScript(), /Win32_CDROMDrive/);
-      assert.deepEqual(commands[0][0], "xorriso");
-      assert.ok(commands[0][1].includes(mediaRoot));
+      assert.deepEqual(commands[0], [
+        "xorriso",
+        [
+          "-osirrox",
+          "on",
+          "-indev",
+          config.media.virtioWinIsoPath,
+          "-extract",
+          "/viogpudo/w10/amd64",
+          join(mediaRoot, "virtio-gpu-driver"),
+        ],
+      ]);
+      assert.deepEqual(commands[1][0], "xorriso");
+      assert.ok(commands[1][1].includes(mediaRoot));
 
       config.media.runnerArchiveSha256 = "b".repeat(64);
       await assert.rejects(
@@ -1707,6 +1913,34 @@ describe("Linux KVM Windows baseline", () => {
     const prepareKvmGuest = runtime.slice(
       runtime.indexOf("function Prepare-KvmGuest"),
       runtime.indexOf('if ($Mode -eq "PrepareKvmGuest")'),
+    );
+    assert.match(
+      runtime,
+      /function Install-VirtioGpuDisplayDriver[\s\S]*pnputil\.exe[\s\S]*@\("\/add-driver", \$driverInf\.FullName, "\/install"\)/,
+    );
+    assert.match(
+      runtime,
+      /Win32_VideoController[\s\S]*Status -eq "OK"[\s\S]*ConfigManagerErrorCode -eq 0[\s\S]*PNPDeviceID -match "\^PCI\\\\VEN_1AF4&"/,
+    );
+    assert.match(
+      runtime,
+      /Win32_PnPSignedDriver[\s\S]*IsSigned -eq \$true/,
+    );
+    assert.match(
+      runtime,
+      /Get-AuthenticodeSignature[\s\S]*Status -ne "Valid"/,
+    );
+    assert.match(
+      runtime,
+      /Get-WindowsDriver -Online -Driver \$signedDriver\.InfName[\s\S]*OriginalFileName[\s\S]*\$driverInf\.Name/,
+    );
+    assert.doesNotMatch(
+      runtime,
+      /\/subdirs|\/add-driver[^\r\n]*\*\.inf|testsigning|nointegritychecks/i,
+    );
+    assert.match(
+      prepareKvmGuest,
+      /Install-VirtioGpuDisplayDriver -DriverRoot \$VirtioGpuDriverPath/,
     );
     assert.match(prepareKvmGuest, /Initialize-InteractiveDisplayPreparation/);
     assert.doesNotMatch(
@@ -1872,6 +2106,7 @@ describe("Linux KVM Windows baseline", () => {
     assert.match(builder, /qemu-img", \[\s*"convert"/);
     assert.match(builder, /publishVerifiedBaselineRelease/);
     assert.match(builder, /PrepareKvmGuest/);
+    assert.match(builder, /startHeadlessVncActivator/);
     assert.match(builder, /ExpectedSerialUsbPort: \[1, 2\]/);
     assert.match(builder, /actions-runner-win-x64\.zip/);
     assert.doesNotMatch(builder, /RunnerArchiveUri/);
@@ -2947,6 +3182,39 @@ describe("Linux KVM Windows baseline", () => {
       await assert.rejects(cleanup(), /libvirt unavailable/);
       assert.equal(existsSync(systemStagingPath), true);
       assert.equal(existsSync(cacheStagingPath), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the VNC activator before tracked domain cleanup and staging deletion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-kvm-activator-cleanup-"));
+    const systemStagingPath = join(root, "system-staging");
+    const cacheStagingPath = join(root, "cache-staging");
+    const events = [];
+    mkdirSync(systemStagingPath, { recursive: true });
+    mkdirSync(cacheStagingPath, { recursive: true });
+    const cleanup = constructionCleanup({
+      cacheStagingDirectory: cacheStagingPath,
+      config: { host: { libvirtUri: "qemu:///system" } },
+      constructionDomain: "win10-runtime-baseline-build-deadbeef",
+      runCommand: async (_command, args) => {
+        events.push(args[2]);
+        return { stdout: "" };
+      },
+      stagingDirectory: systemStagingPath,
+      stopActivator: async () => events.push("activator-stop"),
+    });
+    try {
+      await cleanup();
+      assert.deepEqual(events, [
+        "activator-stop",
+        "destroy",
+        "undefine",
+        "list",
+      ]);
+      assert.equal(existsSync(systemStagingPath), false);
+      assert.equal(existsSync(cacheStagingPath), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

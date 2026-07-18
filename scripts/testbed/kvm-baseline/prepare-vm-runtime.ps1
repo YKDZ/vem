@@ -5,6 +5,7 @@ param(
   [string] $RunnerUrl,
   [string] $RunnerRegistrationToken,
   [string] $RunnerName,
+  [string] $VirtioGpuDriverPath,
   [string] $InteractiveUser,
   [int] $DesktopWidth = 1080,
   [int] $DesktopHeight = 1920,
@@ -50,6 +51,46 @@ function Invoke-Native {
   param([string] $FilePath, [string[]] $ArgumentList, [string] $Description)
   & $FilePath @ArgumentList
   if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
+}
+
+function Install-VirtioGpuDisplayDriver {
+  param([string] $DriverRoot)
+  if ([string]::IsNullOrWhiteSpace($DriverRoot) -or -not (Test-Path -LiteralPath $DriverRoot -PathType Container)) {
+    throw "VirtIO GPU driver payload is unavailable"
+  }
+  $driverInfFiles = @(Get-ChildItem -LiteralPath $DriverRoot -File -Filter "*.inf" -ErrorAction Stop)
+  if ($driverInfFiles.Count -ne 1) { throw "VirtIO GPU driver payload must contain exactly one INF" }
+  $driverInf = $driverInfFiles[0]
+  $driverCatalogFiles = @(Get-ChildItem -LiteralPath $DriverRoot -File -Filter "*.cat" -ErrorAction Stop)
+  if ($driverCatalogFiles.Count -lt 1) { throw "VirtIO GPU driver payload must contain a signed catalog" }
+  foreach ($catalog in $driverCatalogFiles) {
+    if ((Get-AuthenticodeSignature -LiteralPath $catalog.FullName).Status -ne "Valid") {
+      throw "VirtIO GPU driver catalog signature is invalid"
+    }
+  }
+  Invoke-Native -FilePath "pnputil.exe" -ArgumentList @("/add-driver", $driverInf.FullName, "/install") -Description "signed VirtIO GPU driver installation"
+
+  $deadline = [DateTime]::UtcNow.AddMinutes(2)
+  do {
+    $adapter = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Status -eq "OK" -and
+        $_.ConfigManagerErrorCode -eq 0 -and
+        $_.PNPDeviceID -match "^PCI\\VEN_1AF4&"
+      } |
+      Select-Object -First 1
+    if ($null -ne $adapter) {
+      $signedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceID -eq $adapter.PNPDeviceID -and $_.IsSigned -eq $true } |
+        Select-Object -First 1
+      if ($null -ne $signedDriver -and -not [string]::IsNullOrWhiteSpace([string]$signedDriver.InfName)) {
+        $driverPackage = Get-WindowsDriver -Online -Driver $signedDriver.InfName -ErrorAction SilentlyContinue
+        if ($null -ne $driverPackage -and (Split-Path -Leaf ([string]$driverPackage.OriginalFileName)) -ieq $driverInf.Name) { return }
+      }
+    }
+    Start-Sleep -Seconds 2
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "signed VirtIO GPU driver did not bind to a healthy display adapter"
 }
 
 function Get-FreeDriveLetter {
@@ -507,6 +548,7 @@ function Rearm-InteractiveDisplay {
 }
 
 function Prepare-KvmGuest {
+  Install-VirtioGpuDisplayDriver -DriverRoot $VirtioGpuDriverPath
   Initialize-InteractiveDisplayPreparation
 }
 

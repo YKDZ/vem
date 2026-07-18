@@ -24,6 +24,8 @@ const REQUIRED_COMMANDS = [
   "ssh",
   "scp",
   "flock",
+  "Xvfb",
+  "gvncviewer",
 ];
 
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
@@ -195,6 +197,15 @@ export function validateBaselineBuildConfig(input) {
   if (!pathInside(windowsIsoPath, largeFileRoot)) {
     throw new Error("media.windowsIsoPath must stay under host.largeFileRoot");
   }
+  const virtioWinIsoPath = absolutePath(
+    media.virtioWinIsoPath,
+    "media.virtioWinIsoPath",
+  );
+  if (!pathInside(virtioWinIsoPath, largeFileRoot)) {
+    throw new Error(
+      "media.virtioWinIsoPath must stay under host.largeFileRoot",
+    );
+  }
   integer(media.windowsImageIndex, "media.windowsImageIndex");
   const webView2InstallerUri = string(
     media.webView2InstallerUri,
@@ -342,6 +353,11 @@ export function evaluateHostPreflight(config, observed) {
       "Windows installation media must be a readable regular file",
     );
   }
+  if (observed.installationMedia?.virtioWinIso !== true) {
+    throw new Error(
+      "VirtIO Windows driver media must be a readable regular file",
+    );
+  }
   if (observed.installationMedia?.runnerArchive !== true) {
     throw new Error(
       "runner archive must be a readable regular file with the configured SHA-256",
@@ -364,6 +380,147 @@ export function parseGuestAddress(domifaddrOutput, macAddress) {
     if (cidr) return cidr.split("/", 1)[0];
   }
   return null;
+}
+
+export function parseLibvirtVncDisplay(value) {
+  const display = string(value, "libvirt VNC display").trim();
+  const match = /^(?:(127\.0\.0\.1|localhost))?:(\d+)$/.exec(display);
+  if (!match) {
+    throw new Error("libvirt VNC display must use a loopback listener");
+  }
+  return `127.0.0.1:${match[2]}`;
+}
+
+function firstLine(stream, timeoutMs) {
+  return new Promise((resolveLine, rejectLine) => {
+    let output = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectLine(new Error("Xvfb did not allocate a display before timeout"));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+    };
+    const onData = (chunk) => {
+      output += chunk.toString();
+      const newline = output.indexOf("\n");
+      if (newline === -1) return;
+      cleanup();
+      resolveLine(output.slice(0, newline).trim());
+    };
+    const onEnd = () => {
+      cleanup();
+      rejectLine(new Error("Xvfb exited before allocating a display"));
+    };
+    const onError = (error) => {
+      cleanup();
+      rejectLine(error);
+    };
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+  });
+}
+
+function processFailure(handle, label) {
+  return handle.completion.then(
+    () => {
+      throw new Error(`${label} exited before VNC activation`);
+    },
+    (error) => {
+      throw new Error(
+        `${label} failed before VNC activation: ${error.message}`,
+      );
+    },
+  );
+}
+
+async function stopProcess(handle) {
+  if (!handle) return;
+  if (handle.child.exitCode === null && handle.child.signalCode === null) {
+    handle.child.kill("SIGTERM");
+  }
+  await handle.completion.catch(() => undefined);
+}
+
+export async function startHeadlessVncActivator({
+  commands = {},
+  domainName,
+  environment = process.env,
+  libvirtUri,
+  readinessDelayMs = 500,
+  runCommand,
+  startProcess,
+}) {
+  string(domainName, "domainName");
+  string(libvirtUri, "libvirtUri");
+  if (typeof runCommand !== "function") {
+    throw new Error("runCommand must be a function");
+  }
+  if (typeof startProcess !== "function") {
+    throw new Error("startProcess must be a function");
+  }
+  const display = await runCommand("virsh", [
+    "--connect",
+    libvirtUri,
+    "vncdisplay",
+    domainName,
+  ]);
+  const endpoint = parseLibvirtVncDisplay(display.stdout);
+  const width = commands.width ?? 1080;
+  const height = commands.height ?? 1920;
+  const xvfbCommand = commands.xvfb ?? "Xvfb";
+  const viewerCommand = commands.viewer ?? "gvncviewer";
+  let xvfb;
+  let viewer;
+  let stopPromise;
+  const stop = () => {
+    if (!stopPromise) {
+      stopPromise = Promise.all([stopProcess(viewer), stopProcess(xvfb)]).then(
+        () => undefined,
+      );
+    }
+    return stopPromise;
+  };
+
+  try {
+    xvfb = startProcess(
+      xvfbCommand,
+      [
+        ...(commands.xvfbArguments ?? []),
+        "-displayfd",
+        "1",
+        "-screen",
+        "0",
+        `${width}x${height}x24`,
+        "-nolisten",
+        "tcp",
+      ],
+      { env: environment },
+    );
+    const displayNumber = await firstLine(xvfb.child.stdout, 10_000);
+    if (!/^\d+$/.test(displayNumber)) {
+      throw new Error("Xvfb returned an invalid display number");
+    }
+    viewer = startProcess(
+      viewerCommand,
+      [...(commands.viewerArguments ?? []), endpoint],
+      { env: { ...environment, DISPLAY: `:${displayNumber}` } },
+    );
+    await Promise.race([
+      processFailure(viewer, "gvncviewer"),
+      new Promise((resolveReady) =>
+        setTimeout(resolveReady, readinessDelayMs),
+      ),
+    ]);
+    return { endpoint, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 }
 
 export function readJsonWithBom(value) {
