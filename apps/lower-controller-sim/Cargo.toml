@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 vending-core = { path = "../../crates/vending-core" }
 clap = { version = "4", features = ["derive", "env"] }
+chrono.workspace = true
 tokio.workspace = true
 tokio-serial.workspace = true
 

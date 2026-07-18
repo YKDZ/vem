@@ -241,6 +241,74 @@ async function waitForPlatformMovement(
   );
 }
 
+function daemonTerminalReady(transaction, liveSale) {
+  return (
+    transaction?.orderId === liveSale.orderId &&
+    transaction?.orderNo === liveSale.orderNo &&
+    transaction?.vending?.commandId === liveSale.vendingCommandId &&
+    transaction?.orderStatus === "fulfilled" &&
+    transaction?.vending?.status === "succeeded" &&
+    transaction?.nextAction === "success"
+  );
+}
+
+function platformTerminalReady(report, liveSale) {
+  const order = report?.raw?.orders?.find((entry) => entry?.id === liveSale.orderId);
+  const command = report?.raw?.commands?.find(
+    (entry) => entry?.id === liveSale.vendingCommandId,
+  );
+  return (
+    order?.status === "fulfilled" &&
+    command?.orderId === liveSale.orderId &&
+    command?.status === "succeeded" &&
+    typeof command?.commandNo === "string" &&
+    command.commandNo.length > 0
+  );
+}
+
+async function waitForTerminalSale({
+  guestInput,
+  handoff,
+  sessionId,
+  liveSale,
+  outPath,
+  timeoutMs = 30_000,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastPlatform = null;
+  let lastTransaction = null;
+  do {
+    [lastTransaction, lastPlatform] = await Promise.all([
+      daemonGet(handoff, "/v1/transactions/current").catch(() => null),
+      queryPlatform(
+        guestInput,
+        {
+          runId: guestInput.runId,
+          machineCode: guestInput.machineCode,
+          sessionId,
+        },
+        outPath,
+      ).catch(() => null),
+    ]);
+    if (
+      daemonTerminalReady(lastTransaction, liveSale) &&
+      platformTerminalReady(lastPlatform, liveSale)
+    ) {
+      return {
+        transaction: lastTransaction,
+        platform: lastPlatform,
+      };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `sale did not reach terminal daemon/platform settlement after F2: ${JSON.stringify({
+      transaction: lastTransaction,
+      commands: lastPlatform?.raw?.commands ?? [],
+    })}`,
+  );
+}
+
 function daemonCheckpointFactory(handoff) {
   return async (stage, binding) => ({
     stage,
@@ -261,6 +329,9 @@ function issue17EvidenceIndex({
   liveEvidence = null,
   controlPlaneEvidencePath = null,
   platformLogPath = null,
+  audioDiagnosticsPath = null,
+  daemonSnapshotPath = null,
+  uiSnapshotPath = null,
   screenshotRefs = [],
 }) {
   const index = {
@@ -284,11 +355,14 @@ function issue17EvidenceIndex({
       evidenceDirectory: join(delayedRoot, "host-default-audio"),
       startReportPath: join(delayedRoot, "audio-capture-start.json"),
       stopReportPath: join(delayedRoot, "audio-capture-stop.json"),
+      diagnosticsPath: audioDiagnosticsPath,
       wavPath: null,
       rawSerialCapturePath: null,
     },
     trace: {
       machineEvidencePath: join(delayedRoot, "machine-production-evidence.json"),
+      daemonSnapshotPath,
+      uiSnapshotPath,
     },
     screenshots: screenshotRefs,
   };
@@ -323,6 +397,9 @@ async function runDelayedPickupGuestFull(options) {
   const platformLogPath = join(artifactRoot, "platform-service-api.log");
   const platformLogReportPath = join(artifactRoot, "platform-service-api.json");
   const serialConformancePath = join(artifactRoot, "serial-conformance.json");
+  const audioDiagnosticsPath = join(artifactRoot, "audio-diagnostics.json");
+  const daemonSnapshotPath = join(artifactRoot, "daemon-last-snapshot.json");
+  const uiSnapshotPath = join(artifactRoot, "ui-last-snapshot.json");
   const screenshotRefs = [];
   const saleCorrelationId =
     `sale-correlation://${guestInput.runId.toLowerCase()}.delayed-pickup`;
@@ -341,8 +418,16 @@ async function runDelayedPickupGuestFull(options) {
       platformBaselinePath,
       platformPostPath,
       delayedRoot,
+      audioDiagnosticsPath,
+      daemonSnapshotPath,
+      uiSnapshotPath,
       screenshotRefs,
     }),
+    errors: {
+      primary: null,
+      collection: [],
+      cleanup: [],
+    },
   };
   let client = null;
   let delayedTrack = null;
@@ -350,7 +435,9 @@ async function runDelayedPickupGuestFull(options) {
   let liveSale = null;
   let liveEvidence = null;
   let primaryError = null;
+  let audioCaptureId = null;
   let sessionStopped = false;
+  let sink = null;
   try {
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
@@ -365,7 +452,19 @@ async function runDelayedPickupGuestFull(options) {
     await client.connect();
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    const sink = screenshotSink(screenshotRoot);
+    sink = screenshotSink(screenshotRoot);
+    sessionStart = await controlPlaneRequest(
+      guestInput,
+      "/v1/serial-sessions/start",
+      {
+        runId: guestInput.runId,
+        machineCode: guestInput.machineCode,
+        targetIdentity: guestInput.hostControlPlane.targetIdentity,
+        runtimeBase: guestInput.hostControlPlane.runtimeBaseIdentity,
+        saleCorrelationId,
+        serialScenario: "delayed-pickup",
+      },
+    );
     let baselinePlatform = null;
     delayedTrack = await startDelayedPickupLiveProductionTrack(
       {
@@ -389,7 +488,7 @@ async function runDelayedPickupGuestFull(options) {
             {
               runId: guestInput.runId,
               machineCode: guestInput.machineCode,
-              ...(sessionStart ? { sessionId: sessionStart.sessionId } : {}),
+              sessionId: sessionStart.sessionId,
             },
             stage === "baseline"
               ? platformBaselinePath
@@ -428,6 +527,46 @@ async function runDelayedPickupGuestFull(options) {
           };
         },
         readMachineSample: readInstalledMachineProductionSample,
+        async startAudioCapture({
+          baseBinding,
+          runtime,
+        }) {
+          const result = await controlPlaneRequest(
+            guestInput,
+            "/v1/audio-captures/start",
+            {
+              sessionId: sessionStart.sessionId,
+              runId: baseBinding.runId,
+              lifecycleReference: baseBinding.lifecycleReference,
+              transactionId: baseBinding.transactionId,
+              targetIdentity: guestInput.hostControlPlane.targetIdentity,
+              runtime,
+            },
+          );
+          audioCaptureId = result.audioCaptureId;
+          return result.startReport;
+        },
+        async stopAudioCapture({ binding }) {
+          const result = await controlPlaneRequest(
+            guestInput,
+            `/v1/audio-captures/${audioCaptureId}/stop`,
+            {
+              saleCorrelationId: binding.saleCorrelationId,
+              orderId: binding.orderId,
+              orderNo: binding.orderNo,
+              commandId: binding.commandId,
+              commandNo: binding.commandNo,
+            },
+          );
+          return result.stopReport;
+        },
+        async cancelAudioCapture() {
+          if (!audioCaptureId) return null;
+          return controlPlaneRequest(
+            guestInput,
+            `/v1/audio-captures/${audioCaptureId}/cancel`,
+          );
+        },
       },
     );
     report.evidence = issue17EvidenceIndex({
@@ -437,17 +576,11 @@ async function runDelayedPickupGuestFull(options) {
       platformBaselinePath,
       platformPostPath,
       delayedRoot,
+      audioDiagnosticsPath,
+      daemonSnapshotPath,
+      uiSnapshotPath,
       screenshotRefs,
     });
-
-    sessionStart = await controlPlaneRequest(guestInput, "/v1/serial-sessions/start", {
-        runId: guestInput.runId,
-        machineCode: guestInput.machineCode,
-        targetIdentity: guestInput.hostControlPlane.targetIdentity,
-        runtimeBase: guestInput.hostControlPlane.runtimeBaseIdentity,
-        saleCorrelationId,
-        serialScenario: "delayed-pickup",
-      });
 
     for (const step of [
       ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],
@@ -535,24 +668,23 @@ async function runDelayedPickupGuestFull(options) {
         vendingCommandId: liveSale.vendingCommandId,
       },
     );
+    const terminal = await waitForTerminalSale({
+      guestInput,
+      handoff,
+      sessionId: sessionStart.sessionId,
+      liveSale,
+      outPath: platformPostPath,
+      timeoutMs: 60_000,
+    });
     await waitForResultRoute(client, 60_000);
-    await captureCheckpoint(client, "result", {
+    await captureCheckpoint(client, "after-f2-terminal", {
       screenshot: true,
       screenshotSink: sink,
     }).then((checkpoint) => {
       if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
     });
-    const platformPost = await waitForPlatformMovement(
-      guestInput,
-      {
-        runId: guestInput.runId,
-        machineCode: guestInput.machineCode,
-        sessionId: sessionStart.sessionId,
-      },
-      baselinePlatform?.raw?.movements?.length ?? 0,
-      platformPostPath,
-    );
-    const command = platformPost.raw.commands.find(
+    const platformPost = terminal.platform;
+    const command = platformPost?.raw?.commands?.find(
       (entry) => entry.id === liveSale.vendingCommandId,
     );
     if (typeof command?.commandNo !== "string" || command.commandNo.length === 0)
@@ -591,9 +723,12 @@ async function runDelayedPickupGuestFull(options) {
       liveEvidence,
       controlPlaneEvidencePath,
       platformLogPath,
+      audioDiagnosticsPath,
+      daemonSnapshotPath,
+      uiSnapshotPath,
       screenshotRefs,
     });
-      writeJson(installedSalePath, {
+    writeJson(installedSalePath, {
       schemaVersion: "installed-kiosk-sale-acceptance/v2",
       status: "passed",
       ok: true,
@@ -606,7 +741,7 @@ async function runDelayedPickupGuestFull(options) {
         },
       },
       evidence: {
-        platformRawBaselinePath,
+        platformRawBaselinePath: platformBaselinePath,
         platformRawRecordsPath: platformPostPath,
         serialConformancePath,
       },
@@ -650,40 +785,122 @@ async function runDelayedPickupGuestFull(options) {
   } catch (error) {
     primaryError = error;
   } finally {
-    try {
-      if (sessionStart && !sessionStopped) {
-        if (liveSale) {
-          await controlPlaneRequest(
-            guestInput,
-            `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
-            {
-              orderId: liveSale.orderId,
-              paymentId: liveSale.paymentId,
-              vendingCommandId: liveSale.vendingCommandId,
-              idempotencyCheck: true,
-            },
-          ).catch(async () =>
-            controlPlaneRequest(
-              guestInput,
-              `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-            ),
-          );
-        } else {
-          await controlPlaneRequest(
+    const collectionErrors = report.errors.collection;
+    const cleanupErrors = report.errors.cleanup;
+    const collectBestEffort = async (label, callback) => {
+      try {
+        await callback();
+      } catch (error) {
+        collectionErrors.push(`${label}: ${formatError(error)}`);
+      }
+    };
+    await collectBestEffort("control-plane-evidence", async () => {
+      if (!sessionStart || liveEvidence) return;
+      const controlPlaneEvidence = await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+      );
+      writeJson(controlPlaneEvidencePath, controlPlaneEvidence);
+    });
+    await collectBestEffort("platform-log", async () => {
+      if (!sessionStart || liveEvidence) return;
+      const platformLog = await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${sessionStart.sessionId}/platform-log`,
+        { lines: 200 },
+      );
+      writeJson(platformLogReportPath, platformLog);
+      writeFileSync(localPath(platformLogPath), platformLog.log ?? "");
+    });
+    await collectBestEffort("daemon-snapshot", async () => {
+      writeJson(daemonSnapshotPath, {
+        capturedAt: new Date().toISOString(),
+        transaction: await daemonGet(handoff, "/v1/transactions/current").catch(
+          () => null,
+        ),
+        saleView: await daemonGet(handoff, "/v1/sale-view").catch(() => null),
+      });
+    });
+    await collectBestEffort("ui-snapshot", async () => {
+      if (!client) return;
+      writeJson(uiSnapshotPath, await readInstalledMachineProductionSample(client));
+    });
+    await collectBestEffort("finally-screenshot", async () => {
+      if (!client) return;
+      const checkpoint = await captureCheckpoint(client, "finally", {
+        screenshot: true,
+        screenshotSink: sink,
+      });
+      if (checkpoint?.screenshot?.ref) screenshotRefs.push(checkpoint.screenshot.ref);
+    });
+    report.evidence = issue17EvidenceIndex({
+      guestInputPath: options.guestInputPath,
+      handoffPath: options.handoffPath,
+      installedSalePath,
+      platformBaselinePath,
+      platformPostPath,
+      delayedRoot,
+      liveEvidence,
+      controlPlaneEvidencePath,
+      platformLogPath,
+      audioDiagnosticsPath,
+      daemonSnapshotPath,
+      uiSnapshotPath,
+      screenshotRefs,
+    });
+    const cleanupBestEffort = async (label, callback) => {
+      try {
+        await callback();
+      } catch (error) {
+        cleanupErrors.push(`${label}: ${formatError(error)}`);
+      }
+    };
+    await cleanupBestEffort("serial-session", async () => {
+      if (!sessionStart || sessionStopped) return;
+      if (liveSale) {
+        await controlPlaneRequest(
+          guestInput,
+          `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
+          {
+            orderId: liveSale.orderId,
+            paymentId: liveSale.paymentId,
+            vendingCommandId: liveSale.vendingCommandId,
+            idempotencyCheck: true,
+          },
+        ).catch(async () =>
+          controlPlaneRequest(
             guestInput,
             `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-          );
-        }
+          ),
+        );
+      } else {
+        await controlPlaneRequest(
+          guestInput,
+          `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+        );
       }
-    } catch (cleanupError) {
-      if (!primaryError) primaryError = cleanupError;
-    }
-    await delayedTrack?.close().catch(() => {});
-    await client?.close().catch(() => {});
+    });
+    await cleanupBestEffort("live-track-close", async () => {
+      await delayedTrack?.close();
+    });
+    await cleanupBestEffort("ui-client-close", async () => {
+      await client?.close();
+    });
+    await collectBestEffort("audio-diagnostics", async () => {
+      if (!audioCaptureId) return;
+      const diagnostics = await controlPlaneRequest(
+        guestInput,
+        `/v1/audio-captures/${audioCaptureId}/diagnostics`,
+      );
+      writeJson(audioDiagnosticsPath, diagnostics);
+    });
   }
   if (primaryError) {
     report.error = formatError(primaryError);
+    report.errors.primary = formatError(primaryError);
     report.controlPlaneSessionId = sessionStart?.sessionId ?? null;
+  } else {
+    report.errors.primary = null;
   }
   writeJson(options.outPath, report);
   if (primaryError) throw primaryError;

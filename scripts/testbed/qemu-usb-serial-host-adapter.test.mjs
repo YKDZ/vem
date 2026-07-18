@@ -4,13 +4,11 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -21,6 +19,16 @@ import {
 } from "./qemu-usb-serial-host-adapter.mjs";
 
 const adapterPath = new URL("./qemu-usb-serial-host-adapter.mjs", import.meta.url).pathname;
+
+function makeTempDir(prefix) {
+  const path = join(
+    process.cwd(),
+    "test-artifacts",
+    `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  mkdirSync(path, { recursive: true });
+  return path;
+}
 
 function domainXml() {
   return `<domain type="kvm"><devices>
@@ -65,7 +73,7 @@ describe("repo QEMU USB serial host adapter", () => {
   });
 
   it("passes the production VM host adapter contract for a live serial-session start", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-qemu-adapter-"));
+    const root = makeTempDir("vem-qemu-adapter");
     const bin = join(root, "bin");
     const stateRoot = join(root, "state");
     const out = join(root, "start.json");
@@ -131,7 +139,7 @@ describe("repo QEMU USB serial host adapter", () => {
   });
 
   it("passes delayed-pickup scenario through to the lower-controller simulator state", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-qemu-adapter-delayed-"));
+    const root = makeTempDir("vem-qemu-adapter-delayed");
     const bin = join(root, "bin");
     const stateRoot = join(root, "state");
     const out = join(root, "start.json");

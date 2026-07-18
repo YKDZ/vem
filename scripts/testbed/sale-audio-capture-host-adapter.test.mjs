@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -35,6 +34,16 @@ function report(request) {
     capture: null,
     evidence: [],
   };
+}
+
+function makeTempDir(prefix) {
+  const path = join(
+    process.cwd(),
+    "test-artifacts",
+    `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  mkdirSync(path, { recursive: true });
+  return path;
 }
 
 describe("capture-sale-audio host adapter extension", () => {
@@ -88,7 +97,7 @@ describe("capture-sale-audio host adapter extension", () => {
   });
 
   it("is callable through the repo-owned CLI without calibration or endpoint arguments", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-sale-audio-host-"));
+    const root = makeTempDir("vem-sale-audio-host");
     let observedRequest;
     try {
       const result = await runSaleAudioCaptureHostAdapterCli(

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -21,9 +20,19 @@ const sale = {
   commandNo: "COMMAND-17-LIVE",
 };
 
+function makeTempDir(prefix) {
+  const path = join(
+    process.cwd(),
+    "test-artifacts",
+    `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
 describe("delayed pickup live production track", () => {
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-delayed-live-"));
+    const root = makeTempDir("vem-delayed-live");
     const operations = [];
     let sampleSequence = 0;
     const client = {
@@ -64,7 +73,29 @@ describe("delayed pickup live production track", () => {
                     ? "2026-07-18T08:00:30.200Z"
                     : "2026-07-18T08:00:31.200Z",
               binding: null,
-              transaction: {},
+              transaction:
+                stage === "after_f1_before_f2"
+                  ? {
+                      orderNo: sale.orderNo,
+                      orderStatus: "dispensing",
+                      nextAction: "dispensing",
+                      vending: {
+                        commandNo: sale.commandNo,
+                        status: "dispensing",
+                        fulfillmentProgressStage: "pickup_completed",
+                      },
+                    }
+                  : stage === "after_f2"
+                    ? {
+                        orderNo: sale.orderNo,
+                        orderStatus: "fulfilled",
+                        nextAction: "success",
+                        vending: {
+                          commandNo: sale.commandNo,
+                          status: "succeeded",
+                        },
+                      }
+                    : {},
               saleView: { items: [] },
             };
           },
@@ -83,11 +114,27 @@ describe("delayed pickup live production track", () => {
                 machineId: "44444444-4444-4444-8444-444444444444",
               },
               raw: {
-                orders: [],
+                orders:
+                  stage === "at_f1"
+                    ? [{ id: sale.orderId, orderNo: sale.orderNo, status: "dispensing" }]
+                    : [],
                 orderItems: [],
-                payments: [],
+                payments:
+                  stage === "at_f1"
+                    ? [{ id: "payment-17", orderId: sale.orderId, status: "succeeded" }]
+                    : [],
                 reservations: [],
-                commands: [],
+                commands:
+                  stage === "at_f1"
+                    ? [
+                        {
+                          id: sale.commandId,
+                          orderId: sale.orderId,
+                          commandNo: sale.commandNo,
+                          status: "dispensing",
+                        },
+                      ]
+                    : [],
                 movements: [],
               },
             };
@@ -153,18 +200,23 @@ describe("delayed pickup live production track", () => {
                   : [],
             };
           },
-          async runAudio(argv) {
-            const phase = argv[argv.indexOf("--capture-phase") + 1];
-            operations.push(`audio:${phase}`);
-            return phase === "start"
-              ? {
-                  captureSession: {
-                    captureSessionId: "sale-audio-session:run-17-live",
-                    startOperationReference: "vm-operation:run-17-live",
-                    startedAt: "2026-07-18T08:00:00.000Z",
-                  },
-                }
-              : { result: "succeeded" };
+          async startAudioCapture() {
+            operations.push("audio:start");
+            return {
+              captureSession: {
+                captureSessionId: "sale-audio-session:run-17-live",
+                startOperationReference: "vm-operation:run-17-live",
+                startedAt: "2026-07-18T08:00:00.000Z",
+              },
+            };
+          },
+          async stopAudioCapture() {
+            operations.push("audio:stop");
+            return { result: "succeeded" };
+          },
+          async cancelAudioCapture() {
+            operations.push("audio:cancel");
+            return { cancelled: true };
           },
         },
       );
@@ -204,7 +256,7 @@ describe("delayed pickup live production track", () => {
   });
 
   it("fails closed when F2 arrives before the live F1 release gate", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-delayed-live-gate-"));
+    const root = makeTempDir("vem-delayed-live-gate");
     let failedSampleCount = 0;
     try {
       const track = await startDelayedPickupLiveProductionTrack(
@@ -305,17 +357,20 @@ describe("delayed pickup live production track", () => {
               runtimeTrace: [],
             };
           },
-          async runAudio(argv) {
-            const phase = argv[argv.indexOf("--capture-phase") + 1];
-            return phase === "start"
-              ? {
-                  captureSession: {
-                    captureSessionId: "sale-audio-session:run-17-live",
-                    startOperationReference: "vm-operation:run-17-live",
-                    startedAt: "2026-07-18T08:00:00.000Z",
-                  },
-                }
-              : { result: "succeeded" };
+          async startAudioCapture() {
+            return {
+              captureSession: {
+                captureSessionId: "sale-audio-session:run-17-live",
+                startOperationReference: "vm-operation:run-17-live",
+                startedAt: "2026-07-18T08:00:00.000Z",
+              },
+            };
+          },
+          async stopAudioCapture() {
+            return { result: "succeeded" };
+          },
+          async cancelAudioCapture() {
+            return { cancelled: true };
           },
         },
       );

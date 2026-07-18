@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,6 +21,37 @@ import {
   parseHostSerialControlPlaneArgs,
   waitForRawSerialFrame,
 } from "./host-serial-control-plane.mjs";
+import {
+  qemuUsbSerialSessionPaths,
+  QEMU_USB_SERIAL_ADAPTER_VERSION,
+} from "./qemu-usb-serial-host-adapter.mjs";
+
+const adapterPath = new URL("./qemu-usb-serial-host-adapter.mjs", import.meta.url)
+  .pathname;
+
+function makeTempDir(prefix) {
+  const path = join(
+    process.cwd(),
+    "test-artifacts",
+    `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
+async function requestJson(baseUrl, token, path, body = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  return payload;
+}
 
 describe("host serial control plane", () => {
   it("parses an absolute stateful HTTP listener contract", () => {
@@ -214,7 +253,7 @@ describe("host serial control plane", () => {
   });
 
   it("waits on independent raw inbound F1 evidence and fails closed on an invalid boundary", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-host-serial-"));
+    const root = makeTempDir("vem-host-serial");
     const journalPath = join(root, "raw-serial.jsonl");
     try {
       writeFileSync(
@@ -311,7 +350,7 @@ describe("host serial control plane", () => {
   });
 
   it("accepts delayed-pickup boundaries with E5 warnings before F1 and AF before F2", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-host-serial-delayed-"));
+    const root = makeTempDir("vem-host-serial-delayed");
     const journalPath = join(root, "raw-serial.jsonl");
     try {
       writeFileSync(
@@ -358,6 +397,182 @@ describe("host serial control plane", () => {
         ["VEND", "F0", "E5", "E5", "F1", "AF", "F2"],
       );
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serves sale audio start/stop over HTTP and exports timestamped raw serial evidence through the host control plane", async () => {
+    const root = makeTempDir("vem-host-audio-http");
+    const workspace = new URL("../..", import.meta.url).pathname;
+    const stateRoot = join(root, "state");
+    const bin = join(root, "bin");
+    const token = "control-plane-token";
+    const previousEnvironment = {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: process.env.RUNNER_TEMP,
+      VEM_VM_HOST_ADAPTER: process.env.VEM_VM_HOST_ADAPTER,
+      VEM_VM_HOST_ADAPTER_VERSION: process.env.VEM_VM_HOST_ADAPTER_VERSION,
+      VEM_VM_HOST_ADAPTER_SHA256: process.env.VEM_VM_HOST_ADAPTER_SHA256,
+      VEM_VM_HOST_ADAPTER_DOMAIN: process.env.VEM_VM_HOST_ADAPTER_DOMAIN,
+      VEM_VM_HOST_ADAPTER_STATE_ROOT: process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+      VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
+    };
+    const domainXml = `<domain type="kvm"><devices>
+      <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/></serial>
+      <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/></serial>
+    </devices></domain>`;
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "virsh"), `#!/bin/sh\ncat <<'XML'\n${domainXml}\nXML\n`);
+    writeFileSync(join(bin, "lower-controller-sim"), "#!/bin/sh\nexec sleep 60\n");
+    chmodSync(join(bin, "virsh"), 0o755);
+    chmodSync(join(bin, "lower-controller-sim"), 0o755);
+    let controlPlane;
+    let server;
+    try {
+      process.env.PATH = `${bin}:${process.env.PATH}`;
+      process.env.RUNNER_TEMP = join(root, "runner-temp");
+      process.env.VEM_VM_HOST_ADAPTER = adapterPath;
+      process.env.VEM_VM_HOST_ADAPTER_VERSION = QEMU_USB_SERIAL_ADAPTER_VERSION;
+      process.env.VEM_VM_HOST_ADAPTER_SHA256 = `sha256:${createHash("sha256").update(readFileSync(adapterPath)).digest("hex")}`;
+      process.env.VEM_VM_HOST_ADAPTER_DOMAIN = "win10-runtime-testbed";
+      process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT = join(stateRoot, "adapter");
+      process.env.VEM_LOWER_CONTROLLER_SIM = join(bin, "lower-controller-sim");
+      controlPlane = createHostSerialControlPlane({
+        workspace,
+        stateRoot,
+        bind: "127.0.0.1",
+        port: 0,
+        token,
+      });
+      server = controlPlane.listen();
+      await new Promise((resolve) => server.once("listening", resolve));
+      const address = server.address();
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const session = await requestJson(baseUrl, token, "/v1/serial-sessions/start", {
+        runId: "RUN-17-CONTROL-PLANE",
+        machineCode: "MACHINE-17",
+        targetIdentity: "vm-target://runtime-testbed",
+        runtimeBase: `runtime-base://sha256/${"a".repeat(64)}`,
+        saleCorrelationId: "sale-correlation://run-17-control-plane",
+        serialScenario: "delayed-pickup",
+      });
+      const sessionPaths = qemuUsbSerialSessionPaths(
+        process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+        session.binding.serialSessionId,
+      );
+      writeFileSync(
+        sessionPaths.journalPath,
+        [
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55020531",
+            opcode: 2,
+            parsedOpcode: "VEND",
+            capturedAt: "2026-07-18T08:00:00.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+            capturedAt: "2026-07-18T08:00:01.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+            capturedAt: "2026-07-18T08:00:16.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+            capturedAt: "2026-07-18T08:00:26.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+            capturedAt: "2026-07-18T08:00:31.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55AF",
+            opcode: 175,
+            parsedOpcode: "AF",
+            capturedAt: "2026-07-18T08:00:31.500Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F2",
+            opcode: 242,
+            parsedOpcode: "F2",
+            capturedAt: "2026-07-18T08:00:32.000Z",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
+      );
+      const started = await requestJson(baseUrl, token, "/v1/audio-captures/start", {
+        sessionId: session.sessionId,
+        runId: "RUN-17-CONTROL-PLANE",
+        lifecycleReference: "vm-lifecycle://run-17-control-plane.runtime",
+        transactionId: "transaction://run-17-control-plane.sale",
+        targetIdentity: "vm-target://runtime-testbed",
+        runtime: {
+          processId: 42,
+          executablePath: "C:\\VEM\\bringup\\machine.exe",
+          principal: "FIELD\\Operator",
+          sessionId: 7,
+          cdpTargetId: "target-17",
+          cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+        },
+      });
+      const stopped = await requestJson(
+        baseUrl,
+        token,
+        `/v1/audio-captures/${started.audioCaptureId}/stop`,
+        {
+          saleCorrelationId: "sale-correlation://run-17-control-plane.sale",
+          orderId: "11111111-1111-4111-8111-111111111111",
+          orderNo: "ORDER-17-CONTROL-PLANE",
+          commandId: "22222222-2222-4222-8222-222222222222",
+          commandNo: "COMMAND-17-CONTROL-PLANE",
+        },
+      );
+      assert.equal(stopped.stopReport.capture.source, "windows_default_output");
+      assert.equal(stopped.stopReport.evidence.length, 2);
+      const serialFile = stopped.stopReport.evidence.find(
+        (entry) => entry.role === "sale-serial-frame-capture",
+      );
+      const serialCapture = JSON.parse(
+        readFileSync(
+          join(
+            controlPlane.audioCaptures.get(started.audioCaptureId).evidenceDirectory,
+            serialFile.fileName,
+          ),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        serialCapture.frames.every((frame) => typeof frame.capturedAt === "string"),
+        true,
+      );
+      await requestJson(
+        baseUrl,
+        token,
+        `/v1/serial-sessions/${session.sessionId}/abort`,
+      );
+    } finally {
+      controlPlane?.close();
+      server?.close();
+      for (const [name, value] of Object.entries(previousEnvironment)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
       rmSync(root, { recursive: true, force: true });
     }
   });

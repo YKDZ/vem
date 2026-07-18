@@ -112,6 +112,53 @@ describe("delayed pickup production evidence producers", () => {
     );
   });
 
+  it("makes machine evidence stop/cancel idempotent and halts polling after failure", async () => {
+    let polls = 0;
+    const capture = await startDelayedPickupMachineEvidenceCapture({
+      client: {
+        async observeIdentity() {
+          return {
+            targetId: runtime.cdpTargetId,
+            sessionId: runtime.cdpSessionId,
+            connectedAt: "2026-07-18T08:00:00.000Z",
+          };
+        },
+      },
+      async inspectRuntime() {
+        return {
+          machine: runtime,
+          cdpListener: {
+            machineAncestorProcessId: runtime.processId,
+            sessionId: runtime.sessionId,
+            principal: runtime.principal,
+          },
+        };
+      },
+      intervalMs: 25,
+      async readSample() {
+        polls += 1;
+        if (polls > 1) throw new Error("sample failed");
+        return {
+          observedAt: "2026-07-18T08:00:00.010Z",
+          route: "#/dispensing",
+          surface: "ordinary_warning",
+          orderId: binding.orderId,
+          orderNo: binding.orderNo,
+          commandId: binding.commandId,
+          commandNo: binding.commandNo,
+          runtimeTrace: [],
+        };
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const failedPolls = polls;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(polls, failedPolls);
+    await assert.rejects(() => capture.stop(binding), /sample failed/);
+    await capture.cancel();
+    await capture.cancel();
+  });
+
   it("wraps the F1-time authoritative raw query without replacing its records", () => {
     const snapshot = {
       schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",

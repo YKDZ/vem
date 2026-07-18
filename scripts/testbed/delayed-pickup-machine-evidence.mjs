@@ -94,6 +94,8 @@ export async function startDelayedPickupMachineEvidenceCapture({
   let timer = null;
   let active = Promise.resolve();
   let failure = null;
+  let finalizing = null;
+  let finalizeMode = null;
 
   async function poll() {
     if (stopped || failure) return;
@@ -121,6 +123,11 @@ export async function startDelayedPickupMachineEvidenceCapture({
       }
     } catch (error) {
       failure = error;
+      stopped = true;
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
     }
   }
 
@@ -129,19 +136,23 @@ export async function startDelayedPickupMachineEvidenceCapture({
       active = active.then(poll);
     }, intervalMs);
   }
-  active = poll();
-  schedule();
-  return {
-    runtime: { ...runtime },
-    async cancel() {
-      stopped = true;
+
+  async function finalize(mode, binding = null) {
+    if (finalizing) {
+      if (mode === "cancel" || finalizeMode === "cancel")
+        return finalizing.catch(() => undefined);
+      return finalizing.then((value) => {
+        if (mode === "stop") return value;
+      });
+    }
+    finalizeMode = mode;
+    stopped = true;
+    if (timer !== null) {
       clearInterval(timer);
-      await active;
-    },
-    async stop(binding) {
-      stopped = true;
-      clearInterval(timer);
-      await active;
+      timer = null;
+    }
+    finalizing = active.then(() => {
+      if (mode === "cancel") return undefined;
       if (failure) throw failure;
       for (const observation of uiObservations)
         for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
@@ -157,6 +168,19 @@ export async function startDelayedPickupMachineEvidenceCapture({
         uiObservations,
         runtimeTrace,
       };
+    });
+    return finalizing;
+  }
+
+  active = poll();
+  schedule();
+  return {
+    runtime: { ...runtime },
+    async cancel() {
+      await finalize("cancel");
+    },
+    async stop(binding) {
+      return finalize("stop", binding);
     },
   };
 }

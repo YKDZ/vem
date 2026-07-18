@@ -12,6 +12,7 @@ import {
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
 } from "./qemu-usb-serial-host-adapter.mjs";
+import { runSaleAudioCaptureHostAdapterCli } from "./sale-audio-capture-host-adapter.mjs";
 
 const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
 const PLATFORM_DATABASE_URL =
@@ -50,6 +51,31 @@ function positiveInteger(value, label) {
     throw new Error(`${label} must be a positive integer`);
   }
   return parsed;
+}
+
+function runtimeBinding(runtime) {
+  if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) {
+    throw new Error("runtime binding is required");
+  }
+  const processId = Number(runtime.processId);
+  const sessionId = Number(runtime.sessionId);
+  if (!Number.isInteger(processId) || processId < 1) {
+    throw new Error("runtime.processId must be a positive integer");
+  }
+  if (!Number.isInteger(sessionId) || sessionId < 1) {
+    throw new Error("runtime.sessionId must be a positive integer");
+  }
+  return {
+    processId,
+    executablePath: required(
+      runtime.executablePath,
+      "runtime.executablePath",
+    ),
+    principal: required(runtime.principal, "runtime.principal"),
+    sessionId,
+    cdpTargetId: required(runtime.cdpTargetId, "runtime.cdpTargetId"),
+    cdpSessionId: required(runtime.cdpSessionId, "runtime.cdpSessionId"),
+  };
 }
 
 export function parseHostSerialControlPlaneArgs(args) {
@@ -195,6 +221,86 @@ function parseJsonLine(stdout, path) {
     } catch {}
   }
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function audioBaseArgs({ input, outPath, evidenceDirectory, runtime, phase }) {
+  return [
+    "--operation",
+    "capture-sale-audio",
+    "--capture-phase",
+    phase,
+    "--run-id",
+    required(input.runId, "runId"),
+    "--lifecycle-reference",
+    required(input.lifecycleReference, "lifecycleReference"),
+    "--target-identity",
+    required(input.targetIdentity, "targetIdentity"),
+    "--transaction-id",
+    required(input.transactionId, "transactionId"),
+    "--machine-process-id",
+    String(runtime.processId),
+    "--machine-executable-path",
+    runtime.executablePath,
+    "--interactive-principal",
+    runtime.principal,
+    "--interactive-session-id",
+    String(runtime.sessionId),
+    "--cdp-target-id",
+    runtime.cdpTargetId,
+    "--cdp-session-id",
+    runtime.cdpSessionId,
+    "--evidence-dir",
+    evidenceDirectory,
+    "--out",
+    outPath,
+  ];
+}
+
+function audioStartArgs({ input, outPath, evidenceDirectory, runtime }) {
+  return audioBaseArgs({
+    input,
+    outPath,
+    evidenceDirectory,
+    runtime,
+    phase: "start",
+  });
+}
+
+function audioStopArgs({ capture, input, outPath, evidenceDirectory, runtime }) {
+  return [
+    ...audioBaseArgs({
+      input: {
+        runId: capture.startInput.runId,
+        lifecycleReference: capture.startInput.lifecycleReference,
+        targetIdentity: capture.startInput.targetIdentity,
+        transactionId: capture.startInput.transactionId,
+      },
+      outPath,
+      evidenceDirectory,
+      runtime,
+      phase: "stop",
+    }).slice(0, -4),
+    "--capture-session-id",
+    capture.startReport.captureSession.captureSessionId,
+    "--start-operation-reference",
+    capture.startReport.captureSession.startOperationReference,
+    "--capture-started-at",
+    capture.startReport.captureSession.startedAt,
+    "--sale-correlation-id",
+    required(input.saleCorrelationId, "saleCorrelationId"),
+    "--order-id",
+    required(input.orderId, "orderId"),
+    "--order-no",
+    required(input.orderNo, "orderNo"),
+    "--command-id",
+    required(input.commandId, "commandId"),
+    "--command-no",
+    required(input.commandNo, "commandNo"),
+    "--evidence-dir",
+    evidenceDirectory,
+    "--out",
+    outPath,
+  ];
 }
 
 function runJsonCommand(command) {
@@ -545,6 +651,128 @@ function boundedSessionEvidence(server, input) {
   };
 }
 
+function audioCaptureEnvironment(session) {
+  const paths = adapterSessionPaths(session);
+  return {
+    ...process.env,
+    RUNNER_TEMP: runnerTempRoot(session.dir),
+    VEM_VM_HOST_AUDIO_SERIAL_JOURNAL: paths.journalPath,
+    VEM_VM_HOST_AUDIO_SIMULATOR_LOG: paths.logPath,
+  };
+}
+
+function requireAudioCapture(server, audioCaptureId) {
+  const capture = server.audioCaptures.get(required(audioCaptureId, "audioCaptureId"));
+  if (!capture) throw new Error("audio capture session was not found");
+  return capture;
+}
+
+async function startAudioCapture(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const runtime = runtimeBinding(input.runtime);
+  const audioCaptureId = `audio-capture-${randomUUID()}`;
+  const evidenceDirectory = join(session.dir, "host-default-audio");
+  mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
+  const outPath = join(session.dir, "audio-capture-start.json");
+  const startInput = {
+    runId: required(input.runId, "runId"),
+    lifecycleReference: required(input.lifecycleReference, "lifecycleReference"),
+    targetIdentity: required(input.targetIdentity, "targetIdentity"),
+    transactionId: required(input.transactionId, "transactionId"),
+  };
+  const startReport = await runSaleAudioCaptureHostAdapterCli(
+    audioStartArgs({
+      input: startInput,
+      outPath,
+      evidenceDirectory,
+      runtime,
+    }),
+    {
+      environment: audioCaptureEnvironment(session),
+    },
+  );
+  server.audioCaptures.set(audioCaptureId, {
+    id: audioCaptureId,
+    sessionId: session.id,
+    startInput,
+    startReport,
+    runtime,
+    evidenceDirectory,
+    cancelledAt: null,
+    stopReport: null,
+  });
+  return {
+    audioCaptureId,
+    startReport,
+  };
+}
+
+async function stopAudioCapture(server, input) {
+  const capture = requireAudioCapture(server, input.audioCaptureId);
+  if (capture.stopReport) {
+    return {
+      audioCaptureId: capture.id,
+      stopReport: capture.stopReport,
+      repeated: true,
+    };
+  }
+  const session = requireSession(server, capture.sessionId);
+  const outPath = join(session.dir, "audio-capture-stop.json");
+  capture.stopReport = await runSaleAudioCaptureHostAdapterCli(
+    audioStopArgs({
+      capture,
+      input,
+      outPath,
+      evidenceDirectory: capture.evidenceDirectory,
+      runtime: capture.runtime,
+    }),
+    {
+      environment: audioCaptureEnvironment(session),
+    },
+  );
+  return {
+    audioCaptureId: capture.id,
+    stopReport: capture.stopReport,
+    repeated: false,
+  };
+}
+
+function cancelAudioCapture(server, input) {
+  const capture = requireAudioCapture(server, input.audioCaptureId);
+  if (capture.stopReport) {
+    return {
+      audioCaptureId: capture.id,
+      status: "stopped",
+      cancelled: false,
+    };
+  }
+  if (!capture.cancelledAt) capture.cancelledAt = new Date().toISOString();
+  return {
+    audioCaptureId: capture.id,
+    status: "cancelled",
+    cancelled: true,
+    cancelledAt: capture.cancelledAt,
+  };
+}
+
+function audioCaptureDiagnostics(server, input) {
+  const capture = requireAudioCapture(server, input.audioCaptureId);
+  return {
+    audioCaptureId: capture.id,
+    sessionId: capture.sessionId,
+    status: capture.stopReport
+      ? "stopped"
+      : capture.cancelledAt
+        ? "cancelled"
+        : "started",
+    evidenceDirectory: capture.evidenceDirectory,
+    captureSession: capture.startReport.captureSession,
+    cancelledAt: capture.cancelledAt,
+    startReport: capture.startReport,
+    stopReport: capture.stopReport,
+  };
+}
+
 function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
@@ -782,7 +1010,8 @@ function authorize(request, token) {
 
 export function createHostSerialControlPlane(options) {
   const sessions = new Map();
-  const serverState = { options, sessions };
+  const audioCaptures = new Map();
+  const serverState = { options, sessions, audioCaptures };
   const server = createServer(async (request, response) => {
     try {
       if (!authorize(request, options.token)) {
@@ -838,10 +1067,47 @@ export function createHostSerialControlPlane(options) {
         });
         return;
       }
+      if (request.method === "POST" && request.url === "/v1/audio-captures/start") {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...(await startAudioCapture(serverState, await readRequestBody(request))),
+        });
+        return;
+      }
       const sessionMatch = request.url?.match(
         /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|platform-log|evidence|abort|collect|stop))?$/,
       );
-      if (!sessionMatch) {
+      const audioCaptureMatch = request.url?.match(
+        /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|diagnostics)$/,
+      );
+      if (!sessionMatch && !audioCaptureMatch) {
+        jsonResponse(response, 404, { ok: false, error: "not_found" });
+        return;
+      }
+      if (audioCaptureMatch) {
+        const [, audioCaptureId, action] = audioCaptureMatch;
+        const body = { ...(await readRequestBody(request)), audioCaptureId };
+        if (request.method === "POST" && action === "stop") {
+          jsonResponse(response, 200, {
+            ok: true,
+            ...(await stopAudioCapture(serverState, body)),
+          });
+          return;
+        }
+        if (request.method === "POST" && action === "cancel") {
+          jsonResponse(response, 200, {
+            ok: true,
+            ...cancelAudioCapture(serverState, body),
+          });
+          return;
+        }
+        if (request.method === "POST" && action === "diagnostics") {
+          jsonResponse(response, 200, {
+            ok: true,
+            ...audioCaptureDiagnostics(serverState, body),
+          });
+          return;
+        }
         jsonResponse(response, 404, { ok: false, error: "not_found" });
         return;
       }
@@ -936,6 +1202,7 @@ export function createHostSerialControlPlane(options) {
   });
   return {
     sessions,
+    audioCaptures,
     listen() {
       mkdirSync(options.stateRoot, { recursive: true });
       server.listen(options.port, options.bind);

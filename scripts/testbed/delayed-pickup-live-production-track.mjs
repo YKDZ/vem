@@ -14,7 +14,6 @@ import {
   openMachineUiCdpSidecar,
   rewriteWebSocketDebuggerUrl,
 } from "./machine-ui-cdp-driver.mjs";
-import { runSaleAudioCaptureHostAdapterCli } from "./sale-audio-capture-host-adapter.mjs";
 
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 
@@ -82,6 +81,54 @@ function normalizeObservedFrameHex(frame) {
   return /^[0-9a-f]+$/.test(normalized) ? normalized : null;
 }
 
+function sleep(milliseconds) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+}
+
+function daemonF1Ready(daemon, binding) {
+  const transaction = daemon?.transaction;
+  return (
+    transaction?.orderNo === binding.orderNo &&
+    transaction?.vending?.commandNo === binding.commandNo &&
+    transaction?.nextAction === "dispensing" &&
+    transaction?.orderStatus !== "fulfilled" &&
+    transaction?.vending?.status === "dispensing" &&
+    transaction?.vending?.fulfillmentProgressStage === "pickup_completed"
+  );
+}
+
+function daemonF2Ready(daemon, binding) {
+  const transaction = daemon?.transaction;
+  return (
+    transaction?.orderNo === binding.orderNo &&
+    transaction?.vending?.commandNo === binding.commandNo &&
+    transaction?.nextAction === "success" &&
+    transaction?.orderStatus === "fulfilled" &&
+    transaction?.vending?.status === "succeeded"
+  );
+}
+
+function platformF1Ready(platform, binding) {
+  const raw = platform?.raw;
+  const order = raw?.orders?.find(
+    (entry) => entry?.id === binding.orderId && entry?.orderNo === binding.orderNo,
+  );
+  const payment = raw?.payments?.find((entry) => entry?.orderId === binding.orderId);
+  const command = raw?.commands?.find(
+    (entry) =>
+      entry?.id === binding.commandId &&
+      entry?.orderId === binding.orderId &&
+      entry?.commandNo === binding.commandNo,
+  );
+  return (
+    order?.status === "dispensing" &&
+    payment?.status === "succeeded" &&
+    new Set(["pending", "sent", "acknowledged", "dispensing"]).has(
+      command?.status,
+    )
+  );
+}
+
 export function delayedPickupIssue16ControlPlaneContract() {
   return Object.freeze({
     profile: "delayed-pickup-native-audio",
@@ -133,6 +180,8 @@ export async function startDelayedPickupLiveProductionTrack(
   let client;
   let machineCapture;
   let audioStart;
+  let audioStopped = false;
+  let audioCancelled = false;
   let binding = null;
   let latestMachineBinding = null;
   let f1Promise = null;
@@ -141,11 +190,57 @@ export async function startDelayedPickupLiveProductionTrack(
   const daemonCheckpoints = [];
   const captureDaemon = dependencies.captureDaemon ?? options.captureDaemon;
   const queryPlatform = dependencies.queryPlatform ?? options.queryPlatform;
+  const startAudioCapture =
+    dependencies.startAudioCapture ?? options.startAudioCapture;
+  const stopAudioCapture =
+    dependencies.stopAudioCapture ?? options.stopAudioCapture;
+  const cancelAudioCapture =
+    dependencies.cancelAudioCapture ?? options.cancelAudioCapture;
   if (
     typeof captureDaemon !== "function" ||
-    typeof queryPlatform !== "function"
+    typeof queryPlatform !== "function" ||
+    typeof startAudioCapture !== "function" ||
+    typeof stopAudioCapture !== "function" ||
+    typeof cancelAudioCapture !== "function"
   )
-    throw new Error("live track daemon and platform producers are required");
+    throw new Error(
+      "live track daemon/platform producers and audio lifecycle are required",
+    );
+
+  async function settleF1Snapshots(observedBinding) {
+    const deadline = Date.now() + (options.checkpointTimeoutMs ?? 30_000);
+    let lastDaemon = null;
+    let lastPlatform = null;
+    do {
+      [lastDaemon, lastPlatform] = await Promise.all([
+        captureDaemon("after_f1_before_f2", observedBinding),
+        queryPlatform("at_f1"),
+      ]);
+      if (
+        daemonF1Ready(lastDaemon, observedBinding) &&
+        platformF1Ready(lastPlatform, observedBinding)
+      ) {
+        return { daemon: lastDaemon, platform: lastPlatform };
+      }
+      await sleep(options.checkpointPollMs ?? 250);
+    } while (Date.now() < deadline);
+    throw new Error(
+      `timed out waiting for F1 nonterminal daemon/platform settlement for ${observedBinding.commandNo}`,
+    );
+  }
+
+  async function settleF2Snapshot(observedBinding) {
+    const deadline = Date.now() + (options.checkpointTimeoutMs ?? 30_000);
+    let lastDaemon = null;
+    do {
+      lastDaemon = await captureDaemon("after_f2", observedBinding);
+      if (daemonF2Ready(lastDaemon, observedBinding)) return lastDaemon;
+      await sleep(options.checkpointPollMs ?? 250);
+    } while (Date.now() < deadline);
+    throw new Error(
+      `timed out waiting for F2 terminal daemon settlement for ${observedBinding.commandNo}`,
+    );
+  }
 
   async function captureF1(observedBinding) {
     if (f1Promise) return f1Promise;
@@ -154,10 +249,7 @@ export async function startDelayedPickupLiveProductionTrack(
         "live Machine F1 control-plane barrier arrived before sale binding was observed",
       );
     binding = observedBinding;
-    f1Promise = Promise.all([
-      captureDaemon("after_f1_before_f2", binding),
-      queryPlatform("at_f1"),
-    ]).then(([daemon, platform]) => {
+    f1Promise = settleF1Snapshots(binding).then(({ daemon, platform }) => {
       daemonCheckpoints.push(bindCheckpoint(daemon, binding));
       f1Platform = platform;
       writeJson(paths.platformF1, platform);
@@ -179,10 +271,12 @@ export async function startDelayedPickupLiveProductionTrack(
     if (binding && !sameBinding(binding, observedBinding))
       throw new Error("live Machine F2 binding differs from F1 sale binding");
     binding = observedBinding;
-    f2Promise = f1Promise.then(() => captureDaemon("after_f2", binding)).then((daemon) => {
-      daemonCheckpoints.push(bindCheckpoint(daemon, binding));
-      return daemon;
-    });
+    f2Promise = f1Promise
+      .then(() => settleF2Snapshot(binding))
+      .then((daemon) => {
+        daemonCheckpoints.push(bindCheckpoint(daemon, binding));
+        return daemon;
+      });
     return f2Promise;
   }
 
@@ -225,26 +319,13 @@ export async function startDelayedPickupLiveProductionTrack(
       },
     });
     const runtime = machineCapture.runtime;
-    const runAudio = dependencies.runAudio ?? runSaleAudioCaptureHostAdapterCli;
-    audioStart = await runAudio([
-      "--operation",
-      "capture-sale-audio",
-      "--capture-phase",
-      "start",
-      "--run-id",
-      baseBinding.runId,
-      "--lifecycle-reference",
-      baseBinding.lifecycleReference,
-      "--target-identity",
-      options.targetIdentity,
-      "--transaction-id",
-      baseBinding.transactionId,
-      ...audioRuntimeArgs(runtime),
-      "--evidence-dir",
+    audioStart = await startAudioCapture({
+      baseBinding: { ...baseBinding },
+      runtime: { ...runtime },
+      targetIdentity: options.targetIdentity,
       evidenceDirectory,
-      "--out",
-      paths.audioStart,
-    ]);
+      outPath: paths.audioStart,
+    });
     if (
       Date.parse(audioStart?.captureSession?.startedAt ?? "") <
         Date.parse(runtime.observedAt) ||
@@ -297,43 +378,16 @@ export async function startDelayedPickupLiveProductionTrack(
           daemonCheckpoints,
         );
         writeJson(paths.daemon, daemonEvidence);
-        const runAudio =
-          dependencies.runAudio ?? runSaleAudioCaptureHostAdapterCli;
-        const audioStop = await runAudio([
-          "--operation",
-          "capture-sale-audio",
-          "--capture-phase",
-          "stop",
-          "--run-id",
-          baseBinding.runId,
-          "--lifecycle-reference",
-          baseBinding.lifecycleReference,
-          "--target-identity",
-          options.targetIdentity,
-          "--transaction-id",
-          baseBinding.transactionId,
-          ...audioRuntimeArgs(runtime),
-          "--capture-session-id",
-          audioStart.captureSession.captureSessionId,
-          "--start-operation-reference",
-          audioStart.captureSession.startOperationReference,
-          "--capture-started-at",
-          audioStart.captureSession.startedAt,
-          "--sale-correlation-id",
-          binding.saleCorrelationId,
-          "--order-id",
-          binding.orderId,
-          "--order-no",
-          binding.orderNo,
-          "--command-id",
-          binding.commandId,
-          "--command-no",
-          binding.commandNo,
-          "--evidence-dir",
+        const audioStop = await stopAudioCapture({
+          baseBinding: { ...baseBinding },
+          binding: { ...binding },
+          runtime: { ...runtime },
+          targetIdentity: options.targetIdentity,
           evidenceDirectory,
-          "--out",
-          paths.audioStop,
-        ]);
+          outPath: paths.audioStop,
+          audioStart,
+        });
+        audioStopped = true;
         return {
           binding,
           runtime,
@@ -347,8 +401,23 @@ export async function startDelayedPickupLiveProductionTrack(
         };
       },
       async close() {
-        await Promise.allSettled([
+        const cleanup = [
           machineCapture?.cancel(),
+          !audioStopped && !audioCancelled && audioStart
+            ? cancelAudioCapture({
+                baseBinding: { ...baseBinding },
+                runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
+                targetIdentity: options.targetIdentity,
+                evidenceDirectory,
+                outPath: paths.audioStop,
+                audioStart,
+              }).finally(() => {
+                audioCancelled = true;
+              })
+            : Promise.resolve(),
+        ];
+        await Promise.allSettled([
+          ...cleanup,
           client?.close(),
           sidecar.close(),
         ]);
@@ -357,6 +426,18 @@ export async function startDelayedPickupLiveProductionTrack(
   } catch (error) {
     await Promise.allSettled([
       machineCapture?.cancel(),
+      !audioStopped && !audioCancelled && audioStart
+        ? cancelAudioCapture({
+            baseBinding: { ...baseBinding },
+            runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
+            targetIdentity: options.targetIdentity,
+            evidenceDirectory,
+            outPath: paths.audioStop,
+            audioStart,
+          }).finally(() => {
+            audioCancelled = true;
+          })
+        : Promise.resolve(),
       client?.close(),
       sidecar.close(),
     ]);

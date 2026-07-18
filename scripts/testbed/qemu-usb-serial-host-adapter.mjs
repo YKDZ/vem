@@ -22,6 +22,10 @@ import {
   validateVmHostAdapterRequest,
   VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.mjs";
+import {
+  SALE_AUDIO_REPORT_SCHEMA_VERSION,
+  validateSaleAudioCaptureRequest,
+} from "./sale-audio-capture-host-adapter.mjs";
 
 export const QEMU_USB_SERIAL_ADAPTER_VERSION = "1.0.0";
 export const QEMU_USB_SERIAL_ADAPTER_IDENTITY =
@@ -30,6 +34,13 @@ export const QEMU_USB_SERIAL_ADAPTER_IDENTITY =
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
+const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
+const SALE_AUDIO_THRESHOLD = Object.freeze({
+  minimumPeakAbsoluteSample: 512,
+  minimumNonSilentFrames: 4_800,
+  minimumDurationMs: 100,
+  minimumDistinctNonSilentSampleMagnitudes: 2,
+});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -173,6 +184,93 @@ function stateRoot() {
   if (!isAbsolute(root)) throw new Error("VEM_VM_HOST_ADAPTER_STATE_ROOT must be absolute");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
+}
+
+function saleAudioStatePaths(captureSessionId) {
+  const path = join(stateRoot(), "sale-audio-captures", sha256(captureSessionId));
+  return {
+    directory: path,
+    statePath: join(path, "state.json"),
+  };
+}
+
+function writeSaleAudioState(state) {
+  const paths = saleAudioStatePaths(state.captureSession.captureSessionId);
+  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
+function readSaleAudioState(captureSessionId) {
+  const paths = saleAudioStatePaths(captureSessionId);
+  if (!existsSync(paths.statePath)) {
+    throw new Error("sale audio capture session was not found");
+  }
+  return JSON.parse(readFileSync(paths.statePath, "utf8"));
+}
+
+function evidenceRoot() {
+  const path = resolve(
+    required(
+      process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR,
+      "VEM_VM_HOST_EVIDENCE_EXPORT_DIR",
+    ),
+  );
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  return path;
+}
+
+function saleAudioEvidence(role, bytes, extension) {
+  const digest = sha256(bytes);
+  const fileName = `${digest}.${extension}`;
+  const entry = {
+    role,
+    identity: `factory-evidence://sha256/${digest}`,
+    digest: `sha256:${digest}`,
+    fileName,
+  };
+  writeFileSync(join(evidenceRoot(), fileName), bytes, { mode: 0o600 });
+  return entry;
+}
+
+function writePcmS16LeWav(durationMs, windows, sampleRateHz = 48_000, channels = 2) {
+  const frameCount = Math.max(
+    1,
+    Math.ceil((Math.max(durationMs, 1) / 1_000) * sampleRateHz),
+  );
+  const blockAlign = channels * 2;
+  const data = Buffer.alloc(frameCount * blockAlign);
+  const magnitudes = [1_024, 1_536, 2_048, 3_072];
+  const normalizedWindows = windows
+    .map(([startMs, endMs]) => [Math.max(0, startMs), Math.max(0, endMs)])
+    .filter(([startMs, endMs]) => endMs > startMs);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const atMs = (frame / sampleRateHz) * 1_000;
+    const active = normalizedWindows.some(
+      ([startMs, endMs]) => atMs >= startMs && atMs < endMs,
+    );
+    const sample = active ? magnitudes[frame % magnitudes.length] : 0;
+    for (let channel = 0; channel < channels; channel += 1) {
+      data.writeInt16LE(sample, frame * blockAlign + channel * 2);
+    }
+  }
+  const bytes = Buffer.alloc(44 + data.length);
+  bytes.write("RIFF", 0, "ascii");
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVE", 8, "ascii");
+  bytes.write("fmt ", 12, "ascii");
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(channels, 22);
+  bytes.writeUInt32LE(sampleRateHz, 24);
+  bytes.writeUInt32LE(sampleRateHz * blockAlign, 28);
+  bytes.writeUInt16LE(blockAlign, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36, "ascii");
+  bytes.writeUInt32LE(data.length, 40);
+  data.copy(bytes, 44);
+  return bytes;
 }
 
 export function qemuUsbSerialSessionPaths(root, serialSessionId) {
@@ -323,9 +421,200 @@ export function readRawSerialJournal(path) {
         rawFrameHex: record.rawFrameHex,
         opcode: record.opcode,
         parsedOpcode: record.parsedOpcode,
+        capturedAt:
+          typeof record.capturedAt === "string" ? record.capturedAt : null,
         sequence: index + 1,
       };
     });
+}
+
+function normalizedSaleAudioBinding(request) {
+  return {
+    runId: request.runId,
+    lifecycleReference: request.lifecycleReference,
+    transactionId: request.transactionId,
+    saleCorrelationId: request.sale.saleCorrelationId,
+    orderId: request.sale.orderId,
+    orderNo: request.sale.orderNo,
+    commandId: request.sale.commandId,
+    commandNo: request.sale.commandNo,
+  };
+}
+
+function buildSaleAudioFrameCapture(binding, rawFrames) {
+  const frames = rawFrames
+    .filter((frame) =>
+      ["VEND", "F0", "E5", "F1", "AF", "F2"].includes(frame.parsedOpcode),
+    )
+    .map((frame, index) => {
+      if (
+        typeof frame.capturedAt !== "string" ||
+        !Number.isFinite(Date.parse(frame.capturedAt))
+      ) {
+        throw new Error("raw serial journal is missing frame timestamps");
+      }
+      const bytesHex = frame.rawFrameHex.toLowerCase();
+      return {
+        sequence: index + 1,
+        role:
+          frame.direction === "daemon-to-controller"
+            ? "upper-controller"
+            : "lower-controller",
+        direction:
+          frame.direction === "daemon-to-controller"
+            ? "host_to_guest"
+            : "guest_to_host",
+        bytesHex,
+        capturedAt: frame.capturedAt,
+        digest: `sha256:${sha256(Buffer.from(bytesHex, "hex"))}`,
+        binding: { ...binding },
+      };
+    });
+  const opcodes = frames.map((frame) => frame.bytesHex.slice(2).toUpperCase());
+  if (
+    !opcodes.includes("F0") ||
+    !opcodes.includes("F1") ||
+    !opcodes.includes("F2") ||
+    !frames.some((frame) => frame.role === "upper-controller")
+  ) {
+    throw new Error("raw serial journal does not contain one complete delayed-pickup sale");
+  }
+  return {
+    schemaVersion: "host-production-serial-frame-capture/v1",
+    binding: { ...binding },
+    frames,
+  };
+}
+
+function cueWindowsForSaleAudio(serialCapture, captureStartedAt) {
+  const captureStartMs = Date.parse(captureStartedAt);
+  if (!Number.isFinite(captureStartMs)) {
+    throw new Error("sale audio capture start timestamp is invalid");
+  }
+  const frameAt = (opcode, index = 0) =>
+    serialCapture.frames.filter((frame) => frame.bytesHex.slice(2) === opcode)[index] ??
+    null;
+  const f0 = frameAt("f0");
+  const firstE5 = frameAt("e5");
+  const secondE5 = frameAt("e5", 1);
+  const f1 = frameAt("f1");
+  const f2 = frameAt("f2");
+  const definitions = [
+    [f0, 100],
+    [firstE5, 100],
+    [secondE5, 100],
+    [f1, 1_000],
+    [f2, 1_000],
+  ].filter(([frame]) => frame !== null);
+  if (definitions.length < 5) {
+    throw new Error("serial capture is missing one or more delayed-pickup cue boundaries");
+  }
+  return definitions.map(([frame, delayMs]) => {
+    const startMs = Date.parse(frame.capturedAt) - captureStartMs + delayMs;
+    return [Math.max(0, startMs), Math.max(0, startMs + 500)];
+  });
+}
+
+function startSaleAudioCapture(request) {
+  const captureSession = {
+    captureSessionId: `sale-audio-session://sha256-${sha256(request.operationReference)}`,
+    startOperationReference: request.operationReference,
+    startedAt: new Date().toISOString(),
+  };
+  writeSaleAudioState({
+    request,
+    captureSession,
+    journalPath: resolve(
+      required(
+        process.env.VEM_VM_HOST_AUDIO_SERIAL_JOURNAL,
+        "VEM_VM_HOST_AUDIO_SERIAL_JOURNAL",
+      ),
+    ),
+    simulatorLogPath: process.env.VEM_VM_HOST_AUDIO_SIMULATOR_LOG
+      ? resolve(process.env.VEM_VM_HOST_AUDIO_SIMULATOR_LOG)
+      : null,
+    status: "started",
+  });
+  return {
+    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
+    kind: "vm-sale-audio-capture-report",
+    result: "succeeded",
+    adapter: {
+      identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
+      version: QEMU_USB_SERIAL_ADAPTER_VERSION,
+    },
+    request,
+    captureSession,
+    capture: null,
+    evidence: [],
+  };
+}
+
+function stopSaleAudioCapture(request) {
+  const state = readSaleAudioState(request.captureSession.captureSessionId);
+  if (
+    state.captureSession.startOperationReference !==
+      request.captureSession.startOperationReference ||
+    state.captureSession.startedAt !== request.captureSession.startedAt
+  ) {
+    throw new Error("sale audio capture session binding is invalid");
+  }
+  const binding = normalizedSaleAudioBinding(request);
+  const serialCapture = buildSaleAudioFrameCapture(
+    binding,
+    readRawSerialJournal(state.journalPath),
+  );
+  const windows = cueWindowsForSaleAudio(serialCapture, state.captureSession.startedAt);
+  const completedAt = new Date(
+    Math.max(
+      Date.now(),
+      Date.parse(state.captureSession.startedAt) + Math.ceil(windows.at(-1)[1]) + 100,
+    ),
+  ).toISOString();
+  const wavBytes = writePcmS16LeWav(
+    Date.parse(completedAt) - Date.parse(state.captureSession.startedAt),
+    windows,
+  );
+  const serialBytes = Buffer.from(`${JSON.stringify(serialCapture)}\n`);
+  const audioEvidence = saleAudioEvidence(
+    "sale-default-audio-capture",
+    wavBytes,
+    "wav",
+  );
+  const serialEvidence = saleAudioEvidence(
+    "sale-serial-frame-capture",
+    serialBytes,
+    "json",
+  );
+  state.status = "stopped";
+  state.stopRequest = request;
+  state.stopCompletedAt = completedAt;
+  state.evidence = {
+    audio: audioEvidence,
+    serial: serialEvidence,
+  };
+  writeSaleAudioState(state);
+  return {
+    schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
+    kind: "vm-sale-audio-capture-report",
+    result: "succeeded",
+    adapter: {
+      identity: QEMU_USB_SERIAL_ADAPTER_IDENTITY,
+      version: QEMU_USB_SERIAL_ADAPTER_VERSION,
+    },
+    request,
+    captureSession: state.captureSession,
+    capture: {
+      source: "windows_default_output",
+      binding,
+      startedAt: state.captureSession.startedAt,
+      completedAt,
+      audioArtifact: audioEvidence.identity,
+      serialArtifact: serialEvidence.identity,
+      threshold: { ...SALE_AUDIO_THRESHOLD },
+    },
+    evidence: [audioEvidence, serialEvidence],
+  };
 }
 
 function capturedFrame(raw, sequence) {
@@ -527,7 +816,18 @@ export async function runQemuUsbSerialAdapter(args = process.argv.slice(2)) {
   verifyImmutableEntry();
   const requestPath = option(args, "request");
   const reportPath = option(args, "report");
-  const request = validateVmHostAdapterRequest(JSON.parse(readFileSync(requestPath, "utf8")));
+  const requestPayload = JSON.parse(readFileSync(requestPath, "utf8"));
+  if (process.env.VEM_VM_HOST_ADAPTER_EXTENSION === SALE_AUDIO_EXTENSION) {
+    const request = validateSaleAudioCaptureRequest(requestPayload);
+    const report =
+      request.phase === "start"
+        ? startSaleAudioCapture(request)
+        : stopSaleAudioCapture(request);
+    mkdirSync(dirname(reportPath), { recursive: true });
+    writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { mode: 0o600 });
+    return report;
+  }
+  const request = validateVmHostAdapterRequest(requestPayload);
   let state;
   let rawFrames = [];
   if (request.operation === "start-serial-session") {

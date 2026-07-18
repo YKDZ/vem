@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{SecondsFormat, Utc};
 use tokio::{
     io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{mpsc, Mutex},
@@ -925,11 +926,12 @@ fn append_raw_frame(
         return Ok(());
     };
     let opcode = bytes.get(1).copied().unwrap_or_default();
+    let captured_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(
         file,
-        "{{\"direction\":\"{direction}\",\"parsedOpcode\":\"{parsed_opcode}\",\"opcode\":{opcode},\"rawFrameHex\":\"{}\"}}",
-        frame_hex(bytes)
+        "{{\"direction\":\"{direction}\",\"parsedOpcode\":\"{parsed_opcode}\",\"opcode\":{opcode},\"rawFrameHex\":\"{}\",\"capturedAt\":\"{captured_at}\"}}",
+        frame_hex(bytes),
     )
 }
 
