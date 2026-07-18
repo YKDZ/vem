@@ -1175,6 +1175,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "Xvfb",
               "openbox",
               "gvncviewer",
+              "setpriv",
             ],
             cpuCount: 32,
             availableMemoryMiB: 64 * 1024,
@@ -1209,6 +1210,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "Xvfb",
               "openbox",
               "gvncviewer",
+              "setpriv",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
@@ -1289,6 +1291,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "Xvfb",
               "openbox",
               "gvncviewer",
+              "setpriv",
             ],
             cpuCount: 8,
             availableMemoryMiB: 16 * 1024,
@@ -4262,13 +4265,13 @@ await new Promise(() => setInterval(() => {}, 1_000));
           }
         }
         assertProcessIsNotRunning(crashedSupervisorPid);
-        assert.doesNotThrow(() => process.kill(metadata.targets.viewer.pid, 0));
+        assertProcessIsNotRunning(metadata.targets.viewer.pid);
 
         builderChild.kill("SIGKILL");
         await once(builderChild, "exit");
         for (const pid of [
           ...activatorPids.filter((pid) => pid !== crashedSupervisorPid),
-          ...targetPids,
+          ...targetPids.slice(0, 2),
         ]) {
           assert.doesNotThrow(() => process.kill(pid, 0));
         }

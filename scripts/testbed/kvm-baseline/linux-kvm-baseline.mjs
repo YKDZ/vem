@@ -28,6 +28,7 @@ const REQUIRED_COMMANDS = [
   "Xvfb",
   "openbox",
   "gvncviewer",
+  "setpriv",
 ];
 
 const RELEASE_MANIFEST_SCHEMA = "win10-kvm-baseline-release/v1";
@@ -105,10 +106,14 @@ const targetEnvironment = { ...process.env };
 for (const key of Object.keys(targetEnvironment)) {
   if (key.startsWith("VEM_VNC_SUPERVISOR_")) delete targetEnvironment[key];
 }
-targetChild = spawn(target.command, target.arguments, {
+targetChild = spawn(
+  "setpriv",
+  ["--pdeathsig", "SIGKILL", "--", target.command, ...target.arguments],
+  {
   env: targetEnvironment,
   stdio: ["ignore", "inherit", "inherit"],
-});
+  },
+);
 await module.publishVncActivatorTargetIdentity({
   ...registration,
   pid: targetChild.pid,
@@ -1004,7 +1009,14 @@ export async function startHeadlessVncActivator({
         await stopProcess(viewer, viewerIdentity, termination);
         await stopProcess(windowManager, windowManagerIdentity, termination);
         await stopProcess(xvfb, xvfbIdentity, termination);
-        await removeActivatorMetadata(metadataPath);
+        const recovered = await recoverHeadlessVncActivator({
+          metadataPath,
+          owner,
+          termination,
+        });
+        if (!recovered.recovered) {
+          throw new Error("VNC activator metadata could not be recovered");
+        }
       })();
     }
     return stopPromise;
