@@ -595,6 +595,7 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 1 -> E5");
+            journal_controller_frame(&options, LowerFrame::PickupTimeout)?;
             send_frame(&writer, LowerFrame::PickupTimeout).await?;
 
             sleep_after_delta(
@@ -606,6 +607,7 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 2 -> E5");
+            journal_controller_frame(&options, LowerFrame::PickupTimeout)?;
             send_frame(&writer, LowerFrame::PickupTimeout).await?;
 
             sleep_after_delta(
@@ -660,6 +662,7 @@ where
     )
     .await?;
     set_state(&state, ControllerState::Resetting).await;
+    journal_controller_frame(&options, LowerFrame::ResetHeartbeat)?;
     sleep(options.reset_duration).await;
     if current_state(&state).await != ControllerState::Resetting {
         return Ok(());
@@ -949,7 +952,9 @@ fn journal_controller_frame(options: &SimulatorOptions, frame: LowerFrame) -> io
     let parsed_opcode = match frame {
         LowerFrame::IdleHeartbeat => "00",
         LowerFrame::ArrivalAtOutlet => "F0",
+        LowerFrame::PickupTimeout => "E5",
         LowerFrame::PickupCompleted => "F1",
+        LowerFrame::ResetHeartbeat => "AF",
         LowerFrame::ResetCompletedFrame => "F2",
         _ => return Ok(()),
     };

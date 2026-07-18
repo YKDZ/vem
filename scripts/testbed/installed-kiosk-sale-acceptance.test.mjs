@@ -191,7 +191,19 @@ describe("installed kiosk sale preflight", () => {
         /launch failure cleanup retained a detached machine\.exe/,
       );
       assert.match(remoteScripts[1], /\$machines\.Count -eq 1/);
-      assert.equal(existsSync(output), false);
+      assert.equal(existsSync(output), true);
+      const failureReport = JSON.parse(readFileSync(output, "utf8"));
+      assert.equal(failureReport.status, "failed");
+      assert.equal(failureReport.ok, false);
+      assert.match(
+        failureReport.error,
+        /temporary CDP launch terminated before metadata/,
+      );
+      assert.equal(failureReport.cleanup.status, "passed");
+      assert.equal(
+        failureReport.evidence.serialConformancePath,
+        join(root, "serial-conformance.json"),
+      );
     } finally {
       if (previousDatabaseUrl === undefined)
         delete process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];

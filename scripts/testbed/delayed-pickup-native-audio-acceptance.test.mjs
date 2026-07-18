@@ -88,6 +88,13 @@ function fixture(root) {
     reservations: [],
     commands: [],
     movements: [],
+    inventories: [
+      {
+        id: "inventory-17",
+        slotId: "slot-17",
+        onHandQty: 4,
+      },
+    ],
   };
   const platformSaleRaw = {
     orders: [
@@ -137,6 +144,13 @@ function fixture(root) {
       },
     ],
     movements: [],
+    inventories: [
+      {
+        id: "inventory-17",
+        slotId: "slot-17",
+        onHandQty: 4,
+      },
+    ],
   };
   const platformF1Raw = structuredClone(platformSaleRaw);
   platformF1Raw.orders[0].status = "dispensing";
@@ -157,6 +171,13 @@ function fixture(root) {
         orderItemId: "item-17",
         inventoryId: "inventory-17",
         commandNo: binding.commandNo,
+      },
+    ],
+    inventories: [
+      {
+        id: "inventory-17",
+        slotId: "slot-17",
+        onHandQty: 3,
       },
     ],
   };
@@ -505,6 +526,9 @@ describe("delayed pickup native audio production track", () => {
       assert.equal(report.inventory.local.atF1, 4);
       assert.equal(report.inventory.local.afterF2, 3);
       assert.equal(report.inventory.platform.platformStockDelta, -1);
+      assert.equal(report.inventory.platform.baselineOnHandQty, 4);
+      assert.equal(report.inventory.platform.atF1OnHandQty, 4);
+      assert.equal(report.inventory.platform.postF2OnHandQty, 3);
       assert.equal(report.audio.cueWindows.length, 5);
       assert.equal(
         report.audio.cueWindows.every((window) => window.kind === "passed"),
@@ -527,7 +551,7 @@ describe("delayed pickup native audio production track", () => {
       const input = fixture(root);
       const artifacts = collectDelayedPickupProductionEvidence(input.paths);
       artifacts.daemon.value.checkpoints[1].saleView.items[0].physicalStock = 3;
-      artifacts.platformF1.value.raw.orders[0].status = "fulfilled";
+      artifacts.platformF1.value.raw.inventories[0].onHandQty = 3;
       const serialFile = artifacts.audioStop.value.evidence[1].fileName;
       const serial = JSON.parse(
         Buffer.from(
@@ -563,7 +587,7 @@ describe("delayed pickup native audio production track", () => {
       );
       assert.ok(
         report.diagnostics.some(
-          (entry) => entry.code === "platform_f1_not_nonterminal",
+          (entry) => entry.code === "platform_inventory_changed_before_f2",
         ),
       );
       assert.ok(

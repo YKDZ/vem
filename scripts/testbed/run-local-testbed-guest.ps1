@@ -262,6 +262,7 @@ $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
+[string]$delayedPickupOutPath = Join-Path $handoffRoot "delayed-pickup-native-audio.json"
 [string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
 [string]$workflowSummaryOutPath = Join-Path $handoffRoot "full-workflow-tracks.json"
 [ordered]@{
@@ -305,6 +306,7 @@ $trackSummary = [ordered]@{
   ok = $true
   tracks = [ordered]@{
     fast = $null
+    delayedPickup = $null
     vision = $null
   }
   failures = @()
@@ -323,6 +325,16 @@ try {
 
 if ($Mode -eq "full") {
   try {
+    node scripts/testbed/delayed-pickup-native-audio-guest-full.mjs --mode full --guest-input $GuestInputPath --handoff $handoffPath --out $delayedPickupOutPath
+    if ($LASTEXITCODE -ne 0) { throw "delayed pickup native audio failed" }
+  } catch {
+    $trackFailures.Add([ordered]@{ track = "delayedPickup"; message = $_.Exception.Message }) | Out-Null
+  } finally {
+    if (Test-Path -LiteralPath $delayedPickupOutPath) {
+      $trackSummary.tracks.delayedPickup = Get-Content -Raw -LiteralPath $delayedPickupOutPath | ConvertFrom-Json
+    }
+  }
+  try {
     Invoke-FullVisionTryOnAcceptance $GuestInputPath $HandoffPath $visionTryOnOutPath
   } catch {
     $trackFailures.Add([ordered]@{ track = "vision"; message = $_.Exception.Message }) | Out-Null
@@ -340,6 +352,9 @@ if (Test-Path -LiteralPath $fastRouteOutPath) {
   Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
 }
 if ($Mode -eq "full") {
+  if (Test-Path -LiteralPath $delayedPickupOutPath) {
+    Get-Content -Raw -LiteralPath $delayedPickupOutPath | Write-Output
+  }
   if (Test-Path -LiteralPath $visionTryOnOutPath) {
     Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
   }

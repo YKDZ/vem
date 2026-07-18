@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -472,11 +473,50 @@ export function nonQueryChildEnvironment(environment = process.env) {
 }
 
 function writeJson(path, value, mode) {
+  const resolved = resolve(path);
+  const temporary = `${resolved}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(
-    path,
+    temporary,
     `${JSON.stringify(value, null, 2)}\n`,
     mode ? { mode } : undefined,
   );
+  renameSync(temporary, resolved);
+}
+
+function delayedPickupEvidenceIndex({
+  track,
+  liveEvidence = null,
+  plan,
+  scenario = null,
+}) {
+  if (!track) return null;
+  const source = liveEvidence ?? track;
+  const screenshots =
+    scenario?.checkpoints
+      ?.map((checkpoint) => checkpoint?.screenshot?.ref)
+      .filter(Boolean) ?? [];
+  return {
+    platform: {
+      baselinePath: plan.artifacts.platformRawBaselineReport,
+      atF1Path: source.paths.platformF1,
+      postF2Path: plan.artifacts.platformRawRecordsReport,
+    },
+    daemon: {
+      evidencePath: source.paths.daemon,
+    },
+    serial: {
+      conformancePath: plan.artifacts.serialReport,
+    },
+    audio: {
+      evidenceDirectory: source.evidenceDirectory,
+      startReportPath: source.paths.audioStart,
+      stopReportPath: source.paths.audioStop,
+    },
+    trace: {
+      machineEvidencePath: source.paths.machine,
+    },
+    screenshots,
+  };
 }
 
 function observedIdentity(values, name) {
@@ -1008,7 +1048,21 @@ export async function runInstalledKioskSaleAcceptanceCli(
   let cleanup;
   let delayedPickupTrack;
   let primaryError;
-  let report;
+  let report = {
+    schemaVersion: SCHEMA_VERSION,
+    kind: "installed-kiosk-sale-acceptance",
+    status: "failed",
+    ok: false,
+    runId: options.run_id,
+    profile: options.profile,
+    evidence: {
+      scenarioPath: plan.artifacts.scenarioReport,
+      serialConformancePath: plan.artifacts.serialReport,
+      completionPath: plan.artifacts.completionReport,
+      platformRawRecordsPath: plan.artifacts.platformRawRecordsReport,
+      platformRawBaselinePath: plan.artifacts.platformRawBaselineReport,
+    },
+  };
   try {
     await run(
       [
@@ -1115,6 +1169,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
           );
           return JSON.parse(readFileSync(out, "utf8"));
         },
+      });
+      report.evidence.delayedPickupNativeAudio = delayedPickupEvidenceIndex({
+        track: delayedPickupTrack,
+        plan,
       });
     }
     // This must precede the first customer activation, including checkout submit.
@@ -1292,12 +1350,9 @@ export async function runInstalledKioskSaleAcceptanceCli(
       saleCorrelationId,
     });
     report = {
-      schemaVersion: SCHEMA_VERSION,
-      kind: "installed-kiosk-sale-acceptance",
+      ...report,
       status: "passed",
       ok: true,
-      runId: options.run_id,
-      profile: options.profile,
       runtimeBinding: {
         normal: runtime,
         prelaunch: launch.prelaunch,
@@ -1360,6 +1415,12 @@ export async function runInstalledKioskSaleAcceptanceCli(
           artifacts,
           audioEvidenceDirectory: liveEvidence.evidenceDirectory,
         });
+      report.evidence.delayedPickupNativeAudio = delayedPickupEvidenceIndex({
+        track: delayedPickupTrack,
+        liveEvidence,
+        plan,
+        scenario,
+      });
       if (delayedAcceptance.result !== "passed")
         throw new Error(
           `delayed pickup native audio acceptance failed: ${JSON.stringify(delayedAcceptance.diagnostics)}`,
@@ -1369,7 +1430,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
     }
   } catch (error) {
     primaryError = error;
-    throw error;
   } finally {
     try {
       await delayedPickupTrack?.close();
@@ -1443,21 +1503,41 @@ export async function runInstalledKioskSaleAcceptanceCli(
         }
       }
     } catch (cleanupError) {
-      if (!primaryError) throw cleanupError;
-      throw new AggregateError(
-        [primaryError, cleanupError],
-        "installed kiosk sale and cleanup failed",
-      );
+      if (!primaryError) primaryError = cleanupError;
+      else
+        primaryError = new AggregateError(
+          [primaryError, cleanupError],
+          "installed kiosk sale and cleanup failed",
+        );
+      report.cleanup = {
+        status: "failed",
+        error: formatInstalledKioskSaleError(cleanupError),
+      };
     } finally {
       if (scanner.owned) rmSync(scanner.path, { force: true });
       rmSync(root, { recursive: true, force: true });
     }
   }
-  report.cleanup = {
-    status: "passed",
-    normal: cleanup.normal,
-  };
+  if (!report.cleanup) {
+    report.cleanup = {
+      status: "passed",
+      normal: cleanup?.normal ?? null,
+    };
+  }
+  if (delayedPickupTrack) {
+    report.evidence.delayedPickupNativeAudio = delayedPickupEvidenceIndex({
+      track: delayedPickupTrack,
+      plan,
+      scenario: report.machineUiCdpScenario,
+    });
+  }
+  if (primaryError) {
+    report.status = "failed";
+    report.ok = false;
+    report.error = formatInstalledKioskSaleError(primaryError);
+  }
   writeJson(options.out, report);
+  if (primaryError) throw primaryError;
   return report;
 }
 

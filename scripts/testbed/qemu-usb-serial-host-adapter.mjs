@@ -248,6 +248,10 @@ function startSession(request) {
     [
       "--port",
       lower.path,
+      "--scenario",
+      process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "delayed-pickup"
+        ? "pickup-timeout-success"
+        : "normal",
       "--trace",
       "--frame-journal",
       journalPath,
@@ -270,6 +274,10 @@ function startSession(request) {
     liveMappings,
     mappings,
     simulatorPid: child.pid,
+    serialScenario:
+      process.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO === "delayed-pickup"
+        ? "delayed-pickup"
+        : "normal",
     journalPath,
     releaseF0Path,
     releaseF2Path,

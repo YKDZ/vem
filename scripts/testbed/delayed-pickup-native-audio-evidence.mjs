@@ -638,6 +638,7 @@ function rawSnapshot(value, label, expectedRunId) {
     "reservations",
     "commands",
     "movements",
+    "inventories",
   ])
     if (!Array.isArray(value.raw[name]))
       throw new Error(`${label} authoritative platform ${name} is invalid`);
@@ -722,6 +723,24 @@ export function analyzeAuthoritativePlatformEvidence({
   const reservation = post.reservations[0];
   const command = post.commands[0];
   const movement = post.movements[0];
+  const inventoriesByStage =
+    typeof item?.inventoryId === "string"
+      ? {
+          baseline: baseline.raw.inventories.find(
+            (entry) => entry?.id === item.inventoryId,
+          ),
+          atF1: atF1.raw.inventories.find(
+            (entry) => entry?.id === item.inventoryId,
+          ),
+          postF2: postF2.raw.inventories.find(
+            (entry) => entry?.id === item.inventoryId,
+          ),
+        }
+      : {
+          baseline: null,
+          atF1: null,
+          postF2: null,
+        };
   if (
     f1.orders[0]?.id !== order?.id ||
     f1.orderItems[0]?.id !== item?.id ||
@@ -741,6 +760,37 @@ export function analyzeAuthoritativePlatformEvidence({
     )
   )
     diagnostics.push(diagnostic("platform_f1_not_nonterminal"));
+  const baselineOnHand = inventoriesByStage.baseline?.onHandQty;
+  const atF1OnHand = inventoriesByStage.atF1?.onHandQty;
+  const postF2OnHand = inventoriesByStage.postF2?.onHandQty;
+  if (
+    !Number.isFinite(baselineOnHand) ||
+    !Number.isFinite(atF1OnHand) ||
+    !Number.isFinite(postF2OnHand)
+  ) {
+    diagnostics.push(
+      diagnostic("platform_inventory_snapshot_missing", {
+        inventoryId: item?.inventoryId ?? null,
+      }),
+    );
+  } else {
+    if (atF1OnHand !== baselineOnHand)
+      diagnostics.push(
+        diagnostic("platform_inventory_changed_before_f2", {
+          inventoryId: item?.inventoryId ?? null,
+          baselineOnHand,
+          atF1OnHand,
+        }),
+      );
+    if (postF2OnHand !== baselineOnHand - 1)
+      diagnostics.push(
+        diagnostic("platform_inventory_delta_after_f2_invalid", {
+          inventoryId: item?.inventoryId ?? null,
+          baselineOnHand,
+          postF2OnHand,
+        }),
+      );
+  }
   if (
     !order ||
     !item ||
@@ -794,6 +844,9 @@ export function analyzeAuthoritativePlatformEvidence({
       commandCount: post.commands.length,
       movementCount: post.movements.length,
       platformStockDelta: movement ? -movement.quantity : null,
+      baselineOnHandQty: Number.isFinite(baselineOnHand) ? baselineOnHand : null,
+      atF1OnHandQty: Number.isFinite(atF1OnHand) ? atF1OnHand : null,
+      postF2OnHandQty: Number.isFinite(postF2OnHand) ? postF2OnHand : null,
     },
     f1Capture: {
       capturedAt: atF1.capturedAt,

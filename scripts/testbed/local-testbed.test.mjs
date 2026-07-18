@@ -817,11 +817,17 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(guest, /Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot/);
     assert.match(guest, /Install-VisionMainArtifact/);
+    assert.match(
+      guest,
+      /delayed-pickup-native-audio-guest-full\.mjs --mode full/,
+    );
+    assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /vision-try-on-acceptance\.mjs --mode full/);
     assert.match(guest, /full-workflow-tracks\.json/);
     assert.match(guest, /\$trackFailures = \[System\.Collections\.Generic\.List\[object\]\]::new\(\)/);
     assert.match(guest, /\$trackSummary = \[ordered\]@\{/);
     assert.match(guest, /track = "fast"/);
+    assert.match(guest, /track = "delayedPickup"/);
     assert.match(guest, /track = "vision"/);
     assert.match(guest, /if \(\$trackFailures\.Count -gt 0\) \{/);
     assert.match(

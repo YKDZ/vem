@@ -22,7 +22,7 @@ const sale = {
 };
 
 describe("delayed pickup live production track", () => {
-  it("owns producers around the live sale and awaits the F1 control-plane checkpoint", async () => {
+  it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-delayed-live-"));
     const operations = [];
     let sampleSequence = 0;
@@ -130,34 +130,27 @@ describe("delayed pickup live production track", () => {
           },
           async readMachineSample() {
             sampleSequence += 1;
-            const reachedF1 = sampleSequence >= 2;
-            const reachedF2 = sampleSequence >= 3;
             return {
-              observedAt: reachedF1
-                ? "2026-07-18T08:00:30.100Z"
-                : "2026-07-18T08:00:00.300Z",
+              observedAt:
+                sampleSequence >= 2
+                  ? "2026-07-18T08:00:30.100Z"
+                  : "2026-07-18T08:00:00.300Z",
               route: "#/dispensing",
-              surface: reachedF1 ? "reset_progress" : "ordinary_warning",
+              surface:
+                sampleSequence >= 2 ? "reset_progress" : "ordinary_warning",
               orderId: sale.orderId,
               orderNo: sale.orderNo,
               commandId: sale.commandId,
               commandNo: sale.commandNo,
-              runtimeTrace: reachedF1
-                ? [
-                    {
-                      type: "journey_transition",
-                      transitionId: `transaction:${sale.orderNo}:pickup-completed`,
-                    },
-                    ...(reachedF2
-                      ? [
-                          {
-                            type: "journey_transition",
-                            transitionId: `transaction:${sale.orderNo}:dispense-succeeded`,
-                          },
-                        ]
-                      : []),
-                  ]
-                : [],
+              runtimeTrace:
+                sampleSequence >= 2
+                  ? [
+                      {
+                        type: "journey_transition",
+                        transitionId: `transaction:${sale.orderNo}:pickup-completed`,
+                      },
+                    ]
+                  : [],
             };
           },
           async runAudio(argv) {
@@ -181,10 +174,20 @@ describe("delayed pickup live production track", () => {
         "platform:baseline",
       ]);
       await new Promise((resolve) => setTimeout(resolve, 90));
+      await track.observeControllerFrame({ rawFrameHex: "55F1" });
+      await track.observeControllerFrame({ rawFrameHex: "55AF" });
+      await track.observeControllerFrame({ rawFrameHex: "55F2" });
       const evidence = await track.finish(sale);
       assert.ok(operations.indexOf("platform:at_f1") > 0);
       assert.ok(
         operations.indexOf("platform:at_f1") < operations.indexOf("audio:stop"),
+      );
+      assert.ok(
+        operations.indexOf("daemon:after_f1_before_f2") <
+          operations.indexOf("daemon:after_f2"),
+      );
+      assert.ok(
+        operations.indexOf("daemon:after_f2") < operations.indexOf("audio:stop"),
       );
       assert.equal(evidence.runtime.principal, "FIELD\\InteractiveUser");
       assert.equal(evidence.binding.commandId, sale.commandId);
@@ -198,6 +201,131 @@ describe("delayed pickup live production track", () => {
     const contract = delayedPickupIssue16ControlPlaneContract();
     assert.equal(contract.asyncCheckpoint, "controller-frame:55F1");
     assert.equal(contract.releaseAfter, "platform-and-daemon-f1-captured");
+  });
+
+  it("fails closed when F2 arrives before the live F1 release gate", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-delayed-live-gate-"));
+    try {
+      const track = await startDelayedPickupLiveProductionTrack(
+        {
+          outputRoot: root,
+          ...sale,
+          targetIdentity: "vm-target://runtime-testbed",
+          remote: {
+            remote: "operator@runtime.test",
+            identity: "/tmp/id",
+            certificate: "/tmp/id-cert.pub",
+          },
+          async captureDaemon(stage) {
+            return {
+              stage,
+              capturedAt: "2026-07-18T08:00:30.200Z",
+              binding: null,
+              transaction: {},
+              saleView: { items: [] },
+            };
+          },
+          async queryPlatform() {
+            return {
+              schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
+              source: "authoritative_ephemeral_platform_database",
+              capturedAt: "2026-07-18T08:00:30.300Z",
+              scope: {
+                runId: sale.runId,
+                machineCode: "MACHINE-17",
+                machineId: "44444444-4444-4444-8444-444444444444",
+              },
+              raw: {
+                orders: [],
+                orderItems: [],
+                payments: [],
+                reservations: [],
+                commands: [],
+                movements: [],
+                inventories: [],
+              },
+            };
+          },
+        },
+        {
+          async openSidecar() {
+            return {
+              endpoint: "http://127.0.0.1:9222",
+              async close() {},
+            };
+          },
+          async discoverTarget() {
+            return {
+              id: "target-live-17",
+              webSocketDebuggerUrl:
+                "ws://127.0.0.1:9222/devtools/page/target-live-17",
+            };
+          },
+          createClient() {
+            return {
+              async connect() {},
+              async observeIdentity() {
+                return {
+                  targetId: "target-live-17",
+                  sessionId:
+                    "cdp-connection:33333333-3333-4333-8333-333333333333",
+                  connectedAt: "2026-07-18T08:00:00.000Z",
+                };
+              },
+              async close() {},
+            };
+          },
+          async enableRuntime() {},
+          async inspectRuntime() {
+            return {
+              machine: {
+                processId: 42,
+                executablePath: "C:\\VEM\\bringup\\machine.exe",
+                sessionId: 7,
+                principal: "FIELD\\InteractiveUser",
+              },
+              cdpListener: {
+                machineAncestorProcessId: 42,
+                sessionId: 7,
+                principal: "FIELD\\InteractiveUser",
+              },
+            };
+          },
+          async readMachineSample() {
+            return {
+              observedAt: "2026-07-18T08:00:30.100Z",
+              route: "#/dispensing",
+              surface: "reset_progress",
+              orderId: sale.orderId,
+              orderNo: sale.orderNo,
+              commandId: sale.commandId,
+              commandNo: sale.commandNo,
+              runtimeTrace: [],
+            };
+          },
+          async runAudio(argv) {
+            const phase = argv[argv.indexOf("--capture-phase") + 1];
+            return phase === "start"
+              ? {
+                  captureSession: {
+                    captureSessionId: "sale-audio-session:run-17-live",
+                    startOperationReference: "vm-operation:run-17-live",
+                    startedAt: "2026-07-18T08:00:00.000Z",
+                  },
+                }
+              : { result: "succeeded" };
+          },
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await assert.rejects(
+        track.observeControllerFrame({ rawFrameHex: "55F2" }),
+        /F2 control-plane barrier arrived before F1 checkpoint completed/,
+      );
+      await track.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("is invoked by the current full VM runtime acceptance plan", () => {

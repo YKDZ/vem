@@ -75,6 +75,13 @@ function bindCheckpoint(checkpoint, binding) {
   return { ...checkpoint, binding: { ...binding } };
 }
 
+function normalizeObservedFrameHex(frame) {
+  const value =
+    typeof frame?.rawFrameHex === "string" ? frame.rawFrameHex : frame?.bytesHex;
+  const normalized = String(value ?? "").toLowerCase();
+  return /^[0-9a-f]+$/.test(normalized) ? normalized : null;
+}
+
 export function delayedPickupIssue16ControlPlaneContract() {
   return Object.freeze({
     profile: "delayed-pickup-native-audio",
@@ -142,6 +149,10 @@ export async function startDelayedPickupLiveProductionTrack(
 
   async function captureF1(observedBinding) {
     if (f1Promise) return f1Promise;
+    if (!observedBinding)
+      throw new Error(
+        "live Machine F1 control-plane barrier arrived before sale binding was observed",
+      );
     binding = observedBinding;
     f1Promise = Promise.all([
       captureDaemon("after_f1_before_f2", binding),
@@ -157,10 +168,18 @@ export async function startDelayedPickupLiveProductionTrack(
 
   async function captureF2(observedBinding) {
     if (f2Promise) return f2Promise;
+    if (!f1Promise)
+      throw new Error(
+        "live Machine F2 control-plane barrier arrived before F1 checkpoint completed",
+      );
+    if (!observedBinding)
+      throw new Error(
+        "live Machine F2 control-plane barrier arrived before sale binding was observed",
+      );
     if (binding && !sameBinding(binding, observedBinding))
       throw new Error("live Machine F2 binding differs from F1 sale binding");
     binding = observedBinding;
-    f2Promise = captureDaemon("after_f2", binding).then((daemon) => {
+    f2Promise = f1Promise.then(() => captureDaemon("after_f2", binding)).then((daemon) => {
       daemonCheckpoints.push(bindCheckpoint(daemon, binding));
       return daemon;
     });
@@ -203,20 +222,6 @@ export async function startDelayedPickupLiveProductionTrack(
         } catch {
           latestMachineBinding = null;
         }
-        const reachedF1 = sample.runtimeTrace.some(
-          (entry) =>
-            entry?.type === "journey_transition" &&
-            entry.transitionId ===
-              `transaction:${sample.orderNo}:pickup-completed`,
-        );
-        if (reachedF1 && !f1Promise) await captureF1(latestMachineBinding);
-        const reachedF2 = sample.runtimeTrace.some(
-          (entry) =>
-            entry?.type === "journey_transition" &&
-            entry.transitionId ===
-              `transaction:${sample.orderNo}:dispense-succeeded`,
-        );
-        if (reachedF2 && !f2Promise) await captureF2(latestMachineBinding);
       },
     });
     const runtime = machineCapture.runtime;
@@ -258,7 +263,7 @@ export async function startDelayedPickupLiveProductionTrack(
       evidenceDirectory,
       issue16: delayedPickupIssue16ControlPlaneContract(),
       async observeControllerFrame(frame) {
-        const bytesHex = String(frame?.bytesHex).toLowerCase();
+        const bytesHex = normalizeObservedFrameHex(frame);
         if (bytesHex !== "55f1" && bytesHex !== "55f2") return;
         if (!latestMachineBinding)
           throw new Error(

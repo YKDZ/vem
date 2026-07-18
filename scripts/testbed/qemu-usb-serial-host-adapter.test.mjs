@@ -129,4 +129,78 @@ describe("repo QEMU USB serial host adapter", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("passes delayed-pickup scenario through to the lower-controller simulator state", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-qemu-adapter-delayed-"));
+    const bin = join(root, "bin");
+    const stateRoot = join(root, "state");
+    const out = join(root, "start.json");
+    const argvLog = join(root, "simulator-argv.log");
+    mkdirSync(bin, { recursive: true });
+    const virsh = join(bin, "virsh");
+    const simulator = join(bin, "lower-controller-sim");
+    writeFileSync(virsh, `#!/bin/sh\ncat <<'XML'\n${domainXml()}\nXML\n`);
+    writeFileSync(
+      simulator,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvLog}"\nexec sleep 60\n`,
+    );
+    chmodSync(virsh, 0o755);
+    chmodSync(simulator, 0o755);
+    chmodSync(adapterPath, 0o755);
+    let simulatorPid = null;
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/run-vm-host-adapter.mjs",
+          "--operation",
+          "start-serial-session",
+          "--run-id",
+          "RUN-ISSUE17-DELAYED",
+          "--target-identity",
+          "vm-target://release-testbed-0001",
+          "--runtime-base",
+          `runtime-base://sha256/${"b".repeat(64)}`,
+          "--sale-correlation-id",
+          "sale-correlation://issue17-delayed",
+          "--out",
+          out,
+        ],
+        {
+          cwd: new URL("../..", import.meta.url).pathname,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            RUNNER_TEMP: join(root, "runner-temp"),
+            VEM_VM_HOST_ADAPTER: adapterPath,
+            VEM_VM_HOST_ADAPTER_VERSION: QEMU_USB_SERIAL_ADAPTER_VERSION,
+            VEM_VM_HOST_ADAPTER_SHA256: `sha256:${createHash("sha256").update(readFileSync(adapterPath)).digest("hex")}`,
+            VEM_VM_HOST_ADAPTER_DOMAIN: "win10-runtime-testbed",
+            VEM_VM_HOST_ADAPTER_STATE_ROOT: stateRoot,
+            VEM_LOWER_CONTROLLER_SIM: simulator,
+            VEM_LOCAL_TESTBED_SERIAL_SCENARIO: "delayed-pickup",
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
+      const state = JSON.parse(
+        readFileSync(
+          join(stateRoot, "sessions", sessionDirectory, "state.json"),
+          "utf8",
+        ),
+      );
+      simulatorPid = state.simulatorPid;
+      assert.equal(state.serialScenario, "delayed-pickup");
+      assert.match(readFileSync(argvLog, "utf8"), /--scenario\npickup-timeout-success\n/);
+    } finally {
+      if (Number.isInteger(simulatorPid)) {
+        try {
+          process.kill(-simulatorPid, "SIGTERM");
+        } catch {}
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

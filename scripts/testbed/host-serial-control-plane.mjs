@@ -18,6 +18,10 @@ const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
 const PLATFORM_DATABASE_URL =
   process.env.VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL ??
   "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed";
+const SERIAL_SCENARIOS = Object.freeze({
+  NORMAL: "normal",
+  DELAYED_PICKUP: "delayed-pickup",
+});
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -61,6 +65,15 @@ export function parseHostSerialControlPlaneArgs(args) {
 
 export function buildMqttTopic(machineCode) {
   return `vem/machines/${required(machineCode, "machineCode")}/commands/dispense`;
+}
+
+function normalizeSerialScenario(value) {
+  if (value == null) return SERIAL_SCENARIOS.NORMAL;
+  const scenario = String(value).trim().toLowerCase();
+  if (!Object.values(SERIAL_SCENARIOS).includes(scenario)) {
+    throw new Error("serialScenario must be normal or delayed-pickup");
+  }
+  return scenario;
 }
 
 function baseSerialArgs(request) {
@@ -136,6 +149,13 @@ export function buildSerialOperationCommand({ workspace, stateRoot, request }) {
     env: {
       ...process.env,
       RUNNER_TEMP: join(stateRoot, "runner-temp"),
+      ...(request.operation === "start-serial-session"
+        ? {
+            VEM_LOCAL_TESTBED_SERIAL_SCENARIO: normalizeSerialScenario(
+              request.serialScenario,
+            ),
+          }
+        : {}),
     },
   };
 }
@@ -301,22 +321,34 @@ function summarizeReport(report) {
 const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   VEND: "daemon-to-controller",
   F0: "controller-to-daemon",
+  E5: "controller-to-daemon",
   F1: "controller-to-daemon",
+  AF: "controller-to-daemon",
   F2: "controller-to-daemon",
 });
 
 export async function waitForRawSerialFrame({
   journalPath,
   parsedOpcode,
+  serialScenario = SERIAL_SCENARIOS.NORMAL,
   timeoutMs = 30_000,
   pollMs = 25,
 }) {
+  const scenario = normalizeSerialScenario(serialScenario);
   const expected = {
-    VEND: ["VEND"],
-    F0: ["VEND", "F0"],
-    F1: ["VEND", "F0", "F1"],
-    F2: ["VEND", "F0", "F1", "F2"],
-  }[parsedOpcode];
+    [SERIAL_SCENARIOS.NORMAL]: {
+      VEND: ["VEND"],
+      F0: ["VEND", "F0"],
+      F1: ["VEND", "F0", "F1"],
+      F2: ["VEND", "F0", "F1", "AF", "F2"],
+    },
+    [SERIAL_SCENARIOS.DELAYED_PICKUP]: {
+      VEND: ["VEND"],
+      F0: ["VEND", "F0"],
+      F1: ["VEND", "F0", "E5", "E5", "F1"],
+      F2: ["VEND", "F0", "E5", "E5", "F1", "AF", "F2"],
+    },
+  }[scenario]?.[parsedOpcode];
   if (!expected) throw new Error("parsedOpcode must be VEND, F0, F1, or F2");
   const deadline = Date.now() + timeoutMs;
   do {
@@ -370,6 +402,9 @@ async function waitForSessionFrame(server, input) {
   return waitForRawSerialFrame({
     journalPath: adapterSessionPaths(session).journalPath,
     parsedOpcode: required(input.parsedOpcode, "parsedOpcode"),
+    serialScenario: normalizeSerialScenario(
+      input.serialScenario ?? session.serialScenario,
+    ),
     timeoutMs: Number(input.timeoutMs ?? 30_000),
   });
 }
@@ -478,6 +513,7 @@ async function executePlatformQuery(server, input) {
 async function createSerialSession(server, input) {
   const runId = required(input.runId, "runId");
   const machineCode = required(input.machineCode, "machineCode");
+  const serialScenario = normalizeSerialScenario(input.serialScenario);
   const saleCorrelationId = required(
     input.saleCorrelationId ?? `sale-correlation-${randomUUID()}`,
     "saleCorrelationId",
@@ -494,6 +530,7 @@ async function createSerialSession(server, input) {
       runId,
       targetIdentity: required(input.targetIdentity, "targetIdentity"),
       runtimeBase: required(input.runtimeBase, "runtimeBase"),
+      serialScenario,
       saleCorrelationId,
       outPath,
     },
@@ -509,6 +546,7 @@ async function createSerialSession(server, input) {
     targetIdentity: input.targetIdentity,
     runtimeBase: input.runtimeBase,
     saleCorrelationId,
+    serialScenario,
     startReport: report,
     binding: {
       serialSessionId: report.serialSession.serialSessionId,
@@ -525,6 +563,7 @@ async function createSerialSession(server, input) {
   return {
     sessionId,
     saleCorrelationId,
+    serialScenario,
     binding: session.binding,
     startReport: summarizeReport(report),
   };

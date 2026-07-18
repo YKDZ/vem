@@ -77,7 +77,32 @@ describe("host serial control plane", () => {
     ]);
     assert.match(command.args.join(" "), /collect-serial-evidence/);
     assert.match(command.args.join(" "), /--vending-command-id command-1/);
-    assert.match(command.args.join(" "), /--scanner-injection-operation-nonce op-1/);
+    assert.match(
+      command.args.join(" "),
+      /--scanner-injection-operation-nonce op-1/,
+    );
+  });
+
+  it("passes delayed-pickup scenario into start-serial-session commands", () => {
+    const command = buildSerialOperationCommand({
+      workspace: "/workspaces/vem",
+      stateRoot: "/tmp/vem-state",
+      request: {
+        operation: "start-serial-session",
+        runId: "RUN-17",
+        targetIdentity: "vm-target://release-testbed-0001",
+        runtimeBase:
+          "runtime-base://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        serialScenario: "delayed-pickup",
+        saleCorrelationId: "sale-correlation-17",
+        outPath: "/tmp/vem-state/start.json",
+      },
+    });
+
+    assert.equal(
+      command.env.VEM_LOCAL_TESTBED_SERIAL_SCENARIO,
+      "delayed-pickup",
+    );
   });
 
   it("uses the repo-owned adapter wrapper and local mosquitto topic capture", () => {
@@ -146,6 +171,26 @@ describe("host serial control plane", () => {
         [
           { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
           { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
+          { direction: "controller-to-daemon", rawFrameHex: "55AF", opcode: 175, parsedOpcode: "AF" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      const f2Boundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "F2",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        f2Boundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["VEND", "F0", "F1", "AF", "F2"],
+      );
+
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
         ].map((record) => JSON.stringify(record)).join("\n") + "\n",
       );
       await assert.rejects(
@@ -163,6 +208,58 @@ describe("host serial control plane", () => {
       await assert.rejects(
         waitForRawSerialFrame({ journalPath, parsedOpcode: "F0", timeoutMs: 100 }),
         /raw serial journal record 2 F0 must match the 2-byte production frame 55 F0/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts delayed-pickup boundaries with E5 warnings before F1 and AF before F2", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-host-serial-delayed-"));
+    const journalPath = join(root, "raw-serial.jsonl");
+    try {
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
+          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
+          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      const f1Boundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "F1",
+        serialScenario: "delayed-pickup",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        f1Boundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["VEND", "F0", "E5", "E5", "F1"],
+      );
+
+      writeFileSync(
+        journalPath,
+        [
+          { direction: "daemon-to-controller", rawFrameHex: "55010112", opcode: 1, parsedOpcode: "VEND" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F0", opcode: 240, parsedOpcode: "F0" },
+          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
+          { direction: "controller-to-daemon", rawFrameHex: "55E5", opcode: 229, parsedOpcode: "E5" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F1", opcode: 241, parsedOpcode: "F1" },
+          { direction: "controller-to-daemon", rawFrameHex: "55AF", opcode: 175, parsedOpcode: "AF" },
+          { direction: "controller-to-daemon", rawFrameHex: "55F2", opcode: 242, parsedOpcode: "F2" },
+        ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+      );
+      const f2DelayedBoundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "F2",
+        serialScenario: "delayed-pickup",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        f2DelayedBoundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["VEND", "F0", "E5", "E5", "F1", "AF", "F2"],
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

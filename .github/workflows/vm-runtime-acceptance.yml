@@ -93,6 +93,22 @@ jobs:
             C:\ProgramData\VEM\runtime\testbed\vision-try-on-acceptance-artifacts\*.log
           if-no-files-found: warn
           retention-days: 7
+      - name: Collect Bounded Issue17 Delayed Pickup Evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vm-issue17-delayed-pickup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.log
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\*.wav
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\screenshots\*.png
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\*.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\host-default-audio\*.json
+            C:\ProgramData\VEM\runtime\testbed\delayed-pickup-native-audio-artifacts\live-production-track\host-default-audio\*.wav
+          if-no-files-found: warn
+          retention-days: 7
       - name: Collect Full Workflow Track Summary
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
