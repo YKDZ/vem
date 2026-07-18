@@ -84,6 +84,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Restore cached testbed PowerShell
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testbed/ensure-testbed-pwsh.ps1
       - name: Build Deploy Claim And Test
         shell: pwsh
         env:
@@ -171,6 +174,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Restore cached testbed PowerShell
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testbed/ensure-testbed-pwsh.ps1
       - name: Build Deploy Claim And Test Again
         shell: pwsh
         env:

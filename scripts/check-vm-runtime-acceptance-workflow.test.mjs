@@ -66,6 +66,18 @@ describe("VM runtime acceptance workflow", () => {
     assert.match(workflow, /cargo 1\.96\.0/);
   });
 
+  it("restores one fixed PowerShell toolchain from the persistent guest cache", () => {
+    assert.equal(
+      (workflow.match(/Restore cached testbed PowerShell/g) ?? []).length,
+      2,
+    );
+    assert.equal(
+      (workflow.match(/scripts\/testbed\/ensure-testbed-pwsh\.ps1/g) ?? [])
+        .length,
+      2,
+    );
+  });
+
   it("uploads only the bounded evidence bundle plus the clear-cache report without forbidden media", () => {
     const windows = workflow.slice(
       workflow.indexOf("run-inside-windows-pass-1:"),
