@@ -245,6 +245,7 @@ $proof | ConvertTo-Json -Compress
 }
 
 function runnerAdmissionAssertion(runnerProxy) {
+  const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
   const proxyLines = runnerProxy?.configured
     ? [
         `HTTP_PROXY=${runnerProxy.http}`,
@@ -267,6 +268,7 @@ if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw '
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
+Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
 ${updateEnvironment}$diagnosticDirectory = Join-Path $runnerRoot '_diag'
 $diagnosticOffsets = @{}
 @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
