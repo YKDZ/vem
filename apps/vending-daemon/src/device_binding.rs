@@ -351,7 +351,7 @@ $devices = @(Get-PnpDevice -Class Ports -PresentOnly | ForEach-Object {
   $instanceId = $portInstanceId
   try {
     $parent = [string](Get-PnpDeviceProperty -InstanceId $portInstanceId -KeyName 'DEVPKEY_Device_Parent').Data
-    if ($parent -match '^USB\\') { $instanceId = $parent }
+    if ($portInstanceId -notmatch '^USB\\' -and $parent -match '^USB\\') { $instanceId = $parent }
   } catch {}
   $containerId = $null
   $hardwareIds = @()
@@ -367,7 +367,7 @@ $devices = @(Get-PnpDevice -Class Ports -PresentOnly | ForEach-Object {
       containerId = $containerId
       hardwareIds = @($hardwareIds | ForEach-Object { [string]$_ })
       serialNumber = $serialNumber
-      friendlyName = $friendlyName
+      friendlyName = $null
     }
   }
 })
@@ -1124,11 +1124,11 @@ mod tests {
 
     #[test]
     fn windows_discovery_uses_present_pnp_ports_and_their_physical_usb_parent() {
-        assert!(
-            WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("Get-PnpDevice -Class Ports -PresentOnly")
-        );
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("Get-PnpDevice -Class Ports -PresentOnly"));
         assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("DEVPKEY_Device_Parent"));
-        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("if ($parent -match '^USB\\\\')"));
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT
+            .contains("if ($portInstanceId -notmatch '^USB\\\\' -and $parent -match '^USB\\\\')"));
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("friendlyName = $null"));
         assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("\\((COM[0-9]+)\\)\\s*$"));
         assert!(!WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("Win32_SerialPort"));
     }
