@@ -921,6 +921,17 @@ describe("fast route stress sale tracer", () => {
     assert.equal(typeof shutdownControlledVisionMock, "function");
   });
 
+  it("retries controlled departure until the persistent runtime client accepts it", () => {
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /async function dispatchVisionDeparture[\s\S]*Date\.now\(\) \+ 15_000[\s\S]*await sleep\(250\)/,
+    );
+  });
+
   it("waits for a protocol-registered Vision runtime before customer input", () => {
     const source = readFileSync(
       new URL("./fast-route-stress-sale.mjs", import.meta.url),

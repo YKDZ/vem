@@ -1727,11 +1727,22 @@ async function dispatchVisionDeparture(guestInput) {
   // Use the controlled vision injection endpoint rather than browser-state spoofing.
   // Full guest-local URL shape: http://127.0.0.1:<port>/control/departure.
   // Regex guard anchor: vision/control/departure.
-  return fetchJson(`http://127.0.0.1:${controlPort}/control/departure`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source: "fast-route-stress-sale" }),
-  });
+  const url = `http://127.0.0.1:${controlPort}/control/departure`;
+  const deadline = Date.now() + 15_000;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      return await fetchJson(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "fast-route-stress-sale" }),
+      });
+    } catch (error) {
+      lastError = error;
+      await sleep(250);
+    }
+  }
+  throw lastError ?? new Error("Vision departure delivery timed out");
 }
 
 async function completeMockPayment(guestInput, paymentNo) {
