@@ -279,7 +279,9 @@ if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity 
 $runnerWorkRoot = 'D:\\runtime-cache\\v1\\actions-work'
 New-Item -ItemType Directory -Force -Path $runnerWorkRoot | Out-Null
 $env:GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY = '1'
-[Environment]::SetEnvironmentVariable('GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY', '1', 'Machine')
+$runnerEnvironment = if (Test-Path -LiteralPath $environmentPath -PathType Leaf) { @(Get-Content -LiteralPath $environmentPath -Encoding UTF8) } else { @() }
+$runnerEnvironment = @($runnerEnvironment | Where-Object { $_ -notmatch '^GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=' }) + @('GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1')
+[System.IO.File]::WriteAllLines($environmentPath, $runnerEnvironment, [System.Text.UTF8Encoding]::new($false))
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work $runnerWorkRoot --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 Set-RunnerAdmissionPhase 'configured-new-runner'
