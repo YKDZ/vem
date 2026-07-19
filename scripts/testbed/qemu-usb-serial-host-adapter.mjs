@@ -607,10 +607,10 @@ function injectScanner(request, scannerCode) {
   const state = readState(request.serialSession.serialSessionId);
   if (!state.active) throw new Error("serial session is not active");
   const descriptor = createScannerCodeDescriptor(scannerCode);
-  if (
-    JSON.stringify(descriptor) !==
-    JSON.stringify(request.serialSession.scannerInjection)
-  ) {
+  if (!scannerDescriptorMatchesRequest(
+    descriptor,
+    request.serialSession.scannerInjection,
+  )) {
     throw new Error(
       "protected scanner input does not match request descriptor",
     );
@@ -626,6 +626,15 @@ function injectScanner(request, scannerCode) {
   };
   writeState(state);
   return state;
+}
+
+export function scannerDescriptorMatchesRequest(descriptor, scannerInjection) {
+  return (
+    descriptor.scannerCodeDigest === scannerInjection?.scannerCodeDigest &&
+    descriptor.scannerCodeByteLength ===
+      scannerInjection?.scannerCodeByteLength &&
+    descriptor.scannerCodeSuffix === scannerInjection?.scannerCodeSuffix
+  );
 }
 
 export function readRawSerialJournal(path) {

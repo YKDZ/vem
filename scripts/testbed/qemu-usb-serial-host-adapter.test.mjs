@@ -17,8 +17,10 @@ import {
   parseLibvirtUsbSerialMappings,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
   readRawSerialJournal,
+  scannerDescriptorMatchesRequest,
   validateProductionRawSerialFrame,
 } from "./qemu-usb-serial-host-adapter.mjs";
+import { createScannerCodeDescriptor } from "./vm-host-adapter-contract.mjs";
 
 const adapterPath = new URL(
   "./qemu-usb-serial-host-adapter.mjs",
@@ -51,6 +53,27 @@ function libvirtNormalizedDomainXml() {
 }
 
 describe("repo QEMU USB serial host adapter", () => {
+  it("accepts a scanner descriptor when the request also carries its operation nonce", () => {
+    const descriptor = createScannerCodeDescriptor(
+      Buffer.from("2860123456789\r\n", "utf8"),
+    );
+    assert.equal(
+      scannerDescriptorMatchesRequest(descriptor, {
+        ...descriptor,
+        operationNonce: "scanner-injection://runtime-acceptance-1",
+      }),
+      true,
+    );
+    assert.equal(
+      scannerDescriptorMatchesRequest(descriptor, {
+        ...descriptor,
+        scannerCodeDigest: `sha256:${"0".repeat(64)}`,
+        operationNonce: "scanner-injection://runtime-acceptance-1",
+      }),
+      false,
+    );
+  });
+
   it("derives roles after libvirt normalizes the serial aliases", () => {
     assert.deepEqual(
       parseLibvirtUsbSerialMappings(libvirtNormalizedDomainXml()).map(
