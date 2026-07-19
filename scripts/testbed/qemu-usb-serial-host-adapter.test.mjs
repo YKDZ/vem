@@ -289,13 +289,17 @@ describe("repo QEMU USB serial host adapter", () => {
     }
   });
 
-  it("captures socat hex tracing from stderr while retaining stable socat logging", () => {
+  it("uses the stable socat log as the single raw serial journal", () => {
     const source = readFileSync(adapterPath, "utf8");
     assert.match(
       source,
-      /stdio: \["ignore", "ignore", openSync\(journalPath, "a", 0o600\)\]/,
+      /const journalPath = join\(dir, "raw-serial\.socat\.log"\)/,
     );
-    assert.match(source, /"-lf",\s*join\(dir, "socat\.log"\)/);
+    assert.match(source, /"-lf",\s*journalPath/);
+    assert.match(
+      source,
+      /stdio: \["ignore", "ignore", openSync\(bridgeStderrPath, "a", 0o600\)\]/,
+    );
   });
 
   it("passes delayed-pickup scenario through to the lower-controller simulator state", () => {

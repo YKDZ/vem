@@ -495,7 +495,8 @@ function startSession(request) {
   );
   if (!existsSync(simulator))
     throw new Error("repo lower-controller simulator binary does not exist");
-  const journalPath = join(dir, "raw-serial.jsonl");
+  const journalPath = join(dir, "raw-serial.socat.log");
+  const bridgeStderrPath = join(dir, "socat.stderr.log");
   const lowerControllerProxyPath = join(dir, "lower-controller-pty");
   const releaseF0Path = join(dir, "release-f0");
   const releaseF2Path = join(dir, "release-f2");
@@ -510,13 +511,13 @@ function startSession(request) {
       "-x",
       "-v",
       "-lf",
-      join(dir, "socat.log"),
+      journalPath,
       `PTY,link=${lowerControllerProxyPath},rawer,echo=0,waitslave`,
       `FILE:${lower.path},raw,echo=0`,
     ],
     {
       detached: true,
-      stdio: ["ignore", "ignore", openSync(journalPath, "a", 0o600)],
+      stdio: ["ignore", "ignore", openSync(bridgeStderrPath, "a", 0o600)],
     },
   );
   bridge.unref();
