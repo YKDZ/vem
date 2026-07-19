@@ -935,9 +935,10 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
         '[data-test*="recovery"], [data-vem-recovery-overlay], [role="alert"]'
       )].map((element) => ({
         test: element.getAttribute('data-test'),
+        recoveryMarker: element.hasAttribute('data-vem-recovery-overlay'),
         text: (element.textContent || '').trim().slice(0, 256),
         visible: Boolean(element.getClientRects().length)
-      })).filter((entry) => entry.visible && /recover|reconnect|daemon|connection/i.test((entry.test || '') + ' ' + entry.text));
+      })).filter((entry) => entry.visible && (entry.recoveryMarker || /recover|reconnect|daemon|connection/i.test((entry.test || '') + ' ' + entry.text)));
       const catalogRequests = performance.getEntriesByType('resource')
         .map((entry) => entry.name)
         .filter((name) => /\\/v1\\/catalog(?:[?#]|$)/.test(name))

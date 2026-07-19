@@ -526,6 +526,31 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
   throw new Error(`daemon hardware bindings were not ready: ${JSON.stringify(last)}`);
 }
 
+async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await daemonGet(handoff, "/v1/sale-start-capability").catch(
+      () => null,
+    );
+    const paymentCode = last?.paymentOptions?.options?.find(
+      (option) => option?.optionKey === "payment_code:mock",
+    );
+    if (
+      last?.canStartSale === true &&
+      Number.isInteger(last?.revision) &&
+      paymentCode?.ready === true &&
+      paymentCode?.disabledReason === null
+    ) {
+      return last;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `scanner sale capability did not recover after binding: ${JSON.stringify(last)}`,
+  );
+}
+
 async function waitForSuccessfulResultSurface(client, expected, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -852,6 +877,7 @@ export async function runScannerPaymentCodeGuest(options) {
     const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
     quietScannerCapture.close();
     quietScannerCapture = null;
+    const saleStartCapability = await waitForScannerSaleCapability(handoff);
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-scanner-payment-code");
     for (const step of steps) {
@@ -1056,6 +1082,7 @@ export async function runScannerPaymentCodeGuest(options) {
         scannedAtMs: scannerEvent.scannedAtMs,
       },
       hardwareBindings,
+      saleStartCapability,
       scannerBindingProbe: scannerBindingProbe.scannerBindingProbe,
       platformAssertions: success,
       checkpoints,

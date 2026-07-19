@@ -388,4 +388,58 @@ describe("capture-sale-audio host adapter extension", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("accepts a QEMU file output created by the first real playback", async () => {
+    const root = makeTempDir("vem-sale-audio-lazy-libvirt");
+    const wavPath = join(root, "lazy-domain-output.wav");
+    const journalPath = join(root, "raw-serial.socat.log");
+    const domainXml = `<domain type="kvm"><devices><audio id="1" type="file" path="${wavPath}"/><sound model="ich9"><audio id="1"/></sound></devices></domain>`;
+    const testOnlyRunVirsh = (args) =>
+      args.at(-2) === "domstate" ? "running\n" : domainXml;
+    try {
+      writeFileSync(journalPath, "host serial journal\n");
+      const common = {
+        runId: "RUN-17-LAZY",
+        lifecycleReference: "vm-lifecycle://run-17-lazy.runtime",
+        targetIdentity: "vm-target://runtime",
+        transactionId: "transaction://run-17-lazy",
+        runtime,
+        evidenceDirectory: join(root, "evidence"),
+        production: productionBinding(journalPath),
+      };
+      const dependencies = {
+        testOnlyRunVirsh,
+        readSerialJournal: () => delayedPickupFrames(),
+      };
+      const started = await executeSaleAudioCaptureHostAdapter(
+        { ...common, phase: "start", outPath: join(root, "start.json") },
+        dependencies,
+      );
+      assert.equal(existsSync(wavPath), false);
+      writeFileSync(wavPath, wavWithTone());
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 2));
+      const stopped = await executeSaleAudioCaptureHostAdapter(
+        {
+          ...common,
+          phase: "stop",
+          captureSessionId: started.captureSession.captureSessionId,
+          startOperationReference: started.captureSession.startOperationReference,
+          captureStartedAt: started.captureSession.startedAt,
+          outPath: join(root, "stop.json"),
+          sale: {
+            saleCorrelationId: "sale-correlation://run-17-lazy",
+            orderId: "33333333-3333-4333-8333-333333333333",
+            orderNo: "ORDER-17-LAZY",
+            commandId: "44444444-4444-4444-8444-444444444444",
+            commandNo: "COMMAND-17-LAZY",
+          },
+        },
+        dependencies,
+      );
+      assert.equal(stopped.capture.provenance.wav.startOffset, 0);
+      assert.ok(stopped.capture.provenance.wav.capturedByteLength > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

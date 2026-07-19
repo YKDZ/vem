@@ -520,7 +520,9 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
   return {
     async start() {
       const domain = runningDomainAudio(binding, runVirsh);
-      const snapshot = wavSnapshot(domain.outputPath);
+      const snapshot = existsSync(domain.outputPath)
+        ? wavSnapshot(domain.outputPath)
+        : null;
       return {
         kind: "libvirt-domain-file-output",
         domain,
@@ -536,11 +538,14 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
       ) {
         throw new Error("running domain audio output changed during capture");
       }
-      const completed = readStableWavSnapshot(
-        domain.outputPath,
-        state.startSnapshot,
-      );
-      if (completed.snapshot.byteLength <= state.startSnapshot.byteLength) {
+      const completed = state.startSnapshot
+        ? readStableWavSnapshot(domain.outputPath, state.startSnapshot)
+        : (() => {
+            const snapshot = wavSnapshot(domain.outputPath);
+            return { bytes: readFileSync(domain.outputPath), snapshot };
+          })();
+      const startByteLength = state.startSnapshot?.byteLength ?? 0;
+      if (completed.snapshot.byteLength <= startByteLength) {
         throw new Error(
           "running domain audio output did not advance after capture start",
         );
@@ -560,10 +565,10 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
             path: domain.outputPath,
             device: completed.snapshot.device,
             inode: completed.snapshot.inode,
-            startOffset: state.startSnapshot.byteLength,
+            startOffset: startByteLength,
             endOffset: completed.snapshot.byteLength,
             capturedByteLength:
-              completed.snapshot.byteLength - state.startSnapshot.byteLength,
+              completed.snapshot.byteLength - startByteLength,
           },
         },
       };
