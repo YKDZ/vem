@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
 import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
+import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
@@ -329,7 +330,22 @@ beforeEach(() => {
   client.confirmDeviceBinding.mockResolvedValue({});
   client.clearDeviceBinding.mockResolvedValue(configuration(false));
   client.setScannerProtocolParameters.mockResolvedValue(configuration(false));
-  client.setAudioPreferences.mockResolvedValue(configuration(false));
+  client.setAudioPreferences.mockImplementation(async (preferences) => {
+    currentConfiguration = {
+      ...currentConfiguration,
+      generation: currentConfiguration.generation + 1,
+      sourceRevisions: {
+        ...currentConfiguration.sourceRevisions,
+        localSettingsRevision:
+          currentConfiguration.sourceRevisions.localSettingsRevision + 1,
+      },
+      experience: {
+        ...currentConfiguration.experience,
+        audio: preferences,
+      },
+    };
+    return currentConfiguration;
+  });
   client.clearWholeMachineMaintenanceLock.mockResolvedValue({ cleared: true });
   client.submitStockMaintenanceBatch.mockImplementation(async (request) => ({
     task: {
@@ -620,28 +636,57 @@ describe("Local Operations", () => {
     ).not.toContain("确认绑定");
   });
 
-  it("applies audio preference changes as direct daemon-owned updates without a local preference projection", async () => {
+  it("refreshes the daemon-owned audio preferences after each save", async () => {
     const host = await render();
     const initialReloads =
       client.getEffectiveRuntimeConfiguration.mock.calls.length;
-    const checkboxes = host.querySelectorAll<HTMLInputElement>(
-      "[data-test='audio-preferences'] input[type='checkbox']",
+    const transactionCuesEnabled = host.querySelector<HTMLInputElement>(
+      "[data-test='machine-audio-transaction-enabled']",
     );
-    const cuesEnabled = checkboxes[0];
-    if (!cuesEnabled) throw new Error("audio cue checkbox not found");
-    cuesEnabled.checked = false;
-    cuesEnabled.dispatchEvent(new Event("change", { bubbles: true }));
+    if (!transactionCuesEnabled)
+      throw new Error("transaction audio checkbox not found");
+    transactionCuesEnabled.checked = false;
+    transactionCuesEnabled.dispatchEvent(
+      new Event("change", { bubbles: true }),
+    );
     await flush();
 
-    expect(client.setAudioPreferences).toHaveBeenCalledWith({
-      volume: 0.7,
-      cuesEnabled: false,
-      presenceCuesEnabled: true,
-      transactionCuesEnabled: true,
+    await vi.waitFor(() => {
+      expect(client.setAudioPreferences).toHaveBeenCalledWith({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: false,
+      });
     });
-    expect(
-      client.getEffectiveRuntimeConfiguration.mock.calls.length,
-    ).toBeGreaterThan(initialReloads);
+
+    const volume = host.querySelector<HTMLInputElement>(
+      "[data-test='machine-audio-volume-percent']",
+    );
+    if (!volume) throw new Error("machine audio volume input not found");
+    volume.value = "35";
+    volume.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    await vi.waitFor(() => {
+      expect(client.setAudioPreferences).toHaveBeenLastCalledWith({
+        volume: 0.35,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: false,
+      });
+    });
+    expect(client.getEffectiveRuntimeConfiguration.mock.calls.length).toBe(
+      initialReloads + 2,
+    );
+    expect(transactionCuesEnabled.checked).toBe(false);
+    expect(volume.value).toBe("35");
+    expect(useMachineStore().customerAudio).toEqual({
+      volume: 0.35,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: false,
+    });
   });
 
   it("runs hardware and manual dispense diagnostics directly without an authorization interstitial", async () => {

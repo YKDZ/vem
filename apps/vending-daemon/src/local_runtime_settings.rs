@@ -64,9 +64,9 @@ impl Default for AudioPreferences {
     fn default() -> Self {
         Self {
             volume: 0.7,
-            cues_enabled: false,
-            presence_cues_enabled: false,
-            transaction_cues_enabled: false,
+            cues_enabled: true,
+            presence_cues_enabled: true,
+            transaction_cues_enabled: true,
         }
     }
 }
@@ -222,6 +222,16 @@ fn binding_revision(
 mod tests {
     use super::*;
     use crate::device_binding::StableSerialDeviceIdentity;
+
+    #[test]
+    fn enables_core_behavior_audio_by_default() {
+        let audio = AudioPreferences::default();
+
+        assert!(audio.cues_enabled);
+        assert!(audio.presence_cues_enabled);
+        assert!(audio.transaction_cues_enabled);
+        assert_eq!(audio.volume, 0.7);
+    }
 
     fn binding(identity_key: &str) -> LocalSerialRoleBinding {
         LocalSerialRoleBinding {

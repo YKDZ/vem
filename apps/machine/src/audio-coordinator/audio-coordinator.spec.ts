@@ -267,6 +267,47 @@ describe("Audio Coordinator", () => {
     },
   );
 
+  it("uses the effective audio volume and rejects new transaction transitions after transaction cues are disabled", async () => {
+    const effectiveAudioPreferences = {
+      volume: 0.35,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    };
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => effectiveAudioPreferences,
+      mapTransition: (item) => ({
+        sourceUrl: `/audio/${item.transitionId}.mp3`,
+        priority: 20,
+      }),
+    });
+
+    await coordinator.accept([transition("payment-prompt")]);
+
+    expect(driver.playLocal).toHaveBeenCalledWith(
+      "/audio/payment-prompt.mp3",
+      expect.objectContaining({ volume: 0.35 }),
+    );
+
+    effectiveAudioPreferences.transactionCuesEnabled = false;
+    await coordinator.accept([transition("payment-succeeded")]);
+
+    expect(driver.playLocal).toHaveBeenCalledOnce();
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        type: "audio_rejected",
+        transitionId: "payment-succeeded",
+        message: "audio cue preference disabled",
+      }),
+    );
+  });
+
   it("rejects a transition that has no presentation source", async () => {
     const driver: AudioCoordinatorPlaybackDriver = {
       name: "mock",
