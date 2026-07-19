@@ -753,13 +753,13 @@ function semanticRecords(request, state, rawFrames) {
   };
   const handshake = find(
     (frame) =>
-      frame.direction === "daemon-to-controller" && frame.parsedOpcode === "A0",
-    "status query",
+      frame.direction === "daemon-to-controller" && frame.parsedOpcode === "B0",
+    "environment query",
   );
   const health = find(
     (frame) =>
-      frame.direction === "controller-to-daemon" && frame.parsedOpcode === "00",
-    "health frame",
+      frame.direction === "controller-to-daemon" && frame.parsedOpcode === "B0",
+    "environment response",
   );
   const vend = find(
     (frame) =>
