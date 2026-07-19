@@ -1176,6 +1176,7 @@ describe("Windows D cache contract", () => {
       "& $pnpm config set virtual-store-dir",
       "& $pnpm config get virtual-store-dir",
       "& $pnpm fetch --frozen-lockfile",
+      "& $pnpm install --frozen-lockfile --offline",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1205,6 +1206,14 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
     assert.match(guest, /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/);
+    assert.match(
+      guest,
+      /\$pnpmFetchCompletePath = Join-Path \$pnpmVirtualStorePath "\.fetch-complete"/,
+    );
+    assert.match(
+      guest,
+      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile[\s\S]*New-Item -ItemType File -Force -Path \$pnpmFetchCompletePath/,
+    );
     assert.match(
       guest,
       /function Clear-DeclaredCaches \{\s+foreach \(\$path in \$declaredCachePaths\) \{\s+Remove-Item -LiteralPath \$path -Recurse -Force -ErrorAction SilentlyContinue/s,
