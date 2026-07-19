@@ -387,7 +387,7 @@ function defaultBrowserAudioFactory(
 
 export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlaybackDriver | null {
   if (!isTauriRuntime()) return null;
-  const terminalTimeoutMs = 30_000;
+  const terminalTimeoutMs = 120_000;
   let activePlayback: {
     requestId: string;
     commandAccepted: boolean;
@@ -423,17 +423,6 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
     if (outcome.status === "completed") playback.onCompleted?.();
     playback.onTerminal?.(outcome);
     playback.resolveTerminal();
-  }
-
-  function armTerminalTimeout(
-    playback: NonNullable<typeof activePlayback>,
-  ): void {
-    playback.terminalTimer = globalThis.setTimeout(() => {
-      finishActivePlayback(playback, {
-        status: "failed",
-        message: "native playback terminal event timed out",
-      });
-    }, terminalTimeoutMs);
   }
 
   return {
@@ -509,9 +498,14 @@ export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlayb
         playback.commandAccepted = true;
         if (playback.terminal) {
           finishActivePlayback(playback, playback.terminal);
-          return;
+        } else {
+          playback.terminalTimer = globalThis.setTimeout(() => {
+            finishActivePlayback(playback, {
+              status: "failed",
+              message: "native playback terminal event timed out",
+            });
+          }, terminalTimeoutMs);
         }
-        armTerminalTimeout(playback);
       } catch (error: unknown) {
         if (activePlayback === playback) {
           activePlayback = null;

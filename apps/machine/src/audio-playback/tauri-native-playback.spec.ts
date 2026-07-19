@@ -134,6 +134,68 @@ describe("Tauri native Machine Audio playback driver", () => {
     });
   });
 
+  it("does not fail long native playback before a later completion event arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      isTauriRuntimeMock.mockReturnValue(true);
+      const listeners = new Map<
+        string,
+        (event: { payload: { requestId: string; message?: string } }) => void
+      >();
+      listenMock.mockImplementation(async (eventName, listener) => {
+        listeners.set(eventName, listener);
+        return vi.fn();
+      });
+      const diagnostics: string[] = [];
+      const playback = createMachineAudioPlayback({
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.status),
+      });
+
+      await playback.playLocal("/audio/interaction/awakened.mp3");
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(diagnostics).toEqual(["requested", "started"]);
+
+      const firstCall = callTauriCommandMock.mock.calls[0];
+      if (!firstCall) throw new Error("native playback command was not called");
+      const requestId = (firstCall[1] as { requestId: string }).requestId;
+      listeners.get("machine-audio-completed")?.({ payload: { requestId } });
+
+      expect(diagnostics).toEqual(["requested", "started", "completed"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers when native playback never emits a terminal event", async () => {
+    vi.useFakeTimers();
+    try {
+      isTauriRuntimeMock.mockReturnValue(true);
+      listenMock.mockResolvedValue(vi.fn());
+      const outcomes: string[] = [];
+      const driver = createTauriNativeMachineAudioPlaybackDriver();
+
+      await driver?.playLocal("/assets/missing-terminal.wav", {
+        requestId: "native-missing-terminal",
+        volume: 1,
+        onTerminal: (outcome) => {
+          outcomes.push(outcome.status);
+        },
+      });
+      await vi.advanceTimersByTimeAsync(120_001);
+
+      expect(outcomes).toEqual(["failed"]);
+      await expect(
+        driver?.playLocal("/assets/recovered.wav", {
+          requestId: "native-after-timeout",
+          volume: 1,
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets every idempotent stop caller join the same native terminal wait", async () => {
     isTauriRuntimeMock.mockReturnValue(true);
     const listeners = new Map<

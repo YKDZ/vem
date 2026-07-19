@@ -14,7 +14,7 @@ use serde::Serialize;
 
 #[cfg(windows)]
 use {
-    rodio::{source::EmptyCallback, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player},
+    rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player},
     std::fs::File,
     std::io::{BufReader, Cursor},
     tauri::Emitter,
@@ -190,6 +190,14 @@ fn remember_stop_before_start(memory: &mut Vec<String>, request_id: String) {
     if memory.len() > 32 {
         memory.remove(0);
     }
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn spawn_terminal_waiter(wait_for_terminal: impl FnOnce() + Send + 'static) {
+    thread::Builder::new()
+        .name("machine-audio-terminal-wait".to_string())
+        .spawn(wait_for_terminal)
+        .expect("spawn machine audio terminal waiter");
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -517,10 +525,10 @@ impl MachineAudioState {
         };
         let completion = OnceCompletionSignal::new(self.completion_tx.clone(), generation);
         player.append(source);
-        // This closure runs on the audio thread and must remain signal-only.
-        player.append(EmptyCallback::new(Box::new(move || {
+        spawn_terminal_waiter(move || {
+            player.sleep_until_end();
             completion.send();
-        })));
+        });
         player.play();
         Ok(())
     }
@@ -1025,6 +1033,25 @@ mod tests {
             CompletionSignal { generation: 42 }
         );
         assert!(completion_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn terminal_waiter_signals_completion_after_wait_finishes() {
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let completion = OnceCompletionSignal::new(completion_tx, 7);
+
+        spawn_terminal_waiter(move || {
+            resume_rx.recv().expect("resume terminal wait");
+            completion.send();
+        });
+
+        assert!(completion_rx.try_recv().is_err());
+        resume_tx.send(()).expect("resume terminal waiter");
+        assert_eq!(
+            completion_rx.recv().expect("completion signal"),
+            CompletionSignal { generation: 7 }
+        );
     }
 
     #[test]
