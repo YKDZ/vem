@@ -305,12 +305,22 @@ export function installPresenceDepartureNavigation(): void {
   const session = useCustomerPresenceSession();
 
   watch(
-    () => session.state.value.personPresent,
-    (personPresent, wasPresent) => {
-      if (personPresent || !wasPresent) return;
+    () => ({
+      personPresent: session.state.value.personPresent,
+      source: session.state.value.source,
+      eventId: session.state.value.eventId,
+    }),
+    (current, previous) => {
+      if (current.personPresent) return;
+      const presenceEnded = previous?.personPresent === true;
+      const explicitVisionDeparture =
+        current.source === "vision" &&
+        current.eventId !== null &&
+        current.eventId !== previous?.eventId;
+      if (!presenceEnded && !explicitVisionDeparture) return;
       void submitMachineNavigationIntent({
         type: "presence.departed",
-        eventId: session.state.value.eventId,
+        eventId: current.eventId,
       });
     },
   );

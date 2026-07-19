@@ -152,9 +152,24 @@ function physicalEvidence(track, artifactFiles) {
     .filter((path) => [".log", ".txt"].includes(extname(path).toLowerCase()))
     .map((path) => bytesRecord(path, "logs", track))
     .filter((record) => record.byteLength > 0);
-  const screenshots = artifactFiles
+  const screenshotCandidates = artifactFiles
     .filter((path) => extname(path).toLowerCase() === ".png" && isPng(path))
     .map((path) => bytesRecord(path, "screenshots", track));
+  const screenshotScore = (record) => {
+    const name = basename(record.path).toLowerCase();
+    if (name.includes("failure")) return 4;
+    if (name.includes("terminal")) return 3;
+    if (name.includes("result")) return 2;
+    if (name.includes("final")) return 1;
+    return 0;
+  };
+  const screenshots = screenshotCandidates
+    .sort(
+      (left, right) =>
+        screenshotScore(right) - screenshotScore(left) ||
+        right.path.localeCompare(left.path),
+    )
+    .slice(0, 1);
   return { supporting, logs, screenshots };
 }
 

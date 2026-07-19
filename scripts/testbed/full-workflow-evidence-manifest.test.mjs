@@ -34,6 +34,10 @@ describe("full workflow evidence manifest", () => {
       join(artifacts, "checkpoint.png"),
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     );
+    writeFileSync(
+      join(artifacts, "failure.png"),
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]),
+    );
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
     });
@@ -42,6 +46,7 @@ describe("full workflow evidence manifest", () => {
     assert.match(manifest.tracks[0].machineRuntimeTrace, /#runtimeTrace$/);
     assert.equal(manifest.tracks[0].logs.length, 1);
     assert.equal(manifest.tracks[0].screenshots.length, 1);
+    assert.match(manifest.tracks[0].screenshots[0], /failure\.png$/);
     assert.deepEqual(validateFullWorkflowEvidenceManifest(manifest), []);
     const tampered = structuredClone(manifest);
     tampered.totals.byteLength = 0;

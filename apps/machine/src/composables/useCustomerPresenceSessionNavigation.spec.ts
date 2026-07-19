@@ -86,4 +86,43 @@ describe("customer presence navigation", () => {
     });
     unmount();
   });
+
+  it("does not lose an explicit Vision departure after a local timeout", async () => {
+    vi.useFakeTimers();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const App = defineComponent({
+      setup() {
+        useCustomerPresenceSession({ presenceStaleMs: 10 });
+        installPresenceDepartureNavigation();
+        return () => null;
+      },
+    });
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount(host);
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "presence.departed",
+      eventId: null,
+    });
+
+    useVisionStore().applyPersonDeparted({
+      source: "top",
+      eventId: "VISION-DEPARTURE-AFTER-TIMEOUT",
+      detectedAt: "2026-06-30T08:00:05.000Z",
+      lastSeenAt: "2026-06-30T08:00:04.000Z",
+      reason: "left_frame",
+    });
+    await nextTick();
+
+    expect(submitMachineNavigationIntentMock).toHaveBeenLastCalledWith({
+      type: "presence.departed",
+      eventId: "VISION-DEPARTURE-AFTER-TIMEOUT",
+    });
+    app.unmount();
+    vi.useRealTimers();
+  });
 });
