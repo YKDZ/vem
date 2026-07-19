@@ -46,6 +46,7 @@ describe("delayed pickup live production track", () => {
     assert.ok(inject > prepare);
     assert.match(source, /stop-scanner-probe/);
     assert.match(source, /await waitForPaymentCodeArm\(handoff, paymentSurface\)/);
+    assert.match(source, /attempt < 3 && !paymentRouteReached/);
     assert.match(source, /\/v1\/sale-start-capability/);
     assert.match(source, /scannerCodeBase64: Buffer\.from\(/);
     assert.match(source, /DEFAULT_SCANNER_CODE = "621234567890123456"/);

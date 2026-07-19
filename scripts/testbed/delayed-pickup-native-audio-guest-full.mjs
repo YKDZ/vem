@@ -779,14 +779,21 @@ async function runDelayedPickupGuestFull(options) {
       if (checkpoint?.screenshot?.ref)
         screenshotRefs.push(checkpoint.screenshot.ref);
     });
-    await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, /^#\/payment/, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
+    let paymentRouteReached = false;
+    for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
+      await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      paymentRouteReached = await waitForRoute(client, /^#\/payment/, {
+        timeoutMs: attempt === 2 ? 30_000 : 2_000,
+        pollMs: 250,
+      })
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!paymentRouteReached)
+      throw new Error("payment submit touch did not reach the payment route");
     const paymentSurface = await readRenderedPaymentSurface(client);
     await waitForPaymentCodeArm(handoff, paymentSurface);
     await controlPlaneRequest(
