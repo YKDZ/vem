@@ -503,9 +503,12 @@ export function validateFastRouteStressSaleEvidence(input) {
       "correlated daemon and platform stock must remain unchanged through inbound F1",
     );
   }
-  if (daemonAfter.saleableStock - daemonMiddle.saleableStock !== -1) {
+  if (
+    daemonAfter.physicalStock - daemonMiddle.physicalStock !== -1 ||
+    daemonAfter.saleableStock !== daemonMiddle.saleableStock
+  ) {
     throw new Error(
-      "correlated daemon slot stock must decrement exactly once after inbound F2",
+      "correlated daemon physical stock must decrement exactly once without double-decrementing saleable stock after inbound F2",
     );
   }
   if (platformAfter.onHandQty - platformMiddle.onHandQty !== -1) {
@@ -991,7 +994,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     slotCode: daemonBefore.slotCode,
     protocol: protocolFrames.map((frame) => frame.parsedOpcode),
     daemonStockDeltaAfterF2:
-      daemonAfter.saleableStock - daemonMiddle.saleableStock,
+      daemonAfter.physicalStock - daemonMiddle.physicalStock,
     platformStockDeltaAfterF2:
       platformAfter.onHandQty - platformMiddle.onHandQty,
     movementId: movement.id,
