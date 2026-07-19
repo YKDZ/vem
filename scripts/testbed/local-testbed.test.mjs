@@ -1146,6 +1146,11 @@ describe("Windows D cache contract", () => {
     const hardwareBinding = guest.indexOf("Initialize-TestbedHardwareBindings", serialStart);
     assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
     assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
+    const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
+    const claimedRestart = guest.indexOf("restart-claimed-runtime", claim);
+    const claimedReady = guest.indexOf("$runtimeReady = Wait-RuntimeReady", claimedRestart);
+    assert.ok(claim >= 0 && claimedRestart > claim && claimedReady > claimedRestart && serialStart > claimedReady);
+    assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
     assert.match(
       guest,
       /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,
