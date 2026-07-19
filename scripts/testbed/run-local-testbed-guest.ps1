@@ -264,14 +264,19 @@ function Initialize-TestbedHardwareBindings {
   foreach ($role in @("lower_controller", "scanner")) {
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     $binding = $null
+    $lastBindingError = $null
     do {
-      $snapshot = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 5
-      $binding = @($snapshot.roles | Where-Object { $_.role -eq $role })[0]
-      if ($binding.ready) { break }
+      try {
+        $snapshot = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 10
+        $binding = @($snapshot.roles | Where-Object { $_.role -eq $role })[0]
+        if ($binding.ready) { break }
+      } catch {
+        $lastBindingError = $_.Exception.Message
+      }
       Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $binding.ready) {
-      throw "testbed $role production auto-binding did not become ready: $($binding.code): $($binding.message)"
+    if ($null -eq $binding -or -not $binding.ready) {
+      throw "testbed $role production auto-binding did not become ready: $($binding.code): $($binding.message); last query error: $lastBindingError"
     }
   }
 }

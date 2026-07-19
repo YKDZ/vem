@@ -1151,6 +1151,10 @@ describe("Windows D cache contract", () => {
     assert.ok(bindingFunction);
     assert.match(bindingFunction, /production auto-binding did not become ready/);
     assert.doesNotMatch(bindingFunction, /\/test|\/confirm|Method Post/);
+    assert.match(
+      bindingFunction,
+      /try \{[\s\S]*Invoke-RestMethod[\s\S]*\} catch \{[\s\S]*lastBindingError/,
+    );
     assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
     assert.match(guest, /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/);
     const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
