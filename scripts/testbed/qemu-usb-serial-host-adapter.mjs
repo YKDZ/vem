@@ -428,7 +428,7 @@ function startScannerBindingProbe(scannerPath, logPath) {
     process.execPath,
     [
       "-e",
-      "const { openSync, writeSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const fd = openSync(path, 'a'); setTimeout(() => writeSync(fd, bytes), 100); setInterval(() => {}, 1000);",
+      "const { openSync, writeSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const fd = openSync(path, 'a'); const emit = () => writeSync(fd, bytes); setTimeout(emit, 100); setInterval(emit, 500);",
       scannerPath,
       SCANNER_BINDING_PROBE_BYTES.toString("base64"),
     ],
