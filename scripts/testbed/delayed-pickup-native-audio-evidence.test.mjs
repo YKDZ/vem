@@ -60,7 +60,7 @@ function runtimeTraceFixture() {
   const trace = [];
   let id = 1;
   [
-    "pickup-outlet-opened",
+    "pickup-waiting",
     "pickup-warning-1",
     "pickup-warning-2",
     "pickup-completed",
@@ -267,7 +267,7 @@ describe("delayed pickup production evidence algorithms", () => {
   });
 
   it("rejects absent request, transition, terminal IDs and empty cue windows", () => {
-    const transitionId = `transaction:${binding.orderNo}:pickup-outlet-opened`;
+    const transitionId = `transaction:${binding.orderNo}:pickup-waiting`;
     const at = "2026-07-18T08:00:00.000Z";
     const evidence = {
       schemaVersion: "machine-production-evidence/v2",

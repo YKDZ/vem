@@ -244,7 +244,8 @@ function inventorySnapshot(report) {
 }
 
 export function validateSerialFulfillmentErrorEvidence(evidence) {
-  const { baseline, final, sale, liveSale, serial, daemon, ui } = evidence;
+  const { baseline, final, sale, liveSale, serial, daemon, ui, boundaries } =
+    evidence;
   const order = rows(final.platform, "orders").find(
     (row) => row.id === sale.orderId,
   );
@@ -280,8 +281,13 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
       "daemon evidence must retain the rendered order and payment binding",
     );
   }
-  const opcodes = (serial.rawFrames ?? []).map((frame) => frame.parsedOpcode);
-  const protocolFrames = (serial.rawFrames ?? []).filter((frame) =>
+  const completeBoundaryFrames = boundaries?.e6?.protocolFrames ?? [];
+  const rawProtocolFrames =
+    completeBoundaryFrames.length > 0
+      ? completeBoundaryFrames
+      : (serial.rawFrames ?? []);
+  const opcodes = rawProtocolFrames.map((frame) => frame.parsedOpcode);
+  const protocolFrames = rawProtocolFrames.filter((frame) =>
     ["VEND", "F0", "E5", "F1", "AF", "F2", "E6"].includes(frame.parsedOpcode),
   );
   if (!opcodes.includes("E6") || opcodes.includes("F2")) {
@@ -595,6 +601,7 @@ export async function runSerialFulfillmentErrorGuest(options) {
       sale,
       liveSale,
       serial: report.evidence.serial,
+      boundaries: report.evidence.boundaries,
       daemon: report.evidence.daemon,
       ui: report.evidence.resultUi,
     });

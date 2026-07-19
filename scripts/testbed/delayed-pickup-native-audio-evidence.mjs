@@ -28,7 +28,7 @@ const CODES = new Map([
 ]);
 const UI_SURFACES = ["ordinary_warning", "urgent_warning", "reset_progress"];
 const TRACE_CUES = [
-  ["outlet_opened", "pickup-outlet-opened"],
+  ["pickup_waiting", "pickup-waiting"],
   ["ordinary_warning", "pickup-warning-1"],
   ["urgent_warning", "pickup-warning-2"],
   ["reset_progress", "pickup-completed"],

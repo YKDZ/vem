@@ -159,6 +159,22 @@ describe("serial fulfillment error guest full", () => {
     );
   });
 
+  it("uses the complete E6 boundary when the rolling raw-frame window dropped early milestones", () => {
+    const fullFrames = evidence().serial.rawFrames;
+    assert.deepEqual(
+      validateSerialFulfillmentErrorEvidence(
+        evidence({
+          boundaries: { e6: { protocolFrames: fullFrames } },
+          serial: {
+            ...evidence().serial,
+            rawFrames: fullFrames.slice(4),
+          },
+        }),
+      ).orderStatus,
+      "refunded",
+    );
+  });
+
   it("rejects E6 frames that violate 15s/25s pickup timeout spacing", () => {
     assert.throws(
       () =>

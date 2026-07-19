@@ -274,7 +274,7 @@ async function waitForTransactionAudioSettled(
   timeoutMs = 45_000,
 ) {
   const requiredSuffixes = [
-    "pickup-outlet-opened",
+    "pickup-waiting",
     "pickup-warning-1",
     "pickup-warning-2",
     "pickup-completed",

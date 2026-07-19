@@ -1347,11 +1347,18 @@ async function collectSerialEvidence(server, input) {
 
 async function stopSerialSession(server, input) {
   const session = requireSession(server, input.sessionId);
-  const sale = session.sale ?? {
-    saleCorrelationId: session.saleCorrelationId,
-    orderId: required(input.orderId, "orderId"),
-    paymentId: required(input.paymentId, "paymentId"),
-    vendingCommandId: required(input.vendingCommandId, "vendingCommandId"),
+  const sale = {
+    saleCorrelationId:
+      session.sale?.saleCorrelationId ?? session.saleCorrelationId,
+    orderId: required(input.orderId ?? session.sale?.orderId, "orderId"),
+    paymentId: required(
+      input.paymentId ?? session.sale?.paymentId,
+      "paymentId",
+    ),
+    vendingCommandId: required(
+      input.vendingCommandId ?? session.sale?.vendingCommandId,
+      "vendingCommandId",
+    ),
   };
   const outPath = join(
     session.dir,

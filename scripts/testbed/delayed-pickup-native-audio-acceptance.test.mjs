@@ -414,7 +414,7 @@ function fixture(root) {
   writeJson(audioStopPath, stopReport);
 
   const traceDefinitions = [
-    ["pickup-outlet-opened", 100],
+    ["pickup-waiting", 100],
     ["pickup-warning-1", 15_100],
     ["pickup-warning-2", 25_100],
     ["pickup-completed", 30_100],
