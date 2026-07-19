@@ -320,10 +320,10 @@
       "priceCents": 4900
     },
     {
-      "slotCode": "A6",
+      "slotCode": "B1",
       "sourceRow": 6,
-      "layerNo": 1,
-      "cellNo": 6,
+      "layerNo": 2,
+      "cellNo": 1,
       "capacity": 8,
       "onHandQty": 3,
       "lowStockThreshold": 1,

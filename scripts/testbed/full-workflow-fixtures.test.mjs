@@ -9,7 +9,7 @@ import {
 describe("full workflow fixture allocation", () => {
   it("allocates an independent seeded slot to each fixed track", () => {
     const allocation = allocateFullWorkflowFixtures(
-      ["A1", "A2", "A3", "A4", "A5", "A6"].map((slotCode, index) => ({
+      ["A1", "A2", "A3", "A4", "A5", "B1"].map((slotCode, index) => ({
         slotCode,
         inventoryId: `inventory-${index + 1}`,
         onHandQty: 3,
@@ -17,7 +17,7 @@ describe("full workflow fixture allocation", () => {
     );
     assert.deepEqual(
       Object.values(allocation).map((fixture) => fixture.slotCode),
-      ["A1", "A2", "A3", "A4", "A5", "A6"],
+      ["A1", "A2", "A3", "A4", "A5", "B1"],
     );
     assert.equal(
       catalogProductSelectorForFixture(allocation, "scanner"),
@@ -34,7 +34,7 @@ describe("full workflow fixture allocation", () => {
     assert.throws(
       () =>
         allocateFullWorkflowFixtures(
-          ["A1", "A2", "A3", "A4", "A5", "A6"].map((slotCode) => ({
+          ["A1", "A2", "A3", "A4", "A5", "B1"].map((slotCode) => ({
             slotCode,
             inventoryId: "shared",
           })),

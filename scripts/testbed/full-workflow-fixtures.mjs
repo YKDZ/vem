@@ -7,6 +7,8 @@ const FIXTURE_TRACK_KEYS = Object.freeze([
   "ipcRecovery",
 ]);
 
+const FIXTURE_SLOT_CODES = Object.freeze(["A1", "A2", "A3", "A4", "A5", "B1"]);
+
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -33,7 +35,7 @@ export function allocateFullWorkflowFixtures(slots) {
   const allocation = Object.fromEntries(
     FIXTURE_TRACK_KEYS.map((key, index) => [
       key,
-      fixtureForSlot(slots, `A${index + 1}`),
+      fixtureForSlot(slots, FIXTURE_SLOT_CODES[index]),
     ]),
   );
   const usedInventoryIds = new Set();
