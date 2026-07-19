@@ -1145,6 +1145,12 @@ describe("Windows D cache contract", () => {
     const serialStart = guest.indexOf("$commissioningSerialSession = Start-TestbedCommissioningSerialSession");
     const hardwareBinding = guest.indexOf("Initialize-TestbedHardwareBindings", serialStart);
     assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
+    const bindingFunction = guest.match(
+      /function Initialize-TestbedHardwareBindings \{[\s\S]*?\n\}/,
+    )?.[0];
+    assert.ok(bindingFunction);
+    assert.match(bindingFunction, /production auto-binding did not become ready/);
+    assert.doesNotMatch(bindingFunction, /\/test|\/confirm|Method Post/);
     assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
     assert.match(guest, /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/);
     const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
@@ -1253,8 +1259,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /installed-ipc-recovery\.json/);
     assert.match(guest, /function Initialize-TestbedHardwareBindings/);
-    assert.match(guest, /\/v1\/hardware-bindings\/\$role\/test/);
-    assert.match(guest, /\/v1\/runtime-configuration\/intents\/hardware-bindings\/\$role\/confirm/);
+    assert.match(guest, /production auto-binding did not become ready/);
     assert.match(guest, /serial-fulfillment-error\.json/);
     assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /scanner-payment-code\.json/);
