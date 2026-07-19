@@ -312,7 +312,7 @@ export function installPresenceDepartureNavigation(): void {
     }),
     (current, previous) => {
       if (current.personPresent) return;
-      const presenceEnded = previous?.personPresent === true;
+      const presenceEnded = previous?.personPresent ?? false;
       const explicitVisionDeparture =
         current.source === "vision" &&
         current.eventId !== null &&
