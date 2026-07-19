@@ -511,99 +511,103 @@ async fn run_device_binding_watch(
             effective_scanner_protocol(&settings, &hardware_model, &topology_identity);
         let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol);
         for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
-            if binding_for_role(&settings, role).is_some() {
-                continue;
-            }
-            let mut ready = Vec::new();
-            for candidate in &observed {
-                let result = platform.test_candidate(role, candidate, &probe).await;
-                if result.success {
-                    ready.push((candidate, result));
-                }
-            }
-            if ready.len() != 1 {
-                continue;
-            }
-            let (candidate, result) = ready.pop().expect("one verified serial candidate");
-            let Ok(identity) =
-                device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
-            else {
-                continue;
-            };
-            let binding = LocalSerialRoleBinding {
-                identity,
-                confirmed_at: crate::state::store::now_iso(),
-                confirmed_by: "daemon_auto_bind".to_string(),
-                test_evidence_code: result.code,
-            };
-            let Ok((_, revision)) = runtime_sources.local_device_binding_snapshot(role).await
-            else {
-                continue;
-            };
-            if runtime_sources
-                .save_local_device_binding_if_revision(role, binding.clone(), &revision)
-                .await
-                .is_ok()
-            {
-                set_binding_for_role(&mut settings, role, Some(binding));
-                binding_changed = true;
-            }
-        }
-        if let Some(binding) = settings.lower_controller_binding.as_ref() {
-            match device_binding::resolve_runtime_port(
-                LocalDeviceRole::LowerController,
-                binding,
-                &observed,
-            ) {
-                Ok(port)
-                    if status_cache.hardware.read().await.port_path.as_deref()
-                        != Some(port.as_str()) =>
-                {
-                    match hardware
-                        .reconfigure_from_serial_port(
-                            Some(port),
-                            Some(data_dir.join("logs").join("serial-protocol.jsonl")),
-                        )
-                        .await
-                    {
-                        Ok(status) => *status_cache.hardware.write().await = status,
-                        Err(error) => set_lower_unavailable(&status_cache, error).await,
+            if binding_for_role(&settings, role).is_none() {
+                let mut ready = Vec::new();
+                for candidate in &observed {
+                    let result = platform.test_candidate(role, candidate, &probe).await;
+                    if result.success {
+                        ready.push((candidate, result));
                     }
                 }
-                Err(error) => {
-                    hardware.deactivate_bound_adapter(format!(
-                        "lower controller stable binding unresolved: {error}"
-                    ))?;
-                    *status_cache.hardware.write().await = hardware.self_check().await;
-                }
-                _ => {}
-            }
-        }
-        if let Some(binding) = settings.scanner_binding.as_ref() {
-            match device_binding::resolve_runtime_port(LocalDeviceRole::Scanner, binding, &observed)
-            {
-                Ok(port)
-                    if status_cache.scanner.read().await.port.as_deref() != Some(port.as_str()) =>
-                {
-                    if let Err(error) = scanner_runtime
-                        .reconfigure(scanner_runtime_config(
-                            &settings,
-                            &hardware_model,
-                            &topology_identity,
-                            Some(port),
-                        ))
-                        .await
+                if ready.len() == 1 {
+                    let (candidate, result) = ready.pop().expect("one verified serial candidate");
+                    if let Ok(identity) =
+                        device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
                     {
-                        *status_cache.scanner.write().await =
-                            scanner_unavailable("SCANNER_RECONFIGURE_RETRY", error);
+                        let binding = LocalSerialRoleBinding {
+                            identity,
+                            confirmed_at: crate::state::store::now_iso(),
+                            confirmed_by: "daemon_auto_bind".to_string(),
+                            test_evidence_code: result.code,
+                        };
+                        if let Ok((_, revision)) =
+                            runtime_sources.local_device_binding_snapshot(role).await
+                        {
+                            if runtime_sources
+                                .save_local_device_binding_if_revision(
+                                    role,
+                                    binding.clone(),
+                                    &revision,
+                                )
+                                .await
+                                .is_ok()
+                            {
+                                set_binding_for_role(&mut settings, role, Some(binding));
+                                binding_changed = true;
+                            }
+                        }
                     }
                 }
-                Err(error) => {
-                    let _ = scanner_runtime.stop().await;
-                    *status_cache.scanner.write().await =
-                        scanner_unavailable("SCANNER_BINDING_UNAVAILABLE", error);
+            }
+
+            match role {
+                LocalDeviceRole::LowerController => {
+                    if let Some(binding) = settings.lower_controller_binding.as_ref() {
+                        match device_binding::resolve_runtime_port(role, binding, &observed) {
+                            Ok(port)
+                                if status_cache.hardware.read().await.port_path.as_deref()
+                                    != Some(port.as_str()) =>
+                            {
+                                match hardware
+                                    .reconfigure_from_serial_port(
+                                        Some(port),
+                                        Some(data_dir.join("logs").join("serial-protocol.jsonl")),
+                                    )
+                                    .await
+                                {
+                                    Ok(status) => *status_cache.hardware.write().await = status,
+                                    Err(error) => set_lower_unavailable(&status_cache, error).await,
+                                }
+                            }
+                            Err(error) => {
+                                hardware.deactivate_bound_adapter(format!(
+                                    "lower controller stable binding unresolved: {error}"
+                                ))?;
+                                *status_cache.hardware.write().await = hardware.self_check().await;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-                _ => {}
+                LocalDeviceRole::Scanner => {
+                    if let Some(binding) = settings.scanner_binding.as_ref() {
+                        match device_binding::resolve_runtime_port(role, binding, &observed) {
+                            Ok(port)
+                                if status_cache.scanner.read().await.port.as_deref()
+                                    != Some(port.as_str()) =>
+                            {
+                                if let Err(error) = scanner_runtime
+                                    .reconfigure(scanner_runtime_config(
+                                        &settings,
+                                        &hardware_model,
+                                        &topology_identity,
+                                        Some(port),
+                                    ))
+                                    .await
+                                {
+                                    *status_cache.scanner.write().await =
+                                        scanner_unavailable("SCANNER_RECONFIGURE_RETRY", error);
+                                }
+                            }
+                            Err(error) => {
+                                let _ = scanner_runtime.stop().await;
+                                *status_cache.scanner.write().await =
+                                    scanner_unavailable("SCANNER_BINDING_UNAVAILABLE", error);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         drop(lease);
