@@ -26,7 +26,7 @@ import {
 } from "./machine-ui-cdp-driver.mjs";
 
 const MODES = new Set(["full"]);
-const DEFAULT_SCANNER_CODE = "6901234567892";
+const DEFAULT_SCANNER_CODE = "621234567890123456";
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CLEANUP_TIMEOUT_MS = 10_000;
 
