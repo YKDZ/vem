@@ -664,6 +664,24 @@ describe("sale-start capability UI flow", () => {
     ).toBe("accepted");
   });
 
+  it("does not replace a submitted catalog startup decision with offline when navigation rejects", async () => {
+    submitMachineNavigationIntentMock.mockImplementationOnce(async (intent) => {
+      if ("target" in intent) routerReplaceMock(intent.target);
+      throw new Error(
+        "catalog component navigation rejected after route write",
+      );
+    });
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    await nextTick();
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledOnce();
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/offline");
+  });
+
   it("does not render raw current-transaction parse errors during boot", async () => {
     getHealthMock.mockResolvedValue(healthSnapshot());
     getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));

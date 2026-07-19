@@ -37,6 +37,7 @@ const bootStageLabels = [
 
 let bootGeneration = 0;
 let recoveredTransaction: TransactionSnapshot | null = null;
+let startupNavigationSubmitted = false;
 
 function ownsBoot(signal: AbortSignal, generation: number): boolean {
   return !signal.aborted && generation === bootGeneration;
@@ -50,7 +51,9 @@ async function runBootCheck(): Promise<void> {
   bootGeneration += 1;
   const generation = bootGeneration;
   recoveredTransaction = null;
+  startupNavigationSubmitted = false;
   await runBoundedBootCheck(async (signal) => {
+    let startupTarget: ReturnType<typeof routeForStartup>;
     try {
       pushStep("连接本机运行服务");
       await daemonClient.initialize();
@@ -111,26 +114,26 @@ async function runBootCheck(): Promise<void> {
       if (!ownsBoot(signal, generation)) return;
 
       pushStep("根据运行状态选择页面");
-      await submitMachineNavigationIntent({
-        type: "startup.navigate",
-        target: routeForStartup({
-          daemonAvailable: true,
-          effectiveRuntimeConfiguration: configuration,
-          restoredTransaction: startupTransaction,
-        }),
+      startupTarget = routeForStartup({
+        daemonAvailable: true,
+        effectiveRuntimeConfiguration: configuration,
+        restoredTransaction: startupTransaction,
       });
     } catch (error) {
       if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
       pushStep("本机运行服务不可用，进入离线页面");
-      await submitMachineNavigationIntent({
-        type: "startup.navigate",
-        target: routeForBootFailure(
-          recoveredTransaction,
-          machineStore.effectiveRuntimeConfiguration,
-        ),
-      });
+      startupTarget = routeForBootFailure(
+        recoveredTransaction,
+        machineStore.effectiveRuntimeConfiguration,
+      );
     }
+    if (!ownsBoot(signal, generation)) return;
+    startupNavigationSubmitted = true;
+    await submitMachineNavigationIntent({
+      type: "startup.navigate",
+      target: startupTarget,
+    });
   }, 10_000);
 }
 
@@ -140,12 +143,14 @@ onMounted(async () => {
     await runBootCheck();
   } catch (error) {
     if (generation !== bootGeneration) return;
+    if (startupNavigationSubmitted) return;
     connectivityStore.markStale(error);
     pushStep(
       recoveredTransaction
         ? "启动检查超时，继续恢复顾客交易"
         : "启动检查超时，进入离线或维护页",
     );
+    startupNavigationSubmitted = true;
     await submitMachineNavigationIntent({
       type: "startup.navigate",
       target: routeForBootFailure(
