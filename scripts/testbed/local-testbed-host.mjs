@@ -275,7 +275,9 @@ $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
 $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
 if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
-& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
+$runnerWorkRoot = 'D:\\runtime-cache\\v1\\actions-work'
+New-Item -ItemType Directory -Force -Path $runnerWorkRoot | Out-Null
+& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work $runnerWorkRoot --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 Set-RunnerAdmissionPhase 'configured-new-runner'
 $registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -1209,6 +1209,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
+    assert.match(guest, /Join-Path \$cacheRoot "actions-work"/);
     assert.match(guest, /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/);
     assert.match(
       guest,
@@ -1234,6 +1235,7 @@ describe("Windows D cache contract", () => {
       /function Clear-DeclaredCaches \{[\s\S]*?\n\}/,
     )?.[0];
     assert.ok(clearFunction);
+    assert.doesNotMatch(clearFunction, /actions-work/);
     assert.equal(
       (clearFunction.match(/Remove-Item -LiteralPath/g) ?? []).length,
       1,

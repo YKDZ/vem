@@ -240,6 +240,19 @@ describe("tracked local testbed host lifecycle", () => {
     assert.deepEqual(operations, ["ssh"]);
   });
 
+  it("keeps the runner worktree on the persistent D cache disk", () => {
+    const plan = buildHostAdmissionPlan({
+      config: config(),
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      runId: "persistent-worktree",
+      runnerRegistrationToken: "registration-token",
+    });
+    const admission = plan.at(-1).input;
+    assert.match(admission, /D:\\runtime-cache\\v1\\actions-work/);
+    assert.match(admission, /--work \$runnerWorkRoot/);
+    assert.doesNotMatch(admission, /--work '_work'/);
+  });
+
   it("requires exact 1080x1920 proof before scheduling the runner", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),

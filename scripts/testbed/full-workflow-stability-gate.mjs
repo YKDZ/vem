@@ -14,6 +14,7 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\turbo",
   "D:\\runtime-cache\\v1\\vision-main",
   "D:\\runtime-cache\\v1\\powershell",
+  "D:\\runtime-cache\\v1\\actions-work",
 ]);
 const REQUIRED_EXECUTION_ORDER = Object.freeze([
   "fast",
