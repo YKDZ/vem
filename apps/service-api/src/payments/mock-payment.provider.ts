@@ -75,6 +75,7 @@ export class MockPaymentProvider implements PaymentProvider {
     const deadline = Date.now() + 30_000;
     try {
       while (Date.now() < deadline) {
+        // oxlint-disable-next-line no-await-in-loop -- bounded gate polling is intentionally sequential
         const current = await this.readCreateGateState(gatePath);
         if (
           current.state === "release" &&
@@ -82,6 +83,7 @@ export class MockPaymentProvider implements PaymentProvider {
         ) {
           return;
         }
+        // oxlint-disable-next-line no-await-in-loop -- delay belongs to the sequential polling loop
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     } finally {

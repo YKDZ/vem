@@ -78,7 +78,7 @@ postgresDescribe("payment-code daemon runtime", { concurrent: false }, () => {
       throw new Error("Service API did not bind a TCP port");
     }
     serviceBaseUrl = `http://127.0.0.1:${address.port}/api`;
-    db = new DrizzleDB(databaseUrl!);
+    db = new DrizzleDB(databaseUrl);
     await db.connect();
     await cleanupBusinessTables(db);
 

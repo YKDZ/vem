@@ -3292,7 +3292,6 @@ describe("MachinesService planogram lifecycle", () => {
 });
 
 describe("MachinesService claim code lifecycle", () => {
-  const maintenancePeerInsertValues = vi.fn();
   let service: MachinesService;
   const claimCodeNow = new Date("2026-06-08T16:30:00.000Z");
 
@@ -3565,7 +3564,6 @@ describe("MachinesService claim code lifecycle", () => {
 
   it("keeps heartbeat-only refreshes on the same provisioning profile revision", async () => {
     const profile = replayProfile();
-    const paymentUpdatedAt = new Date("2026-06-08T16:35:00.000Z");
     const queueSnapshot = (machineUpdatedAt: Date, machineName = "Lobby") => {
       mockDb.select.mockReturnValueOnce({
         from: () => ({

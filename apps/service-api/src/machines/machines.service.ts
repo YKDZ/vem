@@ -79,7 +79,6 @@ import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
-import { allocateTunnelAddress } from "../maintenance-access/maintenance-address-pools";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
