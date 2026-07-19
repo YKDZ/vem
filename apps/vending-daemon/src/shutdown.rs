@@ -514,6 +514,9 @@ async fn run_device_binding_watch(
             if binding_for_role(&settings, role).is_none() {
                 let mut ready = Vec::new();
                 for candidate in &observed {
+                    if candidate_is_claimed_by_other_role(&settings, role, candidate, &observed) {
+                        continue;
+                    }
                     let result = platform.test_candidate(role, candidate, &probe).await;
                     if result.success {
                         ready.push((candidate, result));
@@ -645,6 +648,23 @@ fn binding_for_role(
         LocalDeviceRole::LowerController => settings.lower_controller_binding.as_ref(),
         LocalDeviceRole::Scanner => settings.scanner_binding.as_ref(),
     }
+}
+
+fn candidate_is_claimed_by_other_role(
+    settings: &crate::local_runtime_settings::LocalRuntimeSettings,
+    role: LocalDeviceRole,
+    candidate: &device_binding::ObservedSerialDevice,
+    observed: &[device_binding::ObservedSerialDevice],
+) -> bool {
+    let other_role = match role {
+        LocalDeviceRole::LowerController => LocalDeviceRole::Scanner,
+        LocalDeviceRole::Scanner => LocalDeviceRole::LowerController,
+    };
+    binding_for_role(settings, other_role)
+        .and_then(|binding| {
+            device_binding::resolve_runtime_port(other_role, binding, observed).ok()
+        })
+        .is_some_and(|port| port.eq_ignore_ascii_case(&candidate.current_port))
 }
 
 fn set_binding_for_role(
@@ -1122,8 +1142,8 @@ mod tests {
     };
 
     use super::{
-        cache_daemon_events, refresh_provisioning_profile_once, run_vision_watch,
-        sale_start_capability_input_changed,
+        cache_daemon_events, candidate_is_claimed_by_other_role, refresh_provisioning_profile_once,
+        run_vision_watch, sale_start_capability_input_changed,
     };
 
     #[tokio::test]
@@ -1199,6 +1219,41 @@ mod tests {
                 < watch.find("reconfigure_from_serial_port"),
             "the same leased tick must activate the binding it persisted"
         );
+    }
+
+    #[test]
+    fn auto_binding_does_not_probe_a_port_claimed_by_the_other_role() {
+        let observed = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM4".to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-01".to_string()),
+            container_id: None,
+            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+            serial_number: Some("CTRL-01".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        };
+        let mut settings = crate::local_runtime_settings::LocalRuntimeSettings::default();
+        settings.lower_controller_binding = Some(crate::device_binding::LocalSerialRoleBinding {
+            identity: crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
+                &observed,
+            )
+            .expect("stable identity"),
+            confirmed_at: "2026-07-19T00:00:00Z".to_string(),
+            confirmed_by: "test".to_string(),
+            test_evidence_code: "LOWER_CONTROLLER_HANDSHAKE_READY".to_string(),
+        });
+
+        assert!(candidate_is_claimed_by_other_role(
+            &settings,
+            crate::device_binding::LocalDeviceRole::Scanner,
+            &observed,
+            std::slice::from_ref(&observed),
+        ));
+        assert!(!candidate_is_claimed_by_other_role(
+            &settings,
+            crate::device_binding::LocalDeviceRole::LowerController,
+            &observed,
+            std::slice::from_ref(&observed),
+        ));
     }
 
     #[test]

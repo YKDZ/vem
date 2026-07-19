@@ -266,6 +266,11 @@ impl WindowsSerialDevicePlatform {
                 LocalDeviceRole::Scanner => {
                     use tokio::io::AsyncReadExt as _;
                     use tokio_serial::SerialPortBuilderExt as _;
+                    let _serial_guard = if cfg!(windows) {
+                        Some(vending_core::serial::acquire_serial_operation_guard().await)
+                    } else {
+                        None
+                    };
                     match tokio_serial::new(&candidate.current_port, probe_config.scanner_baud_rate)
                         .open_native_async()
                     {

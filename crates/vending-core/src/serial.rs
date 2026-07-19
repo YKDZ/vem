@@ -33,8 +33,14 @@ const DISPENSE_COMPLETION_GRACE: TokioDuration = TokioDuration::from_secs(10);
 /// 收到 Busy 回复后，下次重发出货指令前需等待的最小间隔
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const COMMAND_ATTEMPTS: usize = 3;
+const SERIAL_OPEN_ATTEMPTS: usize = 6;
+const SERIAL_OPEN_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const SERIAL_PROTOCOL_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 static SERIAL_OPERATION_LOCK: Mutex<()> = Mutex::const_new(());
+
+pub async fn acquire_serial_operation_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    SERIAL_OPERATION_LOCK.lock().await
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +289,31 @@ async fn open_serial_port_path(port_path: &str) -> Result<LowerControllerStream,
         .open_native_async()
         .map(|stream| Box::new(stream) as LowerControllerStream)
         .map_err(|error| format!("open serial port {port_path} failed: {error}"))
+}
+
+fn is_transient_serial_open_denied(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("access is denied")
+        || normalized.contains("permission denied")
+        || normalized.contains("os error 5")
+        || error.contains("拒绝访问")
+}
+
+async fn open_serial_port_path_with_retry(
+    port_path: &str,
+) -> Result<LowerControllerStream, String> {
+    for attempt in 1..=SERIAL_OPEN_ATTEMPTS {
+        match open_serial_port_path(port_path).await {
+            Ok(port) => return Ok(port),
+            Err(error)
+                if attempt < SERIAL_OPEN_ATTEMPTS && is_transient_serial_open_denied(&error) =>
+            {
+                sleep(SERIAL_OPEN_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("serial open retry loop always returns")
 }
 
 fn tcp_debug_transport_address(port_path: &str) -> Option<&str> {
@@ -1577,7 +1608,7 @@ where
 async fn probe_open_lower_controller_port(
     port_path: &str,
 ) -> Result<(LowerFrame, LowerControllerStream), String> {
-    let mut port = open_serial_port_path(port_path).await?;
+    let mut port = open_serial_port_path_with_retry(port_path).await?;
     let frame = probe_lower_controller_stream(&mut port).await?;
     Ok((frame, port))
 }
@@ -2176,6 +2207,19 @@ mod tests {
     use tokio::io::duplex;
 
     use super::*;
+
+    #[test]
+    fn serial_open_retry_recognizes_windows_access_denied_errors() {
+        assert!(is_transient_serial_open_denied(
+            "open serial port COM4 failed: Access is denied. (os error 5)"
+        ));
+        assert!(is_transient_serial_open_denied(
+            "open serial port COM4 failed: 拒绝访问。"
+        ));
+        assert!(!is_transient_serial_open_denied(
+            "open serial port COM4 failed: The system cannot find the file specified."
+        ));
+    }
 
     #[test]
     fn crc8_matches_hardware_document_example() {
