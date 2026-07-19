@@ -26,7 +26,7 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
 describe("installed kiosk sale preflight", () => {
-  it("interrupts and restores the deployed console daemon recorded by handoff", () => {
+  it("starts and waits for the recovered daemon before reading its transaction once", () => {
     const script = buildInstalledKioskGuestOperationScript({
       operation: "daemon_transport_interrupt",
       phase: "recover",
@@ -39,12 +39,59 @@ describe("installed kiosk sale preflight", () => {
         stdoutPath: "C:\\ProgramData\\VEM\\daemon.stdout.log",
         stderrPath: "C:\\ProgramData\\VEM\\daemon.stderr.log",
       },
+      expectedTransaction: {
+        orderNo: "ORDER-BEFORE-INTERRUPT",
+        updatedAt: "2026-07-19T12:00:00.000Z",
+        machineCode: "VEM-TESTBED-LOCAL",
+      },
     });
 
+    const firstTransactionRead = script.indexOf(
+      'Invoke-RestMethod -Uri "$base/v1/transactions/current"',
+    );
+    const recoveryBranch = script.indexOf("if ($phase -eq 'recover')");
+    const serviceStarts =
+      script.match(/Start-Service -Name 'VemVendingDaemon'/g) ?? [];
+    const consoleStarts = script.match(/Start-Process -FilePath/g) ?? [];
+    const healthCheck = script.indexOf(
+      "Invoke-RestMethod -Uri $ready.healthzUrl",
+    );
+
     assert.match(script, /runtimeMode = .*console_process/);
-    assert.match(script, /Start-Process -FilePath/);
     assert.match(script, /--console/);
     assert.match(script, /--data-dir/);
+    assert.ok(recoveryBranch >= 0);
+    assert.ok(firstTransactionRead >= 0);
+    assert.ok(recoveryBranch < firstTransactionRead);
+    assert.ok(
+      script.indexOf("Start-Service -Name 'VemVendingDaemon'") <
+        firstTransactionRead,
+    );
+    assert.ok(script.indexOf("Start-Process -FilePath") < firstTransactionRead);
+    assert.ok(healthCheck < firstTransactionRead);
+    assert.equal(serviceStarts.length, 1);
+    assert.equal(consoleStarts.length, 1);
+    assert.doesNotMatch(script, /elseif \(\$phase -eq 'recover'\)/);
+    assert.match(script, /ORDER-BEFORE-INTERRUPT/);
+    assert.match(
+      script,
+      /\$before = if \(\$phase -eq 'recover'\) \{ \$expectedTransaction \}/,
+    );
+  });
+
+  it("captures the active transaction before interrupting the daemon", () => {
+    const script = buildInstalledKioskGuestOperationScript({
+      operation: "daemon_transport_interrupt",
+      phase: "interrupt",
+    });
+    const transactionRead = script.indexOf(
+      'Invoke-RestMethod -Uri "$base/v1/transactions/current"',
+    );
+    const serviceStop = script.indexOf("Stop-Service -Name 'VemVendingDaemon'");
+
+    assert.ok(transactionRead >= 0);
+    assert.ok(serviceStop > transactionRead);
+    assert.match(script, /transactionBefore/);
   });
 
   it("proves payment-code acceptance cannot use development submit intents", () => {
