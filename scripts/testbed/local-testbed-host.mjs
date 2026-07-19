@@ -316,6 +316,11 @@ $phasePath = 'C:\\ProgramData\\VEM\\testbed\\runner-admission-phase.txt'
 function Set-RunnerAdmissionPhase([string]$Phase) { [System.IO.File]::WriteAllText($phasePath, $Phase, [System.Text.UTF8Encoding]::new($false)) }
 Set-RunnerAdmissionPhase 'started'
 Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
+try {
+  Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+} catch {
+  Write-Warning "Defender real-time monitoring could not be disabled: $($_.Exception.Message)"
+}
 ${updateEnvironment}${registrationSetup}Set-RunnerAdmissionPhase 'identity-ready'
 if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
 $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()

@@ -311,6 +311,10 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(runner.input, /C:\\actions-runner\\.env/);
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
+    assert.match(
+      runner.input,
+      /Set-MpPreference -DisableRealtimeMonitoring \$true/,
+    );
     assert.match(runner.input, /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/);
     assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
     assert.doesNotMatch(runner.input, /A session for this runner already exists/);

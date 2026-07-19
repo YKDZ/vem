@@ -52,6 +52,10 @@ foreach ($service in "DiagTrack", "SysMain", "MapsBroker", "XblGameSave") {
 }
 
 Invoke-Native -FilePath "powercfg.exe" -ArgumentList @("/setactive", "SCHEME_MIN") -Description "power plan configuration"
+
+# Runtime builds create thousands of short-lived pnpm and Cargo files. Keep the
+# reproducible test baseline focused on feedback speed instead of real-time AV.
+Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
 foreach ($feature in "MediaPlayback", "WindowsMediaPlayer") {
   $optional = Get-WindowsOptionalFeature -Online -FeatureName $feature -ErrorAction SilentlyContinue
   if ($null -ne $optional -and $optional.State -ne "Enabled") {

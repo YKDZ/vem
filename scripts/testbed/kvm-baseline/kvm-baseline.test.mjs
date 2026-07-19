@@ -2707,6 +2707,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
       shared,
       /icacls\.exe" -ArgumentList @\(\$administratorsKeys, "\/inheritance:r", "\/grant", "\*S-1-5-32-544:F", "\/grant", "SYSTEM:F"\)/,
     );
+    assert.match(
+      shared,
+      /Set-MpPreference -DisableRealtimeMonitoring \$true/,
+    );
     assert.doesNotMatch(shared, /"Administrators:F"/);
     assert.match(runtime, /Initialize-Disk/);
     assert.match(runtime, /FileSystemLabel/);
