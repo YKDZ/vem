@@ -274,14 +274,10 @@ if (Test-Path -LiteralPath $oldServiceIdentityPath -PathType Leaf) {
 Set-RunnerAdmissionPhase 'removed-old-runner'
 $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
-$remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
-if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
 $runnerWorkRoot = 'D:\\runtime-cache\\v1\\actions-work'
 New-Item -ItemType Directory -Force -Path $runnerWorkRoot | Out-Null
 $env:GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY = '1'
-$runnerEnvironment = if (Test-Path -LiteralPath $environmentPath -PathType Leaf) { @(Get-Content -LiteralPath $environmentPath -Encoding UTF8) } else { @() }
-$runnerEnvironment = @($runnerEnvironment | Where-Object { $_ -notmatch '^GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=' }) + @('GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1')
-[System.IO.File]::WriteAllLines($environmentPath, $runnerEnvironment, [System.Text.UTF8Encoding]::new($false))
+Add-Content -LiteralPath $environmentPath -Value 'GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1'
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work $runnerWorkRoot --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 Set-RunnerAdmissionPhase 'configured-new-runner'

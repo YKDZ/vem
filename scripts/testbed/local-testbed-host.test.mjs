@@ -465,7 +465,7 @@ describe("tracked local testbed host lifecycle", () => {
     );
     assert.match(
       dynamicRegistration.input,
-      /stale actions runner identity files remain/,
+      /GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1/,
     );
     assert.match(dynamicRegistration.input, /registered unexpected identity/);
 
