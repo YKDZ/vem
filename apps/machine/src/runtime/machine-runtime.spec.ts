@@ -215,6 +215,53 @@ describe("Machine runtime coordinator", () => {
     expect(getSaleStartCapabilityMock).toHaveBeenCalledTimes(2);
   });
 
+  it("returns an idle offline machine to catalog after sale capability recovers", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/offline", name: "offline", component: {} },
+      ],
+    });
+    disposeRouteAuthority = installTransactionRouteAuthority(router, pinia);
+    await router.push("/offline");
+    getSaleStartCapabilityMock
+      .mockResolvedValueOnce(
+        saleCapabilitySnapshot({ revision: 1, canStartSale: false }),
+      )
+      .mockResolvedValueOnce(saleCapabilitySnapshot({ revision: 2 }));
+
+    startMachineRuntime(pinia);
+    await vi.waitFor(() => {
+      expect(useSaleCapabilityStore().orderingKey).toBe(
+        "machine-test-daemon:1",
+      );
+    });
+    const subscription = subscribeEventsMock.mock.calls[0];
+    if (!subscription)
+      throw new Error("runtime did not subscribe to daemon events");
+    subscription[0].onEvent({
+      type: "sale_start_capability_changed",
+      eventId: "capability-recovered",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      generation: "machine-test-daemon",
+      revision: 2,
+    });
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe("catalog");
+    });
+    expect(machineRuntimeTrace()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intentType: "readiness.recovered",
+          decision: "accepted",
+          reasonCode: "sale_capability_recovered",
+        }),
+      ]),
+    );
+  });
+
   it("refreshes the active order projection after a live Vision departure", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -323,7 +370,8 @@ describe("Machine runtime coordinator", () => {
     startMachineRuntime(pinia);
 
     const subscription = subscribeEventsMock.mock.calls[0];
-    if (!subscription) throw new Error("runtime did not subscribe to daemon events");
+    if (!subscription)
+      throw new Error("runtime did not subscribe to daemon events");
     subscription[0].onStale();
 
     await vi.waitFor(() => {

@@ -8,6 +8,7 @@ export type MachineRuntimeNavigationTraceRecord = {
     | "customer.inactive"
     | "presence.departed"
     | "readiness.navigate"
+    | "readiness.recovered"
     | "startup.navigate"
     | "operator.navigate"
     | "transaction.dismiss"

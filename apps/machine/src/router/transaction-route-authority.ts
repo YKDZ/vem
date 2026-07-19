@@ -3,14 +3,14 @@ import type { RouteLocationRaw, Router } from "vue-router";
 
 import { watch, type WatchStopHandle } from "vue";
 
-import { useCheckoutStore } from "@/stores/checkout";
-import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import {
   createMachineRuntimeTrace,
   type MachineRuntimeNavigationTraceRecord,
   type MachineRuntimeTrace as SharedMachineRuntimeTrace,
   type MachineRuntimeTraceEntry,
 } from "@/runtime/machine-runtime-trace";
+import { useCheckoutStore } from "@/stores/checkout";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
@@ -26,6 +26,7 @@ export type MachineNavigationIntent =
   | { type: "customer.inactive"; atMs?: number }
   | { type: "presence.departed"; eventId: string | null }
   | { type: "readiness.navigate"; target: RouteLocationRaw }
+  | { type: "readiness.recovered" }
   | { type: "startup.navigate"; target: RouteLocationRaw }
   | { type: "operator.navigate"; target: RouteLocationRaw }
   | { type: "transaction.dismiss"; target: RouteLocationRaw }
@@ -37,7 +38,9 @@ export type MachineRuntimeTraceRecord = MachineRuntimeNavigationTraceRecord;
 export class MachineRuntimeTrace {
   readonly runtimeTrace: SharedMachineRuntimeTrace;
 
-  constructor(runtimeTrace: SharedMachineRuntimeTrace = createMachineRuntimeTrace()) {
+  constructor(
+    runtimeTrace: SharedMachineRuntimeTrace = createMachineRuntimeTrace(),
+  ) {
     this.runtimeTrace = runtimeTrace;
   }
 
@@ -133,7 +136,8 @@ export function createMachineNavigationAuthority(
       decidedRoute,
       finalRoute,
       targetRoute: finalRoute,
-      sourceEventId: intent.type === "presence.departed" ? intent.eventId : null,
+      sourceEventId:
+        intent.type === "presence.departed" ? intent.eventId : null,
       transactionOrderNo: checkoutStore.customerCheckoutView.orderCredential,
       transactionStage: transactionStage(),
       readinessRevision: saleCapabilityStore.orderingKey,
@@ -257,6 +261,21 @@ export function createMachineNavigationAuthority(
       }
       const target = { name: "catalog" };
       recordDecision("accepted", "presence_departure", target);
+      await writeRoute(target);
+      return;
+    }
+
+    if (intent.type === "readiness.recovered") {
+      if (!saleCapabilityStore.canStartSale) {
+        recordDecision("rejected", "sale_capability_not_ready", null);
+        return;
+      }
+      if (routeName(router) !== "offline") {
+        recordDecision("rejected", "route_not_offline", null);
+        return;
+      }
+      const target = { name: "catalog" };
+      recordDecision("accepted", "sale_capability_recovered", target);
       await writeRoute(target);
       return;
     }

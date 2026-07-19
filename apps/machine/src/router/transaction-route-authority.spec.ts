@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
 
 import { useCheckoutStore } from "@/stores/checkout";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 import {
   createMachineNavigationAuthority,
@@ -60,7 +62,10 @@ describe("transaction route authority", () => {
       target: { name: "product-detail", params: { id: "product-1" } },
     });
     await authority.submit({ type: "customer.touch", atMs: 1_000 });
-    await authority.submit({ type: "presence.departed", eventId: "departure-event-1" });
+    await authority.submit({
+      type: "presence.departed",
+      eventId: "departure-event-1",
+    });
     await authority.submit({
       type: "readiness.navigate",
       target: { name: "catalog" },
@@ -105,7 +110,10 @@ describe("transaction route authority", () => {
 
     window.dispatchEvent(new Event("pointerdown"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await authority.submit({ type: "presence.departed", eventId: "departure-event-2" });
+    await authority.submit({
+      type: "presence.departed",
+      eventId: "departure-event-2",
+    });
 
     expect(router.currentRoute.value.name).toBe("product-detail");
     expect(authority.trace.snapshot()).toEqual(
@@ -151,7 +159,10 @@ describe("transaction route authority", () => {
     useCheckoutStore(pinia).applyTransaction(activePaymentTransaction());
     await router.push("/payment");
 
-    await authority.submit({ type: "presence.departed", eventId: "departure-event-3" });
+    await authority.submit({
+      type: "presence.departed",
+      eventId: "departure-event-3",
+    });
 
     expect(router.currentRoute.value.name).toBe("payment");
     expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
@@ -258,6 +269,31 @@ describe("transaction route authority", () => {
     await authority.submit({ type: "customer.inactive" });
     expect(router.currentRoute.value.name).toBe("maintenance");
 
+    authority.dispose();
+  });
+
+  it("does not let readiness recovery leave an operator route", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/maintenance", name: "maintenance", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useSaleCapabilityStore(pinia).acceptSnapshot(saleCapabilitySnapshot());
+    await router.push("/maintenance");
+
+    await authority.submit({ type: "readiness.recovered" });
+
+    expect(router.currentRoute.value.name).toBe("maintenance");
+    expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
+      intentType: "readiness.recovered",
+      decision: "rejected",
+      reasonCode: "route_not_offline",
+    });
     authority.dispose();
   });
 

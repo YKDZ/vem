@@ -190,16 +190,18 @@ export const useSaleCapabilityStore = defineStore("sale-capability", {
         this.updating = this.refreshesInFlight > 0;
       }
     },
-    invalidate(event: SaleStartCapabilityChangedEvent): void {
+    invalidate(
+      event: SaleStartCapabilityChangedEvent,
+    ): Promise<SaleCapabilityRefreshOutcome> | null {
       const current = this.accepted;
       if (
         (current?.generation === event.generation &&
           event.revision <= current.revision) ||
         this.retiredGenerations.includes(event.generation)
       ) {
-        return;
+        return null;
       }
-      void this.refresh();
+      return this.refresh();
     },
     markStale(error: unknown): void {
       this.stale = true;
