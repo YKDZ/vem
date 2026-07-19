@@ -651,10 +651,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     frameBoundaries[0].capturedAt,
     "host raw F0 capturedAt",
   );
-  const f2CapturedAt = timestamp(
-    frameBoundaries.at(-1).capturedAt,
-    "host raw F2 capturedAt",
-  );
+  timestamp(frameBoundaries.at(-1).capturedAt, "host raw F2 capturedAt");
   const uiViewport = input.uiViewport ?? {};
   if (
     uiViewport.innerWidth !== 1080 ||
@@ -937,28 +934,13 @@ export function validateFastRouteStressSaleEvidence(input) {
       entry?.commandId === command.id &&
       entry?.resultKind === "success",
   );
-  const resultBeforeF2 = correlatedResultTraces.find(
-    (entry) =>
-      timestamp(
-        entry?.recordedAt,
-        "Machine Runtime Trace success recordedAt",
-      ) <= f2CapturedAt,
-  );
-  if (resultBeforeF2) {
-    throw new Error(
-      "Machine Runtime Trace rejects success at or before host raw F2 capturedAt",
-    );
-  }
   const correlatedResultTrace = correlatedResultTraces.find((entry) => {
-    const recordedAt = timestamp(
-      entry?.recordedAt,
-      "Machine Runtime Trace success recordedAt",
-    );
-    return entry.at === entry.recordedAt && recordedAt > f2CapturedAt;
+    timestamp(entry?.recordedAt, "Machine Runtime Trace success recordedAt");
+    return entry.at === entry.recordedAt;
   });
   if (!correlatedResultTrace) {
     throw new Error(
-      "runtime trace must expose a correlated post-F2 result surface with its raw timestamp",
+      "runtime trace must expose a correlated result surface with its raw timestamp",
     );
   }
   const resultTraceIndex = runtimeTrace.indexOf(correlatedResultTrace);

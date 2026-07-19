@@ -690,21 +690,18 @@ describe("fast route stress sale tracer", () => {
       );
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
-      /runtime trace must expose a correlated post-F2 result surface/,
+      /runtime trace must expose a correlated result surface/,
     );
   });
 
-  it("fails closed when Machine Runtime Trace reports success before host raw F2", () => {
+  it("does not compare unsynchronised Windows and host raw-journal clocks", () => {
     const evidence = validEvidence();
     const resultSurface = evidence.machineRuntimeTrace.entries.find(
       (entry) => entry.type === "transaction_surface",
     );
     resultSurface.at = "2026-07-18T04:00:02.000Z";
     resultSurface.recordedAt = "2026-07-18T04:00:02.000Z";
-    assert.throws(
-      () => validateFastRouteStressSaleEvidence(evidence),
-      /rejects success at or before host raw F2 capturedAt/,
-    );
+    assert.doesNotThrow(() => validateFastRouteStressSaleEvidence(evidence));
   });
 
   it("fails closed when F0/F1/F2 do not retain host raw journal provenance", () => {
