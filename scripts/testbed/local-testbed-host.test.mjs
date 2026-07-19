@@ -197,6 +197,7 @@ describe("tracked local testbed host lifecycle", () => {
     assert.doesNotMatch(xml, /<name>win10-runtime-baseline<\/name>/);
     assert.doesNotMatch(xml, /<uuid>/);
     assert.match(xml, /<name>win10-runtime-testbed<\/name>/);
+    assert.match(xml, /<seclabel type="none"\/>/);
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));
     assert.doesNotMatch(xml, /filterref/);

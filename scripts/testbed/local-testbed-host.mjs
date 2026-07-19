@@ -483,9 +483,10 @@ export function renderReconstructedDomainXml({
       "published domain XML must reference baseline C and persistent D exactly once",
     );
   }
-  let rendered = templateXml.replace(
+  let rendered = templateXml.replace(/\s*<seclabel\b[^>]*\/?\s*>/g, "");
+  rendered = rendered.replace(
     domainNames[0][0],
-    `<name>${xml(config.domainName)}</name>`,
+    `<name>${xml(config.domainName)}</name>\n  <seclabel type="none"/>`,
   );
   rendered = rendered.replace(/\s*<uuid>[^<]+<\/uuid>/, "");
   rendered = rendered.replace(
