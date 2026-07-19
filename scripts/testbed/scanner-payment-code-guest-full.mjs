@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import { buildInstalledKioskSaleScenarioSteps } from "./installed-kiosk-sale-acceptance.mjs";
 import {
@@ -1015,6 +1016,7 @@ export async function runScannerPaymentCodeGuest(options) {
 
     stage = "start-session";
     sessionStart = await startSession(guestInput, runId, machineCode);
+    await waitForDaemonReadyRefresh(handoff);
     const hardwareBindings = await waitForHardwareBindings(
       handoff,
       sessionStart,

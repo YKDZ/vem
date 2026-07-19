@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   buildInstalledKioskGuestOperationScript,
@@ -24,6 +25,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
 
 const SCHEMA_VERSION = "vem-installed-ipc-recovery-guest-full/v1";
 const LOCAL_REQUEST_TIMEOUT_MS = 30_000;
@@ -337,6 +339,12 @@ export async function runInstalledIpcRecoveryGuest(options) {
           "hostControlPlane.runtimeBaseIdentity",
         ),
       },
+    );
+    await waitForDaemonReadyRefresh(handoff);
+    await waitForHardwareBindings(handoff, session);
+    await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${session.sessionId}/stop-scanner-probe`,
     );
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-ipc-recovery");

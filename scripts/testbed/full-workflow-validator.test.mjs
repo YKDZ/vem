@@ -311,14 +311,14 @@ describe("full workflow aggregate validator", () => {
         { key: "fast", status: "passed", exitCode: 0, reportOk: true },
         { key: "scanner", status: "passed", exitCode: 0, reportOk: true },
         { key: "visionTryOn", status: "passed", exitCode: 0, reportOk: true },
+        { key: "delayedPickup", status: "passed", exitCode: 0, reportOk: true },
+        { key: "ipcRecovery", status: "passed", exitCode: 0, reportOk: true },
         {
           key: "fulfillmentFailure",
           status: "passed",
           exitCode: 0,
           reportOk: true,
         },
-        { key: "delayedPickup", status: "passed", exitCode: 0, reportOk: true },
-        { key: "ipcRecovery", status: "passed", exitCode: 0, reportOk: true },
       ],
     });
     assert.equal(report.ok, true);

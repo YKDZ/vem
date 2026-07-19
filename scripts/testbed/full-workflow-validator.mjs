@@ -430,9 +430,9 @@ export function buildFullWorkflowAggregate({
           "fast",
           "scanner",
           "visionTryOn",
-          "fulfillmentFailure",
           "delayedPickup",
           "ipcRecovery",
+          "fulfillmentFailure",
         ]
       : ["fast"];
   const executionFailures = requiredChildren

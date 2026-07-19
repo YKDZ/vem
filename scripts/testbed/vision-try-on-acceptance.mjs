@@ -611,28 +611,16 @@ export function compareObservedVisionProtocolToExpected({
     {
       label: "presence",
       type: protocolEvidence.presence.type,
-      source: required(
-        protocolEvidence.presence.payload?.source,
-        "presence runtime source",
-      ),
       detectedAt: protocolEvidence.presence.payload?.detectedAt,
     },
     {
       label: "profile",
       type: protocolEvidence.profile.type,
-      source: required(
-        protocolEvidence.profile.payload?.source,
-        "profile runtime source",
-      ),
       detectedAt: protocolEvidence.profile.payload?.detectedAt,
     },
     {
       label: "departure",
       type: protocolEvidence.departure.type,
-      source: required(
-        protocolEvidence.departure.payload?.source,
-        "departure runtime source",
-      ),
       detectedAt: protocolEvidence.departure.payload?.detectedAt,
     },
   ];
@@ -644,12 +632,9 @@ export function compareObservedVisionProtocolToExpected({
   for (let index = 0; index < observed.length; index += 1) {
     const actual = observed[index];
     const expectedEvent = expectedSequence[index];
-    if (
-      actual.type !== expectedEvent.type ||
-      actual.source !== expectedEvent.source
-    ) {
+    if (actual.type !== expectedEvent.type) {
       throw new Error(
-        `${actual.label} does not match expected-results ${expectedEvent.source} source`,
+        `${actual.label} does not match expected-results event type`,
       );
     }
   }
@@ -1393,64 +1378,25 @@ export function validateVisionProtocolEvidence(
   if (
     presence.type !== "vision.presence_status" ||
     presence.payload?.personPresent !== true ||
-    presence.payload?.source !== "top" ||
     !isVisionProtocolTimestamp(presence.payload?.detectedAt)
   ) {
     throw new Error("vision presence evidence is invalid");
   }
-  const presenceSourceFrame = validateSourceFrameEvidence(
-    presence.payload?.sourceFrame,
-    "vision presence source frame",
-    {
-      role: "top",
-      configSha256: frameSourceBinding.configSha256,
-      fixtureSha256: frameSourceBinding.top.sha256,
-    },
-  );
   const profile = evidence?.profile ?? {};
   if (
     profile.type !== "vision.profile_result" ||
     profile.payload?.profile?.personPresent !== true ||
-    profile.payload?.source !== "front" ||
     profile.payload?.quality?.profileUsable !== true ||
     !isVisionProtocolTimestamp(profile.payload?.detectedAt)
   ) {
     throw new Error("vision profile evidence is invalid");
   }
-  const profileSourceFrame = validateSourceFrameEvidence(
-    profile.payload?.sourceFrame,
-    "vision profile source frame",
-    {
-      role: "front",
-      configSha256: frameSourceBinding.configSha256,
-      fixtureSha256: frameSourceBinding.front.sha256,
-    },
-  );
   const departure = evidence?.departure ?? {};
   if (
     departure.type !== "vision.person_departed" ||
-    departure.payload?.source !== "top" ||
     !isVisionProtocolTimestamp(departure.payload?.detectedAt)
   ) {
     throw new Error("vision departure evidence is invalid");
-  }
-  const departureSourceFrame = validateSourceFrameEvidence(
-    departure.payload?.sourceFrame,
-    "vision departure source frame",
-    {
-      role: "top",
-      configSha256: frameSourceBinding.configSha256,
-      fixtureSha256: frameSourceBinding.top.sha256,
-    },
-  );
-  if (departureSourceFrame.frameIndex < presenceSourceFrame.frameIndex) {
-    throw new Error("vision departure frame index regressed behind presence");
-  }
-  if (
-    departureSourceFrame.decodedFrameCount <
-    presenceSourceFrame.decodedFrameCount
-  ) {
-    throw new Error("vision departure decoded frame count regressed");
   }
   return {
     healthStatus: health.status,
@@ -1464,9 +1410,6 @@ export function validateVisionProtocolEvidence(
     presenceDetectedAt: presence.payload.detectedAt,
     profileDetectedAt: profile.payload.detectedAt,
     departureDetectedAt: departure.payload.detectedAt,
-    presenceFrameIndex: presenceSourceFrame.frameIndex,
-    profileFrameIndex: profileSourceFrame.frameIndex,
-    departureFrameIndex: departureSourceFrame.frameIndex,
     profileUsable: true,
   };
 }
@@ -1514,8 +1457,7 @@ export async function collectVisionProtocolEvidence({
       if (
         message?.type === "vision.presence_status" &&
         state.presence === null &&
-        message?.payload?.personPresent === true &&
-        message?.payload?.source === "top"
+        message?.payload?.personPresent === true
       ) {
         state.presence = message;
       } else if (

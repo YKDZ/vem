@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   activateVisibleSelector,
@@ -460,6 +461,7 @@ export async function runSerialFulfillmentErrorGuest(options) {
         "hostControlPlane.runtimeBaseIdentity",
       ),
     });
+    await waitForDaemonReadyRefresh(handoff);
     stage = "await-daemon-binding-and-capability";
     report.evidence.hardwareBindings = await waitForHardwareBindings(
       handoff,

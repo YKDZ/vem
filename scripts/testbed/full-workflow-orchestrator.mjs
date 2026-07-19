@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { buildFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
 import { buildFullWorkflowAggregate } from "./full-workflow-validator.mjs";
 import {
@@ -557,8 +558,9 @@ function terminalOperations(guestInput, handoff) {
     }
   };
   return {
-    captureTerminal: (track, context) =>
-      captureTrackTerminalFacts({
+    captureTerminal: async (track, context) => {
+      await waitForDaemonReadyRefresh(handoff);
+      return captureTrackTerminalFacts({
         track,
         context,
         readRoute: () =>
@@ -569,7 +571,8 @@ function terminalOperations(guestInput, handoff) {
             runId: guestInput.runId,
             machineCode: guestInput.machineCode,
           }).then((response) => response.report),
-      }),
+      });
+    },
     recover: (track, context) =>
       recoverTrackHandoff({
         track,

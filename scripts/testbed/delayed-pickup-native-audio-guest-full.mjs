@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import {
   delayedPickupIssue16ControlPlaneContract,
   startDelayedPickupLiveProductionTrack,
@@ -655,6 +656,7 @@ async function runDelayedPickupGuestFull(options) {
         serialScenario: "delayed-pickup",
       },
     );
+    await waitForDaemonReadyRefresh(handoff);
     await prepareScannerForSale(handoff, guestInput, sessionStart);
     let baselinePlatform = null;
     delayedTrack = await startDelayedPickupLiveProductionTrack(

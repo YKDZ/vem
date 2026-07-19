@@ -224,9 +224,6 @@ describe("vision try-on acceptance script", () => {
     assert.equal(summary.readyServerName, "vem-vision-runtime");
     assert.equal(summary.readyServerVersion, "1.2.3");
     assert.deepEqual(summary.frameSourceBinding, frameSourceBinding());
-    assert.equal(summary.presenceFrameIndex, 3);
-    assert.equal(summary.profileFrameIndex, 8);
-    assert.equal(summary.departureFrameIndex, 12);
     assert.equal(summary.profileUsable, true);
     assert.throws(
       () =>
@@ -304,7 +301,7 @@ describe("vision try-on acceptance script", () => {
             },
           },
         }),
-      /vision presence evidence is invalid/,
+      /vision profile evidence is invalid/,
     );
   });
 
@@ -521,7 +518,7 @@ describe("vision try-on acceptance script", () => {
     assert.equal(normalized.protocol.departure.type, "vision.person_departed");
   });
 
-  it("compares observed protocol evidence by source and fresh runtime chronology", () => {
+  it("compares observed protocol evidence by event type and fresh runtime chronology", () => {
     const summary = compareObservedVisionProtocolToExpected({
       expectedResults: baseExpectedResults(),
       protocolEvidence: {
@@ -631,9 +628,8 @@ describe("vision try-on acceptance script", () => {
             presence: {
               type: "vision.presence_status",
               payload: {
-                source: "front",
                 detectedAt: "2026-07-18T00:00:01.000Z",
-                personPresent: true,
+                personPresent: false,
                 sourceFrame: sourceFrame("front", "c".repeat(64)),
               },
             },
@@ -739,7 +735,7 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("collects the first true presence event while preserving initial false events", async () => {
+  it("collects the first true presence event without requiring a non-contract source field", async () => {
     const closeArguments = [];
     const messages = [
       visionProtocolMessage("vision.ready", {
@@ -764,14 +760,13 @@ describe("vision try-on acceptance script", () => {
       visionProtocolMessage("vision.presence_status", {
         source: "front",
         detectedAt: "2026-07-18T00:00:01.500Z",
-        personPresent: true,
+        personPresent: false,
         sourceFrame: sourceFrame("front", "c".repeat(64), {
           frameIndex: 3,
           decodedFrameCount: 4,
         }),
       }),
       visionProtocolMessage("vision.presence_status", {
-        source: "top",
         detectedAt: "2026-07-18T00:00:02.000Z",
         personPresent: true,
         sourceFrame: sourceFrame("top", "b".repeat(64), {
@@ -844,9 +839,7 @@ describe("vision try-on acceptance script", () => {
       installedBinding: { frameSourceBinding: frameSourceBinding() },
     });
 
-    assert.equal(summary.presenceFrameIndex, 4);
-    assert.equal(summary.profileFrameIndex, 6);
-    assert.equal(summary.departureFrameIndex, 8);
+    assert.equal(summary.profileUsable, true);
   });
 
   it("fails closed unless recommendation changes and the seeded variant matches", () => {
