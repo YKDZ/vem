@@ -298,6 +298,36 @@
       "onHandQty": 3,
       "lowStockThreshold": 1,
       "priceCents": 5900
+    },
+    {
+      "slotCode": "A4",
+      "sourceRow": 4,
+      "layerNo": 1,
+      "cellNo": 4,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 4900
+    },
+    {
+      "slotCode": "A5",
+      "sourceRow": 5,
+      "layerNo": 1,
+      "cellNo": 5,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 4900
+    },
+    {
+      "slotCode": "A6",
+      "sourceRow": 6,
+      "layerNo": 1,
+      "cellNo": 6,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 4900
     }
   ]
 }

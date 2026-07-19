@@ -7,14 +7,17 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_INVENTORY = [
   ...[
     "delayed-pickup-native-audio-guest-full.mjs",
+    "full-workflow-fixtures.mjs",
     "full-workflow-evidence-manifest.mjs",
     "full-workflow-orchestrator.mjs",
     "full-workflow-stability-gate.mjs",
     "full-workflow-validator.mjs",
     "installed-ipc-recovery-guest-full.mjs",
+    "installed-system-touch-keyboard.mjs",
     "mock-payment-create-gate.mjs",
     "scanner-payment-code-guest-full.mjs",
     "serial-fulfillment-error-guest-full.mjs",
+    "track-handoff-recovery.mjs",
     "vision-try-on-acceptance.mjs",
   ].map((path) => ({
     path: `scripts/testbed/${path}`,
@@ -25,10 +28,14 @@ const DEFAULT_INVENTORY = [
   ...[
     "ensure-testbed-pwsh.test.mjs",
     "full-workflow-evidence-manifest.test.mjs",
+    "full-workflow-fixtures.test.mjs",
+    "full-workflow-orchestrator.test.mjs",
     "full-workflow-validator.test.mjs",
+    "installed-system-touch-keyboard.test.mjs",
     "run-full-vision-try-on-track.test.mjs",
     "scanner-payment-code-guest-full.test.mjs",
     "serial-fulfillment-error-guest-full.test.mjs",
+    "track-handoff-recovery.test.mjs",
     "vision-try-on-acceptance.test.mjs",
   ].map((path) => ({
     path: `scripts/testbed/${path}`,
@@ -771,18 +778,6 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/testbed/kvm-baseline/verify-vm-runtime.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/windows/accept-protected-touch-keyboard.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/windows/protected-touch-keyboard-acceptance.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],

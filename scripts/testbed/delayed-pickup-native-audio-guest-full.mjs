@@ -14,6 +14,7 @@ import {
   collectDelayedPickupProductionEvidence,
   verifyDelayedPickupNativeAudioProductionEvidence,
 } from "./delayed-pickup-native-audio-acceptance.mjs";
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -81,6 +82,11 @@ function option(args, name) {
   return value;
 }
 
+function optionalOption(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : required(args[index + 1], `--${name}`);
+}
+
 function parseArgs(args) {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be full");
@@ -92,6 +98,7 @@ function parseArgs(args) {
     ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: optionalOption(args, "fixture-key"),
   };
 }
 
@@ -771,7 +778,15 @@ async function runDelayedPickupGuestFull(options) {
 
     for (const step of [
       ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],
-      ['[data-test="catalog-product"]', /^#\/products\//],
+      [
+        options.fixtureKey
+          ? catalogProductSelectorForFixture(
+              guestInput.fixtureAllocation,
+              options.fixtureKey,
+            )
+          : '[data-test="catalog-product"]',
+        /^#\/products\//,
+      ],
       ['[data-test="product-buy"]', "#/checkout"],
       [
         '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]:not(:disabled)',

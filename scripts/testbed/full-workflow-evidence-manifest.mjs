@@ -15,6 +15,16 @@ const REQUIRED_KINDS = Object.freeze([
   "logs",
   "screenshots",
 ]);
+const DEFAULT_EVIDENCE_POLICY = Object.freeze({
+  passed: Object.freeze({ trace: true, logs: true, screenshot: true }),
+  failed: Object.freeze({
+    primaryReason: true,
+    diagnostic: true,
+    trace: false,
+    logs: false,
+    screenshot: false,
+  }),
+});
 const FORBIDDEN_EXTENSIONS = new Set([
   ".avi",
   ".bin",
@@ -78,6 +88,25 @@ function meaningfulLog(value) {
     !value.error &&
     Object.keys(value).length > 0
   );
+}
+
+function primaryFailureReason(report) {
+  const candidates = [
+    report?.errors?.primary,
+    report?.failure?.primaryReason,
+    report?.failure?.message,
+    report?.error,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+    if (value && typeof value === "object") {
+      const name = typeof value.name === "string" ? value.name.trim() : "";
+      const message = typeof value.message === "string" ? value.message.trim() : "";
+      if (name && message) return `${name}: ${message}`;
+      if (message || name) return message || name;
+    }
+  }
+  return null;
 }
 
 function isPng(path) {
@@ -209,6 +238,11 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       failures.push(`required report artifact is invalid for ${track}`);
       continue;
     }
+    const businessStatus =
+      input?.result?.businessStatus === "failed" ? "failed" : "passed";
+    const evidencePolicy =
+      input?.evidence?.[businessStatus] ??
+      DEFAULT_EVIDENCE_POLICY[businessStatus];
     const artifactFiles = filesUnder(artifactRoot);
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
@@ -236,18 +270,32 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     if (embeddedLog) sections.push(embeddedLog);
     const evidence = {
       key: track,
+      businessStatus,
+      evidencePolicy,
       report: reportRecord.path,
       machineRuntimeTrace: trace?.path ?? null,
       logs: logs.map((file) => file.path),
       screenshots: physical.screenshots.map((file) => file.path),
+      primaryReason: primaryFailureReason(report),
+      diagnostics: [
+        ...physical.supporting.map((file) => file.path),
+        ...logs.map((file) => file.path),
+      ],
     };
     trackEvidence.push(evidence);
-    if (!trace)
-      failures.push(`actual Machine Runtime Trace is absent for ${track}`);
-    if (logs.length === 0)
-      failures.push(`actual log evidence is absent for ${track}`);
-    if (physical.screenshots.length === 0)
-      failures.push(`actual PNG screenshot evidence is absent for ${track}`);
+    if (businessStatus === "passed") {
+      if (evidencePolicy.trace && !trace)
+        failures.push(`actual Machine Runtime Trace is absent for ${track}`);
+      if (evidencePolicy.logs && logs.length === 0)
+        failures.push(`actual log evidence is absent for ${track}`);
+      if (evidencePolicy.screenshot && physical.screenshots.length === 0)
+        failures.push(`actual PNG screenshot evidence is absent for ${track}`);
+    } else {
+      if (evidencePolicy.primaryReason && !evidence.primaryReason)
+        failures.push(`primary failure reason is absent for ${track}`);
+      if (evidencePolicy.diagnostic && evidence.diagnostics.length === 0)
+        failures.push(`diagnostic evidence is absent for ${track}`);
+    }
   }
   for (const file of [...files, ...sections]) {
     if (file.byteLength > perFileLimit(file)) {
@@ -298,13 +346,28 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
     failures.push("per-track evidence manifest is missing");
   } else {
     for (const track of manifest.tracks) {
+      const failedBusinessTrack = track?.businessStatus === "failed";
+      if (
+        track?.businessStatus != null &&
+        !["passed", "failed"].includes(track.businessStatus)
+      ) {
+        failures.push(
+          `per-track business status is invalid for ${track?.key ?? "unknown"}`,
+        );
+        continue;
+      }
       if (
         typeof track?.key !== "string" ||
-        typeof track?.machineRuntimeTrace !== "string" ||
-        !Array.isArray(track?.logs) ||
-        track.logs.length === 0 ||
-        !Array.isArray(track?.screenshots) ||
-        track.screenshots.length === 0
+        (failedBusinessTrack
+          ? typeof track?.primaryReason !== "string" ||
+            track.primaryReason.trim() === "" ||
+            !Array.isArray(track?.diagnostics) ||
+            track.diagnostics.length === 0
+          : typeof track?.machineRuntimeTrace !== "string" ||
+            !Array.isArray(track?.logs) ||
+            track.logs.length === 0 ||
+            !Array.isArray(track?.screenshots) ||
+            track.screenshots.length === 0)
       ) {
         failures.push(
           `per-track evidence is incomplete for ${track?.key ?? "unknown"}`,
@@ -321,12 +384,23 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
         );
       if (!owns(track.report, "reports"))
         failures.push(`report evidence is not owned by ${track.key}`);
-      if (!owns(track.machineRuntimeTrace, "machineRuntimeTrace"))
-        failures.push(`Machine Runtime Trace is not owned by ${track.key}`);
-      if (track.logs.some((path) => !owns(path, "logs")))
-        failures.push(`log evidence is not owned by ${track.key}`);
-      if (track.screenshots.some((path) => !owns(path, "screenshots")))
-        failures.push(`screenshot evidence is not owned by ${track.key}`);
+      if (!failedBusinessTrack) {
+        if (!owns(track.machineRuntimeTrace, "machineRuntimeTrace"))
+          failures.push(`Machine Runtime Trace is not owned by ${track.key}`);
+        if (track.logs.some((path) => !owns(path, "logs")))
+          failures.push(`log evidence is not owned by ${track.key}`);
+        if (track.screenshots.some((path) => !owns(path, "screenshots")))
+          failures.push(`screenshot evidence is not owned by ${track.key}`);
+      } else if (
+        track.diagnostics.some(
+          (path) =>
+            !records.some(
+              (record) => record?.track === track.key && record?.path === path,
+            ),
+        )
+      ) {
+        failures.push(`diagnostic evidence is not owned by ${track.key}`);
+      }
     }
   }
   if (!Array.isArray(manifest?.files)) {

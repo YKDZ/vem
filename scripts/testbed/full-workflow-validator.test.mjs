@@ -331,6 +331,8 @@ describe("full workflow aggregate validator", () => {
     assert.equal(report.tracks.tryOn.status, "passed");
     assert.equal(report.tracks.evidence.status, "passed");
     assert.equal(report.tracks.error.status, "passed");
+    assert.equal(report.businessOutcome.ok, true);
+    assert.equal(report.evidenceCompleteness.ok, true);
   });
 
   it("marks full aggregate failed when the scanner invalid-scan evidence is incomplete", () => {
@@ -371,6 +373,8 @@ describe("full workflow aggregate validator", () => {
     });
     assert.equal(report.ok, false);
     assert.equal(report.tracks.error.status, "failed");
+    assert.equal(report.businessOutcome.ok, false);
+    assert.equal(report.evidenceCompleteness.ok, true);
   });
 
   it("returns an aggregate failure when a required child report is missing", () => {
@@ -565,10 +569,9 @@ describe("full workflow stability gate", () => {
       ...aggregate,
       identity: {
         ...sampleIdentity("a"),
-        observedRetainedCaches: sampleIdentity("a").observedRetainedCaches.slice(
-          0,
-          -1,
-        ),
+        observedRetainedCaches: sampleIdentity(
+          "a",
+        ).observedRetainedCaches.slice(0, -1),
       },
     });
     writeJson(passB, {

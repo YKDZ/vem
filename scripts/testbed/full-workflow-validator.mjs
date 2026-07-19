@@ -598,10 +598,28 @@ export function buildFullWorkflowAggregate({
       reason: track.reason,
       reportPath: track.reportPath,
     }));
+  const businessFailures = Object.values(tracks)
+    .filter(
+      (track) =>
+        !["evidence", "error"].includes(track.key) && track.status === "failed",
+    )
+    .map((track) => ({
+      track: track.key,
+      reason: track.reason,
+      reportPath: track.reportPath,
+    }));
+  const evidenceCompleteness =
+    normalizedMode === "full"
+      ? {
+          ok: evidence.status === "passed",
+          status: evidence.status,
+          reportPath: evidence.reportPath,
+        }
+      : { ok: true, status: "not-required", reportPath: null };
   return {
     schemaVersion: "vem-local-testbed-full-workflow/v3",
     mode: normalizedMode,
-    ok: failures.length === 0,
+    ok: businessFailures.length === 0 && evidenceCompleteness.ok,
     execution: {
       checkoutBuildDeployCount: 1,
       rebuildBetweenTracks: false,
@@ -621,6 +639,11 @@ export function buildFullWorkflowAggregate({
     },
     tracks,
     failures,
+    businessOutcome: {
+      ok: businessFailures.length === 0,
+      failures: businessFailures,
+    },
+    evidenceCompleteness,
     identity,
   };
 }

@@ -167,4 +167,63 @@ describe("full workflow evidence manifest", () => {
       manifest.failures.some((failure) => failure.includes("PNG screenshot")),
     );
   });
+
+  it("keeps a failed business track failed while accepting its structured primary reason and one diagnostic source", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "scanner.json");
+    writeFileSync(
+      report,
+      `${JSON.stringify({
+        ok: false,
+        errors: { primary: "scanner binding was not ready: null" },
+      })}\n`,
+    );
+    writeFileSync(
+      join(artifacts, "scanner-diagnostic.json"),
+      '{"binding":null}\n',
+    );
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        {
+          key: "scanner",
+          reportPath: report,
+          artifactRoot: artifacts,
+          evidence: {
+            passed: { trace: true, logs: true, screenshot: true },
+            failed: {
+              primaryReason: true,
+              diagnostic: true,
+              trace: false,
+              logs: false,
+              screenshot: false,
+            },
+          },
+          result: { businessStatus: "failed" },
+        },
+      ],
+    });
+    assert.equal(manifest.ok, true, JSON.stringify(manifest.failures));
+    assert.equal(manifest.tracks[0].businessStatus, "failed");
+    assert.equal(
+      manifest.tracks[0].primaryReason,
+      "scanner binding was not ready: null",
+    );
+    assert.equal(manifest.tracks[0].screenshots.length, 0);
+  });
+
+  it("uses repository error objects as the failed track primary reason", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "vision.json");
+    writeFileSync(report, `${JSON.stringify({ ok: false, error: { name: "Error", message: "Vision fixture unavailable", stack: "Error: Vision fixture unavailable" } })}\n`);
+    writeFileSync(join(artifacts, "diagnostic.json"), "{}\n");
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "visionTryOn", reportPath: report, artifactRoot: artifacts, result: { businessStatus: "failed" } }],
+    });
+    assert.equal(manifest.ok, true, JSON.stringify(manifest.failures));
+    assert.equal(manifest.tracks[0].primaryReason, "Error: Vision fixture unavailable");
+  });
 });

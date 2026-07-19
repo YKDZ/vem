@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -64,6 +65,11 @@ function option(args, name) {
   if (!value || value.startsWith("--"))
     throw new Error(`--${name} requires a value`);
   return value;
+}
+
+function optionalOption(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
 function windowsAbsolute(value, label) {
@@ -343,6 +349,7 @@ export function parseSerialFulfillmentErrorGuestArgs(args) {
     ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: optionalOption(args, "fixture-key"),
   };
 }
 
@@ -439,7 +446,15 @@ export async function runSerialFulfillmentErrorGuest(options) {
     stage = "physical-tauri-payment";
     for (const step of [
       ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],
-      ['[data-test="catalog-product"]', /^#\/products\//],
+      [
+        options.fixtureKey
+          ? catalogProductSelectorForFixture(
+              guestInput.fixtureAllocation,
+              options.fixtureKey,
+            )
+          : '[data-test="catalog-product"]',
+        /^#\/products\//,
+      ],
       ['[data-test="product-buy"]', "#/checkout"],
       [
         '[data-test="payment-option"][data-payment-option-key="mock:mock"]:not(:disabled)',

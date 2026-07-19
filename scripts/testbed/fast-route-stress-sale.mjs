@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -52,6 +53,11 @@ function option(args, name) {
   return value;
 }
 
+function optionalOption(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : required(args[index + 1], `--${name}`);
+}
+
 export function parseFastRouteStressSaleArgs(args) {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be fast or full");
@@ -63,10 +69,13 @@ export function parseFastRouteStressSaleArgs(args) {
     ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: optionalOption(args, "fixture-key"),
   };
 }
 
-export function buildFastRouteStressScenarioSteps() {
+export function buildFastRouteStressScenarioSteps(
+  productSelector = '[data-test="catalog-product"]',
+) {
   return [
     {
       type: "customer-activation",
@@ -79,7 +88,7 @@ export function buildFastRouteStressScenarioSteps() {
     {
       type: "customer-activation",
       name: "catalog product",
-      selector: '[data-test="catalog-product"]',
+      selector: productSelector,
       routeBefore: "#/catalog",
       routeAfter: /^#\/products\//,
       inputKind: "touch",
@@ -1791,7 +1800,14 @@ async function runFastRouteStressSale(options) {
     const saleCorrelationId =
       commissioningSession?.saleCorrelationId ??
       `sale-correlation://fast-route-${Date.now()}`;
-    const steps = buildFastRouteStressScenarioSteps();
+    const steps = buildFastRouteStressScenarioSteps(
+      options.fixtureKey
+        ? catalogProductSelectorForFixture(
+            guestInput.fixtureAllocation,
+            options.fixtureKey,
+          )
+        : undefined,
+    );
     createOrderGate = await armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(

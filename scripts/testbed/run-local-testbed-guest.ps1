@@ -573,7 +573,6 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 Write-TestbedPhase "installed-smoke"
 node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
-Get-Content -Raw -LiteralPath $smokeOutPath | Write-Output
 if ($Mode -eq "full") {
   Write-RecordedVisionSiteConfiguration (Join-Path $handoffRoot "vision-recorded-site-config.json")
 }
@@ -595,26 +594,6 @@ try {
   $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"
 }
 
-if (Test-Path -LiteralPath $fastRouteOutPath) {
-  Get-Content -Raw -LiteralPath $fastRouteOutPath | Write-Output
-}
-if ($Mode -eq "full") {
-  if (Test-Path -LiteralPath $ipcRecoveryOutPath) {
-    Get-Content -Raw -LiteralPath $ipcRecoveryOutPath | Write-Output
-  }
-  if (Test-Path -LiteralPath $fulfillmentFailureOutPath) {
-    Get-Content -Raw -LiteralPath $fulfillmentFailureOutPath | Write-Output
-  }
-  if (Test-Path -LiteralPath $scannerPaymentCodeOutPath) {
-    Get-Content -Raw -LiteralPath $scannerPaymentCodeOutPath | Write-Output
-  }
-  if (Test-Path -LiteralPath $delayedPickupOutPath) {
-    Get-Content -Raw -LiteralPath $delayedPickupOutPath | Write-Output
-  }
-  if (Test-Path -LiteralPath $visionTryOnOutPath) {
-    Get-Content -Raw -LiteralPath $visionTryOnOutPath | Write-Output
-  }
-}
 if ($Mode -ne "clear_cache") {
   $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
   if (Test-Path -LiteralPath $manifestPath) {
@@ -626,9 +605,6 @@ if ($Mode -ne "clear_cache") {
       $bundleFailure = "compact evidence bundle failed: $($_.Exception.Message)"
     }
   }
-}
-if (Test-Path -LiteralPath $workflowSummaryOutPath) {
-  Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output
 }
 if ($bundleFailure -ne $null) {
   if ($workflowFailure -ne $null) {

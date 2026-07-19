@@ -1,12 +1,132 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { buildFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
 import { buildFullWorkflowAggregate } from "./full-workflow-validator.mjs";
+import {
+  activateVisibleSelector,
+  CdpClient,
+  discoverMachineUiTarget,
+  enablePageRuntime,
+  evaluateExpression,
+  rewriteWebSocketDebuggerUrl,
+  waitForRoute,
+} from "./machine-ui-cdp-driver.mjs";
+import {
+  isActiveTransaction,
+  captureTrackTerminalFacts,
+  recoverTrackHandoff,
+} from "./track-handoff-recovery.mjs";
+
+const PASSED_EVIDENCE = Object.freeze({
+  trace: true,
+  logs: true,
+  screenshot: true,
+});
+const FAILED_EVIDENCE = Object.freeze({
+  primaryReason: true,
+  diagnostic: true,
+  trace: false,
+  logs: false,
+  screenshot: false,
+});
+const PAYMENT_CANCEL_SELECTOR = '[data-test="payment-cancel"]:not(:disabled)';
+const PAYMENT_RETURN_WAIT_MS = 30_000;
+const CONTROL_PLANE_TIMEOUT_MS = 10_000;
+const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
+
+export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
+  [
+    [
+      "fast",
+      false,
+      true,
+      "fast-route-stress-sale.json",
+      "fast-route-stress-sale-artifacts",
+      "node",
+      "scripts/testbed/fast-route-stress-sale.mjs",
+      [],
+    ],
+    [
+      "scanner",
+      true,
+      true,
+      "scanner-payment-code.json",
+      "scanner-payment-code-artifacts",
+      "node",
+      "scripts/testbed/scanner-payment-code-guest-full.mjs",
+      ["--mode", "full"],
+    ],
+    [
+      "visionTryOn",
+      true,
+      false,
+      "vision-try-on-acceptance.json",
+      "vision-try-on-acceptance-artifacts",
+      "powershell",
+      "scripts/testbed/run-full-vision-try-on-track.ps1",
+      [],
+    ],
+    [
+      "fulfillmentFailure",
+      true,
+      true,
+      "serial-fulfillment-error.json",
+      "serial-fulfillment-error-artifacts",
+      "node",
+      "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
+      ["--mode", "full"],
+    ],
+    [
+      "delayedPickup",
+      true,
+      true,
+      "delayed-pickup-native-audio.json",
+      "delayed-pickup-native-audio-artifacts",
+      "node",
+      "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
+      ["--mode", "full"],
+    ],
+    [
+      "ipcRecovery",
+      true,
+      true,
+      "installed-ipc-recovery.json",
+      "ipc-recovery-artifacts",
+      "node",
+      "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
+      ["--mode", "full"],
+    ],
+  ].map(
+    ([
+      key,
+      fullOnly,
+      transactionProducing,
+      reportFileName,
+      artifactDirectory,
+      kind,
+      script,
+      args,
+    ]) =>
+      Object.freeze({
+        key,
+        fullOnly,
+        transactionProducing,
+        fixtureKey: key,
+        reportFileName,
+        artifactDirectory,
+        command: Object.freeze({ kind, script, args }),
+        evidence: Object.freeze({
+          passed: PASSED_EVIDENCE,
+          failed: FAILED_EVIDENCE,
+        }),
+      }),
+  ),
+);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -23,9 +143,8 @@ function option(args, name) {
 
 function parseArgs(args) {
   const mode = option(args, "mode");
-  if (!["fast", "full"].includes(mode)) {
+  if (!["fast", "full"].includes(mode))
     throw new Error("--mode must be fast or full");
-  }
   return {
     mode,
     guestInputPath: option(args, "guest-input"),
@@ -35,19 +154,29 @@ function parseArgs(args) {
 }
 
 function runTrack(command, label) {
-  const result = spawnSync(command[0], command.slice(1), {
-    encoding: "utf8",
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
+  return new Promise((resolvePromise) => {
+    const child = spawn(command[0], command.slice(1), {
+      env: process.env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-CHILD_ERROR_TAIL_BYTES);
+    });
+    child.once("error", (error) =>
+      resolvePromise({ label, command, exitCode: 1, status: "failed", stderr: error.message }),
+    );
+    child.once("close", (code) =>
+      resolvePromise({
+        label,
+        command,
+        exitCode: code ?? 1,
+        status: code === 0 ? "passed" : "failed",
+        stderr,
+      }),
+    );
   });
-  return {
-    label,
-    command,
-    exitCode: result.status ?? 1,
-    status: result.status === 0 ? "passed" : "failed",
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-  };
 }
 
 function jsonIfPresent(path) {
@@ -59,13 +188,45 @@ function jsonIfPresent(path) {
 }
 
 function workflowIdentity(guestInputPath) {
-  const input = jsonIfPresent(guestInputPath);
-  return input?.workflowIdentity ?? null;
+  return jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
 }
 
 function writeJson(path, value) {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
+  if (track.command.kind === "powershell") {
+    return [
+      "pwsh",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      track.command.script,
+      "-GuestInputPath",
+      guestInputPath,
+      "-HandoffPath",
+      handoffPath,
+      "-OutPath",
+      track.reportPath,
+      "-FixtureKey",
+      track.fixtureKey,
+    ];
+  }
+  return [
+    process.execPath,
+    track.command.script,
+    ...(track.command.args.length ? track.command.args : ["--mode", mode]),
+    "--guest-input",
+    guestInputPath,
+    "--handoff",
+    handoffPath,
+    "--out",
+    track.reportPath,
+    "--fixture-key",
+    track.fixtureKey,
+  ];
 }
 
 export function buildWorkflowTrackCommands({
@@ -75,182 +236,360 @@ export function buildWorkflowTrackCommands({
   outPath,
 }) {
   const root = dirname(resolve(outPath));
-  const fastReportPath = join(root, "fast-route-stress-sale.json");
-  const ipcRecoveryReportPath = join(root, "installed-ipc-recovery.json");
-  const fulfillmentFailureReportPath = join(
-    root,
-    "serial-fulfillment-error.json",
-  );
-  const scannerReportPath = join(root, "scanner-payment-code.json");
-  const delayedPickupReportPath = join(
-    root,
-    "delayed-pickup-native-audio.json",
-  );
-  const visionTryOnReportPath = join(root, "vision-try-on-acceptance.json");
-  const tracks = [
-    {
-      key: "fast",
-      reportPath: fastReportPath,
-      command: [
-        process.execPath,
-        "scripts/testbed/fast-route-stress-sale.mjs",
-        "--mode",
-        mode,
-        "--guest-input",
-        guestInputPath,
-        "--handoff",
-        handoffPath,
-        "--out",
-        fastReportPath,
-      ],
-    },
-  ];
-  if (mode === "full") {
-    tracks.push(
-      {
-        key: "delayedPickup",
-        reportPath: delayedPickupReportPath,
-        command: [
-          process.execPath,
-          "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
-          "--mode",
-          "full",
-          "--guest-input",
-          guestInputPath,
-          "--handoff",
-          handoffPath,
-          "--out",
-          delayedPickupReportPath,
-        ],
-      },
-      {
-        key: "scanner",
-        reportPath: scannerReportPath,
-        command: [
-          process.execPath,
-          "scripts/testbed/scanner-payment-code-guest-full.mjs",
-          "--mode",
-          "full",
-          "--guest-input",
-          guestInputPath,
-          "--handoff",
-          handoffPath,
-          "--out",
-          scannerReportPath,
-        ],
-      },
-      {
-        key: "ipcRecovery",
-        reportPath: ipcRecoveryReportPath,
-        command: [
-          process.execPath,
-          "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
-          "--mode",
-          "full",
-          "--guest-input",
-          guestInputPath,
-          "--handoff",
-          handoffPath,
-          "--out",
-          ipcRecoveryReportPath,
-        ],
-      },
-      {
-        key: "fulfillmentFailure",
-        reportPath: fulfillmentFailureReportPath,
-        command: [
-          process.execPath,
-          "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
-          "--mode",
-          "full",
-          "--guest-input",
-          guestInputPath,
-          "--handoff",
-          handoffPath,
-          "--out",
-          fulfillmentFailureReportPath,
-        ],
-      },
-      {
-        key: "visionTryOn",
-        reportPath: visionTryOnReportPath,
-        command: [
-          "pwsh",
-          "-NoProfile",
-          "-NonInteractive",
-          "-File",
-          "scripts/testbed/run-full-vision-try-on-track.ps1",
-          "-GuestInputPath",
-          guestInputPath,
-          "-HandoffPath",
-          handoffPath,
-          "-OutPath",
-          visionTryOnReportPath,
-        ],
-      },
-    );
-    const tracerBulletOrder = new Map(
-      [
-        "fast",
-        "scanner",
-        "visionTryOn",
-        "fulfillmentFailure",
-        "delayedPickup",
-        "ipcRecovery",
-      ].map((key, index) => [key, index]),
-    );
-    tracks.sort(
-      (left, right) =>
-        tracerBulletOrder.get(left.key) - tracerBulletOrder.get(right.key),
-    );
-  }
+  const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
+    (track) => mode === "full" || !track.fullOnly,
+  ).map((descriptor) => {
+    const track = {
+      ...descriptor,
+      reportPath: join(root, descriptor.reportFileName),
+      artifactRoot: join(root, descriptor.artifactDirectory),
+    };
+    return {
+      ...track,
+      command: commandForTrack(track, { mode, guestInputPath, handoffPath }),
+    };
+  });
+  const reportPathFor = (key) =>
+    tracks.find((track) => track.key === key)?.reportPath ?? null;
   return {
-    fastReportPath,
-    ipcRecoveryReportPath,
-    fulfillmentFailureReportPath,
-    scannerReportPath,
-    delayedPickupReportPath,
-    visionTryOnReportPath,
+    fastReportPath: reportPathFor("fast"),
+    ipcRecoveryReportPath: reportPathFor("ipcRecovery"),
+    fulfillmentFailureReportPath: reportPathFor("fulfillmentFailure"),
+    scannerReportPath: reportPathFor("scanner"),
+    delayedPickupReportPath: reportPathFor("delayedPickup"),
+    visionTryOnReportPath: reportPathFor("visionTryOn"),
     tracks,
   };
 }
 
-export function runFullWorkflowOrchestrator(options) {
-  const plan = buildWorkflowTrackCommands(options);
-  const executedTracks = [];
-  for (const track of plan.tracks) {
-    const result = runTrack(track.command, track.key);
-    executedTracks.push({
+function shortError(result) {
+  return (
+    (result.stderr || "")
+      .trim()
+      .replaceAll(/\s+/g, " ")
+      .slice(-500) || null
+  );
+}
+
+export async function runSerialTrackLifecycle({
+  tracks,
+  runTrack: executeTrack,
+  captureTerminal,
+  recover,
+  now = () => new Date(),
+}) {
+  const executed = [];
+  for (const track of tracks) {
+    const startedAt = now().toISOString();
+    const child = await executeTrack(track);
+    const report = child.report ?? jsonIfPresent(track.reportPath);
+    let terminal;
+    try {
+      terminal = await captureTerminal(track, { child, report });
+    } catch (error) {
+      terminal = {
+        ok: false,
+        facts: null,
+        reason: `terminal capture failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    const finishedAt = now().toISOString();
+    const childFailed = child.status !== "passed" || report?.ok !== true;
+    const terminalFailed = terminal?.ok !== true;
+    const recoveryStartedAt = now().toISOString();
+    let recovery;
+    try {
+      recovery = await recover(track, { child, report, terminal });
+    } catch (error) {
+      recovery = {
+        ok: false,
+        actions: [],
+        errors: [
+          `handoff recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+        ],
+      };
+    }
+    const recoveryFinishedAt = now().toISOString();
+    executed.push({
       key: track.key,
       reportPath: track.reportPath,
-      status: result.status,
-      exitCode: result.exitCode,
-      reportOk: jsonIfPresent(track.reportPath)?.ok ?? null,
-      error:
-        result.status === "passed"
-          ? null
-          : (result.stderr || result.stdout).trim().slice(-16 * 1024) || null,
+      status: childFailed || terminalFailed ? "failed" : "passed",
+      businessStatus: childFailed || terminalFailed ? "failed" : "passed",
+      exitCode: child.exitCode,
+      reportOk: report?.ok ?? null,
+      startedAt,
+      finishedAt,
+      durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+      failureStage: childFailed
+        ? "child"
+        : terminalFailed
+          ? "terminal-state"
+          : null,
+      error: childFailed
+        ? shortError(child)
+        : terminalFailed
+          ? (terminal.reason ?? "terminal facts are incomplete")
+          : null,
+      terminal,
+      handoffRecovery: {
+        ...recovery,
+        startedAt: recoveryStartedAt,
+        finishedAt: recoveryFinishedAt,
+        durationMs:
+          Date.parse(recoveryFinishedAt) - Date.parse(recoveryStartedAt),
+      },
     });
   }
+  return executed;
+}
+
+async function boundedFetch(url, options = {}, timeoutMs = CONTROL_PLANE_TIMEOUT_MS) {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      throw new Error(`request timed out after ${timeoutMs} ms: ${url}`);
+    }
+    throw error;
+  }
+}
+
+function controlPlaneRequest(guestInput, path, body = {}) {
+  const controlPlane = guestInput?.hostControlPlane;
+  if (!controlPlane?.endpoint || !controlPlane?.token) {
+    throw new Error(
+      "guest input is missing hostControlPlane endpoint and token",
+    );
+  }
+  return boundedFetch(`${controlPlane.endpoint}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${controlPlane.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => null);
+    if (!response.ok)
+      throw new Error(
+        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+      );
+    return payload;
+  });
+}
+
+function daemonGet(handoff, path) {
+  const healthzUrl = required(
+    handoff?.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
+  const baseUrl = healthzUrl.endsWith("/healthz")
+    ? healthzUrl.slice(0, -"/healthz".length)
+    : healthzUrl;
+  return boundedFetch(`${baseUrl}${path}`, {
+    headers: {
+      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+    },
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => null);
+    if (!response.ok)
+      throw new Error(
+        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+      );
+    return payload;
+  });
+}
+
+export async function returnToCatalogFromClient({
+  client,
+  evaluateExpressionFn = evaluateExpression,
+  waitForRouteFn = waitForRoute,
+  activateVisibleSelectorFn = activateVisibleSelector,
+  settleRouteTimeoutMs = 10_000,
+}) {
+  const waitForRouteWithTimeout = (expected, timeoutMs = settleRouteTimeoutMs) =>
+    waitForRouteFn(client, expected, {
+      timeoutMs,
+      pollMs: 250,
+    });
+  let route = await evaluateExpressionFn(client, "location.hash");
+  if (route === "#/catalog") return route;
+  if (/^#\/result(?:\/|$)/.test(route)) {
+    await activateVisibleSelectorFn(client, ".result-return-button, .failure-return-button", {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+    return (await waitForRouteWithTimeout("#/catalog")).route;
+  }
+  if (route === "#/checkout") {
+    await activateVisibleSelectorFn(client, ".checkout-back", {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+    await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
+    await activateVisibleSelectorFn(client, ".detail-back-button", {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+    return (await waitForRouteWithTimeout("#/catalog")).route;
+  }
+  if (/^#\/products(?:\/|$)/.test(route)) {
+    await activateVisibleSelectorFn(client, ".detail-back-button", {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+    return (await waitForRouteWithTimeout("#/catalog")).route;
+  }
+  if (/^#\/payment(?:\/|$)/.test(route)) {
+    await activateVisibleSelectorFn(client, PAYMENT_CANCEL_SELECTOR, {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+    route = (await waitForRouteWithTimeout(
+      /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
+      PAYMENT_RETURN_WAIT_MS,
+    )).route;
+    if (route === "#/catalog") return "#/catalog";
+    if (/^#\/result(?:\/|$)/.test(route)) {
+      await activateVisibleSelectorFn(client, ".result-return-button, .failure-return-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      });
+      return (await waitForRouteWithTimeout("#/catalog")).route;
+    }
+    if (route === "#/checkout") {
+      await activateVisibleSelectorFn(client, ".checkout-back", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      });
+      await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
+      await activateVisibleSelectorFn(client, ".detail-back-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      });
+      return (await waitForRouteWithTimeout("#/catalog")).route;
+    }
+    if (/^#\/products(?:\/|$)/.test(route)) {
+      await activateVisibleSelectorFn(client, ".detail-back-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      });
+      return (await waitForRouteWithTimeout("#/catalog")).route;
+    }
+  }
+  throw new Error(`no supported customer return control was available for ${route}`);
+}
+
+function terminalOperations(guestInput, handoff) {
+  const withClient = async (operation) => {
+    const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
+    const target = await discoverMachineUiTarget({
+      endpoint,
+      expectedTargetId: required(
+        handoff?.cdp?.targetId,
+        "handoff cdp targetId",
+      ),
+    });
+    const client = new CdpClient(
+      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
+    );
+    await client.connect();
+    await enablePageRuntime(client);
+    try {
+      return await operation(client);
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  };
+  return {
+    captureTerminal: (track, context) =>
+      captureTrackTerminalFacts({
+        track,
+        context,
+        readRoute: () =>
+          withClient((client) => evaluateExpression(client, "location.hash")),
+        daemonGet: (path) => daemonGet(handoff, path),
+        platformQuery: () =>
+          controlPlaneRequest(guestInput, "/v1/platform/query", {
+            runId: guestInput.runId,
+            machineCode: guestInput.machineCode,
+          }).then((response) => response.report),
+      }),
+    recover: (track, context) =>
+      recoverTrackHandoff({
+        track,
+        terminal: context.terminal,
+        fixtureAllocation: guestInput.fixtureAllocation,
+        returnToCatalog: () =>
+          withClient(async (client) => {
+            return returnToCatalogFromClient({ client });
+          }),
+        disableFaultInjection: () =>
+          controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open"),
+        restoreSerialSession: (sessionId) =>
+          controlPlaneRequest(
+            guestInput,
+            `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
+          ),
+        waitForTransactionTerminal: async () => {
+          const deadline = Date.now() + 30_000;
+          let transaction = null;
+          while (Date.now() < deadline) {
+            transaction = await daemonGet(handoff, "/v1/transactions/current");
+            if (!isActiveTransaction(transaction))
+              return transaction;
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+          }
+          return transaction;
+        },
+        restoreFixtureStock: async () => ({
+          skipped: "independent fixture allocation",
+        }),
+      }),
+  };
+}
+
+export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
+  const plan = buildWorkflowTrackCommands(options);
+  const guestInput = jsonIfPresent(options.guestInputPath);
+  const handoff = jsonIfPresent(options.handoffPath);
+  const operations =
+    dependencies.captureTerminal ||
+    dependencies.recover ||
+    !guestInput ||
+    !handoff
+      ? null
+      : terminalOperations(guestInput, handoff);
+  const executedTracks = await runSerialTrackLifecycle({
+    tracks: plan.tracks,
+    runTrack:
+      dependencies.runTrack ?? ((track) => runTrack(track.command, track.key)),
+    captureTerminal:
+      dependencies.captureTerminal ??
+      operations?.captureTerminal ??
+      (() => ({
+        ok: false,
+        facts: null,
+        reason: "terminal inputs are unavailable",
+      })),
+    recover:
+      dependencies.recover ??
+      operations?.recover ??
+      (() => ({
+        ok: false,
+        actions: [],
+        errors: ["handoff inputs are unavailable"],
+      })),
+    now: dependencies.now,
+  });
   const evidenceManifestPath = join(
     dirname(resolve(options.outPath)),
     "full-workflow-evidence-manifest.json",
   );
   const evidenceManifest = buildFullWorkflowEvidenceManifest({
     tracks: plan.tracks.map((track) => ({
-      key: track.key,
-      reportPath: track.reportPath,
-      artifactRoot: join(
-        dirname(resolve(options.outPath)),
-        {
-          fast: "fast-route-stress-sale-artifacts",
-          delayedPickup: "delayed-pickup-native-audio-artifacts",
-          scanner: "scanner-payment-code-artifacts",
-          ipcRecovery: "ipc-recovery-artifacts",
-          fulfillmentFailure: "serial-fulfillment-error-artifacts",
-          visionTryOn: "vision-try-on-acceptance-artifacts",
-        }[track.key],
-      ),
+      ...track,
+      result: executedTracks.find((entry) => entry.key === track.key),
     })),
   });
   writeJson(evidenceManifestPath, evidenceManifest);
@@ -272,8 +611,12 @@ export function runFullWorkflowOrchestrator(options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const aggregate = runFullWorkflowOrchestrator(options);
-  process.stdout.write(`${JSON.stringify(aggregate)}\n`);
+  const aggregate = await runFullWorkflowOrchestrator(options);
+  for (const track of aggregate.execution.executedTracks) {
+    process.stdout.write(
+      `track=${track.key} status=${track.businessStatus} durationMs=${track.durationMs} failureStage=${track.failureStage ?? "none"} error=${track.error ?? "none"}\n`,
+    );
+  }
   if (!aggregate.ok) process.exitCode = 1;
 }
 

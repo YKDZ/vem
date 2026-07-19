@@ -16,6 +16,7 @@ import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { allocateFullWorkflowFixtures } from "./full-workflow-fixtures.mjs";
 import { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
 
 const FIXTURE_PATH = new URL(
@@ -252,8 +253,7 @@ export function parseOptions(
     ),
     hostPrivateAddress,
     runnerProxy: runnerProxyEnvironment(environment),
-    runnerRegistrationToken:
-      environment.VEM_RUNNER_REGISTRATION_TOKEN || null,
+    runnerRegistrationToken: environment.VEM_RUNNER_REGISTRATION_TOKEN || null,
     runnerRemovalToken: environment.VEM_RUNNER_REMOVAL_TOKEN || null,
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
@@ -1438,9 +1438,11 @@ async function reconstruct(options) {
   ).catch(() => undefined);
   try {
     const hostSimulator = await ensureLowerControllerSimCached({ options });
+    const reconstructionStartedAt = new Date().toISOString();
     const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
       cwd: options.workspace,
     });
+    const reconstructionFinishedAt = new Date().toISOString();
     const reconstructHostResult = parseJsonLine(
       reconstructHost.stdout,
       "host reconstruction",
@@ -1499,6 +1501,7 @@ async function reconstruct(options) {
       fastSale: {
         paymentOptionKey: "mock:mock",
       },
+      fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
       claimCode: seeded.claim.claimCode,
       machineCode: seeded.machine.code,
       planogramVersion: seeded.planogramVersion,
@@ -1513,9 +1516,11 @@ async function reconstruct(options) {
     for (const step of plan.slice(9, -1))
       await run(step.command, step.args, { cwd: options.workspace });
     const admitRunner = plan.at(-1);
+    const admissionStartedAt = new Date().toISOString();
     const admitHost = await runCapture(admitRunner.command, admitRunner.args, {
       cwd: options.workspace,
     });
+    const admissionFinishedAt = new Date().toISOString();
     const admitHostResult = parseJsonLine(admitHost.stdout, "host admission");
     const result = {
       schemaVersion: "vem-local-testbed-reconstruction/v1",
@@ -1568,8 +1573,21 @@ async function reconstruct(options) {
         targetIdentity: runtimeTargetIdentity(contract),
         displayLifecycle: {
           headlessVncActivatorUnit: `${HEADLESS_VNC_ACTIVATOR_UNIT}.service`,
-          reconstruct: reconstructHostResult,
-          admission: admitHostResult,
+          reconstruct: {
+            ...reconstructHostResult,
+            startedAt: reconstructionStartedAt,
+            finishedAt: reconstructionFinishedAt,
+            durationMs:
+              Date.parse(reconstructionFinishedAt) -
+              Date.parse(reconstructionStartedAt),
+          },
+          admission: {
+            ...admitHostResult,
+            startedAt: admissionStartedAt,
+            finishedAt: admissionFinishedAt,
+            durationMs:
+              Date.parse(admissionFinishedAt) - Date.parse(admissionStartedAt),
+          },
         },
       },
     };

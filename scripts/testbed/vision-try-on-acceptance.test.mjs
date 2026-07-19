@@ -9,6 +9,7 @@ import {
   compareObservedVisionProtocolToExpected,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
+  collectVisionProtocolEvidence,
   parseVisionTryOnAcceptanceArgs,
   startVisionMockScenario,
   stopVisionChild,
@@ -18,6 +19,27 @@ import {
   validateVisionProtocolEvidence,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
+
+function queuedReader(queue, timestamps) {
+  let index = 0;
+  return async () => {
+    const entry = queue[index++];
+    if (!entry) {
+      throw new Error("vision protocol message queue exhausted");
+    }
+    const timestamp = timestamps[index - 1] ?? new Date().toISOString();
+    return { ...entry, timestamp };
+  };
+}
+
+function visionProtocolMessage(type, payload) {
+  return {
+    protocol: "vem.vision.v1",
+    type,
+    messageId: `${type}-${Math.random()}`,
+    payload,
+  };
+}
 
 function baseExpectedResults() {
   return {
@@ -89,6 +111,8 @@ describe("vision try-on acceptance script", () => {
         "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
         "--out",
         "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
+        "--fixture-key",
+        "visionTryOn",
       ]),
       {
         mode: "full",
@@ -96,6 +120,7 @@ describe("vision try-on acceptance script", () => {
         handoffPath:
           "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
         outPath: "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
+        fixtureKey: "visionTryOn",
       },
     );
     assert.throws(
@@ -712,6 +737,106 @@ describe("vision try-on acceptance script", () => {
         }),
       /does not look fresh/,
     );
+  });
+
+  it("collects the first true presence event while preserving initial false events", async () => {
+    const messages = [
+      visionProtocolMessage("vision.ready", {
+        serverName: "vem-vision-runtime",
+        serverVersion: "1.2.3",
+        modelReady: true,
+        cameraReady: true,
+        capabilities: [
+          "profile_push",
+          "presence_status",
+          "person_departed",
+          "try_on_session",
+        ],
+        frameSource: frameSourceBinding(),
+      }),
+      visionProtocolMessage("vision.presence_status", {
+        source: "top",
+        detectedAt: "2026-07-18T00:00:01.000Z",
+        personPresent: false,
+        sourceFrame: sourceFrame("top", "b".repeat(64)),
+      }),
+      visionProtocolMessage("vision.presence_status", {
+        source: "top",
+        detectedAt: "2026-07-18T00:00:02.000Z",
+        personPresent: true,
+        sourceFrame: sourceFrame("top", "b".repeat(64), {
+          frameIndex: 4,
+          decodedFrameCount: 5,
+        }),
+      }),
+      visionProtocolMessage("vision.profile_result", {
+        source: "front",
+        detectedAt: "2026-07-18T00:00:03.000Z",
+        profile: { personPresent: true },
+        quality: { profileUsable: true },
+        sourceFrame: sourceFrame("front", "c".repeat(64), {
+          frameIndex: 6,
+          decodedFrameCount: 7,
+        }),
+      }),
+      visionProtocolMessage("vision.person_departed", {
+        source: "top",
+        detectedAt: "2026-07-18T00:00:04.000Z",
+        sourceFrame: sourceFrame("top", "b".repeat(64), {
+          frameIndex: 8,
+          decodedFrameCount: 9,
+        }),
+      }),
+    ];
+
+    const evidence = await collectVisionProtocolEvidence({
+      machineCode: "MACHINE-01",
+      openSocket: async () => ({
+        send: () => {},
+        close: () => {},
+      }),
+      readMessage: queuedReader(messages, [
+        "2026-07-18T00:00:00.100Z",
+        "2026-07-18T00:00:01.000Z",
+        "2026-07-18T00:00:02.000Z",
+        "2026-07-18T00:00:03.000Z",
+        "2026-07-18T00:00:04.000Z",
+      ]),
+      fetchHealth: async () => ({
+        status: "ok",
+        protocol: "vem.vision.v1",
+        modelReady: true,
+        cameraReady: true,
+        frameSource: frameSourceBinding(),
+      }),
+      now: () => "2026-07-18T00:00:00.999Z",
+      timeoutMs: 20_000,
+    });
+
+    assert.equal(evidence.presence.payload.personPresent, true);
+    assert.equal(evidence.presence.payload.detectedAt, "2026-07-18T00:00:02.000Z");
+    assert.equal(
+      evidence.observedMessages[1]?.type,
+      "vision.presence_status",
+    );
+    assert.equal(
+      evidence.observedMessages[1]?.timestamp,
+      "2026-07-18T00:00:01.000Z",
+    );
+    assert.equal(
+      evidence.presence.payload.sourceFrame.frameIndex,
+      4,
+    );
+
+    const summary = compareObservedVisionProtocolToExpected({
+      expectedResults: baseExpectedResults(),
+      protocolEvidence: evidence,
+      installedBinding: { frameSourceBinding: frameSourceBinding() },
+    });
+
+    assert.equal(summary.presenceFrameIndex, 4);
+    assert.equal(summary.profileFrameIndex, 6);
+    assert.equal(summary.departureFrameIndex, 8);
   });
 
   it("fails closed unless recommendation changes and the seeded variant matches", () => {

@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$GuestInputPath,
   [Parameter(Mandatory = $true)][string]$HandoffPath,
   [Parameter(Mandatory = $true)][string]$OutPath,
+  [Parameter(Mandatory = $true)][string]$FixtureKey,
   [string]$CacheRoot = "D:\runtime-cache\v1",
   [string]$RuntimeRoot = "C:\ProgramData\VEM\runtime\testbed"
 )
@@ -90,5 +91,5 @@ $visionInstallation = Install-VisionMainArtifact `
 if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
   throw "installed Vision commit does not match the resolved cached commit"
 }
-node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath
+node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath --fixture-key $FixtureKey
 if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }

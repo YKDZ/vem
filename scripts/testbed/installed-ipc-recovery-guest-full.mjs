@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   buildInstalledKioskGuestOperationScript,
   buildInstalledKioskSaleScenarioSteps,
@@ -40,6 +41,11 @@ function option(args, name) {
     throw new Error(`--${name} requires a value`);
   }
   return value;
+}
+
+function optionalOption(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
 function windowsAbsolute(value, label) {
@@ -79,6 +85,7 @@ function parseArgs(args) {
     ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: optionalOption(args, "fixture-key"),
   };
 }
 
@@ -326,6 +333,13 @@ export async function runInstalledIpcRecoveryGuest(options) {
     );
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-ipc-recovery");
+    if (options.fixtureKey) {
+      steps.find((step) => step.name === "catalog product").selector =
+        catalogProductSelectorForFixture(
+          guestInput.fixtureAllocation,
+          options.fixtureKey,
+        );
+    }
     for (const step of steps.slice(0, 4)) {
       await waitForRoute(client, step.routeBefore, {
         timeoutMs: step.timeoutMs ?? 30_000,

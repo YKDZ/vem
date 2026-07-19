@@ -753,10 +753,21 @@ describe("local testbed orchestration", () => {
 
       const withRegistration = parseOptions(
         [
-          "reconstruct", "--mode", "fast", "--run-id", "run-16",
-          "--workspace", root, "--state-root", join(root, "state"),
-          "--baseline-contract", join(root, "baseline.json"),
-          "--host-private-address", "10.0.0.15", "--out", join(root, "out.json"),
+          "reconstruct",
+          "--mode",
+          "fast",
+          "--run-id",
+          "run-16",
+          "--workspace",
+          root,
+          "--state-root",
+          join(root, "state"),
+          "--baseline-contract",
+          join(root, "baseline.json"),
+          "--host-private-address",
+          "10.0.0.15",
+          "--out",
+          join(root, "out.json"),
         ],
         {
           observeNetworkInterfaces: observedNetworkInterfaces,
@@ -766,10 +777,15 @@ describe("local testbed orchestration", () => {
           },
         },
       );
-      const registrationAdmission = buildReconstructionPlan(withRegistration, value).at(-1);
+      const registrationAdmission = buildReconstructionPlan(
+        withRegistration,
+        value,
+      ).at(-1);
       assert.deepEqual(registrationAdmission.args.slice(-4), [
-        "--runner-registration-token", "runner-registration-token",
-        "--runner-removal-token", "runner-removal-token",
+        "--runner-registration-token",
+        "runner-registration-token",
+        "--runner-removal-token",
+        "runner-removal-token",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1169,25 +1185,47 @@ describe("Windows D cache contract", () => {
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
-    const serialStart = guest.indexOf("$commissioningSerialSession = Start-TestbedCommissioningSerialSession");
-    const hardwareBinding = guest.indexOf("Initialize-TestbedHardwareBindings", serialStart);
+    const serialStart = guest.indexOf(
+      "$commissioningSerialSession = Start-TestbedCommissioningSerialSession",
+    );
+    const hardwareBinding = guest.indexOf(
+      "Initialize-TestbedHardwareBindings",
+      serialStart,
+    );
     assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
     const bindingFunction = guest.match(
       /function Initialize-TestbedHardwareBindings \{[\s\S]*?\n\}/,
     )?.[0];
     assert.ok(bindingFunction);
-    assert.match(bindingFunction, /production auto-binding did not become ready/);
+    assert.match(
+      bindingFunction,
+      /production auto-binding did not become ready/,
+    );
     assert.doesNotMatch(bindingFunction, /\/test|\/confirm|Method Post/);
     assert.match(
       bindingFunction,
       /try \{[\s\S]*Invoke-RestMethod[\s\S]*\} catch \{[\s\S]*lastBindingError/,
     );
-    assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
-    assert.match(guest, /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/);
+    assert.match(
+      guest,
+      /commissioningSerialSession = \$commissioningSerialSession/,
+    );
+    assert.match(
+      guest,
+      /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/,
+    );
     const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
     const claimedRestart = guest.indexOf("restart-claimed-runtime", claim);
-    const claimedReady = guest.indexOf("$runtimeReady = Wait-RuntimeReady", claimedRestart);
-    assert.ok(claim >= 0 && claimedRestart > claim && claimedReady > claimedRestart && serialStart > claimedReady);
+    const claimedReady = guest.indexOf(
+      "$runtimeReady = Wait-RuntimeReady",
+      claimedRestart,
+    );
+    assert.ok(
+      claim >= 0 &&
+        claimedRestart > claim &&
+        claimedReady > claimedRestart &&
+        serialStart > claimedReady,
+    );
     assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
     assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
     assert.match(
@@ -1224,7 +1262,10 @@ describe("Windows D cache contract", () => {
       /cargo metadata --format-version 1 --locked --offline[\s\S]*webview2-com-sys[\s\S]*x64\\WebView2Loader\.dll/,
     );
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
-    assert.match(guest, /proxyBypass = @\("localhost", "127\.0\.0\.1", "::1"\)/);
+    assert.match(
+      guest,
+      /proxyBypass = @\("localhost", "127\.0\.0\.1", "::1"\)/,
+    );
     assert.match(guest, /\$env:no_proxy = \$env:NO_PROXY/);
     assert.match(
       guest,
@@ -1237,7 +1278,10 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "actions-work"/);
-    assert.match(guest, /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/);
+    assert.match(
+      guest,
+      /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/,
+    );
     assert.match(
       guest,
       /\$pnpmFetchCompletePath = Join-Path \$pnpmVirtualStorePath "\.fetch-complete"/,
@@ -1329,10 +1373,6 @@ describe("Windows D cache contract", () => {
     const orchestratorStart = guest.indexOf(
       "node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath",
     );
-    const summaryRead = guest.indexOf(
-      "Get-Content -Raw -LiteralPath $workflowSummaryOutPath | Write-Output",
-      orchestratorStart,
-    );
     const bundleSection = guest.indexOf(
       'if ($Mode -ne "clear_cache")',
       orchestratorStart,
@@ -1349,7 +1389,11 @@ describe("Windows D cache contract", () => {
       '$bundleFailure = "compact evidence bundle failed:',
       manifestCheck,
     );
-    assert.ok(orchestratorStart >= 0 && summaryRead > orchestratorStart);
+    assert.ok(orchestratorStart >= 0);
+    assert.doesNotMatch(
+      guest,
+      /Get-Content -Raw -LiteralPath \$workflowSummaryOutPath \| Write-Output/,
+    );
     assert.ok(manifestCheck >= 0 && bundleCall > manifestCheck);
     assert.ok(bundleFailure > bundleCall);
     assert.match(guest, /if \(Test-Path -LiteralPath \$manifestPath\)/);
@@ -1370,7 +1414,7 @@ describe("local testbed fixture", () => {
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
       fixture.slots.map((slot) => slot.slotCode),
-      ["A1", "A2", "A3"],
+      ["A1", "A2", "A3", "A4", "A5", "A6"],
     );
     const implementation = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),
@@ -1378,6 +1422,7 @@ describe("local testbed fixture", () => {
     );
     assert.doesNotMatch(implementation, /唐诗村商品列表\.xlsx/);
     assert.match(implementation, /seedThroughSupportedApis/);
+    assert.match(implementation, /allocateFullWorkflowFixtures/);
     assert.match(implementation, /\/auth\/login/);
     assert.match(implementation, /\/machines\/\$\{machine\.id\}\/claim-codes/);
     assert.match(implementation, /runtimeBaseIdentity/);

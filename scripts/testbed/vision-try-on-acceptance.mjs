@@ -162,7 +162,10 @@ function daemonHeaders(handoff) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal ?? AbortSignal.timeout(10_000),
+  });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
@@ -1204,6 +1207,7 @@ export function parseVisionTryOnAcceptanceArgs(args) {
     ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: required(option(args, "fixture-key"), "--fixture-key"),
   };
 }
 
@@ -1467,17 +1471,22 @@ export function validateVisionProtocolEvidence(
   };
 }
 
-async function collectVisionProtocolEvidence({
+export async function collectVisionProtocolEvidence({
   machineCode,
   timeoutMs = 120_000,
+  openSocket = openVisionSocket,
+  readMessage = nextVisionMessage,
+  fetchHealth = fetchJson,
+  now = () => new Date().toISOString(),
+  closeSocket,
 }) {
-  const observationStartedAt = new Date().toISOString();
-  const health = await fetchJson("http://127.0.0.1:7892/health");
-  const socket = await openVisionSocket("ws://127.0.0.1:7892/ws");
+  const observationStartedAt = now();
+  const health = await fetchHealth("http://127.0.0.1:7892/health");
+  const socket = await openSocket("ws://127.0.0.1:7892/ws");
   const observedMessages = [];
   try {
     socket.send(JSON.stringify(createVisionHello(machineCode)));
-    const ready = await nextVisionMessage(socket, 10_000);
+    const ready = await readMessage(socket, 10_000);
     observedMessages.push({
       type: ready?.type ?? null,
       messageId: ready?.messageId ?? null,
@@ -1493,7 +1502,7 @@ async function collectVisionProtocolEvidence({
     };
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const message = await nextVisionMessage(
+      const message = await readMessage(
         socket,
         Math.max(1_000, deadline - Date.now()),
       );
@@ -1504,7 +1513,8 @@ async function collectVisionProtocolEvidence({
       });
       if (
         message?.type === "vision.presence_status" &&
-        state.presence === null
+        state.presence === null &&
+        message?.payload?.personPresent === true
       ) {
         state.presence = message;
       } else if (
@@ -1523,7 +1533,7 @@ async function collectVisionProtocolEvidence({
           ...state,
           observation: {
             startedAt: observationStartedAt,
-            completedAt: new Date().toISOString(),
+            completedAt: now(),
           },
         };
       }
@@ -1532,7 +1542,15 @@ async function collectVisionProtocolEvidence({
       `vision protocol did not produce presence/profile/departure within ${timeoutMs} ms`,
     );
   } finally {
-    socket.close();
+    const closer =
+      typeof closeSocket === "function"
+        ? closeSocket
+        : typeof socket?.close === "function"
+          ? socket.close.bind(socket)
+          : null;
+    if (closer) {
+      await closer(socket);
+    }
   }
 }
 
@@ -2197,6 +2215,13 @@ async function runVisionTryOnAcceptance(options) {
   const runtimeExpectation = normalizeSeededVisionAcceptance(
     guestInput.visionAcceptance,
   );
+  const allocatedFixture = guestInput.fixtureAllocation?.[options.fixtureKey];
+  if (!allocatedFixture?.slotCode || !allocatedFixture?.inventoryId) {
+    throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
+  }
+  if (options.fixtureKey !== "visionTryOn" || allocatedFixture.slotCode !== "A3") {
+    throw new Error("Vision/try-on must use the dedicated A3 fixture allocation");
+  }
   let client = null;
   let injectedVisionMock = null;
   const checkpoints = [];
@@ -2442,6 +2467,7 @@ async function runVisionTryOnAcceptance(options) {
         fixtureRoot: VISION_FIXTURE_ROOT,
         expectedResults,
         runtimeExpectation,
+        fixtureAllocation: allocatedFixture,
       },
       health: {
         daemon: {
