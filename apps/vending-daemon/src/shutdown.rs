@@ -493,68 +493,61 @@ async fn run_device_binding_watch(
                 continue;
             }
         };
+        let lease = match sale_gate.try_acquire_reconfigure() {
+            Ok(lease) => lease,
+            Err(_) => continue,
+        };
         let mut binding_changed = false;
         let active_sale = state
             .current_transaction_snapshot()
             .await
             .map(|snapshot| snapshot.as_ref().is_some_and(is_active_transaction))
             .unwrap_or(true);
-        if !active_sale {
-            let scanner_protocol =
-                effective_scanner_protocol(&settings, &hardware_model, &topology_identity);
-            let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol);
-            for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
-                if binding_for_role(&settings, role).is_some() {
-                    continue;
-                }
-                let mut ready = Vec::new();
-                for candidate in &observed {
-                    let result = platform.test_candidate(role, candidate, &probe).await;
-                    if result.success {
-                        ready.push((candidate, result));
-                    }
-                }
-                if ready.len() != 1 {
-                    continue;
-                }
-                let (candidate, result) = ready.pop().expect("one verified serial candidate");
-                let Ok(identity) =
-                    device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
-                else {
-                    continue;
-                };
-                let binding = LocalSerialRoleBinding {
-                    identity,
-                    confirmed_at: crate::state::store::now_iso(),
-                    confirmed_by: "daemon_auto_bind".to_string(),
-                    test_evidence_code: result.code,
-                };
-                let Ok((_, revision)) = runtime_sources.local_device_binding_snapshot(role).await
-                else {
-                    continue;
-                };
-                if runtime_sources
-                    .save_local_device_binding_if_revision(role, binding.clone(), &revision)
-                    .await
-                    .is_ok()
-                {
-                    set_binding_for_role(&mut settings, role, Some(binding));
-                    binding_changed = true;
-                }
-            }
-        }
-        let lease = match sale_gate.try_acquire_reconfigure() {
-            Ok(lease) => lease,
-            Err(_) => continue,
-        };
-        if state
-            .current_transaction_snapshot()
-            .await
-            .map(|snapshot| snapshot.as_ref().is_some_and(is_active_transaction))
-            .unwrap_or(true)
-        {
+        if active_sale {
             drop(lease);
             continue;
+        }
+        let scanner_protocol =
+            effective_scanner_protocol(&settings, &hardware_model, &topology_identity);
+        let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol);
+        for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
+            if binding_for_role(&settings, role).is_some() {
+                continue;
+            }
+            let mut ready = Vec::new();
+            for candidate in &observed {
+                let result = platform.test_candidate(role, candidate, &probe).await;
+                if result.success {
+                    ready.push((candidate, result));
+                }
+            }
+            if ready.len() != 1 {
+                continue;
+            }
+            let (candidate, result) = ready.pop().expect("one verified serial candidate");
+            let Ok(identity) =
+                device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
+            else {
+                continue;
+            };
+            let binding = LocalSerialRoleBinding {
+                identity,
+                confirmed_at: crate::state::store::now_iso(),
+                confirmed_by: "daemon_auto_bind".to_string(),
+                test_evidence_code: result.code,
+            };
+            let Ok((_, revision)) = runtime_sources.local_device_binding_snapshot(role).await
+            else {
+                continue;
+            };
+            if runtime_sources
+                .save_local_device_binding_if_revision(role, binding.clone(), &revision)
+                .await
+                .is_ok()
+            {
+                set_binding_for_role(&mut settings, role, Some(binding));
+                binding_changed = true;
+            }
         }
         if let Some(binding) = settings.lower_controller_binding.as_ref() {
             match device_binding::resolve_runtime_port(
@@ -1058,6 +1051,28 @@ mod tests {
         backend::BackendClient, events::DaemonEvent, ipc::RuntimeStatusCache,
         runtime_configuration::RuntimeSources, secret::InMemorySecretStore, state::LocalStateStore,
     };
+
+    #[test]
+    fn binding_watch_holds_one_reconfigure_lease_across_probe_and_activation() {
+        let source = include_str!("shutdown.rs");
+        let watch = &source[source
+            .find("async fn run_device_binding_watch")
+            .expect("binding watch")
+            ..source
+                .find("async fn sale_capability_inputs_changed")
+                .expect("binding watch end")];
+
+        assert_eq!(watch.matches("current_transaction_snapshot()").count(), 1);
+        assert!(
+            watch.find("try_acquire_reconfigure") < watch.find("let active_sale"),
+            "the lease must precede the one active-sale observation"
+        );
+        assert!(
+            watch.find("save_local_device_binding_if_revision")
+                < watch.find("reconfigure_from_serial_port"),
+            "the same leased tick must activate the binding it persisted"
+        );
+    }
 
     #[test]
     fn sale_capability_reacts_to_transaction_and_durable_stock_signals() {
