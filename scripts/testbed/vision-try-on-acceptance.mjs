@@ -459,16 +459,43 @@ function normalizedExpectedProtocolEvent(
 
 export function normalizeVisionExpectedResults(raw) {
   const fixture = requiredObject(raw, "Vision expected-results fixture");
+  const publishedExpected =
+    fixture.expected && typeof fixture.expected === "object"
+      ? fixture.expected
+      : null;
+  const publishedEvents = Array.isArray(publishedExpected?.top?.protocolEvents)
+    ? publishedExpected.top.protocolEvents
+    : [];
   const protocol = requiredObject(
-    fixture.protocol ?? fixture.machineProtocol ?? fixture.expectedProtocol,
+    fixture.protocol ??
+      fixture.machineProtocol ??
+      fixture.expectedProtocol ??
+      (publishedExpected
+        ? {
+            presence: {
+              type: publishedEvents[0] ?? "vision.presence_status",
+              source: "top",
+            },
+            profile: { type: "vision.profile_result", source: "front" },
+            departure: {
+              type: publishedEvents[1] ?? "vision.person_departed",
+              source: "top",
+            },
+          }
+        : null),
     "expected protocol block",
   );
   const recommendation = requiredObject(
-    fixture.recommendation ?? fixture.catalogRecommendation,
+    fixture.recommendation ??
+      fixture.catalogRecommendation ??
+      (publishedExpected ? {} : null),
     "expected recommendation block",
   );
   const tryOn = requiredObject(
-    fixture.tryOn ?? fixture.try_on ?? fixture.tryOnPreview,
+    fixture.tryOn ??
+      fixture.try_on ??
+      fixture.tryOnPreview ??
+      publishedExpected?.front?.tryOn,
     "expected try-on block",
   );
   const capabilities = Array.isArray(protocol.ready?.capabilities)

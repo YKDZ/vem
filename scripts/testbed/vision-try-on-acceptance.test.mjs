@@ -95,8 +95,7 @@ describe("vision try-on acceptance script", () => {
         guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
         handoffPath:
           "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
-        outPath:
-          "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
+        outPath: "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
       },
     );
     assert.throws(
@@ -316,8 +315,7 @@ describe("vision try-on acceptance script", () => {
         tryOnCategoryKey: null,
         selectedCatalogKey: null,
         selectedVariantId: "variant-seeded",
-        tryOnSilhouetteAssetId:
-          "550e8400-e29b-41d4-a716-446655440125",
+        tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
         seededTryOnVariants: [
@@ -327,8 +325,7 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-seeded",
             sku: "TSC-LOCAL-031",
             size: "M",
-            silhouetteAssetId:
-              "550e8400-e29b-41d4-a716-446655440125",
+            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
             silhouettePublicUrl:
               "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
           },
@@ -344,6 +341,26 @@ describe("vision try-on acceptance script", () => {
         }),
       /presence expected result/,
     );
+  });
+
+  it("consumes the current Vision repository recorded-video fixture contract", () => {
+    const normalized = normalizeVisionExpectedResults({
+      schemaVersion: "vending-vision-recorded-video-fixture/v1",
+      recordings: {
+        top: { file: "top.mp4", sha256: "a".repeat(64), loop: false },
+        front: { file: "front.mp4", sha256: "b".repeat(64), loop: true },
+      },
+      expected: {
+        top: {
+          protocolEvents: ["vision.presence_status", "vision.person_departed"],
+        },
+        front: { tryOn: { jpeg: true } },
+      },
+    });
+
+    assert.equal(normalized.protocol.presence.type, "vision.presence_status");
+    assert.equal(normalized.protocol.profile.type, "vision.profile_result");
+    assert.equal(normalized.protocol.departure.type, "vision.person_departed");
   });
 
   it("compares observed protocol evidence by source and fresh runtime chronology", () => {
@@ -741,8 +758,7 @@ describe("vision try-on acceptance script", () => {
           },
           tryOnState: {
             route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl:
-              "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
+            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
             silhouetteUrl:
               "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
             silhouetteLoaded: true,
@@ -773,14 +789,12 @@ describe("vision try-on acceptance script", () => {
           installedBinding: { frameSourceBinding: frameSourceBinding() },
           runtimeExpectation: {
             selectedVariantId: "variant-l",
-            tryOnSilhouetteAssetId:
-              "550e8400-e29b-41d4-a716-446655440125",
+            tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
             seededTryOnVariants: [
               {
                 productId: "L",
                 variantId: "variant-l",
-                silhouetteAssetId:
-                  "550e8400-e29b-41d4-a716-446655440125",
+                silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
               },
             ],
           },
@@ -796,8 +810,7 @@ describe("vision try-on acceptance script", () => {
           },
           tryOnState: {
             route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl:
-              "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
+            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
             silhouetteUrl:
               "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
             silhouetteLoaded: true,
@@ -926,77 +939,75 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
     assert.throws(
       () =>
-        validateVisionInstalledBinding(
-          {
-            installedRecord: {
-              schemaVersion: "vem-vision-installed/v1",
-              commit: "a".repeat(40),
-              appDirectory: "C:\\VEM\\vision\\app",
-              runtime: "vending-vision.exe",
-              executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
-              executableSha256: "b".repeat(64),
-              runtimeWorkDirectory: "C:\\ProgramData\\VEM\\vision\\runtime",
-              siteConfiguration: {
-                path: "C:\\ProgramData\\VEM\\vision\\site.json",
-                sha256: "a".repeat(64),
-              },
-              downloadManifest: {
-                path: "C:\\cache\\vision\\vending-vision-main-artifacts.json",
-                sha256: "c".repeat(64),
-                runtimeArchive: {
-                  path: "C:\\cache\\vision\\runtime.zip",
-                  sha256: "d".repeat(64),
-                },
-                fixtureArchive: {
-                  path: "C:\\cache\\vision\\fixtures.zip",
-                  sha256: "e".repeat(64),
-                },
-              },
-              fixtureSet: {
-                manifestPath:
-                  "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\fixture-manifest.json",
-                manifestSha256: "f".repeat(64),
-                top: frameSourceBinding().top,
-                front: frameSourceBinding().front,
-                expectedResults: frameSourceBinding().expectedResults,
-              },
-            },
-            siteConfiguration: {
-              cameras: {
-                top: {
-                  source: "recorded_video",
-                  role: "presence",
-                  video_path: frameSourceBinding().top.path,
-                },
-                front: {
-                  source: "recorded_video",
-                  role: "profile_tryon",
-                  video_path: frameSourceBinding().front.path,
-                },
-              },
-            },
-            executablePath: "C:\\Temp\\other.exe",
+        validateVisionInstalledBinding({
+          installedRecord: {
+            schemaVersion: "vem-vision-installed/v1",
+            commit: "a".repeat(40),
+            appDirectory: "C:\\VEM\\vision\\app",
+            runtime: "vending-vision.exe",
+            executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
             executableSha256: "b".repeat(64),
-            siteConfigurationSha256: "a".repeat(64),
-            downloadManifestSha256: "c".repeat(64),
-            fixtureManifestSha256: "f".repeat(64),
-            fixtureTopSha256: frameSourceBinding().top.sha256,
-            fixtureFrontSha256: frameSourceBinding().front.sha256,
-            fixtureExpectedResultsSha256:
-              frameSourceBinding().expectedResults.sha256,
-            processId: 1,
-            processOwner: "OtherUser",
-            commandLine:
-              '"C:\\Temp\\other.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
-            taskUser: "VEMKiosk",
-            taskCommand: "C:\\Windows\\System32\\cmd.exe",
-            taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
-            taskWorkingDirectory: "C:\\VEM\\vision\\app",
-            listenerProcessId: 2,
-            listenerOwnerCount: 2,
-            listenerBindingSource: "Get-NetTCPConnection",
+            runtimeWorkDirectory: "C:\\ProgramData\\VEM\\vision\\runtime",
+            siteConfiguration: {
+              path: "C:\\ProgramData\\VEM\\vision\\site.json",
+              sha256: "a".repeat(64),
+            },
+            downloadManifest: {
+              path: "C:\\cache\\vision\\vending-vision-main-artifacts.json",
+              sha256: "c".repeat(64),
+              runtimeArchive: {
+                path: "C:\\cache\\vision\\runtime.zip",
+                sha256: "d".repeat(64),
+              },
+              fixtureArchive: {
+                path: "C:\\cache\\vision\\fixtures.zip",
+                sha256: "e".repeat(64),
+              },
+            },
+            fixtureSet: {
+              manifestPath:
+                "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\fixture-manifest.json",
+              manifestSha256: "f".repeat(64),
+              top: frameSourceBinding().top,
+              front: frameSourceBinding().front,
+              expectedResults: frameSourceBinding().expectedResults,
+            },
           },
-        ),
+          siteConfiguration: {
+            cameras: {
+              top: {
+                source: "recorded_video",
+                role: "presence",
+                video_path: frameSourceBinding().top.path,
+              },
+              front: {
+                source: "recorded_video",
+                role: "profile_tryon",
+                video_path: frameSourceBinding().front.path,
+              },
+            },
+          },
+          executablePath: "C:\\Temp\\other.exe",
+          executableSha256: "b".repeat(64),
+          siteConfigurationSha256: "a".repeat(64),
+          downloadManifestSha256: "c".repeat(64),
+          fixtureManifestSha256: "f".repeat(64),
+          fixtureTopSha256: frameSourceBinding().top.sha256,
+          fixtureFrontSha256: frameSourceBinding().front.sha256,
+          fixtureExpectedResultsSha256:
+            frameSourceBinding().expectedResults.sha256,
+          processId: 1,
+          processOwner: "OtherUser",
+          commandLine:
+            '"C:\\Temp\\other.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
+          taskUser: "VEMKiosk",
+          taskCommand: "C:\\Windows\\System32\\cmd.exe",
+          taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
+          taskWorkingDirectory: "C:\\VEM\\vision\\app",
+          listenerProcessId: 2,
+          listenerOwnerCount: 2,
+          listenerBindingSource: "Get-NetTCPConnection",
+        }),
       /Vision scheduled task user drifted|fixed installed executable|exactly one installed process/,
     );
   });
@@ -1017,9 +1028,7 @@ describe("vision try-on acceptance script", () => {
 
   it("stops the mock child and preserves the primary failure when cleanup also fails", async () => {
     const probeServer = createServer();
-    await new Promise((resolve) =>
-      probeServer.listen(0, "127.0.0.1", resolve),
-    );
+    await new Promise((resolve) => probeServer.listen(0, "127.0.0.1", resolve));
     const { port } = probeServer.address();
     await new Promise((resolve, reject) =>
       probeServer.close((error) => (error ? reject(error) : resolve())),

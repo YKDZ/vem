@@ -177,7 +177,9 @@ async function prepareScannerForSale(handoff, guestInput, sessionStart) {
   }
   const scanner = bindings?.roles?.find((role) => role?.role === "scanner");
   if (scanner?.ready !== true)
-    throw new Error(`scanner binding was not ready: ${JSON.stringify(bindings)}`);
+    throw new Error(
+      `scanner binding was not ready: ${JSON.stringify(bindings)}`,
+    );
 
   await controlPlaneRequest(
     guestInput,
@@ -258,7 +260,11 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
-async function waitForPaymentCodeArm(handoff, renderedSale, timeoutMs = 30_000) {
+async function waitForPaymentCodeArm(
+  handoff,
+  renderedSale,
+  timeoutMs = 30_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
   let consecutiveReady = 0;
@@ -785,6 +791,27 @@ async function runDelayedPickupGuestFull(options) {
       if (checkpoint?.screenshot?.ref)
         screenshotRefs.push(checkpoint.screenshot.ref);
     });
+    const paymentCodeSelector =
+      '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]:not(:disabled)';
+    let paymentCodeSelected = false;
+    for (let attempt = 0; attempt < 3 && !paymentCodeSelected; attempt += 1) {
+      await activateVisibleSelector(client, paymentCodeSelector, {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      paymentCodeSelected = await evaluateExpression(
+        client,
+        `(() => {
+          const option = document.querySelector(${JSON.stringify(paymentCodeSelector)});
+          const submit = document.querySelector('[data-test="checkout-submit"]');
+          return Boolean(option?.classList.contains('payment-option-selected') && !submit?.hasAttribute('disabled'));
+        })()`,
+      );
+    }
+    if (!paymentCodeSelected)
+      throw new Error(
+        "payment-code option did not become the actionable checkout selection",
+      );
     let paymentRouteReached = false;
     for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
       await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
@@ -809,7 +836,9 @@ async function runDelayedPickupGuestFull(options) {
         orderId: paymentSurface.orderId,
         paymentId: paymentSurface.paymentId,
         scannerCodeBase64: Buffer.from(
-          scannerFrame(guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE),
+          scannerFrame(
+            guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
+          ),
           "utf8",
         ).toString("base64"),
       },

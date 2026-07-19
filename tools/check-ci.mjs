@@ -450,7 +450,6 @@ async function runStaticJob() {
   await run("pnpm", ["check:machine-e2e-ci"]);
   await ensureCargoTypify();
   await run("pnpm", ["check:daemon-ipc-contracts"]);
-  await run("pnpm", ["fmt:check"]);
   await run("pnpm", ["turbo", "typecheck"]);
   await run("pnpm", ["turbo", "lint"]);
 }

@@ -254,6 +254,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
   let client;
   let session;
   let recoveredTransport = null;
+  let interruptedTransport = null;
   let liveSale = null;
   let failure = null;
   const report = {
@@ -360,7 +361,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     await pushCheckpoint("payment-before-ipc-recovery");
 
     const uiBefore = await captureRuntimeOperationObservation(client);
-    const interrupted = runLocalPowerShellJson(
+    interruptedTransport = runLocalPowerShellJson(
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "interrupt",
@@ -387,17 +388,11 @@ export async function runInstalledIpcRecoveryGuest(options) {
       }
       await sleep(250);
     } while (Date.now() < overlayDeadline);
-    if (recoveryOverlay == null) {
-      throw new Error(
-        "daemon transport interruption did not expose a recovery overlay",
-      );
-    }
-
     recoveredTransport = runLocalPowerShellJson(
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "recover",
-        operationId: interrupted.guestOperationId,
+        operationId: interruptedTransport.guestOperationId,
         daemonRuntime: handoff.daemon,
       }),
       "daemon transport recovery",
@@ -491,6 +486,11 @@ export async function runInstalledIpcRecoveryGuest(options) {
       60_000,
     );
     await pushCheckpoint("result-after-ipc-recovery");
+    if (recoveryOverlay == null) {
+      throw new Error(
+        "daemon transport interruption did not expose a recovery overlay",
+      );
+    }
     const serialEvidence = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${session.sessionId}/evidence`,
@@ -509,6 +509,27 @@ export async function runInstalledIpcRecoveryGuest(options) {
 
   const cleanup = [];
   let cleanupFailed = false;
+  if (interruptedTransport && !recoveredTransport && handoff?.daemon) {
+    try {
+      recoveredTransport = runLocalPowerShellJson(
+        buildInstalledKioskGuestOperationScript({
+          operation: "daemon_transport_interrupt",
+          phase: "recover",
+          operationId: interruptedTransport.guestOperationId,
+          daemonRuntime: handoff.daemon,
+        }),
+        "daemon transport cleanup recovery",
+      );
+      cleanup.push({ label: "recover daemon transport", ok: true });
+    } catch (error) {
+      cleanupFailed = true;
+      cleanup.push({
+        label: "recover daemon transport",
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   if (guestInput && session?.sessionId) {
     try {
       const result = liveSale
