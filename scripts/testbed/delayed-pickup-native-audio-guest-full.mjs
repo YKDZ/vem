@@ -156,9 +156,10 @@ function daemonHeaders(handoff) {
   };
 }
 
-async function daemonGet(handoff, path) {
+async function daemonGet(handoff, path, timeoutMs = 30_000) {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
+    timeoutMs,
   });
 }
 
@@ -224,11 +225,16 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
 async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
+  let lastError = null;
   while (Date.now() < deadline) {
     const transaction = await daemonGet(
       handoff,
       "/v1/transactions/current",
-    ).catch(() => null);
+      1_000,
+    ).catch((error) => {
+      lastError = error instanceof Error ? error.message : String(error);
+      return null;
+    });
     lastTransaction = transaction;
     const commandId =
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
@@ -248,7 +254,7 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
   }
   throw new Error(
-    `vending command did not appear for order ${renderedSale.orderId}: ${JSON.stringify(lastTransaction)}`,
+    `vending command did not appear for order ${renderedSale.orderId}: ${JSON.stringify({ transaction: lastTransaction, ipcError: lastError })}`,
   );
 }
 

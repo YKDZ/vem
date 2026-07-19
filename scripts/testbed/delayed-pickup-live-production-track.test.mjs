@@ -298,6 +298,11 @@ describe("delayed pickup live production track", () => {
     assert.match(source, /fulfillmentState === "awaiting_fulfillment"/);
     assert.match(source, /movements\?\.length === 0/);
     assert.match(source, /pickupReminder\?\.stage === "pickup_completed"/);
+    assert.doesNotMatch(
+      source,
+      /Date\.parse\(runtime\.observedAt\)/,
+      "cross-host wall clocks must not be used as a causal ordering check",
+    );
   });
 
   it("declares the Issue16 frame barrier used by the full-mode tracer", () => {

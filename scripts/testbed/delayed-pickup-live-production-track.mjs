@@ -449,13 +449,9 @@ export async function startDelayedPickupLiveProductionTrack(
       evidenceDirectory,
       outPath: paths.audioStart,
     });
-    if (
-      Date.parse(audioStart?.captureSession?.startedAt ?? "") <
-        Date.parse(runtime.observedAt) ||
-      !Number.isFinite(Date.parse(audioStart?.captureSession?.startedAt ?? ""))
-    )
+    if (!Number.isFinite(Date.parse(audioStart?.captureSession?.startedAt ?? "")))
       throw new Error(
-        "host default-audio capture did not start after live runtime observation",
+        "host default-audio capture did not report a valid start timestamp",
       );
     const baseline = await captureDaemon("before_f0", null);
     daemonCheckpoints.push(baseline);
