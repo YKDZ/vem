@@ -831,10 +831,30 @@ async fn run_vision_watch(
 ) -> Result<(), String> {
     let mut backoff = 2_000_u64;
     loop {
-        let snapshot = vision
-            .start()
-            .await
-            .unwrap_or_else(crate::vision::VisionRuntimeSnapshot::failed);
+        let (mut session, snapshot) = match vision.connect().await {
+            Ok(connected) => {
+                backoff = 2_000;
+                connected
+            }
+            Err(error) => {
+                let snapshot = crate::vision::VisionRuntimeSnapshot::failed(error);
+                let _ = events.send(DaemonEvent::VisionChanged {
+                    event_id: uuid::Uuid::new_v4().simple().to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                    enabled: snapshot.enabled,
+                    online: snapshot.online,
+                    message: snapshot.message,
+                    latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
+                });
+                tokio::select! {
+                    _ = shutdown.cancelled() => return Ok(()),
+                    _ = time::sleep(std::time::Duration::from_millis(backoff)) => {
+                        backoff = (backoff * 2).min(30_000);
+                        continue;
+                    }
+                }
+            }
+        };
         let _ = events.send(DaemonEvent::VisionChanged {
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             updated_at: crate::state::store::now_iso(),
@@ -843,9 +863,58 @@ async fn run_vision_watch(
             message: snapshot.message,
             latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
         });
-        tokio::select! {
-            _ = shutdown.cancelled() => return Ok(()),
-            _ = time::sleep(std::time::Duration::from_millis(backoff)) => { backoff = (backoff * 2).min(30_000); }
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return Ok(()),
+                event = time::timeout(std::time::Duration::from_secs(10), session.next_event()) => match event {
+                    Err(_) => {
+                        if let Err(error) = session.ping().await {
+                            let snapshot = crate::vision::VisionRuntimeSnapshot::failed(error);
+                            let _ = events.send(DaemonEvent::VisionChanged {
+                                event_id: uuid::Uuid::new_v4().simple().to_string(),
+                                updated_at: crate::state::store::now_iso(),
+                                enabled: snapshot.enabled,
+                                online: snapshot.online,
+                                message: snapshot.message,
+                                latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
+                            });
+                            break;
+                        }
+                    }
+                    Ok(event) => match event {
+                    Ok(event) => {
+                        if event.message_type == "vision.pong" {
+                            continue;
+                        }
+                        let payload = serde_json::json!({
+                            "type": event.message_type,
+                            "payload": event.payload,
+                        });
+                        let _ = events.send(DaemonEvent::VisionChanged {
+                            event_id: uuid::Uuid::new_v4().simple().to_string(),
+                            updated_at: crate::state::store::now_iso(),
+                            enabled: true,
+                            online: true,
+                            message: "vision runtime event".to_string(),
+                            latest_diagnostic_payload: Some(payload),
+                        });
+                    }
+                    Err(error) => {
+                        let snapshot = crate::vision::VisionRuntimeSnapshot::failed(error);
+                        let _ = events.send(DaemonEvent::VisionChanged {
+                            event_id: uuid::Uuid::new_v4().simple().to_string(),
+                            updated_at: crate::state::store::now_iso(),
+                            enabled: snapshot.enabled,
+                            online: snapshot.online,
+                            message: snapshot.message,
+                            latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
+                        });
+                        break;
+                    }
+                    }
+                }
+            }
         }
     }
 }
@@ -1042,15 +1111,69 @@ async fn wait_for_local_signal() -> Result<(), String> {
 mod tests {
     use std::{num::NonZeroU64, sync::Arc};
 
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
     use tokio::sync::broadcast;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+    use tokio_util::sync::CancellationToken;
     use wiremock::{
         matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
     use super::{
-        cache_daemon_events, refresh_provisioning_profile_once, sale_start_capability_input_changed,
+        cache_daemon_events, refresh_provisioning_profile_once, run_vision_watch,
+        sale_start_capability_input_changed,
     };
+
+    #[tokio::test]
+    async fn vision_watch_forwards_runtime_events_over_the_persistent_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let endpoint = format!("ws://{}/ws", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut socket = accept_async(stream).await.expect("websocket");
+            let _ = socket.next().await.expect("hello frame").expect("hello");
+            socket.send(Message::Text(
+                r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-1","timestamp":"2026-07-19T00:00:00.000Z","payload":{"serverName":"test","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":["person_departed"]}}"#.into(),
+            )).await.expect("ready");
+            socket.send(Message::Text(
+                r#"{"protocol":"vem.vision.v1","type":"vision.person_departed","messageId":"departure-1","timestamp":"2026-07-19T00:00:01.000Z","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:01.000Z","lastSeenAt":null}}"#.into(),
+            )).await.expect("departure");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        });
+        let (events, mut receiver) = broadcast::channel(8);
+        let shutdown = CancellationToken::new();
+        let watcher = tokio::spawn(run_vision_watch(
+            crate::vision::VisionSupervisor::with_endpoint(Some("M-1".to_string()), endpoint),
+            events,
+            shutdown.clone(),
+        ));
+
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let DaemonEvent::VisionChanged {
+                    latest_diagnostic_payload: Some(payload),
+                    ..
+                } = receiver.recv().await.expect("vision event")
+                {
+                    if payload["type"] == "vision.person_departed" {
+                        break payload;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("forwarded departure");
+        assert_eq!(forwarded["payload"]["eventId"], "departure-1");
+
+        shutdown.cancel();
+        watcher
+            .await
+            .expect("watcher task")
+            .expect("watcher result");
+        server.await.expect("server task");
+    }
     use crate::{
         backend::BackendClient, events::DaemonEvent, ipc::RuntimeStatusCache,
         runtime_configuration::RuntimeSources, secret::InMemorySecretStore, state::LocalStateStore,

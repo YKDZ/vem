@@ -82,7 +82,7 @@ impl VisionSupervisor {
     }
 
     #[cfg(test)]
-    fn with_endpoint(machine_code: Option<String>, endpoint: String) -> Self {
+    pub(crate) fn with_endpoint(machine_code: Option<String>, endpoint: String) -> Self {
         Self {
             machine_code,
             endpoint,
@@ -106,6 +106,18 @@ impl VisionSupervisor {
             Ok(payload) => Ok(VisionRuntimeSnapshot::from_ready(payload)),
             Err(error) => Err(error),
         }
+    }
+
+    pub async fn connect(
+        &self,
+    ) -> Result<(vending_core::vision::VisionSession, VisionRuntimeSnapshot), String> {
+        let (session, ready) = vending_core::vision::connect_session(
+            &self.endpoint,
+            self.machine_code.clone(),
+            self.timeout_ms,
+        )
+        .await?;
+        Ok((session, VisionRuntimeSnapshot::from_ready(ready)))
     }
 }
 

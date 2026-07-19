@@ -35,6 +35,35 @@ struct ServerEnvelope {
     payload: Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct VisionServerEvent {
+    pub message_type: String,
+    pub payload: Value,
+}
+
+pub struct VisionSession {
+    socket: VisionSocket,
+}
+
+impl VisionSession {
+    pub async fn ping(&mut self) -> Result<(), String> {
+        send_client_message(&mut self.socket, "vision.ping", serde_json::json!({})).await
+    }
+
+    pub async fn next_event(&mut self) -> Result<VisionServerEvent, String> {
+        let envelope = read_server_envelope(&mut self.socket).await?;
+        if envelope.message_type == "vision.error" {
+            let error: VisionErrorPayload = serde_json::from_value(envelope.payload)
+                .map_err(|error| format!("parse vision payload failed: {error}"))?;
+            return Err(vision_error_message(error));
+        }
+        Ok(VisionServerEvent {
+            message_type: envelope.message_type,
+            payload: envelope.payload,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VisionHelloPayload {
@@ -193,6 +222,21 @@ pub async fn check_ready(
     .map_err(|_| "vision self-check timed out".to_string())?
 }
 
+pub async fn connect_session(
+    ws_url: &str,
+    machine_code: Option<String>,
+    timeout_ms: u64,
+) -> Result<(VisionSession, VisionReadyPayload), String> {
+    timeout(Duration::from_millis(timeout_ms), async {
+        let mut socket = connect_vision(ws_url).await?;
+        send_hello(&mut socket, machine_code).await?;
+        let ready = wait_ready(&mut socket).await?;
+        Ok((VisionSession { socket }, ready))
+    })
+    .await
+    .map_err(|_| "vision connection timed out".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +302,38 @@ mod tests {
         let err = check_ready(&ws_url, None, 2000).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("camera_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn connected_session_receives_runtime_events_after_ready() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next").expect("hello");
+            ws_stream
+                .send(Message::Text(
+                    r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":["person_departed"]}}"#.into(),
+                ))
+                .await
+                .expect("send ready");
+            ws_stream
+                .send(Message::Text(
+                    r#"{"protocol":"vem.vision.v1","type":"vision.person_departed","messageId":"2","timestamp":"x","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:00.000Z","lastSeenAt":null}}"#.into(),
+                ))
+                .await
+                .expect("send departure");
+        });
+
+        let (mut session, ready) = connect_session(&ws_url, Some("M-1".to_string()), 2000)
+            .await
+            .expect("session");
+        assert!(ready.camera_ready);
+        let event = session.next_event().await.expect("runtime event");
+        assert_eq!(event.message_type, "vision.person_departed");
+        assert_eq!(event.payload["eventId"], "departure-1");
     }
 }
