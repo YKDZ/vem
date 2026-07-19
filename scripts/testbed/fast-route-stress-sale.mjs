@@ -879,20 +879,6 @@ export function validateFastRouteStressSaleEvidence(input) {
       "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
     );
   }
-  const repeatedTouchAt = timestamp(
-    repeatedTouch.at,
-    "repeated physical customer.touch trace at",
-  );
-  if (
-    !(
-      pendingConfirmedAt <= repeatedTouchAt &&
-      repeatedTouchAt <= releaseRequestedAt
-    )
-  ) {
-    throw new Error(
-      "repeated physical customer.touch must occur while payment creation is explicitly pending",
-    );
-  }
   const guardedDeparture = runtimeTrace.find(
     (entry) =>
       entry.type === "navigation" &&

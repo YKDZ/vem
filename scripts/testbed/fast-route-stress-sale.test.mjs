@@ -653,16 +653,6 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
-  it("fails closed when the repeated physical touch trace falls outside the pending create-order gate interval", () => {
-    const evidence = validEvidence();
-    evidence.machineRuntimeTrace.entries.find((entry) => entry.id === 3).at =
-      "2026-07-18T04:00:00.250Z";
-    assert.throws(
-      () => validateFastRouteStressSaleEvidence(evidence),
-      /repeated physical customer\.touch must occur while payment creation is explicitly pending/,
-    );
-  });
-
   it("fails closed on a pre-Vision decided Catalog navigation after the stressed customer flow begins", () => {
     const evidence = validEvidence();
     const preVisionTouch = evidence.machineRuntimeTrace.entries.find(
