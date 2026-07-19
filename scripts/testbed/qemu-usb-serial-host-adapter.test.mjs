@@ -136,6 +136,27 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
+  it("accepts the asymmetric production B0 query and environment sample frames", () => {
+    assert.equal(
+      validateProductionRawSerialFrame({
+        direction: "daemon-to-controller",
+        rawFrameHex: "55B002",
+        opcode: 0xb0,
+        parsedOpcode: "B0",
+      }).bytes.length,
+      3,
+    );
+    assert.equal(
+      validateProductionRawSerialFrame({
+        direction: "controller-to-daemon",
+        rawFrameHex: "55B02048",
+        opcode: 0xb0,
+        parsedOpcode: "B0",
+      }).bytes.length,
+      4,
+    );
+  });
+
   it("parses timestamped bytes from the host PTY bridge rather than simulator JSONL", () => {
     const root = makeTempDir("vem-qemu-pty-trace");
     const tracePath = join(root, "qemu-pty.trace");

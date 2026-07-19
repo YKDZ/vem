@@ -428,7 +428,11 @@ function attribute(element, name) {
 function soleDomainAudioOutput(domainXml) {
   const xml = String(domainXml);
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
-  const audioDevices = [...xml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g)];
+  const audioXml = xml.replace(/<sound\b[^>]*>[\s\S]*?<\/sound>/g, "");
+  const audioDevices = [
+    ...audioXml.matchAll(/<audio\b[^>]*>([\s\S]*?)<\/audio>/g),
+    ...audioXml.matchAll(/<audio\b[^>]*\/>/g),
+  ];
   if (
     sounds.length !== 1 ||
     attribute(sounds[0][0], "model") !== "ich9" ||
@@ -443,7 +447,8 @@ function soleDomainAudioOutput(domainXml) {
   }
   const outputs = [...audioDevices[0][0].matchAll(/<output\b[^>]*\/>/g)];
   const outputPath =
-    outputs.length === 1 ? attribute(outputs[0][0], "file") : null;
+    attribute(audioDevices[0][0], "path") ??
+    (outputs.length === 1 ? attribute(outputs[0][0], "file") : null);
   if (!outputPath || !outputPath.startsWith("/") || outputPath.includes("\0")) {
     throw new Error("running domain audio output path is invalid");
   }

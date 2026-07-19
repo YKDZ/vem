@@ -37,6 +37,11 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
 function Get-ResolvedVisionMainCommit([string]$CacheRoot) {
   $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
   if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+    $cached = @(Get-ChildItem -LiteralPath $CacheRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^[a-f0-9]{40}$' } |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1)
+    if ($cached.Count -eq 1) { return [string]$cached[0].Name }
     return ""
   }
   try {

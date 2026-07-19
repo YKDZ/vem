@@ -320,7 +320,7 @@ describe("capture-sale-audio host adapter extension", () => {
     const journalPath = join(root, "raw-serial.socat.log");
     const wavPath = join(root, "domain-output.wav");
     const ignoredWavPath = join(root, "attacker-selected.wav");
-    const domainXml = `<domain type="kvm"><devices><audio id="1" type="file"><output file="${wavPath}"/></audio><sound model="ich9"><audio id="1"/></sound></devices></domain>`;
+    const domainXml = `<domain type="kvm"><devices><audio id="1" type="file" path="${wavPath}"/><sound model="ich9"><audio id="1"/></sound></devices></domain>`;
     const testOnlyRunVirsh = (args) => {
       if (args.at(-2) === "domstate") return "running\n";
       if (args.at(-2) === "dumpxml") return domainXml;

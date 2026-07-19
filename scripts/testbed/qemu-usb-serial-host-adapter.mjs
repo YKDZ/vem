@@ -139,6 +139,23 @@ export function validateProductionRawSerialFrame(
     );
   }
   const expectedOpcode = Number.parseInt(record.parsedOpcode, 16);
+  if (expectedOpcode === 0xb0) {
+    const validQuery =
+      record.direction === "daemon-to-controller" &&
+      bytes.length === 3 &&
+      [0x01, 0x02].includes(bytes[2]);
+    const validSample =
+      record.direction === "controller-to-daemon" && bytes.length === 4;
+    if (!validQuery && !validSample) {
+      throw new Error(
+        `${label} B0 must match the production environment query or sample frame`,
+      );
+    }
+    if (bytes[1] !== expectedOpcode || record.opcode !== expectedOpcode) {
+      throw new Error(`${label} B0 opcode must match the production frame`);
+    }
+    return { ...record, bytes };
+  }
   if (
     bytes.length !== 2 ||
     bytes[1] !== expectedOpcode ||
