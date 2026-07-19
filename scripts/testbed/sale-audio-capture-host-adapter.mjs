@@ -3,9 +3,12 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  openSync,
   mkdirSync,
   readFileSync,
+  readSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -505,17 +508,34 @@ function readStableWavSnapshot(path, expected) {
   if (before.device !== expected.device || before.inode !== expected.inode) {
     throw new Error("running domain audio output inode changed during capture");
   }
-  const bytes = readFileSync(path);
+  const bytes = Buffer.alloc(before.byteLength);
+  const descriptor = openSync(path, "r");
+  let offset = 0;
+  try {
+    while (offset < bytes.length) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.length - offset,
+        offset,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
   const after = wavSnapshot(path);
   if (
     after.device !== before.device ||
     after.inode !== before.inode ||
-    after.byteLength !== before.byteLength ||
-    bytes.length !== after.byteLength
+    after.byteLength < before.byteLength ||
+    offset !== before.byteLength
   ) {
     throw new Error("running domain audio output changed while snapshotting");
   }
-  return { bytes, snapshot: after };
+  return { bytes, snapshot: before };
 }
 
 function capturedQemuWav(bytes, startByteLength) {

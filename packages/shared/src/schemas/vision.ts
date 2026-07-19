@@ -168,7 +168,7 @@ export const visionPresenceOccupancySchema = z
   .loose();
 
 export const visionProfileResultPayloadSchema = z.object({
-  source: z.literal("front"),
+  source: z.literal("front").default("front"),
   eventId: z.string().min(1).max(128),
   detectedAt: z.iso.datetime(),
   sourceFrame: visionFrameSourceEvidenceSchema.optional(),
@@ -186,7 +186,7 @@ export const visionProfileResultPayloadSchema = z.object({
 
 export const visionPresenceStatusPayloadSchema = z
   .object({
-    source: z.literal("top"),
+    source: z.literal("top").default("top"),
     eventId: z.string().min(1).max(128),
     detectedAt: z.iso.datetime(),
     state: z.string().min(1).max(64),
@@ -203,7 +203,7 @@ export const visionPresenceStatusPayloadSchema = z
 
 export const visionPersonDepartedPayloadSchema = z
   .object({
-    source: z.literal("top"),
+    source: z.literal("top").default("top"),
     eventId: z.string().min(1).max(128),
     detectedAt: z.iso.datetime(),
     lastSeenAt: z.iso.datetime().nullable().optional(),

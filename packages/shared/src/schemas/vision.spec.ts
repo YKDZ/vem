@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   VISION_PROTOCOL,
   visionErrorMessageSchema,
+  visionPersonDepartedPayloadSchema,
   visionPersonDepartedMessageSchema,
+  visionPresenceStatusPayloadSchema,
   visionPresenceStatusMessageSchema,
+  visionProfileResultPayloadSchema,
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
   visionClientMessageSchema,
@@ -18,6 +21,34 @@ const BASE_ENVELOPE = {
 };
 
 describe("vision protocol schemas", () => {
+  it("normalizes camera roles for runtime events that omit source", () => {
+    expect(
+      visionProfileResultPayloadSchema.parse({
+        eventId: "profile-without-source",
+        detectedAt: "2026-07-19T22:00:00.000Z",
+        profile: { personPresent: true },
+        quality: {
+          overall: "good",
+          warnings: [],
+          profileUsable: true,
+        },
+      }).source,
+    ).toBe("front");
+    expect(
+      visionPresenceStatusPayloadSchema.parse({
+        eventId: "presence-without-source",
+        detectedAt: "2026-07-19T22:00:01.000Z",
+        state: "occupied",
+        personPresent: true,
+      }).source,
+    ).toBe("top");
+    expect(
+      visionPersonDepartedPayloadSchema.parse({
+        eventId: "departure-without-source",
+        detectedAt: "2026-07-19T22:00:02.000Z",
+      }).source,
+    ).toBe("top");
+  });
   it("parses a machine hello message", () => {
     const message = visionClientMessageSchema.parse({
       ...BASE_ENVELOPE,
