@@ -443,11 +443,11 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm virtual store configuration failed" }
 if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { throw "pnpm virtual-store-dir did not resolve to lock-keyed D: cache" }
 if (-not (Test-Path -LiteralPath $pnpmFetchCompletePath -PathType Leaf)) {
-  & $pnpm fetch --frozen-lockfile
+  & $pnpm fetch --frozen-lockfile --trust-lockfile
   if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
   New-Item -ItemType File -Force -Path $pnpmFetchCompletePath | Out-Null
 }
-& $pnpm install --frozen-lockfile --offline
+& $pnpm install --frozen-lockfile --offline --trust-lockfile
 if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }

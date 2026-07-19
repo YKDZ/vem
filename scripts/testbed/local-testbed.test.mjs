@@ -1179,8 +1179,8 @@ describe("Windows D cache contract", () => {
       "& $pnpm config get store-dir",
       "& $pnpm config set virtual-store-dir",
       "& $pnpm config get virtual-store-dir",
-      "& $pnpm fetch --frozen-lockfile",
-      "& $pnpm install --frozen-lockfile --offline",
+      "& $pnpm fetch --frozen-lockfile --trust-lockfile",
+      "& $pnpm install --frozen-lockfile --offline --trust-lockfile",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1217,7 +1217,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile[\s\S]*New-Item -ItemType File -Force -Path \$pnpmFetchCompletePath/,
+      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile --trust-lockfile[\s\S]*New-Item -ItemType File -Force -Path \$pnpmFetchCompletePath/,
     );
     assert.match(
       guest,
