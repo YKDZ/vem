@@ -231,12 +231,17 @@ function platformF1Ready(platform, binding) {
       entry?.orderId === binding.orderId &&
       entry?.commandNo === binding.commandNo,
   );
+  const movements = raw?.movements?.filter(
+    (entry) => entry?.commandNo === binding.commandNo,
+  );
   return (
-    order?.status === "dispensing" &&
+    order?.status === "paid" &&
+    order?.fulfillmentState === "awaiting_fulfillment" &&
     payment?.status === "succeeded" &&
     new Set(["pending", "sent", "acknowledged", "dispensing"]).has(
       command?.status,
-    )
+    ) &&
+    movements?.length === 0
   );
 }
 
@@ -338,7 +343,7 @@ export async function startDelayedPickupLiveProductionTrack(
       await sleep(options.checkpointPollMs ?? 250);
     } while (Date.now() < deadline);
     throw new Error(
-      `timed out waiting for F1 nonterminal daemon/platform settlement for ${observedBinding.commandNo}`,
+      `timed out waiting for F1 nonterminal daemon/platform settlement for ${observedBinding.commandNo}: ${JSON.stringify({ daemon: lastDaemon, platform: lastPlatform })}`,
     );
   }
 

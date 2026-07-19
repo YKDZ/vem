@@ -149,7 +149,14 @@ describe("delayed pickup live production track", () => {
               raw: {
                 orders:
                   stage === "at_f1"
-                    ? [{ id: sale.orderId, orderNo: sale.orderNo, status: "dispensing" }]
+                    ? [
+                        {
+                          id: sale.orderId,
+                          orderNo: sale.orderNo,
+                          status: "paid",
+                          fulfillmentState: "awaiting_fulfillment",
+                        },
+                      ]
                     : [],
                 orderItems: [],
                 payments:
@@ -280,6 +287,16 @@ describe("delayed pickup live production track", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("treats F1 as paid and awaiting fulfillment without a stock movement", () => {
+    const source = readFileSync(
+      new URL("./delayed-pickup-live-production-track.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /order\?\.status === "paid"/);
+    assert.match(source, /fulfillmentState === "awaiting_fulfillment"/);
+    assert.match(source, /movements\?\.length === 0/);
   });
 
   it("declares the Issue16 frame barrier used by the full-mode tracer", () => {
