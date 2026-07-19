@@ -767,8 +767,21 @@ export function validateFastRouteStressSaleEvidence(input) {
       "Vision departure requires a connected installed runtime client and accepted delivery",
     );
   }
-  const visionAt = Date.parse(vision.timestamp);
-  if (!(pendingConfirmedAt <= visionAt && visionAt <= releaseRequestedAt)) {
+  const visionRequestedAt = timestamp(
+    vision.requestedAt,
+    "guest-local Vision departure request",
+  );
+  const visionCompletedAt = timestamp(
+    vision.completedAt,
+    "guest-local Vision departure completion",
+  );
+  if (
+    !(
+      pendingConfirmedAt <= visionRequestedAt &&
+      visionRequestedAt <= visionCompletedAt &&
+      visionCompletedAt <= releaseRequestedAt
+    )
+  ) {
     throw new Error(
       "Vision departure must occur while payment creation is explicitly pending",
     );
@@ -889,9 +902,7 @@ export function validateFastRouteStressSaleEvidence(input) {
         entry.reasonCode,
       ) &&
       entry.decision === "rejected" &&
-      entry.finalRoute !== "#/catalog" &&
-      Number.isFinite(visionAt) &&
-      Date.parse(entry.at) >= visionAt,
+      entry.finalRoute !== "#/catalog",
   );
   if (!guardedDeparture) {
     throw new Error(
@@ -908,8 +919,9 @@ export function validateFastRouteStressSaleEvidence(input) {
       ) &&
       entry?.transactionOrderNo === order.orderNo &&
       entry?.finalRoute !== "#/catalog" &&
-      Number.isFinite(visionAt) &&
-      Date.parse(entry.at) >= visionAt,
+      Number.isFinite(entry?.id) &&
+      Number.isFinite(guardedDeparture?.id) &&
+      entry.id > guardedDeparture.id,
   );
   if (!projectionRefresh) {
     throw new Error(
@@ -1908,7 +1920,13 @@ async function runFastRouteStressSale(options) {
     const pendingCreate = await waitForCreateOrderGatePending(guestInput);
     stage = "vision-departure-during-create-order";
     const pendingConfirmedAt = new Date().toISOString();
-    const visionDelivery = await dispatchVisionDeparture(guestInput);
+    const visionRequestedAt = new Date().toISOString();
+    const visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+    const visionDelivery = {
+      ...visionDeliveryResult,
+      requestedAt: visionRequestedAt,
+      completedAt: new Date().toISOString(),
+    };
     const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
       client,
       "repeated payment touch pre-dispatch trace boundary",

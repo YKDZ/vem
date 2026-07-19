@@ -349,6 +349,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "interrupt",
+        daemonRuntime: handoff.daemon,
       }),
       "daemon transport interrupt",
     );
@@ -382,6 +383,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
         operation: "daemon_transport_interrupt",
         phase: "recover",
         operationId: interrupted.guestOperationId,
+        daemonRuntime: handoff.daemon,
       }),
       "daemon transport recovery",
     );

@@ -237,6 +237,8 @@ function validEvidence() {
       ok: true,
       eventId: "departure-event-1",
       timestamp: "2026-07-18T04:00:00.000Z",
+      requestedAt: "2026-07-18T04:00:00.000Z",
+      completedAt: "2026-07-18T04:00:00.050Z",
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
     },

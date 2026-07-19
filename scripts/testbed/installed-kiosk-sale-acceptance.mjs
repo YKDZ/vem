@@ -453,6 +453,7 @@ export function buildInstalledKioskGuestOperationScript({
   operation,
   phase = "complete",
   operationId = `guest-operation-${randomBytes(12).toString("hex")}`,
+  daemonRuntime = null,
 }) {
   if (![
     "vision_departure",
@@ -464,6 +465,10 @@ export function buildInstalledKioskGuestOperationScript({
   if (!["complete", "interrupt", "recover"].includes(phase)) {
     throw new Error("installed kiosk guest operation phase is invalid");
   }
+  const daemonRuntimeJson = JSON.stringify(daemonRuntime ?? null).replaceAll(
+    "'",
+    "''",
+  );
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $operation = '${operation}'
@@ -474,7 +479,9 @@ $headers = @{ Authorization = "Bearer $($ready.ipcToken)"; 'Content-Type' = 'app
 $base = [string]$ready.healthzUrl -replace '/healthz$', ''
 $before = Invoke-RestMethod -Uri "$base/v1/transactions/current" -Headers $headers -TimeoutSec 10
 if ([string]::IsNullOrWhiteSpace([string]$before.orderNo)) { throw 'guest operation requires an active daemon transaction' }
-$service = Get-Service -Name 'VemVendingDaemon' -ErrorAction Stop
+$service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+$consoleRuntime = '${daemonRuntimeJson}' | ConvertFrom-Json
+$runtimeMode = if ($null -ne $service) { 'windows_service' } elseif ($null -ne $consoleRuntime -and [bool]$consoleRuntime.console) { 'console_process' } else { throw 'daemon runtime owner is unavailable' }
 $daemonLogs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).ToUniversalTime().AddMinutes(-5) } -ErrorAction SilentlyContinue | Select-Object -First 32)
 $logDigestInput = (($daemonLogs | ForEach-Object { "$($_.RecordId):$($_.ProviderName):$($_.Id):$($_.TimeCreated.ToUniversalTime().ToString('o'))" }) -join [Environment]::NewLine)
 $logDigest = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($logDigestInput)) | ForEach-Object { $_.ToString('x2') }) -join ''
@@ -487,10 +494,14 @@ if ($operation -eq 'vision_departure') {
   $catalogRevision = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(($catalog | ConvertTo-Json -Compress -Depth 64))) | ForEach-Object { $_.ToString('x2') }) -join ''
   $catalogInvalidationId = "catalog-invalidation:$($guestOperationId):$catalogRevision"
 } elseif ($phase -eq 'interrupt') {
-  Stop-Service -Name 'VemVendingDaemon' -Force -ErrorAction Stop
+  if ($runtimeMode -eq 'windows_service') {
+    Stop-Service -Name 'VemVendingDaemon' -Force -ErrorAction Stop
+  } else {
+    Stop-Process -Id ([int]$consoleRuntime.processId) -Force -ErrorAction Stop
+  }
   [Console]::Out.WriteLine(([ordered]@{
     operation = $operation; guestOperationId = $guestOperationId; adapterSessionId = "daemon-ipc:$base"
-    session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; serviceName = 'VemVendingDaemon'; serviceStatusBefore = [string]$service.Status }
+    session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; runtimeMode = $runtimeMode; serviceName = if ($null -ne $service) { 'VemVendingDaemon' } else { $null }; serviceStatusBefore = if ($null -ne $service) { [string]$service.Status } else { 'Running' } }
     daemon = [ordered]@{ transactionBefore = [ordered]@{ orderNo = [string]$before.orderNo; updatedAt = [string]$before.updatedAt }; transport = [ordered]@{ phase = 'interrupted'; serviceStopped = $true } }
     platform = [ordered]@{ machineCode = [string]$before.machineCode; orderNo = [string]$before.orderNo }
     log = [ordered]@{ collector = 'windows_application_log'; recordCount = $daemonLogs.Count; digest = $logDigest; operationId = $guestOperationId }
@@ -498,7 +509,12 @@ if ($operation -eq 'vision_departure') {
   } | ConvertTo-Json -Compress -Depth 12))
   exit 0
 } elseif ($phase -eq 'recover') {
-  Start-Service -Name 'VemVendingDaemon' -ErrorAction Stop
+  if ($runtimeMode -eq 'windows_service') {
+    Start-Service -Name 'VemVendingDaemon' -ErrorAction Stop
+  } else {
+    $started = Start-Process -FilePath ([string]$consoleRuntime.executablePath) -ArgumentList @('--console', '--data-dir', [string]$consoleRuntime.dataDirectory) -WorkingDirectory ([string]$consoleRuntime.workingDirectory) -RedirectStandardOutput ([string]$consoleRuntime.stdoutPath) -RedirectStandardError ([string]$consoleRuntime.stderrPath) -PassThru
+    $consoleRuntime.processId = $started.Id
+  }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     Start-Sleep -Milliseconds 250
@@ -517,7 +533,7 @@ if ([string]$after.orderNo -cne [string]$before.orderNo) { throw 'daemon transpo
   operation = $operation
   guestOperationId = $guestOperationId
   adapterSessionId = "daemon-ipc:$base"
-  session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; serviceName = 'VemVendingDaemon'; serviceStatusBefore = [string]$service.Status; serviceStatusAfter = [string](Get-Service -Name 'VemVendingDaemon').Status }
+  session = [ordered]@{ daemonReadyFile = 'C:\ProgramData\VEM\vending-daemon\daemon-ready.json'; daemonEndpoint = $base; runtimeMode = $runtimeMode; serviceName = if ($null -ne $service) { 'VemVendingDaemon' } else { $null }; serviceStatusBefore = if ($null -ne $service) { [string]$service.Status } else { 'Stopped' }; serviceStatusAfter = if ($null -ne $service) { [string](Get-Service -Name 'VemVendingDaemon').Status } else { 'Running' } }
   daemon = [ordered]@{ transactionBefore = [ordered]@{ orderNo = [string]$before.orderNo; updatedAt = [string]$before.updatedAt }; transactionAfter = [ordered]@{ orderNo = [string]$after.orderNo; updatedAt = [string]$after.updatedAt }; runtimeTrace = [ordered]@{ eventId = if ($null -ne $vision) { [string]$vision.eventId } else { $null }; observedAt = (Get-Date).ToUniversalTime().ToString('o'); endpoint = "$base/v1/vision/status" }; catalog = [ordered]@{ revision = if ($null -ne $catalogRevision) { $catalogRevision } else { $null }; invalidationId = if ($null -ne $catalogInvalidationId) { $catalogInvalidationId } else { $null } }; transport = [ordered]@{ phase = if ($operation -eq 'daemon_transport_interrupt') { 'recovered' } else { 'uninterrupted' }; healthz = $null -ne $health } }
   platform = [ordered]@{ machineCode = [string]$after.machineCode; orderNo = [string]$after.orderNo }
   log = [ordered]@{ collector = 'windows_application_log'; recordCount = $daemonLogs.Count; digest = $logDigest; operationId = $guestOperationId }

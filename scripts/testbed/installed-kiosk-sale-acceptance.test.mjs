@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 
 import {
   buildInstalledKioskSaleAcceptancePlan,
+  buildInstalledKioskGuestOperationScript,
   buildInstalledKioskSaleScenarioSteps,
   deriveFulfillmentBinding,
   evaluateInstalledErrorMatrixEvidence,
@@ -25,6 +26,27 @@ const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
 
 describe("installed kiosk sale preflight", () => {
+  it("interrupts and restores the deployed console daemon recorded by handoff", () => {
+    const script = buildInstalledKioskGuestOperationScript({
+      operation: "daemon_transport_interrupt",
+      phase: "recover",
+      daemonRuntime: {
+        console: true,
+        processId: 42,
+        executablePath: "C:\\VEM\\runtime\\vending-daemon.exe",
+        dataDirectory: "C:\\ProgramData\\VEM\\vending-daemon",
+        workingDirectory: "C:\\VEM\\runtime",
+        stdoutPath: "C:\\ProgramData\\VEM\\daemon.stdout.log",
+        stderrPath: "C:\\ProgramData\\VEM\\daemon.stderr.log",
+      },
+    });
+
+    assert.match(script, /runtimeMode = .*console_process/);
+    assert.match(script, /Start-Process -FilePath/);
+    assert.match(script, /--console/);
+    assert.match(script, /--data-dir/);
+  });
+
   it("proves payment-code acceptance cannot use development submit intents", () => {
     const acceptance = readFileSync(
       "scripts/testbed/installed-kiosk-sale-acceptance.mjs",

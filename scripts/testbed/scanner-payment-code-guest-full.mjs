@@ -497,13 +497,7 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     const scannerCandidate = scanner?.candidates?.find(
       (candidate) =>
         candidate.currentPort === scanner.currentPort &&
-        scannerPnp &&
-        matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity) &&
-        pnpObservationMatchesDaemonIdentity(
-          scannerPnp,
-          candidate.identity,
-          scanner.currentPort,
-        ),
+        matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity),
     );
     if (
       lower?.ready === true &&
@@ -512,7 +506,6 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
       /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
       lower.currentPort !== scanner.currentPort &&
       typeof lower.binding?.identity?.identityKey === "string" &&
-      scannerPnp &&
       scannerCandidate
     ) {
       const qemuMappings = sessionStart?.qemuUsbSerialMappings;
@@ -521,7 +514,7 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
         qemuUsbSerialMappings: qemuMappings,
         scanner: {
           libvirtUsbTopology: scannerMapping.guestUsbTopology,
-          windowsPnpObservation: scannerPnp,
+          windowsPnpObservation: scannerPnp ?? null,
           daemonBindingIdentity: scanner.binding.identity,
           currentPort: scanner.currentPort,
           observedCandidate: scannerCandidate,
