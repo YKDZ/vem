@@ -466,9 +466,8 @@ Write-TestbedPhase "claim-runtime"
 $claim = Invoke-Claim $guestInput
 if (-not [bool]$claim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon restart" }
 Write-TestbedPhase "restart-claimed-runtime"
-if (-not $daemonProcess.WaitForExit(15000)) {
-  throw "pre-claim daemon did not exit after the accepted claim"
-}
+$daemonProcess | Stop-Process -Force
+if (-not $daemonProcess.WaitForExit(5000)) { throw "pre-claim daemon did not stop for the requested restart" }
 Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
 $runtimeReady = Wait-RuntimeReady

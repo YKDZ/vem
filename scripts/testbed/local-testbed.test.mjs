@@ -1151,6 +1151,7 @@ describe("Windows D cache contract", () => {
     const claimedReady = guest.indexOf("$runtimeReady = Wait-RuntimeReady", claimedRestart);
     assert.ok(claim >= 0 && claimedRestart > claim && claimedReady > claimedRestart && serialStart > claimedReady);
     assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
+    assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
     assert.match(
       guest,
       /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,
