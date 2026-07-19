@@ -145,15 +145,20 @@ describe("repo QEMU USB serial host adapter", () => {
         [
           "> 2026/07/18 08:00:00.123456 length=2",
           " 55 f0",
+          "< 2026/07/18 08:00:00.500001 length=3",
+          " 55 b0 02",
+          "> 2026/07/18 08:00:00.600001 length=4",
+          " 55 b0 18 2d",
           "< 2026/07/18 08:00:01.000001 length=4",
           " 55 02 05 31",
         ].join("\n"),
       );
       assert.deepEqual(
         readRawSerialJournal(tracePath).map(
-          ({ direction, rawFrameHex, capturedAt }) => ({
+          ({ direction, rawFrameHex, parsedOpcode, capturedAt }) => ({
             direction,
             rawFrameHex,
+            parsedOpcode,
             capturedAt,
           }),
         ),
@@ -161,11 +166,25 @@ describe("repo QEMU USB serial host adapter", () => {
           {
             direction: "controller-to-daemon",
             rawFrameHex: "55F0",
+            parsedOpcode: "F0",
             capturedAt: "2026-07-18T08:00:00.123Z",
           },
           {
             direction: "daemon-to-controller",
+            rawFrameHex: "55B002",
+            parsedOpcode: "B0",
+            capturedAt: "2026-07-18T08:00:00.500Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55B0182D",
+            parsedOpcode: "B0",
+            capturedAt: "2026-07-18T08:00:00.600Z",
+          },
+          {
+            direction: "daemon-to-controller",
             rawFrameHex: "55020531",
+            parsedOpcode: "VEND",
             capturedAt: "2026-07-18T08:00:01.000Z",
           },
         ],

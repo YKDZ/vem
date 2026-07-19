@@ -647,13 +647,19 @@ export function readRawSerialJournal(path) {
   const flush = () => {
     while (pending.length >= 2) {
       const frameLength =
-        pending[0] === FRAME_HEAD && pending[1] >= 1 && pending[1] <= 9 ? 4 : 2;
+        pending[0] === FRAME_HEAD && pending[1] >= 1 && pending[1] <= 9
+          ? 4
+          : pending[0] === FRAME_HEAD && pending[1] === 0xb0
+            ? direction === "daemon-to-controller"
+              ? 3
+              : 4
+            : 2;
       if (pending.length < frameLength) return;
       const bytes = pending.subarray(0, frameLength);
       pending = pending.subarray(frameLength);
       if (bytes[0] !== FRAME_HEAD || !direction || !capturedAt) continue;
       const parsedOpcode =
-        frameLength === 4
+        bytes[1] >= 1 && bytes[1] <= 9
           ? "VEND"
           : bytes[1].toString(16).padStart(2, "0").toUpperCase();
       records.push({
