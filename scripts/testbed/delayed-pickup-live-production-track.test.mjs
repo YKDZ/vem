@@ -46,6 +46,8 @@ describe("delayed pickup live production track", () => {
     assert.ok(inject > prepare);
     assert.match(source, /stop-scanner-probe/);
     assert.match(source, /\/v1\/sale-start-capability/);
+    assert.match(source, /scannerCode: scannerFrame\(/);
+    assert.match(source, /\\r\\n/);
   });
 
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {

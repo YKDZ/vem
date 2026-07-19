@@ -30,6 +30,10 @@ const DEFAULT_SCANNER_CODE = "6901234567892";
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CLEANUP_TIMEOUT_MS = 10_000;
 
+function scannerFrame(code) {
+  return `${required(code, "scanner code").replace(/[\r\n]+$/u, "")}\r\n`;
+}
+
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
@@ -766,7 +770,9 @@ async function runDelayedPickupGuestFull(options) {
       {
         orderId: liveSale.orderId,
         paymentId: liveSale.paymentId,
-        scannerCode: guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
+        scannerCode: scannerFrame(
+          guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
+        ),
       },
     );
 
