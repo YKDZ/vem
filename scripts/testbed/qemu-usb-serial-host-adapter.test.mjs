@@ -107,6 +107,12 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
+  it("publishes semantic role aliases after libvirt alias normalization", () => {
+    const mappings = parseLibvirtUsbSerialMappings(libvirtNormalizedDomainXml());
+    assert.equal(mappings[0].alias, "serial0");
+    assert.equal(mappings[1].alias, "serial1");
+  });
+
   it("fails closed when raw protocol evidence is not a production 55 frame or has a bad vend checksum", () => {
     assert.throws(
       () =>

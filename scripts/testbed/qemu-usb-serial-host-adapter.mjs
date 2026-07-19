@@ -357,7 +357,10 @@ function contractMappings(liveMappings, pid, connectionState = "connected") {
       `guest-device://libvirt-usb-bus-${mapping.guestUsbTopology.usbBus}` +
       `-port-${mapping.guestUsbTopology.usbPort.replaceAll(".", "-")}` +
       `-target-${mapping.guestUsbTopology.targetPort}`,
-    guestUsbTopology: mapping.guestUsbTopology,
+    guestUsbTopology: {
+      ...mapping.guestUsbTopology,
+      alias: `serial-${mapping.role}`,
+    },
     simulatorProcessIdentity:
       mapping.role === "lower-controller"
         ? `linux-process://pid-${pid}`
