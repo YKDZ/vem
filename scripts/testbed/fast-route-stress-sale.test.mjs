@@ -242,6 +242,9 @@ function validEvidence() {
       capturedAt: "2026-07-18T03:59:59.700Z",
     },
     repeatedPaymentTouch: {
+      traceEntryId: 3,
+      pendingConfirmedAt: "2026-07-18T03:59:59.900Z",
+      releaseRequestedAt: "2026-07-18T04:00:00.200Z",
       preDispatchTraceBoundary: {
         source: "installed_machine_runtime_trace_cdp",
         entryCount: 2,
@@ -608,7 +611,8 @@ describe("fast route stress sale tracer", () => {
 
   it("fails closed when Vision departure is not anchored inside the gated pending payment creation interval", () => {
     const evidence = validEvidence();
-    evidence.createOrderGate.releasedAt = "2026-07-18T03:59:59.950Z";
+    evidence.repeatedPaymentTouch.releaseRequestedAt =
+      "2026-07-18T03:59:59.950Z";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
       /Vision departure must occur while payment creation is explicitly pending/,

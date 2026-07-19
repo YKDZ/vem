@@ -734,6 +734,20 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const vision = input.visionDelivery ?? {};
+  const repeatedPaymentTouch = input.repeatedPaymentTouch ?? {};
+  const pendingConfirmedAt = timestamp(
+    repeatedPaymentTouch.pendingConfirmedAt,
+    "guest-local payment gate pending confirmation",
+  );
+  const releaseRequestedAt = timestamp(
+    repeatedPaymentTouch.releaseRequestedAt,
+    "guest-local payment gate release request",
+  );
+  if (releaseRequestedAt < pendingConfirmedAt) {
+    throw new Error(
+      "guest-local payment gate sequence must confirm pending before release",
+    );
+  }
   if (
     vision.ok !== true ||
     typeof vision.eventId !== "string" ||
@@ -746,7 +760,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const visionAt = Date.parse(vision.timestamp);
-  if (!(gateObservedAt <= visionAt && visionAt <= gateReleasedAt)) {
+  if (!(pendingConfirmedAt <= visionAt && visionAt <= releaseRequestedAt)) {
     throw new Error(
       "Vision departure must occur while payment creation is explicitly pending",
     );
@@ -828,7 +842,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   );
   const repeatedTouchTrace = traceEntriesAfterBoundary(
     runtimeTrace,
-    input.repeatedPaymentTouch?.preDispatchTraceBoundary,
+    repeatedPaymentTouch.preDispatchTraceBoundary,
     "repeated payment touch pre-dispatch trace boundary",
   );
   const repeatedTouch = repeatedTouchTrace.find(
@@ -836,7 +850,8 @@ export function validateFastRouteStressSaleEvidence(input) {
       entry?.type === "navigation" &&
       entry?.intentType === "customer.touch" &&
       entry?.decision === "accepted" &&
-      entry?.reasonCode === "touchscreen_session_renewed",
+      entry?.reasonCode === "touchscreen_session_renewed" &&
+      entry?.id === repeatedPaymentTouch.traceEntryId,
   );
   if (!repeatedTouch) {
     throw new Error(
@@ -848,7 +863,10 @@ export function validateFastRouteStressSaleEvidence(input) {
     "repeated physical customer.touch trace at",
   );
   if (
-    !(gateObservedAt <= repeatedTouchAt && repeatedTouchAt <= gateReleasedAt)
+    !(
+      pendingConfirmedAt <= repeatedTouchAt &&
+      repeatedTouchAt <= releaseRequestedAt
+    )
   ) {
     throw new Error(
       "repeated physical customer.touch must occur while payment creation is explicitly pending",
@@ -1243,13 +1261,8 @@ async function captureRuntimeTraceBoundary(client, label) {
 async function waitForRepeatedCustomerTouchTrace(
   client,
   preDispatchTraceBoundary,
-  pendingObservedAt,
   timeoutMs = 5_000,
 ) {
-  const pendingAt = timestamp(
-    pendingObservedAt,
-    "create-order gate pendingObservedAt",
-  );
   const deadline = Date.now() + timeoutMs;
   let lastTrace = [];
   do {
@@ -1263,9 +1276,7 @@ async function waitForRepeatedCustomerTouchTrace(
         entry?.type === "navigation" &&
         entry?.intentType === "customer.touch" &&
         entry?.decision === "accepted" &&
-        entry?.reasonCode === "touchscreen_session_renewed" &&
-        timestamp(entry?.at, "repeated physical customer.touch trace at") >=
-          pendingAt,
+        entry?.reasonCode === "touchscreen_session_renewed",
     );
     if (touch) return touch;
     await sleep(25);
@@ -1875,6 +1886,7 @@ async function runFastRouteStressSale(options) {
     stage = "wait-create-order-pending-boundary";
     const pendingCreate = await waitForCreateOrderGatePending(guestInput);
     stage = "vision-departure-during-create-order";
+    const pendingConfirmedAt = new Date().toISOString();
     const visionDelivery = await dispatchVisionDeparture(guestInput);
     const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
       client,
@@ -1885,13 +1897,16 @@ async function runFastRouteStressSale(options) {
       firstSubmit,
     );
     assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
-    await waitForRepeatedCustomerTouchTrace(
+    const repeatedTouchTrace = await waitForRepeatedCustomerTouchTrace(
       client,
       preDispatchTraceBoundary,
-      pendingCreate.observedAt,
     );
+    const releaseRequestedAt = new Date().toISOString();
     repeatedPaymentTouch = {
       preDispatchTraceBoundary,
+      traceEntryId: repeatedTouchTrace.id,
+      pendingConfirmedAt,
+      releaseRequestedAt,
     };
     const releasedCreateOrderGate = await releaseCreateOrderGate(
       guestInput,
