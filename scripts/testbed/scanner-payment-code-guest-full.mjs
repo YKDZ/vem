@@ -18,7 +18,6 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { waitForSaleStartCapability } from "./serial-sale-readiness.mjs";
 
 const MODES = new Set(["full"]);
 const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r\n";
@@ -642,6 +641,35 @@ async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
       `scanner sale capability did not recover after binding: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+export async function waitForSaleStartCapability(
+  daemonGetRequest,
+  { timeoutMs = 30_000, paymentOptionKey = "mock:mock" } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await daemonGetRequest("/v1/sale-start-capability").catch(
+      () => null,
+    );
+    const options = last?.paymentOptions?.options;
+    const option = Array.isArray(options)
+      ? options.find((entry) => entry?.optionKey === paymentOptionKey)
+      : null;
+    if (
+      last?.canStartSale === true &&
+      Number.isInteger(last?.revision) &&
+      option?.ready === true &&
+      option?.disabledReason === null
+    ) {
+      return last;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${paymentOptionKey} sale capability did not recover: ${JSON.stringify(last)}`,
+  );
 }
 
 async function waitForSuccessfulResultSurface(

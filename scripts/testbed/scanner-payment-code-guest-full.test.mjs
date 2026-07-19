@@ -12,6 +12,7 @@ import {
   scannerFrameBytes,
   runCleanupStep,
   validateSuccessfulOutcome,
+  waitForSaleStartCapability,
 } from "./scanner-payment-code-guest-full.mjs";
 
 describe("scanner payment-code guest full", () => {
@@ -31,6 +32,48 @@ describe("scanner payment-code guest full", () => {
     assert.equal(
       options.outPath,
       "C:\\ProgramData\\VEM\\testbed\\scanner-payment-code.json",
+    );
+  });
+
+  it("waits for the configured payment option to become startable", async () => {
+    const responses = [
+      { canStartSale: false, revision: null },
+      {
+        canStartSale: true,
+        revision: 3,
+        paymentOptions: {
+          options: [
+            { optionKey: "mock:mock", ready: true, disabledReason: null },
+          ],
+        },
+      },
+    ];
+    const snapshot = await waitForSaleStartCapability(
+      async () => responses.shift(),
+      { timeoutMs: 2_000 },
+    );
+    assert.equal(snapshot.revision, 3);
+  });
+
+  it("rejects a payment option that remains unavailable", async () => {
+    await assert.rejects(
+      waitForSaleStartCapability(
+        async () => ({
+          canStartSale: true,
+          revision: 3,
+          paymentOptions: {
+            options: [
+              {
+                optionKey: "mock:mock",
+                ready: false,
+                disabledReason: "hardware_not_ready",
+              },
+            ],
+          },
+        }),
+        { timeoutMs: 100 },
+      ),
+      /mock:mock sale capability did not recover/,
     );
   });
 

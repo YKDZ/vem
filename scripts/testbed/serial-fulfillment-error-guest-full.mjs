@@ -16,8 +16,10 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
-import { waitForSaleStartCapability } from "./serial-sale-readiness.mjs";
+import {
+  waitForHardwareBindings,
+  waitForSaleStartCapability,
+} from "./scanner-payment-code-guest-full.mjs";
 
 const TERMINAL_FAILURE_ORDER_STATUSES = new Set([
   "refund_pending",
