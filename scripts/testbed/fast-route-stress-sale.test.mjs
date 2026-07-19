@@ -845,6 +845,7 @@ describe("fast route stress sale tracer", () => {
       "beforeF0",
       "afterF1BeforeF2",
       "afterF2",
+      "failureCurrentTransaction",
     ]);
     assert.deepEqual(report.logs.platform, {
       ref: "/tmp/fast-route/platform-service-api.log",

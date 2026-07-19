@@ -509,6 +509,8 @@ function startSession(request) {
     [
       "-x",
       "-v",
+      "-lf",
+      join(dir, "socat.log"),
       `PTY,link=${lowerControllerProxyPath},rawer,echo=0,waitslave`,
       `FILE:${lower.path},raw,echo=0`,
     ],

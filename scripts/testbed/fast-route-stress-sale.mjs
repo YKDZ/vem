@@ -1572,6 +1572,8 @@ export function buildFastRouteStressSaleFailureReport(input) {
         beforeF0: input.snapshots?.daemon?.beforeF0 ?? null,
         afterF1BeforeF2: input.snapshots?.daemon?.afterF1BeforeF2 ?? null,
         afterF2: input.snapshots?.daemon?.afterF2 ?? null,
+        failureCurrentTransaction:
+          input.snapshots?.daemon?.failureCurrentTransaction ?? null,
       },
     },
     hostEvidence: input.hostEvidence ?? null,
@@ -2182,6 +2184,16 @@ async function runFastRouteStressSale(options) {
     };
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
+    const failureCurrentTransaction = handoff
+      ? await daemonGet(handoff, "/v1/transactions/current").catch(
+          (transactionError) => ({
+            evidenceError:
+              transactionError instanceof Error
+                ? transactionError.message
+                : String(transactionError),
+          }),
+        )
+      : null;
     const failureCheckpoints = [...checkpoints];
     if (clientReady) {
       const failure = await captureCheckpoint(client, `failure-${stage}`, {
@@ -2243,6 +2255,7 @@ async function runFastRouteStressSale(options) {
           beforeF0: beforeF0SaleView,
           afterF1BeforeF2: afterF1SaleView,
           afterF2: afterF2SaleView,
+          failureCurrentTransaction,
         },
       },
       hostEvidence,
