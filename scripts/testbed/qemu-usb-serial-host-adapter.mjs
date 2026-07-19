@@ -307,7 +307,7 @@ export function qemuUsbSerialSessionPaths(root, serialSessionId) {
   return {
     directory: path,
     statePath: join(path, "state.json"),
-    journalPath: join(path, "raw-serial.jsonl"),
+    journalPath: join(path, "raw-serial.socat.log"),
     lowerControllerProxyPath: join(path, "lower-controller-pty"),
     releaseF0Path: join(path, "release-f0"),
     releaseF2Path: join(path, "release-f2"),
@@ -495,7 +495,10 @@ function startSession(request) {
   );
   if (!existsSync(simulator))
     throw new Error("repo lower-controller simulator binary does not exist");
-  const journalPath = join(dir, "raw-serial.socat.log");
+  const journalPath = qemuUsbSerialSessionPaths(
+    stateRoot(),
+    binding.serialSessionId,
+  ).journalPath;
   const bridgeStderrPath = join(dir, "socat.stderr.log");
   const lowerControllerProxyPath = join(dir, "lower-controller-pty");
   const releaseF0Path = join(dir, "release-f0");

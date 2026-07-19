@@ -293,8 +293,9 @@ describe("repo QEMU USB serial host adapter", () => {
     const source = readFileSync(adapterPath, "utf8");
     assert.match(
       source,
-      /const journalPath = join\(dir, "raw-serial\.socat\.log"\)/,
+      /journalPath: join\(path, "raw-serial\.socat\.log"\)/,
     );
+    assert.match(source, /const journalPath = qemuUsbSerialSessionPaths\(/);
     assert.match(source, /"-lf",\s*journalPath/);
     assert.match(
       source,
