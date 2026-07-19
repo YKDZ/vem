@@ -525,8 +525,9 @@ impl MachineAudioState {
         };
         let completion = OnceCompletionSignal::new(self.completion_tx.clone(), generation);
         player.append(source);
+        let terminal_player = Arc::clone(&player);
         spawn_terminal_waiter(move || {
-            player.sleep_until_end();
+            terminal_player.sleep_until_end();
             completion.send();
         });
         player.play();
