@@ -127,6 +127,9 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
       ref: destination,
       source: sourcePath,
       byteLength: Math.min(bytes.length, maxBytes),
+      tail: bytes
+        .subarray(Math.max(0, bytes.length - Math.min(maxBytes, 4 * 1024)))
+        .toString("utf8"),
     };
   } catch {
     return { ref: null, source: sourcePath, byteLength: 0 };

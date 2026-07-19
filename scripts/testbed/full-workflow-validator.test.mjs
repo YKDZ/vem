@@ -309,16 +309,16 @@ describe("full workflow aggregate validator", () => {
       evidenceManifestPath: manifestPath,
       executedTracks: [
         { key: "fast", status: "passed", exitCode: 0, reportOk: true },
-        { key: "delayedPickup", status: "passed", exitCode: 0, reportOk: true },
         { key: "scanner", status: "passed", exitCode: 0, reportOk: true },
-        { key: "ipcRecovery", status: "passed", exitCode: 0, reportOk: true },
+        { key: "visionTryOn", status: "passed", exitCode: 0, reportOk: true },
         {
           key: "fulfillmentFailure",
           status: "passed",
           exitCode: 0,
           reportOk: true,
         },
-        { key: "visionTryOn", status: "passed", exitCode: 0, reportOk: true },
+        { key: "delayedPickup", status: "passed", exitCode: 0, reportOk: true },
+        { key: "ipcRecovery", status: "passed", exitCode: 0, reportOk: true },
       ],
     });
     assert.equal(report.ok, true);
@@ -453,11 +453,11 @@ describe("full workflow stability gate", () => {
       execution: {
         executedTracks: [
           "fast",
-          "delayedPickup",
           "scanner",
-          "ipcRecovery",
-          "fulfillmentFailure",
           "visionTryOn",
+          "fulfillmentFailure",
+          "delayedPickup",
+          "ipcRecovery",
         ].map((key) => ({ key })),
       },
       identity: sampleIdentity(),
@@ -552,11 +552,11 @@ describe("full workflow stability gate", () => {
       execution: {
         executedTracks: [
           "fast",
-          "delayedPickup",
           "scanner",
-          "ipcRecovery",
-          "fulfillmentFailure",
           "visionTryOn",
+          "fulfillmentFailure",
+          "delayedPickup",
+          "ipcRecovery",
         ].map((key) => ({ key })),
       },
       identity: sampleIdentity("a"),

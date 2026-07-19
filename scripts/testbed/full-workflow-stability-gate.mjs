@@ -18,11 +18,11 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
 ]);
 const REQUIRED_EXECUTION_ORDER = Object.freeze([
   "fast",
-  "delayedPickup",
   "scanner",
-  "ipcRecovery",
-  "fulfillmentFailure",
   "visionTryOn",
+  "fulfillmentFailure",
+  "delayedPickup",
+  "ipcRecovery",
 ]);
 
 function required(value, label) {
@@ -135,7 +135,7 @@ export function buildStabilityGateReport({
       label === "passA"
     ) {
       gateFailures.push(
-        "pass A execution order is not fast -> delayed audio -> scanner -> IPC recovery -> fulfillment failure -> Vision",
+        "pass A execution order is not fast -> scanner -> Vision -> fulfillment failure -> delayed audio -> IPC recovery",
       );
     }
     if (
@@ -145,7 +145,7 @@ export function buildStabilityGateReport({
       label === "passB"
     ) {
       gateFailures.push(
-        "pass B execution order is not fast -> delayed audio -> scanner -> IPC recovery -> fulfillment failure -> Vision",
+        "pass B execution order is not fast -> scanner -> Vision -> fulfillment failure -> delayed audio -> IPC recovery",
       );
     }
   }

@@ -71,7 +71,15 @@ async function createServer(scenario: MockVisionScenario): Promise<string> {
 async function postJson(
   url: string,
   body: unknown,
-): Promise<{ status: number; json: unknown }> {
+): Promise<{
+  status: number;
+  json: {
+    ok?: boolean;
+    connectedRuntimeClients?: number;
+    acceptedDeliveries?: number;
+    eventId?: string;
+  };
+}> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -79,7 +87,12 @@ async function postJson(
   });
   return {
     status: response.status,
-    json: await response.json(),
+    json: (await response.json()) as {
+      ok?: boolean;
+      connectedRuntimeClients?: number;
+      acceptedDeliveries?: number;
+      eventId?: string;
+    },
   };
 }
 

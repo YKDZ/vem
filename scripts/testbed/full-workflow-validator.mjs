@@ -428,11 +428,11 @@ export function buildFullWorkflowAggregate({
     normalizedMode === "full"
       ? [
           "fast",
-          "delayedPickup",
           "scanner",
-          "ipcRecovery",
-          "fulfillmentFailure",
           "visionTryOn",
+          "fulfillmentFailure",
+          "delayedPickup",
+          "ipcRecovery",
         ]
       : ["fast"];
   const executionFailures = requiredChildren
