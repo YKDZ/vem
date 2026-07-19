@@ -2233,24 +2233,6 @@ async function runVisionTryOnAcceptance(options) {
   let realVisionStopped = false;
   let restoredRuntimeVerification = null;
   try {
-    stage = "reset-installed-vision-fixture-source";
-    await stopVisionRuntime();
-    realVisionStopped = true;
-    await waitForVisionPortRelease();
-    await startInstalledVisionRuntime();
-    await waitForCondition(
-      "restarted Vision health",
-      async () => {
-        const health = await fetchJson("http://127.0.0.1:7892/health").catch(
-          () => null,
-        );
-        return { ok: health?.status === "ok", value: health };
-      },
-      45_000,
-      500,
-    );
-    realVisionStopped = false;
-
     const installedBinding = await collectVisionInstalledBinding();
     const installedBindingSummary =
       validateVisionInstalledBinding(installedBinding);
@@ -2287,6 +2269,24 @@ async function runVisionTryOnAcceptance(options) {
       { kind: "touch", timeoutMs: 30_000 },
     );
     const baselineCatalogProjection = await waitForCatalogProducts(client);
+
+    stage = "reset-installed-vision-fixture-source";
+    await stopVisionRuntime();
+    realVisionStopped = true;
+    await waitForVisionPortRelease();
+    await startInstalledVisionRuntime();
+    await waitForCondition(
+      "restarted Vision health",
+      async () => {
+        const health = await fetchJson("http://127.0.0.1:7892/health").catch(
+          () => null,
+        );
+        return { ok: health?.status === "ok", value: health };
+      },
+      45_000,
+      100,
+    );
+    realVisionStopped = false;
 
     stage = "collect-vision-protocol";
     const protocolEvidence = await collectVisionProtocolEvidence({

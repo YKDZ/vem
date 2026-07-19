@@ -94,6 +94,18 @@ describe("installed kiosk sale preflight", () => {
     assert.match(script, /transactionBefore/);
   });
 
+  it("passes the captured transaction into both full-track daemon recovery paths", () => {
+    const source = readFileSync(
+      "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
+      "utf8",
+    );
+    assert.equal(source.match(/expectedTransaction:\s*\{/g)?.length, 2);
+    assert.equal(
+      source.match(/interruptedTransport\.daemon\.transactionBefore/g)?.length,
+      2,
+    );
+  });
+
   it("proves payment-code acceptance cannot use development submit intents", () => {
     const acceptance = readFileSync(
       "scripts/testbed/installed-kiosk-sale-acceptance.mjs",

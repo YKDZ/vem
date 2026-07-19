@@ -1,6 +1,10 @@
 function sessionIdFromReport(value) {
   if (value == null || typeof value !== "object") return null;
-  if (typeof value.sessionId === "string" && value.sessionId)
+  if (
+    typeof value.sessionId === "string" &&
+    value.sessionId &&
+    !value.sessionId.startsWith("serial-session://")
+  )
     return value.sessionId;
   for (const child of Object.values(value)) {
     const sessionId = sessionIdFromReport(child);

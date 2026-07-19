@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 import {
   buildHostAdmissionPlan,
   buildHostReconstructionPlan,
   executeHostAdmissionPlan,
+  prepareRuntimeAudioCapture,
   renderReconstructedDomainXml,
+  runtimeAudioCapturePath,
   stopDomainBeforeReconstruction,
 } from "./local-testbed-host.mjs";
 
@@ -17,6 +20,7 @@ const PATHS = Object.freeze({
   overlay: `${ROOT}/runtime/vem-runtime-testbed-system.qcow2`,
   runtimeXml: `${ROOT}/runtime/vem-runtime-testbed.xml`,
   filterXml: `${ROOT}/runtime/vem-runtime-testbed-filter.xml`,
+  audio: `${ROOT}/releases/release-0001/system.qcow2.default-audio.wav`,
 });
 
 function config() {
@@ -46,6 +50,7 @@ function baselineXml() {
   <devices>
     <disk type="file" device="disk"><source file="${PATHS.baselineSystem}"/><target dev="sda" bus="sata"/></disk>
     <disk type="file" device="disk"><source file="${PATHS.cacheDisk}"/><target dev="sdb" bus="sata"/></disk>
+    <audio id="1" type="file" path="${PATHS.audio}"/>
     <interface type="network"><mac address="52:54:00:12:34:56"/><source network="runtime-testbed"/><model type="e1000e"/></interface>
   </devices>
 </domain>`;
@@ -185,13 +190,17 @@ describe("tracked local testbed host lifecycle", () => {
       baselineSystem: PATHS.baselineSystem,
       cacheDisk: PATHS.cacheDisk,
     });
-    assert.doesNotMatch(xml, new RegExp(PATHS.baselineSystem));
+    assert.doesNotMatch(
+      xml,
+      new RegExp(`source file="${PATHS.baselineSystem}"`),
+    );
     assert.doesNotMatch(xml, /<name>win10-runtime-baseline<\/name>/);
     assert.doesNotMatch(xml, /<uuid>/);
     assert.match(xml, /<name>win10-runtime-testbed<\/name>/);
     assert.match(xml, new RegExp(PATHS.overlay));
     assert.match(xml, new RegExp(PATHS.cacheDisk));
     assert.doesNotMatch(xml, /filterref/);
+    assert.equal(runtimeAudioCapturePath(xml), PATHS.audio);
     const admission = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -203,6 +212,21 @@ describe("tracked local testbed host lifecycle", () => {
     );
   });
 
+  it("prepares the published domain audio output for the unprivileged QEMU process", async () => {
+    const root = await mkdtemp("/tmp/vem-runtime-audio-");
+    try {
+      const path = `${root}/capture.wav`;
+      const prepared = await prepareRuntimeAudioCapture(
+        `<domain><devices><audio id="1" type="file" path="${path}"/></devices></domain>`,
+      );
+      const metadata = await stat(prepared);
+      assert.equal(prepared, path);
+      assert.equal(metadata.mode & 0o777, 0o666);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not admit the runner until the exact guest input is proven staged", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
@@ -210,11 +234,17 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
-    assert.match(plan[0].args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
+    assert.match(
+      plan[0].args.at(-1),
+      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+    );
     assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
     assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
     assert.doesNotMatch(plan[0].input, /\$input\s*=/);
-    assert.match(plan[1].args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
+    assert.match(
+      plan[1].args.at(-1),
+      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+    );
     assert.match(plan[1].input, /interactive-display-report\.json/);
     assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
     assert.equal(plan[1].type, "assert-interactive-display");
@@ -230,7 +260,10 @@ describe("tracked local testbed host lifecycle", () => {
       executeHostAdmissionPlan(plan, {
         runCommand: async (command, args, _stdin, input) => {
           operations.push(command);
-          assert.match(args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
+          assert.match(
+            args.at(-1),
+            /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+          );
           assert.match(input, /guest input/);
           throw new Error("guest input missing");
         },
@@ -266,7 +299,10 @@ describe("tracked local testbed host lifecycle", () => {
       },
       runCaptureCommand: async (command, args, _stdin, input) => {
         operations.push(command);
-        assert.match(args.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
+        assert.match(
+          args.at(-1),
+          /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+        );
         if (!input.includes("interactive-display-report")) {
           return {
             stdout: `${JSON.stringify({
@@ -311,9 +347,15 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(runner.input, /C:\\actions-runner\\.env/);
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
-    assert.match(runner.input, /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/);
+    assert.match(
+      runner.input,
+      /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/,
+    );
     assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
-    assert.doesNotMatch(runner.input, /A session for this runner already exists/);
+    assert.doesNotMatch(
+      runner.input,
+      /A session for this runner already exists/,
+    );
     assert.doesNotMatch(runner.input, /Session created/);
     assert.match(runner.input, /\$diagnosticOffsets/);
     assert.match(runner.input, /\.Length/);
@@ -400,15 +442,30 @@ describe("tracked local testbed host lifecycle", () => {
       runnerRegistrationToken: "runner-registration-token",
       runnerRemovalToken: "runner-removal-token",
     }).at(-1);
-    assert.doesNotMatch(dynamicRegistration.input, /curl\.exe|actions\/runners\/registration-token/);
+    assert.doesNotMatch(
+      dynamicRegistration.input,
+      /curl\.exe|actions\/runners\/registration-token/,
+    );
     assert.match(dynamicRegistration.input, /Stop-Service.*sc\.exe delete/s);
     assert.doesNotMatch(dynamicRegistration.input, /config\.cmd'\) remove/);
     assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
-    assert.match(dynamicRegistration.input, /sc\.exe config .*obj= LocalSystem/s);
-    assert.match(dynamicRegistration.input, /Get-Process -Name 'Runner\.Listener'.*Stop-Process -Force/s);
+    assert.match(
+      dynamicRegistration.input,
+      /sc\.exe config .*obj= LocalSystem/s,
+    );
+    assert.match(
+      dynamicRegistration.input,
+      /Get-Process -Name 'Runner\.Listener'.*Stop-Process -Force/s,
+    );
     assert.match(dynamicRegistration.input, /forest-win10-runtime-run-18/);
-    assert.doesNotMatch(dynamicRegistration.input, /forest-win10-runtime-current/);
-    assert.match(dynamicRegistration.input, /stale actions runner identity files remain/);
+    assert.doesNotMatch(
+      dynamicRegistration.input,
+      /forest-win10-runtime-current/,
+    );
+    assert.match(
+      dynamicRegistration.input,
+      /stale actions runner identity files remain/,
+    );
     assert.match(dynamicRegistration.input, /registered unexpected identity/);
 
     const proxiedRegistration = buildHostAdmissionPlan({

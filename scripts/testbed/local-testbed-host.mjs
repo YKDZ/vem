@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import {
   access,
+  chmod,
   mkdir,
   readFile,
   rename,
@@ -297,7 +298,9 @@ if ([string]$registeredRunner.agentName -ne ${quotePowerShell(runnerName)}) { th
         ["HTTPS_PROXY", runnerProxy.https],
         ["NO_PROXY", runnerProxy.noProxy],
       ]
-        .map(([name, value]) => `$env:${name} = ${quotePowerShell(value ?? "")}`)
+        .map(
+          ([name, value]) => `$env:${name} = ${quotePowerShell(value ?? "")}`,
+        )
         .join("\n")
     : "";
   const updateEnvironment = runnerProxy?.configured
@@ -428,6 +431,26 @@ export function renderAdmissionFilterXml(configInput, admitted = false) {
 
 function countLiteral(value, needle) {
   return value.split(needle).length - 1;
+}
+
+export function runtimeAudioCapturePath(domainXml) {
+  const devices = [
+    ...String(domainXml).matchAll(/<audio\b[^>]*\btype="file"[^>]*\/?\s*>/g),
+  ];
+  if (devices.length !== 1) {
+    throw new Error(
+      "runtime domain must contain exactly one file audio output",
+    );
+  }
+  const path = devices[0][0].match(/\bpath="([^"]+)"/)?.[1];
+  return absolute(path, "runtime audio capture path");
+}
+
+export async function prepareRuntimeAudioCapture(domainXml) {
+  const path = runtimeAudioCapturePath(domainXml);
+  await writeFile(path, "", { mode: 0o666 });
+  await chmod(path, 0o666);
+  return path;
 }
 
 export function renderReconstructedDomainXml({
@@ -748,6 +771,7 @@ async function executeReconstruction(options) {
     } else if (step.type === "publish-overlay") {
       await rename(step.from, step.to);
     } else if (step.type === "write-runtime-domain") {
+      await prepareRuntimeAudioCapture(runtimeXml);
       await writeFile(step.path, runtimeXml, "utf8");
     } else if (step.type === "wait-ssh") {
       await waitForSsh(config);
@@ -818,10 +842,7 @@ export async function executeHostAdmissionPlan(
         throw new Error("runner admission emitted incomplete diagnostics");
       }
       if (
-        ![
-          "Listening for Jobs",
-          "Runner reconnected",
-        ].includes(
+        !["Listening for Jobs", "Runner reconnected"].includes(
           runnerAdmission.listenerMarker,
         )
       ) {
@@ -896,8 +917,7 @@ export function parseHostOptions(args) {
             noProxy: optionalOptionOrEmpty(args, "runner-no-proxy") ?? "",
           }
         : { configured: false },
-      runnerRegistrationToken:
-        option(args, "runner-registration-token"),
+      runnerRegistrationToken: option(args, "runner-registration-token"),
       runnerRemovalToken: option(args, "runner-removal-token"),
     };
   }

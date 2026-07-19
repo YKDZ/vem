@@ -68,6 +68,36 @@ describe("Track Handoff Recovery", () => {
     assert.equal(terminal.facts.hardwareBindings.roles.length, 1);
   });
 
+  it("selects the host control-plane session instead of the nested serial evidence identity", async () => {
+    const terminal = await captureTrackTerminalFacts({
+      track: { key: "fast" },
+      context: {
+        report: {
+          summary: { serialSessionId: "serial-session://sha256-evidence" },
+          serial: {
+            start: {
+              sessionId: "fast-sale-control-session",
+              binding: {
+                serialSessionId: "serial-session://sha256-evidence",
+              },
+            },
+          },
+        },
+      },
+      readRoute: async () => "#/catalog",
+      daemonGet: async (path) => {
+        if (path === "/v1/transactions/current") return null;
+        if (path === "/v1/hardware-bindings") return { roles: [] };
+        return {};
+      },
+      platformQuery: async () => ({ inventories: [] }),
+    });
+    assert.equal(
+      terminal.facts.deviceSession.sessionId,
+      "fast-sale-control-session",
+    );
+  });
+
   it("records hardware binding degradation without reclassifying a completed child track", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "scanner" },

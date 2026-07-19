@@ -415,6 +415,10 @@ export async function runInstalledIpcRecoveryGuest(options) {
         phase: "recover",
         operationId: interruptedTransport.guestOperationId,
         daemonRuntime: handoff.daemon,
+        expectedTransaction: {
+          ...interruptedTransport.daemon.transactionBefore,
+          machineCode: interruptedTransport.platform.machineCode,
+        },
       }),
       "daemon transport recovery",
     );
@@ -538,6 +542,10 @@ export async function runInstalledIpcRecoveryGuest(options) {
           phase: "recover",
           operationId: interruptedTransport.guestOperationId,
           daemonRuntime: handoff.daemon,
+          expectedTransaction: {
+            ...interruptedTransport.daemon.transactionBefore,
+            machineCode: interruptedTransport.platform.machineCode,
+          },
         }),
         "daemon transport cleanup recovery",
       );
