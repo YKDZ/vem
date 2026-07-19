@@ -438,6 +438,42 @@ fn scanner_runtime_config(
     }
 }
 
+fn role_requires_reconfiguration(
+    role: LocalDeviceRole,
+    binding: Option<&LocalSerialRoleBinding>,
+    observed: &[device_binding::ObservedSerialDevice],
+    current_port: Option<&str>,
+) -> bool {
+    let Some(binding) = binding else {
+        return true;
+    };
+    match device_binding::resolve_runtime_port(role, binding, observed) {
+        Ok(observed_port) => {
+            current_port.is_none_or(|current| !current.eq_ignore_ascii_case(&observed_port))
+        }
+        Err(_) => true,
+    }
+}
+
+fn device_bindings_require_reconfiguration(
+    settings: &LocalRuntimeSettings,
+    observed: &[device_binding::ObservedSerialDevice],
+    lower_controller_port: Option<&str>,
+    scanner_port: Option<&str>,
+) -> bool {
+    role_requires_reconfiguration(
+        LocalDeviceRole::LowerController,
+        settings.lower_controller_binding.as_ref(),
+        observed,
+        lower_controller_port,
+    ) || role_requires_reconfiguration(
+        LocalDeviceRole::Scanner,
+        settings.scanner_binding.as_ref(),
+        observed,
+        scanner_port,
+    )
+}
+
 async fn run_device_binding_watch(
     platform: device_binding::SharedSerialDevicePlatform,
     runtime_sources: Arc<RuntimeSources>,
@@ -493,6 +529,14 @@ async fn run_device_binding_watch(
                 continue;
             }
         };
+        if !device_bindings_require_reconfiguration(
+            &settings,
+            &observed,
+            previous_hardware.port_path.as_deref(),
+            previous_scanner.port.as_deref(),
+        ) {
+            continue;
+        }
         let lease = match sale_gate.try_acquire_reconfigure() {
             Ok(lease) => lease,
             Err(_) => continue,
@@ -1142,7 +1186,8 @@ mod tests {
     };
 
     use super::{
-        cache_daemon_events, candidate_is_claimed_by_other_role, refresh_provisioning_profile_once,
+        cache_daemon_events, candidate_is_claimed_by_other_role,
+        device_bindings_require_reconfiguration, refresh_provisioning_profile_once,
         run_vision_watch, sale_start_capability_input_changed,
     };
 
@@ -1253,6 +1298,54 @@ mod tests {
             crate::device_binding::LocalDeviceRole::LowerController,
             &observed,
             std::slice::from_ref(&observed),
+        ));
+    }
+
+    #[test]
+    fn stable_device_bindings_do_not_enter_the_reconfiguration_gate() {
+        let lower = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM4".to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-01".to_string()),
+            container_id: None,
+            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+            serial_number: Some("CTRL-01".to_string()),
+            friendly_name: Some("lower controller".to_string()),
+        };
+        let scanner = crate::device_binding::ObservedSerialDevice {
+            current_port: "COM7".to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_7523\\SCAN-01".to_string()),
+            container_id: None,
+            hardware_ids: vec!["USB\\VID_1A86&PID_7523".to_string()],
+            serial_number: Some("SCAN-01".to_string()),
+            friendly_name: Some("scanner".to_string()),
+        };
+        let binding = |observation: &crate::device_binding::ObservedSerialDevice| {
+            crate::device_binding::LocalSerialRoleBinding {
+                identity: crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
+                    observation,
+                )
+                .expect("stable identity"),
+                confirmed_at: "2026-07-19T00:00:00Z".to_string(),
+                confirmed_by: "test".to_string(),
+                test_evidence_code: "READY".to_string(),
+            }
+        };
+        let mut settings = crate::local_runtime_settings::LocalRuntimeSettings::default();
+        settings.lower_controller_binding = Some(binding(&lower));
+        settings.scanner_binding = Some(binding(&scanner));
+        let observed = vec![lower, scanner];
+
+        assert!(!device_bindings_require_reconfiguration(
+            &settings,
+            &observed,
+            Some("com4"),
+            Some("COM7"),
+        ));
+        assert!(device_bindings_require_reconfiguration(
+            &settings,
+            &observed,
+            Some("COM9"),
+            Some("COM7"),
         ));
     }
 
