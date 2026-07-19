@@ -468,6 +468,8 @@ describe("repo QEMU USB serial host adapter", () => {
     const implementation = readFileSync(adapterPath, "utf8");
     assert.match(implementation, /const fd = openSync\(path, 'a'\)/);
     assert.match(implementation, /setInterval\(emit, 500\)/);
+    assert.match(implementation, /process\.on\('SIGUSR1'/);
+    assert.match(implementation, /process\.kill\(-probe\.pid, "SIGUSR1"\)/);
     assert.doesNotMatch(implementation, /appendFileSync\(path, bytes\); process\.exit/);
   });
 });

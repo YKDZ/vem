@@ -445,7 +445,7 @@ function startScannerBindingProbe(scannerPath, logPath) {
     process.execPath,
     [
       "-e",
-      "const { openSync, writeSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const fd = openSync(path, 'a'); const emit = () => writeSync(fd, bytes); setTimeout(emit, 100); setInterval(emit, 500);",
+      "const { openSync, writeSync } = require('node:fs'); const path = process.argv[1]; const bytes = Buffer.from(process.argv[2], 'base64'); const fd = openSync(path, 'a'); const emit = () => writeSync(fd, bytes); setTimeout(emit, 100); const probe = setInterval(emit, 500); setInterval(() => {}, 60000); process.on('SIGUSR1', () => clearInterval(probe));",
       scannerPath,
       SCANNER_BINDING_PROBE_BYTES.toString("base64"),
     ],
@@ -481,12 +481,13 @@ export async function stopQemuScannerBindingProbe({
   const probe = state.scannerBindingProbe;
   if (!probe) throw new Error("scanner binding probe was not started");
   if (probe.stoppedAt) return { ...probe, alreadyStopped: true };
-  const termination = await terminateProcessGroup("scanner binding probe", probe.pid);
+  process.kill(-probe.pid, "SIGUSR1");
   state.scannerBindingProbe = {
     ...probe,
     stoppedAt: new Date().toISOString(),
     stopReason: reason,
-    termination,
+    pauseSignal: "SIGUSR1",
+    ptyHolderAlive: processGroupAlive(probe.pid),
   };
   writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
     mode: 0o600,
