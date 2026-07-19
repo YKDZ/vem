@@ -1,7 +1,29 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, LazyLock, Mutex as StdMutex},
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
+
+static SERIAL_DEVICE_PROBE_LOCKS: LazyLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+async fn with_serial_device_probe_lock<F, T>(port: &str, probe: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let lock = SERIAL_DEVICE_PROBE_LOCKS
+        .lock()
+        .expect("serial device probe lock registry")
+        .entry(port.to_ascii_uppercase())
+        .or_default()
+        .clone();
+    let _guard = lock.lock().await;
+    probe.await
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,6 +217,21 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
     }
 
     async fn test_candidate(
+        &self,
+        role: LocalDeviceRole,
+        candidate: &ObservedSerialDevice,
+        probe_config: &SerialDeviceRoleProbeConfig,
+    ) -> DeviceBindingTestResult {
+        with_serial_device_probe_lock(
+            &candidate.current_port,
+            self.test_candidate_exclusive(role, candidate, probe_config),
+        )
+        .await
+    }
+}
+
+impl WindowsSerialDevicePlatform {
+    async fn test_candidate_exclusive(
         &self,
         role: LocalDeviceRole,
         candidate: &ObservedSerialDevice,
@@ -732,6 +769,33 @@ pub fn resolve_runtime_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn serial_device_role_probes_are_exclusive() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut probes = Vec::new();
+        for _ in 0..2 {
+            let active = active.clone();
+            let peak = peak.clone();
+            probes.push(tokio::spawn(with_serial_device_probe_lock(
+                "com4",
+                async move {
+                    let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(concurrent, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                },
+            )));
+        }
+        for probe in probes {
+            probe.await.expect("probe task");
+        }
+
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     #[cfg(unix)]
