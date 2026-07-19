@@ -189,6 +189,20 @@ export function buildWorkflowTrackCommands({
         ],
       },
     );
+    const tracerBulletOrder = new Map(
+      [
+        "fast",
+        "scanner",
+        "visionTryOn",
+        "fulfillmentFailure",
+        "delayedPickup",
+        "ipcRecovery",
+      ].map((key, index) => [key, index]),
+    );
+    tracks.sort(
+      (left, right) =>
+        tracerBulletOrder.get(left.key) - tracerBulletOrder.get(right.key),
+    );
   }
   return {
     fastReportPath,
