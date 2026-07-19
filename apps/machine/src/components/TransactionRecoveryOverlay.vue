@@ -27,6 +27,7 @@ watch(
     v-if="recovery.active"
     ref="dialog"
     class="transaction-recovery-overlay"
+    data-vem-recovery-overlay
     role="dialog"
     aria-modal="true"
     aria-labelledby="transaction-recovery-title"

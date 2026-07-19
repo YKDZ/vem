@@ -1347,6 +1347,11 @@ describe("Windows D cache contract", () => {
       "utf8",
     );
     assert.match(guest, /function Write-RecordedVisionSiteConfiguration/);
+    assert.equal(
+      guest.match(/loop = \$true/g)?.length,
+      2,
+      "both recorded Vision sources must loop during horizontal acceptance",
+    );
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(
       guest,

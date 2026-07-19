@@ -24,11 +24,13 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
         source = "recorded_video"
         role = "presence"
         video_path = "recorded-video/top.mp4"
+        loop = $true
       }
       front = @{
         source = "recorded_video"
         role = "profile_tryon"
         video_path = "recorded-video/front.mp4"
+        loop = $true
       }
     }
   } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding utf8

@@ -70,6 +70,7 @@ describe("TransactionRecoveryOverlay", () => {
     expect(dialog?.textContent).toContain("正在恢复本次交易");
     expect(host.textContent).toContain("ORD-RECOVERY-OVERLAY");
     expect(dialog?.getAttribute("aria-modal")).toBe("true");
+    expect(dialog?.hasAttribute("data-vem-recovery-overlay")).toBe(true);
     expect(dialog?.getAttribute("aria-labelledby")).toBe(
       "transaction-recovery-title",
     );

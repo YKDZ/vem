@@ -930,7 +930,11 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
     client,
     `(() => {
       const trace = window.__VEM_MACHINE_RUNTIME_TRACE__;
-      const payment = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
+      const transactionSurface = document.querySelector([
+        '[data-installed-kiosk-sale-payment-surface]',
+        '[data-installed-kiosk-sale-fulfillment-surface]',
+        '[data-installed-kiosk-sale-result-surface]'
+      ].join(','));
       const overlays = [...document.querySelectorAll(
         '[data-test*="recovery"], [data-vem-recovery-overlay], [role="alert"]'
       )].map((element) => ({
@@ -949,7 +953,7 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
         catalogRevision: document.documentElement?.dataset.catalogRevision || document.querySelector('[data-catalog-revision]')?.dataset.catalogRevision || null,
         catalogInvalidationId: document.documentElement?.dataset.catalogInvalidationId || document.querySelector('[data-catalog-invalidation-id]')?.dataset.catalogInvalidationId || null,
         recoveryOverlay: overlays,
-        orderCredential: payment?.dataset.orderNo || payment?.dataset.orderCredential || null,
+        orderCredential: transactionSurface?.dataset.orderNo || transactionSurface?.dataset.orderCredential || null,
         route: location.hash
       };
     })()`,
