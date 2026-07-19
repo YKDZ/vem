@@ -27,7 +27,7 @@ describe("VM host adapter sale audio dispatch", () => {
       "utf8",
     );
     assert.doesNotMatch(source, /audio_output_calibration/);
-    assert.doesNotMatch(source, /ConfirmAudioOutput/);
+    assert.doesNotMatch(source, new RegExp("ConfirmAudio" + "Output"));
     assert.doesNotMatch(source, /endpointId|endpointIdentity/);
   });
 });

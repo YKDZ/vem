@@ -335,6 +335,9 @@ describe("vision mock server - controlled injections", () => {
 
       const presence = await messages.next();
       expect(presence.type).toBe("vision.presence_status");
+      if (presence.type !== "vision.presence_status") {
+        throw new Error(`expected presence status, received ${presence.type}`);
+      }
       expect(presence.payload.state).toBe("approach");
 
       const departureResponse = await postJson(
@@ -352,6 +355,9 @@ describe("vision mock server - controlled injections", () => {
         departed = await messages.next();
       }
       expect(departed.type).toBe("vision.person_departed");
+      if (departed.type !== "vision.person_departed") {
+        throw new Error(`expected departure, received ${departed.type}`);
+      }
       expect(departed.payload.lastSeenAt).toBe(presence.payload.detectedAt);
     } finally {
       messages.dispose();
