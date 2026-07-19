@@ -1,6 +1,7 @@
 import type { UiDebugScenarioId } from "./ui-debug-fixtures";
 
 export type MachineRuntimeScenarioCategory =
+  | "boot"
   | "ready_catalog"
   | "product"
   | "checkout"
@@ -25,9 +26,22 @@ export type MachineRuntimeScenario = {
   touchChecks: readonly string[];
   screenshot: MachineRuntimeScenarioScreenshotStatus;
   ciTier: MachineRuntimeScenarioCiTier;
+  maintenanceTask?: string;
 };
 
 export const machineRuntimeScenarios = [
+  {
+    id: "boot",
+    name: "生产启动检查",
+    category: "boot",
+    targetRoute: "/boot",
+    fixtureScenarioId: "ready",
+    setup: ["启用 UI debug daemon", "进入生产 BootView"],
+    visualChecks: ["复用生产 KioskHeader", "展示有界启动检查进度"],
+    touchChecks: ["启动检查不提供配置或维护操作"],
+    screenshot: "included",
+    ciTier: "full",
+  },
   {
     id: "ready-catalog",
     name: "可售目录",
@@ -258,6 +272,71 @@ export const machineRuntimeScenarios = [
     touchChecks: ["诊断刷新或返回售卖入口按钮满足触屏尺寸"],
     screenshot: "included",
     ciTier: "smoke",
+  },
+  {
+    id: "maintenance-network",
+    name: "维护网络与认领",
+    category: "maintenance",
+    targetRoute: "/maintenance?source=operator",
+    fixtureScenarioId: "blocked",
+    setup: ["装载维护拦截 fixture", "打开网络与认领任务"],
+    visualChecks: ["展示网络和机器认领输入", "展示维护任务导航"],
+    touchChecks: ["网络扫描和机器认领按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+    maintenanceTask: "网络与认领",
+  },
+  {
+    id: "maintenance-hardware",
+    name: "维护设备检查",
+    category: "maintenance",
+    targetRoute: "/maintenance?source=operator",
+    fixtureScenarioId: "blocked",
+    setup: ["装载维护拦截 fixture", "打开设备检查任务"],
+    visualChecks: ["展示下位机检查和手动出货诊断"],
+    touchChecks: ["重新检查和诊断出货按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+    maintenanceTask: "设备检查",
+  },
+  {
+    id: "maintenance-stock",
+    name: "维护库存",
+    category: "maintenance",
+    targetRoute: "/maintenance?source=operator",
+    fixtureScenarioId: "blocked",
+    setup: ["装载维护拦截 fixture", "打开库存维护任务"],
+    visualChecks: ["展示库存维护任务和货道数量"],
+    touchChecks: ["刷新库存和提交库存按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+    maintenanceTask: "库存维护",
+  },
+  {
+    id: "maintenance-experience",
+    name: "维护声音与视觉",
+    category: "maintenance",
+    targetRoute: "/maintenance?source=operator",
+    fixtureScenarioId: "blocked",
+    setup: ["装载维护拦截 fixture", "打开声音与视觉任务"],
+    visualChecks: ["展示视觉状态和顾客音频偏好"],
+    touchChecks: ["测试播放和视觉诊断按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+    maintenanceTask: "声音与视觉",
+  },
+  {
+    id: "maintenance-diagnostics",
+    name: "维护诊断工具",
+    category: "maintenance",
+    targetRoute: "/maintenance?source=operator",
+    fixtureScenarioId: "blocked",
+    setup: ["装载维护拦截 fixture", "打开诊断工具任务"],
+    visualChecks: ["展示诊断刷新和日志导出"],
+    touchChecks: ["刷新状态和导出日志按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+    maintenanceTask: "诊断工具",
   },
 ] as const satisfies readonly MachineRuntimeScenario[];
 

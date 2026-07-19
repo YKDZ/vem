@@ -3,7 +3,6 @@ import { getActivePinia } from "pinia";
 import { onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
-import TouchKeyboard from "@/components/TouchKeyboard.vue";
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
@@ -65,6 +64,5 @@ onMounted(() => {
 <template>
   <TransactionRecoveryBoundary>
     <RouterView />
-    <TouchKeyboard />
   </TransactionRecoveryBoundary>
 </template>

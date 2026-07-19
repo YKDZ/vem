@@ -384,10 +384,10 @@ describe("Local Operations", () => {
   it("keeps clean bootstrap commissioning in Local Operations and reloads the effective snapshot after a direct claim", async () => {
     const host = await render();
 
-    expect(host.textContent).toContain("生产维护");
-    expect(host.textContent).toContain("Runtime Bootstrap 所有者");
-    expect(host.textContent).toContain("Provisioning Profile 所有者");
-    expect(host.textContent).toContain("Profile 接受时间");
+    expect(host.textContent).toContain("本地运维");
+    expect(host.textContent).toContain("网络与认领");
+    expect(host.textContent).not.toContain("Runtime Bootstrap 所有者");
+    expect(host.textContent).not.toContain("Provisioning Profile 所有者");
     expect(host.querySelector("input[aria-label='网络密码']")).not.toBeNull();
 
     const claimCode = host.querySelector<HTMLInputElement>(
@@ -404,7 +404,7 @@ describe("Local Operations", () => {
     expect(client.getEffectiveRuntimeConfiguration).toHaveBeenCalledTimes(2);
     await vi.waitFor(() => {
       expect(host.textContent).toContain("MACHINE-001");
-      expect(host.textContent).toContain("2026-07-17T08:00:00.000Z");
+      expect(host.textContent).toContain("平台配置已接受");
     });
   });
 
@@ -490,7 +490,7 @@ describe("Local Operations", () => {
 
     expect(client.claimMachine).toHaveBeenCalledWith("bad-claim");
     expect(host.textContent).toContain("claim code rejected");
-    expect(host.textContent).toContain("生产维护");
+    expect(host.textContent).toContain("本地运维");
   });
 
   it("accepts a persisted claim after the expected daemon IPC disconnect", async () => {
@@ -531,109 +531,44 @@ describe("Local Operations", () => {
     expect(button(host, "确认解除整机锁")).toBeTruthy();
   });
 
-  it("requires a tested stable identity before confirm, offers explicit clear, and reloads after every binding mutation", async () => {
-    const host = await render();
-    const identityKey = "container:11111111-2222-3333-4444-555555555555";
-    const initialReloads =
-      client.getEffectiveRuntimeConfiguration.mock.calls.length;
-    await vi.waitFor(() => {
-      expect(
-        host.querySelector("[data-test='device-binding-scanner']"),
-      ).not.toBeNull();
-    });
+  it.each([
+    ["MACHINE_AUTH_MISSING", "完成机器认领", "网络与认领"],
+    ["NO_SALEABLE_SLOTS", "打开库存维护", "库存维护"],
+  ])(
+    "opens %s recovery in its owning maintenance task",
+    async (code, action, task) => {
+      const host = await render();
+      useSaleCapabilityStore().acceptSnapshot(
+        saleCapabilitySnapshot({
+          canStartSale: false,
+          blockerCode: code,
+          blockerMessage: "runtime diagnostic evidence",
+        }),
+      );
+      await flush();
 
-    const scannerBinding = host.querySelector<HTMLElement>(
-      "[data-test='device-binding-scanner']",
-    );
-    if (!scannerBinding) throw new Error("scanner binding card not found");
-    button(scannerBinding, "测试").click();
-    await flush();
-    expect(client.testDeviceBinding).toHaveBeenCalledWith(
-      "scanner",
-      identityKey,
-    );
-    expect(button(scannerBinding, "确认绑定").disabled).toBe(false);
+      button(host, action).click();
+      await nextTick();
 
-    button(scannerBinding, "确认绑定").click();
-    await flush();
-    expect(client.confirmDeviceBinding).toHaveBeenCalledWith(
-      "scanner",
-      identityKey,
-      "550e8400-e29b-41d4-a716-446655440099",
-    );
+      expect(host.querySelector("h1")?.textContent).toContain(task);
+    },
+  );
 
-    await vi.waitFor(() => {
-      expect(button(scannerBinding, "清除绑定").disabled).toBe(false);
-    });
-    button(scannerBinding, "清除绑定").click();
-    await flush();
-    expect(client.clearDeviceBinding).toHaveBeenCalledWith("scanner");
-    expect(
-      client.getEffectiveRuntimeConfiguration.mock.calls.length,
-    ).toBeGreaterThanOrEqual(initialReloads + 2);
-  });
-
-  it("uses the scanner protocol intent and reloads the central snapshot", async () => {
-    const host = await render();
-    const initialReloads =
-      client.getEffectiveRuntimeConfiguration.mock.calls.length;
-    const form = host.querySelector<HTMLFormElement>(
-      "form[aria-label='扫码器协议']",
-    );
-    if (!form) throw new Error("scanner protocol form not found");
-    const baudRate = form.querySelector<HTMLInputElement>(
-      "input[type='number']",
-    );
-    if (!baudRate) throw new Error("baud rate input not found");
-    baudRate.value = "115200";
-    baudRate.dispatchEvent(new Event("input", { bubbles: true }));
-    const frameSuffix = form.querySelector<HTMLSelectElement>("select");
-    if (!frameSuffix) throw new Error("frame suffix select not found");
-    frameSuffix.value = "lf";
-    frameSuffix.dispatchEvent(new Event("change", { bubbles: true }));
-    form.dispatchEvent(
-      new Event("submit", { bubbles: true, cancelable: true }),
-    );
-    await flush();
-
-    expect(client.setScannerProtocolParameters).toHaveBeenCalledWith({
-      baudRate: 115200,
-      frameSuffix: "lf",
-    });
-    expect(
-      client.getEffectiveRuntimeConfiguration.mock.calls.length,
-    ).toBeGreaterThan(initialReloads);
-  });
-
-  it("does not offer arbitrary selection while scanner observation is ambiguous", async () => {
-    const snapshot = deviceBindings();
-    const ambiguous = {
-      ...snapshot,
-      roles: [
-        snapshot.roles[0],
-        {
-          ...snapshot.roles[1],
-          ambiguous: true,
-          ambiguityKind: "duplicate_observation",
-          ambiguityPorts: ["COM7", "COM8"],
-        },
-      ],
-    };
-    client.getDeviceBindings.mockResolvedValue(ambiguous);
+  it("hard-removes retired scanner binding and protocol mutation controls", async () => {
     const host = await render();
 
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("检测到重复设备");
-    });
-    const scannerBinding = host.querySelector<HTMLElement>(
-      "[data-test='device-binding-scanner']",
-    );
-    if (!scannerBinding) throw new Error("scanner binding card not found");
     expect(
-      Array.from(scannerBinding.querySelectorAll("button")).map((item) =>
-        item.textContent?.trim(),
-      ),
-    ).not.toContain("确认绑定");
+      host.querySelector("[data-test='device-binding-scanner']"),
+    ).toBeNull();
+    expect(host.querySelector("form[aria-label='扫码器协议']")).toBeNull();
+    expect(host.textContent).not.toContain("确认绑定");
+    expect(host.textContent).not.toContain("清除绑定");
+    expect(host.textContent).not.toContain("应用扫码器协议");
+    expect(client.getDeviceBindings).not.toHaveBeenCalled();
+    expect(client.testDeviceBinding).not.toHaveBeenCalled();
+    expect(client.confirmDeviceBinding).not.toHaveBeenCalled();
+    expect(client.clearDeviceBinding).not.toHaveBeenCalled();
+    expect(client.setScannerProtocolParameters).not.toHaveBeenCalled();
   });
 
   it("refreshes the daemon-owned audio preferences after each save", async () => {
@@ -692,7 +627,7 @@ describe("Local Operations", () => {
   it("runs hardware and manual dispense diagnostics directly without an authorization interstitial", async () => {
     const host = await render();
 
-    button(host, "执行设备检查").click();
+    button(host, "重新检查").click();
     await flush();
     expect(client.runHardwareSelfCheck).toHaveBeenCalledOnce();
     expect(host.textContent).toContain("硬件就绪");
@@ -709,6 +644,36 @@ describe("Local Operations", () => {
       }),
     );
     expect(host.textContent).toContain("诊断出货完成");
+  });
+
+  it("clears hardware attention after a successful retry and when the operator changes task", async () => {
+    client.runHardwareSelfCheck.mockRejectedValueOnce(
+      new Error("lower controller timeout"),
+    );
+    const host = await render();
+
+    button(host, "重新检查").click();
+    await flush();
+    expect(host.querySelector("[aria-label='操作提示']")?.textContent).toContain(
+      "硬件检查未完成",
+    );
+
+    button(host, "重新检查").click();
+    await flush();
+    expect(host.querySelector("[aria-label='操作提示']")).toBeNull();
+
+    client.runHardwareSelfCheck.mockRejectedValueOnce(
+      new Error("lower controller timeout"),
+    );
+    button(host, "重新检查").click();
+    await flush();
+    expect(host.querySelector("[aria-label='操作提示']")?.textContent).toContain(
+      "硬件检查未完成",
+    );
+
+    button(host, "库存维护").click();
+    await flush();
+    expect(host.querySelector("[aria-label='操作提示']")).toBeNull();
   });
 
   it("keeps a manual dispense idempotency key across response loss until an operator starts a new diagnostic", async () => {
@@ -926,7 +891,7 @@ describe("Local Operations", () => {
 
   it("keeps return-to-catalog unavailable until Local Operations is sellable", async () => {
     const host = await render();
-    const returnToCatalog = button(host, "回到目录");
+    const returnToCatalog = button(host, "返回商品目录");
 
     expect(returnToCatalog.disabled).toBe(true);
     expect(host.textContent).toContain("暂不能回到目录");

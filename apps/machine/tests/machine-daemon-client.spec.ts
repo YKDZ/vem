@@ -410,46 +410,29 @@ test("clean bootstrap claims in Local Operations and uses direct configuration i
 
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/maintenance$/);
-  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
-  await expect(page.getByText("Runtime Bootstrap 所有者")).toBeVisible();
-  await expect(page.getByText("Provisioning Profile 所有者")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
+  await page.getByRole("button", { name: /网络与认领/ }).click();
   await expect(page.getByLabel("认领码")).toBeVisible();
 
   const networkName = page.getByLabel("网络名称");
   await networkName.focus();
-  const touchKeyboard = page.locator('[data-test="touch-keyboard"]');
-  await expect(touchKeyboard).toBeVisible();
-  await page.locator('[data-test="touch-keyboard"] [data-key="q"]').click();
-  await expect(networkName).toHaveValue("q");
-  await page.locator('[data-test="touch-keyboard-dismiss"]').click();
+  await expect(page.locator('[data-test="touch-keyboard"]')).toHaveCount(0);
 
   await page.getByLabel("认领码").fill("claim-001");
   await page.getByRole("button", { name: "认领机器" }).click();
   await expect(page.getByText("M001")).toBeVisible();
 
-  const scannerBinding = page.locator('[data-test="device-binding-scanner"]');
-  await scannerBinding
-    .getByRole("button", { name: "测试", exact: true })
-    .click();
-  await scannerBinding
-    .getByRole("button", { name: "确认绑定", exact: true })
-    .click();
-  await scannerBinding
-    .getByRole("button", { name: "清除绑定", exact: true })
-    .click();
-  const protocol = page.getByLabel("扫码器协议");
-  await protocol.locator("input[type=number]").fill("115200");
-  await protocol.locator("select").selectOption("lf");
-  await protocol.getByRole("button", { name: "应用扫码器协议" }).click();
+  await expect(page.getByText("扫码器协议")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "确认绑定" })).toHaveCount(0);
 
   expect(requests).toContain("POST /v1/provisioning/claim");
-  expect(requests).toContain(
+  expect(requests).not.toContain(
     "POST /v1/runtime-configuration/intents/hardware-bindings/scanner/confirm",
   );
-  expect(requests).toContain(
+  expect(requests).not.toContain(
     "POST /v1/runtime-configuration/intents/hardware-bindings/scanner/clear",
   );
-  expect(requests).toContain(
+  expect(requests).not.toContain(
     "POST /v1/runtime-configuration/intents/scanner-protocol-parameters",
   );
 

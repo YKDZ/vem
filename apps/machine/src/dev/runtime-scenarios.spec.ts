@@ -133,6 +133,15 @@ describe("machine runtime scenario matrix", () => {
     }
   });
 
+  it("covers the production Boot surface as a 1080x1920 screenshot scenario", () => {
+    const scenario = getMachineRuntimeScenario("boot");
+    expect(scenario.category).toBe("boot");
+    expect(scenario.targetRoute).toBe("/boot");
+    expect(scenario.fixtureScenarioId).toBe("ready");
+    expect(scenario.screenshot).toBe("included");
+    expect(scenario.visualChecks).toContain("复用生产 KioskHeader");
+  });
+
   it("covers product browsing and checkout payment selection screenshots", () => {
     const states = [
       {

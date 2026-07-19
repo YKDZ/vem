@@ -712,66 +712,42 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
 
   await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
   await expectKioskMainFrame(page);
-  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
-  await expect(page.getByText("维护控制台")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
 
   await expectMaintenanceDiagnosticRow(
     page,
     "本地服务",
-    /^(健康|降级|offline|维护|starting|未知)\s+·\s+\S/,
+    /^(正常|就绪|健康|降级|离线|维护|启动中|未知)$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
     "后端",
-    /^(在线|不可用)\s+·\s+(健康|降级|offline|维护|starting|未知)$/,
+    /^(在线|不可用)\s+·\s+(正常|就绪|健康|降级|离线|维护|启动中|未知)$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
     "销售启动能力",
-    /^(可开始销售|不可开始)\s+·\s+\S+$/,
+    /^(可开始销售|不可开始)$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "同步",
-    /^(已连接|connecting|未连接|未知)\s+·\s+\S/,
-  );
-  await expectMaintenanceDiagnosticRow(
-    page,
-    "MQTT",
-    /^(已连接|connecting|未连接|未知)\s+·\s+待发队列\s+\d+$/,
+    "平台同步",
+    /^(已连接|连接中|未连接|未知)\s+·\s+待发队列\s+\d+$/,
   );
   await expectMaintenanceDiagnosticRow(page, "下位机", /^(在线|不可用)$/);
-  await expectMaintenanceDiagnosticRow(
-    page,
-    "扫码器",
-    /^(在线|不可用)\s+·\s+\S/,
-  );
-  await expectMaintenanceDiagnosticRow(
-    page,
-    "视觉运行状态",
-    /^(在线|不可用)\s+·\s+\S/,
-  );
-  await expectMaintenanceDiagnosticRow(
-    page,
-    "远程运维",
-    /^待处理\s+\d+\s+·\s+\S+$/,
-  );
+  await expectMaintenanceDiagnosticRow(page, "扫码器", /^(在线|不可用)$/);
+  await expectMaintenanceDiagnosticRow(page, "视觉运行状态", /^(在线|不可用)$/);
 
-  await expect(page.getByText("当前阻塞项")).toBeVisible();
-  await expect(
-    page
-      .getByRole("region", { name: "当前阻塞项" })
-      .getByText("整机维护锁", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "刷新诊断" })).toBeVisible();
+  await expect(page.getByText("整机维护锁", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "当前阻塞项" })).toHaveCount(0);
+  await tapLocator(page, page.getByRole("button", { name: /设备检查/ }));
+  await expect(page.getByRole("button", { name: "重新检查" })).toBeVisible();
+  await tapLocator(page, page.getByRole("button", { name: /诊断工具/ }));
+  await expect(page.getByRole("button", { name: "刷新状态" })).toBeVisible();
   await expect(page.getByRole("button", { name: "导出日志" })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "硬件自检" }).first(),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "视觉状态" }).first(),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "回到目录" })).toBeEnabled();
+    page.getByRole("button", { name: "返回商品目录" }),
+  ).toBeEnabled();
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);
@@ -785,6 +761,7 @@ test("maintenance can start and release the vision try-on preview diagnostic", a
   await loadMachineRuntimeScenario(page, maintenanceScenario);
 
   await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
+  await tapLocator(page, page.getByRole("button", { name: /声音与视觉/ }));
   await expect(page.getByText("视觉试衣预览诊断")).toBeVisible();
 
   await tapLocator(page, page.getByRole("button", { name: "启动试衣预览" }));
@@ -824,8 +801,10 @@ test("operator-entered maintenance can return to the catalog route", async ({
   await page.goto("/#/maintenance?source=operator");
 
   await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
-  await expect(page.getByText("维护控制台")).toBeVisible();
-  const returnToCatalogButton = page.getByRole("button", { name: "回到目录" });
+  await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
+  const returnToCatalogButton = page.getByRole("button", {
+    name: "返回商品目录",
+  });
   await expectReasonableTouchTarget(returnToCatalogButton);
   await tapLocator(page, returnToCatalogButton);
 
@@ -844,7 +823,7 @@ test("customer catalog touch flow does not expose protected maintenance actions"
   await tapLocator(page, page.getByRole("img", { name: "唐诗村" }));
 
   await expect(page).toHaveURL(/#\/catalog$/);
-  await expect(page.getByText("维护控制台")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "运行状态" })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);

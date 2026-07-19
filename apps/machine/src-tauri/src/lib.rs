@@ -3,6 +3,8 @@ use std::path::Path;
 
 mod native_audio;
 use native_audio::{play_machine_audio, stop_machine_audio, MachineAudioState};
+mod system_touch_keyboard;
+use system_touch_keyboard::{hide_system_touch_keyboard, show_system_touch_keyboard};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +83,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
             play_machine_audio,
-            stop_machine_audio
+            stop_machine_audio,
+            show_system_touch_keyboard,
+            hide_system_touch_keyboard
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

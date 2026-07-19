@@ -76,7 +76,11 @@ for (const scenario of selectedScenarios) {
   }) => {
     await loadMachineRuntimeScreenshotScenario(page, scenario);
 
-    await expect(page).toHaveURL(new RegExp(`#${scenario.targetRoute}$`));
+    const escapedTargetRoute = scenario.targetRoute.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+    await expect(page).toHaveURL(new RegExp(`#${escapedTargetRoute}$`));
     await expectKioskMainFrame(page);
     await expectCoreElements(page, scenario);
 
@@ -95,6 +99,13 @@ async function expectCoreElements(
   scenario: MachineRuntimeScenario,
 ): Promise<void> {
   switch (scenario.id) {
+    case "boot":
+      await expect(page.getByRole("img", { name: "唐诗村" })).toBeVisible();
+      await expect(page.getByText(/启动检查 \d+ \/ 4/)).toBeVisible();
+      await expect(
+        page.getByText("正在恢复运行配置和顾客交易，请稍候。"),
+      ).toBeVisible();
+      break;
     case "ready-catalog":
       await expect(page.getByRole("img", { name: "唐诗村" })).toBeVisible();
       await expect(
@@ -225,6 +236,38 @@ async function expectCoreElements(
     case "maintenance":
       await expectMaintenanceConsoleScreenshot(page);
       break;
+    case "maintenance-network":
+      await expect(page.getByLabel("网络名称")).toBeVisible();
+      await expect(page.getByText("机器认领", { exact: true })).toBeVisible();
+      break;
+    case "maintenance-hardware":
+      await expect(
+        page.getByRole("button", { name: "重新检查" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "出货一件" }),
+      ).toBeVisible();
+      break;
+    case "maintenance-stock":
+      await expect(page.getByText("库存维护").last()).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "刷新库存" }),
+      ).toBeVisible();
+      break;
+    case "maintenance-experience":
+      await expect(page.getByText("顾客音频偏好")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "播放测试音频" }),
+      ).toBeVisible();
+      break;
+    case "maintenance-diagnostics":
+      await expect(
+        page.getByRole("button", { name: "刷新状态" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "导出日志" }),
+      ).toBeVisible();
+      break;
     default:
       throw new Error(
         `No core screenshot assertion defined for scenario ${scenario.id}`,
@@ -257,19 +300,13 @@ async function expectDispensingReminderScreenshot(
 }
 
 async function expectMaintenanceConsoleScreenshot(page: Page): Promise<void> {
-  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
-  await expect(page.getByText("维护控制台")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
   await expect(page.getByText("本地服务", { exact: true })).toBeVisible();
-  await expect(page.getByText("同步", { exact: true })).toBeVisible();
+  await expect(page.getByText("平台同步", { exact: true })).toBeVisible();
   await expect(page.getByText("下位机", { exact: true })).toBeVisible();
   await expect(page.getByText("扫码器", { exact: true })).toBeVisible();
   await expect(page.getByText("视觉运行状态", { exact: true })).toBeVisible();
-  await expect(page.getByText("远程运维", { exact: true })).toBeVisible();
 
-  const currentBlockers = page.getByLabel("当前阻塞项");
-  await expect(
-    currentBlockers.getByText("整机维护锁", { exact: true }),
-  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "确认解除整机锁" }),
   ).toBeVisible();
@@ -277,7 +314,6 @@ async function expectMaintenanceConsoleScreenshot(page: Page): Promise<void> {
     page.getByPlaceholder("填写现场处理、复位和自检结果"),
   ).toBeVisible();
 
-  await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
   await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
 }
 
@@ -286,6 +322,24 @@ async function loadMachineRuntimeScreenshotScenario(
   scenario: MachineRuntimeScenario,
 ): Promise<void> {
   await seedRuntimeScreenshotMode(page);
+
+  if (scenario.id === "boot") {
+    // Keep the real bounded BootView observable after its UI-debug connection
+    // resolves; no production route or component behavior is substituted.
+    await page.addInitScript(() => {
+      const settled = Promise.allSettled.bind(Promise);
+      let held = false;
+      Promise.allSettled = ((values: Iterable<unknown>) => {
+        if (!held) {
+          held = true;
+          return new Promise<never>(() => undefined);
+        }
+        return settled(values);
+      }) as typeof Promise.allSettled;
+    });
+    await loadMachineRuntimeScenario(page, scenario);
+    return;
+  }
 
   if (scenario.id === "product-list") {
     await loadMachineRuntimeScenario(page, scenario);
@@ -305,6 +359,9 @@ async function loadMachineRuntimeScreenshotScenario(
   }
 
   await loadMachineRuntimeScenario(page, scenario);
+  if (scenario.maintenanceTask) {
+    await page.getByRole("button", { name: scenario.maintenanceTask }).click();
+  }
 }
 
 async function seedRuntimeScreenshotMode(page: Page): Promise<void> {

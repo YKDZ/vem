@@ -3,10 +3,10 @@ import { onMounted, onUnmounted, ref } from "vue";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import KioskHeader from "@/components/KioskHeader.vue";
 import { runBoundedBootCheck } from "@/daemon/boot-check";
 import { daemonClient } from "@/daemon/client";
 import { routeForBootFailure, routeForStartup } from "@/daemon/startup";
-import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -28,6 +28,12 @@ const visionStore = useVisionStore();
 const remoteOpsStore = useRemoteOpsStore();
 const naturalContextStore = useNaturalContextStore();
 const steps = ref<string[]>([]);
+const bootStageLabels = [
+  "连接本机运行服务",
+  "读取配置与交易快照",
+  "同步目录和展示状态",
+  "进入售卖界面",
+] as const;
 
 let bootGeneration = 0;
 let recoveredTransaction: TransactionSnapshot | null = null;
@@ -46,7 +52,7 @@ async function runBootCheck(): Promise<void> {
   recoveredTransaction = null;
   await runBoundedBootCheck(async (signal) => {
     try {
-      pushStep("连接本机 daemon IPC");
+      pushStep("连接本机运行服务");
       await daemonClient.initialize();
       if (!ownsBoot(signal, generation)) return;
 
@@ -104,7 +110,7 @@ async function runBootCheck(): Promise<void> {
       ]);
       if (!ownsBoot(signal, generation)) return;
 
-      pushStep("根据 daemon 状态选择页面");
+      pushStep("根据运行状态选择页面");
       await submitMachineNavigationIntent({
         type: "startup.navigate",
         target: routeForStartup({
@@ -116,7 +122,7 @@ async function runBootCheck(): Promise<void> {
     } catch (error) {
       if (!ownsBoot(signal, generation)) return;
       connectivityStore.markStale(error);
-      pushStep("daemon 不可用，进入离线页面");
+      pushStep("本机运行服务不可用，进入离线页面");
       await submitMachineNavigationIntent({
         type: "startup.navigate",
         target: routeForBootFailure(
@@ -156,27 +162,141 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <KioskLayout>
-    <section
-      class="flex h-full flex-col items-center justify-center text-center"
-    >
-      <div
-        class="w-full rounded-4xl border border-white/10 bg-white/10 p-8 shadow-2xl"
-      >
-        <p class="text-sm tracking-[0.4em] text-sky-200 uppercase">BOOTING</p>
-        <h2 class="mt-4 text-4xl font-bold text-white">
-          正在连接售货机 daemon
-        </h2>
-        <ul class="mt-8 space-y-3 text-left text-lg text-slate-200">
-          <li
-            v-for="step in steps"
-            :key="step"
-            class="rounded-2xl bg-slate-950/40 px-5 py-4"
-          >
-            {{ step }}
-          </li>
-        </ul>
+  <main class="kiosk-shell boot-page">
+    <KioskHeader />
+    <section class="boot-content" aria-live="polite">
+      <p class="boot-progress-label">
+        启动检查 {{ Math.min(steps.length, 4) }} / 4
+      </p>
+      <h1>{{ steps[steps.length - 1] ?? "正在连接本机服务" }}</h1>
+      <p class="boot-description">正在恢复运行配置和顾客交易，请稍候。</p>
+      <div class="boot-progress" aria-hidden="true">
+        <span
+          :style="{
+            width: `${Math.max(12, Math.min(100, steps.length * 25))}%`,
+          }"
+        ></span>
       </div>
+      <ol class="boot-steps">
+        <li
+          v-for="(stage, index) in bootStageLabels"
+          :key="stage"
+          :class="{
+            current: index === Math.min(steps.length, 4) - 1,
+            complete: index < Math.min(steps.length, 4) - 1,
+            waiting: index >= Math.min(steps.length, 4),
+          }"
+        >
+          <b>{{ index + 1 }}</b>
+          <span>{{ steps[index] ?? stage }}</span>
+          <em>
+            {{
+              index === Math.min(steps.length, 4) - 1
+                ? "进行中"
+                : index < Math.min(steps.length, 4)
+                  ? "完成"
+                  : "等待"
+            }}
+          </em>
+        </li>
+      </ol>
     </section>
-  </KioskLayout>
+  </main>
 </template>
+
+<style scoped>
+.boot-page {
+  display: flex;
+  flex-direction: column;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 2rem;
+  color: #293129;
+  background: #f5f4ee;
+}
+
+.boot-content {
+  width: min(42rem, 88%);
+  margin: clamp(9rem, 17vh, 16rem) auto 0;
+}
+
+.boot-progress-label {
+  margin: 0;
+  color: #647858;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.boot-content h1 {
+  margin: 0.75rem 0 0;
+  color: #293129;
+  font-size: 2.45rem;
+  line-height: 1.25;
+}
+
+.boot-description {
+  margin: 0.7rem 0 0;
+  color: #6c746d;
+  font-size: 1rem;
+}
+
+.boot-progress {
+  height: 0.45rem;
+  margin: 2.6rem 0 2rem;
+  overflow: hidden;
+  background: #dde1da;
+  border-radius: 4px;
+}
+
+.boot-progress span {
+  display: block;
+  height: 100%;
+  background: #6d815d;
+  transition: width 180ms ease;
+}
+
+.boot-steps {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  border-bottom: 1px solid #d7dcd5;
+}
+
+.boot-steps li {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 4rem;
+  color: #858c86;
+  border-top: 1px solid #d7dcd5;
+}
+
+.boot-steps b {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border: 1px solid #b7beb7;
+  border-radius: 50%;
+  font-size: 0.78rem;
+}
+
+.boot-steps em {
+  font-size: 0.8rem;
+  font-style: normal;
+}
+
+.boot-steps .complete {
+  color: #566357;
+}
+
+.boot-steps .complete b {
+  color: #fff;
+  background: #6d815d;
+  border-color: #6d815d;
+}
+
+.boot-steps .current {
+  color: #293129;
+  font-weight: 700;
+}
+</style>

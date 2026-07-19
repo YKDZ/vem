@@ -131,6 +131,26 @@ describe("VisionCameraMaintenancePanel", () => {
     });
   });
 
+  it("keeps camera maintenance failures localized while retaining technical evidence", async () => {
+    getVisionCameraMaintenanceContractMock.mockRejectedValueOnce(
+      new Error("daemon request failed"),
+    );
+    const host = await render();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("读取视觉摄像头维护状态失败");
+    });
+    expect(
+      host.querySelector("[data-test='vision-camera-maintenance-message']")
+        ?.textContent,
+    ).not.toContain(
+      "daemon request failed",
+    );
+    expect(host.querySelector("details")?.textContent).toContain(
+      "daemon request failed",
+    );
+  });
+
   afterEach(() => {
     mountedApp?.unmount();
     mountedApp = null;

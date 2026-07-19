@@ -12,6 +12,7 @@ import { daemonClient } from "@/daemon/client";
 const loading = ref(false);
 const contract = ref<VisionCameraMaintenanceContract | null>(null);
 const message = ref<string | null>(null);
+const technicalEvidence = ref<string | null>(null);
 const previewUrls = reactive<Record<string, string>>({});
 const previewLoading = reactive<Record<string, boolean>>({});
 const tested = reactive<
@@ -72,14 +73,17 @@ function clearPreviewUrls(): void {
 async function refreshContract(force = false): Promise<void> {
   if (loading.value) return;
   loading.value = true;
-  if (force) message.value = null;
+  if (force) {
+    message.value = null;
+    technicalEvidence.value = null;
+  }
   try {
     contract.value = force
       ? await daemonClient.refreshVisionCameraMaintenanceContract()
       : await daemonClient.getVisionCameraMaintenanceContract();
   } catch (error) {
-    message.value =
-      error instanceof Error ? error.message : "读取视觉摄像头维护状态失败";
+    message.value = "读取视觉摄像头维护状态失败";
+    technicalEvidence.value = error instanceof Error ? error.message : String(error);
   } finally {
     loading.value = false;
   }
@@ -89,6 +93,7 @@ async function loadPreview(candidateId: string): Promise<void> {
   if (previewLoading[candidateId]) return;
   previewLoading[candidateId] = true;
   message.value = null;
+  technicalEvidence.value = null;
   try {
     const blob =
       await daemonClient.getVisionCameraMaintenancePreviewBlob(candidateId);
@@ -97,7 +102,8 @@ async function loadPreview(candidateId: string): Promise<void> {
     }
     previewUrls[candidateId] = URL.createObjectURL(blob);
   } catch (error) {
-    message.value = error instanceof Error ? error.message : "读取本地预览失败";
+    message.value = "读取本地预览失败";
+    technicalEvidence.value = error instanceof Error ? error.message : String(error);
   } finally {
     previewLoading[candidateId] = false;
   }
@@ -108,6 +114,7 @@ async function testRole(
   candidateId: string,
 ): Promise<void> {
   message.value = null;
+  technicalEvidence.value = null;
   try {
     tested[role] = await daemonClient.testVisionCameraRole(role, {
       candidateId,
@@ -115,8 +122,8 @@ async function testRole(
     message.value = `${roleLabel(role)}测试通过，请在画面正确时确认绑定。`;
     await refreshContract();
   } catch (error) {
-    message.value =
-      error instanceof Error ? error.message : "视觉摄像头测试失败";
+    message.value = "视觉摄像头测试失败";
+    technicalEvidence.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -127,6 +134,7 @@ async function confirmRole(
   const evidence = tested[role];
   if (!evidence) return;
   message.value = null;
+  technicalEvidence.value = null;
   try {
     await daemonClient.confirmVisionCameraRole(role, {
       candidateId,
@@ -138,8 +146,8 @@ async function confirmRole(
     message.value = `${roleLabel(role)}已确认绑定；如摄像头重插，请直接刷新确认最新状态。`;
     await refreshContract();
   } catch (error) {
-    message.value =
-      error instanceof Error ? error.message : "视觉摄像头确认失败";
+    message.value = "视觉摄像头确认失败";
+    technicalEvidence.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -301,9 +309,13 @@ onUnmounted(() => {
 
     <p
       v-if="message"
-      class="mt-3 rounded-2xl bg-fuchsia-500/15 p-3 text-fuchsia-100"
+      class="mt-3 border border-rose-300/30 bg-rose-500/15 p-3 text-rose-100"
     >
-      {{ message }}
+      <span data-test="vision-camera-maintenance-message">{{ message }}</span>
+      <details v-if="technicalEvidence" class="mt-2 text-sm">
+        <summary>技术证据</summary>
+        <pre class="mt-2 whitespace-pre-wrap">{{ technicalEvidence }}</pre>
+      </details>
     </p>
   </section>
 </template>

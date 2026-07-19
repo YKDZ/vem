@@ -8,18 +8,13 @@ import {
 import { getActivePinia, type Pinia } from "pinia";
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 
-import type { DeviceBindingSnapshot } from "@/daemon/schemas";
-
 import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
-import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import KioskHeader from "@/components/KioskHeader.vue";
 import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePanel.vue";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { recoverPersistedClaim } from "@/daemon/claim-recovery";
 import { daemonClient, isDaemonTransportFailure } from "@/daemon/client";
 import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
-import KioskLayout from "@/layouts/KioskLayout.vue";
+import { installMaintenanceSystemTouchKeyboard } from "@/native/system-touch-keyboard";
 import {
   openVisionTryOnSession,
   type VisionTryOnSession,
@@ -50,7 +45,88 @@ if (!activePinia) {
   throw new Error("Local Operations requires an active Pinia instance");
 }
 const pinia: Pinia = activePinia;
-const { handleMaintenanceTap } = useMaintenanceEntry();
+type MaintenanceTask =
+  | "status"
+  | "commissioning"
+  | "hardware"
+  | "stock"
+  | "experience"
+  | "diagnostics";
+const activeTask = ref<MaintenanceTask>("status");
+const maintenanceRoot = ref<HTMLElement | null>(null);
+let removeSystemTouchKeyboard: (() => void) | null = null;
+const operatorAttention = reactive({
+  summary: null as string | null,
+  technicalEvidence: null as string | null,
+  task: null as MaintenanceTask | null,
+});
+
+function clearOperatorAttention(task?: MaintenanceTask): void {
+  if (task && operatorAttention.task !== task) return;
+  operatorAttention.summary = null;
+  operatorAttention.technicalEvidence = null;
+  operatorAttention.task = null;
+}
+
+function reportOperatorAttention(
+  summary: string,
+  error?: unknown,
+  task: MaintenanceTask = activeTask.value,
+): void {
+  operatorAttention.summary = summary;
+  operatorAttention.technicalEvidence =
+    error instanceof Error ? error.message : error ? String(error) : null;
+  operatorAttention.task = task;
+}
+
+function operatorErrorMessage(
+  summary: string,
+  error: unknown,
+  task?: MaintenanceTask,
+): string {
+  reportOperatorAttention(summary, error, task);
+  return summary;
+}
+
+function selectMaintenanceTask(task: MaintenanceTask): void {
+  clearOperatorAttention();
+  activeTask.value = task;
+}
+const maintenanceTasks = computed(() => [
+  {
+    key: "status" as const,
+    label: "运行状态",
+    value: saleCapabilityStore.canStartSale ? "可以销售" : "需要处理",
+  },
+  {
+    key: "commissioning" as const,
+    label: "网络与认领",
+    value: hasAcceptedProvisioningProfile.value ? "已完成" : "待配置",
+  },
+  {
+    key: "hardware" as const,
+    label: "设备检查",
+    value:
+      machineStore.health?.hardwareOnline && scannerStore.online
+        ? "设备正常"
+        : "检查设备",
+  },
+  {
+    key: "stock" as const,
+    label: "库存维护",
+    value: `${stockMaintenance.task?.slots.length ?? 0} 个货道`,
+  },
+  {
+    key: "experience" as const,
+    label: "声音与视觉",
+    value: visionStore.online ? "运行中" : "检查视觉",
+  },
+  {
+    key: "diagnostics" as const,
+    label: "诊断工具",
+    value: diagnostics.loading ? "刷新中" : "可用",
+  },
+]);
 const paymentEnvironmentDiagnostic =
   ref<PaymentProviderEnvironmentDiagnostic | null>(null);
 const paymentEnvironmentMessage = ref<string | null>(null);
@@ -102,11 +178,13 @@ const wholeMachineMaintenanceLock = computed(
     ) ?? null,
 );
 const saleCriticalBlockers = computed(() =>
-  (saleCapabilityStore.accepted?.blockers ?? []).map((reason) => ({
-    ...reason,
-    operatorLabel: saleCriticalBlockerLabel(reason.code),
-    operatorAction: saleCriticalBlockerAction(reason.code),
-  })),
+  (saleCapabilityStore.accepted?.blockers ?? [])
+    .filter((reason) => reason.code !== WHOLE_MACHINE_LOCKED_BLOCKER_CODE)
+    .map((reason) => ({
+      ...reason,
+      operatorLabel: saleCriticalBlockerLabel(reason.code),
+      operatorAction: saleCriticalBlockerAction(reason.code),
+    })),
 );
 const catalogOperatorDiagnostics = computed(
   () => catalogStore.operatorDiagnostics,
@@ -117,73 +195,6 @@ const latestVisionDiagnosticPayloadText = computed(() => {
   }
   return serializeDiagnosticPayload(visionStore.latestDiagnosticPayload);
 });
-const audioCueSettingsRows = computed(() => [
-  {
-    label: "全局音频提示",
-    value: machineStore.customerAudio.cuesEnabled ? "已启用" : "已停用",
-  },
-  {
-    label: "来人音频提示",
-    value: machineStore.customerAudio.presenceCuesEnabled ? "已启用" : "已停用",
-  },
-  {
-    label: "交易音频提示",
-    value: machineStore.customerAudio.transactionCuesEnabled
-      ? "已启用"
-      : "已停用",
-  },
-  {
-    label: "机器音频音量",
-    value: `${machineAudioVolumePercent(machineStore.customerAudio.volume)}%`,
-  },
-]);
-
-const effectiveRuntimeConfigurationRows = computed(() => {
-  const configuration = machineStore.effectiveRuntimeConfiguration;
-  if (!configuration) return [];
-  return [
-    {
-      label: "认领状态",
-      value: configuration.profileRefresh.status,
-    },
-    {
-      label: "平台机器",
-      value: configuration.machine?.code ?? "未认领",
-    },
-    {
-      label: "硬件型号",
-      value: configuration.hardware.model,
-    },
-    {
-      label: "Runtime Bootstrap 所有者",
-      value: "部署",
-    },
-    {
-      label: "Provisioning Profile 所有者",
-      value: "平台",
-    },
-    {
-      label: "Profile 版本",
-      value: String(
-        configuration.sourceRevisions.profile?.profileRevision ?? "未接受",
-      ),
-    },
-    {
-      label: "Profile 接受时间",
-      value: configuration.sourceRevisions.profile?.acceptedAt ?? "未接受",
-    },
-    {
-      label: "本地设置版本",
-      value: String(configuration.sourceRevisions.localSettingsRevision),
-    },
-  ];
-});
-
-const naturalContextDiagnosticMessage = computed(() =>
-  naturalContextStore.snapshot?.degraded || naturalContextStore.error
-    ? naturalContextStore.operatorMessage
-    : null,
-);
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
@@ -214,13 +225,6 @@ const commissioning = reactive({
   claiming: false,
 });
 
-const scannerProtocolForm = reactive({
-  baudRate: 9_600,
-  frameSuffix: "crlf" as "crlf" | "lf" | "cr" | "none",
-  saving: false,
-  message: null as string | null,
-});
-
 const audioPreferenceMutation = reactive({
   saving: false,
   message: null as string | null,
@@ -237,16 +241,8 @@ let tryOnPreviewDiagnosticSession: VisionTryOnSession | null = null;
 let maintenanceViewMounted = false;
 let tryOnPreviewDiagnosticSequence = 0;
 
-function syncScannerProtocolForm(): void {
-  const protocol =
-    machineStore.effectiveRuntimeConfiguration?.hardware.scannerProtocol;
-  scannerProtocolForm.baudRate = protocol?.baudRate ?? 9_600;
-  scannerProtocolForm.frameSuffix = protocol?.frameSuffix ?? "crlf";
-}
-
 async function reloadEffectiveRuntimeConfiguration(): Promise<void> {
   await machineStore.loadEffectiveRuntimeConfiguration();
-  syncScannerProtocolForm();
 }
 
 async function loadWifiNetworks(): Promise<void> {
@@ -256,8 +252,10 @@ async function loadWifiNetworks(): Promise<void> {
       await daemonClient.scanWifiNetworks()
     ).networks.map((network) => network.ssid);
   } catch (error) {
-    commissioning.message =
-      error instanceof Error ? error.message : String(error);
+    commissioning.message = operatorErrorMessage(
+      "无法读取可用网络，请检查网络适配器后重试。",
+      error,
+    );
   }
 }
 
@@ -275,8 +273,10 @@ async function submitNetworkSettings(): Promise<void> {
     commissioning.message = result.operatorGuidance;
     await reloadEffectiveRuntimeConfiguration();
   } catch (error) {
-    commissioning.message =
-      error instanceof Error ? error.message : String(error);
+    commissioning.message = operatorErrorMessage(
+      "网络设置未完成，请检查网络信息后重试。",
+      error,
+    );
   } finally {
     commissioning.loading = false;
   }
@@ -300,8 +300,10 @@ async function submitClaim(): Promise<void> {
     applyRecoveredClaim(configuration);
   } catch (error) {
     if (!isDaemonTransportFailure(error)) {
-      commissioning.message =
-        error instanceof Error ? error.message : String(error);
+      commissioning.message = operatorErrorMessage(
+        "机器认领未完成，请核对认领码和网络后重试。",
+        error,
+      );
       return;
     }
     const configuration = await recoverPersistedClaim(
@@ -311,8 +313,10 @@ async function submitClaim(): Promise<void> {
     if (configuration) {
       applyRecoveredClaim(configuration);
     } else {
-      commissioning.message =
-        error instanceof Error ? error.message : String(error);
+      commissioning.message = operatorErrorMessage(
+        "机器认领结果尚未恢复，请稍候刷新运行状态。",
+        error,
+      );
     }
   } finally {
     commissioning.claiming = false;
@@ -324,7 +328,6 @@ function applyRecoveredClaim(
 ): void {
   commissioning.claimCode = "";
   machineStore.applyEffectiveRuntimeConfiguration(configuration);
-  syncScannerProtocolForm();
   void refreshDiagnostics();
   commissioning.message = "机器认领已接受，正在读取当前运行状态。";
 }
@@ -469,6 +472,21 @@ function boundDiagnosticString(
 
 onMounted(async () => {
   maintenanceViewMounted = true;
+  if (maintenanceRoot.value) {
+    removeSystemTouchKeyboard = installMaintenanceSystemTouchKeyboard(
+      maintenanceRoot.value,
+      {
+        reportFailure(command, error) {
+          reportOperatorAttention(
+            command === "show_system_touch_keyboard"
+              ? "无法打开 Windows 系统触摸键盘，请检查 Windows 输入服务或改用实体键盘。"
+              : "无法收起 Windows 系统触摸键盘，请检查 Windows 输入服务。",
+            error,
+          );
+        },
+      },
+    );
+  }
   try {
     await reloadEffectiveRuntimeConfiguration();
   } catch {
@@ -490,6 +508,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   maintenanceViewMounted = false;
+  removeSystemTouchKeyboard?.();
+  removeSystemTouchKeyboard = null;
   stopDiagnosticsAutoRefresh();
   void stopTryOnPreviewDiagnostic();
 });
@@ -587,127 +607,12 @@ async function runManualDispenseDiagnostic(): Promise<void> {
         ? `诊断出货完成（${result.diagnosticId}）。请立即执行库存核对。`
         : `诊断结果 ${result.outcome}（${result.diagnosticId}）。请核实实物并执行库存核对。`;
   } catch (error) {
-    manualDispenseDiagnostic.message =
-      error instanceof Error ? error.message : String(error);
+    manualDispenseDiagnostic.message = operatorErrorMessage(
+      "诊断出货未完成，请核实实物和库存后重试。",
+      error,
+    );
   } finally {
     manualDispenseDiagnostic.loading = false;
-  }
-}
-
-const deviceBindingMaintenance = reactive({
-  loading: false,
-  message: null as string | null,
-  snapshot: null as DeviceBindingSnapshot | null,
-  tested: {} as Partial<
-    Record<
-      "lower_controller" | "scanner",
-      { identityKey: string; testEvidenceToken: string }
-    >
-  >,
-});
-
-async function refreshDeviceBindings(): Promise<void> {
-  delete deviceBindingMaintenance.tested.lower_controller;
-  delete deviceBindingMaintenance.tested.scanner;
-  try {
-    deviceBindingMaintenance.snapshot = await daemonClient.getDeviceBindings();
-  } catch (error) {
-    deviceBindingMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-  }
-}
-
-async function testDeviceBinding(
-  role: "lower_controller" | "scanner",
-  identityKey: string,
-): Promise<void> {
-  deviceBindingMaintenance.loading = true;
-  deviceBindingMaintenance.message = null;
-  try {
-    const result = await daemonClient.testDeviceBinding(role, identityKey);
-    deviceBindingMaintenance.tested[role] = {
-      identityKey,
-      testEvidenceToken: result.testEvidenceToken,
-    };
-    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}测试通过：${result.currentPort}`;
-  } catch (error) {
-    deviceBindingMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    deviceBindingMaintenance.loading = false;
-  }
-}
-
-async function confirmDeviceBinding(
-  role: "lower_controller" | "scanner",
-  identityKey: string,
-): Promise<void> {
-  if (deviceBindingMaintenance.tested[role]?.identityKey !== identityKey)
-    return;
-  deviceBindingMaintenance.loading = true;
-  deviceBindingMaintenance.message = null;
-  try {
-    const tested = deviceBindingMaintenance.tested[role];
-    if (!tested) return;
-    delete deviceBindingMaintenance.tested[role];
-    await daemonClient.confirmDeviceBinding(
-      role,
-      identityKey,
-      tested.testEvidenceToken,
-    );
-    await Promise.all([
-      reloadEffectiveRuntimeConfiguration(),
-      refreshDeviceBindings(),
-      refreshDiagnostics(),
-    ]);
-    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}稳定身份已绑定。`;
-  } catch (error) {
-    deviceBindingMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    deviceBindingMaintenance.loading = false;
-  }
-}
-
-async function clearDeviceBinding(
-  role: "lower_controller" | "scanner",
-): Promise<void> {
-  if (deviceBindingMaintenance.loading) return;
-  deviceBindingMaintenance.loading = true;
-  deviceBindingMaintenance.message = null;
-  try {
-    await daemonClient.clearDeviceBinding(role);
-    delete deviceBindingMaintenance.tested[role];
-    await Promise.all([
-      reloadEffectiveRuntimeConfiguration(),
-      refreshDeviceBindings(),
-      refreshDiagnostics(),
-    ]);
-    deviceBindingMaintenance.message = `${role === "lower_controller" ? "下位机" : "扫码器"}稳定身份绑定已清除。`;
-  } catch (error) {
-    deviceBindingMaintenance.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    deviceBindingMaintenance.loading = false;
-  }
-}
-
-async function saveScannerProtocolParameters(): Promise<void> {
-  if (scannerProtocolForm.saving) return;
-  scannerProtocolForm.saving = true;
-  scannerProtocolForm.message = null;
-  try {
-    await daemonClient.setScannerProtocolParameters({
-      baudRate: scannerProtocolForm.baudRate,
-      frameSuffix: scannerProtocolForm.frameSuffix,
-    });
-    await reloadEffectiveRuntimeConfiguration();
-    scannerProtocolForm.message = "扫码器协议参数已应用。";
-  } catch (error) {
-    scannerProtocolForm.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    scannerProtocolForm.saving = false;
   }
 }
 
@@ -808,8 +713,10 @@ async function updateAudioPreferences(
     await reloadEffectiveRuntimeConfiguration();
     audioPreferenceMutation.message = "顾客音频偏好已保存。";
   } catch (error) {
-    audioPreferenceMutation.message =
-      error instanceof Error ? error.message : String(error);
+    audioPreferenceMutation.message = operatorErrorMessage(
+      "顾客音频偏好未保存，请稍后重试。",
+      error,
+    );
   } finally {
     audioPreferenceMutation.saving = false;
   }
@@ -836,7 +743,7 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
     },
     {
       label: "播放驱动",
-      value: "Machine Audio Coordinator",
+      value: "机器音频协调器",
     },
     {
       label: "播放音量",
@@ -844,7 +751,7 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
     },
     {
       label: "输出路径",
-      value: "Windows 当前默认输出设备",
+      value: "系统当前默认扬声器",
     },
   ];
 });
@@ -860,14 +767,14 @@ async function playMachineAudioTestPlayback(): Promise<void> {
       maintenanceTestToneUrl,
       volume,
     );
-    if (!requestId)
-      throw new Error("Machine Audio Coordinator 未接受测试播放请求");
+    if (!requestId) throw new Error("机器音频协调器未接受测试播放请求");
     machineAudioTestPlayback.requestId = requestId;
-    machineAudioTestPlayback.message =
-      "测试播放已交给 Machine Audio Coordinator，等待终态记录。";
+    machineAudioTestPlayback.message = "测试播放已提交，等待播放结果。";
   } catch (error) {
-    machineAudioTestPlayback.message =
-      error instanceof Error ? error.message : String(error);
+    machineAudioTestPlayback.message = operatorErrorMessage(
+      "测试播放未提交，请检查默认扬声器后重试。",
+      error,
+    );
   } finally {
     machineAudioTestPlayback.loading = false;
   }
@@ -891,8 +798,10 @@ async function stopTryOnPreviewDiagnostic(): Promise<void> {
     }
   } catch (error) {
     if (maintenanceViewMounted) {
-      tryOnPreviewDiagnostic.message =
-        error instanceof Error ? error.message : String(error);
+      tryOnPreviewDiagnostic.message = operatorErrorMessage(
+        "试衣预览未能释放，请检查视觉服务。",
+        error,
+      );
     }
   }
 }
@@ -922,8 +831,10 @@ async function startTryOnPreviewDiagnostic(): Promise<void> {
     tryOnPreviewDiagnostic.message = "试衣预览诊断已启动。";
   } catch (error) {
     if (maintenanceViewMounted && sequence === tryOnPreviewDiagnosticSequence) {
-      tryOnPreviewDiagnostic.message =
-        error instanceof Error ? error.message : String(error);
+      tryOnPreviewDiagnostic.message = operatorErrorMessage(
+        "试衣预览未能启动，请检查视觉服务。",
+        error,
+      );
     }
   } finally {
     if (sequence === tryOnPreviewDiagnosticSequence) {
@@ -962,9 +873,13 @@ async function runHardwareCheck(): Promise<void> {
     hardwareMaintenance.message = `${
       result.online ? "硬件就绪" : "硬件告警"
     }：${result.message}${details.length > 0 ? `（${details.join("；")}）` : ""}`;
+    clearOperatorAttention("hardware");
   } catch (error) {
-    hardwareMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+    hardwareMaintenance.message = operatorErrorMessage(
+      "硬件检查未完成，请检查下位机连接后重试。",
+      error,
+      "hardware",
+    );
   } finally {
     hardwareMaintenance.loading = false;
   }
@@ -979,8 +894,10 @@ async function refreshVisionStatus(): Promise<void> {
       ? `视觉模块在线：${visionStore.message}`
       : `视觉模块不可用：${visionStore.message}`;
   } catch (error) {
-    visionMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+    visionMaintenance.message = operatorErrorMessage(
+      "视觉状态未刷新，请检查视觉服务后重试。",
+      error,
+    );
   } finally {
     visionMaintenance.loading = false;
   }
@@ -1017,12 +934,13 @@ async function runDiagnosticsRefresh(): Promise<void> {
       visionStore.refresh(),
       naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
-      refreshDeviceBindings(),
       refreshPaymentEnvironmentDiagnostic(),
     ]);
   } catch (error) {
-    diagnostics.message =
-      error instanceof Error ? error.message : String(error);
+    diagnostics.message = operatorErrorMessage(
+      "运行状态未刷新，请检查本机运行服务后重试。",
+      error,
+    );
   } finally {
     diagnostics.loading = false;
   }
@@ -1068,8 +986,11 @@ async function clearWholeMachineLock(): Promise<void> {
     wholeMachineLockMaintenance.message = message.includes(
       "must be healthy before clearing whole-machine lock",
     )
-      ? `下位机仍处于故障状态，不能解除整机锁。请先按现场复位键并确认下位机恢复在线，再点击解除。(${message})`
-      : message;
+      ? operatorErrorMessage(
+          "下位机仍处于故障状态，不能解除整机锁。请先按现场复位键并确认下位机恢复在线，再点击解除。",
+          error,
+        )
+      : operatorErrorMessage("整机维护锁未解除，请检查处理记录后重试。", error);
   } finally {
     wholeMachineLockMaintenance.loading = false;
   }
@@ -1124,11 +1045,12 @@ function blockerRecoveryLabel(code: string): string {
 }
 
 function blockerRecoveryDisabled(): boolean {
-  return hardwareMaintenance.loading || diagnostics.loading;
+  return hardwareMaintenance.loading;
 }
 
 async function runBlockerRecovery(code: string): Promise<void> {
   if (code === "MACHINE_AUTH_MISSING") {
+    activeTask.value = "commissioning";
     commissioning.message = "请在本页完成网络设置和机器认领。";
     return;
   }
@@ -1141,16 +1063,11 @@ async function runBlockerRecovery(code: string): Promise<void> {
     return;
   }
   if (code === "NO_SALEABLE_SLOTS") {
+    activeTask.value = "stock";
     stockMaintenance.message = "请使用下方库存维护完成补货或盘点修正。";
     return;
   }
   await refreshDiagnostics();
-}
-
-function naturalContextDisplayStatus(): string {
-  const snapshot = naturalContextStore.snapshot;
-  if (!snapshot) return "未知";
-  return `${snapshot.degraded ? "降级" : "就绪"} · ${runtimeStatusLabel(snapshot.status)}`;
 }
 
 function runtimeStatusLabel(status: string): string {
@@ -1163,7 +1080,10 @@ function runtimeStatusLabel(status: string): string {
     unconfigured: "未配置",
     unavailable: "不可用",
     connected: "已连接",
+    connecting: "连接中",
     disconnected: "未连接",
+    offline: "离线",
+    starting: "启动中",
     unknown: "未知",
     catalog: "目录",
     maintenance: "维护",
@@ -1204,8 +1124,10 @@ async function exportLogs(): Promise<void> {
     await remoteOpsStore.downloadExport();
     diagnostics.logsMessage = "日志已导出";
   } catch (error) {
-    diagnostics.logsMessage =
-      error instanceof Error ? error.message : String(error);
+    diagnostics.logsMessage = operatorErrorMessage(
+      "日志未导出，请稍后重试。",
+      error,
+    );
   }
 }
 
@@ -1227,8 +1149,10 @@ async function refreshStockMaintenanceView(): Promise<void> {
   try {
     applyStockMaintenanceTask(await daemonClient.getStockMaintenanceTask());
   } catch (error) {
-    stockMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+    stockMaintenance.message = operatorErrorMessage(
+      "库存维护任务未读取，请刷新后重试。",
+      error,
+    );
   } finally {
     stockMaintenance.loading = false;
   }
@@ -1298,10 +1222,10 @@ async function submitStockMaintenanceTask(): Promise<void> {
       ? "批次已存在，已恢复原同步状态。"
       : "库存批次已提交，等待平台逐货道确认。";
   } catch (error) {
-    stockMaintenance.message =
-      error instanceof Error
-        ? `${error.message}；本机服务保留批次状态，可刷新后恢复。`
-        : "库存批次提交结果未确认，可刷新后恢复。";
+    stockMaintenance.message = operatorErrorMessage(
+      "库存批次提交结果未确认，可刷新后恢复。",
+      error,
+    );
   } finally {
     stockMaintenance.loading = false;
   }
@@ -1309,1106 +1233,1081 @@ async function submitStockMaintenanceTask(): Promise<void> {
 </script>
 
 <template>
-  <KioskLayout>
-    <section class="maintenance-page">
-      <header class="maintenance-header">
-        <div class="maintenance-brand" @click="handleMaintenanceTap">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="maintenance-title-block">
-          <p>维护</p>
-          <h2>生产维护</h2>
-        </div>
-      </header>
-
-      <section
-        v-if="!hasAcceptedProvisioningProfile"
-        class="mt-4 grid gap-4 rounded-3xl border border-amber-200/30 bg-amber-500/10 p-4 text-left md:grid-cols-2"
-        aria-label="机器认领"
-      >
-        <form class="grid gap-3" @submit.prevent="submitNetworkSettings">
-          <div class="flex items-center justify-between gap-3">
-            <p class="font-semibold text-white">本地网络</p>
-            <button
-              class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 text-sm font-bold text-sky-100"
-              type="button"
-              :disabled="commissioning.loading"
-              @click="loadWifiNetworks"
-            >
-              扫描网络
-            </button>
+  <main ref="maintenanceRoot" class="kiosk-shell maintenance-page">
+    <KioskHeader />
+    <div class="maintenance-layout">
+      <aside class="maintenance-task-nav" aria-label="维护任务">
+        <p>维护任务</p>
+        <button
+          v-for="task in maintenanceTasks"
+          :key="task.key"
+          type="button"
+          :class="{ active: activeTask === task.key }"
+          @click="selectMaintenanceTask(task.key)"
+        >
+          <span>{{ task.label }}</span>
+          <small>{{ task.value }}</small>
+        </button>
+      </aside>
+      <section class="maintenance-workspace">
+        <header class="maintenance-workspace-header">
+          <div>
+            <p>本地运维</p>
+            <h1>
+              {{
+                maintenanceTasks.find((task) => task.key === activeTask)?.label
+              }}
+            </h1>
           </div>
-          <select
-            v-if="commissioning.wifiNetworks.length > 0"
-            v-model="commissioning.ssid"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-            aria-label="可用网络"
+          <button
+            class="maintenance-primary-button"
+            type="button"
+            :disabled="Boolean(returnToCatalogBlockedReason)"
+            @click="returnToCatalog"
           >
-            <option value="">选择网络</option>
-            <option
-              v-for="ssid in commissioning.wifiNetworks"
-              :key="ssid"
-              :value="ssid"
+            返回商品目录
+          </button>
+        </header>
+
+        <section
+          v-if="operatorAttention.summary"
+          class="maintenance-attention-list"
+          aria-live="polite"
+          aria-label="操作提示"
+        >
+          <article>
+            <p class="font-semibold text-rose-50">
+              {{ operatorAttention.summary }}
+            </p>
+            <details v-if="operatorAttention.technicalEvidence">
+              <summary>技术证据</summary>
+              <pre>{{ operatorAttention.technicalEvidence }}</pre>
+            </details>
+          </article>
+        </section>
+
+        <section
+          v-show="activeTask === 'commissioning'"
+          class="maintenance-panel maintenance-commissioning"
+          aria-label="机器认领"
+        >
+          <form class="grid gap-3" @submit.prevent="submitNetworkSettings">
+            <div class="flex items-center justify-between gap-3">
+              <p class="font-semibold text-white">本地网络</p>
+              <button
+                class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 text-sm font-bold text-sky-100"
+                type="button"
+                :disabled="commissioning.loading"
+                @click="loadWifiNetworks"
+              >
+                扫描网络
+              </button>
+            </div>
+            <select
+              v-if="commissioning.wifiNetworks.length > 0"
+              v-model="commissioning.ssid"
+              class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+              aria-label="可用网络"
             >
-              {{ ssid }}
-            </option>
-          </select>
-          <input
-            v-model.trim="commissioning.ssid"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-            autocomplete="off"
-            placeholder="网络名称"
-            aria-label="网络名称"
-            required
-          />
-          <input
-            v-model="commissioning.password"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-            type="password"
-            autocomplete="off"
-            placeholder="网络密码"
-            aria-label="网络密码"
-          />
-          <label class="flex items-center gap-2 text-sm text-slate-200">
-            <input v-model="commissioning.hidden" type="checkbox" /> 隐藏网络
-          </label>
-          <button
-            class="kiosk-touch-target rounded-xl bg-sky-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-            type="submit"
-            :disabled="commissioning.loading || !commissioning.ssid"
+              <option value="">选择网络</option>
+              <option
+                v-for="ssid in commissioning.wifiNetworks"
+                :key="ssid"
+                :value="ssid"
+              >
+                {{ ssid }}
+              </option>
+            </select>
+            <input
+              v-model.trim="commissioning.ssid"
+              class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+              autocomplete="off"
+              placeholder="网络名称"
+              aria-label="网络名称"
+              required
+            />
+            <input
+              v-model="commissioning.password"
+              class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+              type="password"
+              autocomplete="off"
+              placeholder="网络密码"
+              aria-label="网络密码"
+            />
+            <label class="flex items-center gap-2 text-sm text-slate-200">
+              <input v-model="commissioning.hidden" type="checkbox" /> 隐藏网络
+            </label>
+            <button
+              class="kiosk-touch-target rounded-xl bg-sky-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+              type="submit"
+              :disabled="commissioning.loading || !commissioning.ssid"
+            >
+              {{ commissioning.loading ? "连接中" : "应用网络" }}
+            </button>
+          </form>
+          <form
+            v-if="!hasAcceptedProvisioningProfile"
+            class="grid content-start gap-3"
+            @submit.prevent="submitClaim"
           >
-            {{ commissioning.loading ? "连接中" : "应用网络" }}
-          </button>
-        </form>
-        <form class="grid content-start gap-3" @submit.prevent="submitClaim">
-          <p class="font-semibold text-white">机器认领</p>
-          <input
-            v-model.trim="commissioning.claimCode"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-            autocomplete="off"
-            placeholder="认领码"
-            aria-label="认领码"
-            required
-          />
-          <button
-            class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-            type="submit"
-            :disabled="commissioning.claiming || !commissioning.claimCode"
+            <p class="font-semibold text-white">机器认领</p>
+            <input
+              v-model.trim="commissioning.claimCode"
+              class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+              autocomplete="off"
+              placeholder="认领码"
+              aria-label="认领码"
+              required
+            />
+            <button
+              class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+              type="submit"
+              :disabled="commissioning.claiming || !commissioning.claimCode"
+            >
+              {{ commissioning.claiming ? "认领中" : "认领机器" }}
+            </button>
+          </form>
+          <div v-else class="maintenance-claim-status">
+            <p>机器认领</p>
+            <strong>{{ machineStore.machineCode ?? "已认领" }}</strong>
+            <span>平台配置已接受，本地界面不重复编辑平台字段。</span>
+          </div>
+          <p
+            v-if="commissioning.message"
+            class="text-sm text-amber-100 md:col-span-2"
           >
-            {{ commissioning.claiming ? "认领中" : "认领机器" }}
-          </button>
-        </form>
-        <p
-          v-if="commissioning.message"
-          class="text-sm text-amber-100 md:col-span-2"
-        >
-          {{ commissioning.message }}
-        </p>
-      </section>
-
-      <section
-        class="mt-4 rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
-        aria-label="支付环境诊断"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <p class="font-semibold text-white">支付环境</p>
-          <span class="text-sm font-semibold text-sky-100">
-            {{ paymentEnvironmentLabel }} ·
-            {{ paymentEnvironmentReadinessLabel }}
-          </span>
-        </div>
-        <p class="mt-1 text-sm text-slate-300">
-          错误分类：{{ paymentEnvironmentErrorLabel }}
-        </p>
-        <p v-if="paymentEnvironmentMessage" class="mt-1 text-sm text-amber-100">
-          {{ paymentEnvironmentMessage }}
-        </p>
-      </section>
-
-      <section
-        v-if="saleCriticalBlockers.length > 0"
-        class="mt-4 grid gap-3"
-        aria-label="当前阻塞项"
-      >
-        <h3 class="text-left text-sm font-semibold text-rose-100">
-          当前阻塞项
-        </h3>
-        <article
-          v-for="blocker in saleCriticalBlockers"
-          :key="`${blocker.component}-${blocker.code}`"
-          class="rounded-3xl border border-rose-300/30 bg-rose-500/15 p-4 text-left"
-        >
-          <p class="font-semibold text-rose-50">{{ blocker.operatorLabel }}</p>
-          <p class="mt-1 text-sm text-rose-100/90">
-            {{ blocker.operatorAction }}
+            {{ commissioning.message }}
           </p>
-          <button
-            class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
-            type="button"
-            :disabled="blockerRecoveryDisabled()"
-            @click="runBlockerRecovery(blocker.code)"
-          >
-            {{ blockerRecoveryLabel(blocker.code) }}
-          </button>
-          <details class="mt-3 text-sm text-rose-100/80">
-            <summary>技术证据</summary>
-            <p class="mt-2">{{ blocker.code }} · {{ blocker.message }}</p>
-          </details>
-        </article>
-      </section>
+        </section>
 
-      <section class="mt-4 grid gap-3 md:grid-cols-2" aria-label="维护任务概览">
-        <article
-          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
+        <section
+          v-show="activeTask === 'status'"
+          class="maintenance-panel"
+          aria-label="支付环境诊断"
         >
-          <p class="font-semibold text-white">健康与连接</p>
-          <p class="mt-1 text-sm text-slate-300">
-            查看本地服务、平台与 MQTT 状态。
-          </p>
-          <details class="mt-3 text-sm text-slate-300">
-            <summary>技术证据</summary>
-            <p class="mt-2">
-              {{ machineStore.health?.process.code ?? "未读取" }}
-            </p>
-          </details>
-        </article>
-        <article
-          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
-        >
-          <p class="font-semibold text-white">硬件与绑定</p>
-          <p class="mt-1 text-sm text-slate-300">
-            检查下位机、扫码器与视觉运行状态。
-          </p>
-          <button
-            class="kiosk-touch-target mt-3 rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-            type="button"
-            :disabled="hardwareMaintenance.loading"
-            @click="runHardwareCheck"
-          >
-            执行设备检查
-          </button>
-          <details class="mt-3 text-sm text-slate-300">
-            <summary>技术证据</summary>
-            <p class="mt-2">
-              {{
-                machineStore.health?.hardwareOnline
-                  ? "下位机在线"
-                  : "下位机不可用"
-              }}
-            </p>
-          </details>
-        </article>
-      </section>
-
-      <section
-        v-if="deviceBindingMaintenance.snapshot"
-        class="mt-4 grid gap-3"
-        aria-label="设备稳定身份绑定"
-      >
-        <article
-          v-for="role in deviceBindingMaintenance.snapshot.roles"
-          :key="role.role"
-          class="rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left"
-          :data-test="`device-binding-${role.role}`"
-        >
-          <div class="flex items-center justify-between gap-3">
-            <p class="font-semibold text-white">
-              {{
-                role.role === "lower_controller" ? "下位机绑定" : "扫码器绑定"
-              }}
-            </p>
-            <span :class="role.ready ? 'text-emerald-200' : 'text-amber-200'">
-              {{ role.ready ? `已就绪 · ${role.currentPort}` : "待处理" }}
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="font-semibold text-white">支付环境</p>
+            <span class="text-sm font-semibold text-sky-100">
+              {{ paymentEnvironmentLabel }} ·
+              {{ paymentEnvironmentReadinessLabel }}
             </span>
           </div>
-          <p v-if="!role.ready" class="mt-2 text-sm text-amber-100">
-            {{ operatorMessageLabel(role.message) }}
+          <p class="mt-1 text-sm text-slate-300">
+            错误分类：{{ paymentEnvironmentErrorLabel }}
           </p>
-          <div
-            v-if="role.ambiguityKind === 'duplicate_observation'"
-            class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200/20 bg-amber-500/10 p-3"
-          >
-            <p class="text-sm font-semibold text-amber-100">
-              检测到重复设备。请拔除重复设备后刷新，再进行测试和绑定。
-            </p>
-            <button
-              class="kiosk-touch-target rounded-xl border border-amber-200/30 px-3 py-2 font-bold text-amber-100 disabled:opacity-40"
-              type="button"
-              :disabled="deviceBindingMaintenance.loading"
-              @click="refreshDeviceBindings"
-            >
-              刷新设备
-            </button>
-          </div>
-          <div v-else class="mt-3 grid gap-2">
-            <div
-              v-for="(candidate, candidateIndex) in role.candidates"
-              :key="`${candidate.identity.identityKey}:${candidate.currentPort}:${candidateIndex}`"
-              class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 p-3"
-            >
-              <div>
-                <p class="font-semibold text-slate-100">
-                  {{ candidate.friendlyName ?? "串口设备" }} ·
-                  {{ candidate.currentPort }}
-                </p>
-                <p class="mt-1 text-xs text-slate-400">
-                  {{ candidate.identity.identityKey }}
-                </p>
-              </div>
-              <div class="flex gap-2">
-                <button
-                  class="kiosk-touch-target rounded-xl border border-sky-200/30 px-3 py-2 font-bold text-sky-100 disabled:opacity-40"
-                  type="button"
-                  :disabled="deviceBindingMaintenance.loading"
-                  @click="
-                    testDeviceBinding(role.role, candidate.identity.identityKey)
-                  "
-                >
-                  测试
-                </button>
-                <button
-                  class="kiosk-touch-target rounded-xl bg-emerald-300 px-3 py-2 font-bold text-slate-950 disabled:opacity-40"
-                  type="button"
-                  :disabled="
-                    deviceBindingMaintenance.loading ||
-                    deviceBindingMaintenance.tested[role.role]?.identityKey !==
-                      candidate.identity.identityKey
-                  "
-                  @click="
-                    confirmDeviceBinding(
-                      role.role,
-                      candidate.identity.identityKey,
-                    )
-                  "
-                >
-                  确认绑定
-                </button>
-                <button
-                  v-if="role.binding"
-                  class="kiosk-touch-target rounded-xl border border-rose-200/30 px-3 py-2 font-bold text-rose-100 disabled:opacity-40"
-                  type="button"
-                  :disabled="deviceBindingMaintenance.loading"
-                  @click="clearDeviceBinding(role.role)"
-                >
-                  清除绑定
-                </button>
-              </div>
-            </div>
-          </div>
           <p
-            v-for="(diagnostic, diagnosticIndex) in role.discoveryDiagnostics"
-            :key="`${diagnostic.currentPort}:${diagnostic.code}:${diagnosticIndex}`"
-            class="mt-2 rounded-2xl border border-amber-200/20 p-3 text-sm text-amber-100"
+            v-if="paymentEnvironmentMessage"
+            class="mt-1 text-sm text-amber-100"
           >
-            {{ diagnostic.friendlyName ?? "串口设备" }} ·
-            {{ diagnostic.currentPort }}：
-            {{ operatorMessageLabel(diagnostic.message) }}
+            {{ paymentEnvironmentMessage }}
           </p>
-          <details
-            v-if="role.binding || role.legacyPortHint"
-            class="mt-3 text-sm text-slate-300"
+        </section>
+
+        <section
+          v-if="saleCriticalBlockers.length > 0"
+          v-show="activeTask === 'status'"
+          class="maintenance-attention-list"
+          aria-label="当前阻塞项"
+        >
+          <h3 class="text-left text-sm font-semibold text-rose-100">
+            当前阻塞项
+          </h3>
+          <article
+            v-for="blocker in saleCriticalBlockers"
+            :key="`${blocker.component}-${blocker.code}`"
+            class="rounded-3xl border border-rose-300/30 bg-rose-500/15 p-4 text-left"
           >
-            <summary>技术证据</summary>
-            <p v-if="role.binding" class="mt-2 break-all">
-              {{ role.binding.identity.identityKey }}
+            <p class="font-semibold text-rose-50">
+              {{ blocker.operatorLabel }}
             </p>
-            <p v-if="role.legacyPortHint" class="mt-1">
-              迁移提示：{{ role.legacyPortHint }}（不作为绑定）
+            <p class="mt-1 text-sm text-rose-100/90">
+              {{ blocker.operatorAction }}
             </p>
-          </details>
-        </article>
-        <p
-          v-if="deviceBindingMaintenance.message"
-          class="rounded-2xl bg-sky-500/15 p-3 text-sky-100"
-        >
-          {{ deviceBindingMaintenance.message }}
-        </p>
-      </section>
-
-      <form
-        class="mt-4 grid gap-3 rounded-3xl border border-white/10 bg-slate-950/30 p-4 text-left md:grid-cols-[1fr_1fr_auto]"
-        aria-label="扫码器协议"
-        @submit.prevent="saveScannerProtocolParameters"
-      >
-        <label class="grid gap-1 text-sm text-slate-200">
-          波特率
-          <input
-            v-model.number="scannerProtocolForm.baudRate"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-            min="1200"
-            max="230400"
-            step="1"
-            type="number"
-            required
-          />
-        </label>
-        <label class="grid gap-1 text-sm text-slate-200">
-          帧尾
-          <select
-            v-model="scannerProtocolForm.frameSuffix"
-            class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
-          >
-            <option value="crlf">CRLF</option>
-            <option value="lf">LF</option>
-            <option value="cr">CR</option>
-            <option value="none">无</option>
-          </select>
-        </label>
-        <button
-          class="kiosk-touch-target self-end rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-          type="submit"
-          :disabled="scannerProtocolForm.saving"
-        >
-          {{ scannerProtocolForm.saving ? "应用中" : "应用扫码器协议" }}
-        </button>
-        <p
-          v-if="scannerProtocolForm.message"
-          class="text-sm text-sky-100 md:col-span-3"
-        >
-          {{ scannerProtocolForm.message }}
-        </p>
-      </form>
-
-      <section
-        class="mt-6 rounded-3xl border border-amber-200/20 bg-amber-500/10 p-5"
-        data-test="manual-dispense-diagnostic"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <p class="font-semibold text-amber-100">手动出货诊断</p>
-          <div class="flex items-center gap-3 text-sm text-amber-100">
-            <span>执行后必须核对库存</span>
             <button
-              class="kiosk-touch-target rounded-xl border border-amber-100/30 px-3 py-2"
+              class="kiosk-touch-target mt-3 rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
               type="button"
-              :disabled="manualDispenseDiagnostic.loading"
-              @click="startNewManualDispenseDiagnostic"
+              :disabled="blockerRecoveryDisabled()"
+              @click="runBlockerRecovery(blocker.code)"
             >
-              新建诊断
+              {{ blockerRecoveryLabel(blocker.code) }}
             </button>
-          </div>
-        </div>
-        <form
-          class="mt-4 grid gap-3 md:grid-cols-4"
-          @submit.prevent="runManualDispenseDiagnostic"
-        >
-          <label class="grid gap-1 text-left text-sm text-slate-200">
-            货道
-            <input
-              v-model.trim="manualDispenseDiagnostic.slotCode"
-              class="rounded-xl bg-slate-950/60 p-3"
-              maxlength="32"
-              required
-            />
-          </label>
-          <label class="grid gap-1 text-left text-sm text-slate-200">
-            层
-            <input
-              v-model.number="manualDispenseDiagnostic.layerNo"
-              class="rounded-xl bg-slate-950/60 p-3"
-              type="number"
-              min="1"
-              max="255"
-              required
-            />
-          </label>
-          <label class="grid gap-1 text-left text-sm text-slate-200">
-            格
-            <input
-              v-model.number="manualDispenseDiagnostic.cellNo"
-              class="rounded-xl bg-slate-950/60 p-3"
-              type="number"
-              min="1"
-              max="255"
-              required
-            />
-          </label>
-          <button
-            class="kiosk-touch-target self-end rounded-xl bg-amber-200 px-4 py-3 font-bold text-slate-950 disabled:opacity-40"
-            type="submit"
-            :disabled="manualDispenseDiagnostic.loading"
-          >
-            {{ manualDispenseDiagnostic.loading ? "执行中" : "出货一件" }}
-          </button>
-        </form>
-        <p
-          v-if="manualDispenseDiagnostic.message"
-          class="mt-3 text-sm text-amber-100"
-        >
-          {{ manualDispenseDiagnostic.message }}
-        </p>
-      </section>
+            <details class="mt-3 text-sm text-rose-100/80">
+              <summary>技术证据</summary>
+              <p class="mt-2">{{ blocker.code }} · {{ blocker.message }}</p>
+            </details>
+          </article>
+        </section>
 
-      <VisionCameraMaintenancePanel />
-
-      <section
-        class="mt-6 rounded-3xl border border-sky-200/20 bg-slate-950/30 p-5 text-left"
-        aria-label="视觉试衣预览诊断"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p class="font-semibold text-sky-100">视觉试衣预览诊断</p>
-            <p class="mt-1 text-sm text-slate-300">
-              直接验证本机视觉服务的临时预览会话。
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-3">
-            <button
-              class="kiosk-touch-target rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-              type="button"
-              :disabled="tryOnPreviewDiagnostic.loading"
-              @click="startTryOnPreviewDiagnostic"
-            >
-              {{ tryOnPreviewDiagnostic.loading ? "启动中" : "启动试衣预览" }}
-            </button>
-            <button
-              v-if="tryOnPreviewDiagnostic.previewUrl"
-              class="kiosk-touch-target rounded-xl border border-rose-200/30 px-4 py-3 font-bold text-rose-100"
-              type="button"
-              @click="stopTryOnPreviewDiagnostic"
-            >
-              释放试衣预览
-            </button>
-          </div>
-        </div>
-        <p
-          v-if="tryOnPreviewDiagnostic.message"
-          class="mt-3 text-sm text-sky-100"
-          aria-live="polite"
+        <section
+          v-show="activeTask === 'hardware'"
+          class="maintenance-panel"
+          data-test="manual-dispense-diagnostic"
         >
-          {{ tryOnPreviewDiagnostic.message }}
-        </p>
-        <div
-          v-if="tryOnPreviewDiagnostic.previewUrl"
-          class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_16rem]"
-        >
-          <img
-            :src="tryOnPreviewDiagnostic.previewUrl"
-            alt="视觉试衣预览"
-            class="aspect-video w-full rounded-xl bg-slate-950 object-cover"
-            data-test="try-on-camera-preview"
-          />
-          <dl class="grid content-start gap-3 text-sm text-slate-200">
+          <div class="maintenance-panel-heading">
             <div>
-              <dt class="text-slate-400">预览流</dt>
-              <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
+              <h2>设备检查</h2>
+              <p>
+                下位机{{
+                  machineStore.health?.hardwareOnline ? "在线" : "不可用"
+                }}，扫码器{{ scannerStore.online ? "在线" : "不可用" }}。
+              </p>
             </div>
-            <div>
-              <dt class="text-slate-400">预览地址</dt>
-              <dd class="break-all">{{ tryOnPreviewDiagnostic.previewUrl }}</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-
-      <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
-        <p
-          class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
-        >
-          库存维护
-        </p>
-        <form
-          class="mt-4 grid gap-4"
-          @submit.prevent="submitStockMaintenanceTask"
-        >
-          <fieldset class="contents">
-            <div class="grid gap-3">
-              <article
-                v-for="slot in stockMaintenance.task?.slots ?? []"
-                :key="slot.slotCode"
-                class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
-              >
-                <div>
-                  <p class="font-semibold text-white">
-                    {{ slot.slotCode }} ·
-                    {{ formatMachineSlotCoordinate(slot) }}
-                  </p>
-                  <p class="text-sm text-slate-200">
-                    {{ slot.productName }} · {{ slot.sku }}
-                  </p>
-                  <p class="text-sm text-slate-400">
-                    {{ slot.currentQuantity }}/{{ slot.capacity }} ·
-                    {{ stockSyncLabel(slot.syncStatus) }}
-                  </p>
-                  <p
-                    v-if="slot.reconciliationReason"
-                    class="mt-1 text-sm text-amber-200"
-                  >
-                    仅此货道待对账：{{ slot.reconciliationReason }}
-                  </p>
-                </div>
-                <label class="grid gap-2">
-                  <span class="text-sm font-semibold text-slate-200">
-                    {{ stockTaskIsRefill ? "补货数量" : "实际数量" }}
-                  </span>
-                  <input
-                    v-model.number="stockMaintenance.values[slot.slotCode]"
-                    class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-                    :max="
-                      stockTaskIsRefill
-                        ? (slot.submittedAddition ??
-                          slot.capacity - slot.currentQuantity)
-                        : slot.capacity
-                    "
-                    :disabled="
-                      stockTaskIsRefill && slot.submittedAddition !== null
-                    "
-                    min="0"
-                    step="1"
-                    type="number"
-                  />
-                  <span class="text-xs text-emerald-200">
-                    {{ stockTaskIsRefill ? "补货后" : "提交后" }}
-                    {{ resultingStock(slot) ?? "输入无效" }}/{{ slot.capacity }}
-                  </span>
-                </label>
-              </article>
-            </div>
-            <div class="grid gap-3 md:grid-cols-2">
-              <button
-                class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
-                type="button"
-                :disabled="stockMaintenance.loading"
-                @click="refreshStockMaintenanceView"
-              >
-                刷新库存
-              </button>
-              <button
-                class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
-                type="submit"
-                :disabled="stockMaintenance.loading || !stockTaskCanSubmit"
-              >
-                {{ stockTaskIsRefill ? "确认补货" : "提交盘点" }}
-              </button>
-            </div>
-          </fieldset>
-          <p
-            v-if="stockMaintenance.message"
-            class="rounded-2xl bg-emerald-500/15 p-4 text-emerald-100"
-          >
-            {{ stockMaintenance.message }}
-          </p>
-        </form>
-      </div>
-
-      <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <p
-            class="text-sm font-semibold tracking-[0.28em] text-sky-200 uppercase"
-          >
-            维护控制台
-          </p>
-          <div class="flex flex-wrap gap-3">
             <button
-              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
-              type="button"
-              :disabled="Boolean(returnToCatalogBlockedReason)"
-              @click="returnToCatalog"
-            >
-              回到目录
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-              type="button"
-              :disabled="diagnostics.loading"
-              @click="refreshDiagnostics"
-            >
-              刷新诊断
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100"
-              type="button"
-              @click="exportLogs"
-            >
-              导出日志
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
               :disabled="hardwareMaintenance.loading"
               @click="runHardwareCheck"
             >
-              硬件自检
-            </button>
-            <button
-              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-              type="button"
-              :disabled="visionMaintenance.loading"
-              @click="refreshVisionStatus"
-            >
-              视觉状态
+              {{ hardwareMaintenance.loading ? "检查中" : "重新检查" }}
             </button>
           </div>
-        </div>
-
-        <p
-          v-if="returnToCatalogBlockedReason || catalogNavigation.message"
-          class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
-          aria-live="polite"
-        >
-          {{
-            catalogNavigation.message ??
-            `暂不能回到目录：${returnToCatalogBlockedReason}`
-          }}
-        </p>
+          <p v-if="hardwareMaintenance.message" class="maintenance-message">
+            {{ hardwareMaintenance.message }}
+          </p>
+          <hr />
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="font-semibold text-amber-100">手动出货诊断</p>
+            <div class="flex items-center gap-3 text-sm text-amber-100">
+              <span>执行后必须核对库存</span>
+              <button
+                class="kiosk-touch-target rounded-xl border border-amber-100/30 px-3 py-2"
+                type="button"
+                :disabled="manualDispenseDiagnostic.loading"
+                @click="startNewManualDispenseDiagnostic"
+              >
+                新建诊断
+              </button>
+            </div>
+          </div>
+          <form
+            class="mt-4 grid gap-3 md:grid-cols-4"
+            @submit.prevent="runManualDispenseDiagnostic"
+          >
+            <label class="grid gap-1 text-left text-sm text-slate-200">
+              货道
+              <input
+                v-model.trim="manualDispenseDiagnostic.slotCode"
+                class="rounded-xl bg-slate-950/60 p-3"
+                maxlength="32"
+                required
+              />
+            </label>
+            <label class="grid gap-1 text-left text-sm text-slate-200">
+              层
+              <input
+                v-model.number="manualDispenseDiagnostic.layerNo"
+                class="rounded-xl bg-slate-950/60 p-3"
+                type="number"
+                min="1"
+                max="255"
+                required
+              />
+            </label>
+            <label class="grid gap-1 text-left text-sm text-slate-200">
+              格
+              <input
+                v-model.number="manualDispenseDiagnostic.cellNo"
+                class="rounded-xl bg-slate-950/60 p-3"
+                type="number"
+                min="1"
+                max="255"
+                required
+              />
+            </label>
+            <button
+              class="kiosk-touch-target self-end rounded-xl bg-amber-200 px-4 py-3 font-bold text-slate-950 disabled:opacity-40"
+              type="submit"
+              :disabled="manualDispenseDiagnostic.loading"
+            >
+              {{ manualDispenseDiagnostic.loading ? "执行中" : "出货一件" }}
+            </button>
+          </form>
+          <p
+            v-if="manualDispenseDiagnostic.message"
+            class="mt-3 text-sm text-amber-100"
+          >
+            {{ manualDispenseDiagnostic.message }}
+          </p>
+        </section>
 
         <div
-          v-if="
-            wholeMachineMaintenanceLock || wholeMachineLockMaintenance.message
-          "
-          class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
+          v-show="activeTask === 'experience'"
+          class="maintenance-vision-panel"
         >
-          <div class="grid gap-4">
-            <div class="text-left">
-              <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
-              <p class="mt-1 text-sm text-rose-50/90">
+          <VisionCameraMaintenancePanel />
+        </div>
+
+        <section
+          v-show="activeTask === 'experience'"
+          class="maintenance-panel"
+          aria-label="视觉试衣预览诊断"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="font-semibold text-sky-100">视觉试衣预览诊断</p>
+              <p class="mt-1 text-sm text-slate-300">
+                直接验证本机视觉服务的临时预览会话。
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-3">
+              <button
+                type="button"
+                :disabled="visionMaintenance.loading"
+                @click="refreshVisionStatus"
+              >
+                {{ visionMaintenance.loading ? "刷新中" : "刷新视觉状态" }}
+              </button>
+              <button
+                class="kiosk-touch-target rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+                type="button"
+                :disabled="tryOnPreviewDiagnostic.loading"
+                @click="startTryOnPreviewDiagnostic"
+              >
+                {{ tryOnPreviewDiagnostic.loading ? "启动中" : "启动试衣预览" }}
+              </button>
+              <button
+                v-if="tryOnPreviewDiagnostic.previewUrl"
+                class="kiosk-touch-target rounded-xl border border-rose-200/30 px-4 py-3 font-bold text-rose-100"
+                type="button"
+                @click="stopTryOnPreviewDiagnostic"
+              >
+                释放试衣预览
+              </button>
+            </div>
+          </div>
+          <p
+            v-if="tryOnPreviewDiagnostic.message"
+            class="mt-3 text-sm text-sky-100"
+            aria-live="polite"
+          >
+            {{ tryOnPreviewDiagnostic.message }}
+          </p>
+          <p v-if="visionMaintenance.message" class="maintenance-message">
+            {{ visionMaintenance.message }}
+          </p>
+          <div
+            v-if="tryOnPreviewDiagnostic.previewUrl"
+            class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_16rem]"
+          >
+            <img
+              :src="tryOnPreviewDiagnostic.previewUrl"
+              alt="视觉试衣预览"
+              class="aspect-video w-full rounded-xl bg-slate-950 object-cover"
+              data-test="try-on-camera-preview"
+            />
+            <dl class="grid content-start gap-3 text-sm text-slate-200">
+              <div>
+                <dt class="text-slate-400">预览流</dt>
+                <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
+              </div>
+              <div>
+                <dt class="text-slate-400">预览地址</dt>
+                <dd class="break-all">
+                  {{ tryOnPreviewDiagnostic.previewUrl }}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <div v-show="activeTask === 'stock'" class="maintenance-panel">
+          <p
+            class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
+          >
+            库存维护
+          </p>
+          <form
+            class="mt-4 grid gap-4"
+            @submit.prevent="submitStockMaintenanceTask"
+          >
+            <fieldset class="contents">
+              <div class="grid gap-3">
+                <article
+                  v-for="slot in stockMaintenance.task?.slots ?? []"
+                  :key="slot.slotCode"
+                  class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
+                >
+                  <div>
+                    <p class="font-semibold text-white">
+                      {{ slot.slotCode }} ·
+                      {{ formatMachineSlotCoordinate(slot) }}
+                    </p>
+                    <p class="text-sm text-slate-200">
+                      {{ slot.productName }} · {{ slot.sku }}
+                    </p>
+                    <p class="text-sm text-slate-400">
+                      {{ slot.currentQuantity }}/{{ slot.capacity }} ·
+                      {{ stockSyncLabel(slot.syncStatus) }}
+                    </p>
+                    <p
+                      v-if="slot.reconciliationReason"
+                      class="mt-1 text-sm text-amber-200"
+                    >
+                      仅此货道待对账：{{ slot.reconciliationReason }}
+                    </p>
+                  </div>
+                  <label class="grid gap-2">
+                    <span class="text-sm font-semibold text-slate-200">
+                      {{ stockTaskIsRefill ? "补货数量" : "实际数量" }}
+                    </span>
+                    <input
+                      v-model.number="stockMaintenance.values[slot.slotCode]"
+                      class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                      :max="
+                        stockTaskIsRefill
+                          ? (slot.submittedAddition ??
+                            slot.capacity - slot.currentQuantity)
+                          : slot.capacity
+                      "
+                      :disabled="
+                        stockTaskIsRefill && slot.submittedAddition !== null
+                      "
+                      min="0"
+                      step="1"
+                      type="number"
+                    />
+                    <span class="text-xs text-emerald-200">
+                      {{ stockTaskIsRefill ? "补货后" : "提交后" }}
+                      {{ resultingStock(slot) ?? "输入无效" }}/{{
+                        slot.capacity
+                      }}
+                    </span>
+                  </label>
+                </article>
+              </div>
+              <div class="grid gap-3 md:grid-cols-2">
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
+                  type="button"
+                  :disabled="stockMaintenance.loading"
+                  @click="refreshStockMaintenanceView"
+                >
+                  刷新库存
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                  type="submit"
+                  :disabled="stockMaintenance.loading || !stockTaskCanSubmit"
+                >
+                  {{ stockTaskIsRefill ? "确认补货" : "提交盘点" }}
+                </button>
+              </div>
+            </fieldset>
+            <p
+              v-if="stockMaintenance.message"
+              class="rounded-2xl bg-emerald-500/15 p-4 text-emerald-100"
+            >
+              {{ stockMaintenance.message }}
+            </p>
+          </form>
+        </div>
+
+        <div v-show="activeTask === 'status'" class="maintenance-panel">
+          <div class="maintenance-panel-heading">
+            <div>
+              <h2>
+                {{
+                  saleCapabilityStore.canStartSale
+                    ? "机器可以正常销售"
+                    : "机器需要处理"
+                }}
+              </h2>
+              <p>以下状态均来自当前运行观测。</p>
+            </div>
+            <button
+              type="button"
+              :disabled="diagnostics.loading"
+              @click="refreshDiagnostics"
+            >
+              {{ diagnostics.loading ? "刷新中" : "刷新状态" }}
+            </button>
+          </div>
+
+          <p
+            v-if="returnToCatalogBlockedReason || catalogNavigation.message"
+            class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
+            aria-live="polite"
+          >
+            {{
+              catalogNavigation.message ??
+              `暂不能回到目录：${returnToCatalogBlockedReason}`
+            }}
+          </p>
+
+          <div
+            v-if="
+              wholeMachineMaintenanceLock || wholeMachineLockMaintenance.message
+            "
+            class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
+          >
+            <div class="grid gap-4">
+              <div class="text-left">
+                <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
+                <p class="mt-1 text-sm text-rose-50/90">
+                  {{
+                    operatorMessageLabel(
+                      wholeMachineMaintenanceLock?.message ?? "",
+                    ) || wholeMachineLockMaintenance.message
+                  }}
+                </p>
+                <p
+                  v-if="wholeMachineLockMaintenance.message"
+                  class="mt-2 text-sm font-semibold text-rose-50"
+                  aria-live="polite"
+                >
+                  {{ wholeMachineLockMaintenance.message }}
+                </p>
+              </div>
+              <div
+                v-if="wholeMachineLockMaintenance.selfCheckEvidence"
+                class="rounded-xl bg-slate-950/35 p-3 text-left text-sm text-rose-50/90"
+              >
+                下位机自检：{{
+                  wholeMachineLockMaintenance.selfCheckEvidence.online
+                    ? "通过"
+                    : "未通过"
+                }}
+                ·
                 {{
                   operatorMessageLabel(
-                    wholeMachineMaintenanceLock?.message ?? "",
-                  ) || wholeMachineLockMaintenance.message
+                    wholeMachineLockMaintenance.selfCheckEvidence.message,
+                  )
                 }}
-              </p>
-              <p
-                v-if="wholeMachineLockMaintenance.message"
-                class="mt-2 text-sm font-semibold text-rose-50"
-                aria-live="polite"
+                <span
+                  v-if="wholeMachineLockMaintenance.selfCheckEvidence.portPath"
+                >
+                  · {{ wholeMachineLockMaintenance.selfCheckEvidence.portPath }}
+                </span>
+              </div>
+              <label
+                class="grid gap-2 text-left text-sm font-semibold text-rose-50"
               >
-                {{ wholeMachineLockMaintenance.message }}
-              </p>
-            </div>
-            <div
-              v-if="wholeMachineLockMaintenance.selfCheckEvidence"
-              class="rounded-xl bg-slate-950/35 p-3 text-left text-sm text-rose-50/90"
-            >
-              下位机自检：{{
-                wholeMachineLockMaintenance.selfCheckEvidence.online
-                  ? "通过"
-                  : "未通过"
-              }}
-              ·
-              {{
-                operatorMessageLabel(
-                  wholeMachineLockMaintenance.selfCheckEvidence.message,
-                )
-              }}
-              <span
-                v-if="wholeMachineLockMaintenance.selfCheckEvidence.portPath"
+                处理记录
+                <textarea
+                  v-model="wholeMachineLockMaintenance.operatorNote"
+                  class="min-h-24 rounded-xl border border-rose-100/30 bg-slate-950/45 p-3 font-normal text-white outline-none"
+                  placeholder="填写现场处理、复位和自检结果"
+                />
+              </label>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+                type="button"
+                :disabled="clearWholeMachineLockDisabled"
+                @click="clearWholeMachineLock"
               >
-                · {{ wholeMachineLockMaintenance.selfCheckEvidence.portPath }}
-              </span>
+                确认解除整机锁
+              </button>
             </div>
-            <label
-              class="grid gap-2 text-left text-sm font-semibold text-rose-50"
-            >
-              处理记录
-              <textarea
-                v-model="wholeMachineLockMaintenance.operatorNote"
-                class="min-h-24 rounded-xl border border-rose-100/30 bg-slate-950/45 p-3 font-normal text-white outline-none"
-                placeholder="填写现场处理、复位和自检结果"
-              />
-            </label>
-            <button
-              class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
-              type="button"
-              :disabled="clearWholeMachineLockDisabled"
-              @click="clearWholeMachineLock"
-            >
-              确认解除整机锁
-            </button>
           </div>
-        </div>
 
-        <dl class="mt-4 grid gap-3 md:grid-cols-2">
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">本地服务</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ runtimeStatusLabel(machineStore.health?.status ?? "unknown") }}
-              ·
-              {{
-                machineStore.health?.process.message
-                  ? operatorMessageLabel(machineStore.health.process.message)
-                  : "未连接"
-              }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">后端</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
-              ·
-              {{ runtimeStatusLabel(machineStore.health?.status ?? "unknown") }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">销售启动能力</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ saleCapabilityStore.canStartSale ? "可开始销售" : "不可开始" }}
-              ·
-              {{
-                saleCapabilityStore.orderingKey ??
-                (saleCapabilityStore.updating ? "读取中" : "尚未读取")
-              }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">同步</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ runtimeStatusLabel(mqttStore.status) }} ·
-              {{ mqttStore.lastError ?? "正常" }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">MQTT</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ runtimeStatusLabel(mqttStore.status) }} · 待发队列
-              {{ mqttStore.outboxSize }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">下位机</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ machineStore.health?.hardwareOnline ? "在线" : "不可用" }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">扫码器</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ scannerStore.online ? "在线" : "不可用" }} ·
-              {{ operatorMessageLabel(scannerStore.message) }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">视觉运行状态</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ visionStore.online ? "在线" : "不可用" }} ·
-              {{ operatorMessageLabel(visionStore.message) }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">来人交互</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
-              {{ runtimeStatusLabel(visionStore.presence.occupancyState) }} ·
-              画像{{ visionStore.presence.profileUsable ? "可用" : "不可用" }}
-              ·
-              {{ visionStore.presence.lastSeenAt ?? "未看到" }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">自然环境上下文</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ naturalContextDisplayStatus() }}
-            </dd>
-            <dd
-              v-if="naturalContextDiagnosticMessage"
-              class="mt-1 text-sm font-semibold text-amber-100"
-            >
-              {{ operatorMessageLabel(naturalContextDiagnosticMessage) }}
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">本地状态</dt>
-            <dd class="mt-1 font-bold text-white">
-              {{ stockMaintenance.task?.status ?? "未读取" }} ·
-              {{ stockMaintenance.task?.slots.length ?? 0 }} 个货道
-            </dd>
-          </div>
-          <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">远程运维</dt>
-            <dd class="mt-1 font-bold text-white">
-              待处理 {{ remoteOpsStore.pending }} ·
-              {{ remoteOpsStore.lastError ?? "正常" }}
-            </dd>
-          </div>
-        </dl>
-
-        <section
-          v-if="saleCriticalBlockers.length > 0"
-          class="mt-5 border-t border-white/10 pt-4 text-left"
-        >
-          <h3 class="text-sm font-semibold text-slate-200">销售就绪阻塞项</h3>
-          <ul class="mt-2 grid gap-2 text-sm text-slate-100">
-            <li
-              v-for="blocker in saleCriticalBlockers"
-              :key="`${blocker.component}-${blocker.code}`"
-            >
-              <span class="font-semibold">
-                {{ blocker.operatorLabel }} · {{ blocker.code }}:
-              </span>
-              {{ blocker.message }}
-              <span class="text-slate-300"> {{ blocker.operatorAction }}</span>
-            </li>
-          </ul>
-        </section>
-
-        <section
-          class="mt-5 border-t border-white/10 pt-4 text-left"
-          data-test="catalog-operator-diagnostics"
-        >
-          <h3 class="text-sm font-semibold text-slate-200">
-            目录媒体与分类诊断
-          </h3>
-          <p
-            v-if="catalogOperatorDiagnostics.length === 0"
-            class="mt-2 text-sm text-slate-300"
-          >
-            尚未记录目录诊断。
-          </p>
-          <ul v-else class="mt-2 grid gap-2 text-sm text-slate-100">
-            <li
-              v-for="diagnostic in catalogOperatorDiagnostics"
-              :key="`${diagnostic.kind}-${diagnostic.reference}-${diagnostic.message}`"
-            >
-              {{ diagnostic.kind }} · {{ diagnostic.message }}
-              <span class="text-slate-300">{{
-                diagnostic.reference ?? "无引用"
-              }}</span>
-            </li>
-          </ul>
-        </section>
-
-        <section class="mt-5 border-t border-white/10 pt-4 text-left">
-          <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>
-          <p class="mt-1 text-sm text-slate-300">
-            机器音频提示分类是本地顾客体验设置。
-          </p>
-          <dl class="mt-3 grid gap-3 md:grid-cols-3">
-            <div
-              v-for="row in audioCueSettingsRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
-            >
-              <dt class="text-xs font-semibold text-slate-400">机器音频提示</dt>
+          <dl class="mt-4 grid gap-3 md:grid-cols-2">
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">本地服务</dt>
               <dd class="mt-1 font-bold text-white">
-                {{ row.label }} · {{ row.value }}
+                {{
+                  runtimeStatusLabel(machineStore.health?.status ?? "unknown")
+                }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">后端</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
+                ·
+                {{
+                  runtimeStatusLabel(machineStore.health?.status ?? "unknown")
+                }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">销售启动能力</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{
+                  saleCapabilityStore.updating
+                    ? "更新中"
+                    : saleCapabilityStore.canStartSale
+                      ? "可开始销售"
+                      : "不可开始"
+                }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">平台同步</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ runtimeStatusLabel(mqttStore.status) }} · 待发队列
+                {{ mqttStore.outboxSize }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">下位机</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ machineStore.health?.hardwareOnline ? "在线" : "不可用" }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">扫码器</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ scannerStore.online ? "在线" : "不可用" }}
+              </dd>
+            </div>
+            <div class="border-t border-white/10 py-3">
+              <dt class="text-sm text-slate-400">视觉运行状态</dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ visionStore.online ? "在线" : "不可用" }}
               </dd>
             </div>
           </dl>
-        </section>
+        </div>
 
         <section
-          v-if="effectiveRuntimeConfigurationRows.length > 0"
-          class="mt-5 border-t border-white/10 pt-4 text-left"
-          data-test="effective-runtime-configuration"
+          v-show="activeTask === 'diagnostics'"
+          class="maintenance-panel"
+          aria-label="诊断工具"
         >
-          <h3 class="text-sm font-semibold text-slate-200">运行时配置</h3>
-          <dl class="mt-3 grid gap-3 md:grid-cols-2">
-            <div
-              v-for="row in effectiveRuntimeConfigurationRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
-            >
-              <dt class="text-xs font-semibold text-slate-400">
-                {{ row.label }}
-              </dt>
-              <dd class="mt-1 font-bold text-white">{{ row.value }}</dd>
+          <div class="maintenance-panel-heading">
+            <div>
+              <h2>诊断工具</h2>
+              <p>刷新当前观测，或导出日志用于排查。</p>
             </div>
-          </dl>
-        </section>
-
-        <section class="mt-5 border-t border-white/10 pt-4 text-left">
-          <h3 class="text-sm font-semibold text-slate-200">最新视觉诊断载荷</h3>
-          <pre
-            class="mt-2 max-h-72 overflow-auto text-sm leading-6 break-words whitespace-pre-wrap text-slate-100"
-            data-test="vision-diagnostic-payload"
-            >{{ latestVisionDiagnosticPayloadText }}</pre
-          >
-        </section>
-
-        <p
-          v-if="diagnostics.message"
-          class="mt-4 rounded-2xl bg-rose-500/20 p-4 text-rose-100"
-        >
-          {{ diagnostics.message }}
-        </p>
-        <p
-          v-if="diagnostics.logsMessage"
-          class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
-        >
-          {{ diagnostics.logsMessage }}
-        </p>
-        <p
-          v-if="hardwareMaintenance.message"
-          class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
-        >
-          {{ hardwareMaintenance.message }}
-        </p>
-        <p
-          v-if="visionMaintenance.message"
-          class="mt-4 rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
-        >
-          {{ visionMaintenance.message }}
-        </p>
-      </div>
-
-      <div
-        v-if="mqttStore.outboxWarning"
-        class="mt-6 rounded-2xl border border-amber-300/30 bg-amber-500/20 p-4 text-amber-100"
-      >
-        {{ mqttStore.outboxWarning }}
-      </div>
-
-      <section class="mt-8 grid gap-5" data-test="audio-preferences">
-        <div class="grid gap-3 text-left">
-          <h3 class="text-lg font-bold text-slate-100">顾客音频偏好</h3>
-          <p class="text-sm text-slate-300">
-            顾客音频始终使用 Windows 当前默认输出设备。
+            <div class="maintenance-button-row">
+              <button
+                type="button"
+                :disabled="diagnostics.loading"
+                @click="refreshDiagnostics"
+              >
+                {{ diagnostics.loading ? "刷新中" : "刷新状态" }}
+              </button>
+              <button type="button" @click="exportLogs">导出日志</button>
+            </div>
+          </div>
+          <details data-test="catalog-operator-diagnostics">
+            <summary>目录媒体与分类</summary>
+            <p v-if="catalogOperatorDiagnostics.length === 0">
+              尚未记录目录诊断。
+            </p>
+            <ul v-else>
+              <li
+                v-for="diagnostic in catalogOperatorDiagnostics"
+                :key="`${diagnostic.kind}-${diagnostic.reference}-${diagnostic.message}`"
+              >
+                {{ diagnostic.message }} ·
+                {{ diagnostic.reference ?? "无引用" }}
+              </li>
+            </ul>
+          </details>
+          <details>
+            <summary>视觉诊断数据</summary>
+            <pre data-test="vision-diagnostic-payload">{{
+              latestVisionDiagnosticPayloadText
+            }}</pre>
+          </details>
+          <p v-if="diagnostics.message" class="maintenance-message error">
+            {{ diagnostics.message }}
           </p>
-          <fieldset class="grid gap-3 text-left md:grid-cols-3">
-            <label class="flex items-center gap-3">
-              <input
-                :checked="machineStore.customerAudio.cuesEnabled"
-                :disabled="audioPreferenceMutation.saving"
-                class="size-5 accent-fuchsia-300"
-                data-test="machine-audio-enabled"
-                type="checkbox"
-                @change="
-                  updateAudioPreferences({
-                    cuesEnabled: checkedInputValue($event),
-                  })
-                "
-              />
+          <p v-if="diagnostics.logsMessage" class="maintenance-message success">
+            {{ diagnostics.logsMessage }}
+          </p>
+        </section>
+
+        <div
+          v-if="mqttStore.outboxWarning"
+          v-show="activeTask === 'status'"
+          class="mt-6 rounded-2xl border border-amber-300/30 bg-amber-500/20 p-4 text-amber-100"
+        >
+          {{ mqttStore.outboxWarning }}
+        </div>
+
+        <section
+          v-show="activeTask === 'experience'"
+          class="maintenance-panel"
+          data-test="audio-preferences"
+        >
+          <div class="grid gap-3 text-left">
+            <h3 class="text-lg font-bold text-slate-100">顾客音频偏好</h3>
+            <p class="text-sm text-slate-300">
+              顾客音频使用系统当前默认扬声器。
+            </p>
+            <fieldset class="grid gap-3 text-left md:grid-cols-3">
+              <label class="flex items-center gap-3">
+                <input
+                  :checked="machineStore.customerAudio.cuesEnabled"
+                  :disabled="audioPreferenceMutation.saving"
+                  class="size-5 accent-fuchsia-300"
+                  data-test="machine-audio-enabled"
+                  type="checkbox"
+                  @change="
+                    updateAudioPreferences({
+                      cuesEnabled: checkedInputValue($event),
+                    })
+                  "
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >启用机器音频提示</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  :checked="machineStore.customerAudio.presenceCuesEnabled"
+                  :disabled="audioPreferenceMutation.saving"
+                  class="size-5 accent-fuchsia-300"
+                  data-test="machine-audio-presence-enabled"
+                  type="checkbox"
+                  @change="
+                    updateAudioPreferences({
+                      presenceCuesEnabled: checkedInputValue($event),
+                    })
+                  "
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >来人音频提示</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  :checked="machineStore.customerAudio.transactionCuesEnabled"
+                  :disabled="audioPreferenceMutation.saving"
+                  class="size-5 accent-fuchsia-300"
+                  data-test="machine-audio-transaction-enabled"
+                  type="checkbox"
+                  @change="
+                    updateAudioPreferences({
+                      transactionCuesEnabled: checkedInputValue($event),
+                    })
+                  "
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >交易音频提示</span
+                >
+              </label>
+            </fieldset>
+            <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >启用机器音频提示</span
+                >机器音频音量</span
               >
+              <div class="flex items-center gap-3">
+                <input
+                  :value="
+                    machineAudioVolumePercent(machineStore.customerAudio.volume)
+                  "
+                  :disabled="audioPreferenceMutation.saving"
+                  class="maintenance-volume-slider"
+                  data-test="machine-audio-volume-percent"
+                  max="100"
+                  min="0"
+                  step="1"
+                  type="range"
+                  @change="
+                    updateAudioPreferences({
+                      volume: audioVolumeFromInput($event),
+                    })
+                  "
+                />
+                <output class="maintenance-volume-output">
+                  {{
+                    machineAudioVolumePercent(
+                      machineStore.customerAudio.volume,
+                    )
+                  }}%
+                </output>
+              </div>
             </label>
-            <label class="flex items-center gap-3">
-              <input
-                :checked="machineStore.customerAudio.presenceCuesEnabled"
-                :disabled="audioPreferenceMutation.saving"
-                class="size-5 accent-fuchsia-300"
-                data-test="machine-audio-presence-enabled"
-                type="checkbox"
-                @change="
-                  updateAudioPreferences({
-                    presenceCuesEnabled: checkedInputValue($event),
-                  })
-                "
-              />
-              <span class="text-sm font-semibold text-slate-200"
-                >来人音频提示</span
+            <div class="flex flex-wrap gap-3">
+              <button
+                class="kiosk-touch-target rounded-2xl border border-cyan-200/30 px-4 py-3 font-bold text-cyan-100 disabled:opacity-50"
+                type="button"
+                :disabled="machineAudioTestPlayback.loading"
+                @click="playMachineAudioTestPlayback"
               >
-            </label>
-            <label class="flex items-center gap-3">
-              <input
-                :checked="machineStore.customerAudio.transactionCuesEnabled"
-                :disabled="audioPreferenceMutation.saving"
-                class="size-5 accent-fuchsia-300"
-                data-test="machine-audio-transaction-enabled"
-                type="checkbox"
-                @change="
-                  updateAudioPreferences({
-                    transactionCuesEnabled: checkedInputValue($event),
-                  })
-                "
-              />
-              <span class="text-sm font-semibold text-slate-200"
-                >交易音频提示</span
-              >
-            </label>
-          </fieldset>
-          <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200"
-              >机器音频音量</span
-            >
-            <div class="flex items-center gap-3">
-              <input
-                :value="
-                  machineAudioVolumePercent(machineStore.customerAudio.volume)
-                "
-                :disabled="audioPreferenceMutation.saving"
-                class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                data-test="machine-audio-volume-percent"
-                max="100"
-                min="0"
-                step="1"
-                type="number"
-                @change="
-                  updateAudioPreferences({
-                    volume: audioVolumeFromInput($event),
-                  })
-                "
-              />
-              <span class="text-sm font-bold text-slate-200">%</span>
+                播放测试音频
+              </button>
             </div>
-          </label>
-          <div class="flex flex-wrap gap-3">
-            <button
-              class="kiosk-touch-target rounded-2xl border border-cyan-200/30 px-4 py-3 font-bold text-cyan-100 disabled:opacity-50"
-              type="button"
-              :disabled="machineAudioTestPlayback.loading"
-              @click="playMachineAudioTestPlayback"
+            <p
+              v-if="audioPreferenceMutation.message"
+              class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
             >
-              播放测试音频
-            </button>
+              {{ audioPreferenceMutation.message }}
+            </p>
+            <dl class="grid gap-3 md:grid-cols-2">
+              <div
+                v-for="row in latestMachineAudioTestPlaybackRows"
+                :key="row.label"
+                class="rounded-xl bg-slate-950/35 p-3"
+              >
+                <dt class="text-xs font-semibold text-cyan-100/70">
+                  {{ row.label }}
+                </dt>
+                <dd class="mt-1 font-bold break-all text-white">
+                  {{ row.value }}
+                </dd>
+              </div>
+            </dl>
+            <p
+              v-if="machineAudioTestPlayback.message"
+              class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+            >
+              {{ machineAudioTestPlayback.message }}
+            </p>
           </div>
           <p
-            v-if="audioPreferenceMutation.message"
-            class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+            v-if="machineStore.error"
+            class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
           >
-            {{ audioPreferenceMutation.message }}
+            {{ machineStore.error }}
           </p>
-          <dl class="grid gap-3 md:grid-cols-2">
-            <div
-              v-for="row in latestMachineAudioTestPlaybackRows"
-              :key="row.label"
-              class="rounded-xl bg-slate-950/35 p-3"
-            >
-              <dt class="text-xs font-semibold text-cyan-100/70">
-                {{ row.label }}
-              </dt>
-              <dd class="mt-1 font-bold break-all text-white">
-                {{ row.value }}
-              </dd>
-            </div>
-          </dl>
-          <p
-            v-if="machineAudioTestPlayback.message"
-            class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
-          >
-            {{ machineAudioTestPlayback.message }}
-          </p>
-        </div>
-        <p
-          v-if="machineStore.error"
-          class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
-        >
-          {{ machineStore.error }}
-        </p>
+        </section>
       </section>
-      <img
-        :src="listSloganImage"
-        alt=""
-        aria-hidden="true"
-        class="maintenance-slogan"
-      />
-    </section>
-  </KioskLayout>
+    </div>
+  </main>
 </template>
 
 <style scoped>
-.maintenance-page dt {
-  color: #7b7468 !important;
+.maintenance-page {
+  display: flex;
+  flex-direction: column;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 0;
+  color: #293129;
+  background: #f5f4ee;
+}
+
+.maintenance-layout {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  margin: 1.4rem calc(var(--machine-page-inline) * -1) 0;
+  overflow: hidden;
+  border-top: 1px solid #d8ddd5;
+}
+
+.maintenance-task-nav {
+  min-height: 0;
+  padding: 1.35rem 0.7rem;
+  overflow-y: auto;
+  background: #e9ebe4;
+  border-right: 1px solid #d3d8d0;
+}
+
+.maintenance-task-nav > p {
+  padding: 0 0.7rem 0.65rem;
+  margin: 0;
+  color: #737b74;
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 700;
 }
 
-.maintenance-page dd {
-  color: #2e2a24 !important;
-  font-size: 0.92rem;
-  line-height: 1.35;
+.maintenance-task-nav button {
+  display: grid;
+  gap: 0.25rem;
+  width: 100%;
+  min-height: 3.6rem;
+  padding: 0.65rem 0.7rem;
+  color: #3f4841;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
 }
 
-.maintenance-page :is(.bg-amber-500\/15, .bg-amber-500\/20) {
-  border: 1px solid rgba(181, 126, 34, 0.24);
-  background: rgba(255, 246, 220, 0.82) !important;
-  color: #70501d !important;
+.maintenance-task-nav button.active {
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(64 74 66 / 9%);
+}
+
+.maintenance-task-nav button span {
+  font-weight: 700;
+}
+
+.maintenance-task-nav button small {
+  color: #6f786f;
+  font-size: 0.68rem;
+}
+
+.maintenance-workspace {
+  min-width: 0;
+  padding: 1.5rem 1.6rem 4rem;
+  overflow-y: auto;
+}
+
+.maintenance-workspace-header,
+.maintenance-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.maintenance-workspace-header {
+  margin-bottom: 1.2rem;
+}
+
+.maintenance-workspace-header p,
+.maintenance-panel-heading p {
+  margin: 0;
+  color: #727a73;
+  font-size: 0.72rem;
+}
+
+.maintenance-workspace-header h1 {
+  margin: 0.2rem 0 0;
+  color: #293129;
+  font-size: 1.7rem;
+}
+
+.maintenance-panel-heading h2 {
+  margin: 0;
+  color: #293129;
+  font-size: 1.1rem;
+}
+
+.maintenance-primary-button,
+.maintenance-panel-heading button,
+.maintenance-button-row button,
+.maintenance-panel button {
+  padding: 0.55rem 0.8rem;
+  color: #42533f !important;
+  background: #fff !important;
+  border: 1px solid #9ca99a !important;
+  border-radius: 6px !important;
+  font-weight: 700;
+}
+
+.maintenance-primary-button {
+  color: #fff !important;
+  background: #657a58 !important;
+  border-color: #657a58 !important;
+}
+
+.maintenance-primary-button:disabled,
+.maintenance-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.maintenance-panel,
+.maintenance-attention-list article {
+  padding: 1rem;
+  margin-top: 0.8rem;
+  color: #303832;
+  text-align: left;
+  background: #fff !important;
+  border: 1px solid #d7dcd5 !important;
+  border-radius: 8px !important;
+  box-shadow: none;
+}
+
+.maintenance-panel:first-of-type {
+  margin-top: 0;
+}
+
+.maintenance-panel hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid #e0e4de;
+}
+
+.maintenance-attention-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.maintenance-attention-list > h3 {
+  margin: 0;
+  color: #85591c !important;
+}
+
+.maintenance-attention-list article {
+  margin-top: 0;
+  background: #fff8e9 !important;
+  border-color: #dfc28c !important;
+}
+
+.maintenance-commissioning {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.maintenance-claim-status {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  padding: 0.9rem;
+  background: #f2f5ef;
+  border-radius: 6px;
+}
+
+.maintenance-claim-status p,
+.maintenance-claim-status span {
+  margin: 0;
+  color: #667067;
+  font-size: 0.75rem;
+}
+
+.maintenance-page
+  :is(input:not([type="checkbox"]):not([type="range"]), select, textarea) {
+  width: 100%;
+  min-height: 2.8rem;
+  padding: 0.65rem 0.75rem;
+  color: #293129 !important;
+  background: #fff !important;
+  border: 1px solid #b8c0b7 !important;
+  border-radius: 6px !important;
+  outline: none;
+}
+
+.maintenance-page :is(input, select, textarea):focus {
+  border-color: #657a58 !important;
+  box-shadow: 0 0 0 2px rgb(101 122 88 / 16%);
+}
+
+.maintenance-page input[type="checkbox"] {
+  accent-color: #657a58;
+}
+
+.maintenance-page
+  :is(.text-white, .text-slate-100, .text-slate-200, .text-slate-300) {
+  color: #3c453e !important;
+}
+
+.maintenance-page :is(.text-slate-400, .text-cyan-100\/70) {
+  color: #717972 !important;
+}
+
+.maintenance-page
+  :is(.text-sky-100, .text-sky-200, .text-cyan-50, .text-cyan-100) {
+  color: #506847 !important;
+}
+
+.maintenance-page :is(.text-amber-100, .text-amber-200) {
+  color: #7a5218 !important;
+}
+
+.maintenance-page :is(.text-rose-50, .text-rose-100) {
+  color: #7e3835 !important;
+}
+
+.maintenance-page
+  :is(
+    .bg-slate-950\/30,
+    .bg-slate-950\/35,
+    .bg-slate-950\/40,
+    .bg-slate-950\/45,
+    .bg-slate-950\/60,
+    .bg-slate-950\/70
+  ) {
+  background: #f5f6f2 !important;
+}
+
+.maintenance-page :is(.bg-amber-500\/10, .bg-amber-500\/15, .bg-amber-500\/20) {
+  color: #704d19 !important;
+  background: #fff7e7 !important;
+  border-color: #dfc38f !important;
 }
 
 .maintenance-page :is(.bg-rose-500\/15, .bg-rose-500\/20) {
-  border: 1px solid rgba(174, 74, 70, 0.28);
-  background: rgba(255, 239, 235, 0.9) !important;
-  color: #7b3430 !important;
+  color: #773936 !important;
+  background: #fff0ed !important;
+  border-color: #d5a4a0 !important;
 }
 
 .maintenance-page
@@ -2416,40 +2315,104 @@ async function submitStockMaintenanceTask(): Promise<void> {
     .bg-sky-500\/15,
     .bg-fuchsia-500\/15,
     .bg-emerald-500\/15,
-    .bg-slate-500\/15
+    .bg-cyan-950\/40
   ) {
-  border: 1px solid rgba(99, 119, 85, 0.2);
-  background: rgba(242, 247, 236, 0.88) !important;
-  color: #4f6845 !important;
+  color: #4d6647 !important;
+  background: #eef4ea !important;
+  border-color: #bdcbb7 !important;
 }
 
-.maintenance-page .grid.gap-3.md\:grid-cols-2,
-.maintenance-page .grid.gap-4.md\:grid-cols-2 {
-  gap: 0.55rem;
+.maintenance-page dl {
+  gap: 0 !important;
+  background: #fff;
+  border: 1px solid #dce0da;
+  border-radius: 8px;
 }
 
-.maintenance-page .maintenance-slogan {
-  display: block;
-  width: min(24rem, 62%);
-  margin: 1.2rem auto 0;
-  opacity: 0.45;
+.maintenance-page dl > div {
+  padding: 0.8rem !important;
+  border-color: #e0e4de !important;
+}
+
+.maintenance-page dt {
+  color: #747c75 !important;
+  font-size: 0.68rem !important;
+  font-weight: 600;
+}
+
+.maintenance-page dd {
+  color: #2f3731 !important;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.maintenance-button-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.maintenance-panel details {
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  color: #515a53;
+  border-top: 1px solid #e0e4de;
+}
+
+.maintenance-panel details summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.maintenance-panel pre {
+  max-height: 15rem;
+  overflow: auto;
+  color: #3f4741;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.maintenance-message {
+  padding: 0.7rem;
+  margin: 0.8rem 0 0;
+  color: #4b6145;
+  background: #eef4ea;
+  border: 1px solid #bdcbb7;
+  border-radius: 6px;
+}
+
+.maintenance-message.error {
+  color: #773936;
+  background: #fff0ed;
+  border-color: #d5a4a0;
+}
+
+.maintenance-volume-slider {
+  width: min(24rem, 78%);
+  accent-color: #657a58;
+}
+
+.maintenance-volume-output {
+  min-width: 3rem;
+  color: #384239;
+  font-weight: 700;
+}
+
+.maintenance-vision-panel :deep(> *) {
+  margin-top: 0.8rem;
 }
 
 @media (max-width: 760px) {
-  .maintenance-page {
-    padding: 1.5rem 1.45rem 2rem;
+  .maintenance-layout {
+    grid-template-columns: 9.2rem minmax(0, 1fr);
   }
 
-  .maintenance-header {
+  .maintenance-workspace {
+    padding: 1rem 1rem 3rem;
+  }
+
+  .maintenance-commissioning {
     grid-template-columns: 1fr;
-  }
-
-  .maintenance-title-block {
-    text-align: left;
-  }
-
-  .maintenance-page dl > div:nth-last-child(2) {
-    border-bottom: 1px solid rgba(126, 112, 82, 0.16);
   }
 }
 </style>

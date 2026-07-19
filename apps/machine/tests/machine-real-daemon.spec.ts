@@ -1,13 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { effectiveMachineRuntimeConfigurationSchema } from "@vem/shared";
 import { spawn } from "node:child_process";
-import {
-  mkdir,
-  mkdtemp,
-  writeFile,
-  readFile,
-  rm,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,11 +78,12 @@ async function readDaemonReadyFile(): Promise<DaemonReadyFile> {
   ) as DaemonReadyFile;
 }
 
-async function browserUsesRealDaemon(page: import("@playwright/test").Page): Promise<boolean> {
+async function browserUsesRealDaemon(
+  page: import("@playwright/test").Page,
+): Promise<boolean> {
   return page.evaluate(async () => {
-    const { getDaemonConnectionInfo } = await import(
-      "/src/native/daemon-connection.ts"
-    );
+    const { getDaemonConnectionInfo } =
+      await import("/src/native/daemon-connection.ts");
     return (await getDaemonConnectionInfo()).mock === false;
   });
 }
@@ -380,11 +375,14 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   await page.goto("/#/boot");
   await expect.poll(() => browserUsesRealDaemon(page)).toBe(true);
   await startBrowserEventStreamProbe(page);
-  await expect.poll(async () =>
-    (await browserEventStreamLifecycle(page)).includes("opened:initial"),
-  ).toBe(true);
+  await expect
+    .poll(async () =>
+      (await browserEventStreamLifecycle(page)).includes("opened:initial"),
+    )
+    .toBe(true);
   await expect(page).toHaveURL(/#\/maintenance$/, { timeout: 20_000 });
-  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
+  await page.getByRole("button", { name: /网络与认领/ }).click();
   await expect(page.getByLabel("认领码")).toBeVisible();
 
   const readyBeforeClaim = await readDaemonReadyFile();
@@ -398,12 +396,16 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
       readyBeforeClaim.generation,
     );
   }).toPass({ intervals: [100, 250, 500], timeout: 20_000 });
-  await expect.poll(async () =>
-    (await browserEventStreamLifecycle(page)).includes("stale"),
-  ).toBe(true);
-  await expect.poll(async () =>
-    (await browserEventStreamLifecycle(page)).includes("opened:reconnected"),
-  ).toBe(true);
+  await expect
+    .poll(async () =>
+      (await browserEventStreamLifecycle(page)).includes("stale"),
+    )
+    .toBe(true);
+  await expect
+    .poll(async () =>
+      (await browserEventStreamLifecycle(page)).includes("opened:reconnected"),
+    )
+    .toBe(true);
   const streamLifecycle = await browserEventStreamLifecycle(page);
   expect(streamLifecycle.indexOf("stale")).toBeGreaterThanOrEqual(0);
   expect(streamLifecycle.indexOf("opened:reconnected")).toBeGreaterThan(
@@ -444,6 +446,6 @@ test("real daemon claim survives its supervised reconfigure cycle and reaches ca
   effectiveMachineRuntimeConfigurationSchema.parse(configuration);
 
   await expect(page).toHaveURL(/#\/maintenance$/);
-  await page.getByRole("button", { name: "回到目录" }).click();
+  await page.getByRole("button", { name: "返回商品目录" }).click();
   await expect(page).toHaveURL(/#\/catalog$/, { timeout: 20_000 });
 });

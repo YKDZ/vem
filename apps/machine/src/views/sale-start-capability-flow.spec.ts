@@ -676,7 +676,7 @@ describe("sale-start capability UI flow", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/offline");
     });
-    expect(host.textContent).toContain("daemon 不可用，进入离线页面");
+    expect(host.textContent).toContain("本机运行服务不可用，进入离线页面");
     expect(host.textContent).not.toContain("ZodError");
     expect(host.textContent).not.toContain("Invalid enum value");
   });
