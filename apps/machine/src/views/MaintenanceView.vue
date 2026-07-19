@@ -2260,6 +2260,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :checked="machineStore.customerAudio.cuesEnabled"
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
+                data-test="machine-audio-enabled"
                 type="checkbox"
                 @change="
                   updateAudioPreferences({
@@ -2276,6 +2277,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :checked="machineStore.customerAudio.presenceCuesEnabled"
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
+                data-test="machine-audio-presence-enabled"
                 type="checkbox"
                 @change="
                   updateAudioPreferences({
@@ -2292,6 +2294,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :checked="machineStore.customerAudio.transactionCuesEnabled"
                 :disabled="audioPreferenceMutation.saving"
                 class="size-5 accent-fuchsia-300"
+                data-test="machine-audio-transaction-enabled"
                 type="checkbox"
                 @change="
                   updateAudioPreferences({

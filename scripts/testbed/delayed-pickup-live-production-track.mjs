@@ -198,13 +198,18 @@ async function closeResourcesOrThrow({
 
 function daemonF1Ready(daemon, binding) {
   const transaction = daemon?.transaction;
+  const vending = transaction?.vending;
+  const pickupCompleted =
+    vending?.fulfillmentProgressStage === "pickup_completed" ||
+    vending?.pickupReminder?.stage === "pickup_completed";
   return (
     transaction?.orderNo === binding.orderNo &&
-    transaction?.vending?.commandNo === binding.commandNo &&
+    vending?.commandNo === binding.commandNo &&
     transaction?.nextAction === "dispensing" &&
     transaction?.orderStatus !== "fulfilled" &&
-    transaction?.vending?.status === "dispensing" &&
-    transaction?.vending?.fulfillmentProgressStage === "pickup_completed"
+    vending?.status !== "succeeded" &&
+    vending?.status !== "failed" &&
+    pickupCompleted
   );
 }
 

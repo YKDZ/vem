@@ -114,8 +114,8 @@ describe("delayed pickup live production track", () => {
                       nextAction: "dispensing",
                       vending: {
                         commandNo: sale.commandNo,
-                        status: "dispensing",
-                        fulfillmentProgressStage: "pickup_completed",
+                        status: "sent",
+                        pickupReminder: { stage: "pickup_completed" },
                       },
                     }
                   : stage === "after_f2"
@@ -297,6 +297,7 @@ describe("delayed pickup live production track", () => {
     assert.match(source, /order\?\.status === "paid"/);
     assert.match(source, /fulfillmentState === "awaiting_fulfillment"/);
     assert.match(source, /movements\?\.length === 0/);
+    assert.match(source, /pickupReminder\?\.stage === "pickup_completed"/);
   });
 
   it("declares the Issue16 frame barrier used by the full-mode tracer", () => {

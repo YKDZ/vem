@@ -925,13 +925,18 @@ export function analyzeDaemonFulfillmentStoreEvidence(
   if (stocks.afterF2 !== stocks.beforeF0 - 1)
     diagnostics.push(diagnostic("daemon_inventory_delta_after_f2_invalid"));
   const f1Transaction = f1?.transaction;
+  const f1Vending = f1Transaction?.vending;
+  const f1PickupCompleted =
+    f1Vending?.fulfillmentProgressStage === "pickup_completed" ||
+    f1Vending?.pickupReminder?.stage === "pickup_completed";
   if (
     f1Transaction?.orderNo !== expectedBinding.orderNo ||
-    f1Transaction?.vending?.commandNo !== expectedBinding.commandNo ||
+    f1Vending?.commandNo !== expectedBinding.commandNo ||
     f1Transaction?.nextAction !== "dispensing" ||
     f1Transaction?.orderStatus === "fulfilled" ||
-    f1Transaction?.vending?.status !== "dispensing" ||
-    f1Transaction?.vending?.fulfillmentProgressStage !== "pickup_completed"
+    f1Vending?.status === "succeeded" ||
+    f1Vending?.status === "failed" ||
+    !f1PickupCompleted
   )
     diagnostics.push(diagnostic("daemon_f1_not_nonterminal"));
   const f2Transaction = f2?.transaction;

@@ -24,7 +24,11 @@ function handleBrandClick(): void {
 
 <template>
   <header class="kiosk-header">
-    <div class="kiosk-header-brand" @click="handleBrandClick">
+    <div
+      class="kiosk-header-brand"
+      data-test="maintenance-entry-brand"
+      @click="handleBrandClick"
+    >
       <img :src="logoImage" alt="唐诗村" class="kiosk-header-logo" />
       <img
         :src="mascotTopImage"
