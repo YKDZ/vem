@@ -332,7 +332,8 @@ function writeSessionState(evidenceDirectory, captureSessionId, state) {
 
 function readSessionState(evidenceDirectory, captureSessionId) {
   const path = sessionStatePath(evidenceDirectory, captureSessionId);
-  if (!existsSync(path)) throw new Error("sale audio capture session was not found");
+  if (!existsSync(path))
+    throw new Error("sale audio capture session was not found");
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
@@ -392,7 +393,9 @@ function buildSaleAudioFrameCapture(binding, rawFrames) {
     !opcodes.includes("F2") ||
     !frames.some((frame) => frame.role === "upper-controller")
   ) {
-    throw new Error("raw serial journal does not contain one complete delayed-pickup sale");
+    throw new Error(
+      "raw serial journal does not contain one complete delayed-pickup sale",
+    );
   }
   return {
     schemaVersion: "host-production-serial-frame-capture/v1",
@@ -515,6 +518,32 @@ function readStableWavSnapshot(path, expected) {
   return { bytes, snapshot: after };
 }
 
+function capturedQemuWav(bytes, startByteLength) {
+  if (
+    bytes.length < 44 ||
+    bytes.toString("ascii", 0, 4) !== "RIFF" ||
+    bytes.toString("ascii", 8, 12) !== "WAVE" ||
+    bytes.toString("ascii", 12, 16) !== "fmt " ||
+    bytes.toString("ascii", 36, 40) !== "data"
+  ) {
+    return bytes;
+  }
+  const blockAlign = bytes.readUInt16LE(32);
+  if (!blockAlign) return bytes;
+  const requestedStart = startByteLength >= 44 ? startByteLength : 44;
+  const alignedStart =
+    44 + Math.ceil((requestedStart - 44) / blockAlign) * blockAlign;
+  if (alignedStart >= bytes.length) return bytes.subarray(0, 44);
+  const dataLength =
+    Math.floor((bytes.length - alignedStart) / blockAlign) * blockAlign;
+  const captured = Buffer.alloc(44 + dataLength);
+  bytes.copy(captured, 0, 0, 44);
+  bytes.copy(captured, 44, alignedStart, alignedStart + dataLength);
+  captured.writeUInt32LE(captured.length - 8, 4);
+  captured.writeUInt32LE(dataLength, 40);
+  return captured;
+}
+
 function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
   const runVirsh = testOnlyRunVirsh ?? productionVirsh;
   return {
@@ -551,7 +580,7 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
         );
       }
       return {
-        bytes: completed.bytes,
+        bytes: capturedQemuWav(completed.bytes, startByteLength),
         completedAt: new Date().toISOString(),
         provenance: {
           domain: {
@@ -567,8 +596,7 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
             inode: completed.snapshot.inode,
             startOffset: startByteLength,
             endOffset: completed.snapshot.byteLength,
-            capturedByteLength:
-              completed.snapshot.byteLength - startByteLength,
+            capturedByteLength: completed.snapshot.byteLength - startByteLength,
           },
         },
       };

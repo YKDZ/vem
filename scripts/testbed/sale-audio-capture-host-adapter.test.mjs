@@ -81,6 +81,13 @@ function wavWithTone(frameCount = 48_000, sampleRate = 48_000, channels = 2) {
   return bytes;
 }
 
+function growingQemuWav(data) {
+  const bytes = Buffer.from(data);
+  bytes.writeUInt32LE(0, 4);
+  bytes.writeUInt32LE(0, 40);
+  return bytes;
+}
+
 function delayedPickupFrames() {
   return [
     ["daemon-to-controller", "55020531", 2, "VEND"],
@@ -423,7 +430,8 @@ describe("capture-sale-audio host adapter extension", () => {
           ...common,
           phase: "stop",
           captureSessionId: started.captureSession.captureSessionId,
-          startOperationReference: started.captureSession.startOperationReference,
+          startOperationReference:
+            started.captureSession.startOperationReference,
           captureStartedAt: started.captureSession.startedAt,
           outPath: join(root, "stop.json"),
           sale: {
@@ -438,6 +446,72 @@ describe("capture-sale-audio host adapter extension", () => {
       );
       assert.equal(stopped.capture.provenance.wav.startOffset, 0);
       assert.ok(stopped.capture.provenance.wav.capturedByteLength > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("wraps only newly appended live QEMU PCM with finalized WAV lengths", async () => {
+    const root = makeTempDir("vem-sale-audio-growing-qemu");
+    const wavPath = join(root, "growing-domain-output.wav");
+    const journalPath = join(root, "raw-serial.socat.log");
+    const domainXml = `<domain type="kvm"><devices><audio id="1" type="file" path="${wavPath}"/><sound model="ich9"><audio id="1"/></sound></devices></domain>`;
+    const testOnlyRunVirsh = (args) =>
+      args.at(-2) === "domstate" ? "running\n" : domainXml;
+    try {
+      const initial = growingQemuWav(wavWithTone(8_000));
+      initial.fill(0, 44);
+      writeFileSync(wavPath, initial);
+      writeFileSync(journalPath, "host serial journal\n");
+      const common = {
+        runId: "RUN-17-GROWING",
+        lifecycleReference: "vm-lifecycle://run-17-growing.runtime",
+        targetIdentity: "vm-target://runtime",
+        transactionId: "transaction://run-17-growing",
+        runtime,
+        evidenceDirectory: join(root, "evidence"),
+        production: productionBinding(journalPath),
+      };
+      const dependencies = {
+        testOnlyRunVirsh,
+        readSerialJournal: () => delayedPickupFrames(),
+      };
+      const started = await executeSaleAudioCaptureHostAdapter(
+        { ...common, phase: "start", outPath: join(root, "start.json") },
+        dependencies,
+      );
+      const tone = wavWithTone();
+      writeFileSync(
+        wavPath,
+        growingQemuWav(Buffer.concat([initial, tone.subarray(44)])),
+      );
+      const stopped = await executeSaleAudioCaptureHostAdapter(
+        {
+          ...common,
+          phase: "stop",
+          captureSessionId: started.captureSession.captureSessionId,
+          startOperationReference:
+            started.captureSession.startOperationReference,
+          captureStartedAt: started.captureSession.startedAt,
+          outPath: join(root, "stop.json"),
+          sale: {
+            saleCorrelationId: "sale-correlation://run-17-growing",
+            orderId: "55555555-5555-4555-8555-555555555555",
+            orderNo: "ORDER-17-GROWING",
+            commandId: "66666666-6666-4666-8666-666666666666",
+            commandNo: "COMMAND-17-GROWING",
+          },
+        },
+        dependencies,
+      );
+      const audio = stopped.evidence.find(
+        (entry) => entry.role === "sale-default-audio-capture",
+      );
+      const captured = readFileSync(
+        join(common.evidenceDirectory, audio.fileName),
+      );
+      assert.equal(captured.readUInt32LE(4) + 8, captured.length);
+      assert.equal(captured.readUInt32LE(40) + 44, captured.length);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

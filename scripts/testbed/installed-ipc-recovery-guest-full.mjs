@@ -430,6 +430,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
       }),
       "daemon transport recovery",
     );
+    await waitForDaemonReadyRefresh(handoff);
     const uiAfter = await captureRuntimeOperationObservation(client);
 
     report.ipcRecovery = {

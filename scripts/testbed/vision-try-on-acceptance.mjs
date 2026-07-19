@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -18,6 +19,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
 
 const MODES = new Set(["full"]);
 const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
@@ -179,6 +181,20 @@ async function daemonGet(handoff, path) {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
   });
+}
+
+async function controlPlaneRequest(guestInput, path, body = {}) {
+  return fetchJson(
+    `${required(guestInput.hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${required(guestInput.hostControlPlane?.token, "hostControlPlane.token")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 async function waitForCondition(name, predicate, timeoutMs, pollMs = 500) {
@@ -2168,6 +2184,7 @@ async function runVisionTryOnAcceptance(options) {
   }
   let client = null;
   let injectedVisionMock = null;
+  let hardwareSession = null;
   const checkpoints = [];
   let stage = "connect-installed-tauri-cdp";
   let report = null;
@@ -2175,6 +2192,36 @@ async function runVisionTryOnAcceptance(options) {
   let realVisionStopped = false;
   let restoredRuntimeVerification = null;
   try {
+    hardwareSession = await controlPlaneRequest(
+      guestInput,
+      "/v1/serial-sessions/start",
+      {
+        runId: guestInput.runId,
+        machineCode: guestInput.machineCode,
+        saleCorrelationId: `sale-correlation://vision-${Date.now()}`,
+        targetIdentity: guestInput.hostControlPlane.targetIdentity,
+        runtimeBase: guestInput.hostControlPlane.runtimeBaseIdentity,
+      },
+    );
+    await waitForDaemonReadyRefresh(handoff);
+    await waitForHardwareBindings(handoff, hardwareSession);
+    await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${hardwareSession.sessionId}/stop-scanner-probe`,
+    );
+    await waitForCondition(
+      "Vision track sale readiness",
+      async () => {
+        const capability = await daemonGet(
+          handoff,
+          "/v1/sale-start-capability",
+        ).catch(() => null);
+        return { ok: capability?.canStartSale === true, value: capability };
+      },
+      30_000,
+      250,
+    );
+
     const installedBinding = await collectVisionInstalledBinding();
     const installedBindingSummary =
       validateVisionInstalledBinding(installedBinding);
@@ -2549,6 +2596,20 @@ async function runVisionTryOnAcceptance(options) {
         `machine UI CDP shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
+  }
+  if (hardwareSession?.sessionId) {
+    try {
+      await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${hardwareSession.sessionId}/abort`,
+      );
+    } catch (error) {
+      cleanupErrors.push(
+        new Error(
+          `Vision hardware session cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
   }
   if (realVisionStopped) {
     try {

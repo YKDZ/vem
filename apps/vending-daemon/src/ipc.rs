@@ -381,6 +381,20 @@ pub(crate) struct SaleBindingOperationGate {
     state: std::sync::atomic::AtomicU8,
 }
 impl SaleBindingOperationGate {
+    pub(crate) async fn acquire_sale_start(
+        self: &Arc<Self>,
+        timeout: Duration,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.try_acquire_sale_start() {
+                Ok(lease) => return Ok(lease),
+                Err(active) if Instant::now() >= deadline => return Err(active),
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+    }
+
     pub(crate) fn try_acquire_sale_start(
         self: &Arc<Self>,
     ) -> Result<SaleBindingOperationLease, u8> {
@@ -1439,7 +1453,11 @@ async fn create_order(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    let _sale = match ctx.sale_binding_gate.try_acquire_sale_start() {
+    let _sale = match ctx
+        .sale_binding_gate
+        .acquire_sale_start(Duration::from_secs(10))
+        .await
+    {
         Ok(value) => value,
         Err(_) => {
             return error_response(
@@ -3118,6 +3136,25 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn sale_start_waits_for_an_in_flight_binding_refresh() {
+        let gate = Arc::new(SaleBindingOperationGate::default());
+        let binding = gate
+            .try_acquire_reconfigure()
+            .expect("binding refresh lease");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(binding);
+        });
+
+        let sale = gate
+            .acquire_sale_start(Duration::from_secs(1))
+            .await
+            .expect("sale lease after binding refresh");
+        drop(sale);
+        release.await.expect("binding release task");
+    }
 
     async fn test_context(
         data_dir: PathBuf,
