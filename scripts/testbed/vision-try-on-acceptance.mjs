@@ -1542,14 +1542,10 @@ export async function collectVisionProtocolEvidence({
       `vision protocol did not produce presence/profile/departure within ${timeoutMs} ms`,
     );
   } finally {
-    const closer =
-      typeof closeSocket === "function"
-        ? closeSocket
-        : typeof socket?.close === "function"
-          ? socket.close.bind(socket)
-          : null;
-    if (closer) {
-      await closer(socket);
+    if (typeof closeSocket === "function") {
+      await closeSocket(socket);
+    } else if (typeof socket?.close === "function") {
+      socket.close();
     }
   }
 }
@@ -2219,8 +2215,13 @@ async function runVisionTryOnAcceptance(options) {
   if (!allocatedFixture?.slotCode || !allocatedFixture?.inventoryId) {
     throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
   }
-  if (options.fixtureKey !== "visionTryOn" || allocatedFixture.slotCode !== "A3") {
-    throw new Error("Vision/try-on must use the dedicated A3 fixture allocation");
+  if (
+    options.fixtureKey !== "visionTryOn" ||
+    allocatedFixture.slotCode !== "A3"
+  ) {
+    throw new Error(
+      "Vision/try-on must use the dedicated A3 fixture allocation",
+    );
   }
   let client = null;
   let injectedVisionMock = null;

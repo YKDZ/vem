@@ -740,6 +740,7 @@ describe("vision try-on acceptance script", () => {
   });
 
   it("collects the first true presence event while preserving initial false events", async () => {
+    const closeArguments = [];
     const messages = [
       visionProtocolMessage("vision.ready", {
         serverName: "vem-vision-runtime",
@@ -793,7 +794,7 @@ describe("vision try-on acceptance script", () => {
       machineCode: "MACHINE-01",
       openSocket: async () => ({
         send: () => {},
-        close: () => {},
+        close: (...args) => closeArguments.push(args),
       }),
       readMessage: queuedReader(messages, [
         "2026-07-18T00:00:00.100Z",
@@ -814,19 +815,17 @@ describe("vision try-on acceptance script", () => {
     });
 
     assert.equal(evidence.presence.payload.personPresent, true);
-    assert.equal(evidence.presence.payload.detectedAt, "2026-07-18T00:00:02.000Z");
     assert.equal(
-      evidence.observedMessages[1]?.type,
-      "vision.presence_status",
+      evidence.presence.payload.detectedAt,
+      "2026-07-18T00:00:02.000Z",
     );
+    assert.equal(evidence.observedMessages[1]?.type, "vision.presence_status");
     assert.equal(
       evidence.observedMessages[1]?.timestamp,
       "2026-07-18T00:00:01.000Z",
     );
-    assert.equal(
-      evidence.presence.payload.sourceFrame.frameIndex,
-      4,
-    );
+    assert.equal(evidence.presence.payload.sourceFrame.frameIndex, 4);
+    assert.deepEqual(closeArguments, [[]]);
 
     const summary = compareObservedVisionProtocolToExpected({
       expectedResults: baseExpectedResults(),
