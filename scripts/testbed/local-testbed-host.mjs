@@ -278,6 +278,8 @@ $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -Lit
 if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
 $runnerWorkRoot = 'D:\\runtime-cache\\v1\\actions-work'
 New-Item -ItemType Directory -Force -Path $runnerWorkRoot | Out-Null
+$env:GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY = '1'
+[Environment]::SetEnvironmentVariable('GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY', '1', 'Machine')
 & (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work $runnerWorkRoot --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 Set-RunnerAdmissionPhase 'configured-new-runner'
