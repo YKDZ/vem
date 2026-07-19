@@ -1616,9 +1616,7 @@ async function collectPlatformLog(guestInput, sessionId, outPath) {
 }
 
 async function ensureControlledVisionMock(controlPort) {
-  const healthUrl = "http://127.0.0.1:7892/health";
   try {
-    await fetchJson(healthUrl);
     const status = await fetchJson(
       `http://127.0.0.1:${controlPort}/control/status`,
     );
@@ -1650,7 +1648,6 @@ async function ensureControlledVisionMock(controlPort) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
-      await fetchJson(healthUrl);
       const status = await fetchJson(
         `http://127.0.0.1:${controlPort}/control/status`,
       );
