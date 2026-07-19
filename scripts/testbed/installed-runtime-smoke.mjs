@@ -20,6 +20,30 @@ const BASE_TRACKS = Object.freeze([
   "runtime-claim",
   "installed-tauri-cdp-handoff",
 ]);
+const LOOPBACK_FETCH_ATTEMPTS = 9;
+const LOOPBACK_FETCH_RETRY_MS = 250;
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fetchLoopbackWithRetry(fetchImpl, url, options, label) {
+  let lastError;
+  for (let attempt = 1; attempt <= LOOPBACK_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchImpl(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < LOOPBACK_FETCH_ATTEMPTS) {
+        await sleep(LOOPBACK_FETCH_RETRY_MS);
+      }
+    }
+  }
+  throw new Error(
+    `${label} could not connect to ${url}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    { cause: lastError },
+  );
+}
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -155,11 +179,16 @@ export async function runInstalledRuntimeSmoke({
 }) {
   const tracks = declaredInstalledRuntimeTracks(mode);
   const runtime = validateInstalledRuntimeEvidence(evidence);
-  const healthResponse = await fetchImpl(runtime.daemon.ready.healthzUrl, {
-    headers: {
-      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+  const retryingFetch = (url, options) =>
+    fetchLoopbackWithRetry(fetchImpl, url, options, "installed runtime probe");
+  const healthResponse = await retryingFetch(
+    runtime.daemon.ready.healthzUrl,
+    {
+      headers: {
+        authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+      },
     },
-  });
+  );
   if (!healthResponse.ok) {
     throw new Error(
       `production daemon health failed with HTTP ${healthResponse.status}`,
@@ -175,11 +204,14 @@ export async function runInstalledRuntimeSmoke({
   ) {
     throw new Error("production daemon health snapshot is invalid");
   }
-  const readyResponse = await fetchImpl(runtime.daemon.ready.readyzUrl, {
-    headers: {
-      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+  const readyResponse = await retryingFetch(
+    runtime.daemon.ready.readyzUrl,
+    {
+      headers: {
+        authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+      },
     },
-  });
+  );
   if (!readyResponse.ok) {
     throw new Error(
       `production daemon readiness failed with HTTP ${readyResponse.status}`,
@@ -196,7 +228,7 @@ export async function runInstalledRuntimeSmoke({
   const target = await discoverMachineUiTarget({
     endpoint: runtime.cdp.endpoint,
     expectedTargetId: runtime.cdp.targetId,
-    fetchImpl,
+    fetchImpl: retryingFetch,
   });
   const client = new CdpClient(
     rewriteWebSocketDebuggerUrl(

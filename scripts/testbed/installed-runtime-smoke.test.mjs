@@ -168,6 +168,22 @@ describe("installed production runtime smoke", () => {
     assert.equal("ipcToken" in result, false);
   });
 
+  it("retries transient loopback refusal without accepting an invalid response", async () => {
+    let attempts = 0;
+    const result = await runInstalledRuntimeSmoke({
+      mode: "fast",
+      evidence: evidence(),
+      fetchImpl: async (...args) => {
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("fetch failed");
+        return fetchBoundary(...args);
+      },
+      webSocketFactory: () => new FakeCdpSocket(),
+    });
+    assert.equal(result.ok, true);
+    assert.ok(attempts >= 4);
+  });
+
   it("launches only canonical installed binaries without a debug test stack", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
