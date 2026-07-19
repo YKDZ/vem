@@ -257,8 +257,10 @@ function runnerAdmissionAssertion(
   runnerProxy,
   runnerRegistrationToken,
   runnerRemovalToken,
+  runId,
 ) {
   const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
+  const runnerName = `forest-win10-runtime-${runId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const registrationSetup = runnerRegistrationToken
     ? `$oldServiceIdentityPath = Join-Path $runnerRoot '.service'
 if (Test-Path -LiteralPath $oldServiceIdentityPath -PathType Leaf) {
@@ -273,11 +275,11 @@ $runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.
 $runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
 $remainingIdentityFiles = @($runnerIdentityFiles | Where-Object { Test-Path -LiteralPath (Join-Path $runnerRoot $_) })
 if ($remainingIdentityFiles.Count -ne 0) { throw "stale actions runner identity files remain: $($remainingIdentityFiles -join ', ')" }
-& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name 'forest-win10-runtime-current' --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
+& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work '_work' --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
 if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
 Set-RunnerAdmissionPhase 'configured-new-runner'
 $registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json
-if ([string]$registeredRunner.agentName -ne 'forest-win10-runtime-current') { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
+if ([string]$registeredRunner.agentName -ne ${quotePowerShell(runnerName)}) { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
 `
     : "";
   const proxyLines = runnerProxy?.configured
@@ -596,6 +598,7 @@ export function buildHostAdmissionPlan({
     runnerProxy,
     runnerRegistrationToken,
     runnerRemovalToken,
+    expectedRunId,
   );
   return [
     {
