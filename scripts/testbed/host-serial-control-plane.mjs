@@ -856,6 +856,15 @@ function requireAudioCapture(server, audioCaptureId) {
   return capture;
 }
 
+function audioCaptureEvidencePayloads(capture) {
+  return (capture.stopReport?.evidence ?? []).map((artifact) => ({
+    fileName: artifact.fileName,
+    bytesBase64: readFileSync(
+      join(capture.evidenceDirectory, artifact.fileName),
+    ).toString("base64"),
+  }));
+}
+
 async function startAudioCapture(server, input) {
   const session = requireSession(server, input.sessionId);
   const runtime = runtimeBinding(input.runtime);
@@ -921,6 +930,7 @@ async function stopAudioCapture(server, input) {
     return {
       audioCaptureId: capture.id,
       stopReport: capture.stopReport,
+      evidencePayloads: audioCaptureEvidencePayloads(capture),
       repeated: true,
     };
   }
@@ -957,6 +967,7 @@ async function stopAudioCapture(server, input) {
   return {
     audioCaptureId: capture.id,
     stopReport: capture.stopReport,
+    evidencePayloads: audioCaptureEvidencePayloads(capture),
     repeated: false,
   };
 }

@@ -2277,21 +2277,25 @@ async function runVisionTryOnAcceptance(options) {
     );
     realVisionStopped = false;
 
-    stage = "collect-vision-protocol";
-    const protocolEvidence = await collectVisionProtocolEvidence({
+    stage = "observe-vision-protocol-and-catalog-recommendation";
+    const protocolEvidencePromise = collectVisionProtocolEvidence({
       machineCode: guestInput.machineCode,
     });
+    const catalogRecommendationPromise = waitForCatalogRecommendationProjection(
+      client,
+      baselineCatalogProjection.products.map((product) => product.catalogKey),
+    );
+    const [protocolEvidence, catalogRecommendation] = await Promise.all([
+      protocolEvidencePromise,
+      catalogRecommendationPromise,
+    ]);
     const protocolSummary = compareObservedVisionProtocolToExpected({
       expectedResults,
       protocolEvidence,
       installedBinding: installedBindingSummary,
     });
 
-    stage = "wait-catalog-recommendation-projection";
-    const catalogRecommendation = await waitForCatalogRecommendationProjection(
-      client,
-      baselineCatalogProjection.products.map((product) => product.catalogKey),
-    );
+    stage = "validate-catalog-recommendation-projection";
     const recommendationSummary = validateRecommendationProjection({
       beforeProducts: baselineCatalogProjection.products,
       afterProducts: catalogRecommendation.products,

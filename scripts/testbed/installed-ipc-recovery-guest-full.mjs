@@ -25,7 +25,10 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
+import {
+  scannerFrameBytes,
+  waitForHardwareBindings,
+} from "./scanner-payment-code-guest-full.mjs";
 
 const SCHEMA_VERSION = "vem-installed-ipc-recovery-guest-full/v1";
 const LOCAL_REQUEST_TIMEOUT_MS = 30_000;
@@ -136,16 +139,6 @@ function controlPlaneRequest(guestInput, path, body = {}) {
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
-    },
-  );
-}
-
-async function completeMockPayment(guestInput, paymentNo) {
-  return fetchJson(
-    `${required(guestInput.runtimeBootstrap?.provisioningApiBaseUrl, "runtimeBootstrap.provisioningApiBaseUrl").replace(/\/+$/, "")}/payments/mock/${encodeURIComponent(required(paymentNo, "paymentNo"))}/complete`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
     },
   );
 }
@@ -431,6 +424,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
       "daemon transport recovery",
     );
     await waitForDaemonReadyRefresh(handoff);
+    await waitForHardwareBindings(handoff, session);
     const uiAfter = await captureRuntimeOperationObservation(client);
 
     report.ipcRecovery = {
@@ -470,10 +464,17 @@ export async function runInstalledIpcRecoveryGuest(options) {
       daemonTransportPhase: recoveredTransport.daemon?.transport?.phase ?? null,
     };
 
-    const current = await daemonGet(handoff, "/v1/transactions/current");
-    await completeMockPayment(
+    const scannerBytes = scannerFrameBytes(
+      guestInput?.scannerAcceptance?.validCode,
+    );
+    report.ipcRecovery.scannerInjection = await controlPlaneRequest(
       guestInput,
-      required(current.paymentNo, "paymentNo"),
+      `/v1/serial-sessions/${session.sessionId}/inject`,
+      {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        scannerCodeBase64: Buffer.from(scannerBytes).toString("base64"),
+      },
     );
     liveSale = await waitForCommand(handoff, renderedSale);
     report.liveSale = liveSale;

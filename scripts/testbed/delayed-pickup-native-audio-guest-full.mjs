@@ -718,7 +718,7 @@ async function runDelayedPickupGuestFull(options) {
           };
         },
         readMachineSample: readInstalledMachineProductionSample,
-        async startAudioCapture({ baseBinding, runtime }) {
+        async startAudioCapture({ baseBinding, runtime, outPath }) {
           const result = await controlPlaneRequest(
             guestInput,
             "/v1/audio-captures/start",
@@ -733,9 +733,10 @@ async function runDelayedPickupGuestFull(options) {
             },
           );
           audioCaptureId = result.audioCaptureId;
+          writeJson(outPath, result.startReport);
           return result.startReport;
         },
-        async stopAudioCapture({ binding }) {
+        async stopAudioCapture({ binding, evidenceDirectory, outPath }) {
           const result = await controlPlaneRequest(
             guestInput,
             `/v1/audio-captures/${audioCaptureId}/stop`,
@@ -747,6 +748,14 @@ async function runDelayedPickupGuestFull(options) {
               commandNo: binding.commandNo,
             },
           );
+          writeJson(outPath, result.stopReport);
+          mkdirSync(localPath(evidenceDirectory), { recursive: true });
+          for (const artifact of result.evidencePayloads ?? []) {
+            writeFileSync(
+              join(localPath(evidenceDirectory), artifact.fileName),
+              Buffer.from(artifact.bytesBase64, "base64"),
+            );
+          }
           return result.stopReport;
         },
         async cancelAudioCapture() {

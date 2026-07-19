@@ -940,6 +940,15 @@ describe("host serial control plane", () => {
       );
       assert.equal(stopped.stopReport.capture.source, "windows_default_output");
       assert.equal(stopped.stopReport.evidence.length, 2);
+      assert.equal(stopped.evidencePayloads.length, 2);
+      assert.equal(
+        stopped.evidencePayloads.every(
+          (entry) =>
+            typeof entry.fileName === "string" &&
+            Buffer.from(entry.bytesBase64, "base64").length > 0,
+        ),
+        true,
+      );
       const serialFile = stopped.stopReport.evidence.find(
         (entry) => entry.role === "sale-serial-frame-capture",
       );
