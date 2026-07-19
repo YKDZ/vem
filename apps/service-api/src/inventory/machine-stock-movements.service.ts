@@ -743,14 +743,23 @@ function hashNormalizedMovement(input: Record<string, unknown>): string {
 }
 
 function isUniqueConstraintViolation(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== "object") return false;
+    const maybeError = current as {
+      code?: unknown;
+      constraint?: unknown;
+      cause?: unknown;
+    };
+    if (
+      maybeError.code === "23505" &&
+      (maybeError.constraint === undefined ||
+        maybeError.constraint ===
+          "machine_raw_stock_movements_machine_movement_unique")
+    ) {
+      return true;
+    }
+    current = maybeError.cause;
   }
-  const maybeError = error as { code?: unknown; constraint?: unknown };
-  return (
-    maybeError.code === "23505" &&
-    (maybeError.constraint === undefined ||
-      maybeError.constraint ===
-        "machine_raw_stock_movements_machine_movement_unique")
-  );
+  return false;
 }

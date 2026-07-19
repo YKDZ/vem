@@ -318,12 +318,16 @@ class InsertRaceMovementRepository extends InMemoryMovementRepository {
   }
 
   override async insertAccepted(): Promise<StoredRawMachineStockMovement> {
-    const error = new Error("duplicate key value violates unique constraint");
-    Object.assign(error, {
+    const cause = Object.assign(
+      new Error("duplicate key value violates unique constraint"),
+      {
       code: "23505",
       constraint: "machine_raw_stock_movements_machine_movement_unique",
+      },
+    );
+    throw Object.assign(new Error("Failed query: insert into movements"), {
+      cause,
     });
-    throw error;
   }
 }
 
@@ -817,7 +821,7 @@ describe("MachineStockMovementsService", () => {
     );
   });
 
-  it("treats a concurrent unique insert race with the same payload as already accepted", async () => {
+  it("treats a Drizzle-wrapped concurrent unique insert race with the same payload as already accepted", async () => {
     const seedRepo = new InMemoryMovementRepository();
     const seedService = new MachineStockMovementsService(seedRepo as never);
     const accepted = await seedService.receiveRawMovement(machine, movement);
