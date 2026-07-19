@@ -18,6 +18,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { waitForSaleStartCapability } from "./serial-sale-readiness.mjs";
 
 const MODES = new Set(["full"]);
 const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r\n";
@@ -564,7 +565,7 @@ async function waitForPaymentCodeAttempt(
   );
 }
 
-async function waitForHardwareBindings(
+export async function waitForHardwareBindings(
   handoff,
   sessionStart,
   timeoutMs = 30_000,
@@ -628,28 +629,19 @@ async function waitForHardwareBindings(
 }
 
 async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = null;
-  while (Date.now() < deadline) {
-    last = await daemonGet(handoff, "/v1/sale-start-capability").catch(
-      () => null,
+  try {
+    return await waitForSaleStartCapability(
+      (path) => daemonGet(handoff, path),
+      {
+        timeoutMs,
+        paymentOptionKey: "payment_code:mock",
+      },
     );
-    const paymentCode = last?.paymentOptions?.options?.find(
-      (option) => option?.optionKey === "payment_code:mock",
+  } catch (error) {
+    throw new Error(
+      `scanner sale capability did not recover after binding: ${error instanceof Error ? error.message : String(error)}`,
     );
-    if (
-      last?.canStartSale === true &&
-      Number.isInteger(last?.revision) &&
-      paymentCode?.ready === true &&
-      paymentCode?.disabledReason === null
-    ) {
-      return last;
-    }
-    await sleep(250);
   }
-  throw new Error(
-    `scanner sale capability did not recover after binding: ${JSON.stringify(last)}`,
-  );
 }
 
 async function waitForSuccessfulResultSurface(

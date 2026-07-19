@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -34,5 +35,16 @@ describe("installed system touch keyboard acceptance", () => {
     assert.match(script, /IsWindowVisible/);
     assert.match(script, /GetWindowThreadProcessId/);
     assert.match(script, /ConvertTo-Json -Compress/);
+  });
+
+  it("allows only its explicit maintenance probe through the customer route policy", () => {
+    const source = readFileSync(
+      new URL("./installed-system-touch-keyboard.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /forbiddenRoutes: route\.startsWith\("#\/maintenance"\) \? \[\] : undefined/,
+    );
   });
 });

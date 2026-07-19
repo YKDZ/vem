@@ -760,30 +760,33 @@ function capturedFrame(raw, sequence) {
   };
 }
 
-function semanticRecords(request, state, rawFrames) {
+export function semanticRecords(request, state, rawFrames) {
   const saleBinding = request.serialSession.saleBindings[0];
   const saleCorrelationId = request.serialSession.saleCorrelationIds[0];
+  const statusHeartbeats = new Set(["AA", "AB", "AC", "AF"]);
   const find = (predicate, label) => {
     const value = rawFrames.find(predicate);
     if (!value) throw new Error(`raw serial evidence is missing ${label}`);
     return value;
   };
-  const handshake = find(
+  const handshakeFrames = rawFrames.filter(
     (frame) =>
-      frame.direction === "daemon-to-controller" && frame.parsedOpcode === "B0",
-    "environment query",
+      frame.direction === "controller-to-daemon" &&
+      statusHeartbeats.has(frame.parsedOpcode),
   );
-  const health = find(
-    (frame) =>
-      frame.direction === "controller-to-daemon" && frame.parsedOpcode === "B0",
-    "environment response",
-  );
-  const vend = find(
-    (frame) =>
-      frame.direction === "daemon-to-controller" &&
-      frame.parsedOpcode === "VEND",
-    "outbound vend frame",
-  );
+  const handshake = handshakeFrames[0];
+  if (!handshake) {
+    throw new Error(
+      "raw serial evidence is missing an inbound status heartbeat",
+    );
+  }
+  const health = handshakeFrames[1];
+  if (!health) {
+    throw new Error(
+      "raw serial evidence is missing a second inbound status heartbeat",
+    );
+  }
+
   const f0 = find(
     (frame) =>
       frame.direction === "controller-to-daemon" && frame.parsedOpcode === "F0",
@@ -793,6 +796,12 @@ function semanticRecords(request, state, rawFrames) {
     (frame) =>
       frame.direction === "controller-to-daemon" && frame.parsedOpcode === "F2",
     "inbound F2",
+  );
+  const vend = find(
+    (frame) =>
+      frame.direction === "daemon-to-controller" &&
+      frame.parsedOpcode === "VEND",
+    "outbound vend frame",
   );
   const scannerFrame = {
     direction: "host-to-scanner",

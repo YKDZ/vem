@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -85,8 +86,20 @@ describe("serial fulfillment error guest full", () => {
         handoffPath:
           "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
         outPath: "C:\\ProgramData\\VEM\\testbed\\serial-fulfillment-error.json",
+        fixtureKey: null,
       },
     );
+  });
+
+  it("waits for serial bindings and payment capability before entering checkout flow", () => {
+    const source = readFileSync(
+      new URL("./serial-fulfillment-error-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /await-daemon-binding-and-capability/);
+    assert.match(source, /waitForHardwareBindings/);
+    assert.match(source, /handoff,\s*session/);
+    assert.match(source, /waitForSaleStartCapability/);
   });
 
   it("accepts only a bound E6 terminal journey with no F2, movement, or stock delta", () => {

@@ -1138,10 +1138,25 @@ export async function activateVisibleSelector(client, selector, options = {}) {
   const timeoutMs = options.timeoutMs ?? 0;
   const pollMs = options.pollMs ?? DEFAULT_ROUTE_POLL_MS;
   const deadline = Date.now() + timeoutMs;
+  let scrolled = false;
   let probe;
   do {
     probe = await probeSelectorBounds(client, selector, options);
     if (probe?.actionable) break;
+    if (probe?.exists === true && probe?.inViewport === false && !scrolled) {
+      await evaluateExpression(
+        client,
+        `(() => {
+          const element = document.querySelector(${JSON.stringify(selector)});
+          if (!element) return false;
+          element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+          return true;
+        })()`,
+        options,
+      );
+      scrolled = true;
+      continue;
+    }
     if (Date.now() >= deadline) {
       throw new Error(
         `selector is not physically actionable: ${selector}; last probe=${JSON.stringify(probe ?? null)}`,
@@ -1531,8 +1546,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           });
           assertHealthy();
         }
-        const repeatedActivation =
-          step.repeatPreviousActivationCenter === true;
+        const repeatedActivation = step.repeatPreviousActivationCenter === true;
         const activation = repeatedActivation
           ? (() => {
               if (!lastCustomerActivation?.center) {
@@ -1640,7 +1654,9 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         );
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
         if (typeof adapter.executeExternalOperation !== "function") {
-          throw new Error("external operation requires adapter.executeExternalOperation");
+          throw new Error(
+            "external operation requires adapter.executeExternalOperation",
+          );
         }
         const uiBefore = await captureRuntimeOperationObservation(client, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1660,9 +1676,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           });
           const overlayDeadline = Date.now() + (step.timeoutMs ?? timeoutMs);
           do {
-            const observation = await captureRuntimeOperationObservation(client, {
-              timeoutMs: step.timeoutMs ?? timeoutMs,
-            });
+            const observation = await captureRuntimeOperationObservation(
+              client,
+              {
+                timeoutMs: step.timeoutMs ?? timeoutMs,
+              },
+            );
             if (observation.recoveryOverlay?.length > 0) {
               recoveryOverlay = {
                 observation,
@@ -1677,7 +1696,9 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             await sleep(routePollMs);
           } while (Date.now() < overlayDeadline);
           if (recoveryOverlay === null) {
-            throw new Error("daemon transport interruption did not expose a recovery overlay to read-only CDP");
+            throw new Error(
+              "daemon transport interruption did not expose a recovery overlay to read-only CDP",
+            );
           }
           rawProvenance = await adapter.completeExternalOperation(pending, {
             operation: step.operation,
@@ -1722,12 +1743,16 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         executedExecution.externalOperations += 1;
         if (step.screenshot) {
-          const checkpoint = await captureCheckpoint(client, `${step.name}:after`, {
-            timeoutMs: step.timeoutMs ?? timeoutMs,
-            screenshot: true,
-            screenshotSink: adapter.screenshotSink,
-            clock,
-          });
+          const checkpoint = await captureCheckpoint(
+            client,
+            `${step.name}:after`,
+            {
+              timeoutMs: step.timeoutMs ?? timeoutMs,
+              screenshot: true,
+              screenshotSink: adapter.screenshotSink,
+              clock,
+            },
+          );
           assertAllowedRoute(
             checkpoint.identity.route,
             activeForbiddenRoutes,
@@ -1995,7 +2020,7 @@ function assertClosedStep(step, index, type) {
               "timeoutMs",
               "screenshot",
             ])
-            : null;
+          : null;
   if (!allowed) return;
   for (const key of Object.keys(step)) {
     if (!allowed.has(key)) {
@@ -2081,13 +2106,18 @@ function countScenarioSteps(sequence) {
       (step) => step.type === "customer-activation",
     ).length,
     observations: sequence.filter((step) => step.type === "observation").length,
-    externalOperations: sequence.filter((step) => step.type === "external-operation")
-      .length,
+    externalOperations: sequence.filter(
+      (step) => step.type === "external-operation",
+    ).length,
   };
 }
 
 function assertScenarioExecutionCounts(planned, executed) {
-  for (const field of ["customerActivations", "observations", "externalOperations"]) {
+  for (const field of [
+    "customerActivations",
+    "observations",
+    "externalOperations",
+  ]) {
     if (planned[field] !== executed[field]) {
       throw new Error(
         `scenario executed ${executed[field]} ${field}, expected ${planned[field]}`,
@@ -2260,7 +2290,9 @@ function boundExternalOperation(value, expectedOperation) {
     MAX_LABEL_LENGTH,
   );
   if (operation !== expectedOperation) {
-    throw new Error("external operation provenance does not match the requested operation");
+    throw new Error(
+      "external operation provenance does not match the requested operation",
+    );
   }
   const guestOperationId = boundedRequiredString(
     value.guestOperationId,
@@ -2278,7 +2310,14 @@ function boundExternalOperation(value, expectedOperation) {
   const log = value.log;
   const vision = value.vision;
   const ui = value.ui;
-  for (const [name, fact] of Object.entries({ session, daemon, platform, log, vision, ui })) {
+  for (const [name, fact] of Object.entries({
+    session,
+    daemon,
+    platform,
+    log,
+    vision,
+    ui,
+  })) {
     if (!fact || typeof fact !== "object" || Array.isArray(fact)) {
       throw new Error(`external operation ${name} fact is required`);
     }
@@ -2374,8 +2413,16 @@ function boundEvidenceEntry(entry) {
   if (entry.type === "external-operation") {
     return {
       type: "external-operation",
-      label: boundedRequiredString(entry.label, "external operation label", MAX_LABEL_LENGTH),
-      operation: boundedRequiredString(entry.operation, "external operation", MAX_LABEL_LENGTH),
+      label: boundedRequiredString(
+        entry.label,
+        "external operation label",
+        MAX_LABEL_LENGTH,
+      ),
+      operation: boundedRequiredString(
+        entry.operation,
+        "external operation",
+        MAX_LABEL_LENGTH,
+      ),
       routeBefore: normalizeMachineRoute(entry.routeBefore),
       routeAfter: normalizeMachineRoute(entry.routeAfter),
       provenance: boundExternalOperation(entry.provenance, entry.operation),

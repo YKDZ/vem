@@ -16,6 +16,8 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
+import { waitForSaleStartCapability } from "./serial-sale-readiness.mjs";
 
 const TERMINAL_FAILURE_ORDER_STATUSES = new Set([
   "refund_pending",
@@ -443,6 +445,15 @@ export async function runSerialFulfillmentErrorGuest(options) {
         "hostControlPlane.runtimeBaseIdentity",
       ),
     });
+    stage = "await-daemon-binding-and-capability";
+    report.evidence.hardwareBindings = await waitForHardwareBindings(
+      handoff,
+      session,
+    );
+    report.evidence.saleStartCapability = await waitForSaleStartCapability(
+      (path) => daemonGet(handoff, path),
+      { paymentOptionKey: "mock:mock" },
+    );
     stage = "physical-tauri-payment";
     for (const step of [
       ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],

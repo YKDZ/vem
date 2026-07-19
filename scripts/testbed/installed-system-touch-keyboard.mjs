@@ -145,6 +145,7 @@ async function setRoute(client, route) {
   return waitForRoute(client, route, {
     timeoutMs: FIELD_TIMEOUT_MS,
     pollMs: 150,
+    forbiddenRoutes: route.startsWith("#/maintenance") ? [] : undefined,
   });
 }
 

@@ -19,6 +19,7 @@ import {
   readRawSerialJournal,
   scannerAcknowledgementFor,
   scannerDescriptorMatchesRequest,
+  semanticRecords,
   validateProductionRawSerialFrame,
 } from "./qemu-usb-serial-host-adapter.mjs";
 import { createScannerCodeDescriptor } from "./vm-host-adapter-contract.mjs";
@@ -248,6 +249,110 @@ describe("repo QEMU USB serial host adapter", () => {
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("builds handshake and health evidence from status heartbeats without B0", () => {
+    const saleBinding = {
+      orderId: "order-001",
+      paymentId: "payment-001",
+      vendingCommandId: "vending-command-001",
+    };
+    const request = {
+      operationNonce: "collect-serial-evidence-001",
+      serialSession: {
+        sessionBindingToken: "binding-001",
+        deviceMappingDigest: `sha256:${"1".repeat(64)}`,
+        saleCorrelationIds: ["sale-correlation-001"],
+        saleBindings: [saleBinding],
+      },
+    };
+    const state = {
+      scannerInjection: {
+        operationNonce: "scanner-injection-001",
+        scannerCodeDigest: `sha256:${"2".repeat(64)}`,
+        scannerCodeByteLength: 18,
+        scannerCodeSuffix: "12345678",
+      },
+    };
+    const rawFrames = [
+      ["controller-to-daemon", "55AA", "AA"],
+      ["daemon-to-controller", "5501050E", "VEND"],
+      ["controller-to-daemon", "5500", "00"],
+      ["controller-to-daemon", "55AB", "AB"],
+      ["controller-to-daemon", "55F0", "F0"],
+      ["controller-to-daemon", "55F2", "F2"],
+    ].map(([direction, rawFrameHex, parsedOpcode]) => ({
+      direction,
+      rawFrameHex,
+      parsedOpcode,
+    }));
+
+    const records = semanticRecords(request, state, rawFrames);
+    assert.equal(
+      records.find((record) => record.event === "handshake")?.capturedFrame
+        .digest,
+      `sha256:${createHash("sha256").update(Buffer.from("55AA", "hex")).digest("hex")}`,
+    );
+    assert.equal(
+      records.find((record) => record.event === "health")?.capturedFrame.digest,
+      `sha256:${createHash("sha256").update(Buffer.from("55AB", "hex")).digest("hex")}`,
+    );
+  });
+
+  it("does not treat fulfillment frames as lower-controller health", () => {
+    assert.throws(
+      () =>
+        semanticRecords(
+          {
+            operationNonce: "collect-serial-evidence-001",
+            serialSession: {
+              sessionBindingToken: "binding-001",
+              deviceMappingDigest: `sha256:${"1".repeat(64)}`,
+              saleCorrelationIds: ["sale-correlation-001"],
+              saleBindings: [{}],
+            },
+          },
+          { scannerInjection: {} },
+          [
+            {
+              direction: "controller-to-daemon",
+              rawFrameHex: "55F0",
+              parsedOpcode: "F0",
+            },
+            {
+              direction: "controller-to-daemon",
+              rawFrameHex: "55F2",
+              parsedOpcode: "F2",
+            },
+          ],
+        ),
+      /missing an inbound status heartbeat/,
+    );
+  });
+
+  it("does not treat controller faults as lower-controller health", () => {
+    const request = {
+      operationNonce: "collect-serial-evidence-001",
+      serialSession: {
+        sessionBindingToken: "binding-001",
+        deviceMappingDigest: `sha256:${"1".repeat(64)}`,
+        saleCorrelationIds: ["sale-correlation-001"],
+        saleBindings: [{}],
+      },
+    };
+    const state = { scannerInjection: {} };
+    for (const opcode of ["E3", "E6"]) {
+      assert.throws(
+        () =>
+          semanticRecords(request, state, [
+            {
+              direction: "controller-to-daemon",
+              rawFrameHex: `55${opcode}`,
+              parsedOpcode: opcode,
+            },
+          ]),
+        /missing an inbound status heartbeat/,
+      );
     }
   });
 

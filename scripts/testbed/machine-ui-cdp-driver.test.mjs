@@ -247,7 +247,8 @@ async function runInstalledRouteCompetitionScenario({
               guestOperationId: `guest-${operation}`,
               adapterSessionId: "serial-session-test",
               session: {
-                daemonReadyFile: "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json",
+                daemonReadyFile:
+                  "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json",
                 daemonEndpoint: "http://127.0.0.1:7615",
               },
               daemon: {
@@ -266,7 +267,11 @@ async function runInstalledRouteCompetitionScenario({
                 },
               },
               platform: { orderNo: "ORDER-TEST" },
-              log: { collector: "windows_application_log", digest: "b".repeat(64), recordCount: 1 },
+              log: {
+                collector: "windows_application_log",
+                digest: "b".repeat(64),
+                recordCount: 1,
+              },
               vision: { eventId: "vision-event-test", delivered: true },
             };
           },
@@ -874,12 +879,6 @@ describe("machine-ui-cdp-driver", () => {
     for (const probe of [
       {
         actionable: false,
-        inViewport: false,
-        pointerEvents: "auto",
-        hitTarget: true,
-      },
-      {
-        actionable: false,
         inViewport: true,
         pointerEvents: "none",
         hitTarget: true,
@@ -908,6 +907,76 @@ describe("machine-ui-cdp-driver", () => {
       );
       await client.close();
     }
+  });
+
+  it("scrolls off-viewport selectors into view and reprobes before dispatching physical input", async () => {
+    let evaluateProbes = 0;
+    let scrollCalls = 0;
+    const { factory, sockets } = createFakeWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        const expression = message.params.expression;
+        if (expression.includes("scrollIntoView")) {
+          scrollCalls += 1;
+          return cdpValue({ scrolled: true }, message.id);
+        }
+        if (expression.includes("getBoundingClientRect")) {
+          evaluateProbes += 1;
+          return cdpValue(
+            evaluateProbes === 1
+              ? {
+                  selector: "#product-b1",
+                  exists: true,
+                  actionable: false,
+                  inViewport: false,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 0, y: 2000, width: 10, height: 10 },
+                  center: { x: 5, y: 2005 },
+                }
+              : {
+                  selector: "#product-b1",
+                  exists: true,
+                  actionable: true,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 0, y: 220, width: 10, height: 10 },
+                  center: { x: 5, y: 225 },
+                },
+            message.id,
+          );
+        }
+      }
+      return { id: message.id, result: {} };
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/probe", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    await activateVisibleSelector(client, "#product-b1", {
+      timeoutMs: 200,
+      pollMs: 1,
+    });
+    assert.equal(evaluateProbes, 2);
+    assert.equal(scrollCalls, 1);
+    assert.deepEqual(
+      sockets[0].sent.map((message) => [message.method, message.params.type]),
+      [
+        ["Runtime.evaluate", undefined],
+        ["Runtime.evaluate", undefined],
+        ["Runtime.evaluate", undefined],
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
+      ],
+    );
+    const scrollCall = sockets[0].sent.find(
+      (message) =>
+        message.method === "Runtime.evaluate" &&
+        message.params.expression.includes("scrollIntoView"),
+    );
+    assert.ok(scrollCall);
+    assert.ok(scrollCall.params.expression.includes('block: "center"'));
+    await client.close();
   });
 
   it("requires a named nonempty sale sequence with customer routes and actions", async () => {
@@ -958,8 +1027,16 @@ describe("machine-ui-cdp-driver", () => {
     const { result, sockets } = await runInstalledRouteCompetitionScenario();
 
     assert.deepEqual(result.execution, {
-      planned: { customerActivations: 6, observations: 0, externalOperations: 2 },
-      executed: { customerActivations: 6, observations: 0, externalOperations: 2 },
+      planned: {
+        customerActivations: 6,
+        observations: 0,
+        externalOperations: 2,
+      },
+      executed: {
+        customerActivations: 6,
+        observations: 0,
+        externalOperations: 2,
+      },
     });
     assert.ok(
       result.evidence.some(
@@ -1185,7 +1262,11 @@ describe("machine-ui-cdp-driver", () => {
           ),
         );
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1, externalOperations: 0 },
+          planned: {
+            customerActivations: 1,
+            observations: 1,
+            externalOperations: 0,
+          },
           executed: {
             customerActivations: 1,
             observations: 1,
@@ -1525,7 +1606,11 @@ describe("machine-ui-cdp-driver", () => {
 
         const result = await running;
         assert.deepEqual(result.execution, {
-          planned: { customerActivations: 1, observations: 1, externalOperations: 0 },
+          planned: {
+            customerActivations: 1,
+            observations: 1,
+            externalOperations: 0,
+          },
           executed: {
             customerActivations: 1,
             observations: 1,
