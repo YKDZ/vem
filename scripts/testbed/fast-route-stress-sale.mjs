@@ -587,11 +587,16 @@ export function validateFastRouteStressSaleEvidence(input) {
   const rawFrames = Array.isArray(input.serial?.rawFrames)
     ? input.serial.rawFrames
     : [];
-  const protocolFrames = rawFrames
+  const observedProtocolFrames = rawFrames
     .map((frame, index) =>
       validateProductionRawSerialFrame(frame, `raw serial frame ${index + 1}`),
     )
     .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame.parsedOpcode));
+  const protocolFrames = observedProtocolFrames.filter(
+    (frame, index) =>
+      index === 0 ||
+      frame.parsedOpcode !== observedProtocolFrames[index - 1].parsedOpcode,
+  );
   if (
     JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !==
     JSON.stringify(["VEND", "F0", "F1", "F2"])

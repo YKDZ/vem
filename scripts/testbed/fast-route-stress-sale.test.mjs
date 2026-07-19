@@ -539,6 +539,24 @@ describe("fast route stress sale tracer", () => {
     ]);
   });
 
+  it("accepts consecutive repeated lower-controller status reports", () => {
+    const evidence = validEvidence();
+    const [vend, f0, f1, f2] = evidence.serial.rawFrames;
+    evidence.serial.rawFrames = [
+      vend,
+      f0,
+      { ...f0, capturedAt: "2026-07-18T04:00:01.100Z" },
+      f1,
+      { ...f1, capturedAt: "2026-07-18T04:00:02.100Z" },
+      f2,
+      { ...f2, capturedAt: "2026-07-18T04:00:03.100Z" },
+    ];
+
+    const summary = validateFastRouteStressSaleEvidence(evidence);
+
+    assert.deepEqual(summary.protocol, ["VEND", "F0", "F1", "F2"]);
+  });
+
   it("fails closed when raw serial direction/order is inferred from semantic event names", () => {
     const evidence = validEvidence();
     evidence.serial.rawFrames[0] = {
