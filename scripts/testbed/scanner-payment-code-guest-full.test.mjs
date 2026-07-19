@@ -39,19 +39,33 @@ describe("scanner payment-code guest full", () => {
       "utf8",
     );
 
-    assert.match(source, /buildInstalledKioskSaleScenarioSteps\("vm-scanner-payment-code"\)/);
+    assert.match(
+      source,
+      /buildInstalledKioskSaleScenarioSteps\(\s*"vm-scanner-payment-code"\s*,?\s*\)/,
+    );
     assert.match(source, /MALFORMED_SCANNER_BYTES/);
     assert.match(source, /TIMEOUT_PARTIAL_SCANNER_BYTES/);
     assert.match(source, /scannerCodeBase64/);
     assert.match(source, /scannerEventId/);
     assert.match(source, /captureNextSerialScannerEvent/);
     assert.match(source, /await scannerEventCapture\.opened/);
+    assert.match(
+      source,
+      /waitForEventId\(\s*attemptSnapshot\.paymentCodeAttempt\.scannerEventId/,
+    );
+    assert.doesNotMatch(
+      source,
+      /const scannerEvent = await scannerEventCapture\.nextEvent/,
+    );
     assert.match(source, /stop-scanner-probe/);
     assert.match(source, /scannerQuietBoundary/);
     assert.match(source, /matchesStableGuestUsbIdentity/);
     assert.match(source, /movement\.quantity/);
     assert.doesNotMatch(source, /guest-device:\/\/qemu-usb-serial/);
-    assert.doesNotMatch(source, /scannerEventId !==\s*attemptSnapshot\?\.paymentCodeAttempt\?\.scannerEventId/);
+    assert.doesNotMatch(
+      source,
+      /scannerEventId !==\s*attemptSnapshot\?\.paymentCodeAttempt\?\.scannerEventId/,
+    );
     assert.match(source, /\/v1\/serial-sessions\/.*\/wait-frame/);
   });
 
@@ -82,22 +96,33 @@ describe("scanner payment-code guest full", () => {
       false,
     );
     assert.equal(
-      pnpObservationMatchesDaemonIdentity(observation, {
-        instanceId: "usb\\vid_1b36&pid_0001\\5&1234&0&2",
-        containerId: null,
-      }, "COM17"),
+      pnpObservationMatchesDaemonIdentity(
+        observation,
+        {
+          instanceId: "usb\\vid_1b36&pid_0001\\5&1234&0&2",
+          containerId: null,
+        },
+        "COM17",
+      ),
       true,
     );
     assert.equal(
-      pnpObservationMatchesDaemonIdentity(observation, {
-        instanceId: "USB\\VID_1B36&PID_0001\\OTHER",
-        containerId: null,
-      }, "COM17"),
+      pnpObservationMatchesDaemonIdentity(
+        observation,
+        {
+          instanceId: "USB\\VID_1B36&PID_0001\\OTHER",
+          containerId: null,
+        },
+        "COM17",
+      ),
       false,
     );
     assert.equal(
       pnpObservationMatchesDaemonIdentity(
-        { ...observation, containerId: "{11111111-2222-3333-4444-555555555555}" },
+        {
+          ...observation,
+          containerId: "{11111111-2222-3333-4444-555555555555}",
+        },
         {
           instanceId: observation.pnpDeviceId,
           containerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -151,9 +176,17 @@ describe("scanner payment-code guest full", () => {
   });
 
   it("keeps malformed and timed-out raw bytes at platform attempt/payment delta 0", () => {
-    const sale = { orderId: "order-20", paymentId: "payment-20", orderNo: "ORDER-20" };
+    const sale = {
+      orderId: "order-20",
+      paymentId: "payment-20",
+      orderNo: "ORDER-20",
+    };
     const baseline = {
-      raw: { payments: [{ id: sale.paymentId, orderId: sale.orderId }], paymentCodeAttempts: [], movements: [] },
+      raw: {
+        payments: [{ id: sale.paymentId, orderId: sale.orderId }],
+        paymentCodeAttempts: [],
+        movements: [],
+      },
     };
     assert.doesNotThrow(() =>
       assertNoAttemptOrDuplicatePayment("malformed", baseline, baseline, sale),
@@ -163,7 +196,15 @@ describe("scanner payment-code guest full", () => {
         assertNoAttemptOrDuplicatePayment(
           "timeout",
           baseline,
-          { raw: { ...baseline.raw, payments: [...baseline.raw.payments, { id: "duplicate", orderId: sale.orderId }] } },
+          {
+            raw: {
+              ...baseline.raw,
+              payments: [
+                ...baseline.raw.payments,
+                { id: "duplicate", orderId: sale.orderId },
+              ],
+            },
+          },
           sale,
         ),
       /duplicated or replaced the payment row/,
@@ -171,21 +212,78 @@ describe("scanner payment-code guest full", () => {
   });
 
   it("requires one paid transaction, completed command, and exactly one total post-F2 movement", () => {
-    const sale = { orderId: "order-20", paymentId: "payment-20", orderNo: "ORDER-20" };
+    const sale = {
+      orderId: "order-20",
+      paymentId: "payment-20",
+      orderNo: "ORDER-20",
+    };
     const baseline = {
       raw: {
-        payments: [{ id: sale.paymentId, orderId: sale.orderId, status: "created" }],
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "created" },
+        ],
         inventories: [{ id: "inventory-20", onHandQty: 2 }],
       },
     };
     const post = {
       raw: {
-        orders: [{ id: sale.orderId, orderNo: sale.orderNo, paymentState: "paid", status: "fulfilled", fulfillmentState: "dispensed" }],
-        orderItems: [{ id: "order-item-20", orderId: sale.orderId, inventoryId: "inventory-20", slotId: "slot-20", quantity: 1, fulfillmentStatus: "dispensed" }],
-        payments: [{ id: sale.paymentId, orderId: sale.orderId, status: "succeeded" }],
-        paymentCodeAttempts: [{ paymentId: sale.paymentId, orderId: sale.orderId, status: "succeeded", isActive: false, source: "serial_text", scannerEventId: "scanner-event-20", attemptNo: 1, idempotencyKey: "scanner-attempt-20" }],
-        commands: [{ id: "command-20", commandNo: "COMMAND-20", orderId: sale.orderId, orderItemId: "order-item-20", slotId: "slot-20", commandKind: "dispatch", status: "succeeded" }],
-        movements: [{ orderNo: sale.orderNo, commandNo: "COMMAND-20", orderItemId: "order-item-20", inventoryId: "inventory-20", slotId: "slot-20", quantity: 1, movementType: "dispense_succeeded", status: "accepted" }],
+        orders: [
+          {
+            id: sale.orderId,
+            orderNo: sale.orderNo,
+            paymentState: "paid",
+            status: "fulfilled",
+            fulfillmentState: "dispensed",
+          },
+        ],
+        orderItems: [
+          {
+            id: "order-item-20",
+            orderId: sale.orderId,
+            inventoryId: "inventory-20",
+            slotId: "slot-20",
+            quantity: 1,
+            fulfillmentStatus: "dispensed",
+          },
+        ],
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "succeeded" },
+        ],
+        paymentCodeAttempts: [
+          {
+            paymentId: sale.paymentId,
+            orderId: sale.orderId,
+            status: "succeeded",
+            isActive: false,
+            source: "serial_text",
+            scannerEventId: "scanner-event-20",
+            attemptNo: 1,
+            idempotencyKey: "scanner-attempt-20",
+          },
+        ],
+        commands: [
+          {
+            id: "command-20",
+            commandNo: "COMMAND-20",
+            orderId: sale.orderId,
+            orderItemId: "order-item-20",
+            slotId: "slot-20",
+            commandKind: "dispatch",
+            status: "succeeded",
+          },
+        ],
+        movements: [
+          {
+            orderNo: sale.orderNo,
+            commandNo: "COMMAND-20",
+            orderItemId: "order-item-20",
+            inventoryId: "inventory-20",
+            slotId: "slot-20",
+            quantity: 1,
+            movementType: "dispense_succeeded",
+            status: "accepted",
+          },
+        ],
         inventories: [{ id: "inventory-20", onHandQty: 1 }],
       },
     };
@@ -193,10 +291,31 @@ describe("scanner payment-code guest full", () => {
       baseline,
       post,
       renderedSale: sale,
-      command: { vendingCommandId: "command-20", vendingCommandNo: "COMMAND-20" },
-      attemptSnapshot: { paymentCodeAttempt: { scannerEventId: "scanner-event-20", attemptNo: 1, idempotencyKey: "scanner-attempt-20" } },
-      scannerEvent: { type: "scanner_code", source: "serial_text", eventId: "scanner-event-20" },
-      afterF2Ui: { route: "#/result/success", result: { kind: "success", orderId: sale.orderId, paymentId: sale.paymentId, commandId: "command-20" } },
+      command: {
+        vendingCommandId: "command-20",
+        vendingCommandNo: "COMMAND-20",
+      },
+      attemptSnapshot: {
+        paymentCodeAttempt: {
+          scannerEventId: "scanner-event-20",
+          attemptNo: 1,
+          idempotencyKey: "scanner-attempt-20",
+        },
+      },
+      scannerEvent: {
+        type: "scanner_code",
+        source: "serial_text",
+        eventId: "scanner-event-20",
+      },
+      afterF2Ui: {
+        route: "#/result/success",
+        result: {
+          kind: "success",
+          orderId: sale.orderId,
+          paymentId: sale.paymentId,
+          commandId: "command-20",
+        },
+      },
     });
     assert.equal(result.finalPaymentCount, 1);
     assert.equal(result.command.status, "succeeded");
@@ -208,43 +327,144 @@ describe("scanner payment-code guest full", () => {
       movementType: "manual_adjustment",
     });
     assert.throws(
-      () => validateSuccessfulOutcome({
-        baseline,
-        post,
-        renderedSale: sale,
-        command: { vendingCommandId: "command-20", vendingCommandNo: "COMMAND-20" },
-        attemptSnapshot: { paymentCodeAttempt: { scannerEventId: "scanner-event-20", attemptNo: 1, idempotencyKey: "scanner-attempt-20" } },
-        scannerEvent: { type: "scanner_code", source: "serial_text", eventId: "scanner-event-20" },
-        afterF2Ui: { route: "#/result/success", result: { kind: "success", orderId: sale.orderId, paymentId: sale.paymentId, commandId: "command-20" } },
-      }),
+      () =>
+        validateSuccessfulOutcome({
+          baseline,
+          post,
+          renderedSale: sale,
+          command: {
+            vendingCommandId: "command-20",
+            vendingCommandNo: "COMMAND-20",
+          },
+          attemptSnapshot: {
+            paymentCodeAttempt: {
+              scannerEventId: "scanner-event-20",
+              attemptNo: 1,
+              idempotencyKey: "scanner-attempt-20",
+            },
+          },
+          scannerEvent: {
+            type: "scanner_code",
+            source: "serial_text",
+            eventId: "scanner-event-20",
+          },
+          afterF2Ui: {
+            route: "#/result/success",
+            result: {
+              kind: "success",
+              orderId: sale.orderId,
+              paymentId: sale.paymentId,
+              commandId: "command-20",
+            },
+          },
+        }),
       /exactly one total movement for the order/,
     );
   });
 
   it("rejects a movement that does not carry the completed command number", () => {
-    const sale = { orderId: "order-21", paymentId: "payment-21", orderNo: "ORDER-21" };
-    const baseline = { raw: { inventories: [{ id: "inventory-21", onHandQty: 2 }] } };
+    const sale = {
+      orderId: "order-21",
+      paymentId: "payment-21",
+      orderNo: "ORDER-21",
+    };
+    const baseline = {
+      raw: { inventories: [{ id: "inventory-21", onHandQty: 2 }] },
+    };
     const post = {
       raw: {
-        orders: [{ id: sale.orderId, orderNo: sale.orderNo, paymentState: "paid", status: "fulfilled", fulfillmentState: "dispensed" }],
-        orderItems: [{ id: "order-item-21", orderId: sale.orderId, inventoryId: "inventory-21", slotId: "slot-21", quantity: 1, fulfillmentStatus: "dispensed" }],
-        payments: [{ id: sale.paymentId, orderId: sale.orderId, status: "succeeded" }],
-        paymentCodeAttempts: [{ paymentId: sale.paymentId, orderId: sale.orderId, status: "succeeded", isActive: false, source: "serial_text", scannerEventId: "scanner-event-21", attemptNo: 1, idempotencyKey: "scanner-attempt-21" }],
-        commands: [{ id: "command-21", commandNo: "COMMAND-21", orderId: sale.orderId, orderItemId: "order-item-21", slotId: "slot-21", commandKind: "dispatch", status: "succeeded" }],
-        movements: [{ orderNo: sale.orderNo, commandNo: "OTHER-COMMAND", orderItemId: "order-item-21", inventoryId: "inventory-21", slotId: "slot-21", quantity: 1, movementType: "dispense_succeeded", status: "accepted" }],
+        orders: [
+          {
+            id: sale.orderId,
+            orderNo: sale.orderNo,
+            paymentState: "paid",
+            status: "fulfilled",
+            fulfillmentState: "dispensed",
+          },
+        ],
+        orderItems: [
+          {
+            id: "order-item-21",
+            orderId: sale.orderId,
+            inventoryId: "inventory-21",
+            slotId: "slot-21",
+            quantity: 1,
+            fulfillmentStatus: "dispensed",
+          },
+        ],
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "succeeded" },
+        ],
+        paymentCodeAttempts: [
+          {
+            paymentId: sale.paymentId,
+            orderId: sale.orderId,
+            status: "succeeded",
+            isActive: false,
+            source: "serial_text",
+            scannerEventId: "scanner-event-21",
+            attemptNo: 1,
+            idempotencyKey: "scanner-attempt-21",
+          },
+        ],
+        commands: [
+          {
+            id: "command-21",
+            commandNo: "COMMAND-21",
+            orderId: sale.orderId,
+            orderItemId: "order-item-21",
+            slotId: "slot-21",
+            commandKind: "dispatch",
+            status: "succeeded",
+          },
+        ],
+        movements: [
+          {
+            orderNo: sale.orderNo,
+            commandNo: "OTHER-COMMAND",
+            orderItemId: "order-item-21",
+            inventoryId: "inventory-21",
+            slotId: "slot-21",
+            quantity: 1,
+            movementType: "dispense_succeeded",
+            status: "accepted",
+          },
+        ],
         inventories: [{ id: "inventory-21", onHandQty: 1 }],
       },
     };
     assert.throws(
-      () => validateSuccessfulOutcome({
-        baseline,
-        post,
-        renderedSale: sale,
-        command: { vendingCommandId: "command-21", vendingCommandNo: "COMMAND-21" },
-        attemptSnapshot: { paymentCodeAttempt: { scannerEventId: "scanner-event-21", attemptNo: 1, idempotencyKey: "scanner-attempt-21" } },
-        scannerEvent: { type: "scanner_code", source: "serial_text", eventId: "scanner-event-21" },
-        afterF2Ui: { route: "#/result/success", result: { kind: "success", orderId: sale.orderId, paymentId: sale.paymentId, commandId: "command-21" } },
-      }),
+      () =>
+        validateSuccessfulOutcome({
+          baseline,
+          post,
+          renderedSale: sale,
+          command: {
+            vendingCommandId: "command-21",
+            vendingCommandNo: "COMMAND-21",
+          },
+          attemptSnapshot: {
+            paymentCodeAttempt: {
+              scannerEventId: "scanner-event-21",
+              attemptNo: 1,
+              idempotencyKey: "scanner-attempt-21",
+            },
+          },
+          scannerEvent: {
+            type: "scanner_code",
+            source: "serial_text",
+            eventId: "scanner-event-21",
+          },
+          afterF2Ui: {
+            route: "#/result/success",
+            result: {
+              kind: "success",
+              orderId: sale.orderId,
+              paymentId: sale.paymentId,
+              commandId: "command-21",
+            },
+          },
+        }),
       /command-bound movement/,
     );
   });

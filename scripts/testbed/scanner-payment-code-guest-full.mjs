@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { buildInstalledKioskSaleScenarioSteps } from "./installed-kiosk-sale-acceptance.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -16,17 +17,13 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
-import { buildInstalledKioskSaleScenarioSteps } from "./installed-kiosk-sale-acceptance.mjs";
 
 const MODES = new Set(["full"]);
 const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r\n";
 const MALFORMED_SCANNER_BYTES = Buffer.from([
   0x36, 0x32, 0x31, 0x32, 0xff, 0x62, 0x61, 0x64, 0x0d, 0x0a,
 ]);
-const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from(
-  "621234567890123456",
-  "utf8",
-);
+const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from("621234567890123456", "utf8");
 const CLEANUP_TIMEOUT_MS = 10_000;
 const SCANNER_QUIET_BOUNDARY_MS = 750;
 
@@ -36,12 +33,20 @@ export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
     : typeof value === "string"
       ? Buffer.from(value, "utf8")
       : null;
-  if (!bytes || bytes.length <= 2 || !bytes.subarray(-2).equals(Buffer.from("\r\n"))) {
-    throw new Error("scannerAcceptance.validCode must end with exactly one CRLF frame suffix");
+  if (
+    !bytes ||
+    bytes.length <= 2 ||
+    !bytes.subarray(-2).equals(Buffer.from("\r\n"))
+  ) {
+    throw new Error(
+      "scannerAcceptance.validCode must end with exactly one CRLF frame suffix",
+    );
   }
   const body = bytes.subarray(0, -2);
   if (body.includes(0x0d) || body.includes(0x0a)) {
-    throw new Error("scannerAcceptance.validCode must contain exactly one trailing CRLF frame suffix");
+    throw new Error(
+      "scannerAcceptance.validCode must contain exactly one trailing CRLF frame suffix",
+    );
   }
   return bytes;
 }
@@ -73,7 +78,9 @@ function option(args, name) {
 function localPath(path) {
   return process.platform === "win32"
     ? path
-    : resolve(`/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`);
+    : resolve(
+        `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
+      );
 }
 
 function readJson(path, label) {
@@ -105,12 +112,21 @@ function cleanupTimeout(label, timeoutMs) {
   });
 }
 
-export async function runCleanupStep(label, action, timeoutMs = CLEANUP_TIMEOUT_MS) {
+export async function runCleanupStep(
+  label,
+  action,
+  timeoutMs = CLEANUP_TIMEOUT_MS,
+) {
   try {
-    const detail = await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
+    const detail = await Promise.race([
+      action(),
+      cleanupTimeout(label, timeoutMs),
+    ]);
     return { label, ok: true, detail };
   } catch (error) {
-    const wrapped = new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    const wrapped = new Error(
+      `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     wrapped.cause = error;
     wrapped.cleanupLabel = label;
     throw wrapped;
@@ -143,7 +159,9 @@ async function finalizeScannerCleanup({ guestInput, sessionStart, client }) {
             `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
           );
           if (result?.aborted !== true) {
-            throw new Error("serial session abort did not confirm inactive state");
+            throw new Error(
+              "serial session abort did not confirm inactive state",
+            );
           }
           return result;
         }),
@@ -182,7 +200,9 @@ function rows(raw, key) {
 }
 
 function paymentRowsByOrder(report, orderId) {
-  return rows(report?.raw, "payments").filter((entry) => entry.orderId === orderId);
+  return rows(report?.raw, "payments").filter(
+    (entry) => entry.orderId === orderId,
+  );
 }
 
 function attemptRowsByOrder(report, orderId) {
@@ -192,11 +212,16 @@ function attemptRowsByOrder(report, orderId) {
 }
 
 function movementRowsByOrderNo(report, orderNo) {
-  return rows(report?.raw, "movements").filter((entry) => entry.orderNo === orderNo);
+  return rows(report?.raw, "movements").filter(
+    (entry) => entry.orderNo === orderNo,
+  );
 }
 
 function daemonBaseUrl(handoff) {
-  const healthzUrl = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
+  const healthzUrl = required(
+    handoff.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -238,7 +263,9 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
   void nextEvent.catch(() => undefined);
   socket = new WebSocket(daemonEventsUrl(handoff));
   timer = setTimeout(() => {
-    const error = new Error("timed out waiting for daemon scanner event stream");
+    const error = new Error(
+      "timed out waiting for daemon scanner event stream",
+    );
     if (!settled) {
       rejectOpen(error);
       rejectEvent(error);
@@ -276,11 +303,24 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
     opened,
     nextEvent,
     events,
+    async waitForEventId(eventId, timeoutMs = 30_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const event = events.find((candidate) => candidate.eventId === eventId);
+        if (event) return event;
+        await sleep(50);
+      }
+      throw new Error(
+        `timed out waiting for correlated scanner event ${eventId}`,
+      );
+    },
     async assertQuiet(timeoutMs = SCANNER_QUIET_BOUNDARY_MS) {
       await opened;
       await sleep(timeoutMs);
       if (events.length > 0) {
-        throw new Error("scanner binding probe left a serial scanner event before sale scans");
+        throw new Error(
+          "scanner binding probe left a serial scanner event before sale scans",
+        );
       }
       return { quietForMs: timeoutMs, scannerEventCount: events.length };
     },
@@ -295,20 +335,36 @@ function matchesStableGuestUsbIdentity(expected, actual) {
   if (expected.containerId) return expected.containerId === actual.containerId;
   return (
     expected.serialNumber === actual.serialNumber &&
-    expected.hardwareIds.every((hardwareId) => actual.hardwareIds?.includes(hardwareId))
+    expected.hardwareIds.every((hardwareId) =>
+      actual.hardwareIds?.includes(hardwareId),
+    )
   );
 }
 
 export function pnpObservationMatchesLibvirtTopology(observation, topology) {
-  if (!observation || !topology || !/^COM[1-9][0-9]*$/.test(observation.currentPort ?? "")) return false;
-  const paths = Array.isArray(observation.locationPaths) ? observation.locationPaths : [];
+  if (
+    !observation ||
+    !topology ||
+    !/^COM[1-9][0-9]*$/.test(observation.currentPort ?? "")
+  )
+    return false;
+  const paths = Array.isArray(observation.locationPaths)
+    ? observation.locationPaths
+    : [];
   const portSegments = String(topology.usbPort).split(".").map(Number);
   return paths.some((path) => {
     const root = String(path).match(/USBROOT\((\d+)\)/i);
-    const ports = [...String(path).matchAll(/USB\((\d+)\)/gi)].map((match) => Number(match[1]));
-    return Number(root?.[1]) === topology.usbBus &&
+    const ports = [...String(path).matchAll(/USB\((\d+)\)/gi)].map((match) =>
+      Number(match[1]),
+    );
+    return (
+      Number(root?.[1]) === topology.usbBus &&
       ports.length >= portSegments.length &&
-      portSegments.every((port, index) => ports[ports.length - portSegments.length + index] === port);
+      portSegments.every(
+        (port, index) =>
+          ports[ports.length - portSegments.length + index] === port,
+      )
+    );
   });
 }
 
@@ -351,11 +407,16 @@ $devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
   }
 })
 ConvertTo-Json -Compress -Depth 4 -InputObject $devices`;
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (result.status !== 0) throw new Error(`Windows PnP serial observation failed: ${result.stderr}`);
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  if (result.status !== 0)
+    throw new Error(`Windows PnP serial observation failed: ${result.stderr}`);
   const parsed = JSON.parse(result.stdout);
   return Array.isArray(parsed) ? parsed : [parsed];
 }
@@ -363,15 +424,16 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $devices`;
 function scannerQemuMapping(sessionStart) {
   const qemuMappings = sessionStart?.qemuUsbSerialMappings;
   if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
-    throw new Error("serial session did not expose the real QEMU USB device mappings");
+    throw new Error(
+      "serial session did not expose the real QEMU USB device mappings",
+    );
   }
   for (const role of ["lower-controller", "scanner"]) {
     const mapping = qemuMappings.find((entry) => entry.role === role);
-    if (
-      !mapping ||
-      !mapping.guestUsbTopology?.alias
-    ) {
-      throw new Error(`QEMU USB mapping for ${role} is missing live libvirt USB topology`);
+    if (!mapping || !mapping.guestUsbTopology?.alias) {
+      throw new Error(
+        `QEMU USB mapping for ${role} is missing live libvirt USB topology`,
+      );
     }
   }
   return qemuMappings.find((entry) => entry.role === "scanner");
@@ -395,8 +457,14 @@ async function daemonGet(handoff, path) {
 }
 
 async function controlPlaneRequest(guestInput, path, body = {}) {
-  const endpoint = required(guestInput?.hostControlPlane?.endpoint, "hostControlPlane.endpoint");
-  const token = required(guestInput?.hostControlPlane?.token, "hostControlPlane.token");
+  const endpoint = required(
+    guestInput?.hostControlPlane?.endpoint,
+    "hostControlPlane.endpoint",
+  );
+  const token = required(
+    guestInput?.hostControlPlane?.token,
+    "hostControlPlane.token",
+  );
   return fetchJson(`${endpoint}${path}`, {
     method: "POST",
     headers: {
@@ -421,9 +489,10 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
   while (Date.now() < deadline) {
-    const transaction = await daemonGet(handoff, "/v1/transactions/current").catch(
-      () => null,
-    );
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
     lastTransaction = transaction;
     const commandId =
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
@@ -452,13 +521,18 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
-async function waitForPaymentCodeAttempt(handoff, renderedSale, timeoutMs = 30_000) {
+async function waitForPaymentCodeAttempt(
+  handoff,
+  renderedSale,
+  timeoutMs = 30_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
   while (Date.now() < deadline) {
-    const transaction = await daemonGet(handoff, "/v1/transactions/current").catch(
-      () => null,
-    );
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
     lastTransaction = transaction;
     const attempt = transaction?.paymentCodeAttempt ?? null;
     if (
@@ -477,11 +551,17 @@ async function waitForPaymentCodeAttempt(handoff, renderedSale, timeoutMs = 30_0
   );
 }
 
-async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000) {
+async function waitForHardwareBindings(
+  handoff,
+  sessionStart,
+  timeoutMs = 30_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
-    const snapshot = await daemonGet(handoff, "/v1/hardware-bindings").catch(() => null);
+    const snapshot = await daemonGet(handoff, "/v1/hardware-bindings").catch(
+      () => null,
+    );
     last = snapshot;
     const roles = Array.isArray(snapshot?.roles) ? snapshot.roles : [];
     const resolved = Object.fromEntries(roles.map((role) => [role.role, role]));
@@ -492,12 +572,18 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     const scannerPnp = windowsPnp.find(
       (observation) =>
         observation.currentPort === scanner?.currentPort &&
-        pnpObservationMatchesLibvirtTopology(observation, scannerMapping.guestUsbTopology),
+        pnpObservationMatchesLibvirtTopology(
+          observation,
+          scannerMapping.guestUsbTopology,
+        ),
     );
     const scannerCandidate = scanner?.candidates?.find(
       (candidate) =>
         candidate.currentPort === scanner.currentPort &&
-        matchesStableGuestUsbIdentity(candidate.identity, scanner.binding?.identity),
+        matchesStableGuestUsbIdentity(
+          candidate.identity,
+          scanner.binding?.identity,
+        ),
     );
     if (
       lower?.ready === true &&
@@ -523,7 +609,9 @@ async function waitForHardwareBindings(handoff, sessionStart, timeoutMs = 30_000
     }
     await sleep(250);
   }
-  throw new Error(`daemon hardware bindings were not ready: ${JSON.stringify(last)}`);
+  throw new Error(
+    `daemon hardware bindings were not ready: ${JSON.stringify(last)}`,
+  );
 }
 
 async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
@@ -551,7 +639,11 @@ async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
   );
 }
 
-async function waitForSuccessfulResultSurface(client, expected, timeoutMs = 60_000) {
+async function waitForSuccessfulResultSurface(
+  client,
+  expected,
+  timeoutMs = 60_000,
+) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   do {
@@ -623,7 +715,10 @@ async function readUiBoundary(client) {
 }
 
 async function readRuntimeTrace(client) {
-  return evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []");
+  return evaluateExpression(
+    client,
+    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+  );
 }
 
 async function startSession(guestInput, runId, machineCode) {
@@ -654,7 +749,12 @@ async function injectSessionCode(guestInput, sessionId, renderedSale, bytes) {
   );
 }
 
-export function assertNoAttemptOrDuplicatePayment(label, baseline, post, renderedSale) {
+export function assertNoAttemptOrDuplicatePayment(
+  label,
+  baseline,
+  post,
+  renderedSale,
+) {
   const baselineAttempts = attemptRowsByOrder(baseline, renderedSale.orderId);
   const postAttempts = attemptRowsByOrder(post, renderedSale.orderId);
   if (baselineAttempts.length !== 0 || postAttempts.length !== 0) {
@@ -687,7 +787,9 @@ export function validateSuccessfulOutcome({
   afterF2Ui,
 }) {
   const order = rows(post?.raw, "orders").filter(
-    (entry) => entry.id === renderedSale.orderId && entry.orderNo === renderedSale.orderNo,
+    (entry) =>
+      entry.id === renderedSale.orderId &&
+      entry.orderNo === renderedSale.orderNo,
   );
   if (
     order.length !== 1 ||
@@ -695,7 +797,9 @@ export function validateSuccessfulOutcome({
     order[0].status !== "fulfilled" ||
     order[0].fulfillmentState !== "dispensed"
   ) {
-    throw new Error("successful scan must persist one paid and fulfilled order");
+    throw new Error(
+      "successful scan must persist one paid and fulfilled order",
+    );
   }
   const attempts = attemptRowsByOrder(post, renderedSale.orderId);
   if (attempts.length !== 1) {
@@ -708,7 +812,9 @@ export function validateSuccessfulOutcome({
     attempt.isActive !== false ||
     attempt.source !== "serial_text"
   ) {
-    throw new Error("successful attempt did not converge to one succeeded serial-text attempt");
+    throw new Error(
+      "successful attempt did not converge to one succeeded serial-text attempt",
+    );
   }
   const paymentRows = paymentRowsByOrder(post, renderedSale.orderId);
   if (
@@ -740,11 +846,15 @@ export function validateSuccessfulOutcome({
     commands[0].commandKind !== "dispatch" ||
     commands[0].status !== "succeeded"
   ) {
-    throw new Error("successful scan must complete exactly one correlated vending command");
+    throw new Error(
+      "successful scan must complete exactly one correlated vending command",
+    );
   }
   const movements = movementRowsByOrderNo(post, renderedSale.orderNo);
   if (movements.length !== 1) {
-    throw new Error("successful scan must produce exactly one total movement for the order");
+    throw new Error(
+      "successful scan must produce exactly one total movement for the order",
+    );
   }
   const movement = movements[0];
   if (
@@ -767,7 +877,9 @@ export function validateSuccessfulOutcome({
     afterF2Ui.result?.paymentId !== renderedSale.paymentId ||
     afterF2Ui.result?.commandId !== command.vendingCommandId
   ) {
-    throw new Error("successful scan did not reach a correlated success result surface");
+    throw new Error(
+      "successful scan did not reach a correlated success result surface",
+    );
   }
   const daemonAttempt = attemptSnapshot?.paymentCodeAttempt;
   if (
@@ -779,7 +891,9 @@ export function validateSuccessfulOutcome({
     daemonAttempt?.attemptNo !== attempt.attemptNo ||
     daemonAttempt?.idempotencyKey !== attempt.idempotencyKey
   ) {
-    throw new Error("ScannerCode event id does not strictly correlate daemon and platform payment attempts");
+    throw new Error(
+      "ScannerCode event id does not strictly correlate daemon and platform payment attempts",
+    );
   }
   const baselineInventory = rows(baseline?.raw, "inventories").find(
     (entry) => entry.id === movement.inventoryId,
@@ -793,7 +907,9 @@ export function validateSuccessfulOutcome({
     baselineInventory.id !== finalInventory.id ||
     baselineInventory.onHandQty - finalInventory.onHandQty !== movement.quantity
   ) {
-    throw new Error("successful scan must decrement the same platform inventory by the completed movement quantity");
+    throw new Error(
+      "successful scan must decrement the same platform inventory by the completed movement quantity",
+    );
   }
   return {
     attempt,
@@ -801,7 +917,8 @@ export function validateSuccessfulOutcome({
     payment: paymentRows[0],
     command: commands[0],
     movement,
-    baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId).length,
+    baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId)
+      .length,
     finalPaymentCount: paymentRowsByOrder(post, renderedSale.orderId).length,
     inventory: {
       id: baselineInventory.id,
@@ -817,7 +934,10 @@ export function parseScannerPaymentCodeGuestArgs(args) {
   if (!MODES.has(mode)) throw new Error("--mode must be full");
   return {
     mode,
-    guestInputPath: windowsAbsolute(option(args, "guest-input"), "--guest-input"),
+    guestInputPath: windowsAbsolute(
+      option(args, "guest-input"),
+      "--guest-input",
+    ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
   };
@@ -850,7 +970,10 @@ export async function runScannerPaymentCodeGuest(options) {
       expectedTargetId: handoff.cdp.targetId,
     });
     client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, "http://127.0.0.1:9222"),
+      rewriteWebSocketDebuggerUrl(
+        target.webSocketDebuggerUrl,
+        "http://127.0.0.1:9222",
+      ),
     );
     await client.connect();
     await enablePageRuntime(client);
@@ -858,7 +981,10 @@ export async function runScannerPaymentCodeGuest(options) {
 
     stage = "start-session";
     sessionStart = await startSession(guestInput, runId, machineCode);
-    const hardwareBindings = await waitForHardwareBindings(handoff, sessionStart);
+    const hardwareBindings = await waitForHardwareBindings(
+      handoff,
+      sessionStart,
+    );
     quietScannerCapture = captureNextSerialScannerEvent(handoff);
     await quietScannerCapture.opened;
     const scannerBindingProbe = await controlPlaneRequest(
@@ -872,24 +998,37 @@ export async function runScannerPaymentCodeGuest(options) {
         "daemon_binding_confirmed" ||
       typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
     ) {
-      throw new Error("scanner binding probe did not stop after daemon binding confirmation");
+      throw new Error(
+        "scanner binding probe did not stop after daemon binding confirmation",
+      );
     }
     const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
     quietScannerCapture.close();
     quietScannerCapture = null;
     const saleStartCapability = await waitForScannerSaleCapability(handoff);
 
-    const steps = buildInstalledKioskSaleScenarioSteps("vm-scanner-payment-code");
+    const steps = buildInstalledKioskSaleScenarioSteps(
+      "vm-scanner-payment-code",
+    );
     for (const step of steps) {
-      await waitForRoute(client, step.routeBefore, { timeoutMs: 30_000, pollMs: 250 });
+      await waitForRoute(client, step.routeBefore, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
       await activateVisibleSelector(client, step.selector, {
         kind: step.inputKind,
         timeoutMs: step.timeoutMs ?? 30_000,
       });
-      await waitForRoute(client, step.routeAfter, { timeoutMs: 30_000, pollMs: 250 });
+      await waitForRoute(client, step.routeAfter, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
     }
 
-    await waitForRoute(client, /^#\/payment/, { timeoutMs: 30_000, pollMs: 250 });
+    await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "scanner-payment", {
         screenshot: true,
@@ -964,15 +1103,16 @@ export async function runScannerPaymentCodeGuest(options) {
       validScannerBytes,
     );
 
-    const scannerEvent = await scannerEventCapture.nextEvent;
-    scannerEventCapture.close();
-    scannerEventCapture = null;
-
     const attemptSnapshot = await waitForPaymentCodeAttempt(
       handoff,
       renderedSale,
       30_000,
     );
+    const scannerEvent = await scannerEventCapture.waitForEventId(
+      attemptSnapshot.paymentCodeAttempt.scannerEventId,
+    );
+    scannerEventCapture.close();
+    scannerEventCapture = null;
     const command = await waitForCommand(handoff, renderedSale, 30_000);
     await controlPlaneRequest(
       guestInput,
@@ -1099,14 +1239,16 @@ export async function runScannerPaymentCodeGuest(options) {
       invalidScanEvidence: {
         malformed: {
           platformCapturedAt: postMalformed.capturedAt,
-          attemptCount: attemptRowsByOrder(postMalformed, renderedSale.orderId).length,
+          attemptCount: attemptRowsByOrder(postMalformed, renderedSale.orderId)
+            .length,
           paymentDelta:
             paymentRowsByOrder(postMalformed, renderedSale.orderId).length -
             paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
         },
         timeout: {
           platformCapturedAt: postTimeout.capturedAt,
-          attemptCount: attemptRowsByOrder(postTimeout, renderedSale.orderId).length,
+          attemptCount: attemptRowsByOrder(postTimeout, renderedSale.orderId)
+            .length,
           paymentDelta:
             paymentRowsByOrder(postTimeout, renderedSale.orderId).length -
             paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
