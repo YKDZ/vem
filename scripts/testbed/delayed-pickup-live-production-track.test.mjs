@@ -46,7 +46,7 @@ describe("delayed pickup live production track", () => {
     assert.ok(inject > prepare);
     assert.match(source, /stop-scanner-probe/);
     assert.match(source, /\/v1\/sale-start-capability/);
-    assert.match(source, /scannerCode: scannerFrame\(/);
+    assert.match(source, /scannerCodeBase64: Buffer\.from\(/);
     assert.match(source, /\\r\\n/);
     const paymentSurface = source.indexOf(
       "const paymentSurface = await readRenderedPaymentSurface(client)",

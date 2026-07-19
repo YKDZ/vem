@@ -769,9 +769,10 @@ async function runDelayedPickupGuestFull(options) {
       {
         orderId: paymentSurface.orderId,
         paymentId: paymentSurface.paymentId,
-        scannerCode: scannerFrame(
-          guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
-        ),
+        scannerCodeBase64: Buffer.from(
+          scannerFrame(guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE),
+          "utf8",
+        ).toString("base64"),
       },
     );
     liveSale = await waitForCommand(handoff, paymentSurface);
