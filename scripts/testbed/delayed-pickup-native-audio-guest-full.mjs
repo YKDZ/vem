@@ -268,6 +268,50 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
+async function waitForTransactionAudioSettled(
+  client,
+  orderNo,
+  timeoutMs = 45_000,
+) {
+  const requiredSuffixes = [
+    "pickup-outlet-opened",
+    "pickup-warning-1",
+    "pickup-warning-2",
+    "pickup-completed",
+    "dispense-succeeded",
+  ];
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluateExpression(
+      client,
+      `(() => {
+        const prefix = ${JSON.stringify(`transaction:${orderNo}:`)};
+        const trace = (window.__VEM_MACHINE_RUNTIME_TRACE__ || []).filter(
+          (entry) => typeof entry?.transitionId === "string" && entry.transitionId.startsWith(prefix),
+        );
+        return ${JSON.stringify(requiredSuffixes)}.map((suffix) => {
+          const entries = trace.filter((entry) => entry.transitionId === prefix + suffix);
+          return {
+            suffix,
+            queued: entries.some((entry) => entry.type === "audio_queued"),
+            started: entries.some((entry) => entry.type === "audio_started"),
+            terminal: entries.some((entry) => entry.type === "audio_terminal"),
+          };
+        });
+      })()`,
+    );
+    if (
+      Array.isArray(last) &&
+      last.every((entry) => entry.queued && entry.started && entry.terminal)
+    ) {
+      return last;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  throw new Error(`transaction audio did not settle: ${JSON.stringify(last)}`);
+}
+
 async function waitForPaymentCodeArm(
   handoff,
   renderedSale,
@@ -959,6 +1003,7 @@ async function runDelayedPickupGuestFull(options) {
       if (checkpoint?.screenshot?.ref)
         screenshotRefs.push(checkpoint.screenshot.ref);
     });
+    await waitForTransactionAudioSettled(client, liveSale.orderNo);
     const platformPost = terminal.platform;
     const command = platformPost?.raw?.commands?.find(
       (entry) => entry.id === liveSale.vendingCommandId,

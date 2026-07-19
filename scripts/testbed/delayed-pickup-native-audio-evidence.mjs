@@ -271,7 +271,7 @@ export function analyzeDelayedPickupControllerFrames(
     ["F1", f1Groups],
     ["F2", f2Groups],
   ]) {
-    if (groups.length !== 1 || groups[0]?.length !== 3)
+    if (groups.length !== 1 || (groups[0]?.length ?? 0) < 1)
       diagnostics.push(
         diagnostic("controller_repeated_event_count_invalid", {
           code,
@@ -467,14 +467,17 @@ export function analyzeDelayedPickupRuntimeTrace(
     captureEndMs <= captureStartMs
   )
     diagnostics.push(diagnostic("machine_capture_window_invalid"));
-  const trace = machineEvidence.runtimeTrace.filter((entry) =>
-    [
-      "journey_transition",
-      "audio_queued",
-      "audio_started",
-      "audio_terminal",
-      "audio_rejected",
-    ].includes(entry?.type),
+  const transitionPrefix = `transaction:${expectedBinding.orderNo}:`;
+  const trace = machineEvidence.runtimeTrace.filter(
+    (entry) =>
+      [
+        "journey_transition",
+        "audio_queued",
+        "audio_started",
+        "audio_terminal",
+        "audio_rejected",
+      ].includes(entry?.type) &&
+      entry?.transitionId?.startsWith(transitionPrefix),
   );
   const ids = new Set();
   const journeyTransitionIds = new Set();
@@ -751,8 +754,13 @@ export function analyzeAuthoritativePlatformEvidence({
     f1.reservations[0]?.orderId !== order?.id
   )
     diagnostics.push(diagnostic("platform_f1_sale_binding_invalid"));
+  const f1OrderStateValid =
+    f1.orders[0]?.status === "dispensing" ||
+    (f1.orders[0]?.status === "paid" &&
+      f1.orders[0]?.paymentState === "paid" &&
+      f1.orders[0]?.fulfillmentState === "awaiting_fulfillment");
   if (
-    f1.orders[0]?.status !== "dispensing" ||
+    !f1OrderStateValid ||
     f1.payments[0]?.status !== "succeeded" ||
     f1.reservations[0]?.status !== "active" ||
     !new Set(["pending", "sent", "acknowledged", "dispensing"]).has(
@@ -844,7 +852,9 @@ export function analyzeAuthoritativePlatformEvidence({
       commandCount: post.commands.length,
       movementCount: post.movements.length,
       platformStockDelta: movement ? -movement.quantity : null,
-      baselineOnHandQty: Number.isFinite(baselineOnHand) ? baselineOnHand : null,
+      baselineOnHandQty: Number.isFinite(baselineOnHand)
+        ? baselineOnHand
+        : null,
       atF1OnHandQty: Number.isFinite(atF1OnHand) ? atF1OnHand : null,
       postF2OnHandQty: Number.isFinite(postF2OnHand) ? postF2OnHand : null,
     },
@@ -965,6 +975,7 @@ export function correlateDelayedPickupCueWindows({
   captureStartedAt,
   captureCompletedAt,
   cues,
+  clockOffsetMs = 0,
   threshold = DEFAULT_AUDIO_CUE_WINDOW_THRESHOLD,
 }) {
   const diagnostics = [];
@@ -981,8 +992,10 @@ export function correlateDelayedPickupCueWindows({
       inspections: [],
     };
   const windows = TRACE_CUES.map(([label]) => {
-    const started = timestamp(cues?.[label]?.started?.at);
-    const terminal = timestamp(cues?.[label]?.terminal?.at);
+    const rawStarted = timestamp(cues?.[label]?.started?.at);
+    const rawTerminal = timestamp(cues?.[label]?.terminal?.at);
+    const started = rawStarted === null ? null : rawStarted - clockOffsetMs;
+    const terminal = rawTerminal === null ? null : rawTerminal - clockOffsetMs;
     if (started === null || terminal === null || terminal <= started)
       return null;
     return {

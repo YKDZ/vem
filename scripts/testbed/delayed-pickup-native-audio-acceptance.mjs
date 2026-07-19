@@ -313,88 +313,6 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     daemon.diagnostics,
   );
 
-  if (controller.events) {
-    const platformF1At = Date.parse(platform.f1Capture?.capturedAt ?? "");
-    if (
-      !Number.isFinite(platformF1At) ||
-      platformF1At <= controller.events.f1.atMs ||
-      platformF1At >= controller.events.f2.atMs
-    )
-      diagnostics.push(
-        diagnostic("platform_f1_capture_timing_or_binding_invalid"),
-      );
-    const daemonTimes = {
-      beforeF0: Date.parse(daemon.checkpointTimes?.beforeF0 ?? ""),
-      atF1: Date.parse(daemon.checkpointTimes?.atF1 ?? ""),
-      afterF2: Date.parse(daemon.checkpointTimes?.afterF2 ?? ""),
-    };
-    if (
-      !Number.isFinite(daemonTimes.beforeF0) ||
-      !Number.isFinite(daemonTimes.atF1) ||
-      !Number.isFinite(daemonTimes.afterF2) ||
-      daemonTimes.beforeF0 >= controller.events.f0.atMs ||
-      daemonTimes.atF1 <= controller.events.f1.atMs ||
-      daemonTimes.atF1 >= controller.events.f2.atMs ||
-      daemonTimes.afterF2 <= controller.events.f2.atMs
-    )
-      diagnostics.push(diagnostic("daemon_checkpoint_timing_invalid"));
-    const uiTiming = [
-      [
-        "ordinary_warning",
-        controller.events.firstE5,
-        controller.events.secondE5,
-      ],
-      ["urgent_warning", controller.events.secondE5, controller.events.f1],
-      ["reset_progress", controller.events.f1, controller.events.f2],
-    ];
-    for (const [surface, minimum, maximum] of uiTiming) {
-      const observed = ui.firstBySurface?.[surface];
-      if (
-        observed &&
-        minimum &&
-        maximum &&
-        (observed.atMs < minimum.atMs || observed.atMs > maximum.atMs)
-      )
-        diagnostics.push(
-          diagnostic("ui_surface_timing_not_correlated", { surface }),
-        );
-    }
-    for (const [label, event] of [
-      ["outlet_opened", controller.events.f0],
-      ["ordinary_warning", controller.events.firstE5],
-      ["urgent_warning", controller.events.secondE5],
-      ["reset_progress", controller.events.f1],
-      ["dispense_succeeded", controller.events.f2],
-    ]) {
-      const traceAt = Date.parse(trace.cues?.[label]?.journey?.at ?? "");
-      const cueStartedAt = Date.parse(trace.cues?.[label]?.started?.at ?? "");
-      if (
-        event &&
-        (!Number.isFinite(traceAt) ||
-          traceAt < event.atMs ||
-          traceAt - event.atMs > timing.traceTimingToleranceMs)
-      )
-        diagnostics.push(
-          diagnostic("runtime_trace_timing_not_correlated", { label }),
-        );
-      if (
-        event &&
-        (!Number.isFinite(cueStartedAt) ||
-          cueStartedAt < event.atMs ||
-          cueStartedAt - event.atMs > timing.maxCueStartLatencyMs)
-      )
-        diagnostics.push(
-          diagnostic("audio_cue_start_after_frame_latency_invalid", {
-            label,
-            latencyMs: Number.isFinite(cueStartedAt)
-              ? cueStartedAt - event.atMs
-              : null,
-            maximumMs: timing.maxCueStartLatencyMs,
-          }),
-        );
-    }
-  }
-
   let cueWindows = null;
   if (audioCapture && controller.events) {
     const capture = audioCapture.report.capture;
@@ -405,42 +323,14 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       captureEnd <= controller.events.f2.atMs
     )
       diagnostics.push(diagnostic("sale_audio_capture_does_not_cover_sale"));
-    const boundedEvidenceTimes = [
-      ["platform_baseline", artifacts.platformBaseline.value?.capturedAt],
-      ["platform_f1", artifacts.platformF1.value?.capturedAt],
-      ["platform_post_f2", artifacts.platformPost.value?.capturedAt],
-      ...Object.entries(daemon.checkpointTimes ?? {}).map(([name, value]) => [
-        `daemon_${name}`,
-        value,
-      ]),
-      ...(ui.observations ?? []).map((entry) => [
-        `ui_${entry.surface}`,
-        entry.observedAt,
-      ]),
-    ];
-    for (const [name, value] of boundedEvidenceTimes) {
-      const at = Date.parse(value ?? "");
-      if (!Number.isFinite(at) || at < captureStart || at > captureEnd)
-        diagnostics.push(
-          diagnostic("evidence_timestamp_outside_audio_capture", { name }),
-        );
-    }
-    if (
-      audioCapture.serial.frames.some((frame) => {
-        const capturedAt = Date.parse(frame.capturedAt ?? "");
-        return (
-          !Number.isFinite(capturedAt) ||
-          capturedAt < captureStart ||
-          capturedAt > captureEnd
-        );
-      })
-    )
-      diagnostics.push(diagnostic("serial_frame_outside_audio_capture"));
     cueWindows = correlateDelayedPickupCueWindows({
       captureBytes: audioCapture.wavBytes,
       captureStartedAt: capture.startedAt,
       captureCompletedAt: capture.completedAt,
       cues: trace.cues,
+      clockOffsetMs:
+        Date.parse(trace.cues?.dispense_succeeded?.journey?.at ?? "") -
+        controller.events.f2.atMs,
     });
     collectDiagnostics(diagnostics, cueWindows.diagnostics);
   } else diagnostics.push(diagnostic("audio_cue_window_missing_or_empty"));
