@@ -339,6 +339,18 @@ describe("host serial control plane", () => {
           },
           {
             direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+          },
+          {
+            direction: "controller-to-daemon",
             rawFrameHex: "55F1",
             opcode: 241,
             parsedOpcode: "F1",

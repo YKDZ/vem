@@ -595,6 +595,18 @@ const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   F2: "controller-to-daemon",
 });
 
+const REPEATED_STATE_OPCODES = new Set(["F0", "F1", "AF", "F2"]);
+
+function collapseRepeatedStateFrames(frames) {
+  return frames.filter((frame, index) => {
+    const previous = frames[index - 1];
+    return !(
+      previous?.parsedOpcode === frame.parsedOpcode &&
+      REPEATED_STATE_OPCODES.has(frame.parsedOpcode)
+    );
+  });
+}
+
 export async function waitForRawSerialFrame({
   journalPath,
   parsedOpcode,
@@ -638,7 +650,8 @@ export async function waitForRawSerialFrame({
         );
       }
     }
-    const opcodes = protocolFrames.map((frame) => frame.parsedOpcode);
+    const normalizedProtocolFrames = collapseRepeatedStateFrames(protocolFrames);
+    const opcodes = normalizedProtocolFrames.map((frame) => frame.parsedOpcode);
     if (parsedOpcode === "VEND" && opcodes.includes("F0")) {
       throw new Error("F0 appeared before the before-F0 gate was released");
     }
@@ -651,7 +664,7 @@ export async function waitForRawSerialFrame({
     }
     const boundaryIndex = opcodes.indexOf(parsedOpcode);
     if (boundaryIndex >= 0) {
-      const prefix = protocolFrames.slice(0, boundaryIndex + 1);
+      const prefix = normalizedProtocolFrames.slice(0, boundaryIndex + 1);
       if (
         JSON.stringify(prefix.map((frame) => frame.parsedOpcode)) !==
         JSON.stringify(expected)
