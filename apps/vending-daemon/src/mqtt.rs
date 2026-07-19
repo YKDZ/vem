@@ -918,6 +918,7 @@ impl MqttSyncRuntime {
             }
         });
 
+        let mut acknowledged_subscriptions = 0_u8;
         let result = loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => {
@@ -927,8 +928,20 @@ impl MqttSyncRuntime {
                     match event {
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
                             self.begin_mqtt_generation().await;
-                            self.set_connected(true, None).await;
+                            acknowledged_subscriptions = 0;
+                            self.set_connected(
+                                false,
+                                Some("waiting for command subscriptions".to_string()),
+                            )
+                            .await;
                             self.schedule_due_outbox();
+                        }
+                        Ok(Event::Incoming(Packet::SubAck(_))) => {
+                            acknowledged_subscriptions =
+                                acknowledged_subscriptions.saturating_add(1);
+                            if acknowledged_subscriptions >= 2 {
+                                self.set_connected(true, None).await;
+                            }
                         }
                         Ok(Event::Incoming(Packet::PubAck(ack))) => {
                             match self.acknowledge_mqtt_outbox_publish(ack.pkid).await {
