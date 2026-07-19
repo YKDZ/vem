@@ -425,9 +425,6 @@ export function runtimeProfileForConfig(config) {
     vcpus: config.runtime?.vcpus,
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
-    audio: {
-      capturePath: `${config.storage.baselinePath}.default-audio.wav`,
-    },
   });
 }
 
@@ -461,9 +458,6 @@ export function runtimeProfileForPublishedRelease(config, id) {
     vcpus: config.runtime?.vcpus,
     memoryMiB: config.runtime?.memoryMiB,
     display: { scalePercent: config.guest.desktopScalePercent },
-    audio: {
-      capturePath: `${config.storage.baselinePath}.default-audio.wav`,
-    },
   });
 }
 

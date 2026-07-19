@@ -1162,6 +1162,23 @@ await new Promise(() => setInterval(() => {}, 1_000));
       release.disks.system.path,
       /^\/var\/tmp\/vem-kvm-baseline\/images\/win10-runtime-baseline\.qcow2\.releases\//,
     );
+    assert.equal(
+      release.audio.capturePath,
+      `${release.disks.system.path}.default-audio.wav`,
+    );
+    const releaseXml = renderLibvirtDomainXml(release);
+    assert.equal(
+      releaseXml.includes(
+        `<audio id="1" type="file" path="${release.audio.capturePath}"/>`,
+      ),
+      true,
+    );
+    assert.equal(
+      releaseXml.includes(
+        `<audio id="1" type="file" path="${config.storage.baselinePath}.default-audio.wav"/>`,
+      ),
+      false,
+    );
     assert.match(
       release.disks.cache.path,
       /^\/var\/cache\/vem\/win10-runtime-cache\.qcow2\.releases\//,
