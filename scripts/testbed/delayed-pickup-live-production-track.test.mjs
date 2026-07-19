@@ -48,6 +48,17 @@ describe("delayed pickup live production track", () => {
     assert.match(source, /\/v1\/sale-start-capability/);
     assert.match(source, /scannerCode: scannerFrame\(/);
     assert.match(source, /\\r\\n/);
+    const paymentSurface = source.indexOf(
+      "const paymentSurface = await readRenderedPaymentSurface(client)",
+    );
+    const paymentInject = source.indexOf("/inject`,", paymentSurface);
+    const waitForCommand = source.indexOf(
+      "liveSale = await waitForCommand(handoff, paymentSurface)",
+      paymentSurface,
+    );
+    assert.ok(paymentSurface >= 0);
+    assert.ok(paymentInject > paymentSurface);
+    assert.ok(waitForCommand > paymentInject);
   });
 
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {

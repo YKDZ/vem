@@ -763,18 +763,18 @@ async function runDelayedPickupGuestFull(options) {
       pollMs: 250,
     });
     const paymentSurface = await readRenderedPaymentSurface(client);
-    liveSale = await waitForCommand(handoff, paymentSurface);
     await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/inject`,
       {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
+        orderId: paymentSurface.orderId,
+        paymentId: paymentSurface.paymentId,
         scannerCode: scannerFrame(
           guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
         ),
       },
     );
+    liveSale = await waitForCommand(handoff, paymentSurface);
 
     await controlPlaneRequest(
       guestInput,
