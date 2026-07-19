@@ -207,9 +207,6 @@ export async function recoverTrackHandoff({
       };
     }
   }
-  if (route && route !== "#/catalog") {
-    await attempt("returnToCatalog", returnToCatalog);
-  }
   await attempt("disableFaultInjection", disableFaultInjection);
   const sessionId = terminal?.facts?.deviceSession?.sessionId;
   if (sessionId) {
@@ -226,6 +223,9 @@ export async function recoverTrackHandoff({
     } else {
       await attempt("restoreFixtureStock", () => restoreFixtureStock(fixture));
     }
+  }
+  if (route && route !== "#/catalog") {
+    await attempt("returnToCatalog", returnToCatalog);
   }
   return { ok: errors.length === 0, actions, errors };
 }

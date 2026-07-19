@@ -203,6 +203,7 @@ describe("Track Handoff Recovery", () => {
   });
 
   it("returns a failure when active return is unavailable on payment route", async () => {
+    const calls = [];
     const result = await recoverTrackHandoff({
       track: { key: "scanner" },
       terminal: {
@@ -215,16 +216,15 @@ describe("Track Handoff Recovery", () => {
       returnToCatalog: async () => {
         throw new Error("payment cancel is disabled");
       },
-      disableFaultInjection: async () => {
-        assert.fail("fault injection should be skipped on return failure");
-      },
+      disableFaultInjection: async () => calls.push("fault"),
     });
     assert.equal(result.ok, false);
     assert.match(
       result.errors[0],
       /returnToCatalog: payment cancel is disabled/,
     );
-    assert.deepEqual(result.actions, []);
+    assert.deepEqual(result.actions, ["disableFaultInjection"]);
+    assert.deepEqual(calls, ["fault"]);
   });
 
   it("allows payment success snapshot with orderId to recover without waiting", async () => {
@@ -245,10 +245,10 @@ describe("Track Handoff Recovery", () => {
       },
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(calls, ["catalog", "fault"]);
+    assert.deepEqual(calls, ["fault", "catalog"]);
     assert.deepEqual(result.actions, [
-      "returnToCatalog",
       "disableFaultInjection",
+      "returnToCatalog",
     ]);
   });
 
@@ -277,11 +277,11 @@ describe("Track Handoff Recovery", () => {
       }),
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(calls, ["cancel:ORD-1", "catalog", "fault"]);
+    assert.deepEqual(calls, ["cancel:ORD-1", "fault", "catalog"]);
     assert.deepEqual(result.actions, [
       "cancelActiveTransaction",
-      "returnToCatalog",
       "disableFaultInjection",
+      "returnToCatalog",
     ]);
   });
 
@@ -305,11 +305,11 @@ describe("Track Handoff Recovery", () => {
       }),
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(calls, ["cancel", "catalog", "fault"]);
+    assert.deepEqual(calls, ["cancel", "fault", "catalog"]);
     assert.deepEqual(result.actions, [
       "cancelActiveTransaction",
-      "returnToCatalog",
       "disableFaultInjection",
+      "returnToCatalog",
     ]);
   });
 });
