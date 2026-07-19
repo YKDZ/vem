@@ -1224,7 +1224,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /\$retainedToolPaths = @\([\s\S]*Join-Path \$cacheRoot "powershell"[\s\S]*Join-Path \$cacheRoot "actions"[\s\S]*\$allowedRetainedPaths = @\(\$declaredCachePaths\) \+ @\(\$retainedToolPaths\)/,
+      /\$retainedToolPaths = @\([\s\S]*Join-Path \$cacheRoot "powershell"[\s\S]*\$allowedRetainedPaths = @\(\$declaredCachePaths\) \+ @\(\$retainedToolPaths\)/,
     );
     assert.match(
       guest,

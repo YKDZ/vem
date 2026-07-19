@@ -126,7 +126,6 @@ function sampleIdentity(reconstruction = "a") {
       "D:\\runtime-cache\\v1\\turbo",
       "D:\\runtime-cache\\v1\\vision-main",
       "D:\\runtime-cache\\v1\\powershell",
-      "D:\\runtime-cache\\v1\\actions",
     ],
     observedRetainedCaches: [
       "D:\\runtime-cache\\v1\\pnpm-store",
@@ -137,7 +136,6 @@ function sampleIdentity(reconstruction = "a") {
       "D:\\runtime-cache\\v1\\turbo",
       "D:\\runtime-cache\\v1\\vision-main",
       "D:\\runtime-cache\\v1\\powershell",
-      "D:\\runtime-cache\\v1\\actions",
     ],
     removedUndeclaredCaches: [],
   };
@@ -476,7 +474,7 @@ describe("full workflow stability gate", () => {
     assert.deepEqual(report.gateFailures, []);
     assert.equal(
       report.declaredStateReconstruction.retainedCachesAllowlist.length,
-      9,
+      8,
     );
   });
 

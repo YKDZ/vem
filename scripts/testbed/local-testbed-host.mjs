@@ -353,26 +353,8 @@ while ((Get-Date).ToUniversalTime() -lt $deadline) {
   }
   Start-Sleep -Seconds 2
 }
-
 $serviceState = (Get-Service -Name $service.Name -ErrorAction SilentlyContinue).Status
 throw ("actions runner did not report a fresh listener diagnostic within ${RUNNER_ADMISSION_TIMEOUT_SECONDS} seconds (service=$serviceState; latest diagnostic tail: $latestTail)")
-`;
-}
-
-function actionsCachePreparation() {
-  return `$ErrorActionPreference = 'Stop'
-$runnerRoot = 'C:\\actions-runner'
-$serviceIdentityPath = Join-Path $runnerRoot '.service'
-if (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf) {
-  $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
-  Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-}
-Get-Process -Name 'Runner.Listener' -ErrorAction SilentlyContinue | Stop-Process -Force
-$cachePath = 'D:\\runtime-cache\\v1\\actions'
-$workPath = Join-Path $runnerRoot '_work\\_actions'
-New-Item -ItemType Directory -Force -Path $cachePath,(Split-Path -Parent $workPath) | Out-Null
-if (Test-Path -LiteralPath $workPath) { Remove-Item -LiteralPath $workPath -Recurse -Force }
-New-Item -ItemType Junction -Path $workPath -Target $cachePath | Out-Null
 `;
 }
 
@@ -618,7 +600,6 @@ export function buildHostAdmissionPlan({
     runnerRemovalToken,
     expectedRunId,
   );
-  const actionsCache = actionsCachePreparation();
   return [
     {
       type: "assert-guest-input",
@@ -637,13 +618,6 @@ export function buildHostAdmissionPlan({
       args: sshArgs(config, encodedPowerShellCommand(displayAssertion)),
       encodedPowerShell: true,
       input: displayAssertion,
-    },
-    {
-      type: "prepare-actions-cache",
-      command: "ssh",
-      args: sshArgs(config, encodedPowerShellCommand(actionsCache)),
-      encodedPowerShell: true,
-      input: actionsCache,
     },
     {
       type: "restart-runner-and-await-listener",
