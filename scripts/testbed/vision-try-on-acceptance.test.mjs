@@ -120,7 +120,6 @@ describe("vision try-on acceptance script", () => {
     assert.equal(config.schemaVersion, "vending-vision-site-config/v1");
     assert.deepEqual(config.allowed_origins, [
       "http://tauri.localhost",
-      "https://tauri.localhost",
       "http://127.0.0.1:7892",
     ]);
     assert.deepEqual(config.cameras.top, {

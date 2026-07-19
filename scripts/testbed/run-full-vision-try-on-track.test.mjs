@@ -17,6 +17,12 @@ test("run-full uses fixed VEMKiosk task user for Vision install", () => {
   assert.match(contents, /-TaskUser "VEMKiosk"/);
 });
 
+test("run-full emits origins accepted by the managed Vision schema", () => {
+  const contents = source();
+  assert.match(contents, /"http:\/\/tauri\.localhost"/);
+  assert.doesNotMatch(contents, /"https:\/\/tauri\.localhost"/);
+});
+
 test("run-full resolves commit via D:\\runtime-cache\\v1\\vision-main index first", () => {
   const contents = source();
   assert.match(

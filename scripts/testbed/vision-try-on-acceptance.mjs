@@ -1085,7 +1085,6 @@ export function buildRecordedVisionSiteConfiguration({
     port,
     allowed_origins: [
       "http://tauri.localhost",
-      "https://tauri.localhost",
       `http://${host}:${port}`,
     ],
     cameras: {

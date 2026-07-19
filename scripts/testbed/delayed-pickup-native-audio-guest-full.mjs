@@ -158,6 +158,45 @@ async function daemonGet(handoff, path) {
   });
 }
 
+async function prepareScannerForSale(handoff, guestInput, sessionStart) {
+  const bindingDeadline = Date.now() + 30_000;
+  let bindings = null;
+  while (Date.now() < bindingDeadline) {
+    bindings = await daemonGet(handoff, "/v1/hardware-bindings").catch(
+      () => null,
+    );
+    const scanner = bindings?.roles?.find((role) => role?.role === "scanner");
+    if (scanner?.ready === true && /^COM[1-9][0-9]*$/.test(scanner.currentPort))
+      break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  const scanner = bindings?.roles?.find((role) => role?.role === "scanner");
+  if (scanner?.ready !== true)
+    throw new Error(`scanner binding was not ready: ${JSON.stringify(bindings)}`);
+
+  await controlPlaneRequest(
+    guestInput,
+    `/v1/serial-sessions/${sessionStart.sessionId}/stop-scanner-probe`,
+  );
+
+  const capabilityDeadline = Date.now() + 30_000;
+  let capability = null;
+  while (Date.now() < capabilityDeadline) {
+    capability = await daemonGet(handoff, "/v1/sale-start-capability").catch(
+      () => null,
+    );
+    const paymentCode = capability?.paymentOptions?.options?.find(
+      (option) => option?.optionKey === "payment_code:mock",
+    );
+    if (capability?.canStartSale === true && paymentCode?.ready === true)
+      return { bindings, capability };
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  throw new Error(
+    `scanner sale capability did not recover: ${JSON.stringify(capability)}`,
+  );
+}
+
 async function controlPlaneRequest(guestInput, path, body = {}) {
   const endpoint = required(
     guestInput.hostControlPlane?.endpoint,
@@ -568,6 +607,7 @@ async function runDelayedPickupGuestFull(options) {
         serialScenario: "delayed-pickup",
       },
     );
+    await prepareScannerForSale(handoff, guestInput, sessionStart);
     let baselinePlatform = null;
     delayedTrack = await startDelayedPickupLiveProductionTrack(
       {

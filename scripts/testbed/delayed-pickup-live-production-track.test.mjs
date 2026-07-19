@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -35,6 +35,19 @@ function makeTempDir(prefix) {
 }
 
 describe("delayed pickup live production track", () => {
+  it("releases the scanner binding probe before payment-code injection", () => {
+    const source = readFileSync(
+      new URL("./delayed-pickup-native-audio-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const prepare = source.indexOf("await prepareScannerForSale(");
+    const inject = source.indexOf("/inject`,", prepare);
+    assert.ok(prepare >= 0);
+    assert.ok(inject > prepare);
+    assert.match(source, /stop-scanner-probe/);
+    assert.match(source, /\/v1\/sale-start-capability/);
+  });
+
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
     const root = makeTempDir("vem-delayed-live");
     const operations = [];

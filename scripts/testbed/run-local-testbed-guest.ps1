@@ -336,7 +336,6 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
     port = 7892
     allowed_origins = @(
       "http://tauri.localhost",
-      "https://tauri.localhost",
       "http://127.0.0.1:7892"
     )
     cameras = @{
