@@ -1146,6 +1146,7 @@ describe("Windows D cache contract", () => {
     const hardwareBinding = guest.indexOf("Initialize-TestbedHardwareBindings", serialStart);
     assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
     assert.match(guest, /commissioningSerialSession = \$commissioningSerialSession/);
+    assert.match(guest, /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/);
     const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
     const claimedRestart = guest.indexOf("restart-claimed-runtime", claim);
     const claimedReady = guest.indexOf("$runtimeReady = Wait-RuntimeReady", claimedRestart);

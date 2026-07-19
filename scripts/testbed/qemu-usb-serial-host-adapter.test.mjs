@@ -378,4 +378,11 @@ describe("repo QEMU USB serial host adapter", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps the scanner PTY open until binding confirmation stops the probe", () => {
+    const implementation = readFileSync(adapterPath, "utf8");
+    assert.match(implementation, /const fd = openSync\(path, 'a'\)/);
+    assert.match(implementation, /setInterval\(\(\) => \{\}, 1000\)/);
+    assert.doesNotMatch(implementation, /appendFileSync\(path, bytes\); process\.exit/);
+  });
 });

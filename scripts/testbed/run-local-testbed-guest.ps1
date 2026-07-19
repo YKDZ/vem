@@ -247,6 +247,14 @@ function Start-TestbedCommissioningSerialSession([object]$GuestInput) {
     -ContentType "application/json" -Body $body -TimeoutSec 30
 }
 
+function Stop-TestbedScannerBindingProbe([object]$GuestInput, [object]$Session) {
+  $controlPlane = $GuestInput.hostControlPlane
+  Invoke-RestMethod -Method Post `
+    -Uri "$($controlPlane.endpoint)/v1/serial-sessions/$($Session.sessionId)/stop-scanner-probe" `
+    -Headers @{ Authorization = "Bearer $($controlPlane.token)" } `
+    -ContentType "application/json" -Body "{}" -TimeoutSec 15 | Out-Null
+}
+
 function Initialize-TestbedHardwareBindings {
   $readyPath = Join-Path $daemonDataRoot "daemon-ready.json"
   $ready = Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json
@@ -475,6 +483,7 @@ Write-TestbedPhase "start-simulated-hardware"
 $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
+Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
 if ($daemonEvidence.processId -ne $daemonProcess.Id -or $daemonEvidence.commandLine -notmatch '(?i)(?:^|\s)--console(?:\s|$)') {
   throw "deployed daemon process is not the claimed production --console process"
