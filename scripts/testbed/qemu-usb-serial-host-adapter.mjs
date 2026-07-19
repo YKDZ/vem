@@ -637,6 +637,15 @@ export function scannerDescriptorMatchesRequest(descriptor, scannerInjection) {
   );
 }
 
+export function scannerAcknowledgementFor(scannerInjection) {
+  return {
+    scannerCodeDigest: scannerInjection.scannerCodeDigest,
+    scannerCodeByteLength: scannerInjection.scannerCodeByteLength,
+    scannerCodeSuffix: scannerInjection.scannerCodeSuffix,
+    accepted: true,
+  };
+}
+
 export function readRawSerialJournal(path) {
   if (!existsSync(path)) return [];
   const source = readFileSync(path, "utf8");
@@ -892,7 +901,7 @@ function serialSessionReport(request, state) {
     })),
     scannerAcknowledgement:
       request.operation === "inject-scanner-code"
-        ? { ...request.serialSession.scannerInjection, accepted: true }
+        ? scannerAcknowledgementFor(request.serialSession.scannerInjection)
         : null,
     simulatorCleanup: stopped
       ? {

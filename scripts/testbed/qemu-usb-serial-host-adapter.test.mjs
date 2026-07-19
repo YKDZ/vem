@@ -17,6 +17,7 @@ import {
   parseLibvirtUsbSerialMappings,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
   readRawSerialJournal,
+  scannerAcknowledgementFor,
   scannerDescriptorMatchesRequest,
   validateProductionRawSerialFrame,
 } from "./qemu-usb-serial-host-adapter.mjs";
@@ -71,6 +72,13 @@ describe("repo QEMU USB serial host adapter", () => {
         operationNonce: "scanner-injection://runtime-acceptance-1",
       }),
       false,
+    );
+    assert.deepEqual(
+      scannerAcknowledgementFor({
+        ...descriptor,
+        operationNonce: "scanner-injection://runtime-acceptance-1",
+      }),
+      { ...descriptor, accepted: true },
     );
   });
 
