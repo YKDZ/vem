@@ -217,6 +217,7 @@ export function runFullWorkflowOrchestrator(options) {
           ? null
           : (result.stderr || result.stdout).trim().slice(-16 * 1024) || null,
     });
+    if (result.status !== "passed") break;
   }
   const evidenceManifestPath = join(
     dirname(resolve(options.outPath)),

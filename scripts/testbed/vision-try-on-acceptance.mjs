@@ -1585,13 +1585,13 @@ async function collectVisionInstalledBinding() {
     "$action = @($task.Actions | Select-Object -First 1)",
     "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
     "if ($listener.Count -ne 1) { throw \"Vision must have exactly one 127.0.0.1:7892 listener\" }",
-    "$pid = [int]$listener[0].OwningProcess",
-    "$process = Get-Process -Id $pid -ErrorAction Stop",
-    "$processWmi = Get-CimInstance Win32_Process -Filter \"ProcessId = $pid\" -ErrorAction Stop",
+    "$visionPid = [int]$listener[0].OwningProcess",
+    "$process = Get-Process -Id $visionPid -ErrorAction Stop",
+    "$processWmi = Get-CimInstance Win32_Process -Filter \"ProcessId = $visionPid\" -ErrorAction Stop",
     "$owner = Invoke-CimMethod -InputObject $processWmi -MethodName GetOwner -ErrorAction Stop",
     "$path = [string]$process.Path",
     "$commandLine = [string]$processWmi.CommandLine",
-    "[Console]::Out.Write((@{ processId = $pid; listenerProcessId = $pid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
+    "[Console]::Out.Write((@{ processId = $visionPid; listenerProcessId = $visionPid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
   ].join("; ");
   const runtimeBinding = await new Promise((resolvePromise, reject) => {
     let stdout = "";

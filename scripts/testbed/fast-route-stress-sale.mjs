@@ -1878,14 +1878,24 @@ async function runFastRouteStressSale(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const firstSubmit = await activateVisibleSelector(
-      client,
-      steps[4].selector,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
     stage = "wait-create-order-pending-boundary";
-    const pendingCreate = await waitForCreateOrderGatePending(guestInput);
+    let firstSubmit = null;
+    let pendingCreate = null;
+    for (let attempt = 0; attempt < 3 && !pendingCreate; attempt += 1) {
+      firstSubmit = await activateVisibleSelector(client, steps[4].selector, {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
+      pendingCreate = await waitForCreateOrderGatePending(
+        guestInput,
+        attempt === 2 ? 30_000 : 2_000,
+      ).catch(() => null);
+    }
+    if (!pendingCreate)
+      throw new Error(
+        "mock create-order gate did not observe a pending payment creation",
+      );
     stage = "vision-departure-during-create-order";
     const pendingConfirmedAt = new Date().toISOString();
     const visionRequestedAt = new Date().toISOString();
