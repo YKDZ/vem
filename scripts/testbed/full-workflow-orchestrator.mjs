@@ -74,16 +74,6 @@ export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
       [],
     ],
     [
-      "fulfillmentFailure",
-      true,
-      true,
-      "serial-fulfillment-error.json",
-      "serial-fulfillment-error-artifacts",
-      "node",
-      "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
-      ["--mode", "full"],
-    ],
-    [
       "delayedPickup",
       true,
       true,
@@ -101,6 +91,16 @@ export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
       "ipc-recovery-artifacts",
       "node",
       "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
+      ["--mode", "full"],
+    ],
+    [
+      "fulfillmentFailure",
+      true,
+      true,
+      "serial-fulfillment-error.json",
+      "serial-fulfillment-error-artifacts",
+      "node",
+      "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
       ["--mode", "full"],
     ],
   ].map(

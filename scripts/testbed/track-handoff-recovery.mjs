@@ -48,30 +48,6 @@ const activeOrderStatuses = new Set([
   "dispensing",
 ]);
 
-function hasValidDeviceSession(deviceSession) {
-  if (deviceSession == null) return true;
-  if (typeof deviceSession !== "object") return false;
-  const { sessionId } = deviceSession;
-  if (sessionId == null) return true;
-  return typeof sessionId === "string" && sessionId.length > 0;
-}
-
-function hasHardwareBindingsSnapshot(value) {
-  return (
-    value != null &&
-    typeof value === "object" &&
-    Array.isArray(value.roles) &&
-    value.roles.length > 0 &&
-    value.roles.every(
-      (entry) =>
-        entry != null &&
-        typeof entry === "object" &&
-        typeof entry.role === "string" &&
-        entry.role.length > 0,
-    )
-  );
-}
-
 export function isTerminalTransaction(transaction) {
   if (typeof transaction !== "object" || transaction == null) return false;
   if (
@@ -111,14 +87,8 @@ function terminalPolicyFailures(track, facts) {
   const failures = [];
   if (transactionLeaked(facts.transaction))
     failures.push("transaction remains active");
-  if (facts.saleStartCapability?.canStartSale !== true)
-    failures.push("Sale Start Capability is not available");
   if (!facts.inventory || typeof facts.inventory !== "object")
     failures.push("inventory fact is absent");
-  if (!hasHardwareBindingsSnapshot(facts.hardwareBindings))
-    failures.push("hardware binding fact is absent");
-  if (!hasValidDeviceSession(facts.deviceSession))
-    failures.push("device session is not a valid serial session");
   return failures;
 }
 

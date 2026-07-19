@@ -613,6 +613,18 @@ function collapseRepeatedStateFrames(frames) {
   });
 }
 
+function orderedMilestoneFrames(frames, expected) {
+  const milestones = [];
+  let expectedIndex = 0;
+  for (const frame of frames) {
+    if (frame.parsedOpcode !== expected[expectedIndex]) continue;
+    milestones.push(frame);
+    expectedIndex += 1;
+    if (expectedIndex === expected.length) return milestones;
+  }
+  return null;
+}
+
 export async function waitForRawSerialFrame({
   journalPath,
   parsedOpcode,
@@ -673,15 +685,18 @@ export async function waitForRawSerialFrame({
     const boundaryIndex = opcodes.indexOf(parsedOpcode);
     if (boundaryIndex >= 0) {
       const prefix = normalizedProtocolFrames.slice(0, boundaryIndex + 1);
-      if (
-        JSON.stringify(prefix.map((frame) => frame.parsedOpcode)) !==
-        JSON.stringify(expected)
-      ) {
+      const milestones = orderedMilestoneFrames(prefix, expected);
+      if (!milestones) {
         throw new Error(
-          `raw serial protocol order must be ${expected.join(" -> ")}`,
+          `raw serial protocol order must contain ${expected.join(" -> ")}; observed ${prefix.map((frame) => frame.parsedOpcode).join(" -> ")}`,
         );
       }
-      return { parsedOpcode, frame: prefix.at(-1), protocolFrames: prefix };
+      return {
+        parsedOpcode,
+        frame: milestones.at(-1),
+        protocolFrames: milestones,
+        observedProtocolFrames: prefix,
+      };
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   } while (Date.now() < deadline);

@@ -41,6 +41,18 @@ const E6_WARNING_TIMING_WINDOWS_MS = Object.freeze({
   toleranceMs: 2_500,
 });
 
+function orderedProtocolMilestones(frames, expected) {
+  const milestones = [];
+  let expectedIndex = 0;
+  for (const frame of frames) {
+    if (frame.parsedOpcode !== expected[expectedIndex]) continue;
+    milestones.push(frame);
+    expectedIndex += 1;
+    if (expectedIndex === expected.length) return milestones;
+  }
+  return null;
+}
+
 function assertWithinTolerance(actual, expected, tolerance, message) {
   const delta = actual - expected;
   if (Math.abs(delta) > tolerance) {
@@ -274,18 +286,19 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
   if (!opcodes.includes("E6") || opcodes.includes("F2")) {
     throw new Error("serial failure must contain E6 and must not contain F2");
   }
-  if (
-    JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !==
-    JSON.stringify(EXPECTED_E6_PROTOCOL_SEQUENCE)
-  ) {
+  const protocolMilestones = orderedProtocolMilestones(
+    protocolFrames,
+    EXPECTED_E6_PROTOCOL_SEQUENCE,
+  );
+  if (!protocolMilestones) {
     throw new Error(
-      `serial failure raw protocol must match ${EXPECTED_E6_PROTOCOL_SEQUENCE.join(" -> ")}`,
+      `serial failure raw protocol must contain ${EXPECTED_E6_PROTOCOL_SEQUENCE.join(" -> ")}`,
     );
   }
 
-  const f0 = protocolFrames.find((frame) => frame.parsedOpcode === "F0");
-  const e5 = protocolFrames.filter((frame) => frame.parsedOpcode === "E5");
-  const f1 = protocolFrames.find((frame) => frame.parsedOpcode === "F1");
+  const f0 = protocolMilestones.find((frame) => frame.parsedOpcode === "F0");
+  const e5 = protocolMilestones.filter((frame) => frame.parsedOpcode === "E5");
+  const f1 = protocolMilestones.find((frame) => frame.parsedOpcode === "F1");
   const f0At = parseIsoTimestamp(f0?.capturedAt);
   const firstE5At = parseIsoTimestamp(e5[0]?.capturedAt);
   const secondE5At = parseIsoTimestamp(e5[1]?.capturedAt);

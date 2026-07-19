@@ -659,6 +659,13 @@ describe("host serial control plane", () => {
           },
           {
             direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+            capturedAt: "2026-07-18T08:00:20.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
             rawFrameHex: "55E5",
             opcode: 229,
             parsedOpcode: "E5",
@@ -670,6 +677,13 @@ describe("host serial control plane", () => {
             opcode: 241,
             parsedOpcode: "F1",
             capturedAt: "2026-07-18T08:00:28.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55AF",
+            opcode: 175,
+            parsedOpcode: "AF",
+            capturedAt: "2026-07-18T08:00:30.000Z",
           },
           {
             direction: "controller-to-daemon",

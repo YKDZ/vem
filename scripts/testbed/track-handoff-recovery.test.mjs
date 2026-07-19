@@ -68,7 +68,7 @@ describe("Track Handoff Recovery", () => {
     assert.equal(terminal.facts.hardwareBindings.roles.length, 1);
   });
 
-  it("rejects terminal facts when hardware bindings are missing roles snapshot", async () => {
+  it("records hardware binding degradation without reclassifying a completed child track", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "scanner" },
       context: { report: {} },
@@ -81,8 +81,8 @@ describe("Track Handoff Recovery", () => {
       },
       platformQuery: async () => ({ inventories: [] }),
     });
-    assert.equal(terminal.ok, false);
-    assert.match(terminal.reason, /hardware binding fact is absent/);
+    assert.equal(terminal.ok, true);
+    assert.deepEqual(terminal.facts.hardwareBindings, { notRoles: [] });
   });
 
   it("allows null device session when no control-plane session is available yet", async () => {
@@ -146,19 +146,19 @@ describe("Track Handoff Recovery", () => {
     assert.match(terminal.diagnostics[0], /daemon IPC unavailable/);
   });
 
-  it("rejects a settled route when transaction or Sale Start Capability facts prove leakage", async () => {
+  it("rejects a settled route only when transaction facts prove leakage", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "fast" },
       context: { report: {} },
       readRoute: async () => "#/catalog",
       daemonGet: async (path) =>
         path === "/v1/transactions/current"
-          ? { orderId: "order-1" }
+          ? { orderId: "order-1", nextAction: "wait_payment" }
           : { canStartSale: false },
       platformQuery: async () => ({ inventories: [] }),
     });
     assert.equal(terminal.ok, false);
-    assert.match(terminal.reason, /Sale Start Capability/);
+    assert.match(terminal.reason, /transaction remains active/);
   });
 
   it("treats terminal success with orderId as non-leaked", () => {

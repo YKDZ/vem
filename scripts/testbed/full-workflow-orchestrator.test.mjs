@@ -19,9 +19,9 @@ describe("full workflow serial lifecycle", () => {
         "fast",
         "scanner",
         "visionTryOn",
-        "fulfillmentFailure",
         "delayedPickup",
         "ipcRecovery",
+        "fulfillmentFailure",
       ],
     );
     assert.deepEqual(
@@ -30,9 +30,9 @@ describe("full workflow serial lifecycle", () => {
         "fast",
         "scanner",
         "visionTryOn",
-        "fulfillmentFailure",
         "delayedPickup",
         "ipcRecovery",
+        "fulfillmentFailure",
       ],
     );
     for (const track of FULL_WORKFLOW_TRACK_DESCRIPTORS) {
