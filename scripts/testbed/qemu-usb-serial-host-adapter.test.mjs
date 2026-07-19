@@ -296,10 +296,10 @@ describe("repo QEMU USB serial host adapter", () => {
       /journalPath: join\(path, "raw-serial\.socat\.log"\)/,
     );
     assert.match(source, /const journalPath = qemuUsbSerialSessionPaths\(/);
-    assert.match(source, /"-lf",\s*journalPath/);
+    assert.match(source, /"-lf",\s*socatLifecycleLogPath/);
     assert.match(
       source,
-      /stdio: \["ignore", "ignore", openSync\(bridgeStderrPath, "a", 0o600\)\]/,
+      /stdio: \["ignore", "ignore", openSync\(journalPath, "a", 0o600\)\]/,
     );
   });
 

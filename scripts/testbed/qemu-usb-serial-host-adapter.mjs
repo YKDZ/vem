@@ -499,7 +499,7 @@ function startSession(request) {
     stateRoot(),
     binding.serialSessionId,
   ).journalPath;
-  const bridgeStderrPath = join(dir, "socat.stderr.log");
+  const socatLifecycleLogPath = join(dir, "socat.lifecycle.log");
   const lowerControllerProxyPath = join(dir, "lower-controller-pty");
   const releaseF0Path = join(dir, "release-f0");
   const releaseF2Path = join(dir, "release-f2");
@@ -514,13 +514,13 @@ function startSession(request) {
       "-x",
       "-v",
       "-lf",
-      journalPath,
+      socatLifecycleLogPath,
       `PTY,link=${lowerControllerProxyPath},rawer,echo=0,waitslave`,
       `FILE:${lower.path},raw,echo=0`,
     ],
     {
       detached: true,
-      stdio: ["ignore", "ignore", openSync(bridgeStderrPath, "a", 0o600)],
+      stdio: ["ignore", "ignore", openSync(journalPath, "a", 0o600)],
     },
   );
   bridge.unref();
