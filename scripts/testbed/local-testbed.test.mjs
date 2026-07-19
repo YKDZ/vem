@@ -939,6 +939,33 @@ describe("supported API seeding", () => {
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       );
     }
+    const seededTryOnVariantIds = new Set(
+      result.visionAcceptance.seededTryOnVariants.map(
+        (entry) => entry.variantId,
+      ),
+    );
+    const tryOnInventoryCalls = calls.filter(
+      (call) =>
+        call.path === "/inventories" &&
+        seededTryOnVariantIds.has(call.body.variantId),
+    );
+    assert.ok(
+      tryOnInventoryCalls.some((call) => call.body.onHandQty > 0),
+      "at least one try-on T-shirt variant must have positive inventory",
+    );
+    const planogramCall = calls.find((call) =>
+      call.path.endsWith("/planogram-versions"),
+    );
+    assert.ok(
+      planogramCall.body.slots.some(
+        (slot) =>
+          seededTryOnVariantIds.has(slot.variantId) &&
+          tryOnInventoryCalls.some(
+            (inventory) => inventory.body.variantId === slot.variantId,
+          ),
+      ),
+      "a stocked try-on T-shirt variant must be present in the published planogram",
+    );
     assert.doesNotMatch(JSON.stringify(calls), /channel-policy/);
   });
 });
@@ -1343,7 +1370,7 @@ describe("local testbed fixture", () => {
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
       fixture.slots.map((slot) => slot.slotCode),
-      ["A1", "A2"],
+      ["A1", "A2", "A3"],
     );
     const implementation = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),

@@ -288,6 +288,16 @@
       "onHandQty": 3,
       "lowStockThreshold": 1,
       "priceCents": 4900
+    },
+    {
+      "slotCode": "A3",
+      "sourceRow": 32,
+      "layerNo": 1,
+      "cellNo": 3,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 5900
     }
   ]
 }
