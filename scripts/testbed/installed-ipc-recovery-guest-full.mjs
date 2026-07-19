@@ -26,6 +26,8 @@ import {
 } from "./machine-ui-cdp-driver.mjs";
 
 const SCHEMA_VERSION = "vem-installed-ipc-recovery-guest-full/v1";
+const LOCAL_REQUEST_TIMEOUT_MS = 30_000;
+const POWERSHELL_OPERATION_TIMEOUT_MS = 45_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -90,7 +92,10 @@ function parseArgs(args) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal ?? AbortSignal.timeout(LOCAL_REQUEST_TIMEOUT_MS),
+  });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
@@ -230,11 +235,13 @@ function runLocalPowerShellJson(script, label) {
       encoding: "utf8",
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: POWERSHELL_OPERATION_TIMEOUT_MS,
     },
   );
   if (result.status !== 0) {
+    const timeout = result.error?.code === "ETIMEDOUT" ? " timed out" : "";
     throw new Error(
-      `${label} failed: ${(result.stderr || result.stdout || "").trim() || `exit ${result.status ?? 1}`}`,
+      `${label}${timeout} failed: ${(result.stderr || result.stdout || "").trim() || result.error?.message || `exit ${result.status ?? 1}`}`,
     );
   }
   try {
