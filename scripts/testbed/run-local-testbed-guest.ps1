@@ -32,7 +32,8 @@ $declaredCachePaths = @(
   (Join-Path $cacheRoot "vision-main")
 )
 $retainedToolPaths = @(
-  (Join-Path $cacheRoot "powershell")
+  (Join-Path $cacheRoot "powershell"),
+  (Join-Path $cacheRoot "actions")
 )
 $allowedRetainedPaths = @($declaredCachePaths) + @($retainedToolPaths)
 

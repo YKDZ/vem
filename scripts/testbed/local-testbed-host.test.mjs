@@ -296,6 +296,9 @@ describe("tracked local testbed host lifecycle", () => {
     const runner = plan.at(-1);
     assert.equal(runner.type, "restart-runner-and-await-listener");
     assert.match(runner.input, /C:\\actions-runner\\.env/);
+    assert.match(runner.input, /D:\\runtime-cache\\v1\\actions/);
+    assert.match(runner.input, /_work\\_actions/);
+    assert.match(runner.input, /New-Item -ItemType Junction/);
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
     assert.match(runner.input, /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/);

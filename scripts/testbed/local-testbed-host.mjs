@@ -320,6 +320,18 @@ $serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF
 if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
 $service = Get-Service -Name $serviceName -ErrorAction Stop
 Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
+$actionsCachePath = 'D:\\runtime-cache\\v1\\actions'
+$actionsWorkPath = Join-Path $runnerRoot '_work\\_actions'
+New-Item -ItemType Directory -Force -Path $actionsCachePath,(Split-Path -Parent $actionsWorkPath) | Out-Null
+if (Test-Path -LiteralPath $actionsWorkPath) {
+  $actionsWorkItem = Get-Item -LiteralPath $actionsWorkPath -Force
+  if ($actionsWorkItem.LinkType -ne 'Junction' -or [IO.Path]::GetFullPath([string]$actionsWorkItem.Target) -ine [IO.Path]::GetFullPath($actionsCachePath)) {
+    Remove-Item -LiteralPath $actionsWorkPath -Recurse -Force
+  }
+}
+if (-not (Test-Path -LiteralPath $actionsWorkPath)) {
+  New-Item -ItemType Junction -Path $actionsWorkPath -Target $actionsCachePath | Out-Null
+}
 & sc.exe config $service.Name obj= LocalSystem | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "actions runner LocalSystem configuration failed with exit code $LASTEXITCODE" }
 Get-Process -Name 'Runner.Listener' -ErrorAction SilentlyContinue | Stop-Process -Force
