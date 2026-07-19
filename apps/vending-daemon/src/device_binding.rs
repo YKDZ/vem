@@ -304,21 +304,29 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
 
 const WINDOWS_SERIAL_DISCOVERY_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
-$devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
-  $instanceId = [string]$_.PNPDeviceID
+$devices = @(Get-PnpDevice -Class Ports -PresentOnly | ForEach-Object {
+  $portInstanceId = [string]$_.InstanceId
+  $instanceId = $portInstanceId
+  try {
+    $parent = [string](Get-PnpDeviceProperty -InstanceId $portInstanceId -KeyName 'DEVPKEY_Device_Parent').Data
+    if ($parent -match '^USB\\') { $instanceId = $parent }
+  } catch {}
   $containerId = $null
   $hardwareIds = @()
   try { $containerId = [string](Get-PnpDeviceProperty -InstanceId $instanceId -KeyName 'DEVPKEY_Device_ContainerId').Data } catch {}
   try { $hardwareIds = @((Get-PnpDeviceProperty -InstanceId $instanceId -KeyName 'DEVPKEY_Device_HardwareIds').Data) } catch {}
   $serialNumber = $null
   if ($instanceId -match '\\([^\\]+)$' -and $Matches[1] -notmatch '&') { $serialNumber = $Matches[1] }
-  [pscustomobject]@{
-    currentPort = [string]$_.DeviceID
-    instanceId = $instanceId
-    containerId = $containerId
-    hardwareIds = @($hardwareIds | ForEach-Object { [string]$_ })
-    serialNumber = $serialNumber
-    friendlyName = [string]$_.Name
+  $friendlyName = [string]$_.FriendlyName
+  if ($friendlyName -match '\((COM[0-9]+)\)\s*$') {
+    [pscustomobject]@{
+      currentPort = [string]$Matches[1]
+      instanceId = $instanceId
+      containerId = $containerId
+      hardwareIds = @($hardwareIds | ForEach-Object { [string]$_ })
+      serialNumber = $serialNumber
+      friendlyName = $friendlyName
+    }
   }
 })
 ConvertTo-Json -Compress -Depth 4 -InputObject $devices
@@ -1043,6 +1051,17 @@ mod tests {
                 .identity_key,
             "container:11111111-2222-3333-4444-555555555555"
         );
+    }
+
+    #[test]
+    fn windows_discovery_uses_present_pnp_ports_and_their_physical_usb_parent() {
+        assert!(
+            WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("Get-PnpDevice -Class Ports -PresentOnly")
+        );
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("DEVPKEY_Device_Parent"));
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("if ($parent -match '^USB\\\\')"));
+        assert!(WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("\\((COM[0-9]+)\\)\\s*$"));
+        assert!(!WINDOWS_SERIAL_DISCOVERY_SCRIPT.contains("Win32_SerialPort"));
     }
 
     #[test]
