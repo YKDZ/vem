@@ -1514,7 +1514,8 @@ export async function collectVisionProtocolEvidence({
       if (
         message?.type === "vision.presence_status" &&
         state.presence === null &&
-        message?.payload?.personPresent === true
+        message?.payload?.personPresent === true &&
+        message?.payload?.source === "top"
       ) {
         state.presence = message;
       } else if (

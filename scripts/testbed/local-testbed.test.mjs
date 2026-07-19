@@ -866,6 +866,8 @@ describe("supported API seeding", () => {
         return [{ id: "mock-provider", code: "mock", status: "enabled" }];
       if (path === "/machines")
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL" };
+      if (path === "/machines/machine-1")
+        return { id: "machine-1", code: "VEM-TESTBED-LOCAL", status: "online" };
       if (path.endsWith("/slots")) return { id: `slot-${calls.length}` };
       if (path === "/inventories") return { id: `inventory-${calls.length}` };
       if (path.endsWith("/planogram-versions"))
@@ -893,6 +895,15 @@ describe("supported API seeding", () => {
       upload,
     });
     assert.equal(result.machine.code, "VEM-TESTBED-LOCAL");
+    assert.deepEqual(
+      calls.find((call) => call.path === "/machines/machine-1"),
+      {
+        path: "/machines/machine-1",
+        method: "PATCH",
+        token: "admin-token",
+        body: { status: "online" },
+      },
+    );
     assert.equal(uploads.length, 1);
     assert.deepEqual(uploads[0], {
       path: "/media-assets/try-on-silhouettes",

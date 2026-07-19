@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
+  refreshDaemonReadyHandoff,
   runSerialTrackLifecycle,
 } from "./full-workflow-orchestrator.mjs";
 
@@ -92,12 +96,75 @@ describe("full workflow serial lifecycle", () => {
     assert.equal(result[1].handoffRecovery.durationMs, 1_000);
   });
 
+  it("refreshes the shared handoff when the daemon rotates its ready generation", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-daemon-ready-"));
+    const handoffPath = join(root, "handoff.json");
+    const readyPath = join(root, "daemon-ready.json");
+    writeFileSync(
+      handoffPath,
+      JSON.stringify({
+        daemon: {
+          ready: {
+            healthzUrl: "http://127.0.0.1:41000/healthz",
+            readyzUrl: "http://127.0.0.1:41000/readyz",
+            ipcToken: "token-1",
+            generation: "generation-1",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      readyPath,
+      JSON.stringify({
+        healthzUrl: "http://127.0.0.1:42000/healthz",
+        readyzUrl: "http://127.0.0.1:42000/readyz",
+        ipcToken: "token-2",
+        generation: "generation-2",
+      }),
+    );
+
+    const handoff = refreshDaemonReadyHandoff({ handoffPath, readyPath });
+
+    assert.equal(
+      handoff.daemon.ready.healthzUrl,
+      "http://127.0.0.1:42000/healthz",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(handoffPath, "utf8")).daemon.ready.generation,
+      "generation-2",
+    );
+  });
+
+  it("records a preflight failure and continues to the next track", async () => {
+    const calls = [];
+    const result = await runSerialTrackLifecycle({
+      tracks: FULL_WORKFLOW_TRACK_DESCRIPTORS.slice(0, 2),
+      beforeTrack(track) {
+        calls.push(`preflight:${track.key}`);
+        if (track.key === "fast") throw new Error("ready file was rotating");
+      },
+      runTrack(track) {
+        calls.push(`run:${track.key}`);
+        return { status: "passed", exitCode: 0, report: { ok: true } };
+      },
+      captureTerminal: async () => ({ ok: true, facts: {} }),
+      recover: async () => ({ ok: true, actions: [] }),
+    });
+
+    assert.deepEqual(calls, [
+      "preflight:fast",
+      "preflight:scanner",
+      "run:scanner",
+    ]);
+    assert.equal(result[0].businessStatus, "failed");
+    assert.match(result[0].error, /ready file was rotating/);
+    assert.equal(result[1].businessStatus, "passed");
+  });
+
   it("returns from payment route via customer cancel entry then back to catalog", async () => {
     const calls = [];
     const routeIdentity = { route: "#/catalog" };
-    const routeByRoute = new Map([
-      ["PAYMENT_RETURN", "#/catalog"],
-    ]);
+    const routeByRoute = new Map([["PAYMENT_RETURN", "#/catalog"]]);
     const result = await returnToCatalogFromClient({
       client: { id: "client" },
       evaluateExpressionFn: async () => "#/payment",

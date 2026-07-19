@@ -1222,6 +1222,11 @@ export async function seedThroughSupportedApis({
       locationLabel: "testbed host",
     },
   });
+  await request(baseUrl, `/machines/${machine.id}`, {
+    method: "PATCH",
+    token,
+    body: { status: "online" },
+  });
   const seededSlots = [];
   for (const slot of fixture.slots) {
     const machineSlot = await request(

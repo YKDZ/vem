@@ -762,6 +762,15 @@ describe("vision try-on acceptance script", () => {
         sourceFrame: sourceFrame("top", "b".repeat(64)),
       }),
       visionProtocolMessage("vision.presence_status", {
+        source: "front",
+        detectedAt: "2026-07-18T00:00:01.500Z",
+        personPresent: true,
+        sourceFrame: sourceFrame("front", "c".repeat(64), {
+          frameIndex: 3,
+          decodedFrameCount: 4,
+        }),
+      }),
+      visionProtocolMessage("vision.presence_status", {
         source: "top",
         detectedAt: "2026-07-18T00:00:02.000Z",
         personPresent: true,
@@ -799,6 +808,7 @@ describe("vision try-on acceptance script", () => {
       readMessage: queuedReader(messages, [
         "2026-07-18T00:00:00.100Z",
         "2026-07-18T00:00:01.000Z",
+        "2026-07-18T00:00:01.500Z",
         "2026-07-18T00:00:02.000Z",
         "2026-07-18T00:00:03.000Z",
         "2026-07-18T00:00:04.000Z",
@@ -824,6 +834,7 @@ describe("vision try-on acceptance script", () => {
       evidence.observedMessages[1]?.timestamp,
       "2026-07-18T00:00:01.000Z",
     );
+    assert.equal(evidence.observedMessages[2]?.type, "vision.presence_status");
     assert.equal(evidence.presence.payload.sourceFrame.frameIndex, 4);
     assert.deepEqual(closeArguments, [[]]);
 

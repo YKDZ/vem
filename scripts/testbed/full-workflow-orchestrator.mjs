@@ -38,6 +38,8 @@ const PAYMENT_CANCEL_SELECTOR = '[data-test="payment-cancel"]:not(:disabled)';
 const PAYMENT_RETURN_WAIT_MS = 30_000;
 const CONTROL_PLANE_TIMEOUT_MS = 10_000;
 const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
+const DAEMON_READY_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 
 export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
   [
@@ -165,7 +167,13 @@ function runTrack(command, label) {
       stderr = `${stderr}${chunk}`.slice(-CHILD_ERROR_TAIL_BYTES);
     });
     child.once("error", (error) =>
-      resolvePromise({ label, command, exitCode: 1, status: "failed", stderr: error.message }),
+      resolvePromise({
+        label,
+        command,
+        exitCode: 1,
+        status: "failed",
+        stderr: error.message,
+      }),
     );
     child.once("close", (code) =>
       resolvePromise({
@@ -194,6 +202,23 @@ function workflowIdentity(guestInputPath) {
 function writeJson(path, value) {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+export function refreshDaemonReadyHandoff({
+  handoffPath,
+  readyPath = DAEMON_READY_FILE,
+  handoff = jsonIfPresent(handoffPath),
+}) {
+  const ready = jsonIfPresent(readyPath);
+  if (!handoff?.daemon || !ready) {
+    throw new Error("daemon ready handoff inputs are unavailable");
+  }
+  for (const key of ["healthzUrl", "readyzUrl", "ipcToken", "generation"]) {
+    required(ready[key], `daemon ready ${key}`);
+  }
+  handoff.daemon.ready = { ...ready };
+  writeJson(handoffPath, handoff);
+  return handoff;
 }
 
 function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
@@ -264,10 +289,7 @@ export function buildWorkflowTrackCommands({
 
 function shortError(result) {
   return (
-    (result.stderr || "")
-      .trim()
-      .replaceAll(/\s+/g, " ")
-      .slice(-500) || null
+    (result.stderr || "").trim().replaceAll(/\s+/g, " ").slice(-500) || null
   );
 }
 
@@ -276,12 +298,23 @@ export async function runSerialTrackLifecycle({
   runTrack: executeTrack,
   captureTerminal,
   recover,
+  beforeTrack = () => undefined,
   now = () => new Date(),
 }) {
   const executed = [];
   for (const track of tracks) {
     const startedAt = now().toISOString();
-    const child = await executeTrack(track);
+    let child;
+    try {
+      await beforeTrack(track);
+      child = await executeTrack(track);
+    } catch (error) {
+      child = {
+        status: "failed",
+        exitCode: 1,
+        stderr: `track preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     const report = child.report ?? jsonIfPresent(track.reportPath);
     let terminal;
     try {
@@ -343,9 +376,16 @@ export async function runSerialTrackLifecycle({
   return executed;
 }
 
-async function boundedFetch(url, options = {}, timeoutMs = CONTROL_PLANE_TIMEOUT_MS) {
+async function boundedFetch(
+  url,
+  options = {},
+  timeoutMs = CONTROL_PLANE_TIMEOUT_MS,
+) {
   try {
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+    return await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   } catch (error) {
     if (error?.name === "TimeoutError" || error?.name === "AbortError") {
       throw new Error(`request timed out after ${timeoutMs} ms: ${url}`);
@@ -407,7 +447,10 @@ export async function returnToCatalogFromClient({
   activateVisibleSelectorFn = activateVisibleSelector,
   settleRouteTimeoutMs = 10_000,
 }) {
-  const waitForRouteWithTimeout = (expected, timeoutMs = settleRouteTimeoutMs) =>
+  const waitForRouteWithTimeout = (
+    expected,
+    timeoutMs = settleRouteTimeoutMs,
+  ) =>
     waitForRouteFn(client, expected, {
       timeoutMs,
       pollMs: 250,
@@ -415,10 +458,14 @@ export async function returnToCatalogFromClient({
   let route = await evaluateExpressionFn(client, "location.hash");
   if (route === "#/catalog") return route;
   if (/^#\/result(?:\/|$)/.test(route)) {
-    await activateVisibleSelectorFn(client, ".result-return-button, .failure-return-button", {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
+    await activateVisibleSelectorFn(
+      client,
+      ".result-return-button, .failure-return-button",
+      {
+        kind: "touch",
+        timeoutMs: 10_000,
+      },
+    );
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (route === "#/checkout") {
@@ -445,16 +492,22 @@ export async function returnToCatalogFromClient({
       kind: "touch",
       timeoutMs: 10_000,
     });
-    route = (await waitForRouteWithTimeout(
-      /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
-      PAYMENT_RETURN_WAIT_MS,
-    )).route;
+    route = (
+      await waitForRouteWithTimeout(
+        /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
+        PAYMENT_RETURN_WAIT_MS,
+      )
+    ).route;
     if (route === "#/catalog") return "#/catalog";
     if (/^#\/result(?:\/|$)/.test(route)) {
-      await activateVisibleSelectorFn(client, ".result-return-button, .failure-return-button", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      });
+      await activateVisibleSelectorFn(
+        client,
+        ".result-return-button, .failure-return-button",
+        {
+          kind: "touch",
+          timeoutMs: 10_000,
+        },
+      );
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
     if (route === "#/checkout") {
@@ -477,7 +530,9 @@ export async function returnToCatalogFromClient({
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
   }
-  throw new Error(`no supported customer return control was available for ${route}`);
+  throw new Error(
+    `no supported customer return control was available for ${route}`,
+  );
 }
 
 function terminalOperations(guestInput, handoff) {
@@ -536,9 +591,10 @@ function terminalOperations(guestInput, handoff) {
           let transaction = null;
           while (Date.now() < deadline) {
             transaction = await daemonGet(handoff, "/v1/transactions/current");
-            if (!isActiveTransaction(transaction))
-              return transaction;
-            await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+            if (!isActiveTransaction(transaction)) return transaction;
+            await new Promise((resolvePromise) =>
+              setTimeout(resolvePromise, 500),
+            );
           }
           return transaction;
         },
@@ -564,6 +620,13 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     tracks: plan.tracks,
     runTrack:
       dependencies.runTrack ?? ((track) => runTrack(track.command, track.key)),
+    beforeTrack:
+      dependencies.beforeTrack ??
+      (() =>
+        refreshDaemonReadyHandoff({
+          handoffPath: options.handoffPath,
+          handoff,
+        })),
     captureTerminal:
       dependencies.captureTerminal ??
       operations?.captureTerminal ??
