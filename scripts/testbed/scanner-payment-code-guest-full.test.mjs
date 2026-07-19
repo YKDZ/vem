@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   assertNoAttemptOrDuplicatePayment,
   combineCleanupError,
+  paymentCodeAttemptCorrelationReady,
   parseScannerPaymentCodeGuestArgs,
   pnpObservationMatchesDaemonIdentity,
   pnpObservationMatchesLibvirtTopology,
@@ -67,6 +68,22 @@ describe("scanner payment-code guest full", () => {
       /scannerEventId !==\s*attemptSnapshot\?\.paymentCodeAttempt\?\.scannerEventId/,
     );
     assert.match(source, /\/v1\/serial-sessions\/.*\/wait-frame/);
+  });
+
+  it("waits for all daemon attempt correlation fields before sampling", () => {
+    const sale = { orderId: "order-1", paymentId: "payment-1" };
+    const transaction = {
+      ...sale,
+      paymentCodeAttempt: {
+        scannerEventId: "event-1",
+        source: "serial_text",
+        attemptNo: 1,
+      },
+    };
+
+    assert.equal(paymentCodeAttemptCorrelationReady(transaction, sale), false);
+    transaction.paymentCodeAttempt.idempotencyKey = "attempt-1";
+    assert.equal(paymentCodeAttemptCorrelationReady(transaction, sale), true);
   });
 
   it("correlates an independently observed Windows PnP location to libvirt USB topology", () => {

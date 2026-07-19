@@ -205,6 +205,13 @@ function requiredObject(value, label) {
   return value;
 }
 
+function optionalFrameSourceBinding(value, label) {
+  if (value == null) {
+    return null;
+  }
+  return normalizeFrameSourceBinding(value, label);
+}
+
 function positiveNumber(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw new Error(`${label} must be a positive number`);
@@ -1319,10 +1326,24 @@ export function validateVisionProtocolEvidence(
     throw new Error("vision health evidence is invalid");
   }
   const ready = evidence?.ready ?? {};
-  const healthFrameSource = normalizeFrameSourceBinding(
-    health.frameSource ?? ready.payload?.frameSource,
+  const healthFrameSource = optionalFrameSourceBinding(
+    health.frameSource,
     "Vision health frame-source binding",
   );
+  const readyFrameSource = optionalFrameSourceBinding(
+    ready.payload?.frameSource,
+    "Vision ready frame-source binding",
+  );
+  const frameSourceBinding =
+    healthFrameSource ??
+    readyFrameSource ??
+    installedBinding?.frameSourceBinding ??
+    null;
+  if (!frameSourceBinding) {
+    throw new Error(
+      "Vision frame-source binding is unavailable for protocol evidence",
+    );
+  }
   if (
     ready.protocol !== "vem.vision.v1" ||
     ready.type !== "vision.ready" ||
@@ -1333,15 +1354,17 @@ export function validateVisionProtocolEvidence(
     ready.payload.serverName.trim() === "" ||
     ready.payload.modelReady !== true ||
     typeof ready.payload.cameraReady !== "boolean" ||
-    !Array.isArray(ready.payload.capabilities) ||
-    !ready.payload.frameSource
+    !Array.isArray(ready.payload.capabilities)
   ) {
     throw new Error("vision ready handshake is invalid");
   }
-  const readyFrameSource = normalizeFrameSourceBinding(
-    ready.payload.frameSource,
-    "Vision ready frame-source binding",
-  );
+  if (
+    healthFrameSource &&
+    readyFrameSource &&
+    JSON.stringify(healthFrameSource) !== JSON.stringify(readyFrameSource)
+  ) {
+    throw new Error("vision health and ready frame-source bindings drifted");
+  }
   for (const capability of [
     "profile_push",
     "presence_status",
@@ -1352,12 +1375,9 @@ export function validateVisionProtocolEvidence(
       throw new Error(`vision ready handshake is missing ${capability}`);
     }
   }
-  if (JSON.stringify(healthFrameSource) !== JSON.stringify(readyFrameSource)) {
-    throw new Error("vision health and ready frame-source bindings drifted");
-  }
   if (installedBinding?.frameSourceBinding) {
     if (
-      JSON.stringify(healthFrameSource) !==
+      JSON.stringify(frameSourceBinding) !==
       JSON.stringify(installedBinding.frameSourceBinding)
     ) {
       throw new Error(
@@ -1379,8 +1399,8 @@ export function validateVisionProtocolEvidence(
     "vision presence source frame",
     {
       role: "top",
-      configSha256: healthFrameSource.configSha256,
-      fixtureSha256: healthFrameSource.top.sha256,
+      configSha256: frameSourceBinding.configSha256,
+      fixtureSha256: frameSourceBinding.top.sha256,
     },
   );
   const profile = evidence?.profile ?? {};
@@ -1398,8 +1418,8 @@ export function validateVisionProtocolEvidence(
     "vision profile source frame",
     {
       role: "front",
-      configSha256: healthFrameSource.configSha256,
-      fixtureSha256: healthFrameSource.front.sha256,
+      configSha256: frameSourceBinding.configSha256,
+      fixtureSha256: frameSourceBinding.front.sha256,
     },
   );
   const departure = evidence?.departure ?? {};
@@ -1415,8 +1435,8 @@ export function validateVisionProtocolEvidence(
     "vision departure source frame",
     {
       role: "top",
-      configSha256: healthFrameSource.configSha256,
-      fixtureSha256: healthFrameSource.top.sha256,
+      configSha256: frameSourceBinding.configSha256,
+      fixtureSha256: frameSourceBinding.top.sha256,
     },
   );
   if (departureSourceFrame.frameIndex < presenceSourceFrame.frameIndex) {
@@ -1436,7 +1456,7 @@ export function validateVisionProtocolEvidence(
         ? ready.payload.serverVersion
         : null,
     capabilities: ready.payload.capabilities,
-    frameSourceBinding: healthFrameSource,
+    frameSourceBinding,
     presenceDetectedAt: presence.payload.detectedAt,
     profileDetectedAt: profile.payload.detectedAt,
     departureDetectedAt: departure.payload.detectedAt,

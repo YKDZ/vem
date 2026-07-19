@@ -619,13 +619,7 @@ where
                     finish_reset_successfully(writer, state, options).await?;
                 }
                 PickupOutcome::TimeoutThenBlocked => {
-                    send_repeated_frame(
-                        &writer,
-                        LowerFrame::PickupCompleted,
-                        3,
-                        options.event_repeat_interval,
-                    )
-                    .await?;
+                    send_frame(&writer, LowerFrame::PickupCompleted).await?;
                     set_state(&state, ControllerState::Resetting).await;
                     sleep(options.reset_duration).await;
                     set_state(&state, ControllerState::PickupPlatformBlocked).await;
@@ -836,24 +830,6 @@ where
         crc,
         raw: vec![FRAME_HEAD, layer_no, cell_no, crc],
     })
-}
-
-async fn send_repeated_frame<W>(
-    writer: &SharedWriter<W>,
-    frame: LowerFrame,
-    count: usize,
-    interval: Duration,
-) -> Result<(), SimulatorError>
-where
-    W: AsyncWrite + Unpin + Send,
-{
-    for index in 0..count {
-        send_frame(writer, frame).await?;
-        if index + 1 < count {
-            sleep(interval).await;
-        }
-    }
-    Ok(())
 }
 
 async fn send_observed_repeated_frame<W>(
@@ -1209,6 +1185,42 @@ mod tests {
         assert_eq!(
             read_until_code(&mut stream, 0xF2).await,
             LowerFrame::ResetCompletedFrame
+        );
+
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_emits_single_pickup_completed_before_blocked_terminal_failure() {
+        let (mut stream, control_tx, handle) =
+            start_test_simulator(DispenseScenario::PickupTimeoutBlocked).await;
+
+        stream
+            .write_all(&build_dispense_frame(2, 5).expect("frame"))
+            .await
+            .expect("write dispense");
+
+        assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
+        assert_eq!(
+            read_until_code(&mut stream, 0xF0).await,
+            LowerFrame::ArrivalAtOutlet
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xE5).await,
+            LowerFrame::PickupTimeout
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xE5).await,
+            LowerFrame::PickupTimeout
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xF1).await,
+            LowerFrame::PickupCompleted
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xE6).await,
+            LowerFrame::PickupPlatformBlocked
         );
 
         control_tx.send(ControlCommand::Quit).expect("quit");

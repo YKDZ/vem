@@ -38,6 +38,10 @@ const adapterPath = new URL(
   import.meta.url,
 ).pathname;
 
+function isIso8601(value) {
+  return Number.isFinite(Date.parse(value));
+}
+
 function makeTempDir(prefix) {
   const path = join(
     process.cwd(),
@@ -625,6 +629,92 @@ describe("host serial control plane", () => {
     }
   });
 
+  it("accepts E6 boundaries with 15/25-second pickup timeout warning timing", async () => {
+    const root = makeTempDir("vem-host-serial-e6-timeout");
+    const journalPath = join(root, "raw-serial.jsonl");
+    try {
+      writeFileSync(
+        journalPath,
+        [
+          {
+            direction: "daemon-to-controller",
+            rawFrameHex: "55010112",
+            opcode: 1,
+            parsedOpcode: "VEND",
+            capturedAt: "2026-07-18T08:00:00.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F0",
+            opcode: 240,
+            parsedOpcode: "F0",
+            capturedAt: "2026-07-18T08:00:01.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+            capturedAt: "2026-07-18T08:00:16.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E5",
+            opcode: 229,
+            parsedOpcode: "E5",
+            capturedAt: "2026-07-18T08:00:26.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55F1",
+            opcode: 241,
+            parsedOpcode: "F1",
+            capturedAt: "2026-07-18T08:00:28.000Z",
+          },
+          {
+            direction: "controller-to-daemon",
+            rawFrameHex: "55E6",
+            opcode: 230,
+            parsedOpcode: "E6",
+            capturedAt: "2026-07-18T08:00:35.000Z",
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n",
+      );
+      const e6Boundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "E6",
+        serialScenario: "e6",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        e6Boundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["VEND", "F0", "E5", "E5", "F1", "E6"],
+      );
+
+      const frames = e6Boundary.protocolFrames;
+      const f0 = frames.find((frame) => frame.parsedOpcode === "F0");
+      const e5 = frames.filter((frame) => frame.parsedOpcode === "E5");
+      assert.equal(
+        frames.some((frame) => frame.parsedOpcode === "F1"),
+        true,
+      );
+      assert.equal(isIso8601(f0?.capturedAt), true);
+      assert.equal(isIso8601(e5[0]?.capturedAt), true);
+      assert.equal(isIso8601(e5[1]?.capturedAt), true);
+      const f0At = Date.parse(f0.capturedAt);
+      const e5aAt = Date.parse(e5[0].capturedAt);
+      const e5bAt = Date.parse(e5[1].capturedAt);
+      const firstDelta = e5aAt - f0At;
+      const secondDelta = e5bAt - f0At;
+      assert.ok(firstDelta > 12_000 && firstDelta < 18_000);
+      assert.ok(secondDelta > 22_000 && secondDelta < 28_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("serves sale audio start/stop over HTTP and exports timestamped raw serial evidence through the host control plane", async () => {
     const root = makeTempDir("vem-host-audio-http");
     const workspace = new URL("../..", import.meta.url).pathname;
@@ -735,7 +825,10 @@ describe("host serial control plane", () => {
         probe.scannerBindingProbe.purpose,
         "non_payment_scanner_binding_probe",
       );
-      assert.equal(probe.scannerBindingProbe.stopReason, "daemon_binding_confirmed");
+      assert.equal(
+        probe.scannerBindingProbe.stopReason,
+        "daemon_binding_confirmed",
+      );
       assert.equal(typeof probe.scannerBindingProbe.stoppedAt, "string");
       const sessionPaths = qemuUsbSerialSessionPaths(
         process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,

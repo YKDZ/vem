@@ -521,6 +521,20 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
+export function paymentCodeAttemptCorrelationReady(transaction, renderedSale) {
+  const attempt = transaction?.paymentCodeAttempt ?? null;
+  return (
+    transaction?.orderId === renderedSale.orderId &&
+    transaction?.paymentId === renderedSale.paymentId &&
+    typeof attempt?.scannerEventId === "string" &&
+    attempt.scannerEventId.length > 0 &&
+    attempt.source === "serial_text" &&
+    Number.isSafeInteger(attempt.attemptNo) &&
+    typeof attempt.idempotencyKey === "string" &&
+    attempt.idempotencyKey.length > 0
+  );
+}
+
 async function waitForPaymentCodeAttempt(
   handoff,
   renderedSale,
@@ -534,14 +548,7 @@ async function waitForPaymentCodeAttempt(
       "/v1/transactions/current",
     ).catch(() => null);
     lastTransaction = transaction;
-    const attempt = transaction?.paymentCodeAttempt ?? null;
-    if (
-      transaction?.orderId === renderedSale.orderId &&
-      transaction?.paymentId === renderedSale.paymentId &&
-      typeof attempt?.scannerEventId === "string" &&
-      attempt.scannerEventId.length > 0 &&
-      attempt.source === "serial_text"
-    ) {
+    if (paymentCodeAttemptCorrelationReady(transaction, renderedSale)) {
       return transaction;
     }
     await sleep(250);

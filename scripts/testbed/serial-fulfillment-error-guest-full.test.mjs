@@ -12,6 +12,15 @@ const sale = {
   orderNo: "ORDER-20",
 };
 const liveSale = { ...sale, vendingCommandId: "command-20" };
+const BASE_E6_TIME_MS = Date.parse("2026-07-18T08:00:00.000Z");
+
+function e6Frame(opcode, offsetMs, partial = {}) {
+  return {
+    parsedOpcode: opcode,
+    capturedAt: new Date(BASE_E6_TIME_MS + offsetMs).toISOString(),
+    ...partial,
+  };
+}
 
 function evidence(overrides = {}) {
   return {
@@ -41,14 +50,18 @@ function evidence(overrides = {}) {
         vendingCommandId: liveSale.vendingCommandId,
       },
       rawFrames: [
-        { parsedOpcode: "VEND" },
-        { parsedOpcode: "F0" },
-        { parsedOpcode: "E5" },
-        { parsedOpcode: "E5" },
-        { parsedOpcode: "E6" },
+        e6Frame("VEND", 0),
+        e6Frame("F0", 1_000),
+        e6Frame("E5", 16_000),
+        e6Frame("E5", 26_000),
+        e6Frame("F1", 28_000),
+        e6Frame("E6", 35_000),
       ],
     },
-    ui: { route: "#/dispensing", trace: [{ type: "dispense_failure" }] },
+    ui: {
+      route: "#/result/dispense_failed",
+      trace: [{ type: "dispense_failure" }],
+    },
     ...overrides,
   };
 }
@@ -106,7 +119,50 @@ describe("serial fulfillment error guest full", () => {
         validateSerialFulfillmentErrorEvidence(
           evidence({ ui: { route: "#/result/success" } }),
         ),
-      /must never project success/,
+      /must end on dispense_failed/,
+    );
+  });
+
+  it("accepts strict E6 timing around the 15s/25s timeout warnings", () => {
+    assert.deepEqual(
+      validateSerialFulfillmentErrorEvidence(
+        evidence({
+          serial: {
+            ...evidence().serial,
+            rawFrames: [
+              e6Frame("VEND", 0),
+              e6Frame("F0", 0),
+              e6Frame("E5", 15_000),
+              e6Frame("E5", 25_000),
+              e6Frame("F1", 25_000),
+              e6Frame("E6", 40_000),
+            ],
+          },
+        }),
+      ).orderStatus,
+      "refunded",
+    );
+  });
+
+  it("rejects E6 frames that violate 15s/25s pickup timeout spacing", () => {
+    assert.throws(
+      () =>
+        validateSerialFulfillmentErrorEvidence(
+          evidence({
+            serial: {
+              ...evidence().serial,
+              rawFrames: [
+                e6Frame("VEND", 0),
+                e6Frame("F0", 0),
+                e6Frame("E5", 8_000),
+                e6Frame("E5", 17_000),
+                e6Frame("F1", 20_000),
+                e6Frame("E6", 35_000),
+              ],
+            },
+          }),
+        ),
+      /first pickup timeout warning timing must be within the timeout window/,
     );
   });
 });

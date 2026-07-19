@@ -114,7 +114,10 @@ describe("repo QEMU USB serial host adapter", () => {
   it("publishes the live libvirt USB topology for both serial roles", () => {
     const mappings = parseLibvirtUsbSerialMappings(domainXml());
     assert.deepEqual(
-      mappings.map(({ role, guestUsbTopology }) => ({ role, guestUsbTopology })),
+      mappings.map(({ role, guestUsbTopology }) => ({
+        role,
+        guestUsbTopology,
+      })),
       [
         {
           role: "lower-controller",
@@ -139,7 +142,9 @@ describe("repo QEMU USB serial host adapter", () => {
   });
 
   it("publishes semantic role aliases after libvirt alias normalization", () => {
-    const mappings = parseLibvirtUsbSerialMappings(libvirtNormalizedDomainXml());
+    const mappings = parseLibvirtUsbSerialMappings(
+      libvirtNormalizedDomainXml(),
+    );
     assert.equal(mappings[0].alias, "serial0");
     assert.equal(mappings[1].alias, "serial1");
   });
@@ -362,10 +367,7 @@ describe("repo QEMU USB serial host adapter", () => {
 
   it("uses the stable socat log as the single raw serial journal", () => {
     const source = readFileSync(adapterPath, "utf8");
-    assert.match(
-      source,
-      /journalPath: join\(path, "raw-serial\.socat\.log"\)/,
-    );
+    assert.match(source, /journalPath: join\(path, "raw-serial\.socat\.log"\)/);
     assert.match(source, /const journalPath = qemuUsbSerialSessionPaths\(/);
     assert.match(source, /"-lf",\s*socatLifecycleLogPath/);
     assert.match(
@@ -464,12 +466,107 @@ describe("repo QEMU USB serial host adapter", () => {
     }
   });
 
+  it("passes E6 failure scenario through to the lower-controller simulator state", () => {
+    const root = makeTempDir("vem-qemu-adapter-e6");
+    const bin = join(root, "bin");
+    const stateRoot = join(root, "state");
+    const out = join(root, "start.json");
+    const argvLog = join(root, "simulator-argv.log");
+    mkdirSync(bin, { recursive: true });
+    const virsh = join(bin, "virsh");
+    const simulator = join(bin, "lower-controller-sim");
+    const socat = join(bin, "socat");
+    writeFileSync(virsh, `#!/bin/sh\ncat <<'XML'\n${domainXml()}\nXML\n`);
+    writeFileSync(
+      simulator,
+      `#!/bin/sh\nprintf '%s\\n' \"$@\" > \"${argvLog}\"\\nexec sleep 60\\n`,
+    );
+    writeFileSync(
+      socat,
+      '#!/bin/sh\nfor value in "$@"; do case "$value" in PTY,link=*) path=${value#PTY,link=}; path=${path%%,*}; touch "$path";; esac; done\nexec sleep 60\n',
+    );
+    chmodSync(virsh, 0o755);
+    chmodSync(simulator, 0o755);
+    chmodSync(socat, 0o755);
+    chmodSync(adapterPath, 0o755);
+    let simulatorPid = null;
+    let bridgePid = null;
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/run-vm-host-adapter.mjs",
+          "--operation",
+          "start-serial-session",
+          "--run-id",
+          "RUN-ISSUE19-E6",
+          "--target-identity",
+          "vm-target://release-testbed-0001",
+          "--runtime-base",
+          `runtime-base://sha256/${"c".repeat(64)}`,
+          "--sale-correlation-id",
+          "sale-correlation://issue19-e6",
+          "--out",
+          out,
+        ],
+        {
+          cwd: new URL("../..", import.meta.url).pathname,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            RUNNER_TEMP: join(root, "runner-temp"),
+            VEM_VM_HOST_ADAPTER: adapterPath,
+            VEM_VM_HOST_ADAPTER_VERSION: QEMU_USB_SERIAL_ADAPTER_VERSION,
+            VEM_VM_HOST_ADAPTER_SHA256: `sha256:${createHash("sha256").update(readFileSync(adapterPath)).digest("hex")}`,
+            VEM_VM_HOST_ADAPTER_DOMAIN: "win10-runtime-testbed",
+            VEM_VM_HOST_ADAPTER_STATE_ROOT: stateRoot,
+            VEM_LOWER_CONTROLLER_SIM: simulator,
+            VEM_LOCAL_TESTBED_SERIAL_SCENARIO: "e6",
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const [sessionDirectory] = readdirSync(join(stateRoot, "sessions"));
+      const state = JSON.parse(
+        readFileSync(
+          join(stateRoot, "sessions", sessionDirectory, "state.json"),
+          "utf8",
+        ),
+      );
+      simulatorPid = state.simulatorPid;
+      bridgePid = state.ptyCapturePid;
+      assert.equal(state.serialScenario, "e6");
+      if (existsSync(argvLog)) {
+        assert.match(
+          readFileSync(argvLog, "utf8"),
+          /--scenario\npickup-timeout-blocked\n/,
+        );
+      }
+    } finally {
+      if (Number.isInteger(simulatorPid)) {
+        try {
+          process.kill(-simulatorPid, "SIGTERM");
+        } catch {}
+      }
+      if (Number.isInteger(bridgePid)) {
+        try {
+          process.kill(-bridgePid, "SIGKILL");
+        } catch {}
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the scanner PTY open until binding confirmation stops the probe", () => {
     const implementation = readFileSync(adapterPath, "utf8");
     assert.match(implementation, /const fd = openSync\(path, 'a'\)/);
     assert.match(implementation, /setInterval\(emit, 500\)/);
     assert.match(implementation, /process\.on\('SIGUSR1'/);
     assert.match(implementation, /process\.kill\(-probe\.pid, "SIGUSR1"\)/);
-    assert.doesNotMatch(implementation, /appendFileSync\(path, bytes\); process\.exit/);
+    assert.doesNotMatch(
+      implementation,
+      /appendFileSync\(path, bytes\); process\.exit/,
+    );
   });
 });

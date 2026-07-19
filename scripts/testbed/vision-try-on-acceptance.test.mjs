@@ -283,6 +283,139 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("accepts missing frameSource when installed binding is supplied", () => {
+    const binding = frameSourceBinding();
+    const summary = validateVisionProtocolEvidence(
+      {
+        health: {
+          status: "ok",
+          protocol: "vem.vision.v1",
+          modelReady: true,
+          cameraReady: true,
+        },
+        ready: {
+          protocol: "vem.vision.v1",
+          type: "vision.ready",
+          messageId: "ready-1",
+          timestamp: "2026-07-18T00:00:00.000Z",
+          payload: {
+            serverName: "vem-vision-runtime",
+            serverVersion: "1.2.3",
+            modelReady: true,
+            cameraReady: true,
+            capabilities: [
+              "profile_push",
+              "presence_status",
+              "person_departed",
+              "try_on_session",
+            ],
+          },
+        },
+        presence: {
+          type: "vision.presence_status",
+          payload: {
+            source: "top",
+            detectedAt: "2026-07-18T00:00:01.000Z",
+            personPresent: true,
+            sourceFrame: sourceFrame("top", "b".repeat(64)),
+          },
+        },
+        profile: {
+          type: "vision.profile_result",
+          payload: {
+            source: "front",
+            detectedAt: "2026-07-18T00:00:02.000Z",
+            profile: { personPresent: true },
+            quality: { profileUsable: true },
+            sourceFrame: sourceFrame("front", "c".repeat(64), {
+              frameIndex: 8,
+              decodedFrameCount: 9,
+            }),
+          },
+        },
+        departure: {
+          type: "vision.person_departed",
+          payload: {
+            source: "top",
+            detectedAt: "2026-07-18T00:00:03.000Z",
+            sourceFrame: sourceFrame("top", "b".repeat(64), {
+              frameIndex: 12,
+              decodedFrameCount: 13,
+            }),
+          },
+        },
+      },
+      { frameSourceBinding: binding },
+    );
+    assert.deepEqual(summary.frameSourceBinding, binding);
+  });
+
+  it("fails when neither health/ready nor installed binding provides frameSource", () => {
+    assert.throws(
+      () =>
+        validateVisionProtocolEvidence({
+          health: {
+            status: "ok",
+            protocol: "vem.vision.v1",
+            modelReady: true,
+            cameraReady: true,
+          },
+          ready: {
+            protocol: "vem.vision.v1",
+            type: "vision.ready",
+            messageId: "ready-1",
+            timestamp: "2026-07-18T00:00:00.000Z",
+            payload: {
+              serverName: "vem-vision-runtime",
+              serverVersion: "1.2.3",
+              modelReady: true,
+              cameraReady: true,
+              capabilities: [
+                "profile_push",
+                "presence_status",
+                "person_departed",
+                "try_on_session",
+              ],
+            },
+          },
+          presence: {
+            type: "vision.presence_status",
+            payload: {
+              source: "top",
+              detectedAt: "2026-07-18T00:00:01.000Z",
+              personPresent: true,
+              sourceFrame: sourceFrame("top", "b".repeat(64)),
+            },
+          },
+          profile: {
+            type: "vision.profile_result",
+            payload: {
+              source: "front",
+              detectedAt: "2026-07-18T00:00:02.000Z",
+              profile: { personPresent: true },
+              quality: { profileUsable: true },
+              sourceFrame: sourceFrame("front", "c".repeat(64), {
+                frameIndex: 8,
+                decodedFrameCount: 9,
+              }),
+            },
+          },
+          departure: {
+            type: "vision.person_departed",
+            payload: {
+              source: "top",
+              detectedAt: "2026-07-18T00:00:03.000Z",
+              sourceFrame: sourceFrame("top", "b".repeat(64), {
+                frameIndex: 12,
+                decodedFrameCount: 13,
+              }),
+            },
+          },
+        }),
+      /Vision frame-source binding is unavailable for protocol evidence/,
+    );
+  });
+
   it("normalizes fixture protocol semantics separately from seeded runtime identity", () => {
     const normalized = normalizeVisionExpectedResults(baseExpectedResults());
     assert.equal(normalized.protocol.profile.source, "front");

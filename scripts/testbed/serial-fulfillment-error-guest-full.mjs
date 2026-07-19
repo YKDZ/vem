@@ -22,6 +22,35 @@ const TERMINAL_FAILURE_ORDER_STATUSES = new Set([
   "manual_handling",
 ]);
 
+const EXPECTED_E6_PROTOCOL_SEQUENCE = Object.freeze([
+  "VEND",
+  "F0",
+  "E5",
+  "E5",
+  "F1",
+  "E6",
+]);
+const E6_WARNING_TIMING_WINDOWS_MS = Object.freeze({
+  firstWarningMs: 15_000,
+  secondWarningMs: 25_000,
+  toleranceMs: 2_500,
+});
+
+function assertWithinTolerance(actual, expected, tolerance, message) {
+  const delta = actual - expected;
+  if (Math.abs(delta) > tolerance) {
+    throw new Error(
+      `${message}: ${actual}ms (expected ${expected}ms ± ${tolerance}ms)`,
+    );
+  }
+}
+
+function parseIsoTimestamp(value) {
+  if (typeof value !== "string") return Number.NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -229,9 +258,49 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
     );
   }
   const opcodes = (serial.rawFrames ?? []).map((frame) => frame.parsedOpcode);
+  const protocolFrames = (serial.rawFrames ?? []).filter((frame) =>
+    ["VEND", "F0", "E5", "F1", "AF", "F2", "E6"].includes(frame.parsedOpcode),
+  );
   if (!opcodes.includes("E6") || opcodes.includes("F2")) {
     throw new Error("serial failure must contain E6 and must not contain F2");
   }
+  if (
+    JSON.stringify(protocolFrames.map((frame) => frame.parsedOpcode)) !==
+    JSON.stringify(EXPECTED_E6_PROTOCOL_SEQUENCE)
+  ) {
+    throw new Error(
+      `serial failure raw protocol must match ${EXPECTED_E6_PROTOCOL_SEQUENCE.join(" -> ")}`,
+    );
+  }
+
+  const f0 = protocolFrames.find((frame) => frame.parsedOpcode === "F0");
+  const e5 = protocolFrames.filter((frame) => frame.parsedOpcode === "E5");
+  const f1 = protocolFrames.find((frame) => frame.parsedOpcode === "F1");
+  const f0At = parseIsoTimestamp(f0?.capturedAt);
+  const firstE5At = parseIsoTimestamp(e5[0]?.capturedAt);
+  const secondE5At = parseIsoTimestamp(e5[1]?.capturedAt);
+  if (
+    Number.isNaN(f0At) ||
+    Number.isNaN(firstE5At) ||
+    Number.isNaN(secondE5At) ||
+    !f1
+  ) {
+    throw new Error(
+      "serial failure must include timestamped F0, E5, and F1 frames",
+    );
+  }
+  assertWithinTolerance(
+    firstE5At - f0At,
+    E6_WARNING_TIMING_WINDOWS_MS.firstWarningMs,
+    E6_WARNING_TIMING_WINDOWS_MS.toleranceMs,
+    "first pickup timeout warning timing must be within the timeout window",
+  );
+  assertWithinTolerance(
+    secondE5At - f0At,
+    E6_WARNING_TIMING_WINDOWS_MS.secondWarningMs,
+    E6_WARNING_TIMING_WINDOWS_MS.toleranceMs,
+    "second pickup timeout warning timing must be within the timeout window",
+  );
   if (
     rows(final.platform, "movements").some(
       (row) => row.orderNo === sale.orderNo,
@@ -248,12 +317,12 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
     throw new Error("failed fulfillment must have stock delta 0");
   }
   if (
-    ui?.route === "#/result/success" ||
+    ui?.route !== "#/result/dispense_failed" ||
     ui?.result?.kind === "success" ||
     hasBoundSuccess(ui?.trace, sale)
   )
     throw new Error(
-      "customer UI must never project success for the failed sale",
+      "customer UI must end on dispense_failed for the failed sale",
     );
   return {
     orderStatus: order.status,
@@ -432,6 +501,21 @@ export async function runSerialFulfillmentErrorGuest(options) {
       `/v1/serial-sessions/${session.sessionId}/wait-frame`,
       { parsedOpcode: "E6", timeoutMs: 50_000 },
     );
+    await waitForRoute(client, "#/result/dispense_failed", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    report.evidence.resultUi = await readUi(client).catch((error) => ({
+      error: String(error),
+    }));
+    await activateVisibleSelector(client, ".failure-return-button", {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     stage = "wait-authoritative-recovery";
     const deadline = Date.now() + 60_000;
     do {
@@ -469,7 +553,7 @@ export async function runSerialFulfillmentErrorGuest(options) {
       liveSale,
       serial: report.evidence.serial,
       daemon: report.evidence.daemon,
-      ui: report.evidence.ui,
+      ui: report.evidence.resultUi,
     });
     report.ok = true;
     stage = "complete";
