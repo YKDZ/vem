@@ -252,6 +252,31 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
+async function waitForPaymentCodeArm(handoff, renderedSale, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTransaction = null;
+  let consecutiveReady = 0;
+  while (Date.now() < deadline) {
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
+    lastTransaction = transaction;
+    const ready =
+      transaction?.orderId === renderedSale.orderId &&
+      transaction?.paymentId === renderedSale.paymentId &&
+      transaction?.orderStatus === "pending_payment" &&
+      transaction?.paymentStatus === "pending" &&
+      transaction?.nextAction === "wait_payment";
+    consecutiveReady = ready ? consecutiveReady + 1 : 0;
+    if (consecutiveReady >= 2) return transaction;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  throw new Error(
+    `payment-code transaction did not become armed: ${JSON.stringify(lastTransaction)}`,
+  );
+}
+
 async function readRenderedPaymentSurface(client) {
   const hook = await evaluateExpression(
     client,
@@ -763,6 +788,7 @@ async function runDelayedPickupGuestFull(options) {
       pollMs: 250,
     });
     const paymentSurface = await readRenderedPaymentSurface(client);
+    await waitForPaymentCodeArm(handoff, paymentSurface);
     await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/inject`,
