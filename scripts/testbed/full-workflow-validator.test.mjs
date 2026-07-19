@@ -103,7 +103,7 @@ function sampleFastReport() {
       platformStockDeltaAfterF2: -1,
       guardedNavigationReason: "active_transaction_route",
       visionEventId: "VISION-1",
-      repeatedPhysicalTouchTraceId: "TRACE-1",
+      repeatedPhysicalTouchTraceId: 18,
     },
   };
 }

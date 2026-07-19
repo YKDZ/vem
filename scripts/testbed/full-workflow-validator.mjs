@@ -97,7 +97,7 @@ function validateFastTrack(report, reportPath) {
     summary.daemonStockDeltaAfterF2 !== -1 ||
     summary.platformStockDeltaAfterF2 !== -1 ||
     typeof summary.visionEventId !== "string" ||
-    typeof summary.repeatedPhysicalTouchTraceId !== "string"
+    !Number.isInteger(summary.repeatedPhysicalTouchTraceId)
   ) {
     return failedTrack(
       "standardSale",
