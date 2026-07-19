@@ -42,6 +42,7 @@ const HOST_CONTROL_PLANE_PORT = 26851;
 const MODES = new Set(["fast", "full", "clear_cache"]);
 const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\pnpm-store",
+  "D:\\runtime-cache\\v1\\pnpm-virtual-store",
   "D:\\runtime-cache\\v1\\cargo-home",
   "D:\\runtime-cache\\v1\\target",
   "D:\\runtime-cache\\v1\\sccache",

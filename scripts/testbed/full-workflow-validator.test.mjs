@@ -119,6 +119,7 @@ function sampleIdentity(reconstruction = "a") {
     reconstructionId: `reconstruction://sha256/${reconstruction.repeat(64).slice(0, 64)}`,
     retainedCaches: [
       "D:\\runtime-cache\\v1\\pnpm-store",
+      "D:\\runtime-cache\\v1\\pnpm-virtual-store",
       "D:\\runtime-cache\\v1\\cargo-home",
       "D:\\runtime-cache\\v1\\target",
       "D:\\runtime-cache\\v1\\sccache",
@@ -128,6 +129,7 @@ function sampleIdentity(reconstruction = "a") {
     ],
     observedRetainedCaches: [
       "D:\\runtime-cache\\v1\\pnpm-store",
+      "D:\\runtime-cache\\v1\\pnpm-virtual-store",
       "D:\\runtime-cache\\v1\\cargo-home",
       "D:\\runtime-cache\\v1\\target",
       "D:\\runtime-cache\\v1\\sccache",
@@ -472,7 +474,7 @@ describe("full workflow stability gate", () => {
     assert.deepEqual(report.gateFailures, []);
     assert.equal(
       report.declaredStateReconstruction.retainedCachesAllowlist.length,
-      7,
+      8,
     );
   });
 

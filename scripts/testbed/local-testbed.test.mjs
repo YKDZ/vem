@@ -1167,6 +1167,9 @@ describe("Windows D cache contract", () => {
       "sccache --show-stats",
       "& $pnpm config set store-dir",
       "& $pnpm config get store-dir",
+      "& $pnpm config set virtual-store-dir",
+      "& $pnpm config get virtual-store-dir",
+      "& $pnpm fetch --frozen-lockfile",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1194,6 +1197,8 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "sccache\\bin\\\$version"/);
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
+    assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
+    assert.match(guest, /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/);
     assert.match(
       guest,
       /function Clear-DeclaredCaches \{\s+foreach \(\$path in \$declaredCachePaths\) \{\s+Remove-Item -LiteralPath \$path -Recurse -Force -ErrorAction SilentlyContinue/s,

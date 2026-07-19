@@ -24,6 +24,7 @@ $env:NO_PROXY = $proxyBypass -join ","
 $env:no_proxy = $env:NO_PROXY
 $declaredCachePaths = @(
   (Join-Path $cacheRoot "pnpm-store"),
+  (Join-Path $cacheRoot "pnpm-virtual-store"),
   (Join-Path $cacheRoot "cargo-home"),
   (Join-Path $cacheRoot "target"),
   (Join-Path $cacheRoot "sccache"),
@@ -414,6 +415,7 @@ $env:CARGO_TARGET_DIR = Join-Path $cacheRoot "target"
 $env:SCCACHE_DIR = Join-Path $cacheRoot "sccache"
 $env:TURBO_CACHE_DIR = Join-Path $cacheRoot "turbo"
 $env:PNPM_STORE_PATH = Join-Path $cacheRoot "pnpm-store"
+$env:PNPM_VIRTUAL_STORE_ROOT = Join-Path $cacheRoot "pnpm-virtual-store"
 $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
 $sccache = Get-TestbedSccache
 Write-TestbedPhase "sccache-ready"
@@ -426,14 +428,24 @@ foreach ($pair in @{
   SCCACHE_DIR = $env:SCCACHE_DIR
   TURBO_CACHE_DIR = $env:TURBO_CACHE_DIR
   PNPM_STORE_PATH = $env:PNPM_STORE_PATH
+  PNPM_VIRTUAL_STORE_ROOT = $env:PNPM_VIRTUAL_STORE_ROOT
   CARGO_HOME = $env:CARGO_HOME
 }.GetEnumerator()) { Assert-DeclaredCachePath $pair.Value $pair.Key }
 $pnpm = "C:\Program Files\nodejs\pnpm.cmd"
 Require-Path $pnpm
+$pnpmLockPath = Join-Path $repoRoot "pnpm-lock.yaml"
+Require-Path $pnpmLockPath
+$pnpmLockDigest = (Get-FileHash -LiteralPath $pnpmLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$pnpmVirtualStorePath = Join-Path $env:PNPM_VIRTUAL_STORE_ROOT $pnpmLockDigest
 Write-TestbedPhase "dependencies"
 & $pnpm config set store-dir $env:PNPM_STORE_PATH --location global
 if ($LASTEXITCODE -ne 0) { throw "pnpm store configuration failed" }
 if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnpm store-dir did not resolve to D: cache" }
+& $pnpm config set virtual-store-dir $pnpmVirtualStorePath --location global
+if ($LASTEXITCODE -ne 0) { throw "pnpm virtual store configuration failed" }
+if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { throw "pnpm virtual-store-dir did not resolve to lock-keyed D: cache" }
+& $pnpm fetch --frozen-lockfile
+if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
 & $pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR

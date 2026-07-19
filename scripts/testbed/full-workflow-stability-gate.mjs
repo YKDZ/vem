@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\pnpm-store",
+  "D:\\runtime-cache\\v1\\pnpm-virtual-store",
   "D:\\runtime-cache\\v1\\cargo-home",
   "D:\\runtime-cache\\v1\\target",
   "D:\\runtime-cache\\v1\\sccache",
