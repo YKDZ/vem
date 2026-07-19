@@ -39,7 +39,7 @@ const secretStatusSchema = z.strictObject({
 const stableSerialIdentitySchema = z.strictObject({
   identityKey: z.string().trim().min(1).max(256),
   instanceId: z.string().trim().min(1).max(512).nullable(),
-  containerId: z.string().uuid().nullable(),
+  containerId: z.uuid().nullable(),
   hardwareIds: z.array(z.string().trim().min(1).max(256)).max(16),
   serialNumber: z.string().trim().min(1).max(128).nullable(),
 });
