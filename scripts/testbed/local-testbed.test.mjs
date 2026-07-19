@@ -1414,7 +1414,7 @@ describe("local testbed fixture", () => {
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
       fixture.slots.map((slot) => slot.slotCode),
-      ["A1", "A2", "A3", "A4", "A5", "A6"],
+      ["A1", "A2", "A3", "A4", "A5", "B1"],
     );
     const implementation = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),
