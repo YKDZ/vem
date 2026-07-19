@@ -23,7 +23,8 @@ const MODES = new Set(["full"]);
 const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
 const VISION_LAUNCHER_PATH = "C:\\VEM\\bringup\\start_vision.bat";
 const VISION_RUNTIME_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
-const VISION_SITE_CONFIGURATION_PATH = "C:\\ProgramData\\VEM\\vision\\site.json";
+const VISION_SITE_CONFIGURATION_PATH =
+  "C:\\ProgramData\\VEM\\vision\\site.json";
 const VISION_INSTALLED_RECORD_PATH =
   "C:\\ProgramData\\VEM\\vision\\installed.json";
 const VISION_FIXTURE_ROOT = "C:\\ProgramData\\VEM\\vision\\fixtures";
@@ -42,9 +43,7 @@ function required(value, label) {
 }
 
 function optionalString(value) {
-  return typeof value === "string" && value.trim() !== ""
-    ? value.trim()
-    : null;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function windowsAbsolute(value, label) {
@@ -67,14 +66,18 @@ function option(args, name) {
 function localPath(path) {
   return process.platform === "win32"
     ? path
-    : resolve(`/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`);
+    : resolve(
+        `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
+      );
 }
 
 function readJson(path, label) {
   try {
     return JSON.parse(readFileSync(localPath(path), "utf8"));
   } catch (error) {
-    throw new Error(`${label} is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `${label} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -116,7 +119,10 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
     );
     mkdirSync(root, { recursive: true });
     const destination = join(root, `${label}.tail.log`);
-    writeFileSync(destination, bytes.subarray(Math.max(0, bytes.length - maxBytes)));
+    writeFileSync(
+      destination,
+      bytes.subarray(Math.max(0, bytes.length - maxBytes)),
+    );
     return {
       ref: destination,
       source: sourcePath,
@@ -136,7 +142,10 @@ function sleep(ms) {
 }
 
 function daemonBaseUrl(handoff) {
-  const healthzUrl = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
+  const healthzUrl = required(
+    handoff.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -174,7 +183,9 @@ async function waitForCondition(name, predicate, timeoutMs, pollMs = 500) {
     if (last?.ok) return last.value;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
-  throw new Error(`${name} did not become true in ${timeoutMs} ms: ${JSON.stringify(last?.value ?? null)}`);
+  throw new Error(
+    `${name} did not become true in ${timeoutMs} ms: ${JSON.stringify(last?.value ?? null)}`,
+  );
 }
 
 function isVisionProtocolTimestamp(value) {
@@ -227,7 +238,10 @@ function windowsUserIdentifier(value, label) {
   return slash === -1 ? user : user.slice(slash + 1);
 }
 
-function normalizeFrameSourceBinding(binding, label = "Vision frame-source binding") {
+function normalizeFrameSourceBinding(
+  binding,
+  label = "Vision frame-source binding",
+) {
   const facts = requiredObject(binding, label);
   return {
     adapter: required(facts.adapter, `${label} adapter`),
@@ -268,14 +282,8 @@ function validateSourceFrameEvidence(
   const normalized = {
     adapter: evidence.adapter,
     role: evidence.role,
-    configSha256: sha256Hex(
-      evidence.configSha256,
-      `${label} configSha256`,
-    ),
-    fixtureSha256: sha256Hex(
-      evidence.fixtureSha256,
-      `${label} fixtureSha256`,
-    ),
+    configSha256: sha256Hex(evidence.configSha256, `${label} configSha256`),
+    fixtureSha256: sha256Hex(evidence.fixtureSha256, `${label} fixtureSha256`),
     frameIndex: nonNegativeInteger(evidence.frameIndex, `${label} frameIndex`),
     decodedFrameCount: positiveNumber(
       evidence.decodedFrameCount,
@@ -290,13 +298,19 @@ function validateSourceFrameEvidence(
     throw new Error(`${label} cannot be synthetic or relabeled`);
   }
   if (normalized.frameIndex >= normalized.decodedFrameCount) {
-    throw new Error(`${label} frameIndex must be smaller than decodedFrameCount`);
+    throw new Error(
+      `${label} frameIndex must be smaller than decodedFrameCount`,
+    );
   }
   if (normalized.configSha256 !== configSha256) {
-    throw new Error(`${label} configSha256 drifted from the installed site configuration`);
+    throw new Error(
+      `${label} configSha256 drifted from the installed site configuration`,
+    );
   }
   if (normalized.fixtureSha256 !== fixtureSha256) {
-    throw new Error(`${label} fixtureSha256 drifted from the committed fixture`);
+    throw new Error(
+      `${label} fixtureSha256 drifted from the committed fixture`,
+    );
   }
   if (sessionId && normalized.sessionId !== sessionId) {
     throw new Error(`${label} sessionId drifted from the try-on session`);
@@ -396,7 +410,11 @@ function resolveSelectedSeededEntry(
   };
 }
 
-export function combineCleanupFailure(primaryError, cleanupError, label = "cleanup") {
+export function combineCleanupFailure(
+  primaryError,
+  cleanupError,
+  label = "cleanup",
+) {
   if (!primaryError) return cleanupError;
   if (!cleanupError) return primaryError;
   return new AggregateError(
@@ -457,12 +475,7 @@ export function normalizeVisionExpectedResults(raw) {
     ? protocol.ready.capabilities.map((value) =>
         required(String(value), "ready capability"),
       )
-    : [
-        "profile_push",
-        "presence_status",
-        "person_departed",
-        "try_on_session",
-      ];
+    : ["profile_push", "presence_status", "person_departed", "try_on_session"];
   const orderedCatalogKeys = Array.isArray(recommendation.orderedCatalogKeys)
     ? recommendation.orderedCatalogKeys.map((value) =>
         required(value, "expected ordered catalog key"),
@@ -540,7 +553,9 @@ export function compareObservedVisionProtocolToExpected({
     installedBinding,
   );
   if (summary.healthStatus !== "ok") {
-    throw new Error("Vision happy-path protocol evidence must report health status ok");
+    throw new Error(
+      "Vision happy-path protocol evidence must report health status ok",
+    );
   }
   if (
     protocolEvidence.ready?.protocol !== expected.protocol.ready.protocol ||
@@ -548,7 +563,9 @@ export function compareObservedVisionProtocolToExpected({
       summary.capabilities.includes(capability),
     )
   ) {
-    throw new Error("Vision ready handshake does not match expected-results capabilities");
+    throw new Error(
+      "Vision ready handshake does not match expected-results capabilities",
+    );
   }
   const observed = [
     {
@@ -679,18 +696,19 @@ export function validateRecommendationProjection({
     runtime.selectedCatalogKey &&
     selected.catalogKey !== runtime.selectedCatalogKey
   ) {
-    throw new Error("top recommended catalog item does not match seeded runtime expectation");
+    throw new Error(
+      "top recommended catalog item does not match seeded runtime expectation",
+    );
   }
   if (
     runtime.selectedVariantId &&
     selected.preferredVariantId !== runtime.selectedVariantId
   ) {
-    throw new Error("recommended variant does not match seeded runtime expectation");
+    throw new Error(
+      "recommended variant does not match seeded runtime expectation",
+    );
   }
-  if (
-    seededSelection &&
-    selected.catalogKey !== seededSelection.catalogKey
-  ) {
+  if (seededSelection && selected.catalogKey !== seededSelection.catalogKey) {
     throw new Error(
       "recommended catalogKey does not match the seeded productId for the selected variantId",
     );
@@ -710,7 +728,9 @@ export function validateRecommendationProjection({
     "gender",
   ]) {
     if (leakage.includes(disallowed)) {
-      throw new Error(`catalog recommendation leaked identity field ${disallowed}`);
+      throw new Error(
+        `catalog recommendation leaked identity field ${disallowed}`,
+      );
     }
   }
   return {
@@ -746,13 +766,17 @@ export function validateTryOnPresentation({
     runtime.selectedCatalogKey &&
     selectedProduct.catalogKey !== runtime.selectedCatalogKey
   ) {
-    throw new Error("selected product catalogKey does not match seeded try-on binding");
+    throw new Error(
+      "selected product catalogKey does not match seeded try-on binding",
+    );
   }
   if (
     runtime.selectedVariantId &&
     selectedProduct.variantId !== runtime.selectedVariantId
   ) {
-    throw new Error("selected product variantId does not match seeded try-on binding");
+    throw new Error(
+      "selected product variantId does not match seeded try-on binding",
+    );
   }
   if (
     seededSelection &&
@@ -770,13 +794,17 @@ export function validateTryOnPresentation({
     typeof tryOnState.previewUrl !== "string" ||
     !tryOnState.previewUrl.startsWith(expected.tryOn.previewPathPrefix)
   ) {
-    throw new Error("try-on preview URL is not bound to the expected loopback session");
+    throw new Error(
+      "try-on preview URL is not bound to the expected loopback session",
+    );
   }
   if (
     typeof tryOnState.silhouetteUrl !== "string" ||
     !tryOnState.silhouetteUrl.includes(expected.tryOn.silhouettePathFragment)
   ) {
-    throw new Error("try-on silhouette URL is not bound to the selected variant");
+    throw new Error(
+      "try-on silhouette URL is not bound to the selected variant",
+    );
   }
   const expectedSilhouettePath = seededSelection?.silhouettePublicUrl
     ? normalizeUrlPath(
@@ -798,7 +826,9 @@ export function validateTryOnPresentation({
     normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
       expectedSilhouettePath
   ) {
-    throw new Error("try-on silhouette URL is not bound to the seeded media asset");
+    throw new Error(
+      "try-on silhouette URL is not bound to the seeded media asset",
+    );
   }
   if (
     !silhouetteEvidence ||
@@ -806,7 +836,9 @@ export function validateTryOnPresentation({
     silhouetteEvidence.httpStatus !== 200 ||
     !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
   ) {
-    throw new Error("try-on silhouette did not return a successful image response");
+    throw new Error(
+      "try-on silhouette did not return a successful image response",
+    );
   }
   if (
     expectedSilhouettePath &&
@@ -824,7 +856,9 @@ export function validateTryOnPresentation({
     tryOnState.silhouetteNaturalWidth < 1 ||
     tryOnState.silhouetteNaturalHeight < 1
   ) {
-    throw new Error("try-on silhouette image did not load with natural dimensions");
+    throw new Error(
+      "try-on silhouette image did not load with natural dimensions",
+    );
   }
   if (
     typeof mjpegEvidence.contentType !== "string" ||
@@ -844,12 +878,16 @@ export function validateTryOnPresentation({
   const sourceFrame =
     installedBinding?.frameSourceBinding &&
     mjpegEvidence.sourceFrame &&
-    validateSourceFrameEvidence(mjpegEvidence.sourceFrame, "try-on source frame", {
-      role: "front",
-      configSha256: installedBinding.frameSourceBinding.configSha256,
-      fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
-      sessionId: mjpegEvidence.sessionId,
-    });
+    validateSourceFrameEvidence(
+      mjpegEvidence.sourceFrame,
+      "try-on source frame",
+      {
+        role: "front",
+        configSha256: installedBinding.frameSourceBinding.configSha256,
+        fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
+        sessionId: mjpegEvidence.sessionId,
+      },
+    );
   return {
     sessionId: mjpegEvidence.sessionId,
     contentType: mjpegEvidence.contentType,
@@ -875,7 +913,9 @@ export function validateVisionInstalledBinding(binding) {
   if (!/^[a-f0-9]{40}$/.test(String(installedRecord.commit ?? ""))) {
     throw new Error("Vision installed record commit is invalid");
   }
-  if (!windowsPathEquals(installedRecord.appDirectory, "C:\\VEM\\vision\\app")) {
+  if (
+    !windowsPathEquals(installedRecord.appDirectory, "C:\\VEM\\vision\\app")
+  ) {
     throw new Error("Vision installed record appDirectory drifted");
   }
   if (installedRecord.runtime !== "vending-vision.exe") {
@@ -889,14 +929,18 @@ export function validateVisionInstalledBinding(binding) {
   ) {
     throw new Error("Vision installed record runtime work directory drifted");
   }
-  if (!windowsPathEquals(installedRecord.executablePath, VISION_ENTRYPOINT_PATH)) {
+  if (
+    !windowsPathEquals(installedRecord.executablePath, VISION_ENTRYPOINT_PATH)
+  ) {
     throw new Error("Vision installed record executablePath drifted");
   }
   const siteConfiguration = requiredObject(
     installedRecord.siteConfiguration,
     "Vision installed siteConfiguration",
   );
-  if (!windowsPathEquals(siteConfiguration.path, VISION_SITE_CONFIGURATION_PATH)) {
+  if (
+    !windowsPathEquals(siteConfiguration.path, VISION_SITE_CONFIGURATION_PATH)
+  ) {
     throw new Error("Vision installed record site configuration path drifted");
   }
   const siteConfigurationSha256 = sha256Hex(
@@ -904,16 +948,22 @@ export function validateVisionInstalledBinding(binding) {
     "Vision site configuration digest",
   );
   if (
-    sha256Hex(siteConfiguration.sha256, "Vision installed record site configuration sha256") !==
-    siteConfigurationSha256
+    sha256Hex(
+      siteConfiguration.sha256,
+      "Vision installed record site configuration sha256",
+    ) !== siteConfigurationSha256
   ) {
-    throw new Error("Vision installed record site configuration digest drifted");
+    throw new Error(
+      "Vision installed record site configuration digest drifted",
+    );
   }
   const downloadManifest = requiredObject(
     installedRecord.downloadManifest,
     "Vision installed download manifest",
   );
-  if (!windowsAbsolute(downloadManifest.path, "Vision download manifest path")) {
+  if (
+    !windowsAbsolute(downloadManifest.path, "Vision download manifest path")
+  ) {
     throw new Error("Vision download manifest path is invalid");
   }
   const downloadManifestSha256 = sha256Hex(
@@ -921,8 +971,10 @@ export function validateVisionInstalledBinding(binding) {
     "Vision download manifest digest",
   );
   if (
-    sha256Hex(downloadManifest.sha256, "Vision installed record download manifest sha256") !==
-    downloadManifestSha256
+    sha256Hex(
+      downloadManifest.sha256,
+      "Vision installed record download manifest sha256",
+    ) !== downloadManifestSha256
   ) {
     throw new Error("Vision download manifest digest drifted");
   }
@@ -952,7 +1004,8 @@ export function validateVisionInstalledBinding(binding) {
     sha256Hex(
       installedRecord.fixtureSet?.manifestSha256,
       "Vision fixture manifest sha256",
-    ) !== sha256Hex(facts.fixtureManifestSha256, "Vision fixture manifest digest")
+    ) !==
+    sha256Hex(facts.fixtureManifestSha256, "Vision fixture manifest digest")
   ) {
     throw new Error("Vision fixture manifest digest drifted");
   }
@@ -961,10 +1014,14 @@ export function validateVisionInstalledBinding(binding) {
     "Vision site configuration",
   );
   if (siteConfigurationObject.cameras?.top?.source !== "recorded_video") {
-    throw new Error("Vision site configuration top camera must use recorded_video");
+    throw new Error(
+      "Vision site configuration top camera must use recorded_video",
+    );
   }
   if (siteConfigurationObject.cameras?.front?.source !== "recorded_video") {
-    throw new Error("Vision site configuration front camera must use recorded_video");
+    throw new Error(
+      "Vision site configuration front camera must use recorded_video",
+    );
   }
   if (siteConfigurationObject.cameras?.top?.role !== "presence") {
     throw new Error("Vision site configuration top role drifted");
@@ -982,12 +1039,19 @@ export function validateVisionInstalledBinding(binding) {
       frameSourceBinding.front.path,
     )
   ) {
-    throw new Error("Vision site configuration is not bound to the committed top/front fixtures");
+    throw new Error(
+      "Vision site configuration is not bound to the committed top/front fixtures",
+    );
   }
   if (!windowsPathEquals(facts.executablePath, VISION_ENTRYPOINT_PATH)) {
-    throw new Error("Vision listener is not bound to the fixed installed executable");
+    throw new Error(
+      "Vision listener is not bound to the fixed installed executable",
+    );
   }
-  if (sha256Hex(facts.executableSha256, "Vision executable hash") !== installedRecord.executableSha256) {
+  if (
+    sha256Hex(facts.executableSha256, "Vision executable hash") !==
+    installedRecord.executableSha256
+  ) {
     throw new Error("Vision executable hash drifted from the installed record");
   }
   if (
@@ -996,18 +1060,37 @@ export function validateVisionInstalledBinding(binding) {
     facts.listenerProcessId !== facts.processId ||
     facts.listenerOwnerCount !== 1
   ) {
-    throw new Error("Vision loopback listener must resolve to exactly one installed process");
+    throw new Error(
+      "Vision loopback listener must resolve to exactly one installed process",
+    );
   }
-  if (required(facts.listenerBindingSource, "Vision listener binding source") !== "Get-NetTCPConnection") {
+  if (
+    required(facts.listenerBindingSource, "Vision listener binding source") !==
+    "Get-NetTCPConnection"
+  ) {
     throw new Error("Vision listener binding source drifted");
   }
-  if (required(facts.commandLine, "Vision process commandLine") !== `"${VISION_ENTRYPOINT_PATH}" --config "${VISION_SITE_CONFIGURATION_PATH}"`) {
-    throw new Error("Vision process command line is not bound to the fixed --config site path");
+  const commandLine = required(facts.commandLine, "Vision process commandLine");
+  const normalizedCommandLine = commandLine.replaceAll('"', "").toLowerCase();
+  if (
+    !normalizedCommandLine.includes(VISION_ENTRYPOINT_PATH.toLowerCase()) ||
+    !normalizedCommandLine.includes("--config") ||
+    !normalizedCommandLine.includes(
+      VISION_SITE_CONFIGURATION_PATH.toLowerCase(),
+    )
+  ) {
+    throw new Error(
+      "Vision process command line is not bound to the fixed --config site path",
+    );
   }
   if (!windowsPathEquals(facts.taskCommand, "C:\\Windows\\System32\\cmd.exe")) {
     throw new Error("Vision scheduled task command drifted");
   }
-  if (required(facts.taskArguments, "Vision scheduled task arguments").includes(VISION_LAUNCHER_PATH) === false) {
+  if (
+    required(facts.taskArguments, "Vision scheduled task arguments").includes(
+      VISION_LAUNCHER_PATH,
+    ) === false
+  ) {
     throw new Error("Vision scheduled task arguments drifted");
   }
   if (!windowsPathEquals(facts.taskWorkingDirectory, "C:\\VEM\\vision\\app")) {
@@ -1026,9 +1109,16 @@ export function validateVisionInstalledBinding(binding) {
       "Vision process owner",
     ).toLowerCase() !== taskUser.toLowerCase()
   ) {
-    throw new Error("Vision process owner drifted from the scheduled task user");
+    throw new Error(
+      "Vision process owner drifted from the scheduled task user",
+    );
   }
-  if (!windowsPathEquals(fixtureManifestPath, `${VISION_FIXTURE_ROOT}\\${installedRecord.commit}\\recorded-video\\fixture-manifest.json`)) {
+  if (
+    !windowsPathEquals(
+      fixtureManifestPath,
+      `${VISION_FIXTURE_ROOT}\\${installedRecord.commit}\\recorded-video\\fixture-manifest.json`,
+    )
+  ) {
     throw new Error("Vision fixture manifest path drifted");
   }
   if (
@@ -1041,7 +1131,9 @@ export function validateVisionInstalledBinding(binding) {
       "Vision expected-results sha256",
     ) !== frameSourceBinding.expectedResults.sha256
   ) {
-    throw new Error("Vision fixture digests drifted from the committed fixture manifest");
+    throw new Error(
+      "Vision fixture digests drifted from the committed fixture manifest",
+    );
   }
   if (!/^[a-f0-9]{64}$/.test(String(facts.executableSha256 ?? ""))) {
     throw new Error("Vision executable hash is invalid");
@@ -1069,7 +1161,10 @@ export function parseVisionTryOnAcceptanceArgs(args) {
   }
   return {
     mode,
-    guestInputPath: windowsAbsolute(option(args, "guest-input"), "--guest-input"),
+    guestInputPath: windowsAbsolute(
+      option(args, "guest-input"),
+      "--guest-input",
+    ),
     handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
     outPath: windowsAbsolute(option(args, "out"), "--out"),
   };
@@ -1083,10 +1178,7 @@ export function buildRecordedVisionSiteConfiguration({
     schemaVersion: "vending-vision-site-config/v1",
     host,
     port,
-    allowed_origins: [
-      "http://tauri.localhost",
-      `http://${host}:${port}`,
-    ],
+    allowed_origins: ["http://tauri.localhost", `http://${host}:${port}`],
     cameras: {
       top: {
         source: "recorded_video",
@@ -1230,9 +1322,7 @@ export function validateVisionProtocolEvidence(
       throw new Error(`vision ready handshake is missing ${capability}`);
     }
   }
-  if (
-    JSON.stringify(healthFrameSource) !== JSON.stringify(readyFrameSource)
-  ) {
+  if (JSON.stringify(healthFrameSource) !== JSON.stringify(readyFrameSource)) {
     throw new Error("vision health and ready frame-source bindings drifted");
   }
   if (installedBinding?.frameSourceBinding) {
@@ -1302,7 +1392,10 @@ export function validateVisionProtocolEvidence(
   if (departureSourceFrame.frameIndex < presenceSourceFrame.frameIndex) {
     throw new Error("vision departure frame index regressed behind presence");
   }
-  if (departureSourceFrame.decodedFrameCount < presenceSourceFrame.decodedFrameCount) {
+  if (
+    departureSourceFrame.decodedFrameCount <
+    presenceSourceFrame.decodedFrameCount
+  ) {
     throw new Error("vision departure decoded frame count regressed");
   }
   return {
@@ -1324,7 +1417,10 @@ export function validateVisionProtocolEvidence(
   };
 }
 
-async function collectVisionProtocolEvidence({ machineCode, timeoutMs = 120_000 }) {
+async function collectVisionProtocolEvidence({
+  machineCode,
+  timeoutMs = 120_000,
+}) {
   const observationStartedAt = new Date().toISOString();
   const health = await fetchJson("http://127.0.0.1:7892/health");
   const socket = await openVisionSocket("ws://127.0.0.1:7892/ws");
@@ -1347,17 +1443,29 @@ async function collectVisionProtocolEvidence({ machineCode, timeoutMs = 120_000 
     };
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const message = await nextVisionMessage(socket, Math.max(1_000, deadline - Date.now()));
+      const message = await nextVisionMessage(
+        socket,
+        Math.max(1_000, deadline - Date.now()),
+      );
       observedMessages.push({
         type: message?.type ?? null,
         messageId: message?.messageId ?? null,
         timestamp: message?.timestamp ?? null,
       });
-      if (message?.type === "vision.presence_status" && state.presence === null) {
+      if (
+        message?.type === "vision.presence_status" &&
+        state.presence === null
+      ) {
         state.presence = message;
-      } else if (message?.type === "vision.profile_result" && state.profile === null) {
+      } else if (
+        message?.type === "vision.profile_result" &&
+        state.profile === null
+      ) {
         state.profile = message;
-      } else if (message?.type === "vision.person_departed" && state.departure === null) {
+      } else if (
+        message?.type === "vision.person_departed" &&
+        state.departure === null
+      ) {
         state.departure = message;
       }
       if (state.presence && state.profile && state.departure) {
@@ -1379,7 +1487,10 @@ async function collectVisionProtocolEvidence({ machineCode, timeoutMs = 120_000 
 }
 
 async function readRuntimeTrace(client) {
-  return evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []");
+  return evaluateExpression(
+    client,
+    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+  );
 }
 
 async function readCatalogRecommendationState(client) {
@@ -1584,10 +1695,10 @@ async function collectVisionInstalledBinding() {
     `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
     "$action = @($task.Actions | Select-Object -First 1)",
     "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
-    "if ($listener.Count -ne 1) { throw \"Vision must have exactly one 127.0.0.1:7892 listener\" }",
+    'if ($listener.Count -ne 1) { throw "Vision must have exactly one 127.0.0.1:7892 listener" }',
     "$visionPid = [int]$listener[0].OwningProcess",
     "$process = Get-Process -Id $visionPid -ErrorAction Stop",
-    "$processWmi = Get-CimInstance Win32_Process -Filter \"ProcessId = $visionPid\" -ErrorAction Stop",
+    '$processWmi = Get-CimInstance Win32_Process -Filter "ProcessId = $visionPid" -ErrorAction Stop',
     "$owner = Invoke-CimMethod -InputObject $processWmi -MethodName GetOwner -ErrorAction Stop",
     "$path = [string]$process.Path",
     "$commandLine = [string]$processWmi.CommandLine",
@@ -1653,7 +1764,12 @@ async function stopVisionRuntime() {
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
-      else reject(new Error(`pwsh exited with ${code ?? "signal"} while stopping Vision runtime`));
+      else
+        reject(
+          new Error(
+            `pwsh exited with ${code ?? "signal"} while stopping Vision runtime`,
+          ),
+        );
     });
   });
 }
@@ -1670,7 +1786,12 @@ async function startInstalledVisionRuntime() {
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
-      else reject(new Error(`pwsh exited with ${code ?? "signal"} while starting Vision runtime`));
+      else
+        reject(
+          new Error(
+            `pwsh exited with ${code ?? "signal"} while starting Vision runtime`,
+          ),
+        );
     });
   });
 }
@@ -1728,12 +1849,16 @@ async function terminateVisionChild(child, timeoutMs = 10_000) {
 }
 
 export async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
-  const portWasAvailable = (
-    await probeLoopbackPortRelease(7892, "127.0.0.1")
-  ).released;
+  const portWasAvailable = (await probeLoopbackPortRelease(7892, "127.0.0.1"))
+    .released;
   const child = spawn(
     process.execPath,
-    ["--conditions=vem-source", "--import", "tsx", "apps/vision-mock/src/server.ts"],
+    [
+      "--conditions=vem-source",
+      "--import",
+      "tsx",
+      "apps/vision-mock/src/server.ts",
+    ],
     {
       cwd: process.cwd(),
       env: {
@@ -1782,7 +1907,8 @@ export async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
     );
     return child;
   } catch (error) {
-    let startupError = error instanceof Error ? error : new Error(String(error));
+    let startupError =
+      error instanceof Error ? error : new Error(String(error));
     try {
       await terminateVisionChild(child, timeoutMs);
       if (portWasAvailable) {
@@ -1817,12 +1943,14 @@ async function waitForVisionDegradation(handoff, timeoutMs = 45_000) {
   return waitForCondition(
     "vision degradation",
     async () => {
-      const [visionStatus, saleCapability, healthz, readyz] = await Promise.all([
-        daemonGet(handoff, "/v1/vision/status").catch(() => null),
-        daemonGet(handoff, "/v1/sale-start-capability").catch(() => null),
-        daemonGet(handoff, "/healthz").catch(() => null),
-        daemonGet(handoff, "/readyz").catch(() => null),
-      ]);
+      const [visionStatus, saleCapability, healthz, readyz] = await Promise.all(
+        [
+          daemonGet(handoff, "/v1/vision/status").catch(() => null),
+          daemonGet(handoff, "/v1/sale-start-capability").catch(() => null),
+          daemonGet(handoff, "/healthz").catch(() => null),
+          daemonGet(handoff, "/readyz").catch(() => null),
+        ],
+      );
       return {
         ok:
           visionStatus?.online === false &&
@@ -2033,7 +2161,9 @@ async function runVisionTryOnAcceptance(options) {
       validateVisionInstalledBinding(installedBinding);
     const expectedResults = normalizeVisionExpectedResults(
       readJson(
-        visionFixtureExpectedResultsPath(installedBindingSummary.installedCommit),
+        visionFixtureExpectedResultsPath(
+          installedBindingSummary.installedCommit,
+        ),
         "Vision expected-results fixture",
       ),
     );
@@ -2046,7 +2176,10 @@ async function runVisionTryOnAcceptance(options) {
       expectedTargetId: handoff.cdp.targetId,
     });
     client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, "http://127.0.0.1:9222"),
+      rewriteWebSocketDebuggerUrl(
+        target.webSocketDebuggerUrl,
+        "http://127.0.0.1:9222",
+      ),
     );
     await client.connect();
     await enablePageRuntime(client);
@@ -2103,8 +2236,14 @@ async function runVisionTryOnAcceptance(options) {
       pollMs: 250,
     });
     const productDetail = await readProductDetailState(client);
-    assert.equal(productDetail?.catalogKey, recommendationSummary.selectedCatalogKey);
-    assert.equal(productDetail?.variantId, recommendationSummary.selectedVariantId);
+    assert.equal(
+      productDetail?.catalogKey,
+      recommendationSummary.selectedCatalogKey,
+    );
+    assert.equal(
+      productDetail?.variantId,
+      recommendationSummary.selectedVariantId,
+    );
     assert.equal(productDetail?.tryOnPresent, true);
     assert.equal(productDetail?.tryOnDisabled, false);
     assert.equal(productDetail?.buyDisabled, false);
@@ -2164,7 +2303,9 @@ async function runVisionTryOnAcceptance(options) {
       "/v1/sale-start-capability",
     );
     if (capabilityBeforeDegradation?.canStartSale !== true) {
-      throw new Error("sale start capability must remain available before degradation");
+      throw new Error(
+        "sale start capability must remain available before degradation",
+      );
     }
 
     stage = "stop-real-vision-runtime";
@@ -2189,7 +2330,10 @@ async function runVisionTryOnAcceptance(options) {
       "try_on_unavailable_start",
     );
     const onlineMockDaemon = await waitForVisionOnline(handoff, 45_000);
-    const restoredProductDetail = await waitForTryOnButtonEnabled(client, 30_000);
+    const restoredProductDetail = await waitForTryOnButtonEnabled(
+      client,
+      30_000,
+    );
     await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
       kind: "touch",
       timeoutMs: 30_000,
@@ -2224,7 +2368,10 @@ async function runVisionTryOnAcceptance(options) {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    await waitForRoute(client, "#/checkout", { timeoutMs: 30_000, pollMs: 250 });
+    await waitForRoute(client, "#/checkout", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "degraded-checkout", {
         screenshot: true,
@@ -2277,11 +2424,13 @@ async function runVisionTryOnAcceptance(options) {
       degradations: {
         visionDown: {
           experienceCapabilityDegraded: true,
-          saleStartStillAvailable: degradedDaemon.saleCapability?.canStartSale === true,
+          saleStartStillAvailable:
+            degradedDaemon.saleCapability?.canStartSale === true,
         },
         tryOnUnavailableWhileVisionOnline: {
           experienceCapabilityDegraded: true,
-          saleStartStillAvailable: onlineMockDaemon.saleCapability?.canStartSale === true,
+          saleStartStillAvailable:
+            onlineMockDaemon.saleCapability?.canStartSale === true,
           visionOnline: onlineMockDaemon.visionStatus?.online === true,
         },
       },
@@ -2308,7 +2457,9 @@ async function runVisionTryOnAcceptance(options) {
     };
   } catch (error) {
     pendingError = error instanceof Error ? error : new Error(String(error));
-    const failureTrace = client ? await readRuntimeTrace(client).catch(() => []) : [];
+    const failureTrace = client
+      ? await readRuntimeTrace(client).catch(() => [])
+      : [];
     const failureCheckpoint = client
       ? await captureCheckpoint(client, `failure-${stage}`, {
           screenshot: true,
@@ -2396,7 +2547,10 @@ async function runVisionTryOnAcceptance(options) {
     const cleanupError =
       cleanupErrors.length === 1
         ? cleanupErrors[0]
-        : new AggregateError(cleanupErrors, "vision try-on acceptance cleanup failed");
+        : new AggregateError(
+            cleanupErrors,
+            "vision try-on acceptance cleanup failed",
+          );
     pendingError = combineCleanupFailure(
       pendingError,
       cleanupError,

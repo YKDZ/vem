@@ -637,10 +637,11 @@ export async function waitForRawSerialFrame({
     [SERIAL_SCENARIOS.E6]: {
       VEND: ["VEND"],
       F0: ["VEND", "F0"],
-      E6: ["VEND", "F0", "E5", "E5", "E6"],
+      E6: ["VEND", "F0", "E5", "E5", "F1", "E6"],
     },
   }[scenario]?.[parsedOpcode];
-  if (!expected) throw new Error("parsedOpcode is not valid for the serial scenario");
+  if (!expected)
+    throw new Error("parsedOpcode is not valid for the serial scenario");
   const deadline = Date.now() + timeoutMs;
   do {
     const raw = readRawSerialJournal(journalPath);
@@ -656,7 +657,8 @@ export async function waitForRawSerialFrame({
         );
       }
     }
-    const normalizedProtocolFrames = collapseRepeatedStateFrames(protocolFrames);
+    const normalizedProtocolFrames =
+      collapseRepeatedStateFrames(protocolFrames);
     const opcodes = normalizedProtocolFrames.map((frame) => frame.parsedOpcode);
     if (parsedOpcode === "VEND" && opcodes.includes("F0")) {
       throw new Error("F0 appeared before the before-F0 gate was released");
@@ -922,7 +924,10 @@ async function stopAudioCapture(server, input) {
         capture.startReport.captureSession.startOperationReference,
       captureStartedAt: capture.startReport.captureSession.startedAt,
       sale: {
-        saleCorrelationId: required(input.saleCorrelationId, "saleCorrelationId"),
+        saleCorrelationId: required(
+          input.saleCorrelationId,
+          "saleCorrelationId",
+        ),
         orderId: required(input.orderId, "orderId"),
         orderNo: required(input.orderNo, "orderNo"),
         commandId: required(input.commandId, "commandId"),
@@ -1044,23 +1049,34 @@ async function waitForProcessGroupExit(pid, timeoutMs) {
 }
 
 async function abortProcessGroup(label, pid) {
-  if (!Number.isInteger(pid)) return { label, pid: null, exitedAfter: "not_started" };
+  if (!Number.isInteger(pid))
+    return { label, pid: null, exitedAfter: "not_started" };
   try {
     process.kill(-pid, "SIGTERM");
   } catch (error) {
-    if (error?.code === "ESRCH") return { label, pid, exitedAfter: "already_exited" };
+    if (error?.code === "ESRCH")
+      return { label, pid, exitedAfter: "already_exited" };
     throw error;
   }
-  if (await waitForProcessGroupExit(pid, 3_000)) return { label, pid, exitedAfter: "SIGTERM" };
+  if (await waitForProcessGroupExit(pid, 3_000))
+    return { label, pid, exitedAfter: "SIGTERM" };
   process.kill(-pid, "SIGKILL");
-  if (await waitForProcessGroupExit(pid, 1_000)) return { label, pid, exitedAfter: "SIGKILL" };
-  throw new Error(`${label} process group ${pid} survived abort SIGTERM and SIGKILL`);
+  if (await waitForProcessGroupExit(pid, 1_000))
+    return { label, pid, exitedAfter: "SIGKILL" };
+  throw new Error(
+    `${label} process group ${pid} survived abort SIGTERM and SIGKILL`,
+  );
 }
 
 async function abortSession(server, input) {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
-  const cleanup = { termination: [], errors: [], survivingProcessCount: 0, survivingSocketCount: 0 };
+  const cleanup = {
+    termination: [],
+    errors: [],
+    survivingProcessCount: 0,
+    survivingSocketCount: 0,
+  };
   if (existsSync(paths.statePath)) {
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
     for (const [label, pid] of [
@@ -1071,7 +1087,9 @@ async function abortSession(server, input) {
       try {
         cleanup.termination.push(await abortProcessGroup(label, pid));
       } catch (error) {
-        cleanup.errors.push(error instanceof Error ? error.message : String(error));
+        cleanup.errors.push(
+          error instanceof Error ? error.message : String(error),
+        );
       }
     }
     state.active = false;
@@ -1090,15 +1108,23 @@ async function abortSession(server, input) {
         throw error;
       }
     }).length;
-    cleanup.survivingSocketCount = (state.runtimeSocketPaths ?? []).filter((path) => existsSync(path)).length;
+    cleanup.survivingSocketCount = (state.runtimeSocketPaths ?? []).filter(
+      (path) => existsSync(path),
+    ).length;
     state.cleanup = cleanup;
     writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
       mode: 0o600,
     });
   }
   session.mqttCapture.stop();
-  if (cleanup.errors.length || cleanup.survivingProcessCount || cleanup.survivingSocketCount) {
-    throw new Error(`serial session abort cleanup failed: ${JSON.stringify(cleanup)}`);
+  if (
+    cleanup.errors.length ||
+    cleanup.survivingProcessCount ||
+    cleanup.survivingSocketCount
+  ) {
+    throw new Error(
+      `serial session abort cleanup failed: ${JSON.stringify(cleanup)}`,
+    );
   }
   return { aborted: true, cleanup };
 }
@@ -1347,7 +1373,8 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
     audioCapturesByOperation,
     dependencies: {
       executeSaleAudioCapture:
-        dependencies.executeSaleAudioCapture ?? executeSaleAudioCaptureHostAdapter,
+        dependencies.executeSaleAudioCapture ??
+        executeSaleAudioCaptureHostAdapter,
       abortSaleAudioCapture:
         dependencies.abortSaleAudioCapture ?? abortSaleAudioCaptureSession,
     },
@@ -1474,7 +1501,10 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           });
           return;
         }
-        if (request.method === "POST" && (action === "cancel" || action === "abort")) {
+        if (
+          request.method === "POST" &&
+          (action === "cancel" || action === "abort")
+        ) {
           jsonResponse(response, 200, {
             ok: true,
             ...(await cancelAudioCapture(serverState, body)),
@@ -1610,7 +1640,8 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           try {
             await serverState.dependencies.abortSaleAudioCapture(
               {
-                captureSessionId: capture.startReport.captureSession.captureSessionId,
+                captureSessionId:
+                  capture.startReport.captureSession.captureSessionId,
                 evidenceDirectory: capture.evidenceDirectory,
               },
               {

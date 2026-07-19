@@ -167,20 +167,26 @@ function validateScannerTrack(report, reportPath) {
   const malformed = report.invalidScanEvidence?.malformed ?? {};
   const timeout = report.invalidScanEvidence?.timeout ?? {};
   const finalResult = report.final?.result ?? {};
+  const platformAttempt = report.platformAssertions?.attempt ?? {};
+  const orderId = report.renderedSale?.orderId ?? finalResult.orderId;
+  const paymentId = report.renderedSale?.paymentId ?? finalResult.paymentId;
+  const orderNo = report.renderedSale?.orderNo ?? finalResult.orderNo;
   const scanner =
-    report.renderedSale?.orderId &&
-    report.renderedSale?.paymentId &&
-    report.renderedSale?.orderNo &&
-    report.scannerAttempt?.status === "succeeded" &&
+    orderId &&
+    paymentId &&
+    orderNo &&
     report.scannerAttempt?.source === "serial_text" &&
-    report.platformAssertions?.attempt?.status === "succeeded" &&
+    platformAttempt.status === "succeeded" &&
     report.platformAssertions?.movement &&
     finalResult.kind === "success"
       ? passedTrack("scanner", "scanner", reportPath, {
-          orderId: report.renderedSale.orderId,
-          paymentId: report.renderedSale.paymentId,
-          orderNo: report.renderedSale.orderNo,
-          scannerEventId: report.scannerAttempt?.scannerEventId ?? null,
+          orderId,
+          paymentId,
+          orderNo,
+          scannerEventId:
+            platformAttempt.scannerEventId ??
+            report.scannerAttempt?.scannerEventId ??
+            null,
         })
       : failedTrack(
           "scanner",

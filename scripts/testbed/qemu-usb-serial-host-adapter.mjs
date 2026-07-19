@@ -25,14 +25,16 @@ import {
 } from "./vm-host-adapter-contract.mjs";
 
 export const QEMU_USB_SERIAL_ADAPTER_VERSION = "1.0.0";
-export const QEMU_USB_SERIAL_ADAPTER_IDENTITY =
-  `vm-host-adapter://repo-qemu-usb-serial@${QEMU_USB_SERIAL_ADAPTER_VERSION}`;
+export const QEMU_USB_SERIAL_ADAPTER_IDENTITY = `vm-host-adapter://repo-qemu-usb-serial@${QEMU_USB_SERIAL_ADAPTER_VERSION}`;
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
 const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
-const SCANNER_BINDING_PROBE_BYTES = Buffer.from("VEM-BINDING-PROBE\r\n", "utf8");
+const SCANNER_BINDING_PROBE_BYTES = Buffer.from(
+  "VEM-BINDING-PROBE\r\n",
+  "utf8",
+);
 const TERMINATE_GRACE_MS = 3_000;
 const KILL_GRACE_MS = 1_000;
 const SALE_AUDIO_THRESHOLD = Object.freeze({
@@ -186,7 +188,9 @@ export function parseLibvirtUsbSerialMappings(xml) {
     const aliasTag = block.match(/<alias\b[^>]*>/)?.[0] ?? "";
     const sourceTag = block.match(/<source\b[^>]*>/)?.[0] ?? "";
     const targetTag = block.match(/<target\b[^>]*>/)?.[0] ?? "";
-    const addressTag = block.match(/<address\b[^>]*\btype=(?:"usb"|'usb')[^>]*\/?\s*>/)?.[0] ?? "";
+    const addressTag =
+      block.match(/<address\b[^>]*\btype=(?:"usb"|'usb')[^>]*\/?\s*>/)?.[0] ??
+      "";
     const alias = xmlAttribute(aliasTag, "name");
     const path = xmlAttribute(sourceTag, "path");
     const targetType = xmlAttribute(targetTag, "type");
@@ -194,8 +198,14 @@ export function parseLibvirtUsbSerialMappings(xml) {
     const usbBus = xmlAttribute(addressTag, "bus");
     const usbPort = xmlAttribute(addressTag, "port");
     if (!alias || !path || targetType !== "usb-serial") continue;
-    if (!/^\d+$/.test(targetPort ?? "") || !/^\d+$/.test(usbBus ?? "") || !/^\d+(?:\.\d+)*$/.test(usbPort ?? "")) {
-      throw new Error(`${alias} must expose explicit libvirt USB target and address topology`);
+    if (
+      !/^\d+$/.test(targetPort ?? "") ||
+      !/^\d+$/.test(usbBus ?? "") ||
+      !/^\d+(?:\.\d+)*$/.test(usbPort ?? "")
+    ) {
+      throw new Error(
+        `${alias} must expose explicit libvirt USB target and address topology`,
+      );
     }
     const role = alias.startsWith("serial-")
       ? alias.slice("serial-".length)
@@ -451,11 +461,16 @@ function startScannerBindingProbe(scannerPath, logPath) {
     ],
     {
       detached: true,
-      stdio: ["ignore", openSync(logPath, "a", 0o600), openSync(logPath, "a", 0o600)],
+      stdio: [
+        "ignore",
+        openSync(logPath, "a", 0o600),
+        openSync(logPath, "a", 0o600),
+      ],
     },
   );
   child.unref();
-  if (!Number.isInteger(child.pid)) throw new Error("scanner binding probe did not start");
+  if (!Number.isInteger(child.pid))
+    throw new Error("scanner binding probe did not start");
   return {
     pid: child.pid,
     byteLength: SCANNER_BINDING_PROBE_BYTES.length,
@@ -608,10 +623,12 @@ function injectScanner(request, scannerCode) {
   const state = readState(request.serialSession.serialSessionId);
   if (!state.active) throw new Error("serial session is not active");
   const descriptor = createScannerCodeDescriptor(scannerCode);
-  if (!scannerDescriptorMatchesRequest(
-    descriptor,
-    request.serialSession.scannerInjection,
-  )) {
+  if (
+    !scannerDescriptorMatchesRequest(
+      descriptor,
+      request.serialSession.scannerInjection,
+    )
+  ) {
     throw new Error(
       "protected scanner input does not match request descriptor",
     );
@@ -736,7 +753,7 @@ export function readRawSerialJournal(path) {
 function capturedFrame(raw, sequence) {
   const bytes = Buffer.from(raw.rawFrameHex, "hex");
   return {
-    source: "qemu-usb-serial-pty",
+    source: "guest-serial-session",
     sequence,
     digest: `sha256:${sha256(bytes)}`,
     byteLength: bytes.length,
@@ -835,12 +852,6 @@ function semanticRecords(request, state, rawFrames) {
       saleCorrelationId: correlation,
       saleBinding: binding,
       capturedFrame: capturedFrame(raw, index + 1),
-      rawSerial: {
-        direction: raw.direction,
-        rawFrameHex: raw.rawFrameHex,
-        opcode: raw.opcode,
-        parsedOpcode: raw.parsedOpcode,
-      },
     };
     record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
       request,
@@ -1005,7 +1016,6 @@ function reportFor(request, state, rawFrames = []) {
           deviceMappingDigest: request.serialSession.deviceMappingDigest,
           operationEvidence: request.serialSession.operationEvidence,
           records,
-          rawFrames,
           captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
             request,
             records,

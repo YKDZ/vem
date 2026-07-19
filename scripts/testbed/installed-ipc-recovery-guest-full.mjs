@@ -325,7 +325,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     );
 
     const steps = buildInstalledKioskSaleScenarioSteps("vm-ipc-recovery");
-    for (const step of steps.slice(0, 5)) {
+    for (const step of steps.slice(0, 4)) {
       await waitForRoute(client, step.routeBefore, {
         timeoutMs: step.timeoutMs ?? 30_000,
         pollMs: 250,
@@ -339,6 +339,21 @@ export async function runInstalledIpcRecoveryGuest(options) {
         pollMs: 250,
       });
     }
+    let paymentRouteReached = false;
+    for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
+      await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      paymentRouteReached = await waitForRoute(client, /^#\/payment/, {
+        timeoutMs: attempt === 2 ? 30_000 : 2_000,
+        pollMs: 250,
+      })
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!paymentRouteReached)
+      throw new Error("payment submit touch did not reach the payment route");
 
     const renderedSale = await readPaymentSurface(client);
     report.renderedSale = renderedSale;

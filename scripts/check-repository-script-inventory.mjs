@@ -5,6 +5,45 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_INVENTORY = [
+  ...[
+    "delayed-pickup-native-audio-guest-full.mjs",
+    "full-workflow-evidence-manifest.mjs",
+    "full-workflow-orchestrator.mjs",
+    "full-workflow-stability-gate.mjs",
+    "full-workflow-validator.mjs",
+    "installed-ipc-recovery-guest-full.mjs",
+    "mock-payment-create-gate.mjs",
+    "scanner-payment-code-guest-full.mjs",
+    "serial-fulfillment-error-guest-full.mjs",
+    "vision-try-on-acceptance.mjs",
+  ].map((path) => ({
+    path: `scripts/testbed/${path}`,
+    owner: "field-operations",
+    category: "test support operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  })),
+  ...[
+    "ensure-testbed-pwsh.test.mjs",
+    "full-workflow-evidence-manifest.test.mjs",
+    "full-workflow-validator.test.mjs",
+    "run-full-vision-try-on-track.test.mjs",
+    "scanner-payment-code-guest-full.test.mjs",
+    "serial-fulfillment-error-guest-full.test.mjs",
+    "vision-try-on-acceptance.test.mjs",
+  ].map((path) => ({
+    path: `scripts/testbed/${path}`,
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  })),
+  ...["ensure-testbed-pwsh.ps1", "run-full-vision-try-on-track.ps1"].map(
+    (path) => ({
+      path: `scripts/testbed/${path}`,
+      owner: "field-operations",
+      category: "test support operation",
+      workflows: ["runtime acceptance", "testbed workflows"],
+    }),
+  ),
   {
     path: "scripts/testbed/fixtures/local-testbed-catalog.json",
     owner: "field-operations",
