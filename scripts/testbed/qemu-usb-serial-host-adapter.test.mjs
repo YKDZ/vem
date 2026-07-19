@@ -289,6 +289,15 @@ describe("repo QEMU USB serial host adapter", () => {
     }
   });
 
+  it("captures socat hex tracing from stderr instead of its buffered log option", () => {
+    const source = readFileSync(adapterPath, "utf8");
+    assert.match(
+      source,
+      /stdio: \["ignore", "ignore", openSync\(journalPath, "a", 0o600\)\]/,
+    );
+    assert.doesNotMatch(source, /"-lf",\s*journalPath/);
+  });
+
   it("passes delayed-pickup scenario through to the lower-controller simulator state", () => {
     const root = makeTempDir("vem-qemu-adapter-delayed");
     const bin = join(root, "bin");

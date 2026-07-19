@@ -509,12 +509,13 @@ function startSession(request) {
     [
       "-x",
       "-v",
-      "-lf",
-      journalPath,
       `PTY,link=${lowerControllerProxyPath},rawer,echo=0,waitslave`,
       `FILE:${lower.path},raw,echo=0`,
     ],
-    { detached: true, stdio: ["ignore", "ignore", "ignore"] },
+    {
+      detached: true,
+      stdio: ["ignore", "ignore", openSync(journalPath, "a", 0o600)],
+    },
   );
   bridge.unref();
   if (!Number.isInteger(bridge.pid))
