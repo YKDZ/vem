@@ -460,6 +460,11 @@ impl ScannerRuntime {
                     // can replace that arm between its bytes.
                     if matches!(self.config.frame_suffix, vending_core::scanner::ScannerFrameSuffix::None) {
                         let arm_epoch = self.payment_code_scan_armer.scanner_epoch().await;
+                        eprintln!(
+                            "scanner serial read: port={port_path} bytes={read} epoch={} accepting={}",
+                            arm_epoch.epoch,
+                            arm_epoch.accepting,
+                        );
                         if observed_arm_epoch != Some(arm_epoch.epoch) {
                             framer.reset();
                             observed_arm_epoch = Some(arm_epoch.epoch);
@@ -477,6 +482,11 @@ impl ScannerRuntime {
                     for byte in &buffer[..read] {
                         let arm_epoch = self.payment_code_scan_armer.scanner_epoch().await;
                         if observed_arm_epoch != Some(arm_epoch.epoch) {
+                            eprintln!(
+                                "scanner serial epoch: port={port_path} epoch={} accepting={}",
+                                arm_epoch.epoch,
+                                arm_epoch.accepting,
+                            );
                             framer.reset();
                             observed_arm_epoch = Some(arm_epoch.epoch);
                         }
