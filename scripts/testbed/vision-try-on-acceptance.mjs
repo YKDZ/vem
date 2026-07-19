@@ -514,10 +514,10 @@ export function normalizeVisionExpectedResults(raw) {
         : null),
     "expected protocol block",
   );
+  const publishedRecommendation =
+    fixture.recommendation ?? fixture.catalogRecommendation ?? null;
   const recommendation = requiredObject(
-    fixture.recommendation ??
-      fixture.catalogRecommendation ??
-      (publishedExpected ? {} : null),
+    publishedRecommendation ?? (publishedExpected ? {} : null),
     "expected recommendation block",
   );
   const tryOn = requiredObject(
@@ -568,6 +568,9 @@ export function normalizeVisionExpectedResults(raw) {
       ),
     },
     recommendation: {
+      required:
+        publishedRecommendation !== null &&
+        publishedRecommendation.required !== false,
       orderedCatalogKeys,
       selectedCatalogKey: optionalString(
         recommendation.selectedCatalogKey ?? recommendation.topCatalogKey,
@@ -725,11 +728,13 @@ export function validateRecommendationProjection({
   if (!selected) {
     throw new Error("catalog recommendation did not expose any product");
   }
+  const selectedVariantId =
+    selected.preferredVariantId || selected.variantId || null;
   const seededSelection =
     runtime.seededTryOnVariants.length > 0
       ? resolveSelectedSeededEntry(
           runtime,
-          selected.preferredVariantId,
+          selectedVariantId,
           "recommended variantId",
         )
       : null;
@@ -742,6 +747,7 @@ export function validateRecommendationProjection({
     );
   }
   if (
+    expected.recommendation.required &&
     runtime.selectedVariantId &&
     selected.preferredVariantId !== runtime.selectedVariantId
   ) {
@@ -754,10 +760,16 @@ export function validateRecommendationProjection({
       "recommended catalogKey does not match the seeded productId for the selected variantId",
     );
   }
-  if (selected.recommendationScore < expected.recommendation.minimumScore) {
+  if (
+    expected.recommendation.required &&
+    selected.recommendationScore < expected.recommendation.minimumScore
+  ) {
     throw new Error("recommended score did not exceed the expected threshold");
   }
-  if (beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")) {
+  if (
+    expected.recommendation.required &&
+    beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")
+  ) {
     throw new Error("catalog recommendation order did not actually change");
   }
   const leakage = JSON.stringify({ pageText, afterProducts });
@@ -778,7 +790,7 @@ export function validateRecommendationProjection({
     beforeCatalogKeys,
     afterCatalogKeys,
     selectedCatalogKey: selected.catalogKey,
-    selectedVariantId: selected.preferredVariantId,
+    selectedVariantId,
     selectedScore: selected.recommendationScore,
     seededSelection,
   };
@@ -1578,6 +1590,7 @@ async function waitForCatalogProducts(client, timeoutMs = 30_000) {
 async function waitForCatalogRecommendationProjection(
   client,
   baselineOrder,
+  requireRecommendation,
   timeoutMs = 90_000,
 ) {
   return waitForCondition(
@@ -1592,12 +1605,13 @@ async function waitForCatalogRecommendationProjection(
           state?.route === "#/catalog" &&
           state?.recommendationActive === "true" &&
           currentOrder.length > 0 &&
-          currentOrder.join("\n") !== baselineOrder.join("\n") &&
-          state.products.some(
-            (product) =>
-              Number.isFinite(product.recommendationScore) &&
-              product.recommendationScore > 0,
-          ),
+          (!requireRecommendation ||
+            (currentOrder.join("\n") !== baselineOrder.join("\n") &&
+              state.products.some(
+                (product) =>
+                  Number.isFinite(product.recommendationScore) &&
+                  product.recommendationScore > 0,
+              ))),
         value: state,
       };
     },
@@ -2284,6 +2298,7 @@ async function runVisionTryOnAcceptance(options) {
     const catalogRecommendationPromise = waitForCatalogRecommendationProjection(
       client,
       baselineCatalogProjection.products.map((product) => product.catalogKey),
+      expectedResults.recommendation.required,
     );
     const [protocolEvidence, catalogRecommendation] = await Promise.all([
       protocolEvidencePromise,

@@ -954,6 +954,48 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("keeps profile and try-on acceptance usable when published fixtures do not claim recommendation data", () => {
+    const expectedResults = {
+      schemaVersion: "vending-vision-recorded-video-fixture/v1",
+      expected: {
+        top: {
+          protocolEvents: ["vision.presence_status", "vision.person_departed"],
+        },
+        front: { tryOn: { jpeg: true } },
+      },
+    };
+    assert.equal(
+      normalizeVisionExpectedResults(expectedResults).recommendation.required,
+      false,
+    );
+    const summary = validateRecommendationProjection({
+      beforeProducts: [
+        {
+          catalogKey: "product:regular",
+          variantId: "variant-regular",
+          preferredVariantId: "",
+          recommendationScore: 0,
+        },
+      ],
+      afterProducts: [
+        {
+          catalogKey: "product:regular",
+          variantId: "variant-regular",
+          preferredVariantId: "",
+          recommendationScore: 0,
+        },
+      ],
+      pageText: "常规码 T恤",
+      expectedResults,
+      runtimeExpectation: {
+        seededTryOnVariants: [
+          { productId: "regular", variantId: "variant-regular" },
+        ],
+      },
+    });
+    assert.equal(summary.selectedVariantId, "variant-regular");
+  });
+
   it("requires try-on evidence to bind the seeded variant/media asset and reject black frames", () => {
     const summary = validateTryOnPresentation({
       selectedProduct: {
