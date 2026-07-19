@@ -441,6 +441,31 @@ function daemonGet(handoff, path) {
   });
 }
 
+function daemonPost(handoff, path, body) {
+  const healthzUrl = required(
+    handoff?.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
+  const baseUrl = healthzUrl.endsWith("/healthz")
+    ? healthzUrl.slice(0, -"/healthz".length)
+    : healthzUrl;
+  return boundedFetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => null);
+    if (!response.ok)
+      throw new Error(
+        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+      );
+    return payload;
+  });
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -589,6 +614,13 @@ function terminalOperations(guestInput, handoff) {
             guestInput,
             `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
           ),
+        cancelActiveTransaction: (transaction) =>
+          daemonPost(handoff, "/v1/intents/cancel-order", {
+            orderNo: required(
+              transaction?.orderNo,
+              "active transaction orderNo",
+            ),
+          }),
         waitForTransactionTerminal: async () => {
           const deadline = Date.now() + 30_000;
           let transaction = null;

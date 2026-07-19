@@ -1699,11 +1699,13 @@ async function waitForControlledVisionRuntimeClient(controlPort) {
 
 export async function shutdownControlledVisionMock(child, timeoutMs = 10_000) {
   if (!child) return;
-  child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolvePromise) => child.once("exit", resolvePromise)),
-    sleep(timeoutMs),
-  ]);
+  if (child.exitCode == null) {
+    child.kill("SIGTERM");
+    await Promise.race([
+      new Promise((resolvePromise) => child.once("exit", resolvePromise)),
+      sleep(timeoutMs),
+    ]);
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -1918,7 +1920,21 @@ async function runFastRouteStressSale(options) {
     stage = "vision-departure-during-create-order";
     const pendingConfirmedAt = new Date().toISOString();
     const visionRequestedAt = new Date().toISOString();
-    const visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+    let visionDeliveryResult;
+    try {
+      visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+    } catch {
+      await shutdownControlledVisionMock(vision?.child).catch(() => undefined);
+      vision = await ensureControlledVisionMock(
+        guestInput.hostControlPlane?.visionMockControlPort ??
+          guestInput.visionMockControlPort,
+      );
+      await waitForControlledVisionRuntimeClient(
+        guestInput.hostControlPlane?.visionMockControlPort ??
+          guestInput.visionMockControlPort,
+      );
+      visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+    }
     const visionDelivery = {
       ...visionDeliveryResult,
       requestedAt: visionRequestedAt,

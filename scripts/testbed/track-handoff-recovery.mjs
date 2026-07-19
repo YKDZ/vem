@@ -165,6 +165,7 @@ export async function recoverTrackHandoff({
   disableFaultInjection,
   restoreSerialSession,
   restoreFixtureStock,
+  cancelActiveTransaction,
   waitForTransactionTerminal,
 }) {
   const actions = [];
@@ -181,6 +182,10 @@ export async function recoverTrackHandoff({
   };
   const route = terminal?.facts?.route;
   if (transactionLeaked(terminal?.facts?.transaction)) {
+    await attempt("cancelActiveTransaction", () =>
+      cancelActiveTransaction(terminal.facts.transaction),
+    );
+    if (errors.length > 0) return { ok: false, actions, errors };
     try {
       const settled = await waitForTransactionTerminal?.();
       if (!settled || transactionLeaked(settled)) {

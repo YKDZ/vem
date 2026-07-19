@@ -252,27 +252,37 @@ describe("Track Handoff Recovery", () => {
     ]);
   });
 
-  it("wait_payment snapshot is treated as leaked and must be waited on before recovery controls", async () => {
+  it("cancels a leaked wait_payment transaction before waiting for terminal state", async () => {
     const calls = [];
     const result = await recoverTrackHandoff({
       track: { key: "scanner" },
       terminal: {
         facts: {
           route: "#/payment",
-          transaction: { orderId: "order-1", nextAction: "wait_payment" },
+          transaction: {
+            orderId: "order-1",
+            orderNo: "ORD-1",
+            nextAction: "wait_payment",
+          },
         },
       },
       fixtureAllocation: {},
       returnToCatalog: async () => calls.push("catalog"),
       disableFaultInjection: async () => calls.push("fault"),
+      cancelActiveTransaction: async (transaction) =>
+        calls.push(`cancel:${transaction.orderNo}`),
       waitForTransactionTerminal: async () => ({
         orderId: "order-1",
-        nextAction: "wait_payment",
+        nextAction: "canceled",
       }),
     });
-    assert.equal(result.ok, false);
-    assert.match(result.errors[0], /active transaction did not reach/);
-    assert.deepEqual(calls, []);
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, ["cancel:ORD-1", "catalog", "fault"]);
+    assert.deepEqual(result.actions, [
+      "cancelActiveTransaction",
+      "returnToCatalog",
+      "disableFaultInjection",
+    ]);
   });
 
   it("treats a wait_for loop settled response as terminal even with orderId", async () => {
@@ -288,14 +298,16 @@ describe("Track Handoff Recovery", () => {
       fixtureAllocation: {},
       returnToCatalog: async () => calls.push("catalog"),
       disableFaultInjection: async () => calls.push("fault"),
+      cancelActiveTransaction: async () => calls.push("cancel"),
       waitForTransactionTerminal: async () => ({
         orderId: "order-1",
         nextAction: "success",
       }),
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(calls, ["catalog", "fault"]);
+    assert.deepEqual(calls, ["cancel", "catalog", "fault"]);
     assert.deepEqual(result.actions, [
+      "cancelActiveTransaction",
       "returnToCatalog",
       "disableFaultInjection",
     ]);
