@@ -154,6 +154,14 @@ describe("host serial control plane", () => {
           scannerCodeByteLength: 18,
           scannerCodeSuffix: "678901",
         },
+        operationEvidence: {
+          runnerChallenge:
+            "serial-runner-challenge://sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          startReportDigest:
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          injectReportDigest:
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        },
       },
     });
 
@@ -168,6 +176,9 @@ describe("host serial control plane", () => {
       command.args.join(" "),
       /--scanner-injection-operation-nonce op-1/,
     );
+    assert.match(command.args.join(" "), /--serial-runner-challenge/);
+    assert.match(command.args.join(" "), /--serial-start-report-digest/);
+    assert.match(command.args.join(" "), /--serial-inject-report-digest/);
   });
 
   it("passes delayed-pickup scenario into start-serial-session commands", () => {

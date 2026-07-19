@@ -284,6 +284,14 @@ function serialSessionForOperation(operation, scannerCode) {
   )
     return null;
   const isStart = operation === "start-serial-session";
+  const operationEvidence =
+    operation === "collect-serial-evidence"
+      ? {
+          runnerChallenge: readOption("--serial-runner-challenge"),
+          startReportDigest: readOption("--serial-start-report-digest"),
+          injectReportDigest: readOption("--serial-inject-report-digest"),
+        }
+      : null;
   return {
     ...(isStart
       ? {
@@ -295,7 +303,7 @@ function serialSessionForOperation(operation, scannerCode) {
       : sessionBindingFromOptions()),
     deviceRoles: ["lower-controller", "scanner"],
     scannerInjection: scannerInjectionFromOptions(operation, scannerCode),
-    operationEvidence: null,
+    operationEvidence,
     saleCorrelationIds: readOptions("--sale-correlation-id"),
     saleBindings: isStart
       ? []

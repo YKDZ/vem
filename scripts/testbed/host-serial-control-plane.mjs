@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -187,6 +187,12 @@ export function buildSerialOperationCommand({ workspace, stateRoot, request }) {
         String(request.scannerInjection.scannerCodeByteLength),
         "--scanner-code-suffix",
         request.scannerInjection.scannerCodeSuffix,
+        "--serial-runner-challenge",
+        request.operationEvidence.runnerChallenge,
+        "--serial-start-report-digest",
+        request.operationEvidence.startReportDigest,
+        "--serial-inject-report-digest",
+        request.operationEvidence.injectReportDigest,
       );
     } else if (request.sale.vendingCommandId) {
       args.push("--vending-command-id", request.sale.vendingCommandId);
@@ -1249,6 +1255,8 @@ async function collectSerialEvidence(server, input) {
     vendingCommandId: required(input.vendingCommandId, "vendingCommandId"),
   };
   const outPath = join(session.dir, "collect.json");
+  const reportDigest = (report) =>
+    `sha256:${createHash("sha256").update(JSON.stringify(report)).digest("hex")}`;
   const command = buildSerialOperationCommand({
     workspace: server.options.workspace,
     stateRoot: server.options.stateRoot,
@@ -1264,6 +1272,11 @@ async function collectSerialEvidence(server, input) {
         scannerCodeDigest: scannerInjection.scannerCodeDigest,
         scannerCodeByteLength: scannerInjection.scannerCodeByteLength,
         scannerCodeSuffix: scannerInjection.scannerCodeSuffix,
+      },
+      operationEvidence: {
+        runnerChallenge: `serial-runner-challenge://sha256-${randomBytes(32).toString("hex")}`,
+        startReportDigest: reportDigest(session.startReport),
+        injectReportDigest: reportDigest(session.injectReport),
       },
       outPath,
     },
