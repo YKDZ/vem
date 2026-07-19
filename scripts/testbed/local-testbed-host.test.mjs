@@ -278,7 +278,7 @@ describe("tracked local testbed host lifecycle", () => {
       },
     });
     assert.equal(result.displayAdmissionProof.widthPx, 1080);
-    assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
+    assert.deepEqual(operations, ["ssh", "ssh", "ssh", "ssh"]);
   });
 
   it("clears explicitly configured proxy entries, restarts the discovered service, and waits for a newly appended listener diagnostic", async () => {
@@ -294,11 +294,13 @@ describe("tracked local testbed host lifecycle", () => {
       },
     });
     const runner = plan.at(-1);
+    const actionsCache = plan.at(-2);
+    assert.equal(actionsCache.type, "prepare-actions-cache");
+    assert.match(actionsCache.input, /D:\\runtime-cache\\v1\\actions/);
+    assert.match(actionsCache.input, /_work\\_actions/);
+    assert.match(actionsCache.input, /New-Item -ItemType Junction/);
     assert.equal(runner.type, "restart-runner-and-await-listener");
     assert.match(runner.input, /C:\\actions-runner\\.env/);
-    assert.match(runner.input, /D:\\runtime-cache\\v1\\actions/);
-    assert.match(runner.input, /_work\\_actions/);
-    assert.match(runner.input, /New-Item -ItemType Junction/);
     assert.match(runner.input, /actions\.runner\.\*/);
     assert.match(runner.input, /Restart-Service/);
     assert.match(runner.input, /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/);
