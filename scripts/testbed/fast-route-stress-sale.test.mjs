@@ -917,6 +917,19 @@ describe("fast route stress sale tracer", () => {
     assert.equal(typeof shutdownControlledVisionMock, "function");
   });
 
+  it("waits for a protocol-registered Vision runtime before customer input", () => {
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /waitForControlledVisionRuntimeClient/);
+    assert.match(source, /connectedRuntimeClients\) >= 1/);
+    assert.ok(
+      source.indexOf("await waitForControlledVisionRuntimeClient") <
+        source.indexOf('stage = "physical-catalog-to-checkout"'),
+    );
+  });
+
   it("aggregates cleanup failures without dropping the primary error", async () => {
     const primary = new Error("sale flow failed");
     let cleanup;

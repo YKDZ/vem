@@ -1662,6 +1662,28 @@ async function ensureControlledVisionMock(controlPort) {
   throw new Error("controlled vision mock did not become ready");
 }
 
+async function waitForControlledVisionRuntimeClient(controlPort) {
+  const deadline = Date.now() + 15_000;
+  let lastStatus = null;
+  while (Date.now() < deadline) {
+    try {
+      lastStatus = await fetchJson(
+        `http://127.0.0.1:${controlPort}/control/status`,
+      );
+      if (
+        lastStatus.scenario === "controlled" &&
+        Number(lastStatus.connectedRuntimeClients) >= 1
+      ) {
+        return lastStatus;
+      }
+    } catch {}
+    await sleep(250);
+  }
+  throw new Error(
+    `controlled vision mock did not receive a runtime client: ${JSON.stringify(lastStatus)}`,
+  );
+}
+
 export async function shutdownControlledVisionMock(child, timeoutMs = 10_000) {
   if (!child) return;
   child.kill("SIGTERM");
@@ -1758,6 +1780,10 @@ async function runFastRouteStressSale(options) {
     createOrderGate = await armCreateOrderGate(guestInput);
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
+      guestInput.hostControlPlane?.visionMockControlPort ??
+        guestInput.visionMockControlPort,
+    );
+    await waitForControlledVisionRuntimeClient(
       guestInput.hostControlPlane?.visionMockControlPort ??
         guestInput.visionMockControlPort,
     );

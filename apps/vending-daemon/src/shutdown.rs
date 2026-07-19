@@ -849,7 +849,7 @@ async fn run_vision_watch(
                 tokio::select! {
                     _ = shutdown.cancelled() => return Ok(()),
                     _ = time::sleep(std::time::Duration::from_millis(backoff)) => {
-                        backoff = (backoff * 2).min(30_000);
+                        backoff = (backoff * 2).min(10_000);
                         continue;
                     }
                 }
