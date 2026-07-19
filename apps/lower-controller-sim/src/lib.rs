@@ -593,8 +593,7 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 1 -> E5");
-            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options)
-                .await?;
+            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options).await?;
 
             sleep_after_delta(
                 options.pickup_warning_1_after,
@@ -605,8 +604,7 @@ where
                 return Ok(());
             }
             trace(&options, "pickup timeout warning 2 -> E5");
-            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options)
-                .await?;
+            send_and_journal_controller_frame(&writer, LowerFrame::PickupTimeout, &options).await?;
 
             sleep_after_delta(
                 options.pickup_warning_2_after,
@@ -947,12 +945,9 @@ fn append_raw_frame(
 
 fn journal_upper_frame(options: &SimulatorOptions, frame: &UpperFrame) -> io::Result<()> {
     match frame {
-        UpperFrame::StatusQuery => append_raw_frame(
-            options,
-            "daemon-to-controller",
-            "A0",
-            &[FRAME_HEAD, 0xA0],
-        ),
+        UpperFrame::StatusQuery => {
+            append_raw_frame(options, "daemon-to-controller", "A0", &[FRAME_HEAD, 0xA0])
+        }
         UpperFrame::SingleDispense { raw, .. } => {
             append_raw_frame(options, "daemon-to-controller", "VEND", raw)
         }
@@ -1369,36 +1364,48 @@ mod tests {
             timeout_seconds: 2,
         }));
         assert!(
-            timeout(Duration::from_millis(250), &mut dispense).await.is_err(),
+            timeout(Duration::from_millis(250), &mut dispense)
+                .await
+                .is_err(),
             "dispense must remain pending at the F1 boundary"
         );
         let journal_before_f0 =
             std::fs::read_to_string(&journal_path).expect("read raw serial journal before F0");
         assert!(
-            journal_before_f0.contains("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\""),
+            journal_before_f0
+                .contains("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\""),
             "outbound VEND must be captured before F0 release: {journal_before_f0}"
         );
         assert!(
-            !journal_before_f0.contains("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\""),
+            !journal_before_f0
+                .contains("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\""),
             "F0 must remain gated until the host releases it: {journal_before_f0}"
         );
         std::fs::write(&release_f0_path, b"release\n").expect("release F0");
         std::fs::write(&release_f2_path, b"release\n").expect("release F2");
-        let result = timeout(
-            Duration::from_secs(5),
-            &mut dispense,
-        )
-        .await
-        .expect("adapter timeout");
+        let result = timeout(Duration::from_secs(5), &mut dispense)
+            .await
+            .expect("adapter timeout");
 
         assert!(result.success, "{result:?}");
         sleep(Duration::from_millis(50)).await;
         let journal = std::fs::read_to_string(&journal_path).expect("read raw serial journal");
-        let vend = journal.find("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\"").expect("outbound VEND record");
-        let f0 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\"").expect("inbound F0 record");
-        let f1 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F1\"").expect("inbound F1 record");
-        let f2 = journal.find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F2\"").expect("inbound F2 record");
-        assert!(vend < f0 && f0 < f1 && f1 < f2, "raw protocol evidence must be ordered: {journal}");
+        let vend = journal
+            .find("\"direction\":\"daemon-to-controller\",\"parsedOpcode\":\"VEND\"")
+            .expect("outbound VEND record");
+        let f0 = journal
+            .find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F0\"")
+            .expect("inbound F0 record");
+        let f1 = journal
+            .find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F1\"")
+            .expect("inbound F1 record");
+        let f2 = journal
+            .find("\"direction\":\"controller-to-daemon\",\"parsedOpcode\":\"F2\"")
+            .expect("inbound F2 record");
+        assert!(
+            vend < f0 && f0 < f1 && f1 < f2,
+            "raw protocol evidence must be ordered: {journal}"
+        );
         control_tx.send(ControlCommand::Quit).expect("quit");
         handle.await.expect("join").expect("sim exits cleanly");
         drop(slave_guard);

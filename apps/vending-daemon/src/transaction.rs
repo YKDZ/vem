@@ -1553,14 +1553,7 @@ mod tests {
 
         machine
             .state
-            .begin_payment_code_attempt(
-                "ORDER-1",
-                "6212****3456",
-                "serial_text",
-                1_000,
-                None,
-                None,
-            )
+            .begin_payment_code_attempt("ORDER-1", "6212****3456", "serial_text", 1_000, None, None)
             .await
             .expect("seed payment attempt");
 
