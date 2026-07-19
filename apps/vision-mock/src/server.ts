@@ -259,6 +259,8 @@ function json(
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
+    // IncomingMessage exposes chunks as any even though Node emits byte buffers here.
+    // oxlint-disable-next-line typescript/no-unsafe-argument
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     if (chunks.reduce((sum, entry) => sum + entry.length, 0) > 64 * 1024) {
       throw new Error("request body too large");
@@ -470,9 +472,11 @@ export function startMockVisionServer(
   const sockets = new Set<WebSocket>();
   const runtimeClients = new Map<WebSocket, VisionHelloPayload>();
   const controlServer =
-    controlPort == null
+    controlPort === null
       ? null
-      : createServer(async (request, response) => {
+      : createServer(
+          // oxlint-disable-next-line typescript/no-misused-promises -- Node owns the async request lifecycle.
+          async (request, response) => {
           if (
             request.method === "GET" &&
             request.url === `${DEFAULT_CONTROL_PATH}/status`
@@ -567,7 +571,8 @@ export function startMockVisionServer(
                   : "invalid_control_request",
             });
           }
-        });
+          },
+        );
 
   server.on("connection", (socket) => {
     sockets.add(socket);
@@ -597,8 +602,12 @@ export function startMockVisionServer(
     controlServer === null
       ? Promise.resolve(null)
       : new Promise<void>((resolve, reject) => {
-          controlServer.once("listening", () => resolve());
-          controlServer.once("error", (error) => reject(error));
+          controlServer.once("listening", () => {
+            resolve();
+          });
+          controlServer.once("error", (error) => {
+            reject(error);
+          });
           controlServer.listen(controlPort!, DEFAULT_HOST);
         }),
   ]).then(([url]) => url);
@@ -656,7 +665,7 @@ function parsePushInterval(value: string | undefined): number {
 }
 
 function parseControlPort(value: string | undefined): number | null {
-  if (value == null || value.trim() === "") return null;
+  if (value === undefined || value.trim() === "") return null;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
     return null;

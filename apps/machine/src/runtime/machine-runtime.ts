@@ -245,6 +245,12 @@ function recordUnknownDaemonEvent(
   useConnectivityStore(pinia).recordUnknownEvent(event);
 }
 
+function exposeActiveTransactionRecovery(pinia: Pinia): void {
+  const checkoutStore = useCheckoutStore(pinia);
+  if (checkoutStore.customerCheckoutView.stage === "none") return;
+  void checkoutStore.refreshCurrentTransaction();
+}
+
 export function startMachineRuntime(pinia: Pinia): void {
   const coordinator = coordinatorFor(pinia);
   if (coordinator.subscription) return;
@@ -269,10 +275,12 @@ export function startMachineRuntime(pinia: Pinia): void {
     onError: (error) => {
       connectivityStore.markStale(error);
       saleCapabilityStore.markStale(error);
+      exposeActiveTransactionRecovery(pinia);
     },
     onStale: () => {
       connectivityStore.markStale();
       saleCapabilityStore.markStale("daemon event stream disconnected");
+      exposeActiveTransactionRecovery(pinia);
     },
     onReconnect: () => {
       scheduleStreamReconciliation(pinia);

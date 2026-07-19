@@ -68,7 +68,10 @@ async function createServer(scenario: MockVisionScenario): Promise<string> {
   return await server.ready;
 }
 
-async function postJson(url: string, body: unknown): Promise<any> {
+async function postJson(
+  url: string,
+  body: unknown,
+): Promise<{ status: number; json: unknown }> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },

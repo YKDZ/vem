@@ -17,6 +17,7 @@ import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 type RuntimeEventHandlers = {
   onEvent: (event: unknown) => void;
+  onError?: (error: unknown) => void;
   onStale: () => void;
   onReconnect?: () => void;
 };
@@ -310,6 +311,26 @@ describe("Machine runtime coordinator", () => {
           }),
         ]),
       );
+    });
+  });
+
+  it("exposes transaction recovery when the daemon stream drops during payment", async () => {
+    const checkoutStore = useCheckoutStore(pinia);
+    checkoutStore.applyTransaction(activePaymentTransaction());
+    getCurrentTransactionMock.mockRejectedValueOnce(
+      new Error("daemon transport unavailable"),
+    );
+    startMachineRuntime(pinia);
+
+    const subscription = subscribeEventsMock.mock.calls[0];
+    if (!subscription) throw new Error("runtime did not subscribe to daemon events");
+    subscription[0].onStale();
+
+    await vi.waitFor(() => {
+      expect(checkoutStore.customerCheckoutRecovery).toEqual({
+        active: true,
+        orderCredential: "ORD-RUNTIME-VISION-001",
+      });
     });
   });
 

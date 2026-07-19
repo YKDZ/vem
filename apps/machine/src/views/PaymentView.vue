@@ -290,6 +290,7 @@ onUnmounted(() => {
           class="payment-cancel-button kiosk-touch-target"
           type="button"
           :disabled="!canCancelOrder"
+          data-test="payment-cancel"
           @click="cancelOrder"
         >
           取消订单

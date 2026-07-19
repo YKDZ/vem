@@ -814,6 +814,13 @@ async function runDelayedPickupGuestFull(options) {
       );
     let paymentRouteReached = false;
     for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
+      paymentRouteReached = await waitForRoute(client, /^#\/payment/, {
+        timeoutMs: 250,
+        pollMs: 50,
+      })
+        .then(() => true)
+        .catch(() => false);
+      if (paymentRouteReached) break;
       await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
         kind: "touch",
         timeoutMs: 30_000,
@@ -1107,6 +1114,25 @@ async function runDelayedPickupGuestFull(options) {
         cleanupFailures.push(error);
       }
     };
+    await cleanupFailClosed("pending-order", async () => {
+      if (!client || liveSale) return;
+      const onPayment = await waitForRoute(client, /^#\/payment/, {
+        timeoutMs: 250,
+        pollMs: 50,
+      })
+        .then(() => true)
+        .catch(() => false);
+      if (!onPayment) return;
+      await activateVisibleSelector(
+        client,
+        '[data-test="payment-cancel"]:not(:disabled)',
+        { kind: "touch", timeoutMs: 10_000 },
+      );
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+    });
     await cleanupFailClosed("serial-session", async () => {
       if (!sessionStart || sessionStopped) return;
       if (liveSale) {
