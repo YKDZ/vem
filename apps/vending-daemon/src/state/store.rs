@@ -6441,13 +6441,24 @@ fn apply_active_order_reservations(
     reservations: &[LocalStockReservation],
 ) {
     for item in items {
-        let reserved_quantity: i64 = reservations
+        let local_reserved_quantity: i64 = reservations
             .iter()
             .filter(|reservation| local_stock_reservation_matches_item(reservation, item))
             .map(|reservation| reservation.quantity)
             .sum();
-        if reserved_quantity > 0 {
-            item.saleable_stock = (item.saleable_stock - reserved_quantity).max(0);
+        if local_reserved_quantity > 0 {
+            // A platform stock snapshot can already include this machine's
+            // active order in availableQty. Only apply the part of the local
+            // reservation that is not reflected by the current projection.
+            let projected_reserved_quantity = item
+                .physical_stock
+                .min(item.capacity)
+                .saturating_sub(item.saleable_stock)
+                .max(0);
+            let additional_reservation = local_reserved_quantity
+                .saturating_sub(projected_reserved_quantity)
+                .max(0);
+            item.saleable_stock = (item.saleable_stock - additional_reservation).max(0);
         }
     }
 }
@@ -10681,6 +10692,44 @@ mod tests {
         assert_eq!(sale_view.items[0].physical_stock, 1);
         assert_eq!(sale_view.items[0].saleable_stock, 0);
         assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn sale_view_does_not_double_count_reservation_already_in_platform_snapshot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(3, 1, 2))
+            .await
+            .expect("platform reservation");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PLATFORM-RESERVED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 2);
     }
 
     #[tokio::test]
