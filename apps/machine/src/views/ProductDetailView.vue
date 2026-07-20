@@ -54,6 +54,11 @@ const selectedVariant = computed(
     variantCandidates.value[0] ??
     null,
 );
+const hasTryOnSilhouette = computed(
+  () =>
+    typeof selectedVariant.value?.tryOnSilhouetteUrl === "string" &&
+    selectedVariant.value.tryOnSilhouetteUrl.trim().length > 0,
+);
 const selectedConcreteItem = computed(() => {
   const current = item.value;
   const variant = selectedVariant.value;
@@ -412,19 +417,10 @@ async function enterTryOn(): Promise<void> {
             </p>
           </section>
 
-          <section v-if="selectedVariant" class="try-on-entry">
-            <button
-              class="try-on-button kiosk-touch-target"
-              type="button"
-              data-test="try-on-entry"
-              :disabled="visionStore.isTryOnCapabilityDegraded"
-              @click="enterTryOn"
-            >
-              虚拟试穿
-            </button>
-          </section>
-
-          <div class="detail-bottom-bar">
+          <div
+            class="detail-bottom-bar"
+            :class="{ 'has-try-on': selectedVariant && hasTryOnSilhouette }"
+          >
             <button
               class="detail-buy-button kiosk-touch-target"
               type="button"
@@ -437,6 +433,18 @@ async function enterTryOn(): Promise<void> {
               @click="purchase"
             >
               {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
+            </button>
+            <button
+              v-if="selectedVariant && hasTryOnSilhouette"
+              class="try-on-button kiosk-touch-target"
+              type="button"
+              data-test="try-on-entry"
+              :disabled="visionStore.isTryOnCapabilityDegraded"
+              aria-label="虚拟试穿"
+              title="虚拟试穿"
+              @click="enterTryOn"
+            >
+              <img :src="iconTshirtImage" alt="" aria-hidden="true" />
             </button>
           </div>
         </section>
@@ -816,24 +824,27 @@ async function enterTryOn(): Promise<void> {
   font-size: 1.4rem;
 }
 
-.try-on-entry {
+.try-on-button {
   display: grid;
-  margin-top: 1.55rem;
+  width: 70px;
+  height: 70px;
+  place-items: center;
+  border: 1px solid rgba(154, 91, 101, 0.72);
+  border-radius: 8px;
+  background: #a76570;
+  box-shadow: 0 14px 24px rgba(126, 68, 78, 0.2);
 }
 
-.try-on-button {
-  min-height: 56px;
-  border: 1px solid rgba(111, 131, 95, 0.7);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.72);
-  color: #5f7352;
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.14rem;
-  font-weight: 700;
+.try-on-button img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
 }
 
 .try-on-button:disabled {
-  opacity: 1;
+  background: rgba(172, 170, 153, 0.65);
+  box-shadow: none;
 }
 
 .detail-mascot {
@@ -849,7 +860,13 @@ async function enterTryOn(): Promise<void> {
 
 .detail-bottom-bar {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.8rem;
   margin-top: 1.85rem;
+}
+
+.detail-bottom-bar.has-try-on {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .detail-buy-button {
@@ -1071,14 +1088,14 @@ async function enterTryOn(): Promise<void> {
     padding-right: 0.2rem;
   }
 
-  .try-on-entry {
-    margin-top: 0.85rem;
+  .try-on-button {
+    width: 56px;
+    height: 56px;
   }
 
-  .try-on-button {
-    min-height: 44px;
-    padding: 0 0.7rem;
-    font-size: 0.88rem;
+  .try-on-button img {
+    width: 30px;
+    height: 30px;
   }
 
   .detail-mascot {
@@ -1091,8 +1108,11 @@ async function enterTryOn(): Promise<void> {
 
   .detail-bottom-bar {
     min-height: 58px;
-    grid-template-columns: minmax(130px, 180px);
     gap: 0.55rem;
+  }
+
+  .detail-bottom-bar.has-try-on {
+    grid-template-columns: minmax(130px, 180px) auto;
   }
 
   .detail-buy-button {

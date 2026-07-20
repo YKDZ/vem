@@ -1364,7 +1364,7 @@ describe("sale-start capability UI flow", () => {
     expect(useCheckoutStore().selectedItem).toBeNull();
   });
 
-  it("shows routed product detail try-on entry regardless of silhouette for selected variant", async () => {
+  it("shows the product detail try-on icon only for a silhouetted variant", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1391,17 +1391,7 @@ describe("sale-start capability UI flow", () => {
     const initialTryOnEntry = host.querySelector<HTMLButtonElement>(
       '[data-test="try-on-entry"]',
     );
-    expect(initialTryOnEntry).toBeTruthy();
-    expect(initialTryOnEntry?.disabled).toBe(false);
-    initialTryOnEntry!.click();
-    await nextTick();
-
-    expect(routerPushMock).toHaveBeenLastCalledWith({
-      name: "virtual-try-on",
-      params: { catalogKey: item.catalogKey },
-      query: { variantId: item.variantId },
-    });
-    routerPushMock.mockClear();
+    expect(initialTryOnEntry).toBeNull();
 
     const sizeLButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "L",
@@ -1415,6 +1405,11 @@ describe("sale-start capability UI flow", () => {
     );
     expect(tryOnEntry).toBeTruthy();
     expect(tryOnEntry?.disabled).toBe(false);
+    expect(tryOnEntry?.getAttribute("aria-label")).toBe("虚拟试穿");
+    expect(tryOnEntry?.querySelector("img")).toBeTruthy();
+    expect(tryOnEntry?.previousElementSibling?.getAttribute("data-test")).toBe(
+      "product-buy",
+    );
 
     tryOnEntry!.click();
     await nextTick();
@@ -1437,8 +1432,7 @@ describe("sale-start capability UI flow", () => {
     const returnTryOnEntry = host.querySelector<HTMLButtonElement>(
       '[data-test="try-on-entry"]',
     );
-    expect(returnTryOnEntry).toBeTruthy();
-    expect(returnTryOnEntry?.disabled).toBe(false);
+    expect(returnTryOnEntry).toBeNull();
   });
 
   it("disables only a degraded try-on capability while preserving ordinary purchase", async () => {
