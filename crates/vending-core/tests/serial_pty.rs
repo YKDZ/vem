@@ -184,6 +184,7 @@ async fn serial_adapter_recovers_a_lost_f2_from_idle_after_pickup_completed() {
         support::send_lower_code(&mut pty.master, 0xF1).await;
         sleep(Duration::from_millis(10)).await;
         support::send_lower_code(&mut pty.master, 0xAA).await;
+        sleep(Duration::from_millis(50)).await;
     });
 
     let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());

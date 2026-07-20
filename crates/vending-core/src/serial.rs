@@ -23,7 +23,7 @@ use crate::hardware::{
 pub const FRAME_HEAD: u8 = 0x55;
 pub const DEBUG_DISPENSE_FAULT_FRAME: [u8; 4] = [FRAME_HEAD, 0xFF, 0xFF, 0xFF];
 const HANDSHAKE: [u8; 2] = build_status_query_frame();
-const SERIAL_BAUD_RATE: u32 = 9_600;
+const SERIAL_BAUD_RATE: u32 = 115_200;
 const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const ENVIRONMENT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const STATUS_QUERY_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
