@@ -237,10 +237,9 @@ function hasBoundSuccess(value, sale) {
   return Object.values(value).some((entry) => hasBoundSuccess(entry, sale));
 }
 
-function inventorySnapshot(report) {
-  return rows(report, "inventories")
-    .map((row) => `${row.id}:${row.onHandQty}`)
-    .sort();
+function inventoryQuantity(report, inventoryId) {
+  return rows(report, "inventories").find((row) => row.id === inventoryId)
+    ?.onHandQty;
 }
 
 export function validateSerialFulfillmentErrorEvidence(evidence) {
@@ -255,14 +254,17 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
   const command = rows(final.platform, "commands").find(
     (row) => row.id === liveSale.vendingCommandId,
   );
+  const orderItem = rows(final.platform, "orderItems").find(
+    (row) => row.orderId === sale.orderId,
+  );
   if (!order || !TERMINAL_FAILURE_ORDER_STATUSES.has(order.status)) {
     throw new Error(
       "authoritative order must settle as refund_pending, refunded, or manual_handling",
     );
   }
-  if (!payment || !command)
+  if (!payment || !command || !orderItem?.inventoryId)
     throw new Error(
-      "platform payment and vending command must retain the rendered sale binding",
+      "platform payment, order item, and vending command must retain the rendered sale binding",
     );
   if (
     serial.saleBinding?.orderId !== sale.orderId ||
@@ -340,9 +342,18 @@ export function validateSerialFulfillmentErrorEvidence(evidence) {
       "dispense_succeeded movement must not exist for the failed sale",
     );
   }
+  const baselineQuantity = inventoryQuantity(
+    baseline.platform,
+    orderItem.inventoryId,
+  );
+  const finalQuantity = inventoryQuantity(
+    final.platform,
+    orderItem.inventoryId,
+  );
   if (
-    JSON.stringify(inventorySnapshot(baseline.platform)) !==
-    JSON.stringify(inventorySnapshot(final.platform))
+    !Number.isInteger(baselineQuantity) ||
+    !Number.isInteger(finalQuantity) ||
+    baselineQuantity !== finalQuantity
   ) {
     throw new Error("failed fulfillment must have stock delta 0");
   }

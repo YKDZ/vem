@@ -34,6 +34,13 @@ function evidence(overrides = {}) {
       platform: {
         raw: {
           orders: [{ id: sale.orderId, status: "refunded" }],
+          orderItems: [
+            {
+              id: "order-item-20",
+              orderId: sale.orderId,
+              inventoryId: "inventory-20",
+            },
+          ],
           payments: [{ id: sale.paymentId, orderId: sale.orderId }],
           commands: [{ id: liveSale.vendingCommandId, orderId: sale.orderId }],
           movements: [],
@@ -111,6 +118,28 @@ describe("serial fulfillment error guest full", () => {
       commandId: liveSale.vendingCommandId,
       inventoryDelta: 0,
     });
+  });
+
+  it("ignores unrelated inventory recovery but rejects a failed-slot stock delta", () => {
+    const base = evidence();
+    base.baseline.platform.raw.inventories.push({
+      id: "inventory-other",
+      onHandQty: 2,
+    });
+    base.final.platform.raw.inventories.push({
+      id: "inventory-other",
+      onHandQty: 3,
+    });
+    assert.equal(
+      validateSerialFulfillmentErrorEvidence(base).inventoryDelta,
+      0,
+    );
+
+    base.final.platform.raw.inventories[0].onHandQty = 6;
+    assert.throws(
+      () => validateSerialFulfillmentErrorEvidence(base),
+      /stock delta 0/,
+    );
   });
 
   it("rejects an accidental F2 or customer success projection", () => {
