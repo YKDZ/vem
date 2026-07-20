@@ -262,18 +262,17 @@ function sampleVisionReport() {
       },
     },
     ui: {
-      tryOnSummary: { ok: true },
-      tryOnFailure: { ok: true },
+      tryOnSummary: {
+        width: 640,
+        height: 360,
+        silhouetteHttpStatus: 200,
+      },
+      tryOnAttempts: [{ attempt: 1, result: "passed" }],
     },
     degradations: {
       visionDown: {
         experienceCapabilityDegraded: true,
         saleStartStillAvailable: true,
-      },
-      tryOnUnavailableWhileVisionOnline: {
-        experienceCapabilityDegraded: true,
-        saleStartStillAvailable: true,
-        visionOnline: true,
       },
     },
   };

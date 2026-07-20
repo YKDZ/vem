@@ -2533,6 +2533,11 @@ async function runVisionTryOnAcceptance(options) {
         screenshotSink: sink,
       }),
     );
+    await evaluateExpression(client, 'location.hash = "#/catalog"');
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
 
     const runtimeTrace = await readRuntimeTrace(client);
     report = {
@@ -2572,7 +2577,7 @@ async function runVisionTryOnAcceptance(options) {
         silhouetteEvidence,
         tryOnSummary,
         degradedProductDetail,
-        finalRoute: "#/checkout",
+        finalRoute: "#/catalog",
       },
       degradations: {
         visionDown: {

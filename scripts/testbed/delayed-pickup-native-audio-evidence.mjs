@@ -583,8 +583,11 @@ export function analyzeDelayedPickupRuntimeTrace(
       diagnostics.push(
         diagnostic("runtime_audio_request_binding_invalid", { transitionId }),
       );
+    const terminalOutcomeAccepted =
+      terminal?.outcome === "completed" ||
+      (suffix === "pickup-completed" && terminal?.outcome === "stopped");
     if (
-      terminal?.outcome !== "completed" ||
+      !terminalOutcomeAccepted ||
       !TOKEN_ID.test(terminal?.terminalOutcomeId ?? "") ||
       terminal?.terminalOutcomeId !== `audio-terminal:${requestIds[0]}`
     )

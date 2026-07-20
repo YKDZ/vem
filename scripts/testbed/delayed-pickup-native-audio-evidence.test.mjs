@@ -112,7 +112,33 @@ function runtimeTraceFixture() {
   return trace;
 }
 
+function stopPickupCompletedCue(trace) {
+  return trace.map((entry) =>
+    entry.transitionId === `transaction:${binding.orderNo}:pickup-completed` &&
+    entry.type === "audio_terminal"
+      ? { ...entry, outcome: "stopped" }
+      : entry,
+  );
+}
+
 describe("delayed pickup production evidence algorithms", () => {
+  it("accepts pickup completion being superseded by terminal success audio", () => {
+    const evidence = {
+      schemaVersion: "machine-production-evidence/v2",
+      source: "installed_canonical_machine_cdp",
+      binding: { ...binding },
+      runtime: { ...runtime },
+      captureStartedAt: "2026-07-18T07:59:59.000Z",
+      captureCompletedAt: "2026-07-18T08:00:30.000Z",
+      runtimeTrace: stopPickupCompletedCue(runtimeTraceFixture()),
+    };
+
+    assert.equal(
+      analyzeDelayedPickupRuntimeTrace(evidence, binding, runtime).ok,
+      true,
+    );
+  });
+
   it("decodes real controller bytes and collapses only protocol repeats", () => {
     const frames = [
       dispenseFrame(),

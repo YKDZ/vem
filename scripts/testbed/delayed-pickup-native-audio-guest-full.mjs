@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -1090,6 +1096,15 @@ async function runDelayedPickupGuestFull(options) {
     if (acceptance.result !== "passed") {
       throw new Error(
         `delayed pickup native audio acceptance failed: ${JSON.stringify(acceptance.diagnostics)}`,
+      );
+    }
+    for (const artifact of liveEvidence.audioStop?.evidence ?? []) {
+      if (artifact.role !== "sale-default-audio-capture") continue;
+      rmSync(
+        join(localPath(liveEvidence.evidenceDirectory), artifact.fileName),
+        {
+          force: true,
+        },
       );
     }
     await controlPlaneRequest(

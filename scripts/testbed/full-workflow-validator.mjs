@@ -322,11 +322,8 @@ function validateVisionTrack(report, reportPath) {
     };
   }
   const visionDown = report.degradations?.visionDown ?? {};
-  const tryOnUnavailable =
-    report.degradations?.tryOnUnavailableWhileVisionOnline ?? {};
   const protocol = report.health?.vision?.protocolSummary ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
-  const tryOnFailure = report.ui?.tryOnFailure ?? null;
   const vision =
     protocol &&
     visionDown.experienceCapabilityDegraded === true &&
@@ -344,13 +341,15 @@ function validateVisionTrack(report, reportPath) {
         );
   const tryOn =
     tryOnSummary &&
-    tryOnFailure &&
-    tryOnUnavailable.experienceCapabilityDegraded === true &&
-    tryOnUnavailable.saleStartStillAvailable === true &&
-    tryOnUnavailable.visionOnline === true
+    tryOnSummary.width > 0 &&
+    tryOnSummary.height > 0 &&
+    tryOnSummary.silhouetteHttpStatus === 200 &&
+    report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
+    visionDown.saleStartStillAvailable === true
       ? passedTrack("tryOn", "try-on", reportPath, {
-          experienceCapabilityDegraded: true,
-          visionOnline: true,
+          previewWidth: tryOnSummary.width,
+          previewHeight: tryOnSummary.height,
+          silhouetteHttpStatus: tryOnSummary.silhouetteHttpStatus,
         })
       : failedTrack(
           "tryOn",
@@ -359,8 +358,8 @@ function validateVisionTrack(report, reportPath) {
           "try-on degradation evidence is incomplete",
           {
             tryOnSummary,
-            tryOnFailure,
-            tryOnUnavailable,
+            tryOnAttempts: report.ui?.tryOnAttempts ?? null,
+            visionDown,
           },
         );
   return { vision, tryOn };
