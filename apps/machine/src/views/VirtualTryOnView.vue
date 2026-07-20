@@ -44,6 +44,7 @@ const silhouetteResolution = computed(() =>
   ),
 );
 const silhouetteUrl = computed(() => silhouetteResolution.value.url);
+const sessionSilhouetteUrl = ref<string | null>(null);
 const silhouetteAvailable = ref(true);
 
 function recordSilhouetteDiagnostic(message: string): void {
@@ -67,10 +68,11 @@ watch(
 );
 
 onMounted(() => {
+  sessionSilhouetteUrl.value = silhouetteUrl.value;
   void startPreview({
     catalogKey: catalogKey.value,
     variantId: variantId.value,
-    silhouetteUrl: silhouetteUrl.value,
+    silhouetteUrl: sessionSilhouetteUrl.value,
   });
 });
 
@@ -113,9 +115,9 @@ function useSilhouettePlaceholder(): void {
       data-test="try-on-preview-placeholder"
     ></div>
     <img
-      v-if="silhouetteUrl && silhouetteAvailable"
+      v-if="sessionSilhouetteUrl && silhouetteAvailable"
       class="try-on-silhouette try-on-silhouette-fixed"
-      :src="silhouetteUrl"
+      :src="sessionSilhouetteUrl"
       alt=""
       aria-hidden="true"
       data-test="try-on-silhouette"

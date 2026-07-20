@@ -1525,6 +1525,19 @@ describe("sale-start capability UI flow", () => {
       `http://localhost:3000${tryOnSilhouetteUrl}`,
     );
     expect(silhouette?.className).toContain("try-on-silhouette-fixed");
+
+    useCatalogStore().applySnapshot({
+      items: [{ ...silhouettedVariant, tryOnSilhouetteUrl: null }],
+      source: "local_stock",
+      planogramVersion: "PLAN-2",
+      lastUpdatedAt: "2026-06-04T00:00:05Z",
+    });
+    await nextTick();
+    expect(
+      host
+        .querySelector<HTMLImageElement>('[data-test="try-on-silhouette"]')
+        ?.getAttribute("src"),
+    ).toBe(`http://localhost:3000${tryOnSilhouetteUrl}`);
   });
 
   it("rejects a remote try-on preview URL at the UI boundary", async () => {
