@@ -849,6 +849,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     beforeTrack:
       dependencies.beforeTrack ??
       (async () => {
+        await waitForDaemonReadyRefresh(handoff);
         const refreshed = refreshDaemonReadyHandoff({
           handoffPath: options.handoffPath,
           handoff,

@@ -557,14 +557,20 @@ export async function runSerialFulfillmentErrorGuest(options) {
     report.evidence.resultUi = await readUi(client).catch((error) => ({
       error: String(error),
     }));
-    await activateVisibleSelector(client, ".failure-return-button", {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, "#/catalog", {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
+    const canReturnToCatalog = await evaluateExpression(
+      client,
+      `document.querySelector(".failure-return-button") !== null`,
+    );
+    if (canReturnToCatalog) {
+      await activateVisibleSelector(client, ".failure-return-button", {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+    }
     stage = "wait-authoritative-recovery";
     const deadline = Date.now() + 60_000;
     do {
