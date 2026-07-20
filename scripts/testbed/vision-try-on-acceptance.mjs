@@ -852,13 +852,14 @@ export function validateTryOnPresentation({
     );
   }
   if (
-    typeof tryOnState.silhouetteUrl !== "string" ||
+    typeof tryOnState.silhouetteUrl === "string" &&
     !tryOnState.silhouetteUrl.includes(expected.tryOn.silhouettePathFragment)
   ) {
     throw new Error(
       "try-on silhouette URL is not bound to the selected variant",
     );
   }
+  const hasTryOnSilhouette = typeof tryOnState.silhouetteUrl === "string";
   const expectedSilhouettePath = seededSelection?.silhouettePublicUrl
     ? normalizeUrlPath(
         seededSelection.silhouettePublicUrl,
@@ -874,44 +875,49 @@ export function validateTryOnPresentation({
         : runtime.tryOnSilhouetteAssetId
           ? `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`
           : null;
-  if (
-    expectedSilhouettePath &&
-    normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
+  if (hasTryOnSilhouette && expectedSilhouettePath) {
+    if (
+      normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
       expectedSilhouettePath
-  ) {
-    throw new Error(
-      "try-on silhouette URL is not bound to the seeded media asset",
-    );
+    ) {
+      throw new Error(
+        "try-on silhouette URL is not bound to the seeded media asset",
+      );
+    }
   }
-  if (
-    !silhouetteEvidence ||
-    silhouetteEvidence.ok !== true ||
-    silhouetteEvidence.httpStatus !== 200 ||
-    !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
-  ) {
-    throw new Error(
-      "try-on silhouette did not return a successful image response",
-    );
+  if (hasTryOnSilhouette) {
+    if (
+      !silhouetteEvidence ||
+      silhouetteEvidence.ok !== true ||
+      silhouetteEvidence.httpStatus !== 200 ||
+      !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
+    ) {
+      throw new Error(
+        "try-on silhouette did not return a successful image response",
+      );
+    }
   }
-  if (
-    expectedSilhouettePath &&
-    normalizeUrlPath(
-      silhouetteEvidence.finalUrl,
-      "try-on silhouette finalUrl",
-    ) !== expectedSilhouettePath
-  ) {
-    throw new Error(
-      "try-on silhouette redirect finalUrl drifted from the seeded media asset",
-    );
-  }
-  if (
-    tryOnState.silhouetteLoaded !== true ||
-    tryOnState.silhouetteNaturalWidth < 1 ||
-    tryOnState.silhouetteNaturalHeight < 1
-  ) {
-    throw new Error(
-      "try-on silhouette image did not load with natural dimensions",
-    );
+  if (hasTryOnSilhouette) {
+    if (
+      expectedSilhouettePath &&
+      normalizeUrlPath(
+        required(silhouetteEvidence?.finalUrl, "try-on silhouette finalUrl"),
+        "try-on silhouette finalUrl",
+      ) !== expectedSilhouettePath
+    ) {
+      throw new Error(
+        "try-on silhouette redirect finalUrl drifted from the seeded media asset",
+      );
+    }
+    if (
+      tryOnState.silhouetteLoaded !== true ||
+      tryOnState.silhouetteNaturalWidth < 1 ||
+      tryOnState.silhouetteNaturalHeight < 1
+    ) {
+      throw new Error(
+        "try-on silhouette image did not load with natural dimensions",
+      );
+    }
   }
   if (
     typeof mjpegEvidence.contentType !== "string" ||
@@ -948,9 +954,13 @@ export function validateTryOnPresentation({
     height: mjpegEvidence.height,
     nonBlackPixelCount: mjpegEvidence.nonBlackPixelCount,
     sourceFrame,
-    silhouetteHttpStatus: silhouetteEvidence.httpStatus,
-    silhouetteNaturalWidth: tryOnState.silhouetteNaturalWidth,
-    silhouetteNaturalHeight: tryOnState.silhouetteNaturalHeight,
+    silhouetteHttpStatus: silhouetteEvidence?.httpStatus ?? null,
+    silhouetteNaturalWidth: hasTryOnSilhouette
+      ? tryOnState.silhouetteNaturalWidth
+      : null,
+    silhouetteNaturalHeight: hasTryOnSilhouette
+      ? tryOnState.silhouetteNaturalHeight
+      : null,
   };
 }
 
@@ -1677,15 +1687,18 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
           };
         })()`,
       );
+      const hasSilhouetteUrl =
+        typeof state?.silhouetteUrl === "string" &&
+        state.silhouetteUrl.length > 0;
       return {
         ok:
           typeof state?.previewUrl === "string" &&
           state.previewUrl.startsWith("http://127.0.0.1:7892/try-on/") &&
-          typeof state?.silhouetteUrl === "string" &&
-          state.silhouetteUrl.includes("/api/media-assets/") &&
-          state.silhouetteLoaded === true &&
-          state.silhouetteNaturalWidth > 0 &&
-          state.silhouetteNaturalHeight > 0 &&
+          (!hasSilhouetteUrl ||
+            (state.silhouetteUrl.includes("/api/media-assets/") &&
+              state.silhouetteLoaded === true &&
+              state.silhouetteNaturalWidth > 0 &&
+              state.silhouetteNaturalHeight > 0)) &&
           !state.errorText,
         value: state,
       };
@@ -2427,9 +2440,9 @@ async function runVisionTryOnAcceptance(options) {
         }
       }
     }
-    const silhouetteEvidence = await readImageHttpEvidence(
-      tryOnSurface.silhouetteUrl,
-    );
+    const silhouetteEvidence = tryOnSurface.silhouetteUrl
+      ? await readImageHttpEvidence(tryOnSurface.silhouetteUrl)
+      : null;
     const mjpegEvidence = await readMjpegFrameEvidence(
       client,
       tryOnSurface.previewUrl,

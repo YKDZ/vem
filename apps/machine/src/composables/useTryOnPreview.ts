@@ -42,14 +42,6 @@ export function useTryOnPreview(): {
     await stopActiveSession("replaced");
     if (sequence !== requestSequence) return;
 
-    if (!input.silhouetteUrl) {
-      if (sequence === requestSequence) {
-        errorMessage.value = "当前规格暂不支持虚拟试穿。";
-        isStarting.value = false;
-      }
-      return;
-    }
-
     try {
       const session = await openVisionTryOnSession(
         { machineCode: machineStore.machineCode },

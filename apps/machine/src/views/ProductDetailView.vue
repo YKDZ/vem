@@ -99,9 +99,6 @@ const stockText = computed(() => selectedVariant.value?.saleableStock ?? 0);
 const skuText = computed(
   () => selectedVariant.value?.sku ?? item.value?.sku ?? "-",
 );
-const selectedTryOnSilhouetteUrl = computed(
-  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
-);
 const routedVariantId = computed(() => {
   const value = route.query.variantId;
   return typeof value === "string" ? value : null;
@@ -228,7 +225,7 @@ async function purchase(): Promise<void> {
 
 async function enterTryOn(): Promise<void> {
   const variant = selectedVariant.value;
-  if (!variant?.tryOnSilhouetteUrl || visionStore.isTryOnCapabilityDegraded) {
+  if (!variant || visionStore.isTryOnCapabilityDegraded) {
     return;
   }
   await submitMachineNavigationIntent({
@@ -415,7 +412,7 @@ async function enterTryOn(): Promise<void> {
             </p>
           </section>
 
-          <section v-if="selectedTryOnSilhouetteUrl" class="try-on-entry">
+          <section v-if="selectedVariant" class="try-on-entry">
             <button
               class="try-on-button kiosk-touch-target"
               type="button"

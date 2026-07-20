@@ -60,7 +60,11 @@ watch(
   silhouetteResolution,
   (resolution) => {
     silhouetteAvailable.value = true;
-    if (resolution.diagnostic) {
+    if (
+      resolution.diagnostic &&
+      selectedVariant.value?.tryOnSilhouetteUrl !== null &&
+      selectedVariant.value?.tryOnSilhouetteUrl !== undefined
+    ) {
       recordSilhouetteDiagnostic(resolution.diagnostic);
     }
   },

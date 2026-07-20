@@ -1157,6 +1157,51 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("accepts preview-only try-on when silhouette is intentionally missing", () => {
+    const summary = validateTryOnPresentation({
+      selectedProduct: {
+        catalogKey: "product:L",
+        variantId: "variant-l",
+      },
+      tryOnState: {
+        route: "#/products/product:L/try-on?variantId=variant-l",
+        previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
+        silhouetteUrl: null,
+        silhouetteLoaded: false,
+        silhouetteNaturalWidth: 0,
+        silhouetteNaturalHeight: 0,
+      },
+      mjpegEvidence: {
+        contentType: "multipart/x-mixed-replace; boundary=frame",
+        frameByteLength: 2048,
+        width: 640,
+        height: 480,
+        nonBlackPixelCount: 12,
+        sessionId: "try-on-session-001",
+        sourceFrame: sourceFrame("front", "c".repeat(64), {
+          frameIndex: 15,
+          decodedFrameCount: 16,
+          sessionId: "try-on-session-001",
+        }),
+      },
+      expectedResults: baseExpectedResults(),
+      installedBinding: { frameSourceBinding: frameSourceBinding() },
+      runtimeExpectation: {
+        selectedVariantId: "variant-l",
+        seededTryOnVariants: [
+          {
+            productId: "L",
+            variantId: "variant-l",
+            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            silhouettePublicUrl:
+              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+          },
+        ],
+      },
+    });
+    assert.equal(summary.sessionId, "try-on-session-001");
+  });
+
   it("requires the 7892 listener to bind the fixed installed executable and commit", () => {
     const binding = validateVisionInstalledBinding({
       installedRecord: {

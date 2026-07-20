@@ -1364,7 +1364,7 @@ describe("sale-start capability UI flow", () => {
     expect(useCheckoutStore().selectedItem).toBeNull();
   });
 
-  it("shows routed product detail try-on entry only for the selected variant silhouette", async () => {
+  it("shows routed product detail try-on entry regardless of silhouette for selected variant", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1388,7 +1388,20 @@ describe("sale-start capability UI flow", () => {
     const host = await mountView(ProductDetailView);
 
     expect(host.textContent).toContain("基础短袖");
-    expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
+    const initialTryOnEntry = host.querySelector<HTMLButtonElement>(
+      '[data-test="try-on-entry"]',
+    );
+    expect(initialTryOnEntry).toBeTruthy();
+    expect(initialTryOnEntry?.disabled).toBe(false);
+    initialTryOnEntry!.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenLastCalledWith({
+      name: "virtual-try-on",
+      params: { catalogKey: item.catalogKey },
+      query: { variantId: item.variantId },
+    });
+    routerPushMock.mockClear();
 
     const sizeLButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "L",
@@ -1406,7 +1419,7 @@ describe("sale-start capability UI flow", () => {
     tryOnEntry!.click();
     await nextTick();
 
-    expect(routerPushMock).toHaveBeenCalledWith({
+    expect(routerPushMock).toHaveBeenLastCalledWith({
       name: "virtual-try-on",
       params: { catalogKey: item.catalogKey },
       query: { variantId: silhouettedVariant.variantId },
@@ -1421,7 +1434,11 @@ describe("sale-start capability UI flow", () => {
     sizeMButton!.click();
     await nextTick();
 
-    expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
+    const returnTryOnEntry = host.querySelector<HTMLButtonElement>(
+      '[data-test="try-on-entry"]',
+    );
+    expect(returnTryOnEntry).toBeTruthy();
+    expect(returnTryOnEntry?.disabled).toBe(false);
   });
 
   it("disables only a degraded try-on capability while preserving ordinary purchase", async () => {
@@ -1538,6 +1555,50 @@ describe("sale-start capability UI flow", () => {
         .querySelector<HTMLImageElement>('[data-test="try-on-silhouette"]')
         ?.getAttribute("src"),
     ).toBe(`http://localhost:3000${tryOnSilhouetteUrl}`);
+  });
+
+  it("starts virtual try-on when selected variant has no silhouette URL", async () => {
+    const item: MachineCatalogItem = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl: null,
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyVisionTryOnConfig();
+    const { previewUrl } = mockTryOnSession();
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = item.variantId;
+
+    const host = await mountView(VirtualTryOnView);
+
+    await vi.waitFor(() => {
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          machineCode: "MACHINE-001",
+        }),
+        {
+          catalogKey: item.catalogKey,
+          variantId: item.variantId,
+        },
+      );
+    });
+    const preview = host.querySelector<HTMLImageElement>(
+      '[data-test="try-on-preview"]',
+    );
+    const silhouette = host.querySelector<HTMLImageElement>(
+      '[data-test="try-on-silhouette"]',
+    );
+    expect(preview).toBeTruthy();
+    expect(preview?.getAttribute("src")).toBe(previewUrl);
+    expect(silhouette).toBeNull();
   });
 
   it("rejects a remote try-on preview URL at the UI boundary", async () => {
