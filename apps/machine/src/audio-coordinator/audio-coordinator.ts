@@ -134,6 +134,9 @@ export function createAudioCoordinator(
         });
         continue;
       }
+      if (transition.category === "transaction") {
+        discardQueuedPresenceRequests();
+      }
       if (queue.length >= maxQueueSize) {
         trace.record({
           type: "audio_rejected",
@@ -153,7 +156,7 @@ export function createAudioCoordinator(
         category: transition.category,
       });
       queue.push(request);
-      queue.sort((left, right) => right.priority - left.priority);
+      queue.sort(compareQueuedRequests);
       trace.record({
         type: "audio_queued",
         transitionId: request.transitionId,
@@ -165,6 +168,18 @@ export function createAudioCoordinator(
     }
     await interruptForHigherPriorityRequest();
     await startNext();
+  }
+
+  function discardQueuedPresenceRequests(): void {
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const request = queue[index];
+      if (request?.category !== "presence") continue;
+      queue.splice(index, 1);
+      recordTerminal(request, {
+        status: "stopped",
+        message: "superseded by transaction audio",
+      });
+    }
   }
 
   async function requestTestPlayback(
@@ -202,10 +217,12 @@ export function createAudioCoordinator(
 
   async function interruptForHigherPriorityRequest(): Promise<void> {
     const next = queue[0];
+    const transactionPreemptsPresence =
+      next?.category === "transaction" && active?.category === "presence";
     if (
       !active ||
       !next ||
-      next.priority <= active.priority ||
+      (!transactionPreemptsPresence && next.priority <= active.priority) ||
       stoppingActive
     ) {
       return;
@@ -312,6 +329,16 @@ export function createAudioCoordinator(
     trace: () => trace.entries(),
     dispose,
   };
+}
+
+function compareQueuedRequests(
+  left: QueuedAudioRequest,
+  right: QueuedAudioRequest,
+): number {
+  if (left.category !== right.category) {
+    return left.category === "transaction" ? -1 : 1;
+  }
+  return right.priority - left.priority;
 }
 
 export function createCustomerJourneyAudioCoordinator(

@@ -295,6 +295,41 @@ describe("Customer Journey Transition Projector", () => {
     expect(repeated).toEqual([]);
   });
 
+  it("consumes Vision presence edges without replaying welcome or departure during a touchscreen session", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const touchscreen = {
+      personPresent: true,
+      source: "local_interaction" as const,
+      lastInteractionAt: "2026-07-18T08:20:00.000Z",
+    };
+
+    projector.project({ touchscreen });
+    expect(
+      projector.project({
+        touchscreen,
+        vision: {
+          personPresent: true,
+          occupancyState: "single",
+          lastSeenAt: "2026-07-18T08:20:01.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:20:01.000Z",
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      projector.project({
+        touchscreen,
+        vision: {
+          personPresent: false,
+          occupancyState: "none",
+          lastSeenAt: "2026-07-18T08:20:01.000Z",
+          departedAt: "2026-07-18T08:20:02.000Z",
+          lastChangedAt: "2026-07-18T08:20:02.000Z",
+        },
+      }),
+    ).toEqual([]);
+  });
+
   it("remembers a restored touchscreen fact without replaying it", () => {
     const projector = createCustomerJourneyTransitionProjector();
     const facts = {

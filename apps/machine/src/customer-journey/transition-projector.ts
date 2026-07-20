@@ -148,7 +148,7 @@ function projectCandidates(
         occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
       }),
     );
-  } else if (visionEdge === "welcome") {
+  } else if (visionEdge === "welcome" && !touchscreenActive) {
     candidates.push(
       transition({
         transitionId: semanticEdges.nextVisionTransitionId("welcome"),
@@ -157,7 +157,7 @@ function projectCandidates(
         occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
       }),
     );
-  } else if (visionEdge === "departed") {
+  } else if (visionEdge === "departed" && !touchscreenActive) {
     candidates.push(
       transition({
         transitionId: semanticEdges.nextVisionTransitionId("departed"),

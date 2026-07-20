@@ -165,6 +165,55 @@ describe("Audio Coordinator", () => {
     ]);
   });
 
+  it("interrupts active presence audio and drops queued presence when a transaction starts", async () => {
+    let terminal:
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null = null;
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        terminal = (status) => options?.onTerminal?.({ status });
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: (item) => ({
+        sourceUrl: `/audio/${item.transitionId}.mp3`,
+        priority: item.category === "presence" ? 100 : 10,
+      }),
+    });
+
+    await coordinator.accept([transition("presence-active", "presence")]);
+    await coordinator.accept([transition("presence-queued", "presence")]);
+    await coordinator.accept([transition("transaction")]);
+
+    expect(driver.stop).toHaveBeenCalledOnce();
+    expect(coordinator.queuedRequestIds()).toEqual(["audio-request-3"]);
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        transitionId: "presence-queued",
+        outcome: "stopped",
+        message: "superseded by transaction audio",
+      }),
+    );
+
+    const stopActive = terminal as
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null;
+    if (!stopActive) throw new Error("mock playback did not retain callback");
+    stopActive("stopped");
+    await vi.waitFor(() => {
+      expect(coordinator.activeRequest()?.transitionId).toBe("transaction");
+    });
+  });
+
   it("deduplicates a stable transition identity and preserves its trace correlation", async () => {
     let complete: (() => void) | null = null;
     const driver: AudioCoordinatorPlaybackDriver = {
