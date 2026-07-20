@@ -457,7 +457,7 @@ describe("ResultView", () => {
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
-  it("keeps dispense failures on the result page when the machine remains blocked", async () => {
+  it("lets customers leave a terminal dispense failure when the machine remains blocked", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applyCapability(false);
@@ -465,7 +465,7 @@ describe("ResultView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("出货失败");
-    expect(host.textContent).not.toContain("返回首页");
+    expect(host.textContent).toContain("返回首页");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
@@ -497,7 +497,7 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("ZodError");
   });
 
-  it("does not dismiss a high-risk result when refreshed capability requires retention", async () => {
+  it("dismisses a terminal dispense failure despite a later capability change", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
@@ -514,20 +514,10 @@ describe("ResultView", () => {
     applyCapability(false);
     returnButton?.click();
     await nextTick();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
-    expect(checkoutStore.customerCheckoutView).toMatchObject({
-      stage: "result",
-      result: {
-        kind: "dispense_failed",
-        returnPolicy: {
-          canManualReturn: false,
-          targetRoute: "catalog",
-          requiresMaintenanceReview: true,
-        },
-      },
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
-    expect(host.textContent).toContain("设备需要维护检查");
-    expect(getSaleViewMock).not.toHaveBeenCalled();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("keeps terminal results retained when severe blockers remain", async () => {

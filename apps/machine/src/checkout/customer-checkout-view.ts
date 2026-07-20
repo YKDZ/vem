@@ -235,19 +235,20 @@ function exceptionalReturnPolicy(
     resultKind === "dispense_failed" ||
     resultKind === "refunded" ||
     resultKind === "closed";
+  const alwaysDismissibleFailure =
+    resultKind === "dispense_failed" || resultKind === "refunded";
   const highRiskResult =
-    resultKind === "dispense_failed" ||
-    resultKind === "refund_pending" ||
-    resultKind === "manual_handling";
-
+    resultKind === "refund_pending" || resultKind === "manual_handling";
   return {
     canAutoReturn: false,
-    canManualReturn: canDismissWhenReady
-      ? saleReady && targetRoute === "catalog"
-        ? !requiresMaintenanceReview
-        : targetRoute === "maintenance" && !highRiskResult
-      : false,
-    targetRoute,
+    canManualReturn: alwaysDismissibleFailure
+      ? true
+      : canDismissWhenReady
+        ? saleReady && targetRoute === "catalog"
+          ? !requiresMaintenanceReview
+          : targetRoute === "maintenance" && !highRiskResult
+        : false,
+    targetRoute: alwaysDismissibleFailure ? "catalog" : targetRoute,
     requiresMaintenanceReview,
   };
 }

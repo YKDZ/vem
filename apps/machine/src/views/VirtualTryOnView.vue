@@ -71,9 +71,12 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
+onMounted(async () => {
+  if (!selectedVariant.value) {
+    await catalogStore.refresh().catch(() => undefined);
+  }
   sessionSilhouetteUrl.value = silhouetteUrl.value;
-  void startPreview({
+  await startPreview({
     catalogKey: catalogKey.value,
     variantId: variantId.value,
     silhouetteUrl: sessionSilhouetteUrl.value,

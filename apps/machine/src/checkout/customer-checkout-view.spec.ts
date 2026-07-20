@@ -499,8 +499,8 @@ describe("Customer Checkout View Projection", () => {
         displayIntent: "dispense_failure",
         detailIntent: "dispense_failure",
         canManualReturnWhenReady: true,
-        canManualReturnWhenUnknown: false,
-        canManualReturnWhenMaintenanceLocked: false,
+        canManualReturnWhenUnknown: true,
+        canManualReturnWhenMaintenanceLocked: true,
       },
       {
         nextAction: "refund_pending",
@@ -519,7 +519,7 @@ describe("Customer Checkout View Projection", () => {
         displayIntent: "refunded",
         detailIntent: null,
         canManualReturnWhenReady: true,
-        canManualReturnWhenUnknown: false,
+        canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
       },
       {
@@ -630,7 +630,11 @@ describe("Customer Checkout View Projection", () => {
       expect(unknownReadinessView.result?.returnPolicy).toMatchObject({
         canAutoReturn: false,
         canManualReturn: testCase.canManualReturnWhenUnknown,
-        targetRoute: "offline",
+        targetRoute:
+          testCase.nextAction === "dispense_failed" ||
+          testCase.nextAction === "refunded"
+            ? "catalog"
+            : "offline",
       });
 
       const maintenanceLockedView = projectCustomerCheckoutView({
@@ -648,7 +652,11 @@ describe("Customer Checkout View Projection", () => {
       expect(maintenanceLockedView.result?.returnPolicy).toMatchObject({
         canAutoReturn: false,
         canManualReturn: testCase.canManualReturnWhenMaintenanceLocked,
-        targetRoute: "maintenance",
+        targetRoute:
+          testCase.nextAction === "dispense_failed" ||
+          testCase.nextAction === "refunded"
+            ? "catalog"
+            : "maintenance",
         requiresMaintenanceReview: true,
       });
     }
