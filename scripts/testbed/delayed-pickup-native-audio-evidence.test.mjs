@@ -122,6 +122,37 @@ describe("delayed pickup production evidence algorithms", () => {
     assert.equal(result.events.af.length, 1);
   });
 
+  it("accepts protocol repeats and reset heartbeats recorded at PTY second precision", () => {
+    const frames = [
+      dispenseFrame(),
+      frame(2, 0, "f0"),
+      frame(3, 1_000, "f0"),
+      frame(4, 1_000, "f0"),
+      frame(5, 16_000, "e5"),
+      frame(6, 26_000, "e5"),
+      frame(7, 31_000, "f1"),
+      frame(8, 31_000, "f1"),
+      frame(9, 31_000, "f1"),
+      frame(10, 31_000, "af"),
+      frame(11, 31_000, "af"),
+      frame(12, 32_000, "f2"),
+      frame(13, 32_000, "f2"),
+      frame(14, 32_000, "f2"),
+    ];
+
+    const result = analyzeDelayedPickupControllerFrames(
+      {
+        schemaVersion: "host-production-serial-frame-capture/v1",
+        binding: { ...binding },
+        frames,
+      },
+      binding,
+    );
+
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.events.af.length, 2);
+  });
+
   it("fails closed for fabricated headers, invalid dispense CRC, and non-canonical timestamps", () => {
     const valid = [
       dispenseFrame(),

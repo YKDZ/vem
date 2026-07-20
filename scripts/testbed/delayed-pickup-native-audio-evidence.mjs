@@ -9,7 +9,7 @@ export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
   controllerTimingToleranceMs: 1_500,
   traceTimingToleranceMs: 3_000,
   maxCueStartLatencyMs: 2_000,
-  repeatedFrameWindowMs: 250,
+  repeatedFrameWindowMs: 1_500,
 });
 
 export const DEFAULT_AUDIO_CUE_WINDOW_THRESHOLD = Object.freeze({
@@ -307,7 +307,9 @@ export function analyzeDelayedPickupControllerFrames(
   if (
     !f1 ||
     !f2 ||
-    !af.some((entry) => entry.atMs > f1.atMs && entry.atMs < f2.atMs)
+    !af.some(
+      (entry) => entry.sequence > f1.sequence && entry.sequence < f2.sequence,
+    )
   )
     diagnostics.push(diagnostic("controller_reset_heartbeat_missing"));
   const deltas =

@@ -1695,6 +1695,38 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
   );
 }
 
+async function restoreTryOnProductDetail(client, catalogKey) {
+  const route = await evaluateExpression(client, "location.hash");
+  if (String(route).includes("/try-on")) {
+    await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+  }
+  const restoredRoute = await evaluateExpression(client, "location.hash");
+  if (restoredRoute === "#/catalog") {
+    await activateVisibleSelector(
+      client,
+      `[data-test="catalog-product"][data-catalog-key="${catalogKey}"]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+  }
+  await waitForRoute(client, /^#\/products\//, {
+    timeoutMs: 30_000,
+    pollMs: 250,
+  });
+  const detail = await readProductDetailState(client);
+  if (
+    detail?.catalogKey !== catalogKey ||
+    detail.tryOnPresent !== true ||
+    detail.tryOnDisabled !== false
+  ) {
+    throw new Error(
+      `try-on product detail was not recoverable: ${JSON.stringify(detail)}`,
+    );
+  }
+}
+
 async function readImageHttpEvidence(url) {
   try {
     const response = await fetch(url);
@@ -2351,20 +2383,50 @@ async function runVisionTryOnAcceptance(options) {
     assert.equal(productDetail?.tryOnDisabled, false);
     assert.equal(productDetail?.buyDisabled, false);
 
-    stage = "open-try-on";
-    await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, /^#\/products\//, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    await waitForRoute(client, /^#\/products\/.+\/try-on/, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    const tryOnSurface = await waitForTryOnSurface(client, 60_000);
+    const tryOnAttempts = [];
+    let tryOnSurface = null;
+    for (let attempt = 1; attempt <= 2 && !tryOnSurface; attempt += 1) {
+      stage = `open-try-on-attempt-${attempt}`;
+      if (attempt > 1) {
+        await restoreTryOnProductDetail(
+          client,
+          recommendationSummary.selectedCatalogKey,
+        );
+      }
+      await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      await waitForRoute(client, /^#\/products\/.+\/try-on/, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      try {
+        tryOnSurface = await waitForTryOnSurface(client, 25_000);
+        tryOnAttempts.push({ attempt, result: "passed", tryOnSurface });
+      } catch (error) {
+        const state = await evaluateExpression(
+          client,
+          `(() => ({
+          route: location.hash,
+          errorText: document.querySelector("[data-test='try-on-error']")?.textContent?.trim() ?? null,
+          previewUrl: document.querySelector("[data-test='try-on-preview']")?.getAttribute("src") ?? null,
+          silhouetteUrl: document.querySelector("[data-test='try-on-silhouette']")?.getAttribute("src") ?? null,
+        }))()`,
+        );
+        tryOnAttempts.push({
+          attempt,
+          result: "failed",
+          error: String(error),
+          state,
+        });
+        if (attempt === 2) {
+          throw new Error(
+            `real Vision try-on failed after two physical attempts: ${JSON.stringify(tryOnAttempts)}`,
+          );
+        }
+      }
+    }
     const silhouetteEvidence = await readImageHttpEvidence(
       tryOnSurface.silhouetteUrl,
     );
@@ -2517,6 +2579,7 @@ async function runVisionTryOnAcceptance(options) {
         recommendationSummary,
         productDetail,
         tryOnSurface,
+        tryOnAttempts,
         silhouetteEvidence,
         tryOnSummary,
         degradedProductDetail,
