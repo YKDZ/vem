@@ -129,4 +129,13 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /ensure-testbed-pwsh\.ps1/);
     assert.match(source, /powershell\\\\7\.4\.6\\\\pwsh\.exe/);
   });
+
+  it("collects evidence from the guest handoff root", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /C:\/ProgramData\/VEM\/testbed\/full-workflow/);
+    assert.doesNotMatch(source, /C:\/ProgramData\/VEM\/runtime\/testbed/);
+  });
 });

@@ -445,8 +445,8 @@ async function stageAndRunGuest({
     await mkdir(evidence, { recursive: true });
     const remoteEvidence =
       mode === "clear_cache"
-        ? "C:/ProgramData/VEM/runtime/testbed/clear-cache-report.json"
-        : "C:/ProgramData/VEM/runtime/testbed/full-workflow-evidence-bundle";
+        ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
+        : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
     await runProcess("scp", [
       ...ssh,
       "-r",
