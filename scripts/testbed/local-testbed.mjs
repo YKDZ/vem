@@ -1394,12 +1394,17 @@ async function reconstruct(options) {
       "host reconstruction",
     );
     await startHeadlessVncActivatorUnit(options, contract);
-    for (const step of plan.slice(3, 9))
+    for (const step of plan.slice(3, 7))
       await run(step.command, step.args, {
         cwd: options.workspace,
         env: step.env,
       });
     await waitForPostgres();
+    for (const step of plan.slice(7, 9))
+      await run(step.command, step.args, {
+        cwd: options.workspace,
+        env: step.env,
+      });
     await startServiceApiUnit(options);
     const apiBaseUrl = "http://127.0.0.1:26849/api";
     try {

@@ -302,6 +302,16 @@ async function publishCurrentManifest(root) {
 }
 
 describe("local testbed orchestration", () => {
+  it("waits for PostgreSQL before running schema migration", () => {
+    const source = readFileSync(
+      new URL("./local-testbed.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /plan\.slice\(3, 7\)[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(7, 9\)/,
+    );
+  });
   it("requires the generic baseline contract to separate reconstruction from guest admission", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
