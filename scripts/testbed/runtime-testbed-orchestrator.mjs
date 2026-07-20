@@ -505,7 +505,7 @@ async function executeRun(options, config) {
           "--mode",
           options.mode,
           "--run-id",
-          `${options.runId}-pass-${pass}`,
+          `${options.runId}-PASS-${pass}`,
           "--workspace",
           workspace,
           "--state-root",

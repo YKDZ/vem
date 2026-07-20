@@ -19,6 +19,15 @@ describe("runtime testbed scheduler contract", () => {
       "RUN-1234-ABCDEF123456-FAST",
     );
   });
+
+  it("keeps reconstruction pass identities uppercase", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /`\$\{options\.runId\}-PASS-\$\{pass\}`/);
+    assert.doesNotMatch(source, /`\$\{options\.runId\}-pass-/);
+  });
   it("accepts one committed revision and host-local config", () => {
     assert.deepEqual(
       parseOrchestratorOptions([
