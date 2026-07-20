@@ -10,6 +10,11 @@ import {
 class FakeCdpSocket extends EventTarget {
   readyState = 1;
 
+  constructor(documentReadyStates = ["complete"]) {
+    super();
+    this.documentReadyStates = [...documentReadyStates];
+  }
+
   send(payload) {
     const request = JSON.parse(payload);
     const result =
@@ -21,7 +26,10 @@ class FakeCdpSocket extends EventTarget {
                 route: "#/catalog",
                 pathname: "/",
                 title: "VEM",
-                readyState: "complete",
+                readyState:
+                  this.documentReadyStates.shift() ??
+                  this.documentReadyStates.at(-1) ??
+                  "complete",
                 activeElement: "body",
                 domLength: 512,
                 domHash: "0123abcd",
@@ -166,6 +174,19 @@ describe("installed production runtime smoke", () => {
       declaredInstalledRuntimeTracks("full"),
     );
     assert.equal("ipcToken" in result, false);
+  });
+
+  it("waits for the installed Tauri document to finish loading", async () => {
+    const socket = new FakeCdpSocket(["loading", "complete"]);
+    const result = await runInstalledRuntimeSmoke({
+      mode: "fast",
+      evidence: evidence(),
+      fetchImpl: fetchBoundary,
+      webSocketFactory: () => socket,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.tauri.readyState, "complete");
   });
 
   it("retries transient loopback refusal without accepting an invalid response", async () => {

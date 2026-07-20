@@ -22,6 +22,7 @@ const BASE_TRACKS = Object.freeze([
 ]);
 const LOOPBACK_FETCH_ATTEMPTS = 9;
 const LOOPBACK_FETCH_RETRY_MS = 250;
+const TAURI_DOCUMENT_READY_TIMEOUT_MS = 30_000;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -86,7 +87,11 @@ export function declaredInstalledRuntimeTracks(mode) {
     throw new Error("installed runtime mode must be fast or full");
   return mode === "fast"
     ? [...BASE_TRACKS]
-    : [...BASE_TRACKS, "scanner-payment-code", "installed-runtime-observability"];
+    : [
+        ...BASE_TRACKS,
+        "scanner-payment-code",
+        "installed-runtime-observability",
+      ];
 }
 
 export function validateInstalledRuntimeEvidence(value) {
@@ -181,14 +186,11 @@ export async function runInstalledRuntimeSmoke({
   const runtime = validateInstalledRuntimeEvidence(evidence);
   const retryingFetch = (url, options) =>
     fetchLoopbackWithRetry(fetchImpl, url, options, "installed runtime probe");
-  const healthResponse = await retryingFetch(
-    runtime.daemon.ready.healthzUrl,
-    {
-      headers: {
-        authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
-      },
+  const healthResponse = await retryingFetch(runtime.daemon.ready.healthzUrl, {
+    headers: {
+      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
     },
-  );
+  });
   if (!healthResponse.ok) {
     throw new Error(
       `production daemon health failed with HTTP ${healthResponse.status}`,
@@ -204,14 +206,11 @@ export async function runInstalledRuntimeSmoke({
   ) {
     throw new Error("production daemon health snapshot is invalid");
   }
-  const readyResponse = await retryingFetch(
-    runtime.daemon.ready.readyzUrl,
-    {
-      headers: {
-        authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
-      },
+  const readyResponse = await retryingFetch(runtime.daemon.ready.readyzUrl, {
+    headers: {
+      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
     },
-  );
+  });
   if (!readyResponse.ok) {
     throw new Error(
       `production daemon readiness failed with HTTP ${readyResponse.status}`,
@@ -240,9 +239,15 @@ export async function runInstalledRuntimeSmoke({
   try {
     await client.connect();
     await enablePageRuntime(client);
-    const identity = await captureDomIdentity(client);
-    if (identity.readyState !== "complete") {
-      throw new Error("installed Tauri document is not complete");
+    const deadline = Date.now() + TAURI_DOCUMENT_READY_TIMEOUT_MS;
+    let identity;
+    do {
+      identity = await captureDomIdentity(client);
+      if (identity.readyState === "complete") break;
+      await sleep(100);
+    } while (Date.now() < deadline);
+    if (identity?.readyState !== "complete") {
+      throw new Error("installed Tauri document did not become complete");
     }
     return {
       schemaVersion: "vem-installed-runtime-smoke/v1",
