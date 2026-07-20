@@ -1001,7 +1001,7 @@ describe("fast route stress sale tracer", () => {
     );
     assert.match(
       implementation,
-      /runCleanupStep\("stop controlled vision mock"/,
+      /runCleanupStep\(\s*"stop controlled vision mock"/,
     );
   });
 });

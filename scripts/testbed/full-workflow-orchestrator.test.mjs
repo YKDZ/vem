@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import {
   ensureFixtureStockReady,
+  refreshCatalogPageFromClient,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   refreshDaemonReadyHandoff,
@@ -389,6 +390,30 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(calls, [
       '[data-test="payment-cancel"]:not(:disabled)',
       "wait:^(?:#\\/catalog|#\\/result(?:\\/|$)|#\\/checkout|#\\/products(?:\\/|$))",
+    ]);
+  });
+
+  it("reloads the settled catalog so the UI binds the current daemon generation", async () => {
+    const calls = [];
+    const result = await refreshCatalogPageFromClient({
+      client: {
+        async send(method, params) {
+          calls.push({ method, params });
+        },
+      },
+      async returnToCatalogFn() {
+        calls.push("catalog");
+      },
+      async waitForRouteFn(_client, route, options) {
+        calls.push({ route, options });
+        return { route: "#/catalog" };
+      },
+    });
+    assert.deepEqual(result, { route: "#/catalog" });
+    assert.deepEqual(calls, [
+      "catalog",
+      { method: "Page.reload", params: { ignoreCache: true } },
+      { route: "#/catalog", options: { timeoutMs: 20_000, pollMs: 250 } },
     ]);
   });
 

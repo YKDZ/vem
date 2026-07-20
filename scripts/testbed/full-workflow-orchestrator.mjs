@@ -697,6 +697,20 @@ export async function returnToCatalogFromClient({
   );
 }
 
+export async function refreshCatalogPageFromClient({
+  client,
+  returnToCatalogFn = returnToCatalogFromClient,
+  waitForRouteFn = waitForRoute,
+}) {
+  await returnToCatalogFn({ client });
+  await client.send("Page.reload", { ignoreCache: true });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+  return waitForRouteFn(client, "#/catalog", {
+    timeoutMs: 20_000,
+    pollMs: 250,
+  });
+}
+
 function terminalOperations(guestInput, handoff) {
   const withClient = async (operation) => {
     const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
@@ -719,6 +733,8 @@ function terminalOperations(guestInput, handoff) {
     }
   };
   return {
+    prepareTrack: () =>
+      withClient((client) => refreshCatalogPageFromClient({ client })),
     captureTerminal: async (track, context) => {
       await waitForDaemonReadyRefresh(handoff);
       return captureTrackTerminalFacts({
@@ -798,6 +814,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
           handoffPath: options.handoffPath,
           handoff,
         });
+        await operations?.prepareTrack();
         await ensureFixtureStockReady({
           fixtureAllocation: guestInput.fixtureAllocation,
           daemonGet: (path) => daemonGet(refreshed, path),

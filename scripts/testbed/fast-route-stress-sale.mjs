@@ -1676,7 +1676,7 @@ async function ensureControlledVisionMock(controlPort) {
 }
 
 async function waitForControlledVisionRuntimeClient(controlPort) {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
   let lastStatus = null;
   while (Date.now() < deadline) {
     try {
@@ -2413,10 +2413,14 @@ async function runFastRouteStressSale(options) {
   }
   try {
     cleanup.push(
-      await runCleanupStep("stop controlled vision mock", async () => {
-        await shutdownControlledVisionMock(vision?.child);
-        return { stopped: true, port: 7892 };
-      }),
+      await runCleanupStep(
+        "stop controlled vision mock",
+        async () => {
+          await shutdownControlledVisionMock(vision?.child);
+          return { stopped: true, port: 7892 };
+        },
+        20_000,
+      ),
     );
   } catch (error) {
     cleanupErrors.push(error);
