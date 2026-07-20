@@ -168,10 +168,7 @@ async function backToCatalog(): Promise<void> {
   stopAutoReturn();
   returningToCatalog = true;
   const returnPolicy = activeReturnPolicy.value;
-  if (
-    !saleCapabilityStore.hasAcceptedCapability ||
-    returnPolicy?.canManualReturn !== true
-  ) {
+  if (returnPolicy?.canManualReturn !== true) {
     returningToCatalog = false;
     return;
   }
