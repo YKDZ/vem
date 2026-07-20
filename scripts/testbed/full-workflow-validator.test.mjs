@@ -148,15 +148,19 @@ function sampleDelayedReport() {
     delayedPickupNativeAudio: {
       schemaVersion: "delayed-pickup-native-audio-production-acceptance/v3",
       result: "passed",
+      controller: {
+        cueStartLatencyMs: {
+          pickup_waiting: 100,
+          ordinary_warning: 100,
+          urgent_warning: 100,
+          reset_progress: 100,
+          dispense_succeeded: 100,
+        },
+      },
       audio: {
         source: "windows_default_output",
-        cueWindows: [
-          { kind: "passed" },
-          { kind: "passed" },
-          { kind: "passed" },
-          { kind: "passed" },
-          { kind: "passed" },
-        ],
+        capture: { nonSilentFrameCount: 4_800, peakAbsoluteSample: 1_024 },
+        cueWindows: [{ kind: "passed", label: "default_output_capture" }],
       },
     },
   };

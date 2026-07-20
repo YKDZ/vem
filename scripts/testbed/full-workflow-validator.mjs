@@ -136,11 +136,28 @@ function validateDelayedAudioTrack(report, reportPath) {
   const cueWindows = Array.isArray(acceptance.audio?.cueWindows)
     ? acceptance.audio.cueWindows
     : [];
+  const cueStartLatencyMs = acceptance.controller?.cueStartLatencyMs ?? {};
+  const requiredCues = [
+    "pickup_waiting",
+    "ordinary_warning",
+    "urgent_warning",
+    "reset_progress",
+    "dispense_succeeded",
+  ];
+  const capture = acceptance.audio?.capture ?? {};
   return acceptance.audio?.source === "windows_default_output" &&
-    cueWindows.length === 5 &&
-    cueWindows.every((entry) => entry?.kind === "passed")
+    cueWindows.length > 0 &&
+    cueWindows.every((entry) => entry?.kind === "passed") &&
+    requiredCues.every(
+      (cue) =>
+        Number.isFinite(cueStartLatencyMs[cue]) &&
+        cueStartLatencyMs[cue] >= 0 &&
+        cueStartLatencyMs[cue] <= 2_000,
+    ) &&
+    capture.nonSilentFrameCount > 0 &&
+    capture.peakAbsoluteSample > 0
     ? passedTrack("audio", "audio", reportPath, {
-        cueCount: cueWindows.length,
+        cueCount: requiredCues.length,
         source: acceptance.audio.source,
       })
     : failedTrack(
