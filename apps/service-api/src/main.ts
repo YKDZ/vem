@@ -11,7 +11,12 @@ async function bootstrap(): Promise<void> {
 
   app.setGlobalPrefix("api");
   app.enableCors({ origin: config.corsOrigins, credentials: true });
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+    }),
+  );
 
   if (config.nodeEnv !== "production") {
     const swaggerConfig = new DocumentBuilder()
