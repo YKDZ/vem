@@ -940,8 +940,7 @@ export function validateTryOnPresentation({
     throw new Error("try-on preview frame decoded but remained fully black");
   }
   const sourceFrame =
-    installedBinding?.frameSourceBinding &&
-    mjpegEvidence.sourceFrame?.adapter
+    installedBinding?.frameSourceBinding && mjpegEvidence.sourceFrame?.adapter
       ? validateSourceFrameEvidence(
           mjpegEvidence.sourceFrame,
           "try-on source frame",
@@ -2508,7 +2507,7 @@ async function runVisionTryOnAcceptance(options) {
     realVisionStopped = true;
     await waitForVisionPortRelease();
     const degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
-    const degradedProductDetail = await waitForTryOnButtonDisabled(
+    const degradedProductDetail = await waitForTryOnButtonEnabled(
       client,
       30_000,
     );

@@ -1111,7 +1111,7 @@ export async function waitForSaleStartReady(
     last = { route, capability };
     if (route === "#/catalog" && capability?.canStartSale === true) {
       stableSince ??= now();
-      if (now() - stableSince >= 1_000) return capability;
+      if (now() - stableSince >= 3_000) return capability;
     } else {
       stableSince = null;
     }
