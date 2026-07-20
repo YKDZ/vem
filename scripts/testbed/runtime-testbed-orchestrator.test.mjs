@@ -138,4 +138,60 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /C:\/ProgramData\/VEM\/testbed\/full-workflow/);
     assert.doesNotMatch(source, /C:\/ProgramData\/VEM\/runtime\/testbed/);
   });
+
+  it("keeps terminal status writes from overwriting an old superseded terminal", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      source.includes(
+        'if (current.status === "superseded")',
+      ),
+    );
+  });
+
+  it("writes compact terminal status before canonical status", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    const compactWrite = source.indexOf(
+      "await writeJson(join(compact, \"status.json\"), status);",
+    );
+    const canonicalWrite = source.indexOf(
+      "await writeJson(statusPath(config, options.runId), status);",
+    );
+    assert.ok(
+      compactWrite >= 0 && canonicalWrite >= 0 && compactWrite < canonicalWrite,
+    );
+  });
+
+  it("treats ssh exit 255 as infrastructure failure", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /\(error\.command === "ssh" \|\| error\.command === "scp"\)\s*&&\s*error\.exitCode === 255/,
+    );
+    assert.ok(
+      source.includes("error.command = command;") &&
+        source.includes("error.exitCode = code;"),
+    );
+  });
+
+  it("waits until old process groups are truly terminated before continuing", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      source.includes(
+        "if (processGroupExists(processGroupId)) {",
+      ) &&
+        source.includes("failed to terminate process group"),
+    );
+  });
 });

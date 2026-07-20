@@ -3,7 +3,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
-  cp,
   mkdir,
   readFile,
   readdir,
@@ -22,6 +21,7 @@ const TERMINAL = new Set([
   "infrastructure_failed",
   "superseded",
 ]);
+const isTerminalStatus = (status) => TERMINAL.has(status);
 const STATUS_SCHEMA = "vem-runtime-testbed-run/v1";
 const CONFIG_SCHEMA = "vem-runtime-testbed-host/v1";
 
@@ -168,6 +168,7 @@ function runProcess(command, args, options = {}) {
         const error = new Error(
           `${command} exited with ${code ?? `signal ${signal ?? "unknown"}`}`,
         );
+        error.command = command;
         error.exitCode = code;
         error.signal = signal;
         reject(error);
@@ -278,6 +279,9 @@ async function terminateProcessGroup(processGroupId) {
     process.kill(-processGroupId, "SIGKILL");
   } catch (error) {
     if (error.code !== "ESRCH") throw error;
+  }
+  if (processGroupExists(processGroupId)) {
+    throw new Error(`failed to terminate process group ${processGroupId}`);
   }
 }
 
@@ -438,7 +442,14 @@ async function stageAndRunGuest({
       encodedPowerShell(invokePowerShell7),
     ]);
   } catch (error) {
-    error.businessFailure = true;
+    if (
+      (error.command === "ssh" || error.command === "scp") &&
+      error.exitCode === 255
+    ) {
+      error.businessFailure = false;
+    } else {
+      error.businessFailure = true;
+    }
     throw error;
   } finally {
     const evidence = join(runRoot, "compact", `pass-${pass}`);
@@ -480,7 +491,23 @@ async function executeRun(options, config) {
   const compact = join(root, "compact");
   let status = await readJson(statusPath(config, options.runId));
   const update = async (next) => {
-    status = { ...status, ...next, updatedAt: new Date().toISOString() };
+    const current =
+      (await readJson(statusPath(config, options.runId), status)) ?? {};
+    const nextStatus = {
+      ...current,
+      ...status,
+      ...next,
+      updatedAt: new Date().toISOString(),
+    };
+    if (current.status === "superseded") {
+      status = current;
+      return;
+    }
+    status = nextStatus;
+    if (isTerminalStatus(status.status)) {
+      await mkdir(compact, { recursive: true });
+      await writeJson(join(compact, "status.json"), status);
+    }
     await writeJson(statusPath(config, options.runId), status);
   };
   try {
@@ -567,20 +594,13 @@ async function executeRun(options, config) {
       finishedAt: new Date().toISOString(),
     });
   } catch (error) {
-    const current = await readJson(statusPath(config, options.runId), status);
-    if (current?.status === "superseded") {
-      status = current;
-    } else {
-      await update({
-        status: error.businessFailure ? "failed" : "infrastructure_failed",
-        phase: status?.phase ?? "unknown",
-        error: error.message,
-        finishedAt: new Date().toISOString(),
-      });
-    }
+    await update({
+      status: error.businessFailure ? "failed" : "infrastructure_failed",
+      phase: status?.phase ?? "unknown",
+      error: error.message,
+      finishedAt: new Date().toISOString(),
+    });
   }
-  await mkdir(compact, { recursive: true });
-  await cp(statusPath(config, options.runId), join(compact, "status.json"));
   return status;
 }
 
