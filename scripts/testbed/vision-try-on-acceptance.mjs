@@ -1684,6 +1684,9 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
           return {
             route: location.hash,
             previewUrl: preview?.getAttribute("src") ?? null,
+            previewLoaded: preview?.complete === true,
+            previewNaturalWidth: Number(preview?.naturalWidth ?? 0),
+            previewNaturalHeight: Number(preview?.naturalHeight ?? 0),
             silhouetteUrl: silhouette?.getAttribute("src") ?? null,
             silhouetteLoaded: silhouette?.complete === true,
             silhouetteNaturalWidth: Number(silhouette?.naturalWidth ?? 0),
@@ -1699,6 +1702,9 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
         ok:
           typeof state?.previewUrl === "string" &&
           state.previewUrl.startsWith("http://127.0.0.1:7892/try-on/") &&
+          state.previewLoaded === true &&
+          state.previewNaturalWidth > 0 &&
+          state.previewNaturalHeight > 0 &&
           (!hasSilhouetteUrl ||
             (state.silhouetteUrl.includes("/api/media-assets/") &&
               state.silhouetteLoaded === true &&
@@ -2137,90 +2143,95 @@ async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
   return waitForCondition(
     "decoded MJPEG frame",
     async () => {
-      const result = await evaluateExpression(
-        client,
-        `(async () => {
-          try {
-            const response = await fetch(${JSON.stringify(previewUrl)});
-            if (!response.ok || !response.body) {
-              return { ok: false, reason: "http", status: response.status };
-            }
-            const reader = response.body.getReader();
-            const chunks = [];
-            let total = 0;
-            const maxBytes = 512 * 1024;
-            while (total < maxBytes) {
-              const { done, value } = await reader.read();
-              if (done || !value) break;
-              chunks.push(value);
-              total += value.byteLength;
-              let jpeg = null;
-              const merged = new Uint8Array(total);
-              let offset = 0;
-              for (const chunk of chunks) {
-                merged.set(chunk, offset);
-                offset += chunk.byteLength;
-              }
-              let start = -1;
-              for (let i = 0; i < merged.length - 1; i += 1) {
-                if (merged[i] === 0xff && merged[i + 1] === 0xd8) { start = i; break; }
-              }
-              if (start >= 0) {
-                for (let i = start + 2; i < merged.length - 1; i += 1) {
-                  if (merged[i] === 0xff && merged[i + 1] === 0xd9) {
-                    jpeg = merged.slice(start, i + 2);
-                    break;
-                  }
-                }
-              }
-              if (!jpeg) continue;
-              const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+      let reader;
+      const controller = new AbortController();
+      const timeout = globalThis.setTimeout(() => controller.abort(), 5_000);
+      try {
+        const response = await fetch(previewUrl, { signal: controller.signal });
+        if (!response.ok || !response.body) {
+          return {
+            ok: false,
+            value: { ok: false, reason: "http", status: response.status },
+          };
+        }
+        reader = response.body.getReader();
+        const chunks = [];
+        let total = 0;
+        const markerStart = Buffer.from([0xff, 0xd8]);
+        const markerEnd = Buffer.from([0xff, 0xd9]);
+        while (total < 512 * 1024) {
+          const { done, value } = await reader.read();
+          if (done || !value) break;
+          chunks.push(Buffer.from(value));
+          total += value.byteLength;
+          const merged = Buffer.concat(chunks);
+          const start = merged.indexOf(markerStart);
+          const end =
+            start < 0
+              ? -1
+              : merged.indexOf(markerEnd, start + markerStart.length);
+          if (start < 0 || end < 0) continue;
+          const jpeg = merged.subarray(start, end + markerEnd.length);
+          const decoded = await evaluateExpression(
+            client,
+            `(async () => {
+              const bytes = Uint8Array.from(atob(${JSON.stringify(jpeg.toString("base64"))}), (character) => character.charCodeAt(0));
+              const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
               const canvas = document.createElement("canvas");
               canvas.width = bitmap.width;
               canvas.height = bitmap.height;
               const context = canvas.getContext("2d");
-              if (!context) {
-                return { ok: false, reason: "context" };
-              }
+              if (!context) return { ok: false, reason: "context" };
               context.drawImage(bitmap, 0, 0);
               const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
               let nonBlackPixelCount = 0;
               for (let i = 0; i < imageData.length; i += 4) {
-                if (
-                  imageData[i] !== 0 ||
-                  imageData[i + 1] !== 0 ||
-                  imageData[i + 2] !== 0
-                ) {
+                if (imageData[i] !== 0 || imageData[i + 1] !== 0 || imageData[i + 2] !== 0) {
                   nonBlackPixelCount += 1;
                   if (nonBlackPixelCount >= 8) break;
                 }
               }
-              return {
-                ok: true,
-                contentType: response.headers.get("content-type"),
-                frameByteLength: jpeg.byteLength,
-                width: canvas.width,
-                height: canvas.height,
-                nonBlackPixelCount,
-                sessionId: ${JSON.stringify(previewUrl)}.split("/").pop()?.replace(/\\.mjpeg$/i, "") ?? null,
-                sourceFrame: {
-                  adapter: response.headers.get("x-vem-frame-source-adapter"),
-                  role: response.headers.get("x-vem-frame-source-role"),
-                  configSha256: response.headers.get("x-vem-frame-source-config-sha256"),
-                  fixtureSha256: response.headers.get("x-vem-frame-source-file-sha256"),
-                  frameIndex: Number(response.headers.get("x-vem-frame-source-frame-index") ?? "-1"),
-                  decodedFrameCount: Number(response.headers.get("x-vem-frame-source-decoded-frame-count") ?? "0"),
-                  sessionId: response.headers.get("x-vem-frame-source-session-id"),
-                },
-              };
-            }
-            return { ok: false, reason: "no-jpeg" };
-          } catch (error) {
-            return { ok: false, reason: String(error) };
-          }
-        })()`,
-      );
-      return { ok: result?.ok === true, value: result };
+              return { ok: true, width: canvas.width, height: canvas.height, nonBlackPixelCount };
+            })()`,
+          );
+          const result = {
+            ...decoded,
+            contentType: response.headers.get("content-type"),
+            frameByteLength: jpeg.byteLength,
+            sessionId:
+              previewUrl
+                .split("/")
+                .pop()
+                ?.replace(/\.mjpeg$/i, "") ?? null,
+            sourceFrame: {
+              adapter: response.headers.get("x-vem-frame-source-adapter"),
+              role: response.headers.get("x-vem-frame-source-role"),
+              configSha256: response.headers.get(
+                "x-vem-frame-source-config-sha256",
+              ),
+              fixtureSha256: response.headers.get(
+                "x-vem-frame-source-file-sha256",
+              ),
+              frameIndex: Number(
+                response.headers.get("x-vem-frame-source-frame-index") ?? "-1",
+              ),
+              decodedFrameCount: Number(
+                response.headers.get(
+                  "x-vem-frame-source-decoded-frame-count",
+                ) ?? "0",
+              ),
+              sessionId: response.headers.get("x-vem-frame-source-session-id"),
+            },
+          };
+          return { ok: result.ok === true, value: result };
+        }
+        return { ok: false, value: { ok: false, reason: "no-jpeg" } };
+      } catch (error) {
+        return { ok: false, value: { ok: false, reason: String(error) } };
+      } finally {
+        globalThis.clearTimeout(timeout);
+        await reader?.cancel().catch(() => undefined);
+      }
     },
     timeoutMs,
     500,
