@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  ensureFixtureStockReady,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   refreshDaemonReadyHandoff,
@@ -159,6 +160,132 @@ describe("full workflow serial lifecycle", () => {
     assert.equal(result[0].businessStatus, "failed");
     assert.match(result[0].error, /ready file was rotating/);
     assert.equal(result[1].businessStatus, "passed");
+  });
+
+  it("uses the production stock maintenance task to restore fixture slots before a track", async () => {
+    const posts = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: {
+        fast: { slotCode: "A1", onHandQty: 3 },
+        scanner: { slotCode: "A2", onHandQty: 4 },
+      },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "stock-count-01",
+            mode: "recovery_count",
+            slots: [
+              { slotCode: "A1", currentQuantity: 0 },
+              { slotCode: "A2", currentQuantity: 1 },
+              { slotCode: "A9", currentQuantity: 2 },
+            ],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          items: [
+            {
+              slotCode: "A1",
+              slotSalesState: saleViewReads > 1 ? "sale_ready" : "needs_count",
+              saleableStock: saleViewReads > 1 ? 3 : 0,
+              physicalStock: saleViewReads > 1 ? 3 : 0,
+            },
+            {
+              slotCode: "A2",
+              slotSalesState: "sale_ready",
+              saleableStock: 4,
+              physicalStock: 4,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+
+    assert.deepEqual(result, {
+      changed: true,
+      taskId: "stock-count-01",
+      mode: "recovery_count",
+    });
+    assert.deepEqual(posts, [
+      {
+        path: "/v1/stock/maintenance-task",
+        body: {
+          taskId: "stock-count-01",
+          mode: "recovery_count",
+          slots: [
+            { slotCode: "A1", quantity: 3 },
+            { slotCode: "A2", quantity: 4 },
+            { slotCode: "A9", quantity: 2 },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("refills a consumed fixture through the production maintenance task", async () => {
+    const posts = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: { fast: { slotCode: "A1", onHandQty: 3 } },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "stock-refill-01",
+            mode: "routine_refill",
+            slots: [
+              { slotCode: "A1", currentQuantity: 2 },
+              { slotCode: "A2", currentQuantity: 3 },
+            ],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          items: [
+            {
+              slotCode: "A1",
+              slotSalesState: "sale_ready",
+              saleableStock: saleViewReads > 1 ? 3 : 2,
+              physicalStock: saleViewReads > 1 ? 3 : 2,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+    assert.equal(result.mode, "routine_refill");
+    assert.deepEqual(posts[0].body.slots, [{ slotCode: "A1", addition: 1 }]);
+  });
+
+  it("skips stock maintenance when every fixture slot is already sale-ready", async () => {
+    let postCount = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: { fast: { slotCode: "A1", onHandQty: 3 } },
+      daemonGet: async () => ({
+        items: [
+          {
+            slotCode: "A1",
+            slotSalesState: "sale_ready",
+            saleableStock: 3,
+            physicalStock: 3,
+          },
+        ],
+      }),
+      daemonPost: async () => {
+        postCount += 1;
+      },
+    });
+    assert.deepEqual(result, { changed: false });
+    assert.equal(postCount, 0);
   });
 
   it("returns from payment route via customer cancel entry then back to catalog", async () => {

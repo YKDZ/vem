@@ -41,6 +41,7 @@ const CONTROL_PLANE_TIMEOUT_MS = 10_000;
 const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
 const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
+const STOCK_READY_TIMEOUT_MS = 30_000;
 
 export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
   [
@@ -466,6 +467,91 @@ function daemonPost(handoff, path, body) {
   });
 }
 
+export async function ensureFixtureStockReady({
+  fixtureAllocation,
+  daemonGet: get,
+  daemonPost: post,
+  timeoutMs = STOCK_READY_TIMEOUT_MS,
+  pollMs = 500,
+}) {
+  const fixtures = Object.values(fixtureAllocation ?? {});
+  const desiredBySlot = new Map(
+    fixtures.map((fixture) => [fixture.slotCode, fixture.onHandQty]),
+  );
+  if (desiredBySlot.size === 0) {
+    throw new Error("fixture stock preflight requires allocated slots");
+  }
+
+  const targetIsReady = (saleView) => {
+    const bySlot = new Map(
+      (saleView?.items ?? []).map((item) => [item.slotCode, item]),
+    );
+    return [...desiredBySlot.keys()].every((slotCode) => {
+      const item = bySlot.get(slotCode);
+      return (
+        item?.slotSalesState === "sale_ready" &&
+        item.saleableStock > 0 &&
+        item.physicalStock >= desiredBySlot.get(slotCode)
+      );
+    });
+  };
+  const initialSaleView = await get("/v1/sale-view");
+  if (targetIsReady(initialSaleView)) return { changed: false };
+
+  const task = await get("/v1/stock/maintenance-task");
+  if (
+    !["initial_count", "recovery_count", "routine_refill"].includes(task?.mode)
+  ) {
+    throw new Error(
+      `fixture stock requires a maintenance task, received ${task?.mode ?? "missing"}`,
+    );
+  }
+  const slots =
+    task.mode === "routine_refill"
+      ? (task.slots ?? [])
+          .map((slot) => ({
+            slotCode: slot.slotCode,
+            addition: Math.max(
+              0,
+              (desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity) -
+                slot.currentQuantity,
+            ),
+          }))
+          .filter((slot) => slot.addition > 0)
+      : (task.slots ?? []).map((slot) => ({
+          slotCode: slot.slotCode,
+          quantity: desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity,
+        }));
+  if (slots.length === 0) {
+    throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
+  }
+  await post("/v1/stock/maintenance-task", {
+    taskId: task.taskId,
+    mode: task.mode,
+    slots,
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  let saleView = initialSaleView;
+  while (Date.now() < deadline) {
+    saleView = await get("/v1/sale-view");
+    if (targetIsReady(saleView)) {
+      return { changed: true, taskId: task.taskId, mode: task.mode };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+  }
+  throw new Error(
+    `fixture stock did not become sale-ready after ${task.mode}: ${JSON.stringify(
+      (saleView?.items ?? []).map((item) => ({
+        slotCode: item.slotCode,
+        slotSalesState: item.slotSalesState,
+        saleableStock: item.saleableStock,
+        physicalStock: item.physicalStock,
+      })),
+    )}`,
+  );
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -657,11 +743,17 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
       dependencies.runTrack ?? ((track) => runTrack(track.command, track.key)),
     beforeTrack:
       dependencies.beforeTrack ??
-      (() =>
-        refreshDaemonReadyHandoff({
+      (async () => {
+        const refreshed = refreshDaemonReadyHandoff({
           handoffPath: options.handoffPath,
           handoff,
-        })),
+        });
+        await ensureFixtureStockReady({
+          fixtureAllocation: guestInput.fixtureAllocation,
+          daemonGet: (path) => daemonGet(refreshed, path),
+          daemonPost: (path, body) => daemonPost(refreshed, path, body),
+        });
+      }),
     captureTerminal:
       dependencies.captureTerminal ??
       operations?.captureTerminal ??

@@ -1060,6 +1060,12 @@ describe("host serial control plane", () => {
         `/v1/serial-sessions/${replacement.sessionId}/abort`,
       );
       assert.equal(controlPlane.sessions.size, 0);
+      const repeatedAbort = await requestJson(
+        baseUrl,
+        token,
+        `/v1/serial-sessions/${replacement.sessionId}/abort`,
+      );
+      assert.equal(repeatedAbort.alreadyAbsent, true);
     } finally {
       if (controlPlane) await controlPlane.close();
       else if (server) {

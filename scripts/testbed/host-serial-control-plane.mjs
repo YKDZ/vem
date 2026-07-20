@@ -1637,6 +1637,15 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       if (request.method === "POST" && action === "abort") {
+        if (!serverState.sessions.has(sessionId)) {
+          jsonResponse(response, 200, {
+            ok: true,
+            sessionId,
+            aborted: true,
+            alreadyAbsent: true,
+          });
+          return;
+        }
         const result = await abortSession(serverState, body);
         serverState.sessions.delete(sessionId);
         jsonResponse(response, 200, {
