@@ -1840,13 +1840,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           isNull(machineSlots.deletedAt),
         ),
       )
-      .where(
-        and(
-          eq(machines.code, code),
-          isNull(machines.deletedAt),
-          inArray(machines.status, ["online", "maintenance"]),
-        ),
-      )
+      .where(and(eq(machines.code, code), isNull(machines.deletedAt)))
       .orderBy(machinePlanogramSlots.layerNo, machinePlanogramSlots.cellNo);
 
     const first = rows[0];
