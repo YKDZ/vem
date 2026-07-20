@@ -60,7 +60,7 @@ export function mapCustomerJourneyAudioPresentation(
     case "pickup.completed":
       return presentation(`${VOICE_BASE_PATH}/effects/pickup_beep.mp3`, 50);
     case "dispense.succeeded":
-      return presentation(`${VOICE_BASE_PATH}/dispensing/succeeded.mp3`, 40);
+      return presentation(`${VOICE_BASE_PATH}/dispensing/succeeded.mp3`, 60);
     case "dispense.failed":
       return presentation(`${VOICE_BASE_PATH}/error/dispense_failed.mp3`, 90);
     case "refund.pending":
