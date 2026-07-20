@@ -97,30 +97,33 @@ export async function startDelayedPickupMachineEvidenceCapture({
   let finalizing = null;
   let finalizeMode = null;
 
+  async function recordSample(sample) {
+    if (!sample || !Array.isArray(sample.runtimeTrace))
+      throw new Error("installed Machine production sample is invalid");
+    if (typeof onSample === "function") await onSample(sample);
+    runtimeTrace = sample.runtimeTrace;
+    if (REQUIRED_SURFACES.has(sample.surface)) {
+      if (sample.route !== "#/dispensing")
+        throw new Error("installed Machine DOM sale binding is invalid");
+      if (!uiObservations.some((entry) => entry.surface === sample.surface))
+        uiObservations.push({
+          surface: sample.surface,
+          route: sample.route,
+          observedAt: sample.observedAt,
+          observedSale: {
+            orderId: sample.orderId,
+            orderNo: sample.orderNo,
+            commandId: sample.commandId,
+            commandNo: sample.commandNo,
+          },
+        });
+    }
+  }
+
   async function poll() {
     if (stopped || failure) return;
     try {
-      const sample = await readSample(client, { timeoutMs: 5_000 });
-      if (!sample || !Array.isArray(sample.runtimeTrace))
-        throw new Error("installed Machine production sample is invalid");
-      if (typeof onSample === "function") await onSample(sample);
-      runtimeTrace = sample.runtimeTrace;
-      if (REQUIRED_SURFACES.has(sample.surface)) {
-        if (sample.route !== "#/dispensing")
-          throw new Error("installed Machine DOM sale binding is invalid");
-        if (!uiObservations.some((entry) => entry.surface === sample.surface))
-          uiObservations.push({
-            surface: sample.surface,
-            route: sample.route,
-            observedAt: sample.observedAt,
-            observedSale: {
-              orderId: sample.orderId,
-              orderNo: sample.orderNo,
-              commandId: sample.commandId,
-              commandNo: sample.commandNo,
-            },
-          });
-      }
+      await recordSample(await readSample(client, { timeoutMs: 5_000 }));
     } catch (error) {
       failure = error;
       stopped = true;
@@ -151,9 +154,10 @@ export async function startDelayedPickupMachineEvidenceCapture({
       clearInterval(timer);
       timer = null;
     }
-    finalizing = active.then(() => {
+    finalizing = active.then(async () => {
       if (mode === "cancel") return undefined;
       if (failure) throw failure;
+      await recordSample(await readSample(client, { timeoutMs: 5_000 }));
       for (const observation of uiObservations)
         for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
           if (observation.observedSale[name] !== binding?.[name])

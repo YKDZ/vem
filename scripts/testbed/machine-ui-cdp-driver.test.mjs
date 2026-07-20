@@ -291,6 +291,26 @@ async function runInstalledRouteCompetitionScenario({
 }
 
 describe("machine-ui-cdp-driver", () => {
+  it("retries a transient CDP discovery connection failure", async () => {
+    let attempts = 0;
+    const selected = await discoverMachineUiTarget({
+      endpoint: "http://127.0.0.1:9222",
+      expectedTargetId: ATTESTATION.targetId,
+      timeoutMs: 1_000,
+      fetchImpl: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("fetch failed");
+        return new Response(
+          JSON.stringify([target("machine-target", "#/catalog")]),
+          { status: 200 },
+        );
+      },
+    });
+
+    assert.equal(attempts, 2);
+    assert.equal(selected.id, "machine-target");
+  });
+
   it("discovers the one expected strict CDP target", async () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],

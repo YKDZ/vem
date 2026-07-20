@@ -235,11 +235,21 @@ export async function discoverMachineUiTarget({
     throw new Error("expectedTargetId is required");
   }
   const jsonEndpoint = new URL("/json", normalizeEndpoint(endpoint));
-  const response = await withTimeout(
-    fetchImpl(jsonEndpoint),
-    timeoutMs,
-    "CDP target discovery",
-  );
+  const deadline = Date.now() + timeoutMs;
+  let response;
+  while (true) {
+    try {
+      response = await withTimeout(
+        fetchImpl(jsonEndpoint),
+        Math.max(1, deadline - Date.now()),
+        "CDP target discovery",
+      );
+      break;
+    } catch (error) {
+      if (!(error instanceof TypeError) || Date.now() >= deadline) throw error;
+      await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+    }
+  }
   if (!response.ok) {
     throw new Error(`CDP target discovery failed with HTTP ${response.status}`);
   }

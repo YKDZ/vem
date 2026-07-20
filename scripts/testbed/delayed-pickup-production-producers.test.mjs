@@ -159,6 +159,45 @@ describe("delayed pickup production evidence producers", () => {
     await capture.cancel();
   });
 
+  it("takes a final synchronous Machine trace sample when capture stops", async () => {
+    let polls = 0;
+    const capture = await startDelayedPickupMachineEvidenceCapture({
+      client: {
+        async observeIdentity() {
+          return {
+            targetId: runtime.cdpTargetId,
+            sessionId: runtime.cdpSessionId,
+            connectedAt: "2026-07-18T08:00:00.000Z",
+          };
+        },
+      },
+      async inspectRuntime() {
+        return {
+          machine: runtime,
+          cdpListener: {
+            machineAncestorProcessId: runtime.processId,
+            sessionId: runtime.sessionId,
+            principal: runtime.principal,
+          },
+        };
+      },
+      intervalMs: 1_000,
+      async readSample() {
+        polls += 1;
+        return {
+          observedAt: "2026-07-18T08:00:00.010Z",
+          route: "#/result/success",
+          surface: "none",
+          runtimeTrace: [{ id: polls, type: "audio_terminal" }],
+        };
+      },
+    });
+
+    const evidence = await capture.stop(binding);
+    assert.equal(polls, 2);
+    assert.equal(evidence.runtimeTrace[0].id, 2);
+  });
+
   it("wraps the F1-time authoritative raw query without replacing its records", () => {
     const snapshot = {
       schemaVersion: "installed-kiosk-sale-platform-raw-records/v3",
