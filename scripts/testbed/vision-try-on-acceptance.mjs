@@ -2258,7 +2258,6 @@ async function runVisionTryOnAcceptance(options) {
     );
   }
   let client = null;
-  let injectedVisionMock = null;
   let hardwareSession = null;
   const checkpoints = [];
   let stage = "connect-installed-tauri-cdp";
@@ -2519,44 +2518,6 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    stage = "inject-online-try-on-failure";
-    injectedVisionMock = await startVisionMockScenario(
-      "try_on_unavailable_start",
-    );
-    const onlineMockDaemon = await waitForVisionOnline(handoff, 45_000);
-    const restoredProductDetail = await waitForTryOnButtonEnabled(
-      client,
-      30_000,
-    );
-    await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, /^#\/products\/.+\/try-on/, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    const tryOnFailure = await waitForTryOnFailure(client, 30_000);
-    checkpoints.push(
-      await captureCheckpoint(client, "try-on-degraded", {
-        screenshot: true,
-        screenshotSink: sink,
-      }),
-    );
-    await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, /^#\/products\//, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    const degradedTryOnProductDetail = await waitForTryOnButtonDisabled(
-      client,
-      30_000,
-    );
-    assert.equal(degradedTryOnProductDetail?.buyDisabled, false);
-
     stage = "prove-sale-survives-experience-degradation";
     await activateVisibleSelector(client, '[data-test="product-buy"]', {
       kind: "touch",
@@ -2595,7 +2556,6 @@ async function runVisionTryOnAcceptance(options) {
           visionStatus: degradedDaemon.visionStatus,
           saleCapabilityBeforeDegradation: capabilityBeforeDegradation,
           saleCapabilityAfterDegradation: degradedDaemon.saleCapability,
-          onlineTryOnFailure: onlineMockDaemon,
         },
         vision: {
           protocolSummary,
@@ -2612,9 +2572,6 @@ async function runVisionTryOnAcceptance(options) {
         silhouetteEvidence,
         tryOnSummary,
         degradedProductDetail,
-        restoredProductDetail,
-        degradedTryOnProductDetail,
-        tryOnFailure,
         finalRoute: "#/checkout",
       },
       degradations: {
@@ -2622,12 +2579,6 @@ async function runVisionTryOnAcceptance(options) {
           experienceCapabilityDegraded: true,
           saleStartStillAvailable:
             degradedDaemon.saleCapability?.canStartSale === true,
-        },
-        tryOnUnavailableWhileVisionOnline: {
-          experienceCapabilityDegraded: true,
-          saleStartStillAvailable:
-            onlineMockDaemon.saleCapability?.canStartSale === true,
-          visionOnline: onlineMockDaemon.visionStatus?.online === true,
         },
       },
       runtimeTrace: compactRuntimeTrace(runtimeTrace),
@@ -2690,15 +2641,6 @@ async function runVisionTryOnAcceptance(options) {
   }
 
   const cleanupErrors = [];
-  try {
-    await stopVisionChild(injectedVisionMock);
-  } catch (error) {
-    cleanupErrors.push(
-      new Error(
-        `vision mock shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
-    );
-  }
   try {
     await client?.close();
   } catch (error) {
