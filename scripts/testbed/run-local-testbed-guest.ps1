@@ -403,6 +403,26 @@ $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | Con
 if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
 Write-TestbedPhase "bootstrap"
 
+if ($Mode -eq "full") {
+  Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+  Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
+  $visionPorts = @(7892, [int]$guestInput.hostControlPlane.visionMockControlPort) | Select-Object -Unique
+  $visionOwnerIds = @(
+    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $visionPorts -contains $_.LocalPort } |
+      Select-Object -ExpandProperty OwningProcess -Unique
+  )
+  foreach ($ownerId in $visionOwnerIds) {
+    Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+  }
+  $visionPortDeadline = (Get-Date).AddSeconds(10)
+  while (
+    (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $visionPorts -contains $_.LocalPort }) -and
+    (Get-Date) -lt $visionPortDeadline
+  ) { Start-Sleep -Milliseconds 100 }
+}
+
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
   $env:Path = "$machinePath;$env:Path"
