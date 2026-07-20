@@ -617,43 +617,68 @@ export async function returnToCatalogFromClient({
       timeoutMs,
       pollMs: 250,
     });
+  const activateUnlessAlreadyCatalog = async (selector, options) => {
+    try {
+      await activateVisibleSelectorFn(client, selector, options);
+      return true;
+    } catch (error) {
+      if (
+        (await evaluateExpressionFn(client, "location.hash")) === "#/catalog"
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  };
   let route = await evaluateExpressionFn(client, "location.hash");
   if (route === "#/catalog") return route;
   if (/^#\/result(?:\/|$)/.test(route)) {
-    await activateVisibleSelectorFn(
-      client,
+    const activated = await activateUnlessAlreadyCatalog(
       ".result-return-button, .failure-return-button",
       {
         kind: "touch",
         timeoutMs: 10_000,
       },
     );
+    if (!activated) return "#/catalog";
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (route === "#/checkout") {
-    await activateVisibleSelectorFn(client, ".checkout-back", {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
+    if (
+      !(await activateUnlessAlreadyCatalog(".checkout-back", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
     await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
-    await activateVisibleSelectorFn(client, ".detail-back-button", {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
+    if (
+      !(await activateUnlessAlreadyCatalog(".detail-back-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (/^#\/products(?:\/|$)/.test(route)) {
-    await activateVisibleSelectorFn(client, ".detail-back-button", {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
+    if (
+      !(await activateUnlessAlreadyCatalog(".detail-back-button", {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (/^#\/payment(?:\/|$)/.test(route)) {
-    await activateVisibleSelectorFn(client, PAYMENT_CANCEL_SELECTOR, {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
+    if (
+      !(await activateUnlessAlreadyCatalog(PAYMENT_CANCEL_SELECTOR, {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
     route = (
       await waitForRouteWithTimeout(
         /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
@@ -662,33 +687,44 @@ export async function returnToCatalogFromClient({
     ).route;
     if (route === "#/catalog") return "#/catalog";
     if (/^#\/result(?:\/|$)/.test(route)) {
-      await activateVisibleSelectorFn(
-        client,
-        ".result-return-button, .failure-return-button",
-        {
-          kind: "touch",
-          timeoutMs: 10_000,
-        },
-      );
+      if (
+        !(await activateUnlessAlreadyCatalog(
+          ".result-return-button, .failure-return-button",
+          {
+            kind: "touch",
+            timeoutMs: 10_000,
+          },
+        ))
+      )
+        return "#/catalog";
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
     if (route === "#/checkout") {
-      await activateVisibleSelectorFn(client, ".checkout-back", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      });
+      if (
+        !(await activateUnlessAlreadyCatalog(".checkout-back", {
+          kind: "touch",
+          timeoutMs: 10_000,
+        }))
+      )
+        return "#/catalog";
       await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
-      await activateVisibleSelectorFn(client, ".detail-back-button", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      });
+      if (
+        !(await activateUnlessAlreadyCatalog(".detail-back-button", {
+          kind: "touch",
+          timeoutMs: 10_000,
+        }))
+      )
+        return "#/catalog";
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
     if (/^#\/products(?:\/|$)/.test(route)) {
-      await activateVisibleSelectorFn(client, ".detail-back-button", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      });
+      if (
+        !(await activateUnlessAlreadyCatalog(".detail-back-button", {
+          kind: "touch",
+          timeoutMs: 10_000,
+        }))
+      )
+        return "#/catalog";
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
   }

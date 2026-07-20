@@ -417,6 +417,21 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("accepts an automatic return to catalog while activating a stale route control", async () => {
+    const routes = ["#/result/success", "#/catalog"];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => routes.shift() ?? "#/catalog",
+      activateVisibleSelectorFn: async () => {
+        throw new Error("result control disappeared");
+      },
+      waitForRouteFn: async () => {
+        throw new Error("route wait must not be needed");
+      },
+    });
+    assert.equal(result, "#/catalog");
+  });
+
   it("reports payment cancellation failure when the payment-cancel control is disabled", async () => {
     await assert.rejects(
       returnToCatalogFromClient({
