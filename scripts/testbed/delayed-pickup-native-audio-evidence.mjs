@@ -1049,11 +1049,11 @@ export function correlateDelayedPickupCueWindows({
   const requiredNonSilentFrames =
     threshold.minimumNonSilentFrames * windows.length;
   const inspections = [overallWindow];
-  if (sampleWindow.nonSilentFrames < requiredNonSilentFrames) {
+  if (sampleWindow.nonSilentFrameCount < requiredNonSilentFrames) {
     diagnostics.push(
       diagnostic("default_audio_capture_insufficient_for_cues", {
         cueCount: windows.length,
-        nonSilentFrames: sampleWindow.nonSilentFrames,
+        nonSilentFrames: sampleWindow.nonSilentFrameCount,
         requiredNonSilentFrames,
       }),
     );
