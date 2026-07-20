@@ -1173,6 +1173,14 @@ describe("Windows D cache contract", () => {
     );
     assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
     assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
+    const finalReadyRefresh = guest.lastIndexOf(
+      "$runtimeReady = Wait-RuntimeReady",
+    );
+    const handoffWrite = guest.indexOf(
+      'schemaVersion = "vem-installed-runtime-handoff/v1"',
+    );
+    assert.ok(finalReadyRefresh > claimedRestart);
+    assert.ok(finalReadyRefresh < handoffWrite);
     assert.match(
       guest,
       /GetEnvironmentVariable\("Path", "Machine"\)[\s\S]*Join-String -Separator ";"/,

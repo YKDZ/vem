@@ -555,6 +555,7 @@ if ($observedInteractiveUser -ine $expectedInteractiveUser) {
   throw "installed Tauri process is not owned by the baseline interactive user"
 }
 $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
+$runtimeReady = Wait-RuntimeReady
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
