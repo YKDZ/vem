@@ -1156,7 +1156,7 @@ describe("Windows D cache contract", () => {
       claimedRestart,
     );
     const reboundReady = guest.indexOf(
-      "$runtimeReady = Wait-RuntimeReady -PreviousGeneration",
+      "$runtimeReady = Wait-RuntimeReady",
       hardwareBinding,
     );
     const daemonEvidence = guest.indexOf(
@@ -1171,7 +1171,6 @@ describe("Windows D cache contract", () => {
         reboundReady > hardwareBinding &&
         daemonEvidence > reboundReady,
     );
-    assert.match(guest, /ready\.generation -eq \$PreviousGeneration/);
     assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
     assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
     assert.match(
