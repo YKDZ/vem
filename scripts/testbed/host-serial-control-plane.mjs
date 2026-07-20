@@ -1155,6 +1155,13 @@ async function abortSession(server, input) {
   return { aborted: true, cleanup };
 }
 
+async function abortExistingSerialSessions(server) {
+  for (const session of [...server.sessions.values()]) {
+    await abortSession(server, { sessionId: session.id });
+    server.sessions.delete(session.id);
+  }
+}
+
 async function executePlatformQuery(server, input) {
   const sessionId = input.sessionId
     ? required(input.sessionId, "sessionId")
@@ -1182,6 +1189,7 @@ async function executePlatformQuery(server, input) {
 }
 
 async function createSerialSession(server, input) {
+  await abortExistingSerialSessions(server);
   const runId = required(input.runId, "runId");
   const machineCode = required(input.machineCode, "machineCode");
   const serialScenario = normalizeSerialScenario(input.serialScenario);
@@ -1629,10 +1637,12 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       if (request.method === "POST" && action === "abort") {
+        const result = await abortSession(serverState, body);
+        serverState.sessions.delete(sessionId);
         jsonResponse(response, 200, {
           ok: true,
           sessionId,
-          ...(await abortSession(serverState, body)),
+          ...result,
         });
         return;
       }

@@ -1032,11 +1032,34 @@ describe("host serial control plane", () => {
       );
       assert.equal(diagnostics.status, "cancelled");
       assert.equal(diagnostics.cancelledAt, recoveredCapture.cancelledAt);
+      const replacement = await requestJson(
+        baseUrl,
+        token,
+        "/v1/serial-sessions/start",
+        {
+          runId: "RUN-17-CONTROL-PLANE-REPLACEMENT",
+          machineCode: "MACHINE-17",
+          targetIdentity: "vm-target://runtime-testbed",
+          runtimeBase: `runtime-base://sha256/${"b".repeat(64)}`,
+          saleCorrelationId:
+            "sale-correlation://run-17-control-plane-replacement",
+        },
+      );
+      assert.equal(controlPlane.sessions.has(session.sessionId), false);
+      assert.equal(controlPlane.sessions.has(replacement.sessionId), true);
+      assert.equal(controlPlane.sessions.size, 1);
+      const replacedState = JSON.parse(
+        readFileSync(sessionPaths.statePath, "utf8"),
+      );
+      assert.equal(replacedState.active, false);
+      assert.equal(replacedState.cleanup.survivingProcessCount, 0);
+      assert.equal(replacedState.cleanup.survivingSocketCount, 0);
       await requestJson(
         baseUrl,
         token,
-        `/v1/serial-sessions/${session.sessionId}/abort`,
+        `/v1/serial-sessions/${replacement.sessionId}/abort`,
       );
+      assert.equal(controlPlane.sessions.size, 0);
     } finally {
       if (controlPlane) await controlPlane.close();
       else if (server) {
