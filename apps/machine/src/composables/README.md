@@ -9,14 +9,6 @@
 - `snapshot.localSiteSignals`：机器观测到的本地现场信号。当机器环境传感器有有效样本时，包含温度和湿度。
 - `degraded` 和 `operatorMessage`：面向操作员的就绪度/诊断辅助信息，用于提示 Natural Context 输入不完整。
 
-## 空调控制
-
-- `useEnvironmentControlStore`，来自 `../stores/environment-control`：向本地 daemon 发送环境控制意图。
-- `controlAirConditioner({ airConditionerOn, targetTemperatureCelsius })`:
-  切换空调开关和/或修改目标温度。
-- `latestResult`, `airConditionerOn`, `targetTemperatureCelsius`, and
-  `latestControlSucceeded`：最近一次已确认的本地命令结果。
-
 ## 顾客旅程音频
 
 - 顾客流程音频只由应用运行时的 `Customer Journey Transition Projector` 和 `Audio Coordinator` 驱动。页面、路由、轮询和通用事件总线不得直接请求播放。

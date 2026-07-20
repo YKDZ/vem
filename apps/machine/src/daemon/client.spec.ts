@@ -569,7 +569,7 @@ describe("DaemonApiClient direct runtime intents", () => {
     );
   });
 
-  it("decodes maintenance and environment diagnostics without exposing credential material", async () => {
+  it("decodes maintenance status without exposing credential material", async () => {
     vi.mocked(globalThis.fetch)
       .mockResolvedValueOnce(
         jsonResponse({
@@ -582,38 +582,12 @@ describe("DaemonApiClient direct runtime intents", () => {
           lastError: "first WireGuard handshake has not been observed",
           updatedAt: "2026-07-10T00:00:00Z",
         }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          commandNo: "local-env-1",
-          success: true,
-          errorCode: null,
-          message: "environment control completed",
-          airConditionerOn: true,
-          targetTemperatureCelsius: 24,
-          reportedAt: "2026-07-01T07:00:00.000Z",
-        }),
       );
     const client = new DaemonApiClient();
 
     await expect(client.getMaintenanceStatus()).resolves.toMatchObject({
       state: "handshake_pending",
       publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-    });
-    await expect(
-      client.controlEnvironment({
-        airConditionerOn: true,
-        targetTemperatureCelsius: 24,
-        timeoutSeconds: 5,
-      }),
-    ).resolves.toMatchObject({ success: true, airConditionerOn: true });
-    expect(lastFetchRequest()).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({
-        airConditionerOn: true,
-        targetTemperatureCelsius: 24,
-        timeoutSeconds: 5,
-      }),
     });
   });
 

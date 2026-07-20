@@ -34,7 +34,6 @@ import {
   deviceBindingActivationSchema,
   deviceBindingSnapshotSchema,
   deviceBindingTestResultSchema,
-  environmentControlResultSchema,
   healthSnapshotSchema,
   paymentProviderEnvironmentDiagnosticSchema,
   saleStartCapabilitySnapshotSchema,
@@ -57,7 +56,6 @@ import {
   type DeviceBindingActivation,
   type DeviceBindingSnapshot,
   type DeviceBindingTestResult,
-  type EnvironmentControlResult,
   type SaleStartCapabilitySnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
@@ -690,15 +688,6 @@ export class DaemonApiClient {
           body: request,
         },
       ),
-    );
-  }
-
-  async controlEnvironment(body: unknown): Promise<EnvironmentControlResult> {
-    return environmentControlResultSchema.parse(
-      await this.request("/v1/environment/control", {
-        method: "POST",
-        body,
-      }),
     );
   }
 
