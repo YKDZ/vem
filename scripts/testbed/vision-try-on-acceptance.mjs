@@ -875,6 +875,11 @@ export function validateTryOnPresentation({
         : runtime.tryOnSilhouetteAssetId
           ? `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`
           : null;
+  if (expectedSilhouettePath && !hasTryOnSilhouette) {
+    throw new Error(
+      "try-on silhouette configured for the selected variant was not rendered",
+    );
+  }
   if (hasTryOnSilhouette && expectedSilhouettePath) {
     if (
       normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==

@@ -1041,15 +1041,23 @@ export function correlateDelayedPickupCueWindows({
     };
   }
   const overallWindow = {
-    label: null,
     ...sampleWindow,
+    label: "default_output_capture",
     startMs: 0,
     endMs: sampleWindow.durationMs,
   };
-  const inspections = windows.map((window) => ({
-    ...overallWindow,
-    label: window.label,
-  }));
+  const requiredNonSilentFrames =
+    threshold.minimumNonSilentFrames * windows.length;
+  const inspections = [overallWindow];
+  if (sampleWindow.nonSilentFrames < requiredNonSilentFrames) {
+    diagnostics.push(
+      diagnostic("default_audio_capture_insufficient_for_cues", {
+        cueCount: windows.length,
+        nonSilentFrames: sampleWindow.nonSilentFrames,
+        requiredNonSilentFrames,
+      }),
+    );
+  }
   for (const inspection of inspections)
     if (!inspection.ok || inspection.kind !== "passed")
       diagnostics.push(
@@ -1058,7 +1066,12 @@ export function correlateDelayedPickupCueWindows({
           kind: inspection.kind,
         }),
       );
-  return { ok: diagnostics.length === 0, diagnostics, inspections };
+  return {
+    ok: diagnostics.length === 0,
+    diagnostics,
+    inspections,
+    cueTimings: windows,
+  };
 }
 
 export function expectedDelayedPickupTraceCues() {

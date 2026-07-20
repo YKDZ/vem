@@ -183,6 +183,8 @@ function useSilhouettePlaceholder(): void {
 }
 
 .try-on-silhouette-placeholder {
+  width: min(42vw, 34rem);
+  height: min(78vh, 48rem);
   border: 2px dashed rgba(255, 255, 255, 0.4);
   border-radius: 999px 999px 2rem 2rem;
   background: rgba(255, 255, 255, 0.08);

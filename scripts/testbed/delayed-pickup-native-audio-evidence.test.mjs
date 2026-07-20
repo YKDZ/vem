@@ -442,18 +442,18 @@ describe("delayed pickup production evidence algorithms", () => {
     });
 
     assert.equal(result.ok, false);
-    const labels = result.inspections.map((entry) => entry.label);
-    assert.deepEqual(labels, [
-      "pickup_waiting",
-      "ordinary_warning",
-      "urgent_warning",
-      "reset_progress",
-    ]);
-    assert.equal(labels.length, 4);
-    assert.ok(
-      result.inspections.every((entry) => entry.kind === "passed"),
-      "valid cue windows should still be analyzed even when one cue is missing",
+    assert.deepEqual(
+      result.cueTimings.map((entry) => entry.label),
+      [
+        "pickup_waiting",
+        "ordinary_warning",
+        "urgent_warning",
+        "reset_progress",
+      ],
     );
+    assert.equal(result.inspections.length, 1);
+    assert.equal(result.inspections[0].label, "default_output_capture");
+    assert.equal(result.inspections[0].kind, "passed");
     assert.ok(
       result.diagnostics.some(
         (entry) =>
@@ -534,11 +534,10 @@ describe("delayed pickup production evidence algorithms", () => {
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.inspections.length, 5);
-    assert.ok(
-      result.inspections.every((entry) => entry.kind === "passed"),
-      "overall non-silent WAV should allow all cue windows to pass when cue timing is present",
-    );
+    assert.equal(result.cueTimings.length, 5);
+    assert.equal(result.inspections.length, 1);
+    assert.equal(result.inspections[0].label, "default_output_capture");
+    assert.equal(result.inspections[0].kind, "passed");
     assert.equal(
       result.inspections.some((entry) => entry.kind === "malformed"),
       false,
