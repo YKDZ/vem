@@ -170,6 +170,34 @@ async fn serial_adapter_ignores_pickup_timeout_frames_after_second_warning() {
 }
 
 #[tokio::test]
+async fn serial_adapter_recovers_a_lost_f2_from_idle_after_pickup_completed() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let _frame = support::read_single_dispense_frame(&mut pty.master).await;
+        support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xAA).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xAA).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense(command("CMD-PTY-LOST-F2")),
+    )
+    .await
+    .expect("test timeout");
+
+    assert!(result.success, "{result:?}");
+}
+
+#[tokio::test]
 async fn serial_adapter_dispenses_once_on_ack_and_completed() {
     let _pty_guard = PTY_TEST_LOCK.lock().await;
     let mut pty = support::open_pty();

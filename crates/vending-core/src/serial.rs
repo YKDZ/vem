@@ -23,7 +23,7 @@ use crate::hardware::{
 pub const FRAME_HEAD: u8 = 0x55;
 pub const DEBUG_DISPENSE_FAULT_FRAME: [u8; 4] = [FRAME_HEAD, 0xFF, 0xFF, 0xFF];
 const HANDSHAKE: [u8; 2] = build_status_query_frame();
-const SERIAL_BAUD_RATE: u32 = 115_200;
+const SERIAL_BAUD_RATE: u32 = 9_600;
 const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const ENVIRONMENT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const STATUS_QUERY_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
@@ -1920,6 +1920,7 @@ where
     let mut probe_failures: usize = 0;
     let mut outlet_opened_reported = false;
     let mut pickup_waiting_reported = false;
+    let mut pickup_completed = false;
     let mut pickup_timeout_warnings: u8 = 0;
     loop {
         let now = Instant::now();
@@ -2008,6 +2009,7 @@ where
                 return Ok(());
             }
             LowerFrame::PickupCompleted => {
+                pickup_completed = true;
                 adapter
                     .log_message(
                         base_entry.clone(),
@@ -2085,6 +2087,24 @@ where
                     message,
                 );
                 continue;
+            }
+            LowerFrame::IdleHeartbeat if pickup_completed => {
+                adapter
+                    .log_message(
+                        base_entry.clone(),
+                        "event",
+                        Some("completed_after_f2_loss"),
+                        Some("controller returned idle after pickup completed".to_string()),
+                    )
+                    .await;
+                emit_dispense_progress(
+                    &progress,
+                    command,
+                    DispenseProgressStage::ResetCompleted,
+                    None,
+                    "设备已复位完成",
+                );
+                return Ok(());
             }
             LowerFrame::Ack
             | LowerFrame::IdleHeartbeat
