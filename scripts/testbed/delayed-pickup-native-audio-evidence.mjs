@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 
-import {
-  inspectWavPcm,
-  inspectWavPcmWindows,
-} from "./default-audio-evidence.mjs";
+import { inspectWavPcm } from "./default-audio-evidence.mjs";
 
 export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
   firstWarningAfterF0Ms: 15_000,
@@ -996,31 +993,43 @@ export function correlateDelayedPickupCueWindows({
       diagnostics: [diagnostic("default_audio_capture_window_binding_missing")],
       inspections: [],
     };
-  const windows = TRACE_CUES.map(([label]) => {
+  const windows = [];
+  TRACE_CUES.forEach(([label]) => {
     const rawStarted = timestamp(cues?.[label]?.started?.at);
     const rawTerminal = timestamp(cues?.[label]?.terminal?.at);
     const started = rawStarted === null ? null : rawStarted - clockOffsetMs;
     const terminal = rawTerminal === null ? null : rawTerminal - clockOffsetMs;
-    if (started === null || terminal === null || terminal <= started)
-      return null;
-    return {
+    if (started === null || terminal === null || terminal <= started) {
+      diagnostics.push(
+        diagnostic("audio_cue_window_missing_or_empty", {
+          label,
+        }),
+      );
+      return;
+    }
+    const startMs = Math.max(0, started - captureStartMs - 250);
+    const endMs = Math.min(
+      captureEndMs - captureStartMs,
+      terminal - captureStartMs + 250,
+    );
+    if (endMs <= startMs || startMs < 0) {
+      diagnostics.push(
+        diagnostic("audio_cue_window_missing_or_empty", {
+          label,
+        }),
+      );
+      return;
+    }
+    windows.push({
       label,
-      startMs: Math.max(0, started - captureStartMs - 250),
-      endMs: Math.min(
-        captureEndMs - captureStartMs,
-        terminal - captureStartMs + 250,
-      ),
-    };
+      startMs,
+      endMs,
+    });
   });
-  if (
-    windows.some(
-      (window) =>
-        !window || window.endMs <= window.startMs || window.startMs < 0,
-    )
-  )
+  if (windows.length === 0)
     return {
       ok: false,
-      diagnostics: [diagnostic("audio_cue_window_missing_or_empty")],
+      diagnostics,
       inspections: [],
     };
   const sampleWindow = inspectWavPcm(captureBytes, threshold);
@@ -1031,28 +1040,16 @@ export function correlateDelayedPickupCueWindows({
       inspections: [],
     };
   }
-  const sampleFrameDurationMs = 1_000 / sampleWindow.sampleRateHz;
-  const captureDurationMs = Math.min(
-    captureEndMs - captureStartMs,
-    sampleWindow.durationMs,
-  );
-  const normalizedWindows = windows.map((window) => {
-    const endMs = Math.max(
-      0,
-      Math.min(captureDurationMs, window.endMs),
-    );
-    let startMs = Math.max(0, Math.min(captureDurationMs, window.startMs));
-    if (endMs <= startMs) {
-      if (endMs <= 0) return window;
-      startMs = Math.max(0, endMs - sampleFrameDurationMs);
-    }
-    return { ...window, startMs, endMs };
-  });
-  const inspections = inspectWavPcmWindows(
-    captureBytes,
-    normalizedWindows,
-    threshold,
-  );
+  const overallWindow = {
+    label: null,
+    ...sampleWindow,
+    startMs: 0,
+    endMs: sampleWindow.durationMs,
+  };
+  const inspections = windows.map((window) => ({
+    ...overallWindow,
+    label: window.label,
+  }));
   for (const inspection of inspections)
     if (!inspection.ok || inspection.kind !== "passed")
       diagnostics.push(

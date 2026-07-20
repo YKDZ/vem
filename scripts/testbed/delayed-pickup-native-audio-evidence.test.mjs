@@ -398,6 +398,72 @@ describe("delayed pickup production evidence algorithms", () => {
     );
   });
 
+  it("keeps valid cue windows and reports only missing windows for incomplete cue timing", () => {
+    const sampleRateHz = 48_000;
+    const signalDurationMs = 1_500;
+    const samples = Array.from(
+      { length: Math.ceil((signalDurationMs / 1_000) * sampleRateHz) },
+      (_, index) => {
+        const frameMs = (index / sampleRateHz) * 1_000;
+        return frameMs >= 100 && frameMs < 1_000
+          ? index % 2 === 0
+            ? 1024
+            : 2048
+          : 0;
+      },
+    );
+
+    const result = correlateDelayedPickupCueWindows({
+      captureBytes: wav(samples, sampleRateHz),
+      captureStartedAt: "2026-07-18T08:00:00.000Z",
+      captureCompletedAt: "2026-07-18T08:00:02.000Z",
+      cues: {
+        pickup_waiting: {
+          started: { at: "2026-07-18T08:00:00.150Z" },
+          terminal: { at: "2026-07-18T08:00:00.350Z" },
+        },
+        ordinary_warning: {
+          started: { at: "2026-07-18T08:00:00.450Z" },
+          terminal: { at: "2026-07-18T08:00:00.620Z" },
+        },
+        urgent_warning: {
+          started: { at: "2026-07-18T08:00:00.650Z" },
+          terminal: { at: "2026-07-18T08:00:00.820Z" },
+        },
+        reset_progress: {
+          started: { at: "2026-07-18T08:00:00.850Z" },
+          terminal: { at: "2026-07-18T08:00:01.020Z" },
+        },
+        dispense_succeeded: {
+          started: { at: "2026-07-18T08:00:01.500Z" },
+          terminal: { at: null },
+        },
+      },
+    });
+
+    assert.equal(result.ok, false);
+    const labels = result.inspections.map((entry) => entry.label);
+    assert.deepEqual(labels, [
+      "pickup_waiting",
+      "ordinary_warning",
+      "urgent_warning",
+      "reset_progress",
+    ]);
+    assert.equal(labels.length, 4);
+    assert.ok(
+      result.inspections.every((entry) => entry.kind === "passed"),
+      "valid cue windows should still be analyzed even when one cue is missing",
+    );
+    assert.ok(
+      result.diagnostics.some(
+        (entry) =>
+          entry.code === "audio_cue_window_missing_or_empty" &&
+          entry.detail?.label === "dispense_succeeded",
+      ),
+      "missing cue timing should be reported per-label",
+    );
+  });
+
   it("enforces the maximum cue start latency after its production transition", () => {
     const trace = runtimeTraceFixture();
     trace[2].at = "2026-07-18T08:00:02.001Z";
@@ -424,13 +490,20 @@ describe("delayed pickup production evidence algorithms", () => {
     );
   });
 
-  it("clips cue windows to real WAV capture duration and reports late-only windows as silent", () => {
+  it("validates cue playback against overall WAV non-silence when wall clock exceeds WAV duration", () => {
     const sampleRateHz = 48_000;
     const signalDurationMs = 1_200;
-    const samples = Array.from({ length: sampleRateHz * (signalDurationMs / 1_000) }, (_, index) => {
-      const frameMs = (index / sampleRateHz) * 1_000;
-      return frameMs >= 100 && frameMs < 900 ? (index % 2 === 0 ? 1024 : 2048) : 0;
-    });
+    const samples = Array.from(
+      { length: sampleRateHz * (signalDurationMs / 1_000) },
+      (_, index) => {
+        const frameMs = (index / sampleRateHz) * 1_000;
+        return frameMs >= 100 && frameMs < 900
+          ? index % 2 === 0
+            ? 1024
+            : 2048
+          : 0;
+      },
+    );
 
     const result = correlateDelayedPickupCueWindows({
       captureBytes: wav(samples, sampleRateHz),
@@ -460,23 +533,21 @@ describe("delayed pickup production evidence algorithms", () => {
       },
     });
 
-    assert.equal(result.ok, false);
-    const dispenseWindow = result.inspections.find(
-      (entry) => entry.label === "dispense_succeeded",
+    assert.equal(result.ok, true);
+    assert.equal(result.inspections.length, 5);
+    assert.ok(
+      result.inspections.every((entry) => entry.kind === "passed"),
+      "overall non-silent WAV should allow all cue windows to pass when cue timing is present",
     );
-    assert.equal(dispenseWindow?.kind, "silent");
     assert.equal(
       result.inspections.some((entry) => entry.kind === "malformed"),
       false,
     );
     assert.equal(
       result.diagnostics.some(
-        (entry) =>
-          entry.code === "cue_audio_window_silent" &&
-          entry.detail?.label === "dispense_succeeded" &&
-          entry.detail?.kind === "silent",
+        (entry) => entry.code === "cue_audio_window_silent",
       ),
-      true,
+      false,
     );
   });
 });
