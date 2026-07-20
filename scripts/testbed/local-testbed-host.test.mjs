@@ -47,6 +47,7 @@ function baselineXml() {
   return `<domain type="kvm">
   <name>win10-runtime-baseline</name>
   <uuid>1c94bc95-7791-4ac7-bd44-1771d9b6b029</uuid>
+  <clock offset="utc"/>
   <devices>
     <disk type="file" device="disk"><source file="${PATHS.baselineSystem}"/><target dev="sda" bus="sata"/></disk>
     <disk type="file" device="disk"><source file="${PATHS.cacheDisk}"/><target dev="sdb" bus="sata"/></disk>
@@ -57,6 +58,17 @@ function baselineXml() {
 }
 
 describe("tracked local testbed host lifecycle", () => {
+  it("keeps the reconstructed Windows RTC aligned with local civil time", () => {
+    const rendered = renderReconstructedDomainXml({
+      templateXml: baselineXml(),
+      config: config(),
+      baselineSystem: PATHS.baselineSystem,
+      cacheDisk: PATHS.cacheDisk,
+    });
+    assert.match(rendered, /<clock offset="localtime"\/>/);
+    assert.doesNotMatch(rendered, /<clock offset="utc"\/>/);
+  });
+
   it("replaces only the exact C overlay and domain while preserving baseline C and D cache", () => {
     const plan = buildHostReconstructionPlan({
       config: config(),

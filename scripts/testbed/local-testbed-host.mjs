@@ -362,6 +362,16 @@ export function renderReconstructedDomainXml({
     `<name>${xml(config.domainName)}</name>\n  <seclabel type="none"/>`,
   );
   rendered = rendered.replace(/\s*<uuid>[^<]+<\/uuid>/, "");
+  const clocks = [...rendered.matchAll(/<clock\b[^>]*\/?>/g)];
+  if (clocks.length > 1) {
+    throw new Error("published domain XML must contain at most one clock");
+  }
+  rendered = clocks.length
+    ? rendered.replace(clocks[0][0], '<clock offset="localtime"/>')
+    : rendered.replace(
+        /(<os>[\s\S]*?<\/os>)/,
+        '$1\n  <clock offset="localtime"/>',
+      );
   rendered = rendered.replace(
     baselineSource,
     `file="${xml(config.overlayPath)}"`,

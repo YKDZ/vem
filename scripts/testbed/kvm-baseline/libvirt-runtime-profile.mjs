@@ -177,6 +177,7 @@ export function renderLibvirtDomainXml(
   <currentMemory unit="MiB">${profile.memoryMiB}</currentMemory>
   <vcpu placement="static">${profile.vcpus}</vcpu>
   <os><type arch="x86_64" machine="q35">hvm</type>${cdroms ? '<boot dev="cdrom"/>' : ""}</os>
+  <clock offset="localtime"/>
   <features><acpi/><apic/><hyperv mode="custom"><relaxed state="on"/><vapic state="on"/><spinlocks state="on" retries="8191"/></hyperv></features>
   <cpu mode="host-passthrough" check="none" migratable="on"/>
   <devices>
