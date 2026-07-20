@@ -200,8 +200,6 @@ describe("MachinesService", () => {
                       humidityRh: 53,
                       sampledAt: "2026-05-05T12:00:00.000Z",
                       sensorStatus: "ok",
-                      airConditionerOn: false,
-                      targetTemperatureCelsius: null,
                     },
                   },
                 },
@@ -341,8 +339,6 @@ describe("MachinesService", () => {
                       humidityRh: 53,
                       sampledAt: "2026-05-05T12:00:00.000Z",
                       sensorStatus: "ok",
-                      airConditionerOn: false,
-                      targetTemperatureCelsius: null,
                     },
                   },
                 },
@@ -393,8 +389,6 @@ describe("MachinesService", () => {
       humidityRh: 53,
       sampledAt: "2026-05-05T12:00:00.000Z",
       sensorStatus: "ok",
-      airConditionerOn: false,
-      targetTemperatureCelsius: null,
     });
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
@@ -2290,14 +2284,28 @@ describe("MachinesService", () => {
       where: () => ({ returning: async () => [sentCommand] }),
     });
 
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({
-        where: () => ({
-          limit: async () => [machine],
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              for: async () => [machine],
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              limit: async () => [],
+            }),
+          }),
         }),
-      }),
-    });
-    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => cb(tx),
+    );
     mockDb.update.mockReturnValueOnce({ set: updateSet });
     signForMachine.mockResolvedValueOnce({ signed: true });
     publish.mockResolvedValueOnce(undefined);
@@ -2349,6 +2357,252 @@ describe("MachinesService", () => {
       }),
     });
     expect(result).toEqual(sentCommand);
+  });
+
+  it("does not overwrite command state when publish succeeds after concurrent status change", async () => {
+    const machine = { id: "machine-1", code: "M001", deletedAt: null };
+    const createdCommand = {
+      id: "command-1",
+      commandNo: "MCMD-1",
+      machineId: "machine-1",
+      type: "environment-control",
+      status: "pending",
+      payloadJson: {
+        commandNo: "MCMD-1",
+        airConditionerOn: true,
+        timeoutSeconds: 5,
+      },
+      createdAt: new Date("2026-05-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-05-05T12:00:00.000Z"),
+    };
+    const acknowledgedCommand = {
+      ...createdCommand,
+      status: "acknowledged",
+      updatedAt: new Date("2026-05-05T12:00:01.000Z"),
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [createdCommand],
+    });
+    const updateWhere = vi.fn();
+    const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              for: async () => [machine],
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => cb(tx),
+    );
+    mockDb.update.mockReturnValue({
+      set: updateSet.mockImplementation(() => ({
+        where: updateWhere.mockReturnValue({
+          returning: async () => [],
+        }) as () => Promise<[]>,
+      })),
+    });
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [acknowledgedCommand],
+        }),
+      }),
+    });
+    signForMachine.mockResolvedValueOnce({ signed: true });
+    publish.mockResolvedValueOnce(undefined);
+
+    const result = await service.commandEnvironment(
+      "machine-1",
+      { airConditionerOn: true },
+      "admin-1",
+    );
+
+    expect(updateWhere).toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: "command-1",
+        status: "acknowledged",
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledTimes(1);
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(mockDb.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fail command publish when audit recording fails", async () => {
+    const machine = { id: "machine-1", code: "M001", deletedAt: null };
+    const createdCommand = {
+      id: "command-1",
+      commandNo: "MCMD-1",
+      machineId: "machine-1",
+      type: "environment-control",
+      status: "pending",
+      payloadJson: {
+        commandNo: "MCMD-1",
+        airConditionerOn: true,
+        timeoutSeconds: 5,
+      },
+    };
+    const sentCommand = { ...createdCommand, status: "sent" };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [createdCommand],
+    });
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [sentCommand] }),
+    });
+
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              for: async () => [machine],
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => cb(tx),
+    );
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+    signForMachine.mockResolvedValueOnce({ signed: true });
+    publish.mockResolvedValueOnce(undefined);
+    auditRecord.mockRejectedValueOnce(new Error("audit store unavailable"));
+
+    const result = await service.commandEnvironment(
+      "machine-1",
+      { airConditionerOn: true },
+      "admin-1",
+    );
+
+    expect(result).toEqual(sentCommand);
+    expect(auditRecord).toHaveBeenCalledTimes(1);
+    expect(mockDb.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("atomically allows only one concurrent environment command per machine", async () => {
+    const machine = { id: "machine-1", code: "M001", deletedAt: null };
+    const commands: Array<Record<string, unknown>> = [];
+    let transactionTail = Promise.resolve();
+    mockDb.transaction.mockImplementation(
+      async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => {
+        const previous = transactionTail;
+        let releaseTransaction!: () => void;
+        transactionTail = new Promise<void>((resolve) => {
+          releaseTransaction = resolve;
+        });
+        await previous;
+        try {
+          const tx = {
+            select: vi
+              .fn()
+              .mockReturnValueOnce({
+                from: () => ({
+                  where: () => ({
+                    for: async () => [machine],
+                  }),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: () => ({
+                  where: () => ({
+                    limit: async () => commands,
+                  }),
+                }),
+              }),
+            insert: vi.fn().mockReturnValue({
+              values: (values: Record<string, unknown>) => ({
+                returning: async () => {
+                  const created = {
+                    id: `command-${commands.length + 1}`,
+                    ...values,
+                  };
+                  commands.push(created);
+                  return [created];
+                },
+              }),
+            }),
+          };
+          return await callback(tx);
+        } finally {
+          releaseTransaction();
+        }
+      },
+    );
+    const sentCommand = { id: "command-1", status: "sent" };
+    mockDb.update.mockReturnValue({
+      set: () => ({
+        where: () => ({ returning: async () => [sentCommand] }),
+      }),
+    });
+    signForMachine.mockResolvedValue({ signed: true });
+    let releasePublish!: () => void;
+    publish.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releasePublish = resolve;
+        }),
+    );
+
+    const first = service.commandEnvironment(
+      "machine-1",
+      { airConditionerOn: true },
+      "admin-1",
+    );
+    const second = service.commandEnvironment(
+      "machine-1",
+      { ventSpeed: 2 },
+      "admin-1",
+    );
+
+    await expect(second).rejects.toThrow("ENVIRONMENT_COMMAND_IN_PROGRESS");
+    expect(publish).toHaveBeenCalledTimes(1);
+    releasePublish();
+    await expect(first).resolves.toEqual(sentCommand);
+    expect(commands).toHaveLength(1);
+  });
+
+  it("schedules environment command timeout sweeping each second on module init", () => {
+    const serviceWithMessageHandler = service as unknown as {
+      mqttService: {
+        registerMachineMessageHandler: (...args: never[]) => void;
+      };
+    };
+    serviceWithMessageHandler.mqttService.registerMachineMessageHandler =
+      vi.fn();
+
+    const setIntervalSpy = vi.spyOn(global, "setInterval");
+
+    service.onModuleInit();
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 1_000);
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
+
+    service.onApplicationShutdown();
+    setIntervalSpy.mockRestore();
   });
 
   it("acknowledges an environment control machine command from MQTT ACK", async () => {
@@ -2412,6 +2666,17 @@ describe("MachinesService", () => {
     const tx = {
       insert: vi.fn().mockReturnValue({ values: eventValues }),
       update: vi.fn().mockReturnValue({ set: commandSet }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                status: "sent",
+              },
+            ],
+          }),
+        }),
+      }),
     };
     mockDb.transaction.mockImplementationOnce(
       async (cb: (txArg: typeof tx) => Promise<void>) => {
@@ -2500,6 +2765,17 @@ describe("MachinesService", () => {
     const tx = {
       insert: vi.fn().mockReturnValue({ values: eventValues }),
       update: vi.fn().mockReturnValue({ set: commandSet }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                status: "pending",
+              },
+            ],
+          }),
+        }),
+      }),
     };
     mockDb.transaction.mockImplementationOnce(
       async (cb: (txArg: typeof tx) => Promise<void>) => {
@@ -2525,6 +2801,113 @@ describe("MachinesService", () => {
         lastError: "hardware rejected command",
       }),
     );
+  });
+
+  it("does not apply environment control results to terminal command states", async () => {
+    const resultPayload = {
+      commandNo: "MCMD-1",
+      success: true,
+      reportedAt: "2026-05-05T12:00:00.000Z",
+      airConditionerOn: true,
+    };
+    const eventValues = vi.fn().mockReturnValue({
+      onConflictDoNothing: () => ({
+        returning: async () => [{ id: "event-1" }],
+      }),
+    });
+    const tx = {
+      insert: vi.fn().mockReturnValue({ values: eventValues }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+    verifyFromTopic.mockResolvedValueOnce({
+      machineId: "machine-1",
+      machineCode: "M001",
+      messageId: "result:MCMD-1",
+      payload: resultPayload,
+    });
+
+    await service.handleMachineMessage(
+      "vem/machines/M001/events/environment-control-result",
+      JSON.stringify({}),
+    );
+
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(eventValues).toHaveBeenCalledWith({
+      machineId: "machine-1",
+      eventType: "environment_control_result",
+      payloadJson: resultPayload,
+      mqttTopic: "vem/machines/M001/events/environment-control-result",
+      messageId: "result:MCMD-1",
+    });
+  });
+
+  it("does not succeed an environment command whose deadline passed before the sweep", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-05T12:00:06.000Z"));
+    const eventValues = vi.fn().mockReturnValue({
+      onConflictDoNothing: () => ({
+        returning: async () => [{ id: "event-1" }],
+      }),
+    });
+    const timeoutWhere = vi.fn().mockResolvedValue(undefined);
+    const timeoutSet = vi.fn().mockReturnValue({ where: timeoutWhere });
+    const tx = {
+      insert: vi.fn().mockReturnValue({ values: eventValues }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: "command-1",
+                status: "sent",
+                timeoutAt: new Date("2026-05-05T12:00:05.000Z"),
+              },
+            ],
+          }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({ set: timeoutSet }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<void>) => cb(tx),
+    );
+    verifyFromTopic.mockResolvedValueOnce({
+      machineId: "machine-1",
+      machineCode: "M001",
+      messageId: "result:MCMD-1",
+      payload: {
+        commandNo: "MCMD-1",
+        success: true,
+        reportedAt: "2026-05-05T12:00:04.000Z",
+        airConditionerOn: true,
+      },
+    });
+
+    await service.handleMachineMessage(
+      "vem/machines/M001/events/environment-control-result",
+      JSON.stringify({}),
+    );
+
+    expect(timeoutSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "timeout",
+        resultAt: new Date("2026-05-05T12:00:06.000Z"),
+        lastError: "machine command timeout",
+      }),
+    );
+    expect(timeoutWhere).toHaveBeenCalledOnce();
   });
 });
 

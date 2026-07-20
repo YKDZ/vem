@@ -80,8 +80,6 @@ describe("VendingService heartbeat ingestion", () => {
         humidityRh: 53,
         sampledAt: "2026-05-05T12:00:00.000Z",
         sensorStatus: "ok",
-        airConditionerOn: false,
-        targetTemperatureCelsius: null,
       },
     };
     const payload = {

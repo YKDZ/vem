@@ -20,9 +20,6 @@ pub struct EnvironmentHeartbeatPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampled_at: Option<String>,
     pub sensor_status: EnvironmentSensorStatus,
-    pub air_conditioner_on: Option<bool>,
-    pub target_temperature_celsius: Option<i8>,
-    pub vent_speed: Option<u8>,
 }
 
 impl Default for EnvironmentHeartbeatPayload {
@@ -32,9 +29,6 @@ impl Default for EnvironmentHeartbeatPayload {
             humidity_rh: None,
             sampled_at: None,
             sensor_status: EnvironmentSensorStatus::Unknown,
-            air_conditioner_on: Some(false),
-            target_temperature_celsius: None,
-            vent_speed: None,
         }
     }
 }
@@ -68,23 +62,6 @@ impl EnvironmentHeartbeatCache {
         self.payload.sensor_status = EnvironmentSensorStatus::Faulted;
     }
 
-    pub fn record_control_success(
-        &mut self,
-        air_conditioner_on: Option<bool>,
-        target_temperature_celsius: Option<i8>,
-        vent_speed: Option<u8>,
-    ) {
-        if let Some(air_conditioner_on) = air_conditioner_on {
-            self.payload.air_conditioner_on = Some(air_conditioner_on);
-        }
-        if let Some(target_temperature_celsius) = target_temperature_celsius {
-            self.payload.target_temperature_celsius = Some(target_temperature_celsius);
-        }
-        if let Some(vent_speed) = vent_speed {
-            self.payload.vent_speed = Some(vent_speed);
-        }
-    }
-
     pub fn heartbeat_payload(&self) -> EnvironmentHeartbeatPayload {
         self.payload.clone()
     }
@@ -96,6 +73,15 @@ mod tests {
         environment::{EnvironmentHeartbeatCache, EnvironmentSensorStatus},
         serial::EnvironmentSample,
     };
+
+    #[test]
+    fn heartbeat_serializes_only_b0_observations() {
+        let payload =
+            serde_json::to_value(EnvironmentHeartbeatCache::default().heartbeat_payload())
+                .expect("serialize environment heartbeat");
+
+        assert_eq!(payload, serde_json::json!({ "sensorStatus": "unknown" }));
+    }
 
     #[test]
     fn preserves_last_valid_reading_after_one_empty_sample() {

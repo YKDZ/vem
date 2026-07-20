@@ -1978,13 +1978,61 @@ describe("shared API contract", () => {
           humidityRh: 53,
           sampledAt: "2026-05-05T12:00:00.000Z",
           sensorStatus: "ok",
-          airConditionerOn: false,
-          targetTemperatureCelsius: null,
         },
       },
     });
 
     expect(parsed.statusPayload.environment?.sensorStatus).toBe("ok");
+  });
+
+  it("rejects removed B0-only legacy actuator fields from heartbeat payload", () => {
+    expect(() =>
+      heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        statusPayload: {
+          environment: {
+            temperatureCelsius: 24,
+            humidityRh: 53,
+            sampledAt: "2026-05-05T12:00:00.000Z",
+            sensorStatus: "ok",
+            airConditionerOn: false,
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        statusPayload: {
+          environment: {
+            temperatureCelsius: 24,
+            humidityRh: 53,
+            sampledAt: "2026-05-05T12:00:00.000Z",
+            sensorStatus: "ok",
+            targetTemperatureCelsius: null,
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        statusPayload: {
+          environment: {
+            temperatureCelsius: 24,
+            humidityRh: 53,
+            sampledAt: "2026-05-05T12:00:00.000Z",
+            sensorStatus: "ok",
+            ventSpeed: 2,
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   it("rejects invalid machine environment sensor status", () => {
@@ -2032,6 +2080,24 @@ describe("shared API contract", () => {
         ventSpeed: 5,
       }),
     ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        airConditionerOn: true,
+        ventSpeed: 2,
+      }),
+    ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        airConditionerOn: true,
+        targetTemperatureCelsius: 24,
+      }),
+    ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
+      }),
+    ).toThrow();
   });
 
   it("validates environment control command payloads", () => {
@@ -2039,11 +2105,23 @@ describe("shared API contract", () => {
       environmentControlCommandPayloadSchema.parse({
         commandNo: "MCMD-1",
         airConditionerOn: true,
+        timeoutSeconds: 5,
+      }).targetTemperatureCelsius,
+    ).toBeUndefined();
+    expect(
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-2",
         targetTemperatureCelsius: 24,
-        ventSpeed: 2,
         timeoutSeconds: 5,
       }).targetTemperatureCelsius,
     ).toBe(24);
+    expect(
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-3",
+        ventSpeed: 2,
+        timeoutSeconds: 5,
+      }).ventSpeed,
+    ).toBe(2);
     expect(() =>
       environmentControlCommandPayloadSchema.parse({
         commandNo: "MCMD-1",
@@ -2054,6 +2132,30 @@ describe("shared API contract", () => {
       environmentControlCommandPayloadSchema.parse({
         commandNo: "MCMD-1",
         targetTemperatureCelsius: 31,
+        timeoutSeconds: 5,
+      }),
+    ).toThrow();
+    expect(() =>
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        airConditionerOn: true,
+        targetTemperatureCelsius: 24,
+        timeoutSeconds: 5,
+      }),
+    ).toThrow();
+    expect(() =>
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        airConditionerOn: true,
+        ventSpeed: 2,
+        timeoutSeconds: 5,
+      }),
+    ).toThrow();
+    expect(() =>
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        targetTemperatureCelsius: 24,
+        ventSpeed: 2,
         timeoutSeconds: 5,
       }),
     ).toThrow();

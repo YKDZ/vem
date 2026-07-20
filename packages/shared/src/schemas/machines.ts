@@ -291,14 +291,11 @@ export const adminMachineSlotResponseSchema = z.strictObject({
   deletedAt: z.iso.datetime().nullable().optional(),
 });
 
-export const machineEnvironmentHeartbeatPayloadSchema = z.object({
+export const machineEnvironmentHeartbeatPayloadSchema = z.strictObject({
   temperatureCelsius: z.number().optional(),
   humidityRh: z.number().min(0).max(100).optional(),
   sampledAt: z.iso.datetime().optional(),
   sensorStatus: z.enum(["ok", "faulted", "unknown"]),
-  airConditionerOn: z.boolean().optional(),
-  targetTemperatureCelsius: z.number().nullable().optional(),
-  ventSpeed: z.number().int().min(0).max(4).nullable().optional(),
 });
 
 export const machineReportedRuntimeConfigurationSchema = z.strictObject({
@@ -382,15 +379,17 @@ export const machineEnvironmentControlRequestSchema = z
     ventSpeed: z.number().int().min(0).max(4).optional(),
   })
   .superRefine((data, ctx) => {
-    if (
-      data.airConditionerOn === undefined &&
-      data.targetTemperatureCelsius === undefined &&
-      data.ventSpeed === undefined
-    ) {
+    const requestedFieldCount = [
+      data.airConditionerOn,
+      data.targetTemperatureCelsius,
+      data.ventSpeed,
+    ].filter((value) => value !== undefined).length;
+
+    if (requestedFieldCount !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "At least one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
+          "Exactly one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
       });
     }
   });

@@ -11,12 +11,33 @@ use vending_core::{
 #[derive(Clone)]
 pub struct HardwareSupervisor {
     adapter: Arc<RwLock<Arc<dyn HardwareAdapter>>>,
+    lower_controller: Arc<tokio::sync::Mutex<()>>,
+}
+
+pub(crate) struct EnvironmentHardwareOwnership {
+    adapter: Arc<dyn HardwareAdapter>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl EnvironmentHardwareOwnership {
+    pub async fn set_target_temperature(&self, value: i8) -> Result<(), String> {
+        self.adapter.set_target_temperature(value).await
+    }
+
+    pub async fn set_air_conditioner_enabled(&self, value: bool) -> Result<(), String> {
+        self.adapter.set_air_conditioner_enabled(value).await
+    }
+
+    pub async fn set_vent_speed(&self, value: u8) -> Result<(), String> {
+        self.adapter.set_vent_speed(value).await
+    }
 }
 
 impl HardwareSupervisor {
     pub fn from_adapter(adapter: Arc<dyn HardwareAdapter>) -> Self {
         Self {
             adapter: Arc::new(RwLock::new(adapter)),
+            lower_controller: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -50,6 +71,7 @@ impl HardwareSupervisor {
         port_path: Option<String>,
         protocol_log_path: Option<PathBuf>,
     ) -> Result<vending_core::hardware::HardwareStatus, String> {
+        let _operation = self.lower_controller.lock().await;
         let replacement = Self::build_serial_adapter(port_path, protocol_log_path);
         let status = replacement.self_check().await;
         if !status.online {
@@ -77,6 +99,7 @@ impl HardwareSupervisor {
     }
 
     pub async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+        let _operation = self.lower_controller.lock().await;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
         adapter.self_check().await
     }
@@ -85,6 +108,7 @@ impl HardwareSupervisor {
         &self,
         command: DispenseCommandPayload,
     ) -> vending_core::hardware::DispenseResultPayload {
+        let _operation = self.lower_controller.lock().await;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
         adapter.dispense(command).await
     }
@@ -94,6 +118,7 @@ impl HardwareSupervisor {
         command: DispenseCommandPayload,
         progress: Option<DispenseProgressObserver>,
     ) -> vending_core::hardware::DispenseResultPayload {
+        let _operation = self.lower_controller.lock().await;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
         adapter.dispense_with_progress(command, progress).await
     }
@@ -106,23 +131,24 @@ impl HardwareSupervisor {
     }
 
     pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        let _operation = self.lower_controller.lock().await;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
         adapter.query_environment_sample().await
     }
 
-    pub async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
+    pub(crate) fn try_acquire_environment_hardware(
+        &self,
+    ) -> Result<EnvironmentHardwareOwnership, ()> {
+        let guard = self
+            .lower_controller
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| ())?;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
-        adapter.set_target_temperature(temperature_celsius).await
-    }
-
-    pub async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
-        let adapter = self.adapter.read().expect("hardware adapter lock").clone();
-        adapter.set_air_conditioner_enabled(enabled).await
-    }
-
-    pub async fn set_vent_speed(&self, speed: u8) -> Result<(), String> {
-        let adapter = self.adapter.read().expect("hardware adapter lock").clone();
-        adapter.set_vent_speed(speed).await
+        Ok(EnvironmentHardwareOwnership {
+            adapter,
+            _guard: guard,
+        })
     }
 
     pub fn adapter_name(&self) -> String {

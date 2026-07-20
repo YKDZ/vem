@@ -108,15 +108,6 @@ struct DeviceBindingTestResponse {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LocalEnvironmentControlRequest {
-    air_conditioner_on: Option<bool>,
-    target_temperature_celsius: Option<i8>,
-    vent_speed: Option<u8>,
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClearWholeMachineMaintenanceLockRequest {
     operator_note: String,
 }
@@ -549,7 +540,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/hardware/self-check", post(hardware_self_check))
         .route("/v1/hardware-bindings", get(device_binding_snapshot))
         .route("/v1/hardware-bindings/:role/test", post(test_binding))
-        .route("/v1/environment/control", post(control_environment))
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
         .route("/v1/vision/status", get(vision_status))
@@ -2819,33 +2809,6 @@ async fn set_audio_preferences(
     runtime_configuration(State(ctx), headers)
         .await
         .into_response()
-}
-
-async fn control_environment(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(request): Json<LocalEnvironmentControlRequest>,
-) -> impl IntoResponse {
-    if let Err(error) = require_token(&headers, &ctx.token).await {
-        return error.into_response();
-    }
-    if let Some(value) = request.air_conditioner_on {
-        if let Err(error) = ctx.hardware.set_air_conditioner_enabled(value).await {
-            return error_response(StatusCode::BAD_GATEWAY, "environment_control_failed", error);
-        }
-    }
-    if let Some(value) = request.target_temperature_celsius {
-        if let Err(error) = ctx.hardware.set_target_temperature(value).await {
-            return error_response(StatusCode::BAD_GATEWAY, "environment_control_failed", error);
-        }
-    }
-    if let Some(value) = request.vent_speed {
-        if let Err(error) = ctx.hardware.set_vent_speed(value).await {
-            return error_response(StatusCode::BAD_GATEWAY, "environment_control_failed", error);
-        }
-    }
-    let _ = request.timeout_seconds;
-    Json(serde_json::json!({ "accepted": true })).into_response()
 }
 
 async fn sync_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {

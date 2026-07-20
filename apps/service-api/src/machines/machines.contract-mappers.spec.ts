@@ -82,7 +82,7 @@ describe("Machine Operations admin contract mappers", () => {
       machineId: "550e8400-e29b-41d4-a716-446655440001",
       adminUserId: "550e8400-e29b-41d4-a716-446655440002",
       commandNo: "MCMD202607050001",
-      input: { targetTemperatureCelsius: 24, ventSpeed: 2 },
+      input: { ventSpeed: 2 },
       timeoutSeconds: 30,
       now,
     });
@@ -94,7 +94,6 @@ describe("Machine Operations admin contract mappers", () => {
       status: "pending",
       payloadJson: {
         commandNo: "MCMD202607050001",
-        targetTemperatureCelsius: 24,
         ventSpeed: 2,
         timeoutSeconds: 30,
       },

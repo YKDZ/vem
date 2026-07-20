@@ -250,6 +250,7 @@ const secureDecommissionCommandPayloadSchema = z.strictObject({
 
 const SECURE_DECOMMISSION_ACK_TOPIC_SUFFIX =
   "/commands/secure-decommission-ack";
+const MACHINE_COMMAND_TIMEOUT_SWEEP_INTERVAL_MS = 1_000;
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -748,7 +749,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           }`,
         );
       });
-    }, 60_000);
+    }, MACHINE_COMMAND_TIMEOUT_SWEEP_INTERVAL_MS);
     this.timeoutInterval.unref();
     this.decommissionDeliveryInterval = setInterval(() => {
       void this.deliverDueSecureDecommissionCommands().catch(
@@ -1040,32 +1041,52 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     adminUserId: string,
   ) {
     const commandInput = machineEnvironmentControlRequestSchema.parse(input);
-    const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code })
-      .from(machines)
-      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
-      .limit(1);
-
-    if (!machine) {
-      throw new NotFoundException("Machine not found");
-    }
-
     const commandNo = createBusinessNo("MCMD");
     const timeoutSeconds = this.config.machineCommandTimeoutSeconds;
     const now = new Date();
-    const commandValues = mapEnvironmentControlDtoToCommandInsert({
-      machineId: machine.id,
-      adminUserId,
-      commandNo,
-      input: commandInput,
-      timeoutSeconds,
-      now,
-    });
+    const { machine, created } = await this.db.transaction(async (tx) => {
+      const [machine] = await tx
+        .select({ id: machines.id, code: machines.code })
+        .from(machines)
+        .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+        .for("update");
+      if (!machine) {
+        throw new NotFoundException("Machine not found");
+      }
 
-    const [created] = await this.db
-      .insert(machineCommands)
-      .values(commandValues)
-      .returning();
+      const [activeEnvironmentCommand] = await tx
+        .select({ id: machineCommands.id })
+        .from(machineCommands)
+        .where(
+          and(
+            eq(machineCommands.machineId, machine.id),
+            eq(machineCommands.type, "environment-control"),
+            inArray(machineCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+            ]),
+          ),
+        )
+        .limit(1);
+      if (activeEnvironmentCommand) {
+        throw new ConflictException("ENVIRONMENT_COMMAND_IN_PROGRESS");
+      }
+
+      const commandValues = mapEnvironmentControlDtoToCommandInsert({
+        machineId: machine.id,
+        adminUserId,
+        commandNo,
+        input: commandInput,
+        timeoutSeconds,
+        now,
+      });
+      const [created] = await tx
+        .insert(machineCommands)
+        .values(commandValues)
+        .returning();
+      return { machine, created };
+    });
 
     try {
       const envelope = await this.mqttSignatureService.signForMachine({
@@ -1084,21 +1105,42 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           sentAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(machineCommands.id, created.id))
+        .where(
+          and(
+            eq(machineCommands.id, created.id),
+            eq(machineCommands.status, "pending"),
+          ),
+        )
         .returning();
+      let commandAfterPublish = sent;
+      if (!commandAfterPublish) {
+        [commandAfterPublish] = await this.db
+          .select()
+          .from(machineCommands)
+          .where(eq(machineCommands.id, created.id))
+          .limit(1);
+      }
 
-      await this.auditService.record({
-        adminUserId,
-        action: "machines.environmentControl.command",
-        resourceType: "machine",
-        resourceId: machine.id,
-        afterJson: {
-          commandId: created.id,
-          commandNo: created.commandNo,
-          payload: created.payloadJson,
-        },
-      });
-      return toAdminMachineCommandResponse(sent);
+      try {
+        await this.auditService.record({
+          adminUserId,
+          action: "machines.environmentControl.command",
+          resourceType: "machine",
+          resourceId: machine.id,
+          afterJson: {
+            commandId: created.id,
+            commandNo: created.commandNo,
+            payload: created.payloadJson,
+          },
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Failed to record audit event for command ${created.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return toAdminMachineCommandResponse(commandAfterPublish ?? created);
     } catch (error) {
       const [failed] = await this.db
         .update(machineCommands)
@@ -1107,9 +1149,22 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           lastError: error instanceof Error ? error.message : String(error),
           updatedAt: new Date(),
         })
-        .where(eq(machineCommands.id, created.id))
+        .where(
+          and(
+            eq(machineCommands.id, created.id),
+            eq(machineCommands.status, "pending"),
+          ),
+        )
         .returning();
-      return toAdminMachineCommandResponse(failed);
+      let commandAfterFailure = failed;
+      if (!commandAfterFailure) {
+        [commandAfterFailure] = await this.db
+          .select()
+          .from(machineCommands)
+          .where(eq(machineCommands.id, created.id))
+          .limit(1);
+      }
+      return toAdminMachineCommandResponse(commandAfterFailure ?? created);
     }
   }
 
@@ -1477,7 +1532,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           eq(machineCommands.type, "environment-control"),
-          inArray(machineCommands.status, ["sent", "acknowledged"]),
+          inArray(machineCommands.status, ["pending", "sent", "acknowledged"]),
         ),
       );
 
@@ -1499,7 +1554,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           .where(
             and(
               eq(machineCommands.id, command.id),
-              inArray(machineCommands.status, ["sent", "acknowledged"]),
+              inArray(machineCommands.status, [
+                "pending",
+                "sent",
+                "acknowledged",
+              ]),
             ),
           )
           .returning({ id: machineCommands.id });
@@ -1852,6 +1911,53 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         })
         .onConflictDoNothing()
         .returning({ id: machineEvents.id });
+
+      const [activeCommand] = await tx
+        .select({
+          id: machineCommands.id,
+          status: machineCommands.status,
+          timeoutAt: machineCommands.timeoutAt,
+        })
+        .from(machineCommands)
+        .where(
+          and(
+            eq(machineCommands.commandNo, verified.payload.commandNo),
+            eq(machineCommands.machineId, verified.machineId),
+            eq(machineCommands.type, "environment-control"),
+            inArray(machineCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+            ]),
+          ),
+        )
+        .limit(1);
+      if (!activeCommand) {
+        return;
+      }
+
+      const now = new Date();
+      if (activeCommand.timeoutAt && activeCommand.timeoutAt <= now) {
+        await tx
+          .update(machineCommands)
+          .set({
+            status: "timeout",
+            resultAt: now,
+            lastError: "machine command timeout",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(machineCommands.id, activeCommand.id),
+              inArray(machineCommands.status, [
+                "pending",
+                "sent",
+                "acknowledged",
+              ]),
+            ),
+          );
+        return;
+      }
 
       await tx
         .update(machineCommands)

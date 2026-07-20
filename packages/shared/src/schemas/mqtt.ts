@@ -36,15 +36,17 @@ export const environmentControlCommandPayloadSchema = z
     timeoutSeconds: z.int().positive(),
   })
   .superRefine((data, ctx) => {
-    if (
-      data.airConditionerOn === undefined &&
-      data.targetTemperatureCelsius === undefined &&
-      data.ventSpeed === undefined
-    ) {
+    const requestedFieldCount = [
+      data.airConditionerOn,
+      data.targetTemperatureCelsius,
+      data.ventSpeed,
+    ].filter((value) => value !== undefined).length;
+
+    if (requestedFieldCount !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "At least one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
+          "Exactly one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
       });
     }
   });

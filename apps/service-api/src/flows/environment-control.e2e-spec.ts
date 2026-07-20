@@ -47,8 +47,6 @@ type MachinePayload = {
     temperatureCelsius: number | null;
     humidityRh: number | null;
     sensorStatus: string;
-    airConditionerOn?: boolean;
-    targetTemperatureCelsius?: number | null;
   } | null;
 };
 
@@ -150,7 +148,7 @@ describe("environment-control.e2e", { concurrent: false }, () => {
     const commandResponse = await api
       .post(`/api/machines/${seeded.machineId}/commands/environment-control`)
       .set("Authorization", `Bearer ${token}`)
-      .send({ airConditionerOn: true, targetTemperatureCelsius: 23 });
+      .send({ targetTemperatureCelsius: 23 });
 
     expect(commandResponse.status).toBe(201);
     const createdCommand =
@@ -168,14 +166,12 @@ describe("environment-control.e2e", { concurrent: false }, () => {
       signature: string;
       payload: {
         commandNo: string;
-        airConditionerOn: boolean;
         targetTemperatureCelsius: number;
         timeoutSeconds: number;
       };
     };
     expect(commandEnvelope.payload).toMatchObject({
       commandNo: createdCommand.data.commandNo,
-      airConditionerOn: true,
       targetTemperatureCelsius: 23,
     });
     expect(commandEnvelope.signature).toBe(
@@ -255,8 +251,6 @@ describe("environment-control.e2e", { concurrent: false }, () => {
               humidityRh: 47,
               sampledAt: new Date().toISOString(),
               sensorStatus: "ok",
-              airConditionerOn: true,
-              targetTemperatureCelsius: 23,
             },
           },
         },
@@ -275,8 +269,6 @@ describe("environment-control.e2e", { concurrent: false }, () => {
       temperatureCelsius: 22.8,
       humidityRh: 47,
       sensorStatus: "ok",
-      airConditionerOn: true,
-      targetTemperatureCelsius: 23,
     });
 
     const [environmentResultEventCount] = await db.client
