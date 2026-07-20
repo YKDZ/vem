@@ -194,4 +194,18 @@ describe("runtime testbed scheduler contract", () => {
         source.includes("failed to terminate process group"),
     );
   });
+
+  it("detaches workers from the caller streams and retains host logs", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /worker\.stdout\.log/);
+    assert.match(source, /worker\.stderr\.log/);
+    assert.match(
+      source,
+      /detached: true, stdio: \["ignore", stdout, stderr\]/,
+    );
+    assert.doesNotMatch(source, /detached: true, stdio: "inherit"/);
+  });
 });

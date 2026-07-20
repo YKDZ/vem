@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -654,22 +654,30 @@ async function startRun(options, config) {
       compactArtifactPath: join(root, "compact"),
     };
     await writeJson(statusPath(config, runId), initial);
-    const child = spawn(
-      process.execPath,
-      [
-        new URL(import.meta.url).pathname,
-        "execute",
-        "--mode",
-        options.mode,
-        "--commit",
-        options.commit,
-        "--run-id",
-        runId,
-        "--config",
-        options.configPath,
-      ],
-      { detached: true, stdio: "inherit" },
-    );
+    const stdout = openSync(join(root, "worker.stdout.log"), "a");
+    const stderr = openSync(join(root, "worker.stderr.log"), "a");
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        [
+          new URL(import.meta.url).pathname,
+          "execute",
+          "--mode",
+          options.mode,
+          "--commit",
+          options.commit,
+          "--run-id",
+          runId,
+          "--config",
+          options.configPath,
+        ],
+        { detached: true, stdio: ["ignore", stdout, stderr] },
+      );
+    } finally {
+      closeSync(stdout);
+      closeSync(stderr);
+    }
     await writeJson(activePath, {
       runId,
       commit: options.commit,
