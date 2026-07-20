@@ -29,6 +29,20 @@ function required(value, label) {
   return value.trim();
 }
 
+function processLiveness(processId) {
+  if (!Number.isInteger(processId) || processId < 1) return null;
+  try {
+    process.kill(processId, 0);
+    return { processId, alive: true };
+  } catch (error) {
+    return {
+      processId,
+      alive: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function timestamp(value, label) {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed))
@@ -2238,6 +2252,7 @@ async function runFastRouteStressSale(options) {
       runtimeTrace: compactRuntimeTrace(runtimeTrace),
       checkpoints,
       logs: {
+        daemonProcess: processLiveness(handoff?.daemon?.processId),
         daemonStdout: writeBoundedLogTail(
           handoff?.daemon?.logs?.stdout,
           options.outPath,
