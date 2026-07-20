@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  createRunId,
   parseOrchestratorOptions,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.mjs";
@@ -12,6 +13,12 @@ import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
 const sha = "a".repeat(40);
 
 describe("runtime testbed scheduler contract", () => {
+  it("uses the host-adapter logical run identity", () => {
+    assert.equal(
+      createRunId("abcdef1234567890".padEnd(40, "0"), "fast", 1234),
+      "RUN-1234-ABCDEF123456-FAST",
+    );
+  });
   it("accepts one committed revision and host-local config", () => {
     assert.deepEqual(
       parseOrchestratorOptions([

@@ -201,6 +201,10 @@ function runDirectory(config, runId) {
   return join(config.stateRoot, "runs", runId);
 }
 
+export function createRunId(commit, mode, now = Date.now()) {
+  return `RUN-${now}-${commit.slice(0, 12).toUpperCase()}-${mode.toUpperCase()}`;
+}
+
 function statusPath(config, runId) {
   return join(runDirectory(config, runId), "status.json");
 }
@@ -586,7 +590,7 @@ async function startRun(options, config) {
   const activePath = join(config.stateRoot, "active-run.json");
   const selected = await withRequestLock(config, async () => {
     const active = await readJson(activePath);
-    const runId = `${Date.now()}-${options.commit.slice(0, 12)}-${options.mode}`;
+    const runId = createRunId(options.commit, options.mode);
     if (active && processExists(active.processGroupId)) {
       if (active.commit === options.commit && active.mode === options.mode) {
         return { existing: true, runId: active.runId };
