@@ -218,9 +218,10 @@ describe("tracked local testbed host lifecycle", () => {
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "display-proof",
+      hostNow: "2026-07-20T11:00:00.000Z",
     });
     assert.match(
-      admission[1].input,
+      admission[2].input,
       /C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report\.json/,
     );
   });
@@ -245,29 +246,33 @@ describe("tracked local testbed host lifecycle", () => {
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-15",
+      hostNow: "2026-07-20T11:00:00.000Z",
     });
-    assert.equal(plan[0].type, "assert-guest-input");
-    assert.equal(plan[1].type, "assert-interactive-display");
-    assert.equal(plan.length, 2);
-    assert.match(
-      plan[0].args.at(-1),
-      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
-    );
-    assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
-    assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
-    assert.doesNotMatch(plan[0].input, /\$input\s*=/);
+    assert.equal(plan[0].type, "synchronize-clock");
+    assert.match(plan[0].input, /2026-07-20T11:00:00\.000Z/);
+    assert.match(plan[0].input, /Set-Date/);
+    assert.equal(plan[1].type, "assert-guest-input");
+    assert.equal(plan[2].type, "assert-interactive-display");
+    assert.equal(plan.length, 3);
     assert.match(
       plan[1].args.at(-1),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
     );
-    assert.match(plan[1].input, /interactive-display-report\.json/);
-    assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
-    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.match(plan[1].input, /Get-Content[^\n]+-Encoding UTF8/);
+    assert.match(plan[1].input, /\$guestDocument\.schemaVersion/);
+    assert.doesNotMatch(plan[1].input, /\$input\s*=/);
+    assert.match(
+      plan[2].args.at(-1),
+      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+    );
+    assert.match(plan[2].input, /interactive-display-report\.json/);
+    assert.match(plan[2].input, /-Encoding UTF8 \| ConvertFrom-Json/);
+    assert.equal(plan[2].type, "assert-interactive-display");
     assert.equal(
-      plan[0].path,
+      plan[1].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
-    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan[2].type, "assert-interactive-display");
     assert.equal(plan.at(-1).type, "assert-interactive-display");
     const operations = [];
     await assert.rejects(
@@ -278,13 +283,14 @@ describe("tracked local testbed host lifecycle", () => {
             args.at(-1),
             /^powershell -NoProfile -NonInteractive -EncodedCommand /,
           );
+          if (input.includes("Set-Date")) return;
           assert.match(input, /guest input/);
           throw new Error("guest input missing");
         },
       }),
       /guest input missing/,
     );
-    assert.deepEqual(operations, ["ssh"]);
+    assert.deepEqual(operations, ["ssh", "ssh"]);
   });
 
   it("rebuild admission contains no Actions runner artifact or marker output", () => {
@@ -301,7 +307,7 @@ describe("tracked local testbed host lifecycle", () => {
         noProxy: "localhost,127.0.0.1",
       },
     });
-    assert.equal(plan.length, 2);
+    assert.equal(plan.length, 3);
     assert.equal(
       plan.some((step) => step.type === "restart-runner-and-await-listener"),
       false,
@@ -352,6 +358,6 @@ describe("tracked local testbed host lifecycle", () => {
     });
     assert.equal(result.displayAdmissionProof.widthPx, 1080);
     assert.equal(result.runnerAdmission, undefined);
-    assert.deepEqual(operations, ["ssh", "ssh"]);
+    assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
   });
 });

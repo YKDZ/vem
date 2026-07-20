@@ -490,6 +490,7 @@ export function buildHostAdmissionPlan({
   config: configInput,
   guestInputPath,
   runId,
+  hostNow = new Date(),
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -500,7 +501,20 @@ export function buildHostAdmissionPlan({
     PORTRAIT_WIDTH_PX,
     PORTRAIT_HEIGHT_PX,
   );
+  const hostUtc = new Date(hostNow);
+  if (Number.isNaN(hostUtc.getTime())) throw new Error("hostNow is invalid");
+  const synchronizeClock = `$hostUtc = [DateTimeOffset]::Parse('${hostUtc.toISOString()}')
+Set-Date -Date $hostUtc.LocalDateTime | Out-Null
+$observedUtc = ([DateTimeOffset](Get-Date)).UtcDateTime
+if ([Math]::Abs(($observedUtc - $hostUtc.UtcDateTime).TotalSeconds) -gt 30) { throw 'Windows clock synchronization failed' }`;
   return [
+    {
+      type: "synchronize-clock",
+      command: "ssh",
+      args: sshArgs(config, encodedPowerShellCommand(synchronizeClock)),
+      encodedPowerShell: true,
+      input: synchronizeClock,
+    },
     {
       type: "assert-guest-input",
       path,
