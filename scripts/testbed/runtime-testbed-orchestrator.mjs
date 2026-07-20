@@ -370,6 +370,18 @@ async function stageAndRunGuest({
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const remoteArchive = `${config.guestSourcePath}.tar`;
+  const createArchiveParent = [
+    `$archive = '${remoteArchive.replaceAll("'", "''")}'`,
+    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $archive) | Out-Null",
+  ].join("\n");
+  await runProcess("ssh", [
+    ...ssh,
+    remote,
+    "powershell.exe",
+    "-NoProfile",
+    "-EncodedCommand",
+    encodedPowerShell(createArchiveParent),
+  ]);
   await runProcess("scp", [...ssh, archive, `${remote}:${remoteArchive}`]);
   const prepare = [
     `$source = '${config.guestSourcePath.replaceAll("'", "''")}'`,

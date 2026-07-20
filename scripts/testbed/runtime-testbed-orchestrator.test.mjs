@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -90,6 +91,17 @@ describe("runtime testbed scheduler contract", () => {
         "/tmp/result.json",
       ]).commit,
       sha,
+    );
+  });
+
+  it("creates the guest archive parent before source transfer", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      source.indexOf("createArchiveParent") <
+        source.indexOf('await runProcess("scp"'),
     );
   });
 });
