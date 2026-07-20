@@ -474,12 +474,20 @@ Require-Path $webViewLoaderSource
 Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
 $machinePath = Join-Path $deploymentRoot "machine.exe"
+Get-Process vending-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process machine -ErrorAction SilentlyContinue | Stop-Process -Force
+$processStopDeadline = (Get-Date).AddSeconds(10)
+while (
+  (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) -and
+  (Get-Date) -lt $processStopDeadline
+) { Start-Sleep -Milliseconds 100 }
+if (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) {
+  throw "installed runtime processes did not stop before deployment"
+}
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
 $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
-Get-Process vending-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process machine -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
 $daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
 $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
