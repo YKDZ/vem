@@ -1900,6 +1900,7 @@ async function runFastRouteStressSale(options) {
     clientReady = true;
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     saleStartCapability = await waitForSaleStartReady(handoff, client);
+    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     stage = "snapshot-baseline";
     uiViewport = await readInstalledUiViewport(client);
     baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
