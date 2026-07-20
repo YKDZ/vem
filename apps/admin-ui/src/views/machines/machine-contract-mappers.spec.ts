@@ -64,13 +64,40 @@ describe("Machine Operations form contract mappers", () => {
 
   it("maps environment control checkboxes into the shared command contract", () => {
     expect(
-      mapEnvironmentControlFormToContract({
-        includeAirConditioner: false,
-        airConditionerOn: false,
-        includeTargetTemperature: true,
-        targetTemperatureCelsius: 24,
-      }),
-    ).toEqual({ targetTemperatureCelsius: 24 });
+      mapEnvironmentControlFormToContract(
+        {
+          airConditionerOn: false,
+          targetTemperatureCelsius: 24,
+          ventSpeed: 2,
+        },
+        "airConditionerOn",
+        true,
+      ),
+    ).toEqual({ airConditionerOn: true });
+
+    expect(
+      mapEnvironmentControlFormToContract(
+        {
+          airConditionerOn: false,
+          targetTemperatureCelsius: 24,
+          ventSpeed: 2,
+        },
+        "targetTemperatureCelsius",
+        27,
+      ),
+    ).toEqual({ targetTemperatureCelsius: 27 });
+
+    expect(
+      mapEnvironmentControlFormToContract(
+        {
+          airConditionerOn: false,
+          targetTemperatureCelsius: 24,
+          ventSpeed: 2,
+        },
+        "ventSpeed",
+        4,
+      ),
+    ).toEqual({ ventSpeed: 4 });
   });
 
   it("maps slot forms through hardware coordinate validation", () => {
@@ -95,6 +122,32 @@ describe("Machine Operations form contract mappers", () => {
         capacity: 10,
         status: "enabled",
       }),
+    ).toThrow();
+  });
+
+  it("rejects out-of-range independent action values", () => {
+    expect(() =>
+      mapEnvironmentControlFormToContract(
+        {
+          airConditionerOn: false,
+          targetTemperatureCelsius: 24,
+          ventSpeed: 2,
+        },
+        "targetTemperatureCelsius",
+        31,
+      ),
+    ).toThrow();
+
+    expect(() =>
+      mapEnvironmentControlFormToContract(
+        {
+          airConditionerOn: false,
+          targetTemperatureCelsius: 24,
+          ventSpeed: 2,
+        },
+        "ventSpeed",
+        5,
+      ),
     ).toThrow();
   });
 });

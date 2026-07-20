@@ -294,10 +294,10 @@ async function mountView(
   app.mount(root);
   await flushPromises();
   await nextTick();
-  return { root };
+  return { app, root };
 }
 
-function machineFixture() {
+function machineFixture(overrides: Record<string, unknown> = {}) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
@@ -324,8 +324,6 @@ function machineFixture() {
         humidityRh: 51,
         sampledAt: "2026-06-04T05:01:00.000Z",
         sensorStatus: "ok",
-        airConditionerOn: false,
-        targetTemperatureCelsius: 24,
       },
     },
     latestEnvironment: {
@@ -333,15 +331,13 @@ function machineFixture() {
       humidityRh: 51,
       sampledAt: "2026-06-04T05:01:00.000Z",
       sensorStatus: "ok",
-      airConditionerOn: false,
-      targetTemperatureCelsius: 24,
     },
     latestEnvironmentCommand: {
       id: "cmd-1",
       machineId: "11111111-1111-4111-8111-111111111111",
       commandNo: "MCMD1",
       type: "environment-control",
-      status: "acknowledged",
+      status: "succeeded",
     },
     reportedRuntimeConfiguration: {
       audioCues: {
@@ -352,6 +348,7 @@ function machineFixture() {
       audioVolume: 72,
       visionRecommendationsEnabled: false,
     },
+    ...overrides,
   };
 }
 
@@ -472,7 +469,6 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("31.2304, 121.4737");
     expect(root.textContent).toContain("Asia/Shanghai");
     expect(root.textContent).toContain("23 C");
-    expect(root.textContent).toContain("空调关");
     expect(root.textContent).toContain("已就绪");
     expect(root.textContent).toContain("2026-07-08 18:00:00 · Asia/Shanghai");
     expect(root.textContent).toContain("31 C");
@@ -483,16 +479,8 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("测试衬衫");
     expect(root.textContent).toContain("库存预警");
 
-    const checkboxes = root.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]',
-    );
-    checkboxes[0].checked = true;
-    checkboxes[0].dispatchEvent(new Event("change", { bubbles: true }));
-    checkboxes[1].checked = true;
-    checkboxes[1].dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
     Array.from(root.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("提交环境控制"))
+      .find((button) => button.textContent?.includes("开启"))
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
 
@@ -521,6 +509,69 @@ describe("MachineDetailView", () => {
       quantity: 6,
       note: undefined,
     });
+  });
+
+  it("tracks environment command progress until terminal status and releases controls", async () => {
+    const machine = machineFixture({
+      latestEnvironment: {
+        temperatureCelsius: 21,
+        humidityRh: 50,
+        sampledAt: "2026-06-04T05:02:00.000Z",
+        sensorStatus: "unknown",
+      },
+    });
+    const pendingCommand = {
+      id: "cmd-poll",
+      machineId: machine.id,
+      commandNo: "MCMD-PENDING",
+      type: "environment-control",
+      status: "sent",
+      payloadJson: { airConditionerOn: true },
+    };
+    const acknowledgedCommand = {
+      ...pendingCommand,
+      status: "acknowledged",
+    };
+    const succeededCommand = {
+      ...pendingCommand,
+      status: "succeeded",
+    };
+
+    apiMocks.getMachine
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: null,
+      })
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: acknowledgedCommand,
+      })
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: succeededCommand,
+      });
+    apiMocks.commandEnvironment.mockResolvedValue(pendingCommand);
+
+    const { app, root } = await mountView();
+    vi.useFakeTimers();
+    try {
+      const openButton = Array.from(root.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("开启"),
+      );
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      expect(openButton?.disabled).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.resolve();
+      await nextTick();
+      expect(root.textContent).toContain("命令成功");
+      expect(openButton?.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      app.unmount();
+    }
   });
 
   it("edits the machine from the detail header", async () => {

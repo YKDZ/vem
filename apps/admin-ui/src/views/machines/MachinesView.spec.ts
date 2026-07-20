@@ -694,8 +694,6 @@ describe("MachinesView environment controls", () => {
             humidityRh: 48,
             sampledAt: "2026-06-04T05:01:00.000Z",
             sensorStatus: "ok",
-            airConditionerOn: true,
-            targetTemperatureCelsius: 24,
           },
         }),
       ],
@@ -709,8 +707,6 @@ describe("MachinesView environment controls", () => {
     expect(root.textContent).toContain("22.4 C");
     expect(root.textContent).toContain("48% RH");
     expect(root.textContent).toContain("传感器正常");
-    expect(root.textContent).toContain("空调开");
-    expect(root.textContent).toContain("目标 24 C");
     expect(root.querySelector("tbody input")).toBeNull();
   });
 
@@ -762,8 +758,6 @@ describe("MachinesView environment controls", () => {
           humidityRh: 67.5,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "faulted",
-          airConditionerOn: false,
-          targetTemperatureCelsius: null,
         },
         latestEnvironmentCommand: {
           id: "cmd-existing",
@@ -792,12 +786,6 @@ describe("MachinesView environment controls", () => {
     );
     expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
       "传感器故障",
-    );
-    expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
-      "空调关",
-    );
-    expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
-      "目标未知",
     );
     expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
       "2026/6/4 05:02:00",
@@ -831,19 +819,10 @@ describe("MachinesView environment controls", () => {
     );
 
     expect(dialog.textContent).toContain("环境未知");
-    expect(dialog.textContent).toContain("设置空调开关");
-    const checkboxes = dialog.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]',
+    const openButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("开启"),
     );
-    checkboxes[0].checked = true;
-    checkboxes[0].dispatchEvent(new Event("change", { bubbles: true }));
-    checkboxes[1].checked = true;
-    checkboxes[1].dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
-
-    Array.from(dialog.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("提交环境控制"))
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
     await nextTick();
 
@@ -869,32 +848,29 @@ describe("MachinesView environment controls", () => {
           humidityRh: 50,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "ok",
-          airConditionerOn: true,
-          targetTemperatureCelsius: 24,
         },
       }),
     );
 
     const { root } = await mountMachinesView();
     await openEnvironmentDrawer(root);
-
-    const targetToggle = Array.from(root.querySelectorAll("label"))
-      .find((label) => label.textContent?.includes("设置目标温度"))
-      ?.querySelector("input");
-    expect(targetToggle).toBeDefined();
-    targetToggle!.checked = true;
-    targetToggle!.dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "environment dialog",
+    );
 
     const targetInput = requireElement(
-      root.querySelector<HTMLInputElement>('input[type="number"]'),
+      dialog.querySelector<HTMLInputElement>('input[type="number"]'),
       "target input",
     );
-    const submitButton = Array.from(root.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("提交环境控制"),
+    const targetSubmit = Array.from(dialog.querySelectorAll("button")).find(
+      (button) =>
+        button.textContent?.includes("设定") &&
+        button.previousElementSibling?.textContent?.includes("C"),
     );
 
     expect(targetInput).toBeDefined();
+    expect(targetSubmit).toBeDefined();
     expect(targetInput.min).toBe("18");
     expect(targetInput.max).toBe("30");
     targetInput.value = "31";
@@ -904,13 +880,13 @@ describe("MachinesView environment controls", () => {
     expect(root.querySelector('[role="dialog"]')?.textContent).toContain(
       "18-30 C",
     );
-    expect(submitButton?.disabled).toBe(true);
+    expect(targetSubmit?.disabled).toBe(true);
 
     targetInput.value = "30";
     targetInput.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
 
-    expect(submitButton?.disabled).toBe(false);
+    expect(targetSubmit?.disabled).toBe(false);
   });
 
   it("submits a switch-only command without optimistic air-conditioner state", async () => {
@@ -927,8 +903,6 @@ describe("MachinesView environment controls", () => {
           humidityRh: 50,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "ok",
-          airConditionerOn: false,
-          targetTemperatureCelsius: 24,
         },
       }),
     );
@@ -944,18 +918,10 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "environment dialog",
     );
-    const checkboxes = dialog.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]',
+    const openButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("开启"),
     );
-    checkboxes[0].checked = true;
-    checkboxes[0].dispatchEvent(new Event("change", { bubbles: true }));
-    checkboxes[1].checked = true;
-    checkboxes[1].dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
-
-    Array.from(dialog.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("提交环境控制"))
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
     await nextTick();
 
@@ -963,11 +929,10 @@ describe("MachinesView environment controls", () => {
       "11111111-1111-4111-8111-111111111111",
       { airConditionerOn: true },
     );
-    expect(dialog.textContent).toContain("空调关");
     expect(dialog.textContent).toContain("命令已发送");
   });
 
-  it("submits target-only and combined command payloads", async () => {
+  it("submits target-only and speed-only command payloads", async () => {
     listMachines.mockResolvedValue({
       items: [createMachineFixture()],
       total: 1,
@@ -981,8 +946,128 @@ describe("MachinesView environment controls", () => {
           humidityRh: 50,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "ok",
-          airConditionerOn: false,
-          targetTemperatureCelsius: 24,
+        },
+      }),
+    );
+    commandEnvironment.mockResolvedValue({
+      id: "cmd-terminal",
+      commandNo: "MCMD-TERMINAL",
+      status: "succeeded",
+    });
+
+    const { root } = await mountMachinesView();
+    await openEnvironmentDrawer(root);
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "environment dialog",
+    );
+    const targetInput = requireElement(
+      dialog.querySelector<HTMLInputElement>('input[type="number"]'),
+      "target input",
+    );
+    const targetSetButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) =>
+        button.textContent?.includes("设定") &&
+        button.previousElementSibling?.textContent?.includes("C"),
+    );
+    const speedSetButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) =>
+        button.textContent?.includes("设定") &&
+        button.previousElementSibling instanceof HTMLSelectElement,
+    );
+    const speedSelect = requireElement(
+      dialog.querySelector("select"),
+      "speed select",
+    );
+
+    expect(targetSetButton).toBeDefined();
+    expect(speedSetButton).toBeDefined();
+
+    targetInput.value = "26";
+    targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    targetSetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(commandEnvironment).toHaveBeenLastCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { targetTemperatureCelsius: 26 },
+    );
+
+    speedSelect.value = "3";
+    speedSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    speedSetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(commandEnvironment).toHaveBeenLastCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { ventSpeed: 3 },
+    );
+  });
+
+  it.each(["pending", "sent", "acknowledged"])(
+    "disables every environment control while the machine command is %s",
+    async (status) => {
+      listMachines.mockResolvedValue({
+        items: [createMachineFixture()],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      getMachine.mockResolvedValue(
+        createMachineFixture({
+          latestEnvironmentCommand: {
+            id: "cmd-active",
+            machineId: "11111111-1111-4111-8111-111111111111",
+            commandNo: "MCMD-ACTIVE",
+            type: "environment-control",
+            status,
+            payloadJson: { targetTemperatureCelsius: 25 },
+          },
+        }),
+      );
+
+      const { root } = await mountMachinesView();
+      await openEnvironmentDrawer(root);
+      const dialog = requireElement(
+        root.querySelector<HTMLElement>('[role="dialog"]'),
+        "environment dialog",
+      );
+
+      expect(
+        Array.from(dialog.querySelectorAll("button, input, select")).every(
+          (control) =>
+            (
+              control as
+                | HTMLButtonElement
+                | HTMLInputElement
+                | HTMLSelectElement
+            ).disabled,
+        ),
+      ).toBe(true);
+      expect(dialog.textContent).toContain("请求：25 C");
+    },
+  );
+
+  it("shows the requested value and correlated failure on its action row", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    getMachine.mockResolvedValue(
+      createMachineFixture({
+        latestEnvironmentCommand: {
+          id: "cmd-failed",
+          machineId: "11111111-1111-4111-8111-111111111111",
+          commandNo: "MCMD-FAILED",
+          type: "environment-control",
+          status: "failed",
+          payloadJson: { ventSpeed: 4 },
+          resultJson: { errorCode: "E4" },
+          lastError: "controller rejected command",
         },
       }),
     );
@@ -993,41 +1078,16 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "environment dialog",
     );
-    const checkboxes = dialog.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]',
-    );
-    const targetInput = requireElement(
-      dialog.querySelector<HTMLInputElement>('input[type="number"]'),
-      "target input",
-    );
-    const submitButton = Array.from(dialog.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("提交环境控制"),
+    const speedRow = requireElement(
+      Array.from(dialog.querySelectorAll("div.flex")).find((row) =>
+        row.textContent?.includes("风速"),
+      ),
+      "speed row",
     );
 
-    checkboxes[2].checked = true;
-    checkboxes[2].dispatchEvent(new Event("change", { bubbles: true }));
-    targetInput.value = "26";
-    targetInput.dispatchEvent(new Event("input", { bubbles: true }));
-    await nextTick();
-    submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await flushPromises();
-
-    expect(commandEnvironment).toHaveBeenLastCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { targetTemperatureCelsius: 26 },
-    );
-
-    checkboxes[0].checked = true;
-    checkboxes[0].dispatchEvent(new Event("change", { bubbles: true }));
-    checkboxes[1].checked = true;
-    checkboxes[1].dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
-    submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await flushPromises();
-
-    expect(commandEnvironment).toHaveBeenLastCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { airConditionerOn: true, targetTemperatureCelsius: 26 },
+    expect(speedRow.textContent).toContain("请求：全");
+    expect(speedRow.textContent).toContain(
+      "失败：控制器操作过于频繁，请稍后重试（E4）",
     );
   });
 
@@ -1045,8 +1105,6 @@ describe("MachinesView environment controls", () => {
           humidityRh: 50,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "unknown",
-          airConditionerOn: undefined,
-          targetTemperatureCelsius: null,
         },
       }),
     );
@@ -1057,18 +1115,12 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "environment dialog",
     );
-    const checkboxes = dialog.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]',
+    const closeButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("软关闭"),
     );
-    const submitButton = requireElement(
-      Array.from(dialog.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("提交环境控制"),
-      ),
-      "submit button",
-    );
-    checkboxes[0].checked = true;
-    checkboxes[0].dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
+    const actionSetButtons = Array.from(
+      dialog.querySelectorAll("button"),
+    ).filter((button) => button.textContent?.includes("设定"));
 
     let resolveCommand: ((value: unknown) => void) | undefined;
     commandEnvironment.mockReturnValueOnce(
@@ -1076,9 +1128,9 @@ describe("MachinesView environment controls", () => {
         resolveCommand = resolve;
       }),
     );
-    submitButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await nextTick();
-    expect(submitButton.disabled).toBe(true);
+    expect(closeButton?.disabled).toBe(true);
     requireElement(
       resolveCommand,
       "resolve command",
@@ -1089,7 +1141,6 @@ describe("MachinesView environment controls", () => {
     });
     await flushPromises();
     expect(dialog.textContent).toContain("传感器未知");
-    expect(dialog.textContent).toContain("空调未知");
     expect(dialog.textContent).toContain("命令成功");
 
     commandEnvironment.mockResolvedValueOnce({
@@ -1097,7 +1148,9 @@ describe("MachinesView environment controls", () => {
       commandNo: "MCMD3",
       status: "failed",
     });
-    submitButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    actionSetButtons[0].dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
     await flushPromises();
     expect(dialog.textContent).toContain("命令失败");
 
@@ -1106,9 +1159,164 @@ describe("MachinesView environment controls", () => {
       commandNo: "MCMD4",
       status: "timeout",
     });
-    submitButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    actionSetButtons[0].dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
     await flushPromises();
     expect(dialog.textContent).toContain("命令超时");
+  });
+
+  it("tracks environment command progress until terminal status and releases controls", async () => {
+    const machine = createMachineFixture({
+      latestEnvironment: {
+        temperatureCelsius: 21,
+        humidityRh: 50,
+        sampledAt: "2026-06-04T05:02:00.000Z",
+        sensorStatus: "unknown",
+      },
+    });
+    const pendingCommand = {
+      id: "cmd-poll",
+      machineId: machine.id,
+      commandNo: "MCMD-PENDING",
+      type: "environment-control",
+      status: "sent",
+      payloadJson: { airConditionerOn: true },
+    };
+    const acknowledgedCommand = {
+      ...pendingCommand,
+      status: "acknowledged",
+      payloadJson: { airConditionerOn: true },
+    };
+    const succeededCommand = {
+      ...pendingCommand,
+      status: "succeeded",
+      payloadJson: { airConditionerOn: true },
+    };
+
+    listMachines.mockResolvedValue({
+      items: [machine],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    getMachine
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: null,
+      })
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: acknowledgedCommand,
+      })
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: succeededCommand,
+      });
+    commandEnvironment.mockResolvedValue(pendingCommand);
+
+    const { root } = await mountMachinesView();
+    vi.useFakeTimers();
+    try {
+      const environmentButton = Array.from(
+        root.querySelectorAll("button"),
+      ).find((button) => button.textContent?.includes("环境"));
+      environmentButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await Promise.resolve();
+      await nextTick();
+      const dialog = requireElement(
+        root.querySelector<HTMLElement>('[role="dialog"]'),
+        "environment dialog",
+      );
+      const openButton = Array.from(dialog.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("开启"),
+      );
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      expect(openButton?.disabled).toBe(true);
+      expect(dialog.textContent).toContain("命令");
+
+      const pollerCallAfterSubmit = getMachine.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.resolve();
+      await nextTick();
+      expect(dialog.textContent).toContain("命令成功");
+      expect(openButton?.disabled).toBe(false);
+      expect(getMachine.mock.calls.length).toBeGreaterThan(
+        pollerCallAfterSubmit,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling when view is unmounted while command remains pending", async () => {
+    const machine = createMachineFixture({
+      latestEnvironment: {
+        temperatureCelsius: 21,
+        humidityRh: 50,
+        sampledAt: "2026-06-04T05:02:00.000Z",
+        sensorStatus: "unknown",
+      },
+    });
+    const pendingCommand = {
+      id: "cmd-unmount",
+      machineId: machine.id,
+      commandNo: "MCMD-PENDING-UNMOUNT",
+      type: "environment-control",
+      status: "sent",
+      payloadJson: { airConditionerOn: true },
+    };
+
+    listMachines.mockResolvedValue({
+      items: [machine],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    getMachine
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: null,
+      })
+      .mockResolvedValue({
+        ...machine,
+        latestEnvironmentCommand: pendingCommand,
+      });
+    commandEnvironment.mockResolvedValue({
+      ...pendingCommand,
+      status: "sent",
+    });
+
+    const { app, root } = await mountMachinesView();
+    vi.useFakeTimers();
+    try {
+      const environmentButton = Array.from(
+        root.querySelectorAll("button"),
+      ).find((button) => button.textContent?.includes("环境"));
+      environmentButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await Promise.resolve();
+      await nextTick();
+      const openButton = Array.from(
+        root.querySelectorAll('[role="dialog"] button'),
+      ).find((button) => button.textContent?.includes("开启"));
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+
+      const baselineCalls = getMachine.mock.calls.length;
+      app.unmount();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(getMachine).toHaveBeenCalledTimes(baselineCalls);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps controls disabled without machine command permission", async () => {
@@ -1125,8 +1333,6 @@ describe("MachinesView environment controls", () => {
           humidityRh: 50,
           sampledAt: "2026-06-04T05:02:00.000Z",
           sensorStatus: "ok",
-          airConditionerOn: true,
-          targetTemperatureCelsius: 24,
         },
       }),
     );
@@ -1138,11 +1344,21 @@ describe("MachinesView environment controls", () => {
       "environment dialog",
     );
 
-    expect(dialog.textContent).toContain("无机器控制权限");
-    expect(dialog.textContent).not.toContain("提交环境控制");
+    expect(dialog.textContent).toContain("命令状态未知");
+    expect(dialog.textContent).toContain("空调");
+    expect(
+      Array.from(dialog.querySelectorAll("button")).every(
+        (button) => button.disabled,
+      ),
+    ).toBe(true);
     expect(
       Array.from(dialog.querySelectorAll("input")).every(
         (input) => input.disabled,
+      ),
+    ).toBe(true);
+    expect(
+      Array.from(dialog.querySelectorAll("select")).every(
+        (select) => select.disabled,
       ),
     ).toBe(true);
   });

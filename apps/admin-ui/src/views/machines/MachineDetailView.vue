@@ -7,7 +7,7 @@ import type {
 
 import { formatMachineSlotCoordinate } from "@vem/shared";
 import { Modal } from "antdv-next";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import {
@@ -40,7 +40,14 @@ import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
 import {
+  isEnvironmentCommandTerminalStatus,
+  syncEnvironmentCommandStateFromSnapshot,
+  startEnvironmentCommandPoller,
+  type EnvironmentCommandSnapshot,
+} from "./environment-command-poller";
+import {
   mapEnvironmentControlFormToContract,
+  type EnvironmentControlAction,
   mapMachineBasicsFormToUpdateContract,
 } from "./machine-contract-mappers";
 import {
@@ -82,10 +89,14 @@ const reconciliationCases = ref<StockReconciliationCaseSummary[]>([]);
 const externalNaturalEnvironment = ref<ExternalNaturalEnvironment | null>(null);
 
 const environmentControlForm = ref({
-  includeAirConditioner: false,
   airConditionerOn: false,
-  includeTargetTemperature: false,
   targetTemperatureCelsius: 24,
+  ventSpeed: 0,
+});
+const defaultEnvironmentControlForm = () => ({
+  airConditionerOn: false,
+  targetTemperatureCelsius: 24,
+  ventSpeed: 0,
 });
 const machineDrawerOpen = ref(false);
 const machineSaving = ref(false);
@@ -97,8 +108,77 @@ const machineForm = ref({
   geoLongitude: null as number | null,
   geoTimezone: "Asia/Shanghai",
 });
-const environmentSubmitting = ref(false);
+const environmentSubmittingAction = ref<EnvironmentControlAction | null>(null);
 const environmentCommandStatus = ref<MachineCommandStatus | null>(null);
+const environmentControlActionStatus = ref<
+  Record<EnvironmentControlAction, MachineCommandStatus | null>
+>({
+  airConditionerOn: null,
+  targetTemperatureCelsius: null,
+  ventSpeed: null,
+});
+const environmentControlActionPayload = ref<
+  Record<EnvironmentControlAction, Record<string, unknown> | null>
+>({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
+const environmentControlActionResult = ref<
+  Record<EnvironmentControlAction, Record<string, unknown> | null>
+>({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
+const environmentControlActionError = ref<
+  Record<EnvironmentControlAction, string | null>
+>({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
+const environmentCommandPoller = ref<ReturnType<
+  typeof startEnvironmentCommandPoller
+> | null>(null);
+
+function stopEnvironmentCommandPoller(): void {
+  environmentCommandPoller.value?.stop();
+  environmentCommandPoller.value = null;
+}
+
+function syncEnvironmentCommandStateFromMachine(
+  command: EnvironmentCommandSnapshot | null | undefined,
+): void {
+  syncEnvironmentCommandStateFromSnapshot(command ?? null, {
+    setEnvironmentCommandStatus: (status) => {
+      environmentCommandStatus.value = status;
+    },
+    setActionStatus: (action, status) => {
+      environmentControlActionStatus.value[action] = status;
+    },
+    setActionPayload: (action, payload) => {
+      environmentControlActionPayload.value[action] = payload;
+    },
+    setActionResult: (action, result) => {
+      environmentControlActionResult.value[action] = result;
+    },
+    setActionError: (action, error) => {
+      environmentControlActionError.value[action] = error;
+    },
+  });
+}
+
+function clearEnvironmentControlActionStatus(): void {
+  environmentControlActionStatus.value = {
+    airConditionerOn: null,
+    targetTemperatureCelsius: null,
+    ventSpeed: null,
+  };
+  environmentControlActionPayload.value = {
+    airConditionerOn: null,
+    targetTemperatureCelsius: null,
+    ventSpeed: null,
+  };
+  environmentControlActionResult.value = {
+    airConditionerOn: null,
+    targetTemperatureCelsius: null,
+    ventSpeed: null,
+  };
+  environmentControlActionError.value = {
+    airConditionerOn: null,
+    targetTemperatureCelsius: null,
+    ventSpeed: null,
+  };
+}
 const exportingLogs = ref(false);
 
 const refillModalOpen = ref(false);
@@ -121,18 +201,21 @@ const reconciliationForm = ref({
 });
 
 const targetTemperatureInvalid = computed(() => {
-  if (!environmentControlForm.value.includeTargetTemperature) return false;
   const value = environmentControlForm.value.targetTemperatureCelsius;
   return value < 18 || value > 30;
 });
 
+const environmentMachineCommandLocked = computed(() =>
+  ["pending", "sent", "acknowledged"].includes(
+    environmentCommandStatus.value ?? "",
+  ),
+);
+
 const environmentCommandDisabled = computed(
   () =>
     !canCommand ||
-    environmentSubmitting.value ||
-    targetTemperatureInvalid.value ||
-    (!environmentControlForm.value.includeAirConditioner &&
-      !environmentControlForm.value.includeTargetTemperature),
+    environmentMachineCommandLocked.value ||
+    Boolean(environmentSubmittingAction.value),
 );
 
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
@@ -357,13 +440,9 @@ async function loadMachine(): Promise<void> {
   machine.value = nextMachine;
   environmentCommandStatus.value =
     nextMachine.latestEnvironmentCommand?.status ?? null;
-  environmentControlForm.value = {
-    includeAirConditioner: false,
-    airConditionerOn: nextMachine.latestEnvironment?.airConditionerOn ?? false,
-    includeTargetTemperature: false,
-    targetTemperatureCelsius:
-      nextMachine.latestEnvironment?.targetTemperatureCelsius ?? 24,
-  };
+  clearEnvironmentControlActionStatus();
+  syncEnvironmentCommandStateFromMachine(nextMachine.latestEnvironmentCommand);
+  environmentControlForm.value = defaultEnvironmentControlForm();
 }
 
 async function loadExternalNaturalEnvironment(): Promise<void> {
@@ -446,19 +525,52 @@ async function saveMachine(): Promise<void> {
   }
 }
 
-async function submitEnvironmentCommand(): Promise<void> {
+async function submitEnvironmentCommand(
+  action: EnvironmentControlAction,
+  value: boolean | number,
+): Promise<void> {
   if (environmentCommandDisabled.value) return;
+
   const body = mapEnvironmentControlFormToContract(
     environmentControlForm.value,
+    action,
+    value,
   );
 
-  environmentSubmitting.value = true;
+  environmentSubmittingAction.value = action;
   try {
     const command = await commandEnvironment(machineId.value, body);
-    environmentCommandStatus.value = command.status;
-    await loadMachine();
+    syncEnvironmentCommandStateFromMachine(command);
+    if (
+      command.commandNo &&
+      !isEnvironmentCommandTerminalStatus(command.status)
+    ) {
+      const poller = startEnvironmentCommandPoller({
+        commandNo: command.commandNo,
+        fetchMachine: () => getMachine(machineId.value),
+        isActive: () =>
+          environmentSubmittingAction.value !== null &&
+          machineId.value === machine.value?.id,
+        onCommand: (commandSnapshot) => {
+          syncEnvironmentCommandStateFromMachine(commandSnapshot);
+        },
+      });
+      environmentCommandPoller.value = poller;
+      void poller.promise
+        .finally(() => {
+          if (environmentCommandPoller.value === poller) {
+            environmentCommandPoller.value = null;
+          }
+          environmentSubmittingAction.value = null;
+        })
+        .catch(() => undefined);
+      return;
+    }
+    return;
   } finally {
-    environmentSubmitting.value = false;
+    if (environmentCommandPoller.value === null) {
+      environmentSubmittingAction.value = null;
+    }
   }
 }
 
@@ -568,6 +680,10 @@ async function saveReconciliation(
 
 onMounted(() => {
   void refreshAll();
+});
+
+onBeforeUnmount(() => {
+  stopEnvironmentCommandPoller();
 });
 </script>
 
@@ -795,12 +911,16 @@ onMounted(() => {
         <MachineEnvironmentCard
           :environment="environment"
           :command-status="environmentCommandStatus"
+          :action-statuses="environmentControlActionStatus"
+          :action-payloads="environmentControlActionPayload"
+          :action-results="environmentControlActionResult"
+          :action-errors="environmentControlActionError"
           :form="environmentControlForm"
           :can-command="canCommand"
-          :submitting="environmentSubmitting"
+          :submitting-action="environmentSubmittingAction"
+          :controls-disabled="environmentCommandDisabled"
           :target-temperature-invalid="targetTemperatureInvalid"
-          :command-disabled="environmentCommandDisabled"
-          @submit="submitEnvironmentCommand"
+          @command="submitEnvironmentCommand"
         />
       </a-col>
     </a-row>

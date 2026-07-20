@@ -5,31 +5,80 @@ import type { Machine } from "@/api/machines";
 
 import { formatDateTime } from "@/utils/format";
 
-import type { EnvironmentControlForm } from "./machine-contract-mappers";
+import type {
+  EnvironmentControlAction,
+  EnvironmentControlForm,
+} from "./machine-contract-mappers";
 
 import {
-  airConditionerLabel,
   commandStatusLabel,
+  environmentCommandFailureLabel,
+  environmentCommandRequestedValue,
   formatEnvironmentNumber,
   sensorStatusLabel,
-  targetTemperatureLabel,
 } from "./machine-environment-display";
 
-defineProps<{
+type ActionStatusMap = Record<
+  EnvironmentControlAction,
+  MachineCommandStatus | null
+>;
+type ActionCommandDataMap = Record<
+  EnvironmentControlAction,
+  Record<string, unknown> | null
+>;
+type ActionErrorMap = Record<EnvironmentControlAction, string | null>;
+
+const props = defineProps<{
   environment: Machine["latestEnvironment"] | null | undefined;
   commandStatus: MachineCommandStatus | null;
+  actionStatuses: ActionStatusMap;
+  actionPayloads: ActionCommandDataMap;
+  actionResults: ActionCommandDataMap;
+  actionErrors: ActionErrorMap;
   form: EnvironmentControlForm;
   canCommand: boolean;
-  submitting: boolean;
+  controlsDisabled: boolean;
+  submittingAction: EnvironmentControlAction | null;
   targetTemperatureInvalid: boolean;
-  commandDisabled: boolean;
   loading?: boolean;
   bordered?: boolean;
 }>();
 
 const emit = defineEmits<{
-  submit: [];
+  command: [action: EnvironmentControlAction, value: boolean | number];
 }>();
+
+const actionOptions: Array<{
+  label: string;
+  value: EnvironmentControlForm["ventSpeed"];
+}> = [
+  { label: "关闭", value: 0 },
+  { label: "低", value: 1 },
+  { label: "中", value: 2 },
+  { label: "高", value: 3 },
+  { label: "全", value: 4 },
+];
+
+function emitAction(
+  action: EnvironmentControlAction,
+  value: boolean | number,
+): void {
+  emit("command", action, value);
+}
+
+function actionFeedback(action: EnvironmentControlAction): string[] {
+  const feedback: string[] = [];
+  const requested = environmentCommandRequestedValue(
+    props.actionPayloads[action],
+  );
+  if (requested) feedback.push(`请求：${requested}`);
+  const failure = environmentCommandFailureLabel(
+    props.actionResults[action],
+    props.actionErrors[action],
+  );
+  if (failure) feedback.push(`失败：${failure}`);
+  return feedback;
+}
 </script>
 
 <template>
@@ -50,12 +99,6 @@ const emit = defineEmits<{
           <a-descriptions-item label="传感器">
             {{ sensorStatusLabel(environment.sensorStatus) }}
           </a-descriptions-item>
-          <a-descriptions-item label="空调">
-            {{ airConditionerLabel(environment.airConditionerOn) }}
-          </a-descriptions-item>
-          <a-descriptions-item label="目标温度">
-            {{ targetTemperatureLabel(environment.targetTemperatureCelsius) }}
-          </a-descriptions-item>
         </template>
         <template v-else>
           <a-descriptions-item label="最新读数">环境未知</a-descriptions-item>
@@ -67,61 +110,109 @@ const emit = defineEmits<{
 
       <div class="mt-5 border-t border-slate-200 pt-4">
         <h3 class="text-sm font-medium text-slate-900">控制动作</h3>
-        <a-form layout="vertical" class="mt-3">
-          <a-form-item>
-            <div class="space-y-2">
-              <div class="flex items-center gap-3">
-                <a-checkbox
-                  v-model:checked="form.includeAirConditioner"
-                  :disabled="!canCommand || submitting"
-                >
-                  设置空调开关
-                </a-checkbox>
-                <a-switch
-                  v-model:checked="form.airConditionerOn"
-                  :disabled="
-                    !canCommand || submitting || !form.includeAirConditioner
-                  "
-                >
-                  {{ form.airConditionerOn ? "开" : "关" }}
-                </a-switch>
-              </div>
-              <div class="flex items-center gap-3">
-                <a-checkbox
-                  v-model:checked="form.includeTargetTemperature"
-                  :disabled="!canCommand || submitting"
-                >
-                  设置目标温度
-                </a-checkbox>
-                <a-input-number
-                  v-model:value="form.targetTemperatureCelsius"
-                  :min="18"
-                  :max="30"
-                  :disabled="
-                    !canCommand || submitting || !form.includeTargetTemperature
-                  "
-                  class="w-28"
-                />
-                <span>C</span>
-              </div>
-              <div v-if="targetTemperatureInvalid" class="text-xs text-red-600">
-                目标温度必须在 18-30 C
-              </div>
-              <div v-if="!canCommand" class="text-xs text-gray-500">
-                无机器控制权限
-              </div>
-            </div>
-          </a-form-item>
-          <a-button
-            v-if="canCommand"
-            type="primary"
-            :loading="submitting"
-            :disabled="commandDisabled"
-            @click="emit('submit')"
-          >
-            提交环境控制
-          </a-button>
-        </a-form>
+        <div class="mt-3 space-y-3 text-sm">
+          <div class="flex items-center gap-3">
+            <span class="w-24">空调</span>
+            <a-button
+              type="primary"
+              :loading="submittingAction === 'airConditionerOn'"
+              :disabled="controlsDisabled"
+              @click="emitAction('airConditionerOn', true)"
+            >
+              开启
+            </a-button>
+            <a-button
+              :loading="submittingAction === 'airConditionerOn'"
+              :disabled="controlsDisabled"
+              @click="emitAction('airConditionerOn', false)"
+            >
+              软关闭
+            </a-button>
+            <span class="text-xs text-slate-500">
+              {{ commandStatusLabel(actionStatuses.airConditionerOn) }}
+              <template
+                v-for="item in actionFeedback('airConditionerOn')"
+                :key="item"
+              >
+                · {{ item }}</template
+              >
+            </span>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <span class="w-24">目标温度</span>
+            <a-input-number
+              v-model:value="form.targetTemperatureCelsius"
+              :min="18"
+              :max="30"
+              class="w-28"
+              :disabled="controlsDisabled"
+            />
+            <span>C</span>
+            <a-button
+              type="primary"
+              :loading="submittingAction === 'targetTemperatureCelsius'"
+              :disabled="controlsDisabled || targetTemperatureInvalid"
+              @click="
+                emitAction(
+                  'targetTemperatureCelsius',
+                  form.targetTemperatureCelsius,
+                )
+              "
+            >
+              设定
+            </a-button>
+            <span class="text-xs text-slate-500">
+              {{ commandStatusLabel(actionStatuses.targetTemperatureCelsius) }}
+              <template
+                v-for="item in actionFeedback('targetTemperatureCelsius')"
+                :key="item"
+              >
+                · {{ item }}</template
+              >
+            </span>
+          </div>
+          <div v-if="targetTemperatureInvalid" class="text-xs text-red-600">
+            目标温度必须在 18-30 C
+          </div>
+
+          <div class="flex items-center gap-3">
+            <span class="w-24">风速</span>
+            <select
+              :value="String(form.ventSpeed)"
+              :disabled="controlsDisabled"
+              class="w-28"
+              @change="
+                (event: Event) =>
+                  (form.ventSpeed = Number(
+                    (event.target as HTMLSelectElement).value,
+                  ))
+              "
+            >
+              <option
+                v-for="option in actionOptions"
+                :key="option.value"
+                :value="String(option.value)"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <a-button
+              type="primary"
+              :loading="submittingAction === 'ventSpeed'"
+              :disabled="controlsDisabled"
+              @click="emitAction('ventSpeed', form.ventSpeed)"
+            >
+              设定
+            </a-button>
+            <span class="text-xs text-slate-500">
+              {{ commandStatusLabel(actionStatuses.ventSpeed) }}
+              <template v-for="item in actionFeedback('ventSpeed')" :key="item">
+                · {{ item }}</template
+              >
+            </span>
+          </div>
+        </div>
       </div>
     </template>
   </a-card>

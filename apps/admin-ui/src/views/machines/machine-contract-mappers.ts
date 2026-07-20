@@ -25,11 +25,15 @@ export type MachineForm = {
 export type MachineBasicsForm = Omit<MachineForm, "code">;
 
 export type EnvironmentControlForm = {
-  includeAirConditioner: boolean;
   airConditionerOn: boolean;
-  includeTargetTemperature: boolean;
   targetTemperatureCelsius: number;
+  ventSpeed: number;
 };
+
+export type EnvironmentControlAction =
+  | "airConditionerOn"
+  | "targetTemperatureCelsius"
+  | "ventSpeed";
 
 export type SlotForm = {
   layerNo: number;
@@ -49,10 +53,9 @@ const machineFormSchema = z.strictObject({
 });
 
 const environmentControlFormSchema = z.strictObject({
-  includeAirConditioner: z.boolean(),
   airConditionerOn: z.boolean(),
-  includeTargetTemperature: z.boolean(),
   targetTemperatureCelsius: z.number(),
+  ventSpeed: z.number().int().min(0).max(4),
 });
 
 const slotFormSchema = z.strictObject({
@@ -122,17 +125,25 @@ export function mapMachineBasicsFormToUpdateContract(
 
 export function mapEnvironmentControlFormToContract(
   form: EnvironmentControlForm,
+  action: EnvironmentControlAction,
+  value: boolean | number,
 ): MachineEnvironmentControlRequest {
-  const parsed = environmentControlFormSchema.parse(form);
-  const contract = {
-    ...(parsed.includeAirConditioner
-      ? { airConditionerOn: parsed.airConditionerOn }
-      : {}),
-    ...(parsed.includeTargetTemperature
-      ? { targetTemperatureCelsius: parsed.targetTemperatureCelsius }
-      : {}),
-  } satisfies z.input<typeof machineEnvironmentControlRequestSchema>;
-  return machineEnvironmentControlRequestSchema.parse(contract);
+  environmentControlFormSchema.parse(form);
+  if (action === "airConditionerOn") {
+    return machineEnvironmentControlRequestSchema.parse({
+      airConditionerOn: z.boolean().parse(value),
+    });
+  }
+
+  if (action === "targetTemperatureCelsius") {
+    return machineEnvironmentControlRequestSchema.parse({
+      targetTemperatureCelsius: z.number().min(18).max(30).parse(value),
+    });
+  }
+
+  return machineEnvironmentControlRequestSchema.parse({
+    ventSpeed: z.number().int().min(0).max(4).parse(value),
+  });
 }
 
 export function mapSlotFormToContract(
