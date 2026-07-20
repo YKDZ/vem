@@ -393,6 +393,28 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("waits for production startup to leave boot without forcing navigation", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => "#/boot",
+      activateVisibleSelectorFn: async () => {
+        throw new Error("boot must not use a customer control");
+      },
+      waitForRouteFn: async (_client, expected, options) => {
+        calls.push({ expected, options });
+        return { route: "#/catalog" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      {
+        expected: "#/catalog",
+        options: { timeoutMs: 30_000, pollMs: 250 },
+      },
+    ]);
+  });
+
   it("reloads the settled catalog so the UI binds the current daemon generation", async () => {
     const calls = [];
     const result = await refreshCatalogPageFromClient({

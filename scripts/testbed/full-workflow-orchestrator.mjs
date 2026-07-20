@@ -632,6 +632,9 @@ export async function returnToCatalogFromClient({
   };
   let route = await evaluateExpressionFn(client, "location.hash");
   if (route === "#/catalog") return route;
+  if (route === "#/boot") {
+    return (await waitForRouteWithTimeout("#/catalog", 30_000)).route;
+  }
   if (/^#\/result(?:\/|$)/.test(route)) {
     const activated = await activateUnlessAlreadyCatalog(
       ".result-return-button, .failure-return-button",
