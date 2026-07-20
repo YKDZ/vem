@@ -2007,7 +2007,9 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
+    stage = "read-rendered-payment-surface";
     const renderedSale = await readRenderedPaymentSurface(client);
+    stage = "read-pending-transaction";
     const pendingTransaction = await daemonGet(
       handoff,
       "/v1/transactions/current",
