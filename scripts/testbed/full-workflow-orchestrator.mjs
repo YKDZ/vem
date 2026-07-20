@@ -495,10 +495,28 @@ export async function ensureFixtureStockReady({
       );
     });
   };
-  const initialSaleView = await get("/v1/sale-view");
-  if (targetIsReady(initialSaleView)) return { changed: false };
-
-  const task = await get("/v1/stock/maintenance-task");
+  const deadline = Date.now() + timeoutMs;
+  let initialSaleView = null;
+  let task = null;
+  let taskError = null;
+  while (Date.now() < deadline) {
+    initialSaleView = await get("/v1/sale-view");
+    if (targetIsReady(initialSaleView)) return { changed: false };
+    try {
+      task = await get("/v1/stock/maintenance-task");
+      break;
+    } catch (error) {
+      taskError = error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+  }
+  if (!task) {
+    throw new Error(
+      `fixture stock maintenance task did not become available: ${
+        taskError instanceof Error ? taskError.message : String(taskError)
+      }`,
+    );
+  }
   if (
     !["initial_count", "recovery_count", "routine_refill"].includes(task?.mode)
   ) {
@@ -564,7 +582,6 @@ export async function ensureFixtureStockReady({
     });
   }
 
-  const deadline = Date.now() + timeoutMs;
   let saleView = initialSaleView;
   while (Date.now() < deadline) {
     saleView = await get("/v1/sale-view");

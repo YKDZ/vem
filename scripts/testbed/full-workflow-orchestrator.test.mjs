@@ -228,6 +228,37 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("waits for the daemon stock-sync watcher to establish an acknowledged planogram", async () => {
+    let taskReads = 0;
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: { fast: { slotCode: "A1", onHandQty: 3 } },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          taskReads += 1;
+          throw new Error("active acknowledged planogram is required");
+        }
+        saleViewReads += 1;
+        return {
+          items: [
+            {
+              slotCode: "A1",
+              slotSalesState: saleViewReads >= 3 ? "sale_ready" : "needs_count",
+              saleableStock: saleViewReads >= 3 ? 3 : 0,
+              physicalStock: saleViewReads >= 3 ? 3 : 0,
+            },
+          ],
+        };
+      },
+      daemonPost: async () => {
+        throw new Error("stock write was not expected");
+      },
+      pollMs: 0,
+    });
+    assert.deepEqual(result, { changed: false });
+    assert.equal(taskReads, 2);
+  });
+
   it("refills a consumed fixture through the production maintenance task", async () => {
     const posts = [];
     let saleViewReads = 0;
