@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_INVENTORY = [
   ...[
     "delayed-pickup-native-audio-guest-full.mjs",
+    "daemon-ready-refresh.mjs",
     "full-workflow-fixtures.mjs",
     "full-workflow-evidence-manifest.mjs",
     "full-workflow-orchestrator.mjs",
@@ -27,6 +28,7 @@ const DEFAULT_INVENTORY = [
   })),
   ...[
     "ensure-testbed-pwsh.test.mjs",
+    "daemon-ready-refresh.test.mjs",
     "full-workflow-evidence-manifest.test.mjs",
     "full-workflow-fixtures.test.mjs",
     "full-workflow-orchestrator.test.mjs",
@@ -77,6 +79,24 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/testbed/local-testbed.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/runtime-testbed-orchestrator.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/runtime-testbed-trigger.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/runtime-testbed-orchestrator.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["runtime acceptance", "testbed workflows"],

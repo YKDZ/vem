@@ -112,7 +112,7 @@ function buildConfig(root) {
         "--run-id",
         "{runId}",
       ],
-      admitRunnerCommand: [
+      admitGuestCommand: [
         join(root, "bin", "admit-runtime-runner"),
         "--run-id",
         "{runId}",
@@ -1093,10 +1093,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
     );
     assert.throws(
       () =>
-        verifyDefinedRuntimeDevices(
-          xml.replace(/ path="[^"]+"/, ""),
-          profile,
-        ),
+        verifyDefinedRuntimeDevices(xml.replace(/ path="[^"]+"/, ""), profile),
       /default ICH9 audio device/,
     );
     assert.throws(
@@ -2527,7 +2524,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /System\.IO\.Compression\.ZipFile/);
     assert.doesNotMatch(runtime, /Expand-Archive/);
     assert.match(runtime, /Set-Disk -Number \$disk\.Number -IsOffline \$false/);
-    assert.match(runtime, /Set-Disk -Number \$disk\.Number -IsReadOnly \$false/);
+    assert.match(
+      runtime,
+      /Set-Disk -Number \$disk\.Number -IsReadOnly \$false/,
+    );
     assert.doesNotMatch(runtime, /-IsOffline \$false -IsReadOnly \$false/);
     assert.match(runtime, /PrepareInteractiveDisplay/);
     assert.match(runtime, /RearmInteractiveDisplay/);
@@ -2704,10 +2704,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
       runtime,
       /function Test-InteractiveAutomaticLogonEnabled[\s\S]*configuredUser -ieq "VEMKiosk"/,
     );
-    assert.match(
-      runtime,
-      /DefaultUserName" -Value "VEMKiosk"/,
-    );
+    assert.match(runtime, /DefaultUserName" -Value "VEMKiosk"/);
     const rearmInteractiveDisplay = runtime.slice(
       runtime.indexOf("function Rearm-InteractiveDisplay"),
       runtime.indexOf("function Prepare-KvmGuest"),
@@ -2724,10 +2721,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
       shared,
       /icacls\.exe" -ArgumentList @\(\$administratorsKeys, "\/inheritance:r", "\/grant", "\*S-1-5-32-544:F", "\/grant", "SYSTEM:F"\)/,
     );
-    assert.match(
-      shared,
-      /Set-MpPreference -DisableRealtimeMonitoring \$true/,
-    );
+    assert.match(shared, /Set-MpPreference -DisableRealtimeMonitoring \$true/);
     assert.doesNotMatch(shared, /"Administrators:F"/);
     assert.match(runtime, /Initialize-Disk/);
     assert.match(runtime, /FileSystemLabel/);
@@ -2766,10 +2760,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
       runtime,
       /node-v24\.16\.0-win-x64\.zip[\s\S]*edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56/,
     );
-    assert.match(
-      runtime,
-      /function Install-PinnedNodeJs[\s\S]*Get-Sha256/,
-    );
+    assert.match(runtime, /function Install-PinnedNodeJs[\s\S]*Get-Sha256/);
     assert.match(runtime, /\$installRoot = "C:\\Program Files\\nodejs"/);
     assert.doesNotMatch(runtime, /choco\.exe[^\r\n]*nodejs-lts/);
     assert.match(
@@ -2817,7 +2808,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /"--labels", \(\$RunnerLabels -join ","\)/);
     assert.match(runtime, /choco\.exe/);
     assert.match(runtime, /function Invoke-NativeWithRetry/);
-    assert.match(runtime, /for \(\$attempt = 1; \$attempt -le \$Attempts; \$attempt\+\+\)/);
+    assert.match(
+      runtime,
+      /for \(\$attempt = 1; \$attempt -le \$Attempts; \$attempt\+\+\)/,
+    );
     assert.match(runtime, /Invoke-NativeWithRetry -FilePath "choco\.exe"/);
     assert.ok(runtime.indexOf("choco.exe") < runtime.indexOf("config.cmd"));
     assert.match(runtime, /vswhere\.exe/);
@@ -2901,7 +2895,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
     assert.match(runtime, /foreach \(\$codePoint in 69\.\.90\)/);
     assert.doesNotMatch(runtime, /"E"\.\."Z"/);
     assert.match(runtime, /Join-Path \$cachePaths\.PNPM_HOME "bin"/);
-    assert.match(runtime, /SetEnvironmentVariable\("Path", \$machinePath, "Machine"\)/);
+    assert.match(
+      runtime,
+      /SetEnvironmentVariable\("Path", \$machinePath, "Machine"\)/,
+    );
     assert.match(runtime, /e436ebb3-524f-11ce-9f53-0020af0ba770/);
     assert.doesNotMatch(runtime, /New-Object -ComObject "FilterGraph"/);
     assert.match(shared, /PreserveStartupType/);

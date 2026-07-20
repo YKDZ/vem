@@ -358,7 +358,9 @@ export function validateBaselineBuildConfig(input) {
     absolutePath(guest[key], `guest.${key}`);
   }
   if (string(guest.sshUser, "guest.sshUser") !== "VEMKiosk") {
-    throw new Error("guest.sshUser must be the production machine user VEMKiosk");
+    throw new Error(
+      "guest.sshUser must be the production machine user VEMKiosk",
+    );
   }
   integer(guest.desktopScalePercent, "guest.desktopScalePercent");
   const runner = object(config.runner, "runner");
@@ -403,7 +405,7 @@ export function validateBaselineBuildConfig(input) {
   }
   const testbed = object(config.testbed, "testbed");
   commandArray(testbed.reconstructCommand, "testbed.reconstructCommand");
-  commandArray(testbed.admitRunnerCommand, "testbed.admitRunnerCommand");
+  commandArray(testbed.admitGuestCommand, "testbed.admitGuestCommand");
   const testbedGuest = object(testbed.guest, "testbed.guest");
   hostnameOrAddress(testbedGuest.host, "testbed.guest.host");
   string(testbedGuest.user, "testbed.guest.user");
@@ -896,7 +898,11 @@ async function registeredSupervisorIdentity(handle, metadataPath, role) {
   return identity;
 }
 
-async function registeredTargetIdentity(metadataPath, role, timeoutMs = 10_000) {
+async function registeredTargetIdentity(
+  metadataPath,
+  role,
+  timeoutMs = 10_000,
+) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

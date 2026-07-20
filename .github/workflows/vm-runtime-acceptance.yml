@@ -6,11 +6,18 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Windows runtime testbed operation
+        description: Runtime testbed operation
         required: true
         default: full
         type: choice
         options: [fast, full, clear_cache]
+  workflow_call:
+    inputs:
+      mode:
+        description: Runtime testbed operation
+        required: false
+        default: full
+        type: string
 
 concurrency:
   group: vem-windows-runtime-testbed
@@ -18,257 +25,76 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
-  reconstruct-local-testbed:
-    name: Reconstruct Local Testbed Pass 1
+  invoke-runtime-testbed-caller:
+    name: Invoke Runtime Testbed Caller
     runs-on: [self-hosted, Linux, X64, vem-runtime]
-    timeout-minutes: 30
-    outputs:
-      mode: ${{ steps.testbed.outputs.mode }}
+    timeout-minutes: 120
     env:
+      VEM_TESTBED_HOST_CONFIG: ${{ vars.VEM_TESTBED_HOST_CONFIG }}
       TESTBED_MODE: ${{ inputs.mode || 'full' }}
       GITHUB_SHA: ${{ github.sha }}
-      CARGO_HOME: /opt/vem/runtime-testbed/cargo
-      RUSTUP_HOME: /opt/vem/runtime-testbed/rustup
-      RUSTUP_TOOLCHAIN: 1.96.0-x86_64-unknown-linux-gnu
-      CARGO_TARGET_DIR: /opt/vem/runtime-testbed/cargo-target
-      CARGO_HTTP_MULTIPLEXING: "false"
-      CARGO_HTTP_TIMEOUT: "30"
-      CARGO_NET_RETRY: "10"
-      VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
-      VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
-      VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
-      VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
-      VEM_RUNNER_HTTP_PROXY: ${{ vars.VEM_RUNNER_HTTP_PROXY }}
-      VEM_RUNNER_HTTPS_PROXY: ${{ vars.VEM_RUNNER_HTTPS_PROXY }}
-      VEM_RUNNER_NO_PROXY: ${{ vars.VEM_RUNNER_NO_PROXY }}
     steps:
-      - name: Add cached Rust toolchain to PATH
-        run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-      - name: Verify cached host Rust toolchain
-        run: |
-          test "$("$CARGO_HOME/bin/rustc" --version)" = "rustc 1.96.0 (ac68faa20 2026-05-25)"
-          test "$("$CARGO_HOME/bin/cargo" --version)" = "cargo 1.96.0 (30a34c682 2026-05-25)"
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Mint Windows runner registration token
-        env:
-          RUNNER_ADMIN_TOKEN: ${{ secrets.VEM_RUNNER_ADMIN_TOKEN }}
+      - name: Run VM runtime testbed caller
+        id: caller
         run: |
-          set -euo pipefail
-          response="$(curl --fail --silent --show-error --retry 3 --connect-timeout 5 --max-time 20 --request POST \
-            --header "Authorization: Bearer $RUNNER_ADMIN_TOKEN" \
-            --header 'Accept: application/vnd.github+json' \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
-          runner_token="$(jq -r '.token' <<<"$response")"
-          echo "VEM_RUNNER_REGISTRATION_TOKEN=$runner_token" >> "$GITHUB_ENV"
-          echo "VEM_RUNNER_REMOVAL_TOKEN=$runner_token" >> "$GITHUB_ENV"
-      - id: testbed
-        name: Reconstruct C Drive And Local Platform
-        run: |
-          set -euo pipefail
-          test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
-          test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
-          test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          test "${VEM_VM_HOST_LOCK_PATH#/}" != "$VEM_VM_HOST_LOCK_PATH"
-          mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
-          flock "$VEM_VM_HOST_LOCK_PATH" \
-            node scripts/testbed/local-testbed.mjs reconstruct \
+          set -uo pipefail
+          node scripts/testbed/runtime-testbed-trigger.mjs run \
             --mode "$TESTBED_MODE" \
-            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --workspace "$GITHUB_WORKSPACE" \
-            --state-root "$VEM_LOCAL_TESTBED_STATE_ROOT" \
-            --baseline-contract "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT" \
-            --host-private-address "$VEM_LOCAL_TESTBED_HOST_ADDRESS" \
-            --out "$RUNNER_TEMP/vem-local-testbed-reconstruction.json"
-          echo "mode=$TESTBED_MODE" >> "$GITHUB_OUTPUT"
+            --commit "$GITHUB_SHA" \
+            --config "$VEM_TESTBED_HOST_CONFIG" \
+            --out "$RUNNER_TEMP/vm-runtime-acceptance-caller-result.json"
+          caller_exit=$?
+          test -f "$RUNNER_TEMP/vm-runtime-acceptance-caller-result.json"
+          node --input-type=module - <<'NODE' "$RUNNER_TEMP/vm-runtime-acceptance-caller-result.json"
+          import { readFile, writeFile } from "node:fs/promises";
 
-  run-inside-windows-pass-1:
-    name: Build Deploy And Test Inside Windows Pass 1
-    needs: reconstruct-local-testbed
-    if: ${{ needs.reconstruct-local-testbed.result == 'success' }}
-    runs-on: [self-hosted, Windows, X64, vem-runtime]
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+          const [,, resultPath] = process.argv;
+          if (!resultPath) process.exit(1);
+          const payload = JSON.parse(await readFile(resultPath, "utf8"));
+          const artifactPath =
+            payload?.canonicalCompactArtifact ??
+            payload?.canonicalCompactArtifactPath ??
+            payload?.artifact?.canonicalCompactArtifact ??
+            payload?.artifactPath;
+          if (!artifactPath) {
+            throw new Error("canonicalCompactArtifact not found in caller result");
+          }
+          await writeFile(process.env.GITHUB_OUTPUT, `artifact_path=${artifactPath}\n`, {
+            flag: "a",
+          });
+          NODE
+          echo "caller_exit=$caller_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload canonical compact artifact
+        if: always() && steps.caller.outputs.artifact_path != ''
+        uses: actions/upload-artifact@v4
         with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          clean: false
-      - name: Restore cached testbed PowerShell
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testbed/ensure-testbed-pwsh.ps1
-      - name: Build Deploy Claim And Test
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          VISION_GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          & scripts/testbed/run-local-testbed-guest.ps1 -Mode '${{ needs.reconstruct-local-testbed.outputs.mode }}'
-      - name: Collect Compact Runtime Acceptance Evidence Pass 1
-        if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode != 'clear_cache' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-bundle\**
+          name: vm-runtime-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.caller.outputs.artifact_path }}
           if-no-files-found: error
           retention-days: 7
-      - name: Collect Clear Cache Report Pass 1
-        if: ${{ always() && needs.reconstruct-local-testbed.outputs.mode == 'clear_cache' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-runtime-clear-cache-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: C:\ProgramData\VEM\runtime\testbed\clear-cache-report.json
-          if-no-files-found: error
-          retention-days: 7
-
-  reconstruct-local-testbed-pass-2:
-    name: Reconstruct Local Testbed Pass 2
-    needs: [reconstruct-local-testbed, run-inside-windows-pass-1]
-    if: ${{ needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result == 'success' }}
-    runs-on: [self-hosted, Linux, X64, vem-runtime]
-    timeout-minutes: 30
-    env:
-      CARGO_HOME: /opt/vem/runtime-testbed/cargo
-      RUSTUP_HOME: /opt/vem/runtime-testbed/rustup
-      RUSTUP_TOOLCHAIN: 1.96.0-x86_64-unknown-linux-gnu
-      CARGO_TARGET_DIR: /opt/vem/runtime-testbed/cargo-target
-      CARGO_HTTP_MULTIPLEXING: "false"
-      CARGO_HTTP_TIMEOUT: "30"
-      CARGO_NET_RETRY: "10"
-      VEM_VM_HOST_LOCK_PATH: ${{ vars.VEM_VM_HOST_LOCK_PATH }}
-    steps:
-      - name: Add cached Rust toolchain to PATH
-        run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-      - name: Verify cached host Rust toolchain
-        run: |
-          test "$("$CARGO_HOME/bin/rustc" --version)" = "rustc 1.96.0 (ac68faa20 2026-05-25)"
-          test "$("$CARGO_HOME/bin/cargo" --version)" = "cargo 1.96.0 (30a34c682 2026-05-25)"
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Mint Windows runner registration token
+      - name: Apply canonical result
+        if: always()
         env:
-          RUNNER_ADMIN_TOKEN: ${{ secrets.VEM_RUNNER_ADMIN_TOKEN }}
+          CALLER_RESULT: ${{ runner.temp }}/vm-runtime-acceptance-caller-result.json
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          response="$(curl --fail --silent --show-error --retry 3 --connect-timeout 5 --max-time 20 --request POST \
-            --header "Authorization: Bearer $RUNNER_ADMIN_TOKEN" \
-            --header 'Accept: application/vnd.github+json' \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
-          runner_token="$(jq -r '.token' <<<"$response")"
-          echo "VEM_RUNNER_REGISTRATION_TOKEN=$runner_token" >> "$GITHUB_ENV"
-          echo "VEM_RUNNER_REMOVAL_TOKEN=$runner_token" >> "$GITHUB_ENV"
-      - name: Reconstruct C Drive And Local Platform Again
-        run: |
-          set -euo pipefail
-          test -n "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT"
-          test -n "$VEM_LOCAL_TESTBED_HOST_ADDRESS"
-          test -n "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          test "${VEM_VM_HOST_LOCK_PATH#/}" != "$VEM_VM_HOST_LOCK_PATH"
-          mkdir -p "$VEM_LOCAL_TESTBED_STATE_ROOT"
-          mkdir -p "$(dirname "$VEM_VM_HOST_LOCK_PATH")"
-          flock "$VEM_VM_HOST_LOCK_PATH" \
-            node scripts/testbed/local-testbed.mjs reconstruct \
-            --mode full \
-            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-pass-2" \
-            --workspace "$GITHUB_WORKSPACE" \
-            --state-root "$VEM_LOCAL_TESTBED_STATE_ROOT" \
-            --baseline-contract "$VEM_LOCAL_TESTBED_BASELINE_CONTRACT" \
-            --host-private-address "$VEM_LOCAL_TESTBED_HOST_ADDRESS" \
-            --out "$RUNNER_TEMP/vem-local-testbed-reconstruction-pass-2.json"
-        env:
-          GITHUB_SHA: ${{ github.sha }}
-          VEM_LOCAL_TESTBED_BASELINE_CONTRACT: ${{ vars.VEM_LOCAL_TESTBED_BASELINE_CONTRACT }}
-          VEM_LOCAL_TESTBED_HOST_ADDRESS: ${{ vars.VEM_LOCAL_TESTBED_HOST_ADDRESS }}
-          VEM_LOCAL_TESTBED_STATE_ROOT: ${{ vars.VEM_LOCAL_TESTBED_STATE_ROOT }}
-          VEM_RUNNER_HTTP_PROXY: ${{ vars.VEM_RUNNER_HTTP_PROXY }}
-          VEM_RUNNER_HTTPS_PROXY: ${{ vars.VEM_RUNNER_HTTPS_PROXY }}
-          VEM_RUNNER_NO_PROXY: ${{ vars.VEM_RUNNER_NO_PROXY }}
-
-  run-inside-windows-pass-2:
-    name: Build Deploy And Test Inside Windows Pass 2
-    needs: reconstruct-local-testbed-pass-2
-    if: ${{ needs.reconstruct-local-testbed-pass-2.result == 'success' }}
-    runs-on: [self-hosted, Windows, X64, vem-runtime]
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          clean: false
-      - name: Restore cached testbed PowerShell
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testbed/ensure-testbed-pwsh.ps1
-      - name: Build Deploy Claim And Test Again
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          VISION_GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          & scripts/testbed/run-local-testbed-guest.ps1 -Mode 'full'
-      - name: Collect Compact Runtime Acceptance Evidence Pass 2
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-runtime-acceptance-pass-2-${{ github.run_id }}-${{ github.run_attempt }}
-          path: C:\ProgramData\VEM\runtime\testbed\full-workflow-evidence-bundle\**
-          if-no-files-found: error
-          retention-days: 7
-
-  full-workflow-stability-gate:
-    name: Full Workflow Stability Gate
-    needs:
-      [
-        reconstruct-local-testbed,
-        run-inside-windows-pass-1,
-        reconstruct-local-testbed-pass-2,
-        run-inside-windows-pass-2,
-      ]
-    if: ${{ needs.reconstruct-local-testbed.outputs.mode == 'full' && needs.run-inside-windows-pass-1.result == 'success' && needs.run-inside-windows-pass-2.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Download pass 1 runtime evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: vm-runtime-acceptance-pass-1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/vm-runtime-pass-1
-      - name: Download pass 2 runtime evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: vm-runtime-acceptance-pass-2-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/vm-runtime-pass-2
-      - name: Validate same-commit two-pass stability gate
-        run: |
-          PASS_A="$(find "${RUNNER_TEMP}/vm-runtime-pass-1" -name full-workflow-tracks.json | head -n1)"
-          PASS_B="$(find "${RUNNER_TEMP}/vm-runtime-pass-2" -name full-workflow-tracks.json | head -n1)"
-          test -n "$PASS_A"
-          test -n "$PASS_B"
-          node scripts/testbed/full-workflow-stability-gate.mjs \
-            --commit "${GITHUB_SHA}" \
-            --pass-a "$PASS_A" \
-            --pass-b "$PASS_B" \
-            --out "${RUNNER_TEMP}/full-workflow-stability-gate.json"
-      - name: Upload stability gate report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: vm-runtime-stability-gate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/full-workflow-stability-gate.json
-          if-no-files-found: error
-          retention-days: 7
+          status="$(node -e 'console.log(require(process.argv[1]).status)' "$CALLER_RESULT")"
+          case "$status" in
+            passed) exit 0 ;;
+            superseded)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" || true
+              exit 0
+              ;;
+            failed) exit 1 ;;
+            infrastructure_failed) exit 2 ;;
+            *) echo "unknown canonical status: $status" >&2; exit 2 ;;
+          esac

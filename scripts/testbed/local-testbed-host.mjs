@@ -13,7 +13,6 @@ import {
 import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gzipSync } from "node:zlib";
 
 import {
   recoverHeadlessVncActivator,
@@ -26,7 +25,6 @@ const PORTRAIT_HEIGHT_PX = 1920;
 const DISPLAY_PROOF_SCHEMA = "vem-local-testbed-display-admission-proof/v1";
 const ACTIVATOR_SERVICE_OWNER_SCHEMA =
   "vem-local-testbed-headless-vnc-activator-owner/v1";
-const RUNNER_ADMISSION_TIMEOUT_SECONDS = 180;
 const DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS = 20_000;
 const DOMAIN_ACPI_SHUTDOWN_POLL_MS = 1_000;
 
@@ -47,16 +45,6 @@ function option(args, name) {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
-    throw new Error(`--${name} requires a value`);
-  }
-  return value;
-}
-
-function optionalOptionOrEmpty(args, name) {
-  const index = args.indexOf(`--${name}`);
-  if (index === -1) return undefined;
-  const value = args[index + 1];
-  if (value === undefined || value.startsWith("--")) {
     throw new Error(`--${name} requires a value`);
   }
   return value;
@@ -176,12 +164,6 @@ function encodedPowerShellCommand(script) {
   return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
 }
 
-function compressedPowerShellCommand(script) {
-  const payload = gzipSync(Buffer.from(script, "utf8")).toString("base64");
-  const bootstrap = `$b=[Convert]::FromBase64String('${payload}');$m=[IO.MemoryStream]::new($b);$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);$r=[IO.StreamReader]::new($g);try{& ([ScriptBlock]::Create($r.ReadToEnd()))}finally{$r.Dispose();$g.Dispose();$m.Dispose()}`;
-  return encodedPowerShellCommand(bootstrap);
-}
-
 function guestInputAssertion(path, runId) {
   return `$ErrorActionPreference = 'Stop'
 $path = ${quotePowerShell(path)}
@@ -251,115 +233,6 @@ if ($proof.status -ne 'passed') {
   throw ('interactive desktop display baseline is {0}x{1}, expected ${width}x${height}' -f $proof.widthPx, $proof.heightPx)
 }
 $proof | ConvertTo-Json -Compress
-`;
-}
-
-function runnerAdmissionAssertion(
-  runnerProxy,
-  runnerRegistrationToken,
-  runnerRemovalToken,
-  runId,
-) {
-  const hostTimeUnixSeconds = Math.floor(Date.now() / 1000);
-  const runnerName = `forest-win10-runtime-${runId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const registrationSetup = runnerRegistrationToken
-    ? `$oldServiceIdentityPath = Join-Path $runnerRoot '.service'
-if (Test-Path -LiteralPath $oldServiceIdentityPath -PathType Leaf) {
-  $oldServiceName = (Get-Content -LiteralPath $oldServiceIdentityPath -Raw -Encoding UTF8).Trim()
-  if ($oldServiceName -like 'actions.runner.*') {
-    Stop-Service -Name $oldServiceName -Force -ErrorAction SilentlyContinue
-    & sc.exe delete $oldServiceName | Out-Null
-  }
-}
-Set-RunnerAdmissionPhase 'removed-old-runner'
-$runnerIdentityFiles = @('.runner', '.credentials', '.credentials_rsaparams', '.service')
-$runnerIdentityFiles | ForEach-Object { Remove-Item -LiteralPath (Join-Path $runnerRoot $_) -Force -ErrorAction SilentlyContinue }
-$runnerWorkRoot = 'D:\\runtime-cache\\v1\\actions-work'
-New-Item -ItemType Directory -Force -Path $runnerWorkRoot | Out-Null
-$env:GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY = '1'
-Add-Content -LiteralPath $environmentPath -Value 'GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1'
-& (Join-Path $runnerRoot 'config.cmd') --unattended --url 'https://github.com/YKDZ/vem' --token ${quotePowerShell(runnerRegistrationToken)} --name ${quotePowerShell(runnerName)} --labels 'vem-runtime' --work $runnerWorkRoot --runasservice --windowslogonaccount 'NT AUTHORITY\\NETWORK SERVICE' --replace
-if ($LASTEXITCODE -ne 0) { throw "actions runner dynamic registration failed with exit code $LASTEXITCODE" }
-Set-RunnerAdmissionPhase 'configured-new-runner'
-$registeredRunner = Get-Content -LiteralPath (Join-Path $runnerRoot '.runner') -Raw -Encoding UTF8 | ConvertFrom-Json
-if ([string]$registeredRunner.agentName -ne ${quotePowerShell(runnerName)}) { throw "actions runner registered unexpected identity: $($registeredRunner.agentName)" }
-`
-    : "";
-  const proxyLines = runnerProxy?.configured
-    ? [
-        `HTTP_PROXY=${runnerProxy.http}`,
-        `HTTPS_PROXY=${runnerProxy.https}`,
-        `NO_PROXY=${runnerProxy.noProxy}`,
-      ].filter((line) => !line.endsWith("="))
-    : [];
-  const proxyEnvironmentAssignments = runnerProxy?.configured
-    ? [
-        ["HTTP_PROXY", runnerProxy.http],
-        ["HTTPS_PROXY", runnerProxy.https],
-        ["NO_PROXY", runnerProxy.noProxy],
-      ]
-        .map(
-          ([name, value]) => `$env:${name} = ${quotePowerShell(value ?? "")}`,
-        )
-        .join("\n")
-    : "";
-  const updateEnvironment = runnerProxy?.configured
-    ? `$proxyLines = @(${proxyLines.map(quotePowerShell).join(", ")})
-$existingLines = if (Test-Path -LiteralPath $environmentPath -PathType Leaf) { @(Get-Content -LiteralPath $environmentPath -Encoding UTF8) } else { @() }
-$preservedLines = @($existingLines | Where-Object { $_ -notmatch '^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY)=' })
-[System.IO.File]::WriteAllLines($environmentPath, @($preservedLines + $proxyLines), [System.Text.UTF8Encoding]::new($false))
-${proxyEnvironmentAssignments}
-`
-    : "";
-  return `$ErrorActionPreference = 'Stop'
-$runnerRoot = 'C:\\actions-runner'
-$environmentPath = 'C:\\actions-runner\\.env'
-$serviceIdentityPath = Join-Path $runnerRoot '.service'
-$phasePath = 'C:\\ProgramData\\VEM\\testbed\\runner-admission-phase.txt'
-function Set-RunnerAdmissionPhase([string]$Phase) { [System.IO.File]::WriteAllText($phasePath, $Phase, [System.Text.UTF8Encoding]::new($false)) }
-Set-RunnerAdmissionPhase 'started'
-Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(${hostTimeUnixSeconds}).LocalDateTime)
-${updateEnvironment}${registrationSetup}Set-RunnerAdmissionPhase 'identity-ready'
-if (-not (Test-Path -LiteralPath $serviceIdentityPath -PathType Leaf)) { throw 'actions runner service identity is unavailable' }
-$serviceName = (Get-Content -LiteralPath $serviceIdentityPath -Raw -Encoding UTF8).Trim()
-if ($serviceName -notlike 'actions.runner.*') { throw 'actions runner service identity is invalid' }
-$service = Get-Service -Name $serviceName -ErrorAction Stop
-Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
-& sc.exe config $service.Name obj= LocalSystem | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "actions runner LocalSystem configuration failed with exit code $LASTEXITCODE" }
-Get-Process -Name 'Runner.Listener' -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
-$diagnosticDirectory = Join-Path $runnerRoot '_diag'
-$diagnosticOffsets = @{}
-@(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue) | ForEach-Object { $diagnosticOffsets[$_.FullName] = [int64]$_.Length }
-Restart-Service -Name $service.Name -Force -ErrorAction Stop
-$service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
-Set-RunnerAdmissionPhase 'waiting-listener'
-$deadline = (Get-Date).ToUniversalTime().AddSeconds(${RUNNER_ADMISSION_TIMEOUT_SECONDS})
-$latestTail = ''
-while ((Get-Date).ToUniversalTime() -lt $deadline) {
-  $logs = @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending)
-  foreach ($log in $logs) {
-    $offset = if ($diagnosticOffsets.ContainsKey($log.FullName)) { [int64]$diagnosticOffsets[$log.FullName] } else { 0 }
-    if ([int64]$log.Length -lt $offset) { $offset = 0 }
-    $stream = [System.IO.File]::Open($log.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-    try {
-      [void]$stream.Seek($offset, [System.IO.SeekOrigin]::Begin)
-      $reader = [System.IO.StreamReader]::new($stream)
-      try { $tail = $reader.ReadToEnd() } finally { $reader.Dispose() }
-    } finally { $stream.Dispose() }
-    if (-not [string]::IsNullOrWhiteSpace($tail)) { $latestTail = $tail }
-    $marker = [regex]::Match($tail, 'Listening for Jobs|Runner reconnected')
-    if ($marker.Success) {
-      Set-RunnerAdmissionPhase 'listener-ready'
-      [ordered]@{ serviceName = $service.Name; listenerMarker = $marker.Value; diagnosticLog = $log.Name; diagnosticOffset = $offset } | ConvertTo-Json -Compress
-      exit 0
-    }
-  }
-  Start-Sleep -Seconds 2
-}
-$serviceState = (Get-Service -Name $service.Name -ErrorAction SilentlyContinue).Status
-throw ("actions runner did not report a fresh listener diagnostic within ${RUNNER_ADMISSION_TIMEOUT_SECONDS} seconds (service=$serviceState; latest diagnostic tail: $latestTail)")
 `;
 }
 
@@ -607,9 +480,6 @@ export function buildHostAdmissionPlan({
   config: configInput,
   guestInputPath,
   runId,
-  runnerProxy = { configured: false },
-  runnerRegistrationToken = null,
-  runnerRemovalToken = null,
 }) {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
@@ -619,12 +489,6 @@ export function buildHostAdmissionPlan({
     config.ssh.user,
     PORTRAIT_WIDTH_PX,
     PORTRAIT_HEIGHT_PX,
-  );
-  const runnerAssertion = runnerAdmissionAssertion(
-    runnerProxy,
-    runnerRegistrationToken,
-    runnerRemovalToken,
-    expectedRunId,
   );
   return [
     {
@@ -644,13 +508,6 @@ export function buildHostAdmissionPlan({
       args: sshArgs(config, encodedPowerShellCommand(displayAssertion)),
       encodedPowerShell: true,
       input: displayAssertion,
-    },
-    {
-      type: "restart-runner-and-await-listener",
-      command: "ssh",
-      args: sshArgs(config, compressedPowerShellCommand(runnerAssertion)),
-      encodedPowerShell: true,
-      input: runnerAssertion,
     },
   ];
 }
@@ -786,22 +643,18 @@ async function executeReconstruction(options) {
     domainName: config.domainName,
     overlayPath: config.overlayPath,
     cacheDisk: options.cacheDisk,
-    runnerAdmitted: false,
   };
 }
 
 async function executeAdmission(options) {
   const plan = buildHostAdmissionPlan(options);
-  const { displayAdmissionProof, runnerAdmission } =
-    await executeHostAdmissionPlan(plan);
+  const { displayAdmissionProof } = await executeHostAdmissionPlan(plan);
   return {
     action: "admit",
     runId: options.runId,
     domainName: options.config.domainName,
     guestInputPath: options.guestInputPath,
-    runnerAdmitted: true,
     displayAdmissionProof,
-    runnerAdmission,
   };
 }
 
@@ -810,7 +663,6 @@ export async function executeHostAdmissionPlan(
   { runCommand = run, runCaptureCommand = runCapture } = {},
 ) {
   let displayAdmissionProof = null;
-  let runnerAdmission = null;
   for (const step of plan) {
     if (step.type === "assert-interactive-display") {
       const output = await runCaptureCommand(
@@ -827,28 +679,6 @@ export async function executeHostAdmissionPlan(
           height: step.expectedHeight,
         },
       );
-    } else if (step.type === "restart-runner-and-await-listener") {
-      const output = await runCaptureCommand(
-        step.command,
-        step.args,
-        step.encodedPowerShell ? undefined : step.input,
-        step.input,
-      );
-      runnerAdmission = parseJsonLine(output.stdout, "runner admission");
-      if (
-        typeof runnerAdmission.serviceName !== "string" ||
-        typeof runnerAdmission.listenerMarker !== "string" ||
-        typeof runnerAdmission.diagnosticLog !== "string"
-      ) {
-        throw new Error("runner admission emitted incomplete diagnostics");
-      }
-      if (
-        !["Listening for Jobs", "Runner reconnected"].includes(
-          runnerAdmission.listenerMarker,
-        )
-      ) {
-        throw new Error("runner admission emitted an invalid listener marker");
-      }
     } else {
       await runCommand(
         step.command,
@@ -858,7 +688,7 @@ export async function executeHostAdmissionPlan(
       );
     }
   }
-  return { displayAdmissionProof, runnerAdmission };
+  return { displayAdmissionProof };
 }
 
 export function parseHostOptions(args) {
@@ -903,23 +733,12 @@ export function parseHostOptions(args) {
     runId: required(option(args, "run-id"), "runId"),
   };
   if (action === "admit") {
-    const runnerProxyConfigured = args.includes("--runner-proxy-configured");
     return {
       ...common,
       guestInputPath: windowsAbsolute(
         option(args, "guest-input"),
         "guestInputPath",
       ),
-      runnerProxy: runnerProxyConfigured
-        ? {
-            configured: true,
-            http: optionalOptionOrEmpty(args, "runner-http-proxy") ?? "",
-            https: optionalOptionOrEmpty(args, "runner-https-proxy") ?? "",
-            noProxy: optionalOptionOrEmpty(args, "runner-no-proxy") ?? "",
-          }
-        : { configured: false },
-      runnerRegistrationToken: option(args, "runner-registration-token"),
-      runnerRemovalToken: option(args, "runner-removal-token"),
     };
   }
   return {

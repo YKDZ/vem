@@ -14,7 +14,6 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\turbo",
   "D:\\runtime-cache\\v1\\vision-main",
   "D:\\runtime-cache\\v1\\powershell",
-  "D:\\runtime-cache\\v1\\actions-work",
 ]);
 const REQUIRED_EXECUTION_ORDER = Object.freeze([
   "fast",
@@ -121,12 +120,17 @@ export function buildStabilityGateReport({
       gateFailures.push(`${label} retained-cache contract drifted`);
     }
     if (
-      !sameStringArray(identity?.observedRetainedCaches, RETAINED_CACHE_CONTRACT)
+      !sameStringArray(
+        identity?.observedRetainedCaches,
+        RETAINED_CACHE_CONTRACT,
+      )
     ) {
       gateFailures.push(`${label} observed retained caches drifted`);
     }
     if (!Array.isArray(identity?.removedUndeclaredCaches)) {
-      gateFailures.push(`${label} undeclared cache cleanup evidence is missing`);
+      gateFailures.push(
+        `${label} undeclared cache cleanup evidence is missing`,
+      );
     }
     if (
       JSON.stringify(
@@ -159,7 +163,12 @@ export function buildStabilityGateReport({
     gateFailures.push("runtime-base differs between passes");
   if (passA.identity?.reconstructionId === passB.identity?.reconstructionId)
     gateFailures.push("two passes reused one reconstruction ID");
-  if (!sameStringArray(passA.identity?.retainedCaches, passB.identity?.retainedCaches))
+  if (
+    !sameStringArray(
+      passA.identity?.retainedCaches,
+      passB.identity?.retainedCaches,
+    )
+  )
     gateFailures.push("retained-cache contract differs between passes");
   if (
     !sameStringArray(

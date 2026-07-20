@@ -50,7 +50,6 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\turbo",
   "D:\\runtime-cache\\v1\\vision-main",
   "D:\\runtime-cache\\v1\\powershell",
-  "D:\\runtime-cache\\v1\\actions-work",
 ]);
 const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "NODE_ENV",
@@ -108,11 +107,6 @@ const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
   "Cargo.toml",
   "apps/lower-controller-sim/Cargo.toml",
   "crates/vending-core/Cargo.toml",
-]);
-const RUNNER_PROXY_ENVIRONMENT_NAMES = Object.freeze([
-  "VEM_RUNNER_HTTP_PROXY",
-  "VEM_RUNNER_HTTPS_PROXY",
-  "VEM_RUNNER_NO_PROXY",
 ]);
 
 function required(value, label) {
@@ -223,10 +217,7 @@ export function validateHostPrivateAddress(
 
 export function parseOptions(
   args,
-  {
-    observeNetworkInterfaces = networkInterfaces,
-    environment = process.env,
-  } = {},
+  { observeNetworkInterfaces = networkInterfaces } = {},
 ) {
   const command = args[0];
   if (command !== "reconstruct") {
@@ -252,25 +243,8 @@ export function parseOptions(
       "--baseline-contract",
     ),
     hostPrivateAddress,
-    runnerProxy: runnerProxyEnvironment(environment),
-    runnerRegistrationToken: environment.VEM_RUNNER_REGISTRATION_TOKEN || null,
-    runnerRemovalToken: environment.VEM_RUNNER_REMOVAL_TOKEN || null,
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
-  };
-}
-
-export function runnerProxyEnvironment(environment = process.env) {
-  const [http, https, noProxy] = RUNNER_PROXY_ENVIRONMENT_NAMES.map((name) =>
-    String(environment[name] ?? "").trim(),
-  );
-  return {
-    configured: RUNNER_PROXY_ENVIRONMENT_NAMES.some((name) =>
-      Object.hasOwn(environment, name),
-    ),
-    http,
-    https,
-    noProxy,
   };
 }
 
@@ -309,9 +283,9 @@ export function validateBaselineContract(contract) {
     "baseline contract testbed.reconstructCommand",
   );
   trackedHostCommand(
-    binding.admitRunnerCommand,
+    binding.admitGuestCommand,
     "admit",
-    "baseline contract testbed.admitRunnerCommand",
+    "baseline contract testbed.admitGuestCommand",
   );
   if (!binding.guest || typeof binding.guest !== "object") {
     throw new Error("baseline contract guest is required");
@@ -451,32 +425,6 @@ function renderPublishedCommand(command, options, contract) {
   return commandLine(rendered[0], rendered.slice(1));
 }
 
-function renderRunnerProxyArguments(runnerProxy) {
-  if (!runnerProxy?.configured) return [];
-  return [
-    "--runner-proxy-configured",
-    "--runner-http-proxy",
-    runnerProxy.http,
-    "--runner-https-proxy",
-    runnerProxy.https,
-    "--runner-no-proxy",
-    runnerProxy.noProxy,
-  ];
-}
-
-function renderRunnerRegistrationArguments(
-  runnerRegistrationToken,
-  runnerRemovalToken,
-) {
-  if (!runnerRegistrationToken || !runnerRemovalToken) return [];
-  return [
-    "--runner-registration-token",
-    runnerRegistrationToken,
-    "--runner-removal-token",
-    runnerRemovalToken,
-  ];
-}
-
 export function buildReconstructionPlan(options, contract) {
   const state = options.stateRoot;
   const binding = contract.testbed;
@@ -564,19 +512,12 @@ export function buildReconstructionPlan(options, contract) {
       `${binding.guest.user}@${binding.guest.host}:${binding.guest.stagingPath}`,
     ]),
     (() => {
-      const admission = renderPublishedCommand(
-        binding.admitRunnerCommand,
+      const guestAdmission = renderPublishedCommand(
+        binding.admitGuestCommand,
         options,
         contract,
       );
-      return commandLine(admission.command, [
-        ...admission.args,
-        ...renderRunnerProxyArguments(options.runnerProxy),
-        ...renderRunnerRegistrationArguments(
-          options.runnerRegistrationToken,
-          options.runnerRemovalToken,
-        ),
-      ]);
+      return commandLine(guestAdmission.command, [...guestAdmission.args]);
     })(),
   ];
 }
@@ -1520,9 +1461,9 @@ async function reconstruct(options) {
     );
     for (const step of plan.slice(9, -1))
       await run(step.command, step.args, { cwd: options.workspace });
-    const admitRunner = plan.at(-1);
+    const admitGuest = plan.at(-1);
     const admissionStartedAt = new Date().toISOString();
-    const admitHost = await runCapture(admitRunner.command, admitRunner.args, {
+    const admitHost = await runCapture(admitGuest.command, admitGuest.args, {
       cwd: options.workspace,
     });
     const admissionFinishedAt = new Date().toISOString();

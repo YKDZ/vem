@@ -228,13 +228,15 @@ describe("tracked local testbed host lifecycle", () => {
     }
   });
 
-  it("does not admit the runner until the exact guest input is proven staged", async () => {
+  it("admits only after guest input and desktop proof are available", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-15",
     });
     assert.equal(plan[0].type, "assert-guest-input");
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan.length, 2);
     assert.match(
       plan[0].args.at(-1),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
@@ -254,8 +256,7 @@ describe("tracked local testbed host lifecycle", () => {
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
     assert.equal(plan[1].type, "assert-interactive-display");
-    assert.equal(plan.at(-1).type, "restart-runner-and-await-listener");
-    assert.ok(plan.at(-1).args.at(-1).length < 8_000);
+    assert.equal(plan.at(-1).type, "assert-interactive-display");
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
@@ -274,20 +275,37 @@ describe("tracked local testbed host lifecycle", () => {
     assert.deepEqual(operations, ["ssh"]);
   });
 
-  it("keeps the runner worktree on the persistent D cache disk", () => {
+  it("rebuild admission contains no Actions runner artifact or marker output", () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "persistent-worktree",
       runnerRegistrationToken: "registration-token",
+      runnerRemovalToken: "removal-token",
+      runnerProxy: {
+        configured: true,
+        http: "http://proxy.example.test:8080",
+        https: "http://proxy.example.test:8080",
+        noProxy: "localhost,127.0.0.1",
+      },
     });
-    const admission = plan.at(-1).input;
-    assert.match(admission, /D:\\runtime-cache\\v1\\actions-work/);
-    assert.match(admission, /--work \$runnerWorkRoot/);
-    assert.doesNotMatch(admission, /--work '_work'/);
+    assert.equal(plan.length, 2);
+    assert.equal(
+      plan.some((step) => step.type === "restart-runner-and-await-listener"),
+      false,
+    );
+    assert.equal(plan.at(-1).type, "assert-interactive-display");
+    assert.doesNotMatch(plan.at(-1).input, /C:\\actions-runner/);
+    assert.doesNotMatch(plan.at(-1).input, /actions\.runner/);
+    assert.doesNotMatch(plan.at(-1).input, /Listening for Jobs/);
+    assert.doesNotMatch(plan.at(-1).input, /Runner\.Listener/);
+    assert.doesNotMatch(
+      plan.at(-1).input,
+      /runner-admission|listenerMarker|serviceName|diagnosticLog/,
+    );
   });
 
-  it("requires exact 1080x1920 proof before scheduling the runner", async () => {
+  it("accepts only the exact 1080x1920 desktop proof", async () => {
     const plan = buildHostAdmissionPlan({
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -305,15 +323,8 @@ describe("tracked local testbed host lifecycle", () => {
           /^powershell -NoProfile -NonInteractive -EncodedCommand /,
         );
         if (!input.includes("interactive-display-report")) {
-          return {
-            stdout: `${JSON.stringify({
-              serviceName: "actions.runner.example.runtime",
-              listenerMarker: "Listening for Jobs",
-              diagnosticLog: "Runner_20260718-000000-utc.log",
-            })}\n`,
-          };
+          return { stdout: "ok\n" };
         }
-        assert.match(input, /interactive-display-report\.json/);
         return {
           stdout: `${JSON.stringify({
             schemaVersion: "vem-local-testbed-display-admission-proof/v1",
@@ -328,163 +339,7 @@ describe("tracked local testbed host lifecycle", () => {
       },
     });
     assert.equal(result.displayAdmissionProof.widthPx, 1080);
-    assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
-  });
-
-  it("clears explicitly configured proxy entries, restarts the discovered service, and waits for a newly appended listener diagnostic", async () => {
-    const plan = buildHostAdmissionPlan({
-      config: config(),
-      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      runId: "run-15",
-      runnerProxy: {
-        configured: true,
-        http: "http://proxy.example.test:8080",
-        https: "",
-        noProxy: "localhost,127.0.0.1",
-      },
-    });
-    const runner = plan.at(-1);
-    assert.equal(runner.type, "restart-runner-and-await-listener");
-    assert.match(runner.input, /C:\\actions-runner\\.env/);
-    assert.match(runner.input, /actions\.runner\.\*/);
-    assert.match(runner.input, /Restart-Service/);
-    assert.match(
-      runner.input,
-      /Set-Date -Date \(\[DateTimeOffset\]::FromUnixTimeSeconds\(\d+\)\.LocalDateTime\)/,
-    );
-    assert.match(runner.input, /Listening for Jobs|Runner reconnected/);
-    assert.doesNotMatch(
-      runner.input,
-      /A session for this runner already exists/,
-    );
-    assert.doesNotMatch(runner.input, /Session created/);
-    assert.match(runner.input, /\$diagnosticOffsets/);
-    assert.match(runner.input, /\.Length/);
-    assert.match(runner.input, /\.Seek\(\$offset/);
-    assert.match(runner.input, /HTTP_PROXY=http:\/\/proxy\.example\.test:8080/);
-    assert.doesNotMatch(runner.input, /HTTPS_PROXY=/);
-    assert.match(runner.input, /NO_PROXY=localhost,127\.0\.0\.1/);
-    assert.match(runner.input, /Where-Object \{ \$_ -notmatch/);
-    assert.doesNotMatch(runner.input, /GitHub API|GITHUB_TOKEN|gh api/i);
-
-    const result = await executeHostAdmissionPlan(plan, {
-      runCommand: async () => {},
-      runCaptureCommand: async (_command, _args, _stdin, input) => {
-        if (input.includes("interactive-display-report")) {
-          return {
-            stdout: `${JSON.stringify({
-              schemaVersion: "vem-local-testbed-display-admission-proof/v1",
-              status: "passed",
-              widthPx: 1080,
-              heightPx: 1920,
-              sessionUser: "baseline",
-            })}\n`,
-          };
-        }
-        return {
-          stdout: `${JSON.stringify({
-            serviceName: "actions.runner.example.runtime",
-            listenerMarker: "Listening for Jobs",
-            diagnosticLog: "Runner_20260718-000000-utc.log",
-          })}\n`,
-        };
-      },
-    });
-    assert.equal(result.runnerAdmission.listenerMarker, "Listening for Jobs");
-
-    await assert.rejects(
-      executeHostAdmissionPlan(plan, {
-        runCommand: async () => {},
-        runCaptureCommand: async (_command, _args, _stdin, input) => {
-          if (input.includes("interactive-display-report")) {
-            return {
-              stdout: `${JSON.stringify({
-                schemaVersion: "vem-local-testbed-display-admission-proof/v1",
-                status: "passed",
-                widthPx: 1080,
-                heightPx: 1920,
-                sessionUser: "baseline",
-              })}\n`,
-            };
-          }
-          return {
-            stdout: `${JSON.stringify({
-              serviceName: "actions.runner.example.runtime",
-              listenerMarker: "Session created",
-              diagnosticLog: "Runner_old.log",
-            })}\n`,
-          };
-        },
-      }),
-      /invalid listener marker/,
-    );
-
-    const withoutProxy = buildHostAdmissionPlan({
-      config: config(),
-      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      runId: "run-16",
-    }).at(-1);
-    assert.doesNotMatch(withoutProxy.input, /WriteAllLines|\$proxyLines/);
-
-    const clearProxy = buildHostAdmissionPlan({
-      config: config(),
-      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      runId: "run-17",
-      runnerProxy: { configured: true, http: "", https: "", noProxy: "" },
-    }).at(-1);
-    assert.match(clearProxy.input, /\$proxyLines = @\(\)/);
-    assert.match(clearProxy.input, /Where-Object \{ \$_ -notmatch/);
-    assert.doesNotMatch(clearProxy.input, /HTTP_PROXY=|HTTPS_PROXY=|NO_PROXY=/);
-
-    const dynamicRegistration = buildHostAdmissionPlan({
-      config: config(),
-      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      runId: "run-18",
-      runnerRegistrationToken: "runner-registration-token",
-      runnerRemovalToken: "runner-removal-token",
-    }).at(-1);
-    assert.doesNotMatch(
-      dynamicRegistration.input,
-      /curl\.exe|actions\/runners\/registration-token/,
-    );
-    assert.match(dynamicRegistration.input, /Stop-Service.*sc\.exe delete/s);
-    assert.doesNotMatch(dynamicRegistration.input, /config\.cmd'\) remove/);
-    assert.match(dynamicRegistration.input, /config\.cmd.*--runasservice/s);
-    assert.match(
-      dynamicRegistration.input,
-      /sc\.exe config .*obj= LocalSystem/s,
-    );
-    assert.match(
-      dynamicRegistration.input,
-      /Get-Process -Name 'Runner\.Listener'.*Stop-Process -Force/s,
-    );
-    assert.match(dynamicRegistration.input, /forest-win10-runtime-run-18/);
-    assert.doesNotMatch(
-      dynamicRegistration.input,
-      /forest-win10-runtime-current/,
-    );
-    assert.match(
-      dynamicRegistration.input,
-      /GITHUB_ACTIONS_RUNNER_TLS_NO_VERIFY=1/,
-    );
-    assert.match(dynamicRegistration.input, /registered unexpected identity/);
-
-    const proxiedRegistration = buildHostAdmissionPlan({
-      config: config(),
-      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      runId: "run-19",
-      runnerProxy: {
-        configured: true,
-        http: "http://proxy.example.test:8080",
-        https: "http://proxy.example.test:8080",
-        noProxy: "localhost,127.0.0.1",
-      },
-      runnerRegistrationToken: "runner-registration-token",
-      runnerRemovalToken: "runner-removal-token",
-    }).at(-1);
-    assert.match(
-      proxiedRegistration.input,
-      /HTTP_PROXY=http:\/\/proxy\.example\.test:8080/s,
-    );
+    assert.equal(result.runnerAdmission, undefined);
+    assert.deepEqual(operations, ["ssh", "ssh"]);
   });
 });

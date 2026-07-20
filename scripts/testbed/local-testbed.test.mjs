@@ -32,7 +32,6 @@ import {
   parseOptions,
   paymentMockCreateGatePaths,
   seedThroughSupportedApis,
-  runnerProxyEnvironment,
   validateBaselineContract,
 } from "./local-testbed.mjs";
 
@@ -94,7 +93,7 @@ function contract(root) {
         "--domain-xml",
         "{domainXmlPath}",
       ],
-      admitRunnerCommand: [
+      admitGuestCommand: [
         "/usr/bin/node",
         hostScript,
         "admit",
@@ -240,7 +239,7 @@ function producerConfig(root) {
         "--domain-xml",
         "{domainXmlPath}",
       ],
-      admitRunnerCommand: [
+      admitGuestCommand: [
         "/usr/bin/node",
         hostScript,
         "admit",
@@ -303,7 +302,7 @@ async function publishCurrentManifest(root) {
 }
 
 describe("local testbed orchestration", () => {
-  it("requires the generic baseline contract to separate reconstruction from runner admission", () => {
+  it("requires the generic baseline contract to separate reconstruction from guest admission", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const value = contract(root);
@@ -351,11 +350,8 @@ describe("local testbed orchestration", () => {
       );
       value.testbed.reconstructCommand[1] =
         "{repository}/scripts/testbed/local-testbed-host.mjs";
-      delete value.testbed.admitRunnerCommand;
-      assert.throws(
-        () => validateBaselineContract(value),
-        /admitRunnerCommand/,
-      );
+      delete value.testbed.admitGuestCommand;
+      assert.throws(() => validateBaselineContract(value), /admitGuestCommand/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -600,7 +596,7 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("replaces fixed host state and C overlay before admitting the Windows runner", () => {
+  it("replaces fixed host state and C overlay before admitting the Windows guest", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const value = contract(root);
@@ -691,7 +687,7 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("forwards explicitly configured runner proxies, including explicit clears, while leaving absent configuration untouched", () => {
+  it("passes admission command through without runner proxy/token arguments", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const value = contract(root);
@@ -700,93 +696,11 @@ describe("local testbed orchestration", () => {
         withoutProxy.args.includes("--runner-proxy-configured"),
         false,
       );
-
-      const withProxy = parseOptions(
-        [
-          "reconstruct",
-          "--mode",
-          "fast",
-          "--run-id",
-          "run-15",
-          "--workspace",
-          root,
-          "--state-root",
-          join(root, "state"),
-          "--baseline-contract",
-          join(root, "baseline.json"),
-          "--host-private-address",
-          "10.0.0.15",
-          "--out",
-          join(root, "out.json"),
-        ],
-        {
-          observeNetworkInterfaces: observedNetworkInterfaces,
-          environment: {
-            VEM_RUNNER_HTTP_PROXY: "http://proxy.example.test:8080",
-            VEM_RUNNER_HTTPS_PROXY: "",
-            VEM_RUNNER_NO_PROXY: "localhost,127.0.0.1",
-          },
-        },
+      assert.equal(
+        withoutProxy.args.includes("--runner-registration-token"),
+        false,
       );
-      const admission = buildReconstructionPlan(withProxy, value).at(-1);
-      assert.deepEqual(admission.args.slice(-7), [
-        "--runner-proxy-configured",
-        "--runner-http-proxy",
-        "http://proxy.example.test:8080",
-        "--runner-https-proxy",
-        "",
-        "--runner-no-proxy",
-        "localhost,127.0.0.1",
-      ]);
-      assert.deepEqual(runnerProxyEnvironment({}), {
-        configured: false,
-        http: "",
-        https: "",
-        noProxy: "",
-      });
-      assert.deepEqual(runnerProxyEnvironment({ VEM_RUNNER_HTTP_PROXY: "" }), {
-        configured: true,
-        http: "",
-        https: "",
-        noProxy: "",
-      });
-
-      const withRegistration = parseOptions(
-        [
-          "reconstruct",
-          "--mode",
-          "fast",
-          "--run-id",
-          "run-16",
-          "--workspace",
-          root,
-          "--state-root",
-          join(root, "state"),
-          "--baseline-contract",
-          join(root, "baseline.json"),
-          "--host-private-address",
-          "10.0.0.15",
-          "--out",
-          join(root, "out.json"),
-        ],
-        {
-          observeNetworkInterfaces: observedNetworkInterfaces,
-          environment: {
-            VEM_RUNNER_REGISTRATION_TOKEN: "runner-registration-token",
-            VEM_RUNNER_REMOVAL_TOKEN: "runner-removal-token",
-          },
-        },
-      );
-      const registrationAdmission = buildReconstructionPlan(
-        withRegistration,
-        value,
-      ).at(-1);
-      assert.deepEqual(registrationAdmission.args.slice(-4), [
-        "--runner-registration-token",
-        "runner-registration-token",
-        "--runner-removal-token",
-        "runner-removal-token",
-      ]);
+      assert.equal(withoutProxy.args.includes("--runner-removal-token"), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1288,7 +1202,6 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
-    assert.match(guest, /Join-Path \$cacheRoot "actions-work"/);
     assert.match(
       guest,
       /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/,
@@ -1317,7 +1230,6 @@ describe("Windows D cache contract", () => {
       /function Clear-DeclaredCaches \{[\s\S]*?\n\}/,
     )?.[0];
     assert.ok(clearFunction);
-    assert.doesNotMatch(clearFunction, /actions-work/);
     assert.equal(
       (clearFunction.match(/Remove-Item -LiteralPath/g) ?? []).length,
       1,
