@@ -11,6 +11,7 @@ import {
   runCleanupStep,
   shutdownControlledVisionMock,
   startContinuousCdpLocationHashObservation,
+  waitForSaleStartReady,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -463,6 +464,31 @@ describe("fast route stress sale tracer", () => {
       ],
     );
     assert.deepEqual(result.originalPoint, { x: 412.5, y: 1711.25 });
+  });
+
+  it("waits for sale readiness and a stable Catalog before observing customer navigation", async () => {
+    let nowMs = 0;
+    let sample = 0;
+    const capability = { canStartSale: true, revision: 7 };
+    const result = await waitForSaleStartReady({}, {}, 5_000, {
+      now: () => nowMs,
+      readRoute: async () => {
+        sample += 1;
+        return sample === 1
+          ? "#/catalog"
+          : sample === 2
+            ? "#/boot"
+            : "#/catalog";
+      },
+      readCapability: async () =>
+        sample < 3 ? { canStartSale: false } : capability,
+      wait: async (durationMs) => {
+        nowMs += durationMs;
+      },
+    });
+
+    assert.equal(result, capability);
+    assert.ok(sample >= 7);
   });
 
   it("captures root as the first CDP transition away from Catalog without runtime trace input", async () => {

@@ -1075,6 +1075,39 @@ async function daemonGet(handoff, path) {
   });
 }
 
+export async function waitForSaleStartReady(
+  handoff,
+  client,
+  timeoutMs = 30_000,
+  {
+    now = () => Date.now(),
+    readRoute = readCdpLocationHash,
+    readCapability = (input) => daemonGet(input, "/v1/sale-start-capability"),
+    wait = sleep,
+  } = {},
+) {
+  const deadline = now() + timeoutMs;
+  let stableSince = null;
+  let last = null;
+  while (now() < deadline) {
+    const [route, capability] = await Promise.all([
+      readRoute(client),
+      readCapability(handoff),
+    ]);
+    last = { route, capability };
+    if (route === "#/catalog" && capability?.canStartSale === true) {
+      stableSince ??= now();
+      if (now() - stableSince >= 1_000) return capability;
+    } else {
+      stableSince = null;
+    }
+    await wait(250);
+  }
+  throw new Error(
+    `installed sale startup did not settle before interaction: ${JSON.stringify(last)}`,
+  );
+}
+
 async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastTransaction = null;
@@ -1852,9 +1885,9 @@ async function runFastRouteStressSale(options) {
     await enablePageRuntime(client);
     clientReady = true;
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+    saleStartCapability = await waitForSaleStartReady(handoff, client);
     stage = "snapshot-baseline";
     uiViewport = await readInstalledUiViewport(client);
-    saleStartCapability = await daemonGet(handoff, "/v1/sale-start-capability");
     baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
     baselinePlatform = (
       await controlPlaneRequest(guestInput, "/v1/platform/query", {
