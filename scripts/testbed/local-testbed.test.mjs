@@ -1155,12 +1155,23 @@ describe("Windows D cache contract", () => {
       "$runtimeReady = Wait-RuntimeReady",
       claimedRestart,
     );
+    const reboundReady = guest.indexOf(
+      "$runtimeReady = Wait-RuntimeReady -PreviousGeneration",
+      hardwareBinding,
+    );
+    const daemonEvidence = guest.indexOf(
+      '$daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe"',
+      hardwareBinding,
+    );
     assert.ok(
       claim >= 0 &&
         claimedRestart > claim &&
         claimedReady > claimedRestart &&
-        serialStart > claimedReady,
+        serialStart > claimedReady &&
+        reboundReady > hardwareBinding &&
+        daemonEvidence > reboundReady,
     );
+    assert.match(guest, /ready\.generation -eq \$PreviousGeneration/);
     assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
     assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
     assert.match(

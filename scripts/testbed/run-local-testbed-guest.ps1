@@ -211,13 +211,20 @@ function Invoke-Claim([object]$GuestInput) {
   throw "clean Runtime Bootstrap claim did not complete: $lastError"
 }
 
-function Wait-RuntimeReady {
+function Wait-RuntimeReady([string]$PreviousGeneration = "") {
   $readyPath = Join-Path $daemonDataRoot "daemon-ready.json"
   $healthStatuses = @("healthy", "degraded", "offline", "maintenance", "starting")
   $deadline = [DateTime]::UtcNow.AddMinutes(2)
   do {
     if (Test-Path -LiteralPath $readyPath) {
       $ready = Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json
+      if (
+        -not [string]::IsNullOrWhiteSpace($PreviousGeneration) -and
+        [string]$ready.generation -eq $PreviousGeneration
+      ) {
+        Start-Sleep -Milliseconds 250
+        continue
+      }
       try {
         $health = Invoke-RestMethod -Uri $ready.healthzUrl -Headers @{ Authorization = "Bearer $($ready.ipcToken)" } -TimeoutSec 5
         $readiness = Invoke-RestMethod -Uri $ready.readyzUrl -Headers @{ Authorization = "Bearer $($ready.ipcToken)" } -TimeoutSec 5
@@ -525,6 +532,8 @@ $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInpu
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
 Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+Write-TestbedPhase "wait-bound-runtime-ready"
+$runtimeReady = Wait-RuntimeReady -PreviousGeneration ([string]$runtimeReady.ready.generation)
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
 if ($daemonEvidence.processId -ne $daemonProcess.Id -or $daemonEvidence.commandLine -notmatch '(?i)(?:^|\s)--console(?:\s|$)') {
   throw "deployed daemon process is not the claimed production --console process"
