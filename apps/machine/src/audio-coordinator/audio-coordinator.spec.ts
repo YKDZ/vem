@@ -214,6 +214,86 @@ describe("Audio Coordinator", () => {
     });
   });
 
+  it("drops stale queued transaction cues and interrupts equal-priority transaction audio", async () => {
+    let terminal:
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null = null;
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        terminal = (status) => options?.onTerminal?.({ status });
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: () => ({
+        sourceUrl: "/audio/transaction.mp3",
+        priority: 40,
+      }),
+    });
+
+    await coordinator.accept([transition("payment-succeeded")]);
+    await coordinator.accept([transition("dispensing-started")]);
+    await coordinator.accept([transition("pickup-waiting")]);
+
+    expect(driver.stop).toHaveBeenCalledOnce();
+    expect(coordinator.queuedRequestIds()).toEqual(["audio-request-3"]);
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        transitionId: "dispensing-started",
+        outcome: "stopped",
+        message: "superseded by newer transaction audio",
+      }),
+    );
+
+    const stopActive = terminal as
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null;
+    if (!stopActive) throw new Error("mock playback did not retain callback");
+    stopActive("stopped");
+    await vi.waitFor(() => {
+      expect(coordinator.activeRequest()?.transitionId).toBe("pickup-waiting");
+    });
+  });
+
+  it("rejects presence cues while transaction audio is active", async () => {
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: () => ({ sourceUrl: "/audio/cue.mp3", priority: 40 }),
+    });
+
+    await coordinator.accept([transition("pickup-waiting")]);
+    await coordinator.accept([transition("welcome", "presence")]);
+
+    expect(driver.playLocal).toHaveBeenCalledOnce();
+    expect(coordinator.queuedRequestIds()).toEqual([]);
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        type: "audio_rejected",
+        transitionId: "welcome",
+        message: "transaction audio active",
+      }),
+    );
+  });
+
   it("deduplicates a stable transition identity and preserves its trace correlation", async () => {
     let complete: (() => void) | null = null;
     const driver: AudioCoordinatorPlaybackDriver = {
@@ -401,9 +481,9 @@ describe("Audio Coordinator", () => {
       maxQueueSize: 1,
     });
 
-    await coordinator.accept([transition("active")]);
-    await coordinator.accept([transition("queued")]);
-    await coordinator.accept([transition("rejected")]);
+    await coordinator.accept([transition("active", "presence")]);
+    await coordinator.accept([transition("queued", "presence")]);
+    await coordinator.accept([transition("rejected", "presence")]);
 
     expect(coordinator.queuedRequestIds()).toEqual(["audio-request-2"]);
     expect(coordinator.trace()).toContainEqual(

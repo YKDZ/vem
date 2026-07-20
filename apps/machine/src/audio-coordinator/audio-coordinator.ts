@@ -134,8 +134,23 @@ export function createAudioCoordinator(
         });
         continue;
       }
+      if (
+        transition.category === "presence" &&
+        (active?.category === "transaction" ||
+          queue.some((request) => request.category === "transaction"))
+      ) {
+        trace.record({
+          type: "audio_rejected",
+          transitionId: transition.transitionId,
+          requestId: null,
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "transaction audio active",
+        });
+        continue;
+      }
       if (transition.category === "transaction") {
-        discardQueuedPresenceRequests();
+        discardSupersededQueuedRequests();
       }
       if (queue.length >= maxQueueSize) {
         trace.record({
@@ -170,14 +185,17 @@ export function createAudioCoordinator(
     await startNext();
   }
 
-  function discardQueuedPresenceRequests(): void {
+  function discardSupersededQueuedRequests(): void {
     for (let index = queue.length - 1; index >= 0; index -= 1) {
       const request = queue[index];
-      if (request?.category !== "presence") continue;
+      if (!request) continue;
       queue.splice(index, 1);
       recordTerminal(request, {
         status: "stopped",
-        message: "superseded by transaction audio",
+        message:
+          request.category === "presence"
+            ? "superseded by transaction audio"
+            : "superseded by newer transaction audio",
       });
     }
   }
@@ -219,10 +237,16 @@ export function createAudioCoordinator(
     const next = queue[0];
     const transactionPreemptsPresence =
       next?.category === "transaction" && active?.category === "presence";
+    const newerTransactionPreemptsActive =
+      next?.category === "transaction" &&
+      active?.category === "transaction" &&
+      next.priority >= active.priority;
     if (
       !active ||
       !next ||
-      (!transactionPreemptsPresence && next.priority <= active.priority) ||
+      (!transactionPreemptsPresence &&
+        !newerTransactionPreemptsActive &&
+        next.priority <= active.priority) ||
       stoppingActive
     ) {
       return;
