@@ -266,6 +266,54 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(posts[0].body.slots, [{ slotCode: "A1", addition: 1 }]);
   });
 
+  it("uses physical stock attestation when fixture quantities are full but sales state is frozen", async () => {
+    const posts = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: { fast: { slotCode: "A1", onHandQty: 3 } },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "stock-refill-01",
+            mode: "routine_refill",
+            slots: [{ slotCode: "A1", currentQuantity: 3 }],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          planogramVersion: "PLAN-01",
+          items: [
+            {
+              slotId: "slot-01",
+              slotCode: "A1",
+              sku: "SKU-01",
+              slotSalesState: saleViewReads > 1 ? "sale_ready" : "frozen",
+              saleableStock: saleViewReads > 1 ? 3 : 0,
+              physicalStock: 3,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+    assert.equal(result.mode, "physical_stock_attestation");
+    assert.equal(posts[0].path, "/v1/stock/attestation");
+    assert.equal(posts[0].body.planogramVersion, "PLAN-01");
+    assert.deepEqual(posts[0].body.slots, [
+      {
+        slotId: "slot-01",
+        slotCode: "A1",
+        sku: "SKU-01",
+        quantity: 3,
+        enabled: true,
+      },
+    ]);
+  });
+
   it("skips stock maintenance when every fixture slot is already sale-ready", async () => {
     let postCount = 0;
     const result = await ensureFixtureStockReady({

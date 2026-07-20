@@ -506,42 +506,75 @@ export async function ensureFixtureStockReady({
       `fixture stock requires a maintenance task, received ${task?.mode ?? "missing"}`,
     );
   }
-  const slots =
-    task.mode === "routine_refill"
-      ? (task.slots ?? [])
-          .map((slot) => ({
+  const initialBySlot = new Map(
+    (initialSaleView?.items ?? []).map((item) => [item.slotCode, item]),
+  );
+  const requiresCount = [...desiredBySlot.keys()].some(
+    (slotCode) => initialBySlot.get(slotCode)?.slotSalesState !== "sale_ready",
+  );
+  let operationMode = task.mode;
+  let operationId = task.taskId;
+  if (task.mode === "routine_refill" && requiresCount) {
+    operationMode = "physical_stock_attestation";
+    operationId = `testbed-stock-recovery-${Date.now()}`;
+    const slots = (initialSaleView?.items ?? []).map((item) => ({
+      slotId: item.slotId,
+      slotCode: item.slotCode,
+      sku: item.sku,
+      quantity: desiredBySlot.get(item.slotCode) ?? item.physicalStock,
+      enabled: true,
+    }));
+    if (
+      !initialSaleView?.planogramVersion ||
+      slots.length === 0 ||
+      slots.some((slot) => !slot.slotId || !slot.slotCode || !slot.sku)
+    ) {
+      throw new Error("fixture stock attestation inputs are incomplete");
+    }
+    await post("/v1/stock/attestation", {
+      attestationId: operationId,
+      planogramVersion: initialSaleView.planogramVersion,
+      operatorId: "testbed-orchestrator",
+      slots,
+    });
+  } else {
+    const slots =
+      task.mode === "routine_refill"
+        ? (task.slots ?? [])
+            .map((slot) => ({
+              slotCode: slot.slotCode,
+              addition: Math.max(
+                0,
+                (desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity) -
+                  slot.currentQuantity,
+              ),
+            }))
+            .filter((slot) => slot.addition > 0)
+        : (task.slots ?? []).map((slot) => ({
             slotCode: slot.slotCode,
-            addition: Math.max(
-              0,
-              (desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity) -
-                slot.currentQuantity,
-            ),
-          }))
-          .filter((slot) => slot.addition > 0)
-      : (task.slots ?? []).map((slot) => ({
-          slotCode: slot.slotCode,
-          quantity: desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity,
-        }));
-  if (slots.length === 0) {
-    throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
+            quantity: desiredBySlot.get(slot.slotCode) ?? slot.currentQuantity,
+          }));
+    if (slots.length === 0) {
+      throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
+    }
+    await post("/v1/stock/maintenance-task", {
+      taskId: task.taskId,
+      mode: task.mode,
+      slots,
+    });
   }
-  await post("/v1/stock/maintenance-task", {
-    taskId: task.taskId,
-    mode: task.mode,
-    slots,
-  });
 
   const deadline = Date.now() + timeoutMs;
   let saleView = initialSaleView;
   while (Date.now() < deadline) {
     saleView = await get("/v1/sale-view");
     if (targetIsReady(saleView)) {
-      return { changed: true, taskId: task.taskId, mode: task.mode };
+      return { changed: true, taskId: operationId, mode: operationMode };
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
   throw new Error(
-    `fixture stock did not become sale-ready after ${task.mode}: ${JSON.stringify(
+    `fixture stock did not become sale-ready after ${operationMode}: ${JSON.stringify(
       (saleView?.items ?? []).map((item) => ({
         slotCode: item.slotCode,
         slotSalesState: item.slotSalesState,
