@@ -400,8 +400,28 @@ async function stageAndRunGuest({
     "-EncodedCommand",
     encodedPowerShell(prepare),
   ]);
+  const ensurePowerShell = `${config.guestSourcePath}\\scripts\\testbed\\ensure-testbed-pwsh.ps1`;
+  const preparePowerShell = [
+    `$env:GITHUB_PATH = Join-Path $env:TEMP 'vem-testbed-pwsh-path.txt'`,
+    `& '${ensurePowerShell.replaceAll("'", "''")}'`,
+  ].join("\n");
+  await runProcess("ssh", [
+    ...ssh,
+    remote,
+    "powershell.exe",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encodedPowerShell(preparePowerShell),
+  ]);
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}'`;
+  const invokePowerShell7 = [
+    `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
+    `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
+    "exit $LASTEXITCODE",
+  ].join("\n");
   try {
     await runProcess("ssh", [
       ...ssh,
@@ -411,7 +431,7 @@ async function stageAndRunGuest({
       "-ExecutionPolicy",
       "Bypass",
       "-EncodedCommand",
-      encodedPowerShell(execute),
+      encodedPowerShell(invokePowerShell7),
     ]);
   } catch (error) {
     error.businessFailure = true;
