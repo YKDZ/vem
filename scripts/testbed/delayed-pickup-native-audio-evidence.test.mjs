@@ -28,6 +28,26 @@ const runtime = {
   cdpSessionId: "cdp-session://17",
 };
 
+function wav(samples, sampleRateHz = 48_000) {
+  const data = Buffer.alloc(samples.length * 2);
+  samples.forEach((sample, index) => data.writeInt16LE(sample, index * 2));
+  const bytes = Buffer.alloc(44 + data.length);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVEfmt ", 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(sampleRateHz, 24);
+  bytes.writeUInt32LE(sampleRateHz * 2, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(data.length, 40);
+  data.copy(bytes, 44);
+  return bytes;
+}
+
 function frame(sequence, offset, code) {
   const bytesHex = `55${code}`;
   return {
@@ -401,6 +421,62 @@ describe("delayed pickup production evidence algorithms", () => {
       result.diagnostics.some(
         (entry) => entry.code === "runtime_audio_cue_start_latency_invalid",
       ),
+    );
+  });
+
+  it("clips cue windows to real WAV capture duration and reports late-only windows as silent", () => {
+    const sampleRateHz = 48_000;
+    const signalDurationMs = 1_200;
+    const samples = Array.from({ length: sampleRateHz * (signalDurationMs / 1_000) }, (_, index) => {
+      const frameMs = (index / sampleRateHz) * 1_000;
+      return frameMs >= 100 && frameMs < 900 ? (index % 2 === 0 ? 1024 : 2048) : 0;
+    });
+
+    const result = correlateDelayedPickupCueWindows({
+      captureBytes: wav(samples, sampleRateHz),
+      captureStartedAt: "2026-07-18T08:00:00.000Z",
+      captureCompletedAt: "2026-07-18T08:00:02.000Z",
+      cues: {
+        pickup_waiting: {
+          started: { at: "2026-07-18T08:00:00.150Z" },
+          terminal: { at: "2026-07-18T08:00:00.250Z" },
+        },
+        ordinary_warning: {
+          started: { at: "2026-07-18T08:00:00.450Z" },
+          terminal: { at: "2026-07-18T08:00:00.540Z" },
+        },
+        urgent_warning: {
+          started: { at: "2026-07-18T08:00:00.650Z" },
+          terminal: { at: "2026-07-18T08:00:00.740Z" },
+        },
+        reset_progress: {
+          started: { at: "2026-07-18T08:00:00.800Z" },
+          terminal: { at: "2026-07-18T08:00:00.970Z" },
+        },
+        dispense_succeeded: {
+          started: { at: "2026-07-18T08:00:01.500Z" },
+          terminal: { at: "2026-07-18T08:00:01.700Z" },
+        },
+      },
+    });
+
+    assert.equal(result.ok, false);
+    const dispenseWindow = result.inspections.find(
+      (entry) => entry.label === "dispense_succeeded",
+    );
+    assert.equal(dispenseWindow?.kind, "silent");
+    assert.equal(
+      result.inspections.some((entry) => entry.kind === "malformed"),
+      false,
+    );
+    assert.equal(
+      result.diagnostics.some(
+        (entry) =>
+          entry.code === "cue_audio_window_silent" &&
+          entry.detail?.label === "dispense_succeeded" &&
+          entry.detail?.kind === "silent",
+      ),
+      true,
     );
   });
 });

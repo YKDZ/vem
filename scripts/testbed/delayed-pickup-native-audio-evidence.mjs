@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { inspectWavPcmWindows } from "./default-audio-evidence.mjs";
+import {
+  inspectWavPcm,
+  inspectWavPcmWindows,
+} from "./default-audio-evidence.mjs";
 
 export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
   firstWarningAfterF0Ms: 15_000,
@@ -1020,7 +1023,36 @@ export function correlateDelayedPickupCueWindows({
       diagnostics: [diagnostic("audio_cue_window_missing_or_empty")],
       inspections: [],
     };
-  const inspections = inspectWavPcmWindows(captureBytes, windows, threshold);
+  const sampleWindow = inspectWavPcm(captureBytes, threshold);
+  if (!sampleWindow.ok) {
+    return {
+      ok: false,
+      diagnostics: [diagnostic("audio_capture_malformed", sampleWindow)],
+      inspections: [],
+    };
+  }
+  const sampleFrameDurationMs = 1_000 / sampleWindow.sampleRateHz;
+  const captureDurationMs = Math.min(
+    captureEndMs - captureStartMs,
+    sampleWindow.durationMs,
+  );
+  const normalizedWindows = windows.map((window) => {
+    const endMs = Math.max(
+      0,
+      Math.min(captureDurationMs, window.endMs),
+    );
+    let startMs = Math.max(0, Math.min(captureDurationMs, window.startMs));
+    if (endMs <= startMs) {
+      if (endMs <= 0) return window;
+      startMs = Math.max(0, endMs - sampleFrameDurationMs);
+    }
+    return { ...window, startMs, endMs };
+  });
+  const inspections = inspectWavPcmWindows(
+    captureBytes,
+    normalizedWindows,
+    threshold,
+  );
   for (const inspection of inspections)
     if (!inspection.ok || inspection.kind !== "passed")
       diagnostics.push(
