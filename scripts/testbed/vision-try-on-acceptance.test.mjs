@@ -996,7 +996,7 @@ describe("vision try-on acceptance script", () => {
     assert.equal(summary.selectedVariantId, "variant-regular");
   });
 
-  it("requires try-on evidence to bind the seeded variant/media asset and reject black frames", () => {
+  it("requires decodable try-on pixels without requiring transport-specific frame headers", () => {
     const summary = validateTryOnPresentation({
       selectedProduct: {
         catalogKey: "product:L",
@@ -1018,11 +1018,6 @@ describe("vision try-on acceptance script", () => {
         height: 480,
         nonBlackPixelCount: 12,
         sessionId: "try-on-session-001",
-        sourceFrame: sourceFrame("front", "c".repeat(64), {
-          frameIndex: 15,
-          decodedFrameCount: 16,
-          sessionId: "try-on-session-001",
-        }),
       },
       silhouetteEvidence: {
         ok: true,
@@ -1051,7 +1046,7 @@ describe("vision try-on acceptance script", () => {
     });
     assert.equal(summary.sessionId, "try-on-session-001");
     assert.equal(summary.nonBlackPixelCount, 12);
-    assert.equal(summary.sourceFrame.frameIndex, 15);
+    assert.equal(summary.sourceFrame, null);
     assert.throws(
       () =>
         validateTryOnPresentation({

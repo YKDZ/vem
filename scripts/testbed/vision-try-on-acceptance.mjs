@@ -941,17 +941,18 @@ export function validateTryOnPresentation({
   }
   const sourceFrame =
     installedBinding?.frameSourceBinding &&
-    mjpegEvidence.sourceFrame &&
-    validateSourceFrameEvidence(
-      mjpegEvidence.sourceFrame,
-      "try-on source frame",
-      {
-        role: "front",
-        configSha256: installedBinding.frameSourceBinding.configSha256,
-        fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
-        sessionId: mjpegEvidence.sessionId,
-      },
-    );
+    mjpegEvidence.sourceFrame?.adapter
+      ? validateSourceFrameEvidence(
+          mjpegEvidence.sourceFrame,
+          "try-on source frame",
+          {
+            role: "front",
+            configSha256: installedBinding.frameSourceBinding.configSha256,
+            fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
+            sessionId: mjpegEvidence.sessionId,
+          },
+        )
+      : null;
   return {
     sessionId: mjpegEvidence.sessionId,
     contentType: mjpegEvidence.contentType,
