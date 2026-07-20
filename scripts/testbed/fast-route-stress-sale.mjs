@@ -1648,14 +1648,25 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
     );
   }
   // The Linux host control plane is the runner-owned bridge to run-vm-host-adapter.mjs.
-  return fetchJson(`${controlPlane.endpoint}${path}`, {
+  const request = {
     method: "POST",
     headers: {
       authorization: `Bearer ${controlPlane.token}`,
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  };
+  let lastError;
+  for (const retryDelayMs of [0, 100, 250]) {
+    if (retryDelayMs > 0) await sleep(retryDelayMs);
+    try {
+      return await fetchJson(`${controlPlane.endpoint}${path}`, request);
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function collectPlatformLog(guestInput, sessionId, outPath) {
