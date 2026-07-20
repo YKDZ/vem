@@ -2,12 +2,16 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
+    time::Duration,
 };
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqlitePoolOptions, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Row, Sqlite, SqlitePool, Transaction,
+};
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use uuid::Uuid;
@@ -5718,9 +5722,12 @@ impl LocalStateStore {
 
 async fn open_sqlite_pool(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     let url = format!("sqlite://{}?mode=rwc", path.display());
+    let options = url
+        .parse::<SqliteConnectOptions>()?
+        .busy_timeout(Duration::from_secs(5));
     SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&url)
+        .connect_with(options)
         .await
 }
 
