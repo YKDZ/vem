@@ -126,7 +126,8 @@ async function waitForRoleState(handoff, role, ready, timeoutMs = 45_000) {
     ]);
     const state = bindings?.roles?.find((entry) => entry?.role === role);
     last = { bindings, healthz, readyz, capability, state };
-    if (state?.ready === ready) {
+    const detached = ready || state?.currentPort == null;
+    if (state?.ready === ready && detached) {
       return {
         ready,
         currentPort: state.currentPort ?? null,

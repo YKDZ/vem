@@ -125,6 +125,17 @@ function daemonGet(handoff, path) {
   });
 }
 
+function daemonPost(handoff, path, body = {}) {
+  return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 function control(guestInput, path, body = {}) {
   return fetchJson(
     `${required(guestInput.hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
@@ -393,6 +404,12 @@ export async function runEnvironmentControlGuest(options) {
     });
     await waitForDaemonReadyRefresh(handoff);
     await waitForHardwareBindings(handoff, session);
+    const hardware = await daemonPost(handoff, "/v1/hardware/self-check", {});
+    if (hardware?.online !== true) {
+      throw new Error(
+        `lower-controller was not ready before environment commands: ${JSON.stringify(hardware)}`,
+      );
+    }
     const token = await adminLogin(guestInput);
     const machine = await findMachine(guestInput, token);
 
