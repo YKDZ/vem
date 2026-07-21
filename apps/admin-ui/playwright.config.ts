@@ -1,10 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const chromiumChannel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL ?? "chrome";
+const chromiumChannel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL;
 
 const chromiumUse = {
   ...devices["Desktop Chrome"],
-  channel: chromiumChannel,
+  ...(chromiumChannel ? { channel: chromiumChannel } : {}),
 };
 
 export default defineConfig({
@@ -20,7 +20,8 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "pnpm -F admin-ui dev",
+    command:
+      "pnpm -F admin-ui build && pnpm -F admin-ui exec vite preview --host 0.0.0.0 --port 5173 --strictPort",
     url: "http://localhost:5173",
     reuseExistingServer: true,
   },

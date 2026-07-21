@@ -17,7 +17,7 @@ async function login(
 }
 
 test.describe("Access Management insufficient permission", () => {
-  test("limited admin cannot see or execute admin user writes in the browser", async ({
+  test("limited admin cannot see or execute admin user writes through the deployed UI session", async ({
     page,
   }) => {
     const unique = Date.now().toString(36);
@@ -28,53 +28,29 @@ test.describe("Access Management insufficient permission", () => {
 
     await page.evaluate(
       async ({ limitedPassword, limitedUsername, unique }) => {
-        type CreateRole = (body: {
-          code: string;
-          name: string;
-          permissionCodes: string[];
-        }) => Promise<{ id: string }>;
-        type CreateAdminUser = (body: {
-          username: string;
-          password: string;
-          displayName: string;
-          roleIds?: string[];
-        }) => Promise<unknown>;
-
-        function isRecord(value: unknown): value is Record<string, unknown> {
-          return typeof value === "object" && value !== null;
-        }
-
-        function isRolesModule(
-          value: unknown,
-        ): value is { createRole: CreateRole } {
-          return isRecord(value) && typeof value.createRole === "function";
-        }
-
-        function isAdminUsersModule(
-          value: unknown,
-        ): value is { createAdminUser: CreateAdminUser } {
-          return isRecord(value) && typeof value.createAdminUser === "function";
-        }
-
-        const rolesModulePath = "/src/api/roles.ts";
-        const adminUsersModulePath = "/src/api/admin-users.ts";
-        const rolesModule: unknown = await import(rolesModulePath);
-        const adminUsersModule: unknown = await import(adminUsersModulePath);
-        if (!isRolesModule(rolesModule)) {
-          throw new Error("roles API module is unavailable");
-        }
-        if (!isAdminUsersModule(adminUsersModule)) {
-          throw new Error("admin users API module is unavailable");
-        }
-        const { createRole } = rolesModule;
-        const { createAdminUser } = adminUsersModule;
-
-        const role = await createRole({
+        const token = localStorage.getItem("vem.admin.accessToken");
+        const post = async (path: string, body: unknown): Promise<unknown> => {
+          const response = await fetch(`/api${path}`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(body),
+          });
+          const payload = (await response.json()) as {
+            data?: unknown;
+            message?: string;
+          };
+          if (!response.ok) throw new Error(payload.message ?? path);
+          return payload.data;
+        };
+        const role = (await post("/roles", {
           code: `limited_ui_${unique}`,
           name: `Limited UI ${unique}`,
-          permissionCodes: ["adminUsers.read" as const],
-        });
-        await createAdminUser({
+          permissionCodes: ["adminUsers.read"],
+        })) as { id: string };
+        await post("/admin-users", {
           username: limitedUsername,
           password: limitedPassword,
           displayName: `Limited UI ${unique}`,
@@ -96,46 +72,20 @@ test.describe("Access Management insufficient permission", () => {
 
     const writeAttempt = await page.evaluate(
       async ({ unique }) => {
-        type CreateAdminUser = (body: {
-          username: string;
-          password: string;
-          displayName: string;
-        }) => Promise<unknown>;
-
-        function isRecord(value: unknown): value is Record<string, unknown> {
-          return typeof value === "object" && value !== null;
-        }
-
-        function isAdminUsersModule(
-          value: unknown,
-        ): value is { createAdminUser: CreateAdminUser } {
-          return isRecord(value) && typeof value.createAdminUser === "function";
-        }
-
-        function statusFromError(error: unknown): number | null {
-          if (!isRecord(error) || !isRecord(error.response)) return null;
-          return typeof error.response.status === "number"
-            ? error.response.status
-            : null;
-        }
-
-        const adminUsersModulePath = "/src/api/admin-users.ts";
-        const adminUsersModule: unknown = await import(adminUsersModulePath);
-        if (!isAdminUsersModule(adminUsersModule)) {
-          throw new Error("admin users API module is unavailable");
-        }
-        const { createAdminUser } = adminUsersModule;
-
-        try {
-          await createAdminUser({
+        const token = localStorage.getItem("vem.admin.accessToken");
+        const response = await fetch("/api/admin-users", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
             username: `blocked-ui-${unique}`,
             password: "BlockedPassword123!",
             displayName: "Blocked UI Write",
-          });
-          return { ok: true, status: null };
-        } catch (error) {
-          return { ok: false, status: statusFromError(error) };
-        }
+          }),
+        });
+        return { ok: response.ok, status: response.status };
       },
       { unique },
     );

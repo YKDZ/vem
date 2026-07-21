@@ -141,17 +141,11 @@ async function ensureCargoTypify() {
 async function assertLocalCiPrerequisites() {
   printStep("Check local CI prerequisites");
   await requireCommand("docker");
-  await requireCommand("google-chrome");
 }
 
 async function assertDockerPrerequisite() {
   printStep("Check Docker prerequisite");
   await requireCommand("docker");
-}
-
-async function assertChromePrerequisite() {
-  printStep("Check Chrome prerequisite");
-  await requireCommand("google-chrome");
 }
 
 async function dockerRm(name) {
@@ -378,7 +372,14 @@ async function runAdminBrowserE2e({
     const mqtt = await startMosquitto(mqttContainer, mqttConfigDirectory);
     const databaseUrl = `postgresql://vem:vem_password@${postgres.host}:${postgres.port}/${database}`;
 
-    await run("pnpm", ["turbo", "build", "--filter", "service-api"]);
+    await run("pnpm", [
+      "turbo",
+      "build",
+      "--filter",
+      "service-api",
+      "--filter",
+      "admin-ui",
+    ]);
     await run("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: {
         DATABASE_URL: databaseUrl,
@@ -400,13 +401,25 @@ async function runAdminBrowserE2e({
       serviceLog,
     );
 
-    adminUi = startProcess("pnpm", ["dev", "--", "--strictPort"], {
-      cwd: join(root, "apps/admin-ui"),
-      logPath: adminLog,
-    });
+    adminUi = startProcess(
+      "pnpm",
+      [
+        "exec",
+        "vite",
+        "preview",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5173",
+        "--strictPort",
+      ],
+      {
+        cwd: join(root, "apps/admin-ui"),
+        logPath: adminLog,
+      },
+    );
     await waitForUrl("http://localhost:5173", "Admin UI", adminLog);
 
-    await run("google-chrome", ["--version"]);
     await run("pnpm", [testScript], { cwd: join(root, "apps/admin-ui") });
   } finally {
     await stopProcess(adminUi);
@@ -466,7 +479,6 @@ async function runUnitJob() {
 
 async function runAdminE2eJob() {
   await assertDockerPrerequisite();
-  await assertChromePrerequisite();
   await runAdminBrowserE2e({
     name: "Admin UI browser E2E",
     database: "vem",

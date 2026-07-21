@@ -13,7 +13,7 @@ async function login(page: Page): Promise<void> {
 }
 
 test.describe("Payment Operations admin API contract", () => {
-  test("upserts an Alipay provider config through the admin-ui contract helper against the real admin API", async ({
+  test("upserts an Alipay provider config through the deployed UI session against the real admin API", async ({
     page,
   }) => {
     const unique = Date.now().toString(36);
@@ -25,64 +25,39 @@ test.describe("Payment Operations admin API contract", () => {
 
     const configPayload = await page.evaluate(
       async ({ appId, merchantNo }) => {
-        type UpsertPaymentProviderConfig = (body: {
-          providerCode: "alipay";
-          machineId: null;
-          merchantNo: string;
-          appId: string;
-          status: "enabled";
-          publicConfigJson: {
-            mode: "sandbox";
-            gatewayUrl: string;
-            keyType: "PKCS8";
-            qrExpiresMinutes: number;
-          };
-          sensitiveConfigJson: {
-            privateKeyPem: string;
-            appCertPem: string;
-            alipayPublicCertPem: string;
-            alipayRootCertPem: string;
-          };
-        }) => Promise<unknown>;
-
-        function isRecord(value: unknown): value is Record<string, unknown> {
-          return typeof value === "object" && value !== null;
-        }
-
-        function isPaymentsModule(value: unknown): value is {
-          upsertPaymentProviderConfig: UpsertPaymentProviderConfig;
-        } {
-          return (
-            isRecord(value) &&
-            typeof value.upsertPaymentProviderConfig === "function"
-          );
-        }
-
-        const paymentsModulePath = "/src/api/payments.ts";
-        const paymentsModule: unknown = await import(paymentsModulePath);
-        if (!isPaymentsModule(paymentsModule)) {
-          throw new Error("payments API module is unavailable");
-        }
-        const { upsertPaymentProviderConfig } = paymentsModule;
-        return await upsertPaymentProviderConfig({
-          providerCode: "alipay",
-          machineId: null,
-          merchantNo,
-          appId,
-          status: "enabled",
-          publicConfigJson: {
-            mode: "sandbox",
-            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
-            keyType: "PKCS8",
-            qrExpiresMinutes: 10,
+        const token = localStorage.getItem("vem.admin.accessToken");
+        const response = await fetch("/api/payments/provider-configs", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${token}`,
           },
-          sensitiveConfigJson: {
-            privateKeyPem: "test-key",
-            appCertPem: "test-cert",
-            alipayPublicCertPem: "test-alipay-cert",
-            alipayRootCertPem: "test-root-cert",
-          },
+          body: JSON.stringify({
+            providerCode: "alipay",
+            machineId: null,
+            merchantNo,
+            appId,
+            status: "enabled",
+            publicConfigJson: {
+              mode: "sandbox",
+              gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+              keyType: "PKCS8",
+              qrExpiresMinutes: 10,
+            },
+            sensitiveConfigJson: {
+              privateKeyPem: "test-key",
+              appCertPem: "test-cert",
+              alipayPublicCertPem: "test-alipay-cert",
+              alipayRootCertPem: "test-root-cert",
+            },
+          }),
         });
+        const payload = (await response.json()) as {
+          data?: unknown;
+          message?: string;
+        };
+        if (!response.ok) throw new Error(payload.message ?? "payment config");
+        return payload.data;
       },
       { appId, merchantNo },
     );
