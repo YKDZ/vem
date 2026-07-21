@@ -15,6 +15,7 @@ import {
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   refreshDaemonReadyHandoff,
   runSerialTrackLifecycle,
+  waitForPlatformFixtureStock,
   waitForBusinessHardwareReady,
 } from "./full-workflow-orchestrator.mjs";
 
@@ -540,6 +541,55 @@ describe("full workflow serial lifecycle", () => {
     });
     assert.deepEqual(result, { changed: false });
     assert.equal(postCount, 0);
+  });
+
+  it("waits for asynchronous stock upload to settle in the authoritative platform", async () => {
+    let inventoryReads = 0;
+    const calls = [];
+    const result = await waitForPlatformFixtureStock({
+      guestInput: {
+        serviceApi: { adminUsername: "admin", adminPassword: "secret" },
+      },
+      fixtureAllocation: {
+        pickupProtocol: {
+          inventoryId: "inventory-5",
+          slotCode: "A5",
+          onHandQty: 3,
+        },
+      },
+      request: async (_input, path, options) => {
+        calls.push({ path, options });
+        if (path === "/auth/login") return { accessToken: "token-1" };
+        inventoryReads += 1;
+        return {
+          items: [
+            {
+              id: "inventory-5",
+              onHandQty: inventoryReads === 1 ? 2 : 3,
+              reservedQty: 0,
+            },
+          ],
+        };
+      },
+      pollMs: 0,
+    });
+    assert.equal(inventoryReads, 2);
+    assert.deepEqual(result.inventories, [
+      {
+        inventoryId: "inventory-5",
+        expectedOnHandQty: 3,
+        onHandQty: 3,
+        reservedQty: 0,
+      },
+    ]);
+    assert.deepEqual(calls[0], {
+      path: "/auth/login",
+      options: {
+        method: "POST",
+        body: { username: "admin", password: "secret" },
+      },
+    });
+    assert.equal(calls[1].options.token, "token-1");
   });
 
   it("returns from payment route via customer cancel entry then back to catalog", async () => {

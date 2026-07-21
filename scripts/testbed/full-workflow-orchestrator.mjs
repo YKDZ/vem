@@ -37,6 +37,7 @@ const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
 const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 const STOCK_READY_TIMEOUT_MS = 30_000;
+const PLATFORM_STOCK_READY_TIMEOUT_MS = 30_000;
 const HARDWARE_READY_TIMEOUT_MS = 30_000;
 
 // This is the one canonical registry for business acceptance.
@@ -409,6 +410,103 @@ function daemonPost(handoff, path, body) {
       );
     return payload;
   });
+}
+
+function unwrapServiceApiEnvelope(payload) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    payload.code === 0 &&
+    Object.hasOwn(payload, "data")
+  ) {
+    return payload.data;
+  }
+  return payload;
+}
+
+async function serviceApiRequest(guestInput, path, options = {}) {
+  const baseUrl = required(
+    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    "runtime bootstrap provisioning API base URL",
+  ).replace(/\/+$/, "");
+  const response = await boundedFetch(`${baseUrl}${path}`, {
+    method: options.method ?? "GET",
+    headers: {
+      ...(options.token
+        ? { authorization: `Bearer ${options.token}` }
+        : {}),
+      ...(options.body ? { "content-type": "application/json" } : {}),
+    },
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(
+      `${options.method ?? "GET"} ${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+    );
+  }
+  return unwrapServiceApiEnvelope(payload);
+}
+
+export async function waitForPlatformFixtureStock({
+  guestInput,
+  fixtureAllocation,
+  request = serviceApiRequest,
+  timeoutMs = PLATFORM_STOCK_READY_TIMEOUT_MS,
+  pollMs = 250,
+}) {
+  const fixtures = Object.values(fixtureAllocation ?? {});
+  if (fixtures.length === 0) {
+    throw new Error("platform fixture stock wait requires allocated slots");
+  }
+  const login = await request(guestInput, "/auth/login", {
+    method: "POST",
+    body: {
+      username: required(
+        guestInput?.serviceApi?.adminUsername,
+        "service API admin username",
+      ),
+      password: required(
+        guestInput?.serviceApi?.adminPassword,
+        "service API admin password",
+      ),
+    },
+  });
+  const token = required(login?.accessToken, "service API access token");
+  const deadline = Date.now() + timeoutMs;
+  let last = [];
+  while (Date.now() < deadline) {
+    const page = await request(
+      guestInput,
+      "/inventories?page=1&pageSize=100",
+      { token },
+    );
+    last = fixtures.map((fixture) => {
+      const inventory = (page?.items ?? []).find(
+        (entry) => entry?.id === fixture.inventoryId,
+      );
+      return {
+        inventoryId: fixture.inventoryId,
+        expectedOnHandQty: fixture.onHandQty,
+        onHandQty: inventory?.onHandQty ?? null,
+        reservedQty: inventory?.reservedQty ?? null,
+      };
+    });
+    if (
+      last.every(
+        (entry) =>
+          entry.onHandQty === entry.expectedOnHandQty &&
+          entry.reservedQty === 0,
+      )
+    ) {
+      return { inventories: last };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+  }
+  throw new Error(
+    `platform fixture stock did not settle before business assertions: ${JSON.stringify(last)}`,
+  );
 }
 
 export async function ensureFixtureStockReady({
@@ -933,6 +1031,10 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
             fixtureAllocation,
             daemonGet: (path) => daemonGet(refreshed, path),
             daemonPost: (path, body) => daemonPost(refreshed, path, body),
+          });
+          await waitForPlatformFixtureStock({
+            guestInput,
+            fixtureAllocation,
           });
         }
       }),
