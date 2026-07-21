@@ -364,10 +364,27 @@ export async function runInstalledIpcRecoveryGuest(options) {
     }
     let paymentRouteReached = false;
     for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
-      await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
+      const currentRoute = await evaluateExpression(client, "location.hash");
+      if (/^#\/payment/.test(currentRoute)) {
+        paymentRouteReached = true;
+        break;
+      }
+      try {
+        await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
+          kind: "touch",
+          timeoutMs: 30_000,
+        });
+      } catch (error) {
+        const projectedRoute = await evaluateExpression(
+          client,
+          "location.hash",
+        );
+        if (/^#\/payment/.test(projectedRoute)) {
+          paymentRouteReached = true;
+          break;
+        }
+        throw error;
+      }
       paymentRouteReached = await waitForRoute(client, /^#\/payment/, {
         timeoutMs: attempt === 2 ? 30_000 : 2_000,
         pollMs: 250,
