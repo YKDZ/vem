@@ -1489,6 +1489,10 @@ describe("Windows D cache contract", () => {
     assert.ok(machineBuild < deploy && deploy < acceptance);
     assert.match(
       guest,
+      /Write-TestbedPhase "clean-local-runtime-artifacts"\s+cargo clean --release -p machine -p vending-daemon\s+if \(\$LASTEXITCODE -ne 0\)/,
+    );
+    assert.match(
+      guest,
       /if \(\$Mode -eq "full"\) \{\s+\$guestInput\.runtimeBootstrap[\s\S]*Set-Content -LiteralPath \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"/,
     );
     assert.match(

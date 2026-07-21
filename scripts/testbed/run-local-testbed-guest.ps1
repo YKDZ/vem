@@ -539,6 +539,9 @@ if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
 }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
+Write-TestbedPhase "clean-local-runtime-artifacts"
+cargo clean --release -p machine -p vending-daemon
+if ($LASTEXITCODE -ne 0) { throw "local runtime artifact cleanup failed" }
 Write-TestbedPhase "machine-build"
 & $pnpm --filter machine exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
 if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
