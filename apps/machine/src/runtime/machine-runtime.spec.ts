@@ -30,6 +30,7 @@ const {
   getSaleViewMock,
   getSyncStatusMock,
   getCurrentTransactionMock,
+  getEffectiveRuntimeConfigurationMock,
   subscribeEventsMock,
   createJourneyAudioRuntimeMock,
   disposeJourneyAudioMock,
@@ -42,6 +43,7 @@ const {
     getSaleViewMock: vi.fn(),
     getSyncStatusMock: vi.fn(),
     getCurrentTransactionMock: vi.fn(),
+    getEffectiveRuntimeConfigurationMock: vi.fn(),
     subscribeEventsMock: vi.fn<
       (handlers: RuntimeEventHandlers) => { close(): void }
     >(() => ({ close: vi.fn() })),
@@ -59,6 +61,7 @@ vi.mock("@/daemon/client", () => ({
     getSaleView: getSaleViewMock,
     getSyncStatus: getSyncStatusMock,
     getCurrentTransaction: getCurrentTransactionMock,
+    getEffectiveRuntimeConfiguration: getEffectiveRuntimeConfigurationMock,
     subscribeEvents: subscribeEventsMock,
   },
 }));
@@ -147,6 +150,20 @@ beforeEach(() => {
     lastError: null,
   });
   getCurrentTransactionMock.mockResolvedValue(noCurrentTransaction());
+  getEffectiveRuntimeConfigurationMock.mockResolvedValue({
+    schemaVersion: 1,
+    revision: "runtime-config-1",
+    machine: { code: "VEM-TESTBED" },
+    platform: { apiBaseUrl: "http://127.0.0.1/api" },
+    experience: {
+      audio: {
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      },
+    },
+  });
   disposeJourneyAudioMock.mockResolvedValue(undefined);
   createJourneyAudioRuntimeMock.mockReturnValue({
     requestTestPlayback: vi.fn(),
@@ -205,6 +222,7 @@ describe("Machine runtime coordinator", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
+    expect(getEffectiveRuntimeConfigurationMock).toHaveBeenCalledOnce();
     expect(subscribeEventsMock).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(15_000);

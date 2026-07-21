@@ -172,6 +172,7 @@ async function reconcileAfterStreamReconnect(
   const catalogStore = useCatalogStore(pinia);
   const checkoutStore = useCheckoutStore(pinia);
   const mqttStore = useMqttStore(pinia);
+  const machineStore = useMachineStore(pinia);
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   let retryDelayMs = RECONCILIATION_INITIAL_DELAY_MS;
 
@@ -186,6 +187,7 @@ async function reconcileAfterStreamReconnect(
         catalogResult,
         mqttResult,
         transactionResult,
+        runtimeConfigurationResult,
         // oxlint-disable-next-line no-await-in-loop -- all projections belong to the same reconnect observation and must settle before retrying it.
       ] = await Promise.allSettled([
         connectivityStore.refresh(),
@@ -193,6 +195,7 @@ async function reconcileAfterStreamReconnect(
         catalogStore.refresh(),
         mqttStore.refresh(),
         checkoutStore.refreshCurrentTransaction(),
+        machineStore.loadEffectiveRuntimeConfiguration(),
       ]);
       const rejected = [
         connectivityResult,
@@ -200,6 +203,7 @@ async function reconcileAfterStreamReconnect(
         catalogResult,
         mqttResult,
         transactionResult,
+        runtimeConfigurationResult,
       ].find((result) => result.status === "rejected");
       if (rejected?.status === "rejected") throw rejected.reason;
       if (
@@ -260,10 +264,14 @@ export function startMachineRuntime(pinia: Pinia): void {
 
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
+  const machineStore = useMachineStore(pinia);
   coordinator.journeyAudio = createCustomerJourneyAudioRuntime(
     pinia,
     installedMachineRuntimeTrace() ?? undefined,
   );
+  void machineStore.loadEffectiveRuntimeConfiguration().catch((error) => {
+    connectivityStore.markStale(error);
+  });
   void saleCapabilityStore.refresh();
   coordinator.subscription = daemonClient.subscribeEvents({
     onEvent: (event) => {
