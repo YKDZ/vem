@@ -481,8 +481,6 @@ if ($Mode -eq "fast") {
     throw "warm fast run requires the existing provisioned runtime handoff"
   }
   $claim = $existingHandoff.claim
-  $commissioningSerialSession = $existingHandoff.commissioningSerialSession
-  if ($null -eq $commissioningSerialSession) { throw "warm fast run requires the existing commissioning serial session" }
   Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
   Write-TestbedPhase "warm-baseline-recovery"
 }

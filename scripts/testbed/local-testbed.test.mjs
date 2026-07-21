@@ -1085,6 +1085,10 @@ describe("Windows D cache contract", () => {
       guestScript,
       /if \(\$Mode -eq "full"\) \{\s+Write-TestbedPhase "start-simulated-hardware"/,
     );
+    assert.doesNotMatch(
+      guestScript,
+      /warm fast run requires the existing commissioning serial session/,
+    );
     assert.ok(
       guestScript.indexOf('Write-TestbedPhase "start-simulated-hardware"') <
         guestScript.indexOf("$daemonProcess = Start-Process"),
