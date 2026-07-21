@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   mqttEvidenceMatchesPayment,
   refreshAdminAccessToken,
+  unwrapServiceApiEnvelope,
   waitForMachineOnline,
   parsePaymentRecoveryGuestArgs,
   selectCanonicalSlot,
@@ -46,6 +47,11 @@ describe("payment recovery guest full", () => {
       },
     });
   });
+  it("unwraps real Service API admin response envelopes", () => {
+    assert.deepEqual(unwrapServiceApiEnvelope({ code: 0, data: { id: 17 } }), {
+      id: 17,
+    });
+  });
   it("resolves a slot from daemon canonical sale-view", () => {
     assert.deepEqual(
       selectCanonicalSlot(
@@ -73,7 +79,12 @@ describe("payment recovery guest full", () => {
       {
         query: async (_input, path, options) => {
           calls.push({ path, options });
-          return { items: [{ code: "MACHINE-17", status: statuses.shift() }] };
+          return {
+            code: 0,
+            data: {
+              items: [{ code: "MACHINE-17", status: statuses.shift() }],
+            },
+          };
         },
         wait: async () => {},
         now: (() => {

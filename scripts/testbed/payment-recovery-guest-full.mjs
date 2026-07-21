@@ -106,20 +106,34 @@ function api(input, path, options = {}) {
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
 }
+export function unwrapServiceApiEnvelope(payload) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    payload.code === 0 &&
+    Object.hasOwn(payload, "data")
+  ) {
+    return payload.data;
+  }
+  return payload;
+}
 export async function refreshAdminAccessToken(input, login = api) {
-  const result = await login(input, "/auth/login", {
-    method: "POST",
-    body: {
-      username: required(
-        input.serviceApi?.adminUsername ?? "local-testbed-admin",
-        "serviceApi.adminUsername",
-      ),
-      password: required(
-        input.serviceApi?.adminPassword ?? "LocalTestbedAdminPassword!",
-        "serviceApi.adminPassword",
-      ),
-    },
-  });
+  const result = unwrapServiceApiEnvelope(
+    await login(input, "/auth/login", {
+      method: "POST",
+      body: {
+        username: required(
+          input.serviceApi?.adminUsername ?? "local-testbed-admin",
+          "serviceApi.adminUsername",
+        ),
+        password: required(
+          input.serviceApi?.adminPassword ?? "LocalTestbedAdminPassword!",
+          "serviceApi.adminPassword",
+        ),
+      },
+    }),
+  );
   return required(result?.accessToken, "auth.login.accessToken");
 }
 export async function waitForMachineOnline(
@@ -139,10 +153,12 @@ export async function waitForMachineOnline(
   const deadline = now() + timeoutMs;
   let lastStatus = null;
   do {
-    const page = await query(input, "/machines?page=1&pageSize=100", {
-      method: "GET",
-      token: required(token, "admin access token"),
-    });
+    const page = unwrapServiceApiEnvelope(
+      await query(input, "/machines?page=1&pageSize=100", {
+        method: "GET",
+        token: required(token, "admin access token"),
+      }),
+    );
     const machine = (page?.items ?? []).find((entry) => entry?.code === code);
     if (!machine) throw new Error(`Service API machine ${code} was not found`);
     lastStatus = machine.status;
