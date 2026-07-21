@@ -226,6 +226,9 @@ export async function runInstalledSystemTouchKeyboardAcceptance(
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);
   } finally {
+    if (client) {
+      await setRoute(client, "#/catalog").catch(() => {});
+    }
     await client?.close().catch(() => {});
   }
   writeJson(options.outPath, report);

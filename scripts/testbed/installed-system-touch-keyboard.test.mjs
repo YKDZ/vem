@@ -44,5 +44,6 @@ describe("installed system touch keyboard acceptance", () => {
       source,
       /forbiddenRoutes: route\.startsWith\("#\/maintenance"\) \? \[\] : undefined/,
     );
+    assert.match(source, /await setRoute\(client, "#\/catalog"\)\.catch/);
   });
 });
