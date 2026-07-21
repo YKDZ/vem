@@ -935,6 +935,10 @@ describe("Windows D cache contract", () => {
       guestScript,
       /if \(\$Mode -eq "full"\) \{\s+Write-TestbedPhase "start-simulated-hardware"/,
     );
+    assert.match(
+      guestScript,
+      /while \(\[DateTime\]::UtcNow -lt \$deadline\)\s+if \(\$null -eq \$binding -or -not \$binding\.ready\) \{\s+try \{\s+\$snapshot = Invoke-RestMethod/,
+    );
   });
 
   it("changes the host simulator cache key when its local runtime sources change", async () => {

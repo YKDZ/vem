@@ -278,6 +278,14 @@ function Initialize-TestbedHardwareBindings {
       Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($null -eq $binding -or -not $binding.ready) {
+      try {
+        $snapshot = Invoke-RestMethod -Uri "$baseUrl/v1/hardware-bindings" -Headers $headers -TimeoutSec 10
+        $binding = @($snapshot.roles | Where-Object { $_.role -eq $role })[0]
+      } catch {
+        $lastBindingError = $_.Exception.Message
+      }
+    }
+    if ($null -eq $binding -or -not $binding.ready) {
       throw "testbed $role production auto-binding did not become ready: $($binding.code): $($binding.message); last query error: $lastBindingError"
     }
   }
