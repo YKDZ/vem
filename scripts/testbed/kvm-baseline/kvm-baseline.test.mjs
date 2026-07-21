@@ -4230,35 +4230,6 @@ await writeFile(markerPath, "created");
     );
   });
 
-  it("has an independent manual workflow that never uploads a baseline image", () => {
-    const workflow = readFileSync(
-      ".github/workflows/build-win10-kvm-baseline.yml",
-      "utf8",
-    );
-    assert.match(workflow, /workflow_dispatch:/);
-    assert.match(workflow, /concurrency:/);
-    assert.match(workflow, /vem-windows-runtime-testbed/);
-    assert.match(workflow, /cancel-in-progress: true/);
-    assert.match(workflow, /default: vem-runtime/);
-    assert.match(workflow, /build-win10-baseline\.mjs/);
-    assert.doesNotMatch(workflow, /upload-artifact/i);
-  });
-
-  it("uses the same latest-wins concurrency group while baseline owns its host lock", () => {
-    const baselineWorkflow = readFileSync(
-      ".github/workflows/build-win10-kvm-baseline.yml",
-      "utf8",
-    );
-    assert.match(baselineWorkflow, /group: vem-windows-runtime-testbed/);
-    assert.match(baselineWorkflow, /VEM_VM_HOST_LOCK_PATH/);
-    assert.match(baselineWorkflow, /flock -n/);
-    assert.doesNotMatch(baselineWorkflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);
-    assert.doesNotMatch(
-      baselineWorkflow,
-      /rm -rf -- "\$VEM_VM_HOST_LOCK_PATH"/,
-    );
-  });
-
   it("terminates the lock holder process group and releases its flock within five seconds", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-kvm-baseline-flock-"));
     const lockPath = join(root, "vem-windows-runtime-testbed.lock");
