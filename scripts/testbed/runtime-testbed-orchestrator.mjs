@@ -372,6 +372,14 @@ function encodedPowerShell(script) {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+export function powerShellFocusArgument(focus) {
+  if (focus.length === 0) return "";
+  const values = focus
+    .map((name) => `'${name.replaceAll("'", "''")}'`)
+    .join(", ");
+  return ` -Focus @(${values})`;
+}
+
 async function stageAndRunGuest({
   config,
   contract,
@@ -440,10 +448,8 @@ async function stageAndRunGuest({
     encodedPowerShell(preparePowerShell),
   ]);
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
-  const focusArguments = focus
-    .map((name) => ` -Focus '${name.replaceAll("'", "''")}'`)
-    .join("");
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}'${focusArguments}`;
+  const focusArgument = powerShellFocusArgument(focus);
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}'${focusArgument}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,

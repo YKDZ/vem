@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import {
   createRunId,
   parseOrchestratorOptions,
+  powerShellFocusArgument,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.mjs";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
@@ -81,6 +82,14 @@ describe("runtime testbed scheduler contract", () => {
           "/etc/vem/testbed.json",
         ]),
       /--focus is only valid with --mode fast/,
+    );
+  });
+
+  it("passes multiple focused sets as one PowerShell array parameter", () => {
+    assert.equal(powerShellFocusArgument([]), "");
+    assert.equal(
+      powerShellFocusArgument(["sale", "scannerPayment", "name'quoted"]),
+      " -Focus @('sale', 'scannerPayment', 'name''quoted')",
     );
   });
 
