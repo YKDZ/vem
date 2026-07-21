@@ -55,14 +55,18 @@ describe("local operations guest full", () => {
       [vend],
     );
   });
-  it("requires daemon, self-check, serial, and manual diagnostic evidence", () => {
+  it("requires business evidence without gating on VM touch-keyboard support", () => {
     const report = {
       schemaVersion: "vem-local-operations-guest-full/v1",
       ok: true,
       boundaries: { daemon: true, hardwareSelfCheck: true, serial: true },
       planogram: { canonical: true, planogramVersion: "P-8", slotCode: "R7C1" },
       manualDispense: { slotCode: "R7C1", outcome: "completed" },
-      systemTouchKeyboard: { ok: true },
+      systemTouchKeyboard: {
+        ok: false,
+        blocking: false,
+        error: "Windows input pane rejected the virtual-keyboard host",
+      },
     };
     assert.equal(validateLocalOperationsEvidence(report).canonical, true);
     assert.throws(
