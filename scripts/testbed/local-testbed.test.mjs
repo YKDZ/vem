@@ -1493,6 +1493,10 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
+      /foreach \(\$artifactName in @\("daemon", "machine", "webViewLoader"\)\)[\s\S]*runtime artifact manifest is missing: \$artifactName/,
+    );
+    assert.match(
+      guest,
       /function Get-LocalRustSourceDigest[\s\S]*\.vem-local-rust-source\.sha256[\s\S]*if \(\$cachedLocalRustSourceDigest -ne \$localRustSourceDigest\) \{\s+Write-TestbedPhase "clean-local-runtime-artifacts"\s+cargo clean --release -p machine -p vending-daemon -p vending-core -p daemon-ipc-contracts[\s\S]*Set-Content -LiteralPath \$localRustSourceMarker -Value \$localRustSourceDigest/,
     );
     assert.match(

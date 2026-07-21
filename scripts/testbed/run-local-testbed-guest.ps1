@@ -656,8 +656,10 @@ $runtimeArtifactEvidence = [ordered]@{
   reusedFromPass1 = $reuseRuntimeArtifacts
   artifacts = [ordered]@{}
 }
-foreach ($artifact in @($runtimeArtifactManifest.artifacts.PSObject.Properties)) {
-  $runtimeArtifactEvidence.artifacts[$artifact.Name] = [ordered]@{ sha256 = [string]$artifact.Value.sha256 }
+foreach ($artifactName in @("daemon", "machine", "webViewLoader")) {
+  $artifact = $runtimeArtifactManifest.artifacts.$artifactName
+  if ($null -eq $artifact) { throw "runtime artifact manifest is missing: $artifactName" }
+  $runtimeArtifactEvidence.artifacts[$artifactName] = [ordered]@{ sha256 = [string]$artifact.sha256 }
 }
 $guestInput.workflowIdentity | Add-Member -NotePropertyName runtimeArtifacts -NotePropertyValue $runtimeArtifactEvidence -Force
 $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPath -Encoding utf8
