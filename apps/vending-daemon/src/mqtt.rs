@@ -555,7 +555,7 @@ impl MqttSyncRuntime {
             });
         }
 
-        let _environment_guard = match self.acquire_environment_command_lock() {
+        let environment_guard = match self.acquire_environment_command_lock() {
             Ok(guard) => guard,
             Err(error) => {
                 self.enqueue_environment_control_result(
@@ -574,29 +574,42 @@ impl MqttSyncRuntime {
             }
         };
 
-        let hardware = match self.hardware.try_acquire_environment_hardware() {
-            Ok(hardware) => hardware,
-            Err(()) => {
-                let error_code = if self.is_dispense_in_progress().await? {
-                    "DISPENSE_IN_PROGRESS"
-                } else {
-                    "LOWER_CONTROLLER_BUSY"
-                };
-                self.enqueue_environment_control_result(
-                    &command,
-                    false,
-                    Some(error_code.to_string()),
-                    Some("lower-controller resource is in use".to_string()),
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(CommandHandlingResult::Processed {
-                    command_no: command.command_no,
-                });
-            }
+        let Some(remaining) = command_deadline_remaining(&deadline) else {
+            self.enqueue_environment_control_result(
+                &command,
+                false,
+                Some("COMMAND_EXPIRED".to_string()),
+                Some("environment control command deadline elapsed".to_string()),
+                None,
+                None,
+                None,
+            )
+            .await?;
+            return Ok(CommandHandlingResult::Processed {
+                command_no: command.command_no,
+            });
         };
+        let hardware =
+            match tokio::time::timeout(remaining, self.hardware.acquire_environment_hardware())
+                .await
+            {
+                Ok(hardware) => hardware,
+                Err(_) => {
+                    self.enqueue_environment_control_result(
+                        &command,
+                        false,
+                        Some("COMMAND_EXPIRED".to_string()),
+                        Some("environment control command deadline elapsed".to_string()),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
+                    return Ok(CommandHandlingResult::Processed {
+                        command_no: command.command_no,
+                    });
+                }
+            };
 
         let mut confirmed_target = None;
         let mut confirmed_switch = None;
@@ -691,6 +704,11 @@ impl MqttSyncRuntime {
             error_code = Some("COMMAND_EXPIRED".to_string());
             message = Some("environment control command deadline elapsed".to_string());
         }
+
+        // A terminal result means the physical command no longer owns the
+        // controller. Release both guards before making that result observable.
+        drop(hardware);
+        drop(environment_guard);
 
         if success {
             let remaining = command_deadline_remaining(&deadline)
@@ -1976,7 +1994,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn environment_control_does_not_wait_for_lower_controller_ownership() {
+    async fn environment_control_waits_for_background_sample_ownership() {
         let temp = tempfile::tempdir().expect("temp");
         let state = LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -2003,11 +2021,11 @@ mod tests {
             None,
         );
         tokio::time::timeout(
-            StdDuration::from_millis(100),
+            StdDuration::from_secs(2),
             runtime.handle_environment_control_command(&envelope),
         )
         .await
-        .expect("environment command must not wait for lower controller")
+        .expect("environment command must complete within its deadline")
         .expect("environment command");
 
         let events = state
@@ -2016,10 +2034,12 @@ mod tests {
             .expect("environment outbox");
         let result = command_result_payload_by_no(&events, "MACHINE-ENV", "ENV-BUSY")
             .expect("environment command result");
-        assert_eq!(result["payload"]["success"], false);
-        assert_eq!(result["payload"]["errorCode"], "LOWER_CONTROLLER_BUSY");
-        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 0);
-        occupied.abort();
+        assert_eq!(result["payload"]["success"], true);
+        assert_eq!(calls.air_conditioner_calls.load(Ordering::SeqCst), 1);
+        occupied
+            .await
+            .expect("background sample task")
+            .expect("sample");
     }
 
     #[tokio::test]

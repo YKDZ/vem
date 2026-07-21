@@ -456,7 +456,7 @@ export async function runEnvironmentControlGuest(options) {
     report.boundaries.daemonIpc =
       (await daemonGet(handoff, "/healthz")).hardwareOnline === true &&
       (await daemonGet(handoff, "/readyz")).ready === true;
-    report.ok = true;
+    report.ok = Object.values(report.boundaries).every(Boolean);
     writeJson(options.outPath, report);
     return report;
   } catch (error) {

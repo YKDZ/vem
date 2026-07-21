@@ -481,6 +481,15 @@ fn device_bindings_require_reconfiguration(
     )
 }
 
+fn scanner_runtime_requires_reconfiguration(
+    started_port: Option<&str>,
+    current_port: Option<&str>,
+    online: bool,
+    resolved_port: &str,
+) -> bool {
+    started_port != Some(resolved_port) && (!online || current_port != Some(resolved_port))
+}
+
 async fn run_device_binding_watch(
     platform: device_binding::SharedSerialDevicePlatform,
     runtime_sources: Arc<RuntimeSources>,
@@ -684,11 +693,16 @@ async fn run_device_binding_watch(
                 LocalDeviceRole::Scanner => {
                     if let Some(binding) = settings.scanner_binding.as_ref() {
                         match device_binding::resolve_runtime_port(role, binding, &observed) {
-                            Ok(port)
-                                if scanner_started_port.as_deref() != Some(port.as_str())
-                                    && status_cache.scanner.read().await.port.as_deref()
-                                        != Some(port.as_str()) =>
-                            {
+                            Ok(port) => {
+                                let scanner_status = status_cache.scanner.read().await.clone();
+                                if !scanner_runtime_requires_reconfiguration(
+                                    scanner_started_port.as_deref(),
+                                    scanner_status.port.as_deref(),
+                                    scanner_status.online,
+                                    &port,
+                                ) {
+                                    continue;
+                                }
                                 if let Err(error) = scanner_runtime
                                     .reconfigure(scanner_runtime_config(
                                         &settings,
@@ -707,7 +721,6 @@ async fn run_device_binding_watch(
                                 *status_cache.scanner.write().await =
                                     scanner_unavailable("SCANNER_BINDING_UNAVAILABLE", error);
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -1293,6 +1306,7 @@ mod tests {
     use super::{
         cache_daemon_events, device_bindings_require_reconfiguration,
         refresh_provisioning_profile_once, run_vision_watch, sale_start_capability_input_changed,
+        scanner_runtime_requires_reconfiguration,
     };
 
     #[tokio::test]
@@ -1433,6 +1447,22 @@ mod tests {
             Some("COM7"),
             true,
             false,
+        ));
+    }
+
+    #[test]
+    fn offline_scanner_retries_even_when_windows_reuses_the_same_port() {
+        assert!(scanner_runtime_requires_reconfiguration(
+            None,
+            Some("COM3"),
+            false,
+            "COM3",
+        ));
+        assert!(!scanner_runtime_requires_reconfiguration(
+            None,
+            Some("COM3"),
+            true,
+            "COM3",
         ));
     }
 

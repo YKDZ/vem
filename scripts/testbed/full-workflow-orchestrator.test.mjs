@@ -605,9 +605,41 @@ describe("full workflow serial lifecycle", () => {
         activateVisibleSelectorFn: async () => {
           throw new Error("payment-cancel control is disabled");
         },
-        waitForRouteFn: async () => ({ route: "#/catalog" }),
+        waitForRouteFn: async () => {
+          throw new Error("payment route remained active");
+        },
       }),
       /payment-cancel control is disabled/,
     );
+  });
+
+  it("waits for transaction cancellation to project away from payment when its control disappeared", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => "#/payment",
+      activateVisibleSelectorFn: async (_client, selector) => {
+        calls.push(selector);
+        if (selector.includes("payment-cancel")) {
+          throw new Error(
+            "payment control disappeared after daemon cancellation",
+          );
+        }
+        return { selector };
+      },
+      waitForRouteFn: async (_client, expected) => {
+        calls.push(`wait:${expected.source || expected}`);
+        return expected === "#/catalog"
+          ? { route: "#/catalog" }
+          : { route: "#/result/payment_failed" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      '[data-test="payment-cancel"]:not(:disabled)',
+      "wait:^(?:#\\/catalog|#\\/result(?:\\/|$)|#\\/checkout|#\\/products(?:\\/|$))",
+      ".result-return-button, .failure-return-button",
+      "wait:#/catalog",
+    ]);
   });
 });

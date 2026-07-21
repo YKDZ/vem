@@ -13,8 +13,13 @@ function sessionIdFromReport(value) {
   return null;
 }
 
-function terminalRoute(route) {
-  return route === "#/catalog" || /^#\/result(?:\/|$)/.test(route ?? "");
+function terminalRoute(track, route) {
+  return (
+    route === "#/catalog" ||
+    /^#\/result(?:\/|$)/.test(route ?? "") ||
+    (track.allowActiveTransactionHandoff === true &&
+      /^#\/payment(?:\/|$)/.test(route ?? ""))
+  );
 }
 
 const terminalNextActions = new Set([
@@ -98,7 +103,10 @@ function hasWholeMachineLockBlocker(capability) {
 
 function terminalPolicyFailures(track, facts) {
   const failures = [];
-  if (transactionLeaked(facts.transaction))
+  if (
+    transactionLeaked(facts.transaction) &&
+    track.allowActiveTransactionHandoff !== true
+  )
     failures.push("transaction remains active");
   if (!facts.inventory || typeof facts.inventory !== "object")
     failures.push("inventory fact is absent");
@@ -146,7 +154,7 @@ export async function captureTrackTerminalFacts({
       diagnostics,
     };
   }
-  if (!terminalRoute(facts.route)) {
+  if (!terminalRoute(track, facts.route)) {
     return {
       ok: false,
       facts,

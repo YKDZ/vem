@@ -136,19 +136,13 @@ impl HardwareSupervisor {
         adapter.query_environment_sample().await
     }
 
-    pub(crate) fn try_acquire_environment_hardware(
-        &self,
-    ) -> Result<EnvironmentHardwareOwnership, ()> {
-        let guard = self
-            .lower_controller
-            .clone()
-            .try_lock_owned()
-            .map_err(|_| ())?;
+    pub(crate) async fn acquire_environment_hardware(&self) -> EnvironmentHardwareOwnership {
+        let guard = self.lower_controller.clone().lock_owned().await;
         let adapter = self.adapter.read().expect("hardware adapter lock").clone();
-        Ok(EnvironmentHardwareOwnership {
+        EnvironmentHardwareOwnership {
             adapter,
             _guard: guard,
-        })
+        }
     }
 
     pub fn adapter_name(&self) -> String {

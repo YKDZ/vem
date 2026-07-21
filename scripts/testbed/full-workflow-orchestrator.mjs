@@ -665,19 +665,30 @@ export async function returnToCatalogFromClient({
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (/^#\/payment(?:\/|$)/.test(route)) {
-    if (
-      !(await activateUnlessAlreadyCatalog(PAYMENT_CANCEL_SELECTOR, {
-        kind: "touch",
-        timeoutMs: 10_000,
-      }))
-    )
-      return "#/catalog";
-    route = (
-      await waitForRouteWithTimeout(
-        /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
-        PAYMENT_RETURN_WAIT_MS,
+    try {
+      if (
+        !(await activateUnlessAlreadyCatalog(PAYMENT_CANCEL_SELECTOR, {
+          kind: "touch",
+          timeoutMs: 2_000,
+        }))
       )
-    ).route;
+        return "#/catalog";
+    } catch (error) {
+      const projected = await waitForRouteWithTimeout(
+        /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
+        10_000,
+      ).catch(() => null);
+      if (!projected) throw error;
+      route = projected.route;
+    }
+    if (/^#\/payment(?:\/|$)/.test(route)) {
+      route = (
+        await waitForRouteWithTimeout(
+          /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
+          PAYMENT_RETURN_WAIT_MS,
+        )
+      ).route;
+    }
     if (route === "#/catalog") return "#/catalog";
     if (/^#\/result(?:\/|$)/.test(route)) {
       if (

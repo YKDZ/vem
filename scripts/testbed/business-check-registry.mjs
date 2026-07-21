@@ -18,6 +18,7 @@ function descriptor({
   runner = null,
   validator,
   blockedReason = null,
+  allowActiveTransactionHandoff = false,
 }) {
   return Object.freeze({
     name,
@@ -30,6 +31,7 @@ function descriptor({
     runner: runner && Object.freeze(runner),
     validator,
     blockedReason,
+    allowActiveTransactionHandoff,
     evidence: Object.freeze({ passed: passedEvidence, failed: failedEvidence }),
   });
 }
@@ -128,6 +130,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   descriptor({
     name: "paymentRecovery",
     fixtureKey: "sale",
+    allowActiveTransactionHandoff: true,
     runner: {
       kind: "node",
       script: "scripts/testbed/payment-recovery-guest-full.mjs",

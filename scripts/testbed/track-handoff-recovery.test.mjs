@@ -191,6 +191,20 @@ describe("Track Handoff Recovery", () => {
     assert.match(terminal.reason, /transaction remains active/);
   });
 
+  it("allows the payment recovery set to hand an uncertain transaction to bounded recovery", async () => {
+    const terminal = await captureTrackTerminalFacts({
+      track: { key: "paymentRecovery", allowActiveTransactionHandoff: true },
+      context: { report: {} },
+      readRoute: async () => "#/payment",
+      daemonGet: async (path) =>
+        path === "/v1/transactions/current"
+          ? { orderId: "order-uncertain", nextAction: "wait_payment" }
+          : {},
+      platformQuery: async () => ({ inventories: [] }),
+    });
+    assert.equal(terminal.ok, true);
+  });
+
   it("treats terminal success with orderId as non-leaked", () => {
     assert.equal(
       isActiveTransaction({ orderId: "order-1", nextAction: "success" }),

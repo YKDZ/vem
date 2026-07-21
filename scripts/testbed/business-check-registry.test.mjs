@@ -54,6 +54,12 @@ describe("runtime business-check registry", () => {
     );
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "paymentRecovery",
+      )?.allowActiveTransactionHandoff,
+      true,
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
         (descriptor) => descriptor.name === "localOperations",
       )?.runner?.script,
       "scripts/testbed/local-operations-guest-full.mjs",
