@@ -44,7 +44,7 @@ services:
       retries: 20
 
   service-api:
-    image: ${SERVICE_API_IMAGE:?SERVICE_API_IMAGE is required}
+    image: ${SERVICE_API_IMAGE:?SERVICE_API_IMAGE must be sha-<40-character-commit>}
     environment:
       NODE_ENV: production
       SERVICE_PORT: 3000
@@ -78,7 +78,7 @@ services:
       retries: 30
 
   admin-ui:
-    image: ${ADMIN_UI_IMAGE:?ADMIN_UI_IMAGE is required}
+    image: ${ADMIN_UI_IMAGE:?ADMIN_UI_IMAGE must be sha-<40-character-commit>}
     environment:
       API_URL: ${API_URL:-http://service-api:3000}
     ports:

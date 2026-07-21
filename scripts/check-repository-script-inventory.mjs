@@ -215,6 +215,12 @@ export const DEFAULT_INVENTORY = [
     workflows: ["backend deployment"],
   },
   {
+    path: "scripts/backend-image-deployment.test.mjs",
+    owner: "backend-operations",
+    category: "verifier-test guard",
+    workflows: ["backend deployment"],
+  },
+  {
     path: "scripts/check-machine-customer-payment-copy.mjs",
     owner: "machine-runtime-console",
     category: "verifier-test guard",
