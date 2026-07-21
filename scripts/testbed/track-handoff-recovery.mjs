@@ -176,6 +176,8 @@ export async function recoverTrackHandoff({
   restoreFixtureStock,
   cancelActiveTransaction,
   waitForTransactionTerminal,
+  recoverAfterFailure = false,
+  readLateTransaction,
   selfCheckHardware,
   clearWholeMachineLock,
   wholeMachineLockOperatorNote = "verified track handoff recovery",
@@ -193,30 +195,30 @@ export async function recoverTrackHandoff({
     }
   };
   const route = terminal?.facts?.route;
-  if (transactionLeaked(terminal?.facts?.transaction)) {
+  const cancelAndWaitForTerminal = async (transaction) => {
     await attempt("cancelActiveTransaction", () =>
-      cancelActiveTransaction(terminal.facts.transaction),
+      cancelActiveTransaction(transaction),
     );
-    if (errors.length > 0) return { ok: false, actions, errors };
+    if (errors.length > 0) return false;
     try {
       const settled = await waitForTransactionTerminal?.();
       if (!settled || transactionLeaked(settled)) {
-        return {
-          ok: false,
-          actions,
-          errors: [
-            "recovery failure: active transaction did not reach a real terminal state",
-          ],
-        };
+        errors.push(
+          "recovery failure: active transaction did not reach a real terminal state",
+        );
+        return false;
       }
     } catch (error) {
-      return {
-        ok: false,
-        actions,
-        errors: [
-          `recovery failure: active transaction wait failed: ${error instanceof Error ? error.message : String(error)}`,
-        ],
-      };
+      errors.push(
+        `recovery failure: active transaction wait failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+    return true;
+  };
+  if (transactionLeaked(terminal?.facts?.transaction)) {
+    if (!(await cancelAndWaitForTerminal(terminal.facts.transaction))) {
+      return { ok: false, actions, errors };
     }
   }
   if (hasWholeMachineLockBlocker(terminal?.facts?.saleStartCapability)) {
@@ -239,6 +241,22 @@ export async function recoverTrackHandoff({
     );
   }
   await attempt("disableFaultInjection", disableFaultInjection);
+  if (recoverAfterFailure && typeof readLateTransaction === "function") {
+    let lateTransaction = null;
+    try {
+      lateTransaction = await readLateTransaction();
+    } catch (error) {
+      errors.push(
+        `readLateTransaction: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (
+      transactionLeaked(lateTransaction) &&
+      !(await cancelAndWaitForTerminal(lateTransaction))
+    ) {
+      return { ok: false, actions, errors };
+    }
+  }
   const sessionId = terminal?.facts?.deviceSession?.sessionId;
   if (sessionId) {
     await attempt("restoreSerialSession", () =>

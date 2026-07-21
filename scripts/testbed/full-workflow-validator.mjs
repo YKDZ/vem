@@ -307,7 +307,7 @@ function validatePaymentRecoveryTrack(report, reportPath) {
   const action = report.recovery?.action ?? {};
   if (
     report.boundaries?.serviceApi !== true ||
-    report.boundaries?.mqtt !== true ||
+    report.boundaries?.mqttNoDispense !== true ||
     report.boundaries?.daemon !== true ||
     !report.payment?.id ||
     !["query_payment", "close_or_reverse_uncertain_payment"].includes(

@@ -788,6 +788,8 @@ function terminalOperations(guestInput, handoff, handoffPath) {
       recoverTrackHandoff({
         track,
         terminal: context.terminal,
+        recoverAfterFailure:
+          context.child?.status !== "passed" || context.report?.ok !== true,
         fixtureAllocation: guestInput.fixtureAllocation,
         returnToCatalog: () =>
           withClient(async (client) => {
@@ -819,6 +821,18 @@ function terminalOperations(guestInput, handoff, handoffPath) {
               setTimeout(resolvePromise, 500),
             );
           }
+          return transaction;
+        },
+        readLateTransaction: async () => {
+          const deadline = Date.now() + 2_000;
+          let transaction = null;
+          do {
+            transaction = await daemonGet(handoff, "/v1/transactions/current");
+            if (isActiveTransaction(transaction)) return transaction;
+            await new Promise((resolvePromise) =>
+              setTimeout(resolvePromise, 100),
+            );
+          } while (Date.now() < deadline);
           return transaction;
         },
         selfCheckHardware: () =>

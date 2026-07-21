@@ -355,6 +355,35 @@ describe("Track Handoff Recovery", () => {
     ]);
   });
 
+  it("cancels a transaction that arrives after a failed create-order gate is released", async () => {
+    const calls = [];
+    const lateTransaction = {
+      orderId: "late-order-1",
+      orderNo: "ORD-LATE-1",
+      nextAction: "wait_payment",
+    };
+    const result = await recoverTrackHandoff({
+      track: { key: "sale" },
+      terminal: { facts: { route: "#/catalog", transaction: null } },
+      recoverAfterFailure: true,
+      disableFaultInjection: async () => calls.push("fault"),
+      readLateTransaction: async () => lateTransaction,
+      cancelActiveTransaction: async (transaction) =>
+        calls.push(`cancel:${transaction.orderNo}`),
+      waitForTransactionTerminal: async () => ({
+        ...lateTransaction,
+        nextAction: "closed",
+      }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, ["fault", "cancel:ORD-LATE-1"]);
+    assert.deepEqual(result.actions, [
+      "disableFaultInjection",
+      "cancelActiveTransaction",
+    ]);
+  });
+
   it("treats a wait_for loop settled response as terminal even with orderId", async () => {
     const calls = [];
     const result = await recoverTrackHandoff({

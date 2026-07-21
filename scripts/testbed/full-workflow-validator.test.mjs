@@ -120,7 +120,11 @@ function paymentRecoveryReport() {
   return {
     schemaVersion: "vem-payment-recovery-guest-full/v1",
     ok: true,
-    boundaries: { serviceApi: true, mqtt: true, daemon: true },
+    boundaries: {
+      serviceApi: true,
+      mqttNoDispense: true,
+      daemon: true,
+    },
     payment: { id: "payment-recovery-1" },
     recovery: { action: { action: "query_payment" } },
     assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
