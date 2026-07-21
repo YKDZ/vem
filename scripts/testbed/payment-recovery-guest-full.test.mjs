@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -12,6 +13,14 @@ import {
 } from "./payment-recovery-guest-full.mjs";
 
 describe("payment recovery guest full", () => {
+  it("publishes its serial session so track handoff can restore hardware", () => {
+    const source = readFileSync(
+      new URL("./payment-recovery-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /report\.serialSession\s*=\s*\{/);
+    assert.match(source, /sessionId:\s*required\(session\.sessionId/);
+  });
   it("parses the installed guest contract", () => {
     assert.equal(
       parsePaymentRecoveryGuestArgs([

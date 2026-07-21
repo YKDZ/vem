@@ -232,6 +232,7 @@ export async function runPaymentRecoveryGuest(options) {
     mode: options.mode,
     runId,
     boundaries: { serviceApi: false, mqtt: false, daemon: false },
+    serialSession: null,
     payment: null,
     recovery: null,
     assertions: { duplicatePaymentCount: null, dispenseStarted: null },
@@ -253,6 +254,9 @@ export async function runPaymentRecoveryGuest(options) {
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.payment-recovery`,
     });
+    report.serialSession = {
+      sessionId: required(session.sessionId, "serial session id"),
+    };
     const saleView = await daemon(handoff, "/v1/sale-view");
     const fixture =
       input.fixtureAllocation?.[options.fixtureKey ?? "paymentRecovery"] ??
