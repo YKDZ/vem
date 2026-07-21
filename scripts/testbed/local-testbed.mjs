@@ -1224,6 +1224,7 @@ export async function seedThroughSupportedApis({
       silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
     }));
   return {
+    adminAccessToken: token,
     machine,
     claim,
     planogramVersion,
@@ -1413,6 +1414,9 @@ async function reconstruct(options) {
         provisioningApiBaseUrl: `http://${options.hostPrivateAddress}:26849/api`,
         hardwareModel: "vem-prod-24",
         topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
+      },
+      serviceApi: {
+        adminAccessToken: seeded.adminAccessToken,
       },
       workflowIdentity: identity,
       hostControlPlane: {

@@ -5,9 +5,6 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const SCHEMA_VERSION = "vem-payment-recovery-guest-full/v1";
-const ADMIN_USER = "local-testbed-admin";
-const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
-
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
@@ -108,6 +105,12 @@ function api(input, path, options = {}) {
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
+}
+export function adminAccessToken(input) {
+  return required(
+    input.serviceApi?.adminAccessToken,
+    "serviceApi.adminAccessToken",
+  );
 }
 export function selectCanonicalSlot(saleView, fixture) {
   const slotCode = required(fixture?.slotCode, "fixture.slotCode");
@@ -224,16 +227,12 @@ export async function runPaymentRecoveryGuest(options) {
       paymentNo: order.paymentNo,
       orderNo: order.orderNo,
     };
-    const login = await api(input, "/auth/login", {
-      method: "POST",
-      body: { username: ADMIN_USER, password: ADMIN_PASSWORD },
-    });
     const action = await api(
       input,
       `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
       {
         method: "POST",
-        token: required(login.accessToken, "admin accessToken"),
+        token: adminAccessToken(input),
         body: {
           action: "query_payment",
           reason: `runtime acceptance ${runId}: reconcile provider outcome`,

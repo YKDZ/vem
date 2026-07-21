@@ -711,6 +711,7 @@ async function runDelayedPickupGuestFull(options) {
     let baselinePlatform = null;
     delayedTrack = await startDelayedPickupLiveProductionTrack(
       {
+        closeClient: false,
         outputRoot: delayedRoot,
         runId: guestInput.runId,
         lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
@@ -1219,6 +1220,15 @@ async function runDelayedPickupGuestFull(options) {
         pollMs: 250,
       });
     });
+    await cleanupFailClosed("audio-capture", async () => {
+      if (liveEvidence?.audioStop) return;
+      await controlPlaneRequest(guestInput, "/v1/audio-captures/cancel", {
+        operationId: audioOperationId,
+      });
+    });
+    await cleanupFailClosed("live-track-close", async () => {
+      await delayedTrack?.close();
+    });
     await cleanupFailClosed("serial-session", async () => {
       if (!sessionStart || sessionStopped) return;
       if (liveSale) {
@@ -1243,15 +1253,6 @@ async function runDelayedPickupGuestFull(options) {
           `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
         );
       }
-    });
-    await cleanupFailClosed("audio-capture", async () => {
-      if (liveEvidence?.audioStop) return;
-      await controlPlaneRequest(guestInput, "/v1/audio-captures/cancel", {
-        operationId: audioOperationId,
-      });
-    });
-    await cleanupFailClosed("live-track-close", async () => {
-      await delayedTrack?.close();
     });
     await cleanupFailClosed("ui-client-close", async () => {
       await client?.close();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { describe, it } from "node:test";
 
@@ -100,6 +101,21 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
+  it("waits for the scheduled Vision task to stop before restarting it", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /while \(\[DateTime\]::UtcNow -lt \$deadline\)[\s\S]*Get-ScheduledTask[\s\S]*task\.State -ne 'Running'/,
+    );
+    assert.match(
+      source,
+      /task\.State -eq 'Running'\) \{ throw 'Vision scheduled task is still running before start'/,
+    );
+  });
+
   it("accepts only full mode with absolute Windows inputs", () => {
     assert.deepEqual(
       parseVisionTryOnAcceptanceArgs([

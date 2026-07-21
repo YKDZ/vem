@@ -3,12 +3,23 @@ import { describe, it } from "node:test";
 
 import {
   mqttEvidenceMatchesPayment,
+  adminAccessToken,
   parsePaymentRecoveryGuestArgs,
   selectCanonicalSlot,
   validatePaymentRecoveryEvidence,
 } from "./payment-recovery-guest-full.mjs";
 
 describe("payment recovery guest full", () => {
+  it("uses the seeded Service API admin access token from guest input", () => {
+    assert.equal(
+      adminAccessToken({ serviceApi: { adminAccessToken: "seeded-token" } }),
+      "seeded-token",
+    );
+    assert.throws(
+      () => adminAccessToken({}),
+      /serviceApi\.adminAccessToken is required/,
+    );
+  });
   it("parses the installed guest contract", () => {
     assert.equal(
       parsePaymentRecoveryGuestArgs([

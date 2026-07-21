@@ -1847,8 +1847,16 @@ async function collectVisionInstalledBinding() {
 async function stopVisionRuntime() {
   const command = [
     "$ErrorActionPreference = 'Stop'",
-    `Stop-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
+    `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
+    "if ($null -ne $task -and [string]$task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue }",
     "Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+    "$deadline = [DateTime]::UtcNow.AddSeconds(15)",
+    "while ([DateTime]::UtcNow -lt $deadline) {",
+    `  $task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
+    "  if ($null -eq $task -or [string]$task.State -ne 'Running') { break }",
+    "  Start-Sleep -Milliseconds 250",
+    "}",
+    "if ($null -ne $task -and [string]$task.State -eq 'Running') { throw 'Vision scheduled task did not stop' }",
   ].join("; ");
   await new Promise((resolvePromise, reject) => {
     const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
@@ -1870,6 +1878,8 @@ async function stopVisionRuntime() {
 async function startInstalledVisionRuntime() {
   const command = [
     "$ErrorActionPreference = 'Stop'",
+    `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
+    "if ([string]$task.State -eq 'Running') { throw 'Vision scheduled task is still running before start' }",
     `Start-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
   ].join("; ");
   await new Promise((resolvePromise, reject) => {

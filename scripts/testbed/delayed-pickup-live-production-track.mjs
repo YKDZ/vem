@@ -158,6 +158,7 @@ async function closeResourcesOrThrow({
   machineCapture,
   cancelAudio,
   client,
+  closeClient = true,
   sidecar,
   runtime,
   inspectRuntime,
@@ -185,9 +186,13 @@ async function closeResourcesOrThrow({
     settleStep("audio capture cancel", async () => {
       await cancelAudio();
     }),
-    settleStep("CDP client close", async () => {
-      await client?.close();
-    }),
+    ...(closeClient
+      ? [
+          settleStep("CDP client close", async () => {
+            await client?.close();
+          }),
+        ]
+      : []),
     settleStep("CDP sidecar close", async () => {
       await sidecar.close();
     }),
@@ -559,6 +564,7 @@ export async function startDelayedPickupLiveProductionTrack(
       async close() {
         await closeResourcesOrThrow({
           machineCapture,
+          closeClient: options.closeClient !== false,
           runtime: machineCapture?.runtime ?? runtime,
           client,
           sidecar,
@@ -595,6 +601,7 @@ export async function startDelayedPickupLiveProductionTrack(
     try {
       await closeResourcesOrThrow({
         machineCapture,
+        closeClient: options.closeClient !== false,
         runtime: machineCapture?.runtime ?? null,
         client,
         sidecar,
