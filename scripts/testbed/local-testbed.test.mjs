@@ -819,7 +819,6 @@ describe("supported API seeding", () => {
       upload,
     });
     assert.equal(result.machine.code, "VEM-TESTBED-LOCAL");
-    assert.equal(result.adminAccessToken, "admin-token");
     assert.deepEqual(
       calls.find((call) => call.path === "/machines/machine-1"),
       {

@@ -40,6 +40,8 @@ const GUEST_SMOKE_PATH =
   "C:\\ProgramData\\VEM\\testbed\\installed-runtime-smoke.json";
 const GUEST_VISION_MOCK_CONTROL_PORT = 7893;
 const HOST_CONTROL_PLANE_PORT = 26851;
+const LOCAL_TESTBED_ADMIN_USERNAME = "local-testbed-admin";
+const LOCAL_TESTBED_ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 const MODES = new Set(["fast", "full", "clear_cache"]);
 const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\pnpm-store",
@@ -1075,8 +1077,8 @@ export async function seedThroughSupportedApis({
   const login = await request(baseUrl, "/auth/login", {
     method: "POST",
     body: {
-      username: "local-testbed-admin",
-      password: "LocalTestbedAdminPassword!",
+      username: LOCAL_TESTBED_ADMIN_USERNAME,
+      password: LOCAL_TESTBED_ADMIN_PASSWORD,
     },
   });
   const token = login.accessToken;
@@ -1222,9 +1224,8 @@ export async function seedThroughSupportedApis({
       size: entry.size,
       silhouetteAssetId: tryOnSilhouetteAsset.id,
       silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
-    }));
+  }));
   return {
-    adminAccessToken: token,
     machine,
     claim,
     planogramVersion,
@@ -1416,7 +1417,8 @@ async function reconstruct(options) {
         topology: { identity: "vem-prod-24", version: "2026-06-adr0026" },
       },
       serviceApi: {
-        adminAccessToken: seeded.adminAccessToken,
+        adminUsername: LOCAL_TESTBED_ADMIN_USERNAME,
+        adminPassword: LOCAL_TESTBED_ADMIN_PASSWORD,
       },
       workflowIdentity: identity,
       hostControlPlane: {

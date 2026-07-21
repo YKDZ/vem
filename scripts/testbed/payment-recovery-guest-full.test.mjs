@@ -3,23 +3,13 @@ import { describe, it } from "node:test";
 
 import {
   mqttEvidenceMatchesPayment,
-  adminAccessToken,
+  refreshAdminAccessToken,
   parsePaymentRecoveryGuestArgs,
   selectCanonicalSlot,
   validatePaymentRecoveryEvidence,
 } from "./payment-recovery-guest-full.mjs";
 
 describe("payment recovery guest full", () => {
-  it("uses the seeded Service API admin access token from guest input", () => {
-    assert.equal(
-      adminAccessToken({ serviceApi: { adminAccessToken: "seeded-token" } }),
-      "seeded-token",
-    );
-    assert.throws(
-      () => adminAccessToken({}),
-      /serviceApi\.adminAccessToken is required/,
-    );
-  });
   it("parses the installed guest contract", () => {
     assert.equal(
       parsePaymentRecoveryGuestArgs([
@@ -34,6 +24,24 @@ describe("payment recovery guest full", () => {
       ]).mode,
       "full",
     );
+  });
+  it("refreshes the admin token through the existing login path", async () => {
+    const calls = [];
+    const token = await refreshAdminAccessToken(
+      { serviceApi: { adminUsername: "seeded-admin", adminPassword: "secret" } },
+      async (_input, path, options) => {
+        calls.push({ path, options });
+        return { accessToken: "fresh-token" };
+      },
+    );
+    assert.equal(token, "fresh-token");
+    assert.deepEqual(calls[0], {
+      path: "/auth/login",
+      options: {
+        method: "POST",
+        body: { username: "seeded-admin", password: "secret" },
+      },
+    });
   });
   it("resolves a slot from daemon canonical sale-view", () => {
     assert.deepEqual(

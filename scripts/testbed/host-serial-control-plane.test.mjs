@@ -349,6 +349,15 @@ describe("host serial control plane", () => {
     );
   });
 
+  it("selects lifecycle devices when libvirt omits serial aliases", () => {
+    const domainXml = `<domain><devices>
+      <serial type='pty'><source path='/dev/pts/41'/><target type='usb-serial' port='0'/><address type='usb' bus='0' port='3.1'/></serial>
+      <serial type='pty'><source path='/dev/pts/42'/><target type='usb-serial' port='1'/><address type='usb' bus='0' port='3.2'/></serial>
+    </devices></domain>`;
+
+    assert.match(serialDeviceXmlForRole(domainXml, "scanner"), /port='1'/);
+  });
+
   it("waits on independent raw inbound F1 evidence and fails closed on an invalid boundary", async () => {
     const root = makeTempDir("vem-host-serial");
     const journalPath = join(root, "raw-serial.jsonl");

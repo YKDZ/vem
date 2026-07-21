@@ -197,19 +197,20 @@ export function parseLibvirtUsbSerialMappings(xml) {
     const targetPort = xmlAttribute(targetTag, "port");
     const usbBus = xmlAttribute(addressTag, "bus");
     const usbPort = xmlAttribute(addressTag, "port");
-    if (!alias || !path || targetType !== "usb-serial") continue;
+    if (!path || targetType !== "usb-serial") continue;
     if (
       !/^\d+$/.test(targetPort ?? "") ||
       !/^\d+$/.test(usbBus ?? "") ||
       !/^\d+(?:\.\d+)*$/.test(usbPort ?? "")
     ) {
       throw new Error(
-        `${alias} must expose explicit libvirt USB target and address topology`,
+        `${alias ?? "QEMU USB serial"} must expose explicit libvirt USB target and address topology`,
       );
     }
-    const role = alias.startsWith("serial-")
-      ? alias.slice("serial-".length)
-      : targetPort === "0"
+    // Libvirt may normalize or omit aliases. The target port is the stable
+    // role contract; the USB address preserves the physical topology.
+    const role =
+      targetPort === "0"
         ? "lower-controller"
         : targetPort === "1"
           ? "scanner"

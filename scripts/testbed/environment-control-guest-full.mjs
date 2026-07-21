@@ -236,6 +236,13 @@ function serialTailIdentity(evidence) {
     .join("|");
 }
 
+function serialProtocolFrames(evidence, beforeFrameCount) {
+  return (evidence?.rawFrames ?? [])
+    .slice(beforeFrameCount)
+    .filter((frame) => frame?.parsedOpcode)
+    .map((frame) => frame.parsedOpcode);
+}
+
 async function commandEnvironment({
   guestInput,
   token,
@@ -271,6 +278,12 @@ async function commandEnvironment({
     `/v1/serial-sessions/${sessionId}/evidence`,
     {},
   );
+  const expectedOpcode =
+    action === "airConditionerOnTrue" || action === "airConditionerOnFalse"
+      ? "B2"
+      : action === "ventSpeed"
+        ? "B3"
+        : "B1";
   return {
     action,
     request: body,
@@ -294,6 +307,11 @@ async function commandEnvironment({
         serialTailIdentity(afterEvidence) !== beforeTail,
       beforeFrameCount,
       afterFrameCount: serialFrameCount(afterEvidence),
+      protocolFrames: serialProtocolFrames(afterEvidence, beforeFrameCount),
+      expectedOpcode,
+      protocolFrameObserved: serialProtocolFrames(afterEvidence, beforeFrameCount).includes(
+        expectedOpcode,
+      ),
     },
   };
 }
@@ -412,7 +430,10 @@ export async function runEnvironmentControlGuest(options) {
       (entry) => entry.mqtt.commandObserved && entry.mqtt.resultObserved,
     );
     report.boundaries.lowerSerial = report.commands.every(
-      (entry) => entry.serial.lowerBoundaryObserved,
+      (entry) =>
+        entry.serial.lowerBoundaryObserved &&
+        entry.serial.protocolFrameObserved &&
+        entry.result?.status === "succeeded",
     );
     report.boundaries.daemonIpc =
       (await daemonGet(handoff, "/healthz")).hardwareOnline === true &&

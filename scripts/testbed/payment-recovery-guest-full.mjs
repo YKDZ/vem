@@ -106,11 +106,21 @@ function api(input, path, options = {}) {
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
 }
-export function adminAccessToken(input) {
-  return required(
-    input.serviceApi?.adminAccessToken,
-    "serviceApi.adminAccessToken",
-  );
+export async function refreshAdminAccessToken(input, login = api) {
+  const result = await login(input, "/auth/login", {
+    method: "POST",
+    body: {
+      username: required(
+        input.serviceApi?.adminUsername ?? "local-testbed-admin",
+        "serviceApi.adminUsername",
+      ),
+      password: required(
+        input.serviceApi?.adminPassword ?? "LocalTestbedAdminPassword!",
+        "serviceApi.adminPassword",
+      ),
+    },
+  });
+  return required(result?.accessToken, "auth.login.accessToken");
 }
 export function selectCanonicalSlot(saleView, fixture) {
   const slotCode = required(fixture?.slotCode, "fixture.slotCode");
@@ -232,7 +242,7 @@ export async function runPaymentRecoveryGuest(options) {
       `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
       {
         method: "POST",
-        token: adminAccessToken(input),
+        token: await refreshAdminAccessToken(input),
         body: {
           action: "query_payment",
           reason: `runtime acceptance ${runId}: reconcile provider outcome`,

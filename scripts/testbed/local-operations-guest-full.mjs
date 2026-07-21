@@ -82,6 +82,14 @@ function control(input, path, body = {}) {
     },
   );
 }
+
+async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
+  return control(input, `/v1/serial-sessions/${sessionId}/wait-frame`, {
+    parsedOpcode,
+    timeoutMs: 30_000,
+    serialScenario: "normal",
+  });
+}
 export function canonicalPlanogramSlot(saleView, slotCode) {
   const code = required(slotCode, "slotCode");
   const item = (saleView?.items ?? []).find(
@@ -176,7 +184,7 @@ export async function runLocalOperationsGuest(options) {
       input,
       `/v1/serial-sessions/${session.sessionId}/evidence`,
     );
-    const diagnostic = await daemon(
+    const diagnosticPromise = daemon(
       handoff,
       "/v1/maintenance/manual-dispense-diagnostic",
       {
@@ -186,6 +194,13 @@ export async function runLocalOperationsGuest(options) {
         timeoutSeconds: 15,
       },
     );
+    await waitForSerialBoundary(input, session.sessionId, "VEND");
+    await control(input, `/v1/serial-sessions/${session.sessionId}/release-f0`);
+    await waitForSerialBoundary(input, session.sessionId, "F0");
+    await waitForSerialBoundary(input, session.sessionId, "F1");
+    await control(input, `/v1/serial-sessions/${session.sessionId}/release-f2`);
+    await waitForSerialBoundary(input, session.sessionId, "F2");
+    const diagnostic = await diagnosticPromise;
     report.manualDispense = {
       ...diagnostic,
       slotCode: slot.slotCode,
@@ -198,11 +213,13 @@ export async function runLocalOperationsGuest(options) {
     report.serial = evidence;
     const operationFrames = manualDispenseFrames(beforeEvidence, evidence);
     report.serial.operationFrames = operationFrames;
-    report.boundaries.serial = operationFrames.some(
-      (frame) =>
-        frame?.direction === "daemon-to-controller" &&
-        frame?.parsedOpcode === "VEND",
+    report.boundaries.serial = ["VEND", "F0", "F1", "AF", "F2"].every(
+      (opcode) => operationFrames.some((frame) => frame?.parsedOpcode === opcode),
     );
+    if (diagnostic.outcome !== "completed" || !report.boundaries.serial)
+      throw new Error(
+        `manual dispense did not complete the lower-controller protocol: ${JSON.stringify({ outcome: diagnostic.outcome, frames: operationFrames.map((frame) => frame?.parsedOpcode) })}`,
+      );
     report.ok = true;
     validateLocalOperationsEvidence(report);
     writeJson(options.outPath, report);

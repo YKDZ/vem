@@ -95,20 +95,28 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
-  it("rejects missing or duplicate live libvirt USB serial role mappings", () => {
-    assert.throws(
-      () =>
-        parseLibvirtUsbSerialMappings(
-          domainXml().replace("serial-scanner", "serial-other"),
-        ),
-      /exactly one scanner/,
+  it("derives roles from target ports when aliases are wrong or omitted", () => {
+    const normalized = parseLibvirtUsbSerialMappings(
+      domainXml().replace("serial-scanner", "serial-other"),
     );
-    assert.throws(
-      () =>
-        parseLibvirtUsbSerialMappings(
-          domainXml().replace("serial-scanner", "serial-lower-controller"),
-        ),
-      /exactly one lower-controller/,
+    assert.deepEqual(
+      normalized.map(({ role, guestUsbTopology }) => ({
+        role,
+        targetPort: guestUsbTopology.targetPort,
+      })),
+      [
+        { role: "lower-controller", targetPort: 0 },
+        { role: "scanner", targetPort: 1 },
+      ],
+    );
+
+    const withoutAliases = domainXml().replaceAll(
+      /<alias name="[^"]+"\/>/g,
+      "",
+    );
+    assert.deepEqual(
+      parseLibvirtUsbSerialMappings(withoutAliases).map(({ role }) => role),
+      ["lower-controller", "scanner"],
     );
   });
 
