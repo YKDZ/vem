@@ -477,100 +477,104 @@ export function startMockVisionServer(
       : createServer(
           // oxlint-disable-next-line typescript/no-misused-promises -- Node owns the async request lifecycle.
           async (request, response) => {
-          if (
-            request.method === "GET" &&
-            request.url === `${DEFAULT_CONTROL_PATH}/status`
-          ) {
-            json(response, 200, {
-              ok: true,
-              scenario,
-              connectedRuntimeClients: runtimeClients.size,
-            });
-            return;
-          }
-          if (request.method !== "POST") {
-            json(response, 405, { ok: false, error: "method_not_allowed" });
-            return;
-          }
-          if (!request.url?.startsWith(DEFAULT_CONTROL_PATH)) {
-            json(response, 404, { ok: false, error: "not_found" });
-            return;
-          }
-          if (scenario !== "controlled") {
-            json(response, 409, {
-              ok: false,
-              error: "control_requires_controlled_scenario",
-            });
-            return;
-          }
-          try {
-            const body = await readJsonBody(request);
-            if (request.url === `${DEFAULT_CONTROL_PATH}/presence`) {
-              const state =
-                body &&
-                typeof body === "object" &&
-                "state" in body &&
-                body.state === "empty"
-                  ? "empty"
-                  : "approach";
-              const message = createPresenceMessage(state);
-              for (const socket of sockets) sendServerMessage(socket, message);
+            if (
+              request.method === "GET" &&
+              request.url === `${DEFAULT_CONTROL_PATH}/status`
+            ) {
               json(response, 200, {
                 ok: true,
-                event: message.type,
-                eventId: message.payload.eventId,
-                state: message.payload.state,
+                scenario,
+                connectedRuntimeClients: runtimeClients.size,
               });
               return;
             }
-            if (request.url === `${DEFAULT_CONTROL_PATH}/departure`) {
-              const lastSeenAt =
-                body &&
-                typeof body === "object" &&
-                "lastSeenAt" in body &&
-                (typeof body.lastSeenAt === "string" ||
-                  body.lastSeenAt === null)
-                  ? body.lastSeenAt
-                  : null;
-              const message = createPersonDepartedMessage(lastSeenAt);
-              const eligibleClients = [...sockets].filter((socket) =>
-                runtimeClients
-                  .get(socket)
-                  ?.capabilities.includes("person_departed"),
-              );
-              const acceptedDeliveries = eligibleClients.filter((socket) =>
-                sendServerMessage(socket, message),
-              ).length;
-              if (eligibleClients.length === 0 || acceptedDeliveries === 0) {
-                json(response, 409, {
-                  ok: false,
-                  error: "no_connected_runtime_client",
+            if (request.method !== "POST") {
+              json(response, 405, { ok: false, error: "method_not_allowed" });
+              return;
+            }
+            if (!request.url?.startsWith(DEFAULT_CONTROL_PATH)) {
+              json(response, 404, { ok: false, error: "not_found" });
+              return;
+            }
+            if (scenario !== "controlled") {
+              json(response, 409, {
+                ok: false,
+                error: "control_requires_controlled_scenario",
+              });
+              return;
+            }
+            try {
+              const body = await readJsonBody(request);
+              if (request.url === `${DEFAULT_CONTROL_PATH}/presence`) {
+                const state =
+                  body &&
+                  typeof body === "object" &&
+                  "state" in body &&
+                  body.state === "empty"
+                    ? "empty"
+                    : "approach";
+                const message = createPresenceMessage(state);
+                for (const socket of sockets)
+                  sendServerMessage(socket, message);
+                json(response, 200, {
+                  ok: true,
+                  event: message.type,
+                  eventId: message.payload.eventId,
+                  state: message.payload.state,
+                });
+                return;
+              }
+              if (request.url === `${DEFAULT_CONTROL_PATH}/departure`) {
+                const lastSeenAt =
+                  body &&
+                  typeof body === "object" &&
+                  "lastSeenAt" in body &&
+                  (typeof body.lastSeenAt === "string" ||
+                    body.lastSeenAt === null)
+                    ? body.lastSeenAt
+                    : null;
+                const message = createPersonDepartedMessage(lastSeenAt);
+                const eligibleClients = [...sockets].filter((socket) =>
+                  runtimeClients
+                    .get(socket)
+                    ?.capabilities.includes("person_departed"),
+                );
+                const acceptedDeliveries = eligibleClients.filter((socket) =>
+                  sendServerMessage(socket, message),
+                ).length;
+                if (eligibleClients.length === 0 || acceptedDeliveries === 0) {
+                  json(response, 409, {
+                    ok: false,
+                    error: "no_connected_runtime_client",
+                    connectedRuntimeClients: eligibleClients.length,
+                    acceptedDeliveries,
+                  });
+                  return;
+                }
+                json(response, 200, {
+                  ok: true,
+                  event: message.type,
+                  eventId: message.payload.eventId,
+                  timestamp: message.timestamp,
+                  lastSeenAt: message.payload.lastSeenAt,
                   connectedRuntimeClients: eligibleClients.length,
                   acceptedDeliveries,
                 });
                 return;
               }
-              json(response, 200, {
-                ok: true,
-                event: message.type,
-                eventId: message.payload.eventId,
-                timestamp: message.timestamp,
-                lastSeenAt: message.payload.lastSeenAt,
-                connectedRuntimeClients: eligibleClients.length,
-                acceptedDeliveries,
+              json(response, 404, {
+                ok: false,
+                error: "unknown_control_route",
               });
-              return;
+            } catch (error) {
+              json(response, 400, {
+                ok: false,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "invalid_control_request",
+              });
             }
-            json(response, 404, { ok: false, error: "unknown_control_route" });
-          } catch (error) {
-            json(response, 400, {
-              ok: false,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "invalid_control_request",
-            });
-          }
           },
         );
 

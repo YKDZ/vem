@@ -1145,9 +1145,7 @@ function xmlAttributeEquals(element, attribute, value) {
 export function verifyDefinedRuntimeDevices(domainXml, profile) {
   const xml = String(domainXml);
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
-  const audioDevices = [
-    ...xml.matchAll(/<audio\b(?=[^>]*\btype=)[^>]*\/?>/g),
-  ];
+  const audioDevices = [...xml.matchAll(/<audio\b(?=[^>]*\btype=)[^>]*\/?>/g)];
   if (
     sounds.length !== 1 ||
     !xmlAttributeEquals(sounds[0][0], "model", profile.audio.model) ||
@@ -1580,7 +1578,11 @@ async function existingPublishedDomainUuid(config) {
   );
   if (result.failed) return null;
   const uuid = result.stdout.trim();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      uuid,
+    )
+  ) {
     throw new Error("existing published domain returned an invalid UUID");
   }
   return uuid;

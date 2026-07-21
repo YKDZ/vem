@@ -37,7 +37,8 @@ const forbiddenPatterns = [
 function walk(path, files) {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      if (!ignoredDirectories.has(entry.name)) walk(join(path, entry.name), files);
+      if (!ignoredDirectories.has(entry.name))
+        walk(join(path, entry.name), files);
       continue;
     }
     if (entry.isFile()) files.push(join(path, entry.name));
@@ -49,14 +50,15 @@ export function findLegacyEffectiveConfigReferences({ root = ".", paths }) {
   for (const path of paths) walk(join(root, path), files);
 
   return files.flatMap((path) => {
-    if (relative(root, path) === "scripts/check-effective-config-hard-migration.mjs") {
+    if (
+      relative(root, path) ===
+      "scripts/check-effective-config-hard-migration.mjs"
+    ) {
       return [];
     }
     const text = readFileSync(path, "utf8");
     return forbiddenPatterns.flatMap((pattern) =>
-      pattern.test(text)
-        ? [`${relative(root, path)} matches ${pattern}`]
-        : [],
+      pattern.test(text) ? [`${relative(root, path)} matches ${pattern}`] : [],
     );
   });
 }
@@ -64,7 +66,9 @@ export function findLegacyEffectiveConfigReferences({ root = ".", paths }) {
 export function assertNoLegacyEffectiveConfigReferences(options) {
   const findings = findLegacyEffectiveConfigReferences(options);
   if (findings.length > 0) {
-    throw new Error(`legacy effective-config references found:\n${findings.join("\n")}`);
+    throw new Error(
+      `legacy effective-config references found:\n${findings.join("\n")}`,
+    );
   }
 }
 
@@ -74,6 +78,11 @@ const isDirectExecution =
 if (isDirectExecution) {
   assertNoLegacyEffectiveConfigReferences({
     root: ".",
-    paths: ["apps/vending-daemon", "apps/machine", "scripts", ".github/workflows"],
+    paths: [
+      "apps/vending-daemon",
+      "apps/machine",
+      "scripts",
+      ".github/workflows",
+    ],
   });
 }

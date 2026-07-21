@@ -77,13 +77,17 @@ function bindCheckpoint(checkpoint, binding) {
 
 function normalizeObservedFrameHex(frame) {
   const value =
-    typeof frame?.rawFrameHex === "string" ? frame.rawFrameHex : frame?.bytesHex;
+    typeof frame?.rawFrameHex === "string"
+      ? frame.rawFrameHex
+      : frame?.bytesHex;
   const normalized = String(value ?? "").toLowerCase();
   return /^[0-9a-f]+$/.test(normalized) ? normalized : null;
 }
 
 function sleep(milliseconds) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+  return new Promise((resolvePromise) =>
+    setTimeout(resolvePromise, milliseconds),
+  );
 }
 
 function formatError(error) {
@@ -227,9 +231,12 @@ function daemonF2Ready(daemon, binding) {
 function platformF1Ready(platform, binding) {
   const raw = platform?.raw;
   const order = raw?.orders?.find(
-    (entry) => entry?.id === binding.orderId && entry?.orderNo === binding.orderNo,
+    (entry) =>
+      entry?.id === binding.orderId && entry?.orderNo === binding.orderNo,
   );
-  const payment = raw?.payments?.find((entry) => entry?.orderId === binding.orderId);
+  const payment = raw?.payments?.find(
+    (entry) => entry?.orderId === binding.orderId,
+  );
   const command = raw?.commands?.find(
     (entry) =>
       entry?.id === binding.commandId &&
@@ -449,7 +456,9 @@ export async function startDelayedPickupLiveProductionTrack(
       evidenceDirectory,
       outPath: paths.audioStart,
     });
-    if (!Number.isFinite(Date.parse(audioStart?.captureSession?.startedAt ?? "")))
+    if (
+      !Number.isFinite(Date.parse(audioStart?.captureSession?.startedAt ?? ""))
+    )
       throw new Error(
         "host default-audio capture did not report a valid start timestamp",
       );
@@ -541,7 +550,9 @@ export async function startDelayedPickupLiveProductionTrack(
             if (audioStopped || audioCancelled || !audioStart) return;
             await cancelAudioCapture({
               baseBinding: { ...baseBinding },
-              runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
+              runtime: machineCapture?.runtime
+                ? { ...machineCapture.runtime }
+                : null,
               targetIdentity: options.targetIdentity,
               evidenceDirectory,
               outPath: paths.audioStop,
@@ -575,7 +586,9 @@ export async function startDelayedPickupLiveProductionTrack(
           if (audioStopped || audioCancelled || !audioStart) return;
           await cancelAudioCapture({
             baseBinding: { ...baseBinding },
-            runtime: machineCapture?.runtime ? { ...machineCapture.runtime } : null,
+            runtime: machineCapture?.runtime
+              ? { ...machineCapture.runtime }
+              : null,
             targetIdentity: options.targetIdentity,
             evidenceDirectory,
             outPath: paths.audioStop,

@@ -1640,5 +1640,4 @@ describe("checkout store", () => {
     });
     expect(store.paymentCodeMessage).toBe("正在确认支付结果");
   });
-
 });

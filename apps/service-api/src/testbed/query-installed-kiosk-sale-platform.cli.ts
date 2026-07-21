@@ -279,7 +279,9 @@ export async function queryInstalledKioskSalePlatform(
                     status: paymentCodeAttempts.status,
                     isActive: paymentCodeAttempts.isActive,
                     source: paymentCodeAttempts.source,
-                    scannerEventId: sql<string | null>`${paymentCodeAttempts.scannerHealthJson}->>'scannerEventId'`,
+                    scannerEventId: sql<
+                      string | null
+                    >`${paymentCodeAttempts.scannerHealthJson}->>'scannerEventId'`,
                   })
                   .from(paymentCodeAttempts)
                   .where(inArray(paymentCodeAttempts.orderId, orderIds)),
@@ -319,16 +321,15 @@ export async function queryInstalledKioskSalePlatform(
           paymentCodeAttemptRows,
           reservationRows,
           commandRows,
-        ] =
-          Array.isArray(related)
-            ? related
-            : [
-                related.orderItems,
-                related.payments,
-                related.paymentCodeAttempts,
-                related.reservations,
-                related.commands,
-              ];
+        ] = Array.isArray(related)
+          ? related
+          : [
+              related.orderItems,
+              related.payments,
+              related.paymentCodeAttempts,
+              related.reservations,
+              related.commands,
+            ];
         const movementRows = await client
           .select({
             id: machineRawStockMovements.id,

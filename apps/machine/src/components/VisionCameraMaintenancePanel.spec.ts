@@ -143,9 +143,7 @@ describe("VisionCameraMaintenancePanel", () => {
     expect(
       host.querySelector("[data-test='vision-camera-maintenance-message']")
         ?.textContent,
-    ).not.toContain(
-      "daemon request failed",
-    );
+    ).not.toContain("daemon request failed");
     expect(host.querySelector("details")?.textContent).toContain(
       "daemon request failed",
     );

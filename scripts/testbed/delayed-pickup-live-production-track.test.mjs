@@ -45,7 +45,10 @@ describe("delayed pickup live production track", () => {
     assert.ok(prepare >= 0);
     assert.ok(inject > prepare);
     assert.match(source, /stop-scanner-probe/);
-    assert.match(source, /await waitForPaymentCodeArm\(handoff, paymentSurface\)/);
+    assert.match(
+      source,
+      /await waitForPaymentCodeArm\(handoff, paymentSurface\)/,
+    );
     assert.match(source, /attempt < 3 && !paymentRouteReached/);
     assert.match(source, /\/v1\/sale-start-capability/);
     assert.match(source, /scannerCodeBase64: Buffer\.from\(/);
@@ -161,7 +164,13 @@ describe("delayed pickup live production track", () => {
                 orderItems: [],
                 payments:
                   stage === "at_f1"
-                    ? [{ id: "payment-17", orderId: sale.orderId, status: "succeeded" }]
+                    ? [
+                        {
+                          id: "payment-17",
+                          orderId: sale.orderId,
+                          status: "succeeded",
+                        },
+                      ]
                     : [],
                 reservations: [],
                 commands:
@@ -279,7 +288,8 @@ describe("delayed pickup live production track", () => {
           operations.indexOf("daemon:after_f2"),
       );
       assert.ok(
-        operations.indexOf("daemon:after_f2") < operations.indexOf("audio:stop"),
+        operations.indexOf("daemon:after_f2") <
+          operations.indexOf("audio:stop"),
       );
       assert.equal(evidence.runtime.principal, "FIELD\\InteractiveUser");
       assert.equal(evidence.binding.commandId, sale.commandId);
@@ -459,7 +469,10 @@ describe("delayed pickup live production track", () => {
     assert.equal(combined instanceof AggregateError, true);
     assert.equal(combined.errors[0], primary);
     assert.match(combined.message, /primary live sale failure/);
-    assert.match(combined.message, /live-track-close failed: sidecar tunnel still open/);
+    assert.match(
+      combined.message,
+      /live-track-close failed: sidecar tunnel still open/,
+    );
   });
 
   it("fails closed when live track close rejects and includes surviving process/session evidence", async () => {
@@ -578,19 +591,16 @@ describe("delayed pickup live production track", () => {
           },
         },
       );
-      await assert.rejects(
-        track.close(),
-        (error) => {
-          assert.equal(error instanceof AggregateError, true);
-          assert.match(error.message, /live production track cleanup failed/);
-          assert.match(error.message, /CDP client close failed/);
-          assert.match(error.message, /CDP sidecar close failed/);
-          assert.match(error.message, /surviving process\/session evidence/);
-          assert.match(error.message, /\"processId\":42/);
-          assert.match(error.message, /\"sessionId\":7/);
-          return true;
-        },
-      );
+      await assert.rejects(track.close(), (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.match(error.message, /live production track cleanup failed/);
+        assert.match(error.message, /CDP client close failed/);
+        assert.match(error.message, /CDP sidecar close failed/);
+        assert.match(error.message, /surviving process\/session evidence/);
+        assert.match(error.message, /\"processId\":42/);
+        assert.match(error.message, /\"sessionId\":7/);
+        return true;
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

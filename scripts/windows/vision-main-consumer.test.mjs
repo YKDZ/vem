@@ -27,12 +27,21 @@ test("consumes the published Vision main Actions artifact contract", () => {
 
 test("keeps the runtime and recorded-video fixture archives separate", () => {
   const module = source(modulePath);
-  assert.match(module, /runtime archive must not contain recorded-video fixtures/);
+  assert.match(
+    module,
+    /runtime archive must not contain recorded-video fixtures/,
+  );
   assert.match(module, /recorded-video\/top\.mp4/);
   assert.match(module, /fixture-manifest\.json/);
-  assert.match(module, /recorded-video configuration requires the separate fixture archive/);
+  assert.match(
+    module,
+    /recorded-video configuration requires the separate fixture archive/,
+  );
   assert.match(module, /recorded-video path must be an extracted fixture/);
-  assert.match(module, /recorded-video path must bind the committed \$\(\$binding\.label\) fixture/);
+  assert.match(
+    module,
+    /recorded-video path must bind the committed \$\(\$binding\.label\) fixture/,
+  );
 });
 
 test("installs one fixed app directory and probes health plus machine protocol", () => {
@@ -52,7 +61,10 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /while \(-not \$received\.EndOfMessage\)/);
   assert.match(module, /\$MaxMessageBytes = 65536/);
   assert.match(module, /Test-VisionMainProtocolTimestamp/);
-  assert.match(module, /profile_push", "presence_status", "person_departed", "try_on_session/);
+  assert.match(
+    module,
+    /profile_push", "presence_status", "person_departed", "try_on_session/,
+  );
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
   assert.match(module, /vending-vision\.exe`" --config/);
@@ -91,7 +103,10 @@ test("removes retired candidate delivery entrypoints without a compatibility pat
     assert.equal(existsSync(path), false, `${path} must remain deleted`);
   }
   const combined = `${source(modulePath)}\n${source(resolverPath)}\n${source(installerPath)}`;
-  assert.doesNotMatch(combined, /candidate|approval|attestation|sbom|provenance|rollback|factory manifest|allowlist/i);
+  assert.doesNotMatch(
+    combined,
+    /candidate|approval|attestation|sbom|provenance|rollback|factory manifest|allowlist/i,
+  );
 });
 
 test("runtime verification cannot reintroduce versioned release selection", () => {

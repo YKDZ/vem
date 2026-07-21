@@ -8,7 +8,10 @@ const script = readFileSync(scriptPath, "utf8");
 
 describe("testbed PowerShell cache bootstrap", () => {
   it("stages and validates a pending installation before replacing a damaged cache", () => {
-    assert.match(script, /function Test-CachedPowerShell[\s\S]*\[string\] \$InstallRoot/);
+    assert.match(
+      script,
+      /function Test-CachedPowerShell[\s\S]*\[string\] \$InstallRoot/,
+    );
     assert.match(script, /\$pending = "\$root\.pending"/);
     assert.match(
       script,

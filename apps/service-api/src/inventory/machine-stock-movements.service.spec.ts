@@ -321,8 +321,8 @@ class InsertRaceMovementRepository extends InMemoryMovementRepository {
     const cause = Object.assign(
       new Error("duplicate key value violates unique constraint"),
       {
-      code: "23505",
-      constraint: "machine_raw_stock_movements_machine_movement_unique",
+        code: "23505",
+        constraint: "machine_raw_stock_movements_machine_movement_unique",
       },
     );
     throw Object.assign(new Error("Failed query: insert into movements"), {

@@ -10,7 +10,6 @@ const FORMAT_EXTENSIONS = new Set([
   ".json",
   ".jsonc",
   ".jsx",
-  ".md",
   ".mjs",
   ".ts",
   ".tsx",
