@@ -52,30 +52,48 @@ function hardwareLifecycleReport() {
     lifecycle: [
       {
         role: "lower_controller",
-        initialBindingRevision: 3,
+        identityKey: "container:lower",
         disconnect: {
           host: { operation: "disconnect" },
-          daemon: { ready: false },
+          daemon: { ready: false, currentPort: null },
           saleStartCapability: { canStartSale: false },
         },
         reconnect: {
           host: { operation: "reconnect" },
-          daemon: { ready: true },
-          bindingRevision: 4,
+          daemon: {
+            ready: true,
+            currentPort: "COM4",
+            identityKey: "container:lower",
+          },
+          saleStartCapability: { canStartSale: true },
         },
       },
       {
         role: "scanner",
-        initialBindingRevision: 5,
+        identityKey: "container:scanner",
         disconnect: {
           host: { operation: "disconnect" },
-          daemon: { ready: false },
-          saleStartCapability: { canStartSale: false },
+          daemon: { ready: false, currentPort: null },
+          saleStartCapability: {
+            canStartSale: true,
+            paymentOptions: {
+              options: [{ method: "payment_code", ready: false }],
+            },
+          },
         },
         reconnect: {
           host: { operation: "reconnect" },
-          daemon: { ready: true },
-          bindingRevision: 6,
+          daemon: {
+            ready: true,
+            currentPort: "COM3",
+            identityKey: "container:scanner",
+          },
+          saleStartCapability: {
+            canStartSale: true,
+            paymentOptions: {
+              options: [{ method: "payment_code", ready: true }],
+            },
+          },
         },
       },
     ],

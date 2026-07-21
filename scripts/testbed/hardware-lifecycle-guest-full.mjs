@@ -132,15 +132,42 @@ async function waitForRoleState(handoff, role, ready, timeoutMs = 45_000) {
         ready,
         currentPort: state.currentPort ?? null,
         bindingRevision: state.bindingRevision ?? null,
+        identityKey: state.binding?.identity?.identityKey ?? null,
         healthz,
         readyz,
-        saleStartCapability: capability,
       };
     }
     await sleep(250);
   }
   throw new Error(
     `timed out waiting for ${role} ready=${ready}: ${JSON.stringify(last)}`,
+  );
+}
+
+export function capabilityReflectsRoleState(capability, role, ready) {
+  if (!capability) return false;
+  if (role === "lower_controller") return capability.canStartSale === ready;
+  const paymentCodeOptions = (capability.paymentOptions?.options ?? []).filter(
+    (option) => option?.method === "payment_code",
+  );
+  return (
+    paymentCodeOptions.length > 0 &&
+    paymentCodeOptions.some((option) => option?.ready === true) === ready
+  );
+}
+
+async function waitForRoleCapability(handoff, role, ready, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await daemonGet(handoff, "/v1/sale-start-capability").catch(
+      () => null,
+    );
+    if (capabilityReflectsRoleState(last, role, ready)) return last;
+    await sleep(100);
+  }
+  throw new Error(
+    `timed out waiting for ${role} capability ready=${ready}: ${JSON.stringify(last)}`,
   );
 }
 
@@ -229,6 +256,11 @@ export async function runHardwareLifecycleGuest(options) {
         serialObservationsForLifecycle(originalObservations, role, false),
       );
       const disconnected = await waitForRoleState(handoff, role, false);
+      const disconnectedCapability = await waitForRoleCapability(
+        handoff,
+        role,
+        false,
+      );
       const reconnectedHost = await control(
         guestInput,
         `/v1/serial-sessions/${session.sessionId}/device-lifecycle`,
@@ -236,6 +268,11 @@ export async function runHardwareLifecycleGuest(options) {
       );
       writeJson(discoveryPath, originalObservations);
       const reconnected = await waitForRoleState(handoff, role, true);
+      const reconnectedCapability = await waitForRoleCapability(
+        handoff,
+        role,
+        true,
+      );
       report.lifecycle.push({
         role,
         initialBindingRevision: initial?.bindingRevision ?? null,
@@ -246,8 +283,9 @@ export async function runHardwareLifecycleGuest(options) {
             ready: disconnected.ready,
             currentPort: disconnected.currentPort,
             bindingRevision: disconnected.bindingRevision,
+            identityKey: disconnected.identityKey,
           },
-          saleStartCapability: disconnected.saleStartCapability,
+          saleStartCapability: disconnectedCapability,
         },
         reconnect: {
           host: reconnectedHost.lifecycle,
@@ -255,9 +293,10 @@ export async function runHardwareLifecycleGuest(options) {
             ready: reconnected.ready,
             currentPort: reconnected.currentPort,
             bindingRevision: reconnected.bindingRevision,
+            identityKey: reconnected.identityKey,
           },
           bindingRevision: reconnected.bindingRevision,
-          saleStartCapability: reconnected.saleStartCapability,
+          saleStartCapability: reconnectedCapability,
         },
       });
     }

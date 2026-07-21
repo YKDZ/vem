@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { serialObservationsForLifecycle } from "./hardware-lifecycle-guest-full.mjs";
+import {
+  capabilityReflectsRoleState,
+  serialObservationsForLifecycle,
+} from "./hardware-lifecycle-guest-full.mjs";
 import {
   buildMqttTopic,
   buildSerialOperationCommand,
@@ -97,6 +100,31 @@ async function requestJson(baseUrl, token, path, body = {}) {
 }
 
 describe("host serial control plane", () => {
+  it("waits for role-specific sale capability projections", () => {
+    const capability = {
+      canStartSale: true,
+      paymentOptions: {
+        options: [
+          { method: "payment_code", ready: false },
+          { method: "mock", ready: true },
+        ],
+      },
+    };
+    assert.equal(
+      capabilityReflectsRoleState(capability, "scanner", false),
+      true,
+    );
+    assert.equal(
+      capabilityReflectsRoleState(capability, "lower_controller", false),
+      false,
+    );
+    capability.canStartSale = false;
+    assert.equal(
+      capabilityReflectsRoleState(capability, "lower_controller", false),
+      true,
+    );
+  });
+
   it("parses an absolute stateful HTTP listener contract", () => {
     const options = parseHostSerialControlPlaneArgs([
       "--workspace",

@@ -411,19 +411,37 @@ function validateHardwareLifecycleTrack(report, reportPath) {
     (entry) =>
       entry?.disconnect?.host?.operation === "disconnect" &&
       entry.disconnect?.daemon?.ready === false &&
-      entry.disconnect?.saleStartCapability?.canStartSale === false &&
+      entry.disconnect?.daemon?.currentPort == null &&
       entry?.reconnect?.host?.operation === "reconnect" &&
       entry.reconnect?.daemon?.ready === true &&
-      Number.isInteger(entry.reconnect?.bindingRevision) &&
-      entry.reconnect.bindingRevision >= entry.initialBindingRevision,
+      typeof entry.reconnect?.daemon?.currentPort === "string" &&
+      entry.reconnect.daemon.identityKey === entry.identityKey,
   );
+  const lowerCapabilityValid =
+    lower?.disconnect?.saleStartCapability?.canStartSale === false &&
+    lower?.reconnect?.saleStartCapability?.canStartSale === true;
+  const scannerPaymentOptions = (capability) =>
+    (capability?.paymentOptions?.options ?? []).filter(
+      (option) => option?.method === "payment_code",
+    );
+  const scannerCapabilityValid =
+    scannerPaymentOptions(scanner?.disconnect?.saleStartCapability).length >
+      0 &&
+    scannerPaymentOptions(scanner.disconnect.saleStartCapability).every(
+      (option) => option?.ready === false,
+    ) &&
+    scannerPaymentOptions(scanner?.reconnect?.saleStartCapability).some(
+      (option) => option?.ready === true,
+    );
   if (
     roles.length < 2 ||
     qemuMappings.length < 2 ||
     discovery.dynamicRoleDiscovery !== true ||
     discovery.fixedComSelection !== false ||
     stableReadiness !== true ||
-    validLifecycle !== true
+    validLifecycle !== true ||
+    lowerCapabilityValid !== true ||
+    scannerCapabilityValid !== true
   ) {
     return failedTrack(
       "hardwareLifecycle",
