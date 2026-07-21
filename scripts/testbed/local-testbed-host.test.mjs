@@ -253,7 +253,10 @@ describe("tracked local testbed host lifecycle", () => {
     assert.equal(plan[2].type, "synchronize-clock");
     assert.match(plan[2].input, /2026-07-20T11:00:00\.000Z/);
     assert.match(plan[2].input, /Stop-Service -Name W32Time/);
-    assert.match(plan[2].input, /Set-Service -Name W32Time -StartupType Disabled/);
+    assert.match(
+      plan[2].input,
+      /Set-Service -Name W32Time -StartupType Disabled/,
+    );
     assert.match(plan[2].input, /Set-Date/);
     assert.equal(plan.length, 3);
     assert.match(
