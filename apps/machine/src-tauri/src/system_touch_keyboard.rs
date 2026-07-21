@@ -36,6 +36,9 @@ pub fn show_system_touch_keyboard(
 ) -> Result<SystemTouchKeyboardState, String> {
     #[cfg(windows)]
     {
+        window
+            .set_focus()
+            .map_err(|error| format!("聚焦 Machine UI 窗口失败: {error}"))?;
         if input_pane_for_window(&window).and_then(|input_pane| {
             input_pane
                 .TryShow()
