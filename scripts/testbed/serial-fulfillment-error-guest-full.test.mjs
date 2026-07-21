@@ -151,9 +151,38 @@ describe("serial fulfillment error guest full", () => {
         ["post", "/v1/hardware/self-check"],
         ["post", "/v1/maintenance/whole-machine-lock/clear"],
         ["get", "/v1/sale-start-capability"],
-        ["control", "/v1/serial-sessions/recovery-1/abort"],
       ],
     );
+  });
+
+  it("cleans up the recovery controller session when recovery fails", async () => {
+    const paths = [];
+    await assert.rejects(
+      recoverWholeMachineLockAfterFulfillmentFailure({
+        guestInput: {
+          hostControlPlane: {
+            targetIdentity: "target-1",
+            runtimeBaseIdentity: "base-1",
+          },
+        },
+        handoff: {},
+        runId: "run-1",
+        machineCode: "machine-1",
+        controlRequest: async (_input, path) => {
+          paths.push(path);
+          return path.endsWith("/start") ? { sessionId: "recovery-1" } : {};
+        },
+        waitForReady: async () => {},
+        waitForBindings: async () => ({}),
+        daemonPostRequest: async (_handoff, path) =>
+          path.endsWith("self-check") ? { online: false } : {},
+      }),
+      /lower-controller recovery self-check failed/,
+    );
+    assert.deepEqual(paths, [
+      "/v1/serial-sessions/start",
+      "/v1/serial-sessions/recovery-1/abort",
+    ]);
   });
 
   it("accepts only a bound E6 terminal journey with no F2, movement, or stock delta", () => {

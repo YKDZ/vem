@@ -241,11 +241,12 @@ export async function recoverWholeMachineLockAfterFulfillmentFailure({
       );
     }
     return { hardwareBindings, selfCheck, clear, capability };
-  } finally {
+  } catch (error) {
     await controlRequest(
       guestInput,
       `/v1/serial-sessions/${recoverySession.sessionId}/abort`,
     ).catch(() => undefined);
+    throw error;
   }
 }
 
