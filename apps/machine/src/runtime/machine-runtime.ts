@@ -269,9 +269,11 @@ export function startMachineRuntime(pinia: Pinia): void {
     pinia,
     installedMachineRuntimeTrace() ?? undefined,
   );
-  void machineStore.loadEffectiveRuntimeConfiguration().catch((error) => {
-    connectivityStore.markStale(error);
-  });
+  void machineStore
+    .loadEffectiveRuntimeConfiguration()
+    .catch((error: unknown) => {
+      connectivityStore.markStale(error);
+    });
   void saleCapabilityStore.refresh();
   coordinator.subscription = daemonClient.subscribeEvents({
     onEvent: (event) => {
