@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -122,6 +122,11 @@ function jsonIfPresent(path) {
   }
 }
 
+function clearTrackReport(path) {
+  if (typeof path !== "string" || path.trim() === "") return;
+  rmSync(path, { force: true });
+}
+
 function workflowIdentity(guestInputPath, commit = null) {
   const identity = jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
   return commit ? { ...identity, githubSha: commit } : identity;
@@ -234,6 +239,8 @@ export async function runSerialTrackLifecycle({
           report: null,
         };
       } else {
+        // A report is valid only when produced by this invocation.
+        clearTrackReport(track.reportPath);
         await beforeTrack(track);
         child = await executeTrack(track);
       }
@@ -543,6 +550,30 @@ export function fixtureAllocationForTrack(fixtureAllocation, track) {
   return fixture ? { [track.fixtureKey]: fixture } : null;
 }
 
+export async function clearWholeMachineLockIfPresent({
+  daemonGet: get,
+  daemonPost: post,
+}) {
+  const capability = await get("/v1/sale-start-capability");
+  const locked = capability?.blockers?.some(
+    (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
+  );
+  if (!locked) return { cleared: false };
+  await post("/v1/hardware/self-check", {});
+  const result = await post("/v1/maintenance/whole-machine-lock/clear", {
+    operatorNote: "testbed business-set handoff recovery",
+  });
+  const refreshed = await get("/v1/sale-start-capability");
+  if (
+    refreshed?.blockers?.some(
+      (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
+    )
+  ) {
+    throw new Error("whole-machine lock remained after production recovery");
+  }
+  return { cleared: true, result };
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -713,8 +744,13 @@ function terminalOperations(guestInput, handoff) {
     }
   };
   return {
-    prepareTrack: () =>
-      withClient((client) => refreshCatalogPageFromClient({ client })),
+    prepareTrack: async () => {
+      await clearWholeMachineLockIfPresent({
+        daemonGet: (path) => daemonGet(handoff, path),
+        daemonPost: (path, body) => daemonPost(handoff, path, body),
+      });
+      return withClient((client) => refreshCatalogPageFromClient({ client }));
+    },
     captureTerminal: async (track, context) => {
       await waitForDaemonReadyRefresh(handoff);
       return captureTrackTerminalFacts({
@@ -765,6 +801,13 @@ function terminalOperations(guestInput, handoff) {
           }
           return transaction;
         },
+        selfCheckHardware: () =>
+          daemonPost(handoff, "/v1/hardware/self-check", {}),
+        clearWholeMachineLock: (operatorNote) =>
+          daemonPost(handoff, "/v1/maintenance/whole-machine-lock/clear", {
+            operatorNote,
+          }),
+        wholeMachineLockOperatorNote: "testbed business-set handoff recovery",
         restoreFixtureStock: async () => ({
           skipped: "independent fixture allocation",
         }),

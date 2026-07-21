@@ -252,6 +252,76 @@ describe("Track Handoff Recovery", () => {
     ]);
   });
 
+  it("self-checks and clears the whole-machine lock only for its capability blocker", async () => {
+    const calls = [];
+    const result = await recoverTrackHandoff({
+      track: { key: "scanner" },
+      terminal: {
+        facts: {
+          route: "#/catalog",
+          saleStartCapability: {
+            blockers: [{ code: "WHOLE_MACHINE_LOCKED" }],
+          },
+        },
+      },
+      selfCheckHardware: async () => calls.push("self-check"),
+      clearWholeMachineLock: async (note) => calls.push(["clear", note]),
+      wholeMachineLockOperatorNote: "handoff recovery",
+      disableFaultInjection: async () => calls.push("fault"),
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [
+      "self-check",
+      ["clear", "handoff recovery"],
+      "fault",
+    ]);
+    assert.deepEqual(result.actions, [
+      "selfCheckHardware",
+      "clearWholeMachineLock",
+      "disableFaultInjection",
+    ]);
+  });
+
+  it("does not call whole-machine recovery endpoints without the lock blocker", async () => {
+    const calls = [];
+    const result = await recoverTrackHandoff({
+      track: { key: "scanner" },
+      terminal: {
+        facts: {
+          route: "#/catalog",
+          saleStartCapability: { blockers: [{ code: "MQTT_UNAVAILABLE" }] },
+        },
+      },
+      selfCheckHardware: async () => calls.push("self-check"),
+      clearWholeMachineLock: async () => calls.push("clear"),
+      disableFaultInjection: async () => calls.push("fault"),
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, ["fault"]);
+  });
+
+  it("does not clear the lock when self-check fails", async () => {
+    const calls = [];
+    const result = await recoverTrackHandoff({
+      track: { key: "scanner" },
+      terminal: {
+        facts: {
+          route: "#/catalog",
+          saleStartCapability: { blockers: [{ code: "WHOLE_MACHINE_LOCKED" }] },
+        },
+      },
+      selfCheckHardware: async () => {
+        calls.push("self-check");
+        throw new Error("production serial path unavailable");
+      },
+      clearWholeMachineLock: async () => calls.push("clear"),
+      disableFaultInjection: async () => calls.push("fault"),
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(calls, ["self-check"]);
+    assert.match(result.errors[0], /production serial path unavailable/);
+  });
+
   it("cancels a leaked wait_payment transaction before waiting for terminal state", async () => {
     const calls = [];
     const result = await recoverTrackHandoff({

@@ -922,6 +922,41 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
+  it("clears Vision processes and mock ports before both full and fast runs", () => {
+    const guestScript = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      guestScript,
+      /function Clear-TestbedVisionProcesses\(\[object\]\$GuestInput\)/,
+    );
+    assert.match(
+      guestScript,
+      /\$visionPorts = @\(7892, \[int\]\$GuestInput\.hostControlPlane\.visionMockControlPort\)/,
+    );
+    assert.match(
+      guestScript,
+      /Get-Process vending-vision[\s\S]*Get-NetTCPConnection -State Listen/,
+    );
+    assert.match(
+      guestScript,
+      /if \(\$Mode -in @\("fast", "full"\)\) \{\s+Clear-TestbedVisionProcesses \$guestInput\s+\}/,
+    );
+    assert.ok(
+      guestScript.indexOf("Clear-TestbedVisionProcesses $guestInput") <
+        guestScript.indexOf('if ($Mode -eq "fast")'),
+    );
+    assert.equal(
+      (
+        guestScript.match(
+          /Stop-ScheduledTask -TaskName "StartVisionServer"/g,
+        ) ?? []
+      ).length,
+      1,
+    );
+  });
+
   it("starts a fresh simulated serial session for warm and reconstructed runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
@@ -955,10 +990,7 @@ describe("Windows D cache contract", () => {
     assert.match(guestScript, /VID_1A86&PID_7523/);
     assert.match(guestScript, /VID_1A86&PID_55D3/);
     assert.match(guestScript, /VEM_TESTBED_SERIAL_DISCOVERY_FILE/);
-    assert.match(
-      guestScript,
-      /while \(\[DateTime\]::UtcNow -lt \$deadline\)/,
-    );
+    assert.match(guestScript, /while \(\[DateTime\]::UtcNow -lt \$deadline\)/);
     assert.doesNotMatch(
       guestScript.match(
         /function Write-TestbedSerialDiscoveryAdapter[\s\S]*?\n}/,
@@ -1350,7 +1382,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(\$Mode -eq "full"\) \{[\s\S]*Start-TestbedCommissioningSerialSession \$guestInput[\s\S]*Stop-TestbedScannerBindingProbe/,
+      /Start-TestbedCommissioningSerialSession \$guestInput[\s\S]*Stop-TestbedScannerBindingProbe/,
     );
     assert.match(guest, /Write-TestbedPhase "restart-warm-runtime"/);
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$daemonDataRoot/);

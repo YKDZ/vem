@@ -87,6 +87,15 @@ function transactionLeaked(transaction) {
   return isActiveTransaction(transaction);
 }
 
+function hasWholeMachineLockBlocker(capability) {
+  return (
+    Array.isArray(capability?.blockers) &&
+    capability.blockers.some(
+      (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
+    )
+  );
+}
+
 function terminalPolicyFailures(track, facts) {
   const failures = [];
   if (transactionLeaked(facts.transaction))
@@ -167,6 +176,9 @@ export async function recoverTrackHandoff({
   restoreFixtureStock,
   cancelActiveTransaction,
   waitForTransactionTerminal,
+  selfCheckHardware,
+  clearWholeMachineLock,
+  wholeMachineLockOperatorNote = "verified track handoff recovery",
 }) {
   const actions = [];
   const errors = [];
@@ -206,6 +218,25 @@ export async function recoverTrackHandoff({
         ],
       };
     }
+  }
+  if (hasWholeMachineLockBlocker(terminal?.facts?.saleStartCapability)) {
+    if (typeof selfCheckHardware !== "function") {
+      errors.push(
+        "recoverWholeMachineLock: selfCheckHardware is required for WHOLE_MACHINE_LOCKED",
+      );
+      return { ok: false, actions, errors };
+    }
+    await attempt("selfCheckHardware", selfCheckHardware);
+    if (errors.length > 0) return { ok: false, actions, errors };
+    if (typeof clearWholeMachineLock !== "function") {
+      errors.push(
+        "recoverWholeMachineLock: clearWholeMachineLock is required for WHOLE_MACHINE_LOCKED",
+      );
+      return { ok: false, actions, errors };
+    }
+    await attempt("clearWholeMachineLock", () =>
+      clearWholeMachineLock(wholeMachineLockOperatorNote),
+    );
   }
   await attempt("disableFaultInjection", disableFaultInjection);
   const sessionId = terminal?.facts?.deviceSession?.sessionId;

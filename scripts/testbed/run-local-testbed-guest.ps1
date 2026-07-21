@@ -423,6 +423,26 @@ function Invoke-FullVisionTryOnAcceptance(
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
+function Clear-TestbedVisionProcesses([object]$GuestInput) {
+  Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+  Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
+  $visionPorts = @(7892, [int]$GuestInput.hostControlPlane.visionMockControlPort) | Select-Object -Unique
+  $visionOwnerIds = @(
+    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $visionPorts -contains $_.LocalPort } |
+      Select-Object -ExpandProperty OwningProcess -Unique
+  )
+  foreach ($ownerId in $visionOwnerIds) {
+    Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+  }
+  $visionPortDeadline = (Get-Date).AddSeconds(10)
+  while (
+    (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $visionPorts -contains $_.LocalPort }) -and
+    (Get-Date) -lt $visionPortDeadline
+  ) { Start-Sleep -Milliseconds 100 }
+}
+
 if ($Mode -eq "clear_cache") {
   $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
   Clear-DeclaredCaches
@@ -445,6 +465,9 @@ if ($Mode -eq "clear_cache") {
 Require-Path $GuestInputPath
 $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
+if ($Mode -in @("fast", "full")) {
+  Clear-TestbedVisionProcesses $guestInput
+}
 Write-TestbedPhase "bootstrap"
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $claim = $null
@@ -462,26 +485,6 @@ if ($Mode -eq "fast") {
   if ($null -eq $commissioningSerialSession) { throw "warm fast run requires the existing commissioning serial session" }
   Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
   Write-TestbedPhase "warm-baseline-recovery"
-}
-
-if ($Mode -eq "full") {
-  Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-  Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
-  $visionPorts = @(7892, [int]$guestInput.hostControlPlane.visionMockControlPort) | Select-Object -Unique
-  $visionOwnerIds = @(
-    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-      Where-Object { $visionPorts -contains $_.LocalPort } |
-      Select-Object -ExpandProperty OwningProcess -Unique
-  )
-  foreach ($ownerId in $visionOwnerIds) {
-    Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
-  }
-  $visionPortDeadline = (Get-Date).AddSeconds(10)
-  while (
-    (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-      Where-Object { $visionPorts -contains $_.LocalPort }) -and
-    (Get-Date) -lt $visionPortDeadline
-  ) { Start-Sleep -Milliseconds 100 }
 }
 
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")

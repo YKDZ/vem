@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  clearWholeMachineLockIfPresent,
   ensureFixtureStockReady,
   fixtureAllocationForTrack,
   refreshCatalogPageFromClient,
@@ -15,6 +16,29 @@ import {
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
+  it("uses the production self-check and clear endpoints for a persisted whole-machine lock", async () => {
+    const posts = [];
+    let capabilityRead = 0;
+    const result = await clearWholeMachineLockIfPresent({
+      daemonGet: async () => ({
+        blockers:
+          capabilityRead++ === 0 ? [{ code: "WHOLE_MACHINE_LOCKED" }] : [],
+      }),
+      daemonPost: async (path, body) => {
+        posts.push({ path, body });
+        return { cleared: true };
+      },
+    });
+    assert.equal(result.cleared, true);
+    assert.deepEqual(posts, [
+      { path: "/v1/hardware/self-check", body: {} },
+      {
+        path: "/v1/maintenance/whole-machine-lock/clear",
+        body: { operatorNote: "testbed business-set handoff recovery" },
+      },
+    ]);
+  });
+
   it("restores only the fixture owned by the current business set", () => {
     const allocation = {
       sale: { slotCode: "A1", onHandQty: 3 },
@@ -160,11 +184,32 @@ describe("full workflow serial lifecycle", () => {
   });
 
   it("records a preflight failure and continues to the next track", async () => {
+    const reportPath = join(
+      mkdtempSync(join(tmpdir(), "vem-workflow-preflight-report-")),
+      "sale.json",
+    );
+    writeFileSync(reportPath, JSON.stringify({ ok: true }));
     const calls = [];
     const result = await runSerialTrackLifecycle({
-      tracks: FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
-        (track) => track.runner && track.name !== "commissioning",
-      ).slice(0, 2),
+      tracks: [
+        {
+          ...FULL_WORKFLOW_TRACK_DESCRIPTORS.find(
+            (track) => track.name === "sale",
+          ),
+          key: "sale",
+          reportPath,
+        },
+        {
+          ...FULL_WORKFLOW_TRACK_DESCRIPTORS.find(
+            (track) => track.name === "scannerPayment",
+          ),
+          key: "scannerPayment",
+          reportPath: join(
+            mkdtempSync(join(tmpdir(), "vem-workflow-next-report-")),
+            "scanner.json",
+          ),
+        },
+      ],
       beforeTrack(track) {
         calls.push(`preflight:${track.key}`);
         if (track.key === "sale") throw new Error("ready file was rotating");
@@ -173,7 +218,10 @@ describe("full workflow serial lifecycle", () => {
         calls.push(`run:${track.key}`);
         return { status: "passed", exitCode: 0, report: { ok: true } };
       },
-      captureTerminal: async () => ({ ok: true, facts: {} }),
+      captureTerminal: async (track, { report }) => {
+        if (track.key === "sale") assert.equal(report, null);
+        return { ok: true, facts: {} };
+      },
       recover: async () => ({ ok: true, actions: [] }),
     });
 
@@ -184,6 +232,8 @@ describe("full workflow serial lifecycle", () => {
     ]);
     assert.equal(result[0].businessStatus, "failed");
     assert.match(result[0].error, /ready file was rotating/);
+    assert.equal(result[0].reportOk, null);
+    assert.equal(existsSync(reportPath), false);
     assert.equal(result[1].businessStatus, "failed");
   });
 
