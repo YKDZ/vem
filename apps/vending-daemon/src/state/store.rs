@@ -5772,9 +5772,11 @@ async fn open_sqlite_pool(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     let url = format!("sqlite://{}?mode=rwc", path.display());
     let options = url
         .parse::<SqliteConnectOptions>()?
-        .busy_timeout(Duration::from_secs(5));
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(10));
     SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(16)
         .connect_with(options)
         .await
 }
@@ -9015,6 +9017,30 @@ mod tests {
             .expect("schema version")
             .unwrap();
         assert_eq!(schema_version, Some(SCHEMA_VERSION));
+    }
+
+    #[tokio::test]
+    async fn sqlite_pool_keeps_runtime_reads_available_during_background_work() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let mut connections = Vec::new();
+        for _ in 0..8 {
+            connections.push(
+                tokio::time::timeout(Duration::from_secs(1), store.pool().acquire())
+                    .await
+                    .expect("runtime read connection must not starve")
+                    .expect("acquire runtime read connection"),
+            );
+        }
+        for connection in &mut connections {
+            let foreign_keys: (i64,) = sqlx::query_as("PRAGMA foreign_keys")
+                .fetch_one(&mut **connection)
+                .await
+                .expect("foreign key mode");
+            assert_eq!(foreign_keys.0, 1);
+        }
     }
 
     #[tokio::test]
