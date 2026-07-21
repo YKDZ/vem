@@ -187,27 +187,19 @@ export function selectCanonicalSlot(saleView, fixture) {
     planogramVersion: saleView.planogramVersion,
   };
 }
-function capturedMqttMessages(evidence) {
-  return [
-    ...(evidence?.mqtt?.messages ?? []),
-    ...(evidence?.machineMqtt?.messages ?? []),
-  ];
-}
-export function mqttEvidenceMatchesPayment(evidence, payment) {
-  const identities = [payment?.id, payment?.paymentNo, payment?.orderNo].filter(
-    (value) => typeof value === "string" && value !== "",
+export function mqttEvidenceProvesNoDispense(evidence) {
+  return (
+    evidence?.mqtt?.topic?.endsWith("/commands/dispense") === true &&
+    Array.isArray(evidence.mqtt.messages) &&
+    evidence.mqtt.messages.length === 0
   );
-  return capturedMqttMessages(evidence).some((message) => {
-    const serialized = JSON.stringify(message);
-    return identities.some((identity) => serialized.includes(identity));
-  });
 }
 export function validatePaymentRecoveryEvidence(report) {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true)
     throw new Error("payment recovery report is not successful");
   if (
     report.boundaries?.serviceApi !== true ||
-    report.boundaries?.mqtt !== true ||
+    report.boundaries?.mqttNoDispense !== true ||
     report.boundaries?.daemon !== true ||
     report.payment?.id == null
   )
@@ -289,17 +281,19 @@ export async function runPaymentRecoveryGuest(options) {
       paymentNo: order.paymentNo,
       orderNo: order.orderNo,
     };
-    const action = await api(
-      input,
-      `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
-      {
-        method: "POST",
-        token: adminAccessToken,
-        body: {
-          action: "query_payment",
-          reason: `runtime acceptance ${runId}: reconcile provider outcome`,
+    const action = unwrapServiceApiEnvelope(
+      await api(
+        input,
+        `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
+        {
+          method: "POST",
+          token: adminAccessToken,
+          body: {
+            action: "query_payment",
+            reason: `runtime acceptance ${runId}: reconcile provider outcome`,
+          },
         },
-      },
+      ),
     );
     report.recovery = {
       action,
@@ -317,10 +311,7 @@ export async function runPaymentRecoveryGuest(options) {
       action?.protectedDiagnostics?.paymentId === order.paymentId;
     report.boundaries.daemon =
       transaction?.paymentId === order.paymentId && diagnostic != null;
-    report.boundaries.mqtt = mqttEvidenceMatchesPayment(
-      evidence,
-      report.payment,
-    );
+    report.boundaries.mqttNoDispense = mqttEvidenceProvesNoDispense(evidence);
     report.assertions.dispenseStarted = Boolean(
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId,
     );

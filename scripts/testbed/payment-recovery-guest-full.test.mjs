@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  mqttEvidenceMatchesPayment,
+  mqttEvidenceProvesNoDispense,
   refreshAdminAccessToken,
   unwrapServiceApiEnvelope,
   waitForMachineOnline,
@@ -118,24 +118,20 @@ describe("payment recovery guest full", () => {
       /did not become online/,
     );
   });
-  it("requires MQTT evidence correlated to the recovered payment", () => {
-    const payment = {
-      id: "pay-1",
-      paymentNo: "PAY-001",
-      orderNo: "ORD-001",
-    };
+  it("requires real dispense-topic evidence that recovery did not vend", () => {
     assert.equal(
-      mqttEvidenceMatchesPayment(
-        { machineMqtt: { messages: [{ payload: { orderNo: "ORD-001" } }] } },
-        payment,
-      ),
+      mqttEvidenceProvesNoDispense({
+        mqtt: { topic: "vem/machines/M-1/commands/dispense", messages: [] },
+      }),
       true,
     );
     assert.equal(
-      mqttEvidenceMatchesPayment(
-        { mqtt: { messages: [{ payload: { orderNo: "ORD-OTHER" } }] } },
-        payment,
-      ),
+      mqttEvidenceProvesNoDispense({
+        mqtt: {
+          topic: "vem/machines/M-1/commands/dispense",
+          messages: [{ payload: { commandNo: "VEND-1" } }],
+        },
+      }),
       false,
     );
   });
@@ -143,7 +139,11 @@ describe("payment recovery guest full", () => {
     const report = {
       schemaVersion: "vem-payment-recovery-guest-full/v1",
       ok: true,
-      boundaries: { serviceApi: true, mqtt: true, daemon: true },
+      boundaries: {
+        serviceApi: true,
+        mqttNoDispense: true,
+        daemon: true,
+      },
       payment: { id: "pay-1" },
       recovery: { action: { action: "query_payment" } },
       assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
@@ -157,7 +157,7 @@ describe("payment recovery guest full", () => {
       () =>
         validatePaymentRecoveryEvidence({
           ...report,
-          boundaries: { ...report.boundaries, mqtt: false },
+          boundaries: { ...report.boundaries, mqttNoDispense: false },
         }),
       /boundaries/,
     );
