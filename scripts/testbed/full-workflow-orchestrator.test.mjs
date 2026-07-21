@@ -237,6 +237,29 @@ describe("full workflow serial lifecycle", () => {
     assert.equal(result[1].businessStatus, "failed");
   });
 
+  it("preserves child stderr when a failed process produced no report", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-child-error-"));
+    const [result] = await runSerialTrackLifecycle({
+      tracks: [
+        {
+          ...FULL_WORKFLOW_TRACK_DESCRIPTORS.find(
+            (track) => track.name === "localOperations",
+          ),
+          reportPath: join(root, "local-operations.json"),
+        },
+      ],
+      runTrack: async () => ({
+        status: "failed",
+        exitCode: 1,
+        stderr: "Error: exact child startup failure",
+      }),
+      captureTerminal: async () => ({ ok: true, facts: {} }),
+      recover: async () => ({ ok: true, actions: [] }),
+    });
+    assert.equal(result.reportOk, null);
+    assert.equal(result.error, "Error: exact child startup failure");
+  });
+
   it("uses the production stock maintenance task to restore fixture slots before a track", async () => {
     const posts = [];
     let saleViewReads = 0;

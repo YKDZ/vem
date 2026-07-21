@@ -304,7 +304,7 @@ export async function runSerialTrackLifecycle({
       error: childFailed
         ? child.stderr?.startsWith("track preflight failed:")
           ? shortError(child)
-          : (validation.reason ?? shortError(child))
+          : (shortError(child) ?? validation.reason)
         : terminalFailed
           ? (terminal.reason ?? "terminal facts are incomplete")
           : null,
