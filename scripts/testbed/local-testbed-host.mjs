@@ -503,18 +503,16 @@ export function buildHostAdmissionPlan({
   );
   const hostUtc = new Date(hostNow);
   if (Number.isNaN(hostUtc.getTime())) throw new Error("hostNow is invalid");
-  const synchronizeClock = `$hostUtc = [DateTimeOffset]::Parse('${hostUtc.toISOString()}')
+  const synchronizeClock = `$timeService = Get-Service -Name W32Time -ErrorAction SilentlyContinue
+if ($null -ne $timeService) {
+  Stop-Service -Name W32Time -Force -ErrorAction Stop
+  Set-Service -Name W32Time -StartupType Disabled
+}
+$hostUtc = [DateTimeOffset]::Parse('${hostUtc.toISOString()}')
 Set-Date -Date $hostUtc.LocalDateTime | Out-Null
 $observedUtc = ([DateTimeOffset](Get-Date)).UtcDateTime
 if ([Math]::Abs(($observedUtc - $hostUtc.UtcDateTime).TotalSeconds) -gt 30) { throw 'Windows clock synchronization failed' }`;
   return [
-    {
-      type: "synchronize-clock",
-      command: "ssh",
-      args: sshArgs(config, encodedPowerShellCommand(synchronizeClock)),
-      encodedPowerShell: true,
-      input: synchronizeClock,
-    },
     {
       type: "assert-guest-input",
       path,
@@ -532,6 +530,13 @@ if ([Math]::Abs(($observedUtc - $hostUtc.UtcDateTime).TotalSeconds) -gt 30) { th
       args: sshArgs(config, encodedPowerShellCommand(displayAssertion)),
       encodedPowerShell: true,
       input: displayAssertion,
+    },
+    {
+      type: "synchronize-clock",
+      command: "ssh",
+      args: sshArgs(config, encodedPowerShellCommand(synchronizeClock)),
+      encodedPowerShell: true,
+      input: synchronizeClock,
     },
   ];
 }

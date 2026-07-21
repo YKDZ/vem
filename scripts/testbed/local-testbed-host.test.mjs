@@ -221,7 +221,7 @@ describe("tracked local testbed host lifecycle", () => {
       hostNow: "2026-07-20T11:00:00.000Z",
     });
     assert.match(
-      admission[2].input,
+      admission[1].input,
       /C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report\.json/,
     );
   });
@@ -248,32 +248,34 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "run-15",
       hostNow: "2026-07-20T11:00:00.000Z",
     });
-    assert.equal(plan[0].type, "synchronize-clock");
-    assert.match(plan[0].input, /2026-07-20T11:00:00\.000Z/);
-    assert.match(plan[0].input, /Set-Date/);
-    assert.equal(plan[1].type, "assert-guest-input");
-    assert.equal(plan[2].type, "assert-interactive-display");
+    assert.equal(plan[0].type, "assert-guest-input");
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan[2].type, "synchronize-clock");
+    assert.match(plan[2].input, /2026-07-20T11:00:00\.000Z/);
+    assert.match(plan[2].input, /Stop-Service -Name W32Time/);
+    assert.match(plan[2].input, /Set-Service -Name W32Time -StartupType Disabled/);
+    assert.match(plan[2].input, /Set-Date/);
     assert.equal(plan.length, 3);
+    assert.match(
+      plan[0].args.at(-1),
+      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
+    );
+    assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
+    assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
+    assert.doesNotMatch(plan[0].input, /\$input\s*=/);
     assert.match(
       plan[1].args.at(-1),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
     );
-    assert.match(plan[1].input, /Get-Content[^\n]+-Encoding UTF8/);
-    assert.match(plan[1].input, /\$guestDocument\.schemaVersion/);
-    assert.doesNotMatch(plan[1].input, /\$input\s*=/);
-    assert.match(
-      plan[2].args.at(-1),
-      /^powershell -NoProfile -NonInteractive -EncodedCommand /,
-    );
-    assert.match(plan[2].input, /interactive-display-report\.json/);
-    assert.match(plan[2].input, /-Encoding UTF8 \| ConvertFrom-Json/);
-    assert.equal(plan[2].type, "assert-interactive-display");
+    assert.match(plan[1].input, /interactive-display-report\.json/);
+    assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
+    assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(
-      plan[1].path,
+      plan[0].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
-    assert.equal(plan[2].type, "assert-interactive-display");
-    assert.equal(plan.at(-1).type, "assert-interactive-display");
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.equal(plan.at(-1).type, "synchronize-clock");
     const operations = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
@@ -283,14 +285,13 @@ describe("tracked local testbed host lifecycle", () => {
             args.at(-1),
             /^powershell -NoProfile -NonInteractive -EncodedCommand /,
           );
-          if (input.includes("Set-Date")) return;
           assert.match(input, /guest input/);
           throw new Error("guest input missing");
         },
       }),
       /guest input missing/,
     );
-    assert.deepEqual(operations, ["ssh", "ssh"]);
+    assert.deepEqual(operations, ["ssh"]);
   });
 
   it("rebuild admission contains no Actions runner artifact or marker output", () => {
@@ -312,13 +313,13 @@ describe("tracked local testbed host lifecycle", () => {
       plan.some((step) => step.type === "restart-runner-and-await-listener"),
       false,
     );
-    assert.equal(plan.at(-1).type, "assert-interactive-display");
-    assert.doesNotMatch(plan.at(-1).input, /C:\\actions-runner/);
-    assert.doesNotMatch(plan.at(-1).input, /actions\.runner/);
-    assert.doesNotMatch(plan.at(-1).input, /Listening for Jobs/);
-    assert.doesNotMatch(plan.at(-1).input, /Runner\.Listener/);
+    assert.equal(plan[1].type, "assert-interactive-display");
+    assert.doesNotMatch(plan[1].input, /C:\\actions-runner/);
+    assert.doesNotMatch(plan[1].input, /actions\.runner/);
+    assert.doesNotMatch(plan[1].input, /Listening for Jobs/);
+    assert.doesNotMatch(plan[1].input, /Runner\.Listener/);
     assert.doesNotMatch(
-      plan.at(-1).input,
+      plan[1].input,
       /runner-admission|listenerMarker|serviceName|diagnosticLog/,
     );
   });
