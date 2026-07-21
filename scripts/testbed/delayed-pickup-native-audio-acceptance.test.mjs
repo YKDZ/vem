@@ -414,10 +414,9 @@ function fixture(root) {
   writeJson(audioStopPath, stopReport);
 
   const traceDefinitions = [
-    ["pickup-waiting", 100],
+    ["pickup-outlet-opened", 100],
     ["pickup-warning-1", 15_100],
     ["pickup-warning-2", 25_100],
-    ["pickup-completed", 30_100],
     ["dispense-succeeded", 31_300],
   ];
   let traceId = 1;
@@ -546,11 +545,17 @@ describe("delayed pickup native audio production track", () => {
       assert.equal(report.inventory.platform.baselineOnHandQty, 4);
       assert.equal(report.inventory.platform.atF1OnHandQty, 4);
       assert.equal(report.inventory.platform.postF2OnHandQty, 3);
-      assert.equal(report.audio.cueWindows.length, 5);
+      assert.equal(report.audio.cueWindows.length, 1);
       assert.equal(
         report.audio.cueWindows.every((window) => window.kind === "passed"),
         true,
       );
+      assert.deepEqual(Object.keys(report.controller.cueStartLatencyMs), [
+        "pickup_started",
+        "ordinary_warning",
+        "urgent_warning",
+        "dispense_succeeded",
+      ]);
       assert.equal(JSON.stringify(report).includes('"data"'), false);
       assert.equal(JSON.stringify(report).includes('"wavBytes"'), false);
       assert.equal(

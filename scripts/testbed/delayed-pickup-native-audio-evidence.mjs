@@ -28,10 +28,9 @@ const CODES = new Map([
 ]);
 const UI_SURFACES = ["ordinary_warning", "urgent_warning", "reset_progress"];
 const TRACE_CUES = [
-  ["pickup_waiting", "pickup-waiting"],
+  ["pickup_started", "pickup-outlet-opened"],
   ["ordinary_warning", "pickup-warning-1"],
   ["urgent_warning", "pickup-warning-2"],
-  ["reset_progress", "pickup-completed"],
   ["dispense_succeeded", "dispense-succeeded"],
 ];
 const CANONICAL_UTC_RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -583,9 +582,7 @@ export function analyzeDelayedPickupRuntimeTrace(
       diagnostics.push(
         diagnostic("runtime_audio_request_binding_invalid", { transitionId }),
       );
-    const terminalOutcomeAccepted =
-      terminal?.outcome === "completed" ||
-      (suffix === "pickup-completed" && terminal?.outcome === "stopped");
+    const terminalOutcomeAccepted = terminal?.outcome === "completed";
     if (
       !terminalOutcomeAccepted ||
       !TOKEN_ID.test(terminal?.terminalOutcomeId ?? "") ||

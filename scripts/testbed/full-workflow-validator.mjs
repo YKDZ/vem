@@ -107,10 +107,9 @@ function validateDelayedAudioTrack(report, reportPath) {
     : [];
   const cueStartLatencyMs = acceptance.controller?.cueStartLatencyMs ?? {};
   const requiredCues = [
-    "pickup_waiting",
+    "pickup_started",
     "ordinary_warning",
     "urgent_warning",
-    "reset_progress",
     "dispense_succeeded",
   ];
   const capture = acceptance.audio?.capture ?? {};

@@ -80,10 +80,9 @@ function runtimeTraceFixture() {
   const trace = [];
   let id = 1;
   [
-    "pickup-waiting",
+    "pickup-outlet-opened",
     "pickup-warning-1",
     "pickup-warning-2",
-    "pickup-completed",
     "dispense-succeeded",
   ].forEach((suffix, index) => {
     const transitionId = `transaction:${binding.orderNo}:${suffix}`;
@@ -112,33 +111,7 @@ function runtimeTraceFixture() {
   return trace;
 }
 
-function stopPickupCompletedCue(trace) {
-  return trace.map((entry) =>
-    entry.transitionId === `transaction:${binding.orderNo}:pickup-completed` &&
-    entry.type === "audio_terminal"
-      ? { ...entry, outcome: "stopped" }
-      : entry,
-  );
-}
-
 describe("delayed pickup production evidence algorithms", () => {
-  it("accepts pickup completion being superseded by terminal success audio", () => {
-    const evidence = {
-      schemaVersion: "machine-production-evidence/v2",
-      source: "installed_canonical_machine_cdp",
-      binding: { ...binding },
-      runtime: { ...runtime },
-      captureStartedAt: "2026-07-18T07:59:59.000Z",
-      captureCompletedAt: "2026-07-18T08:00:30.000Z",
-      runtimeTrace: stopPickupCompletedCue(runtimeTraceFixture()),
-    };
-
-    assert.equal(
-      analyzeDelayedPickupRuntimeTrace(evidence, binding, runtime).ok,
-      true,
-    );
-  });
-
   it("decodes real controller bytes and collapses only protocol repeats", () => {
     const frames = [
       dispenseFrame(),
@@ -444,7 +417,7 @@ describe("delayed pickup production evidence algorithms", () => {
       captureStartedAt: "2026-07-18T08:00:00.000Z",
       captureCompletedAt: "2026-07-18T08:00:02.000Z",
       cues: {
-        pickup_waiting: {
+        pickup_started: {
           started: { at: "2026-07-18T08:00:00.150Z" },
           terminal: { at: "2026-07-18T08:00:00.350Z" },
         },
@@ -456,10 +429,6 @@ describe("delayed pickup production evidence algorithms", () => {
           started: { at: "2026-07-18T08:00:00.650Z" },
           terminal: { at: "2026-07-18T08:00:00.820Z" },
         },
-        reset_progress: {
-          started: { at: "2026-07-18T08:00:00.850Z" },
-          terminal: { at: "2026-07-18T08:00:01.020Z" },
-        },
         dispense_succeeded: {
           started: { at: "2026-07-18T08:00:01.500Z" },
           terminal: { at: null },
@@ -470,12 +439,7 @@ describe("delayed pickup production evidence algorithms", () => {
     assert.equal(result.ok, false);
     assert.deepEqual(
       result.cueTimings.map((entry) => entry.label),
-      [
-        "pickup_waiting",
-        "ordinary_warning",
-        "urgent_warning",
-        "reset_progress",
-      ],
+      ["pickup_started", "ordinary_warning", "urgent_warning"],
     );
     assert.equal(result.inspections.length, 1);
     assert.equal(result.inspections[0].label, "default_output_capture");
@@ -536,7 +500,7 @@ describe("delayed pickup production evidence algorithms", () => {
       captureStartedAt: "2026-07-18T08:00:00.000Z",
       captureCompletedAt: "2026-07-18T08:00:02.000Z",
       cues: {
-        pickup_waiting: {
+        pickup_started: {
           started: { at: "2026-07-18T08:00:00.150Z" },
           terminal: { at: "2026-07-18T08:00:00.250Z" },
         },
@@ -548,10 +512,6 @@ describe("delayed pickup production evidence algorithms", () => {
           started: { at: "2026-07-18T08:00:00.650Z" },
           terminal: { at: "2026-07-18T08:00:00.740Z" },
         },
-        reset_progress: {
-          started: { at: "2026-07-18T08:00:00.800Z" },
-          terminal: { at: "2026-07-18T08:00:00.970Z" },
-        },
         dispense_succeeded: {
           started: { at: "2026-07-18T08:00:01.500Z" },
           terminal: { at: "2026-07-18T08:00:01.700Z" },
@@ -560,7 +520,7 @@ describe("delayed pickup production evidence algorithms", () => {
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.cueTimings.length, 5);
+    assert.equal(result.cueTimings.length, 4);
     assert.equal(result.inspections.length, 1);
     assert.equal(result.inspections[0].label, "default_output_capture");
     assert.equal(result.inspections[0].kind, "passed");
