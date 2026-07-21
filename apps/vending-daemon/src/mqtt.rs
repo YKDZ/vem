@@ -1259,7 +1259,10 @@ impl MqttSyncRuntime {
                             let handling_result = if publish.topic == dispense_topic {
                                 self.handle_dispense_command(&text).await
                             } else if publish.topic == environment_control_topic {
-                                if environment_task.as_ref().is_some_and(|task: &EnvironmentCommandTask| task.is_finished()) {
+                                if environment_task.as_ref().is_some_and(|task: &EnvironmentCommandTask| {
+                                    task.is_finished()
+                                        || !self.environment_command_in_progress.load(Ordering::Acquire)
+                                }) {
                                     let completed = environment_task.take().expect("finished environment task").await;
                                     if let Ok(Err(error)) = completed {
                                         self.set_connected(false, Some(format!("publish handle failed: {error}"))).await;
