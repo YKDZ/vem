@@ -1089,6 +1089,63 @@ async function daemonGet(handoff, path) {
   });
 }
 
+async function daemonPost(handoff, path, body = {}) {
+  return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
+    method: "POST",
+    headers: {
+      ...daemonHeaders(handoff),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function transactionIsActive(transaction) {
+  return (
+    ["wait_payment", "dispensing"].includes(transaction?.nextAction) ||
+    ["pending_payment", "waiting_payment", "paid", "dispensing"].includes(
+      transaction?.orderStatus,
+    )
+  );
+}
+
+export async function settlePendingCreateOrder({
+  paymentNo,
+  timeoutMs = 15_000,
+  readTransaction,
+  cancelTransaction,
+  wait = sleep,
+  now = () => Date.now(),
+}) {
+  const deadline = now() + timeoutMs;
+  let transaction = null;
+  while (now() < deadline) {
+    transaction = await readTransaction();
+    if (transaction?.paymentNo === paymentNo) break;
+    await wait(100);
+  }
+  if (transaction?.paymentNo !== paymentNo) {
+    throw new Error(
+      `released payment create request did not project transaction ${paymentNo}`,
+    );
+  }
+  if (!transactionIsActive(transaction)) return transaction;
+  await cancelTransaction(transaction);
+  while (now() < deadline) {
+    transaction = await readTransaction();
+    if (
+      transaction?.paymentNo === paymentNo &&
+      !transactionIsActive(transaction)
+    ) {
+      return transaction;
+    }
+    await wait(100);
+  }
+  throw new Error(
+    `transaction ${paymentNo} remained active after cancellation`,
+  );
+}
+
 export async function waitForSaleStartReady(
   handoff,
   client,
@@ -1872,6 +1929,7 @@ async function runFastRouteStressSale(options) {
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
   let createOrderGate = null;
+  let pendingCreate = null;
   let noCatalogTraceBoundary = null;
   let repeatedPaymentTouch = null;
   let continuousCdpLocationHashObserver = null;
@@ -1988,7 +2046,6 @@ async function runFastRouteStressSale(options) {
     });
     stage = "wait-create-order-pending-boundary";
     let firstSubmit = null;
-    let pendingCreate = null;
     for (let attempt = 0; attempt < 3 && !pendingCreate; attempt += 1) {
       firstSubmit = await activateVisibleSelector(client, steps[4].selector, {
         kind: "touch",
@@ -2429,7 +2486,18 @@ async function runFastRouteStressSale(options) {
               "payment create gate did not return to open with no pending payment",
             );
           }
-          return { opened, status };
+          const transaction = pendingCreate?.paymentNo
+            ? await settlePendingCreateOrder({
+                paymentNo: pendingCreate.paymentNo,
+                readTransaction: () =>
+                  daemonGet(handoff, "/v1/transactions/current"),
+                cancelTransaction: (active) =>
+                  daemonPost(handoff, "/v1/intents/cancel-order", {
+                    orderNo: required(active?.orderNo, "active orderNo"),
+                  }),
+              })
+            : null;
+          return { opened, status, transaction };
         }),
       );
     } catch (error) {

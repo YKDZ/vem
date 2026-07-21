@@ -9,12 +9,46 @@ import {
   dispatchRepeatedPaymentTouch,
   parseFastRouteStressSaleArgs,
   runCleanupStep,
+  settlePendingCreateOrder,
   shutdownControlledVisionMock,
   startContinuousCdpLocationHashObservation,
   waitForSaleStartReady,
   waitForGuardedVisionDepartureTrace,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
+
+describe("pending create-order cleanup", () => {
+  it("cancels the correlated active transaction and waits for terminal state", async () => {
+    const reads = [
+      null,
+      {
+        paymentNo: "PAY-1",
+        orderNo: "ORD-1",
+        orderStatus: "pending_payment",
+        nextAction: "wait_payment",
+      },
+      {
+        paymentNo: "PAY-1",
+        orderNo: "ORD-1",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      },
+    ];
+    const canceled = [];
+    let clock = 0;
+    const result = await settlePendingCreateOrder({
+      paymentNo: "PAY-1",
+      readTransaction: async () => (reads.length > 0 ? reads.shift() : null),
+      cancelTransaction: async (transaction) =>
+        canceled.push(transaction.orderNo),
+      wait: async () => undefined,
+      now: () => clock++,
+    });
+
+    assert.equal(result.orderStatus, "canceled");
+    assert.deepEqual(canceled, ["ORD-1"]);
+  });
+});
 
 function validEvidence() {
   const inventory = {
