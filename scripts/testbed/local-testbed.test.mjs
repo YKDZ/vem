@@ -955,6 +955,10 @@ describe("Windows D cache contract", () => {
     assert.match(guestScript, /VID_1A86&PID_7523/);
     assert.match(guestScript, /VID_1A86&PID_55D3/);
     assert.match(guestScript, /VEM_TESTBED_SERIAL_DISCOVERY_FILE/);
+    assert.match(
+      guestScript,
+      /while \(\[DateTime\]::UtcNow -lt \$deadline\)/,
+    );
     assert.doesNotMatch(
       guestScript.match(
         /function Write-TestbedSerialDiscoveryAdapter[\s\S]*?\n}/,

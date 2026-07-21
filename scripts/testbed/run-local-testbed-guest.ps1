@@ -292,26 +292,32 @@ function Initialize-TestbedHardwareBindings {
 }
 
 function Write-TestbedSerialDiscoveryAdapter {
-  $devices = @(Get-PnpDevice -Class Ports -PresentOnly | ForEach-Object {
-    $portInstanceId = [string]$_.InstanceId
-    $parent = [string](Get-PnpDeviceProperty -InstanceId $portInstanceId -KeyName "DEVPKEY_Device_Parent" -ErrorAction Stop).Data
-    $usbPortMatch = [regex]::Match($parent, '-([12])$')
-    $comPortMatch = [regex]::Match([string]$_.FriendlyName, '\((COM[0-9]+)\)\s*$')
-    if (-not $usbPortMatch.Success -or -not $comPortMatch.Success) { return }
-    $usbPort = [int]$usbPortMatch.Groups[1].Value
-    $currentPort = [string]$comPortMatch.Groups[1].Value
-    $role = if ($usbPort -eq 1) { "lower-controller" } else { "scanner" }
-    $hardwareId = if ($usbPort -eq 1) { "USB\VID_1A86&PID_7523" } else { "USB\VID_1A86&PID_55D3" }
-    $serialNumber = if ($usbPort -eq 1) { "VEMVMLOWER" } else { "VEMVMSCANNER" }
-    [pscustomobject]@{
-      currentPort = $currentPort
-      instanceId = "$hardwareId\$serialNumber"
-      containerId = [string](Get-PnpDeviceProperty -InstanceId $parent -KeyName "DEVPKEY_Device_ContainerId" -ErrorAction Stop).Data
-      hardwareIds = @($hardwareId)
-      serialNumber = $serialNumber
-      friendlyName = "VEM VM $role serial boundary"
-    }
-  })
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  $devices = @()
+  do {
+    $devices = @(Get-PnpDevice -Class Ports -PresentOnly -ErrorAction SilentlyContinue | ForEach-Object {
+      $portInstanceId = [string]$_.InstanceId
+      $parent = [string](Get-PnpDeviceProperty -InstanceId $portInstanceId -KeyName "DEVPKEY_Device_Parent" -ErrorAction SilentlyContinue).Data
+      $usbPortMatch = [regex]::Match($parent, '-([12])$')
+      $comPortMatch = [regex]::Match([string]$_.FriendlyName, '\((COM[0-9]+)\)\s*$')
+      if (-not $usbPortMatch.Success -or -not $comPortMatch.Success) { return }
+      $usbPort = [int]$usbPortMatch.Groups[1].Value
+      $currentPort = [string]$comPortMatch.Groups[1].Value
+      $role = if ($usbPort -eq 1) { "lower-controller" } else { "scanner" }
+      $hardwareId = if ($usbPort -eq 1) { "USB\VID_1A86&PID_7523" } else { "USB\VID_1A86&PID_55D3" }
+      $serialNumber = if ($usbPort -eq 1) { "VEMVMLOWER" } else { "VEMVMSCANNER" }
+      [pscustomobject]@{
+        currentPort = $currentPort
+        instanceId = "$hardwareId\$serialNumber"
+        containerId = [string](Get-PnpDeviceProperty -InstanceId $parent -KeyName "DEVPKEY_Device_ContainerId" -ErrorAction Stop).Data
+        hardwareIds = @($hardwareId)
+        serialNumber = $serialNumber
+        friendlyName = "VEM VM $role serial boundary"
+      }
+    })
+    if ($devices.Count -eq 2 -and @($devices.currentPort | Select-Object -Unique).Count -eq 2) { break }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
   if ($devices.Count -ne 2 -or @($devices.currentPort | Select-Object -Unique).Count -ne 2) {
     throw "testbed serial discovery adapter requires exactly two distinct QEMU USB serial ports"
   }
