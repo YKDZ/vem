@@ -2665,20 +2665,6 @@ async function runVisionTryOnAcceptance(options) {
       ),
     );
   }
-  if (hardwareSession?.sessionId) {
-    try {
-      await controlPlaneRequest(
-        guestInput,
-        `/v1/serial-sessions/${hardwareSession.sessionId}/abort`,
-      );
-    } catch (error) {
-      cleanupErrors.push(
-        new Error(
-          `Vision hardware session cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-    }
-  }
   if (realVisionStopped) {
     try {
       await startInstalledVisionRuntime();
@@ -2706,6 +2692,20 @@ async function runVisionTryOnAcceptance(options) {
       cleanupErrors.push(
         new Error(
           `vision runtime restore failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
+  }
+  if (hardwareSession?.sessionId) {
+    try {
+      await controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${hardwareSession.sessionId}/abort`,
+      );
+    } catch (error) {
+      cleanupErrors.push(
+        new Error(
+          `Vision hardware session cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
     }
