@@ -892,15 +892,19 @@ function normalizeLifecycleOperation(value) {
   return operation;
 }
 
-function serialDeviceXmlForRole(domainXml, role) {
-  const alias = `serial-${normalizeLifecycleRole(role)}`;
-  const match = domainXml.match(
-    new RegExp(
-      `<serial\\b[\\s\\S]*?<alias\\s+name="${alias}"\\s*/>[\\s\\S]*?</serial>`,
-    ),
+export function serialDeviceXmlForRole(domainXml, role) {
+  const targetPort =
+    normalizeLifecycleRole(role) === "lower-controller" ? 0 : 1;
+  const serialDevices = domainXml.match(/<serial\b[\s\S]*?<\/serial>/g) ?? [];
+  const device = serialDevices.find((candidate) =>
+    new RegExp(`<target\\b[^>]*\\bport=(['"])${targetPort}\\1`).test(candidate),
   );
-  if (!match) throw new Error(`live libvirt domain XML omitted ${alias}`);
-  return match[0];
+  if (!device) {
+    throw new Error(
+      `live libvirt domain XML omitted ${normalizeLifecycleRole(role)} target port ${targetPort}`,
+    );
+  }
+  return device;
 }
 
 function runVirshDeviceLifecycle(server, { role, operation, xml }) {

@@ -12,6 +12,7 @@ import {
   shutdownControlledVisionMock,
   startContinuousCdpLocationHashObservation,
   waitForSaleStartReady,
+  waitForGuardedVisionDepartureTrace,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -386,6 +387,30 @@ function validEvidence() {
 }
 
 describe("fast route stress sale tracer", () => {
+  it("awaits the correlated guarded Vision departure effect", async () => {
+    let reads = 0;
+    const result = await waitForGuardedVisionDepartureTrace(null, "vision-1", {
+      timeoutMs: 100,
+      sleepFn: async () => {},
+      readTrace: async () => {
+        reads += 1;
+        return reads < 2
+          ? []
+          : [
+              {
+                type: "navigation",
+                intentType: "presence.departed",
+                sourceEventId: "vision-1",
+                decision: "rejected",
+                reasonCode: "active_transaction_route",
+                finalRoute: "#/payment",
+              },
+            ];
+      },
+    });
+    assert.equal(result.sourceEventId, "vision-1");
+    assert.equal(reads, 2);
+  });
   it("parses a guest-local tracer contract with handoff and guest input evidence", () => {
     const options = parseFastRouteStressSaleArgs([
       "--mode",

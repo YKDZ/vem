@@ -87,6 +87,19 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+export function unwrapServiceApiEnvelope(payload) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    payload.code === 0 &&
+    Object.hasOwn(payload, "data")
+  ) {
+    return payload.data;
+  }
+  return payload;
+}
+
 function apiBase(guestInput) {
   return required(
     guestInput.runtimeBootstrap?.provisioningApiBaseUrl,
@@ -131,7 +144,7 @@ async function adminRequest(
   path,
   { token = null, method = "GET", body = null } = {},
 ) {
-  return fetchJson(`${apiBase(guestInput)}${path}`, {
+  const payload = await fetchJson(`${apiBase(guestInput)}${path}`, {
     method,
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -139,6 +152,7 @@ async function adminRequest(
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
+  return unwrapServiceApiEnvelope(payload);
 }
 
 async function adminLogin(guestInput) {

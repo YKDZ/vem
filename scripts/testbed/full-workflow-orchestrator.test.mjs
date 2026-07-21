@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import {
   ensureFixtureStockReady,
+  fixtureAllocationForTrack,
   refreshCatalogPageFromClient,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
@@ -14,6 +15,22 @@ import {
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
+  it("restores only the fixture owned by the current business set", () => {
+    const allocation = {
+      sale: { slotCode: "A1", onHandQty: 3 },
+      fulfillmentRecovery: { slotCode: "A4", onHandQty: 3 },
+    };
+    assert.deepEqual(
+      fixtureAllocationForTrack(allocation, { fixtureKey: "sale" }),
+      { sale: allocation.sale },
+    );
+    assert.equal(
+      fixtureAllocationForTrack(allocation, {
+        fixtureKey: "environmentControl",
+      }),
+      null,
+    );
+  });
   it("owns canonical business-set selection, runners, fixture allocations, and evidence policy in one table", () => {
     assert.deepEqual(
       FULL_WORKFLOW_TRACK_DESCRIPTORS.map((track) => track.name),

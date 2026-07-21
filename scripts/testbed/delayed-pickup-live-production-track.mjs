@@ -257,6 +257,31 @@ function platformF1Ready(platform, binding) {
   );
 }
 
+export async function waitForStablePlatformInventoryBaseline(
+  queryPlatform,
+  { timeoutMs = 10_000, pollMs = 250, sleepFn = sleep } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let previous = null;
+  let stableReads = 0;
+  let snapshot = null;
+  do {
+    snapshot = await queryPlatform("baseline");
+    const inventory = JSON.stringify(
+      [...(snapshot?.raw?.inventories ?? [])].sort((left, right) =>
+        String(left?.id).localeCompare(String(right?.id)),
+      ),
+    );
+    stableReads = inventory === previous ? stableReads + 1 : 1;
+    previous = inventory;
+    if (stableReads >= 3) return snapshot;
+    await sleepFn(pollMs);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `platform inventory baseline did not stabilize: ${JSON.stringify(snapshot?.raw?.inventories ?? null)}`,
+  );
+}
+
 export function delayedPickupIssue16ControlPlaneContract() {
   return Object.freeze({
     profile: "delayed-pickup-native-audio",
@@ -424,6 +449,10 @@ export async function startDelayedPickupLiveProductionTrack(
         );
     await client.connect();
     await (dependencies.enableRuntime ?? enablePageRuntime)(client);
+    await waitForStablePlatformInventoryBaseline(queryPlatform, {
+      timeoutMs: options.checkpointTimeoutMs ?? 30_000,
+      pollMs: options.checkpointPollMs ?? 250,
+    });
     machineCapture = await startDelayedPickupMachineEvidenceCapture({
       client,
       inspectRuntime: () =>
@@ -464,7 +493,6 @@ export async function startDelayedPickupLiveProductionTrack(
       );
     const baseline = await captureDaemon("before_f0", null);
     daemonCheckpoints.push(baseline);
-    await queryPlatform("baseline");
 
     return {
       runtime,

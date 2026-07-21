@@ -6,7 +6,23 @@ import { describe, it } from "node:test";
 import {
   delayedPickupIssue16ControlPlaneContract,
   startDelayedPickupLiveProductionTrack,
+  waitForStablePlatformInventoryBaseline,
 } from "./delayed-pickup-live-production-track.mjs";
+
+it("waits for three equal authoritative inventory baseline reads", async () => {
+  const quantities = [2, 3, 3, 3];
+  let reads = 0;
+  const snapshot = await waitForStablePlatformInventoryBaseline(
+    async () => ({
+      raw: {
+        inventories: [{ id: "inventory-1", onHandQty: quantities[reads++] }],
+      },
+    }),
+    { timeoutMs: 100, pollMs: 0, sleepFn: async () => {} },
+  );
+  assert.equal(snapshot.raw.inventories[0].onHandQty, 3);
+  assert.equal(reads, 4);
+});
 import {
   combineCleanupError,
   runCleanupStep,
@@ -98,6 +114,7 @@ describe("delayed pickup live production track", () => {
             certificate: "/tmp/id-cert.pub",
           },
           pollIntervalMs: 25,
+          checkpointPollMs: 0,
           async captureDaemon(stage) {
             operations.push(`daemon:${stage}`);
             return {
@@ -269,11 +286,20 @@ describe("delayed pickup live production track", () => {
           },
         },
       );
-      assert.deepEqual(operations.slice(-3), [
-        "audio:start",
-        "daemon:before_f0",
-        "platform:baseline",
-      ]);
+      assert.deepEqual(
+        operations.filter((operation) =>
+          ["platform:baseline", "audio:start", "daemon:before_f0"].includes(
+            operation,
+          ),
+        ),
+        [
+          "platform:baseline",
+          "platform:baseline",
+          "platform:baseline",
+          "audio:start",
+          "daemon:before_f0",
+        ],
+      );
       await new Promise((resolve) => setTimeout(resolve, 90));
       await track.observeControllerFrame({ rawFrameHex: "55F1" });
       await track.observeControllerFrame({ rawFrameHex: "55AF" });

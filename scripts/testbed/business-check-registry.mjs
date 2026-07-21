@@ -127,6 +127,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "paymentRecovery",
+    fixtureKey: "sale",
     runner: {
       kind: "node",
       script: "scripts/testbed/payment-recovery-guest-full.mjs",
@@ -149,6 +150,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "localOperations",
+    fixtureKey: "sale",
     runner: {
       kind: "node",
       script: "scripts/testbed/local-operations-guest-full.mjs",

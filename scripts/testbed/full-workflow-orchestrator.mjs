@@ -538,6 +538,11 @@ export async function ensureFixtureStockReady({
   );
 }
 
+export function fixtureAllocationForTrack(fixtureAllocation, track) {
+  const fixture = fixtureAllocation?.[track?.fixtureKey];
+  return fixture ? { [track.fixtureKey]: fixture } : null;
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -784,18 +789,24 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
       dependencies.runTrack ?? ((track) => runTrack(track.command, track.key)),
     beforeTrack:
       dependencies.beforeTrack ??
-      (async () => {
+      (async (track) => {
         await waitForDaemonReadyRefresh(handoff);
         const refreshed = refreshDaemonReadyHandoff({
           handoffPath: options.handoffPath,
           handoff,
         });
         await operations?.prepareTrack();
-        await ensureFixtureStockReady({
-          fixtureAllocation: guestInput.fixtureAllocation,
-          daemonGet: (path) => daemonGet(refreshed, path),
-          daemonPost: (path, body) => daemonPost(refreshed, path, body),
-        });
+        const fixtureAllocation = fixtureAllocationForTrack(
+          guestInput.fixtureAllocation,
+          track,
+        );
+        if (fixtureAllocation) {
+          await ensureFixtureStockReady({
+            fixtureAllocation,
+            daemonGet: (path) => daemonGet(refreshed, path),
+            daemonPost: (path, body) => daemonPost(refreshed, path, body),
+          });
+        }
       }),
     captureTerminal:
       dependencies.captureTerminal ??
