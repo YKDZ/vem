@@ -37,6 +37,7 @@ export const DEFAULT_INVENTORY = [
     "business-check-registry.test.mjs",
     "commissioning-acceptance.test.mjs",
     "daemon-ready-refresh.test.mjs",
+    "environment-control-guest-full.test.mjs",
     "full-workflow-evidence-manifest.test.mjs",
     "full-workflow-fixtures.test.mjs",
     "full-workflow-orchestrator.test.mjs",
