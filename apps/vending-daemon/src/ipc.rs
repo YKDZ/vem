@@ -2042,7 +2042,7 @@ async fn manual_dispense_diagnostic(
     };
     let _lease = match ctx
         .sale_binding_gate
-        .acquire_manual_dispense(Duration::from_secs(2))
+        .acquire_manual_dispense(Duration::from_secs(10))
         .await
     {
         Ok(value) => value,
