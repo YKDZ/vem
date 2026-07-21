@@ -567,6 +567,8 @@ if (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) {
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
+Write-TestbedPhase "start-simulated-hardware"
+$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedSerialDiscoveryAdapter
 if ($Mode -eq "full") {
   $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
@@ -588,8 +590,6 @@ if ($Mode -eq "full") {
   Write-TestbedPhase "restart-warm-runtime"
 }
 $runtimeReady = Wait-RuntimeReady
-Write-TestbedPhase "start-simulated-hardware"
-$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
 Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession

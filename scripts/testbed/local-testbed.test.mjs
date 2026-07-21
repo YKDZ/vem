@@ -929,11 +929,15 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /Write-TestbedPhase "start-simulated-hardware"\s+\$commissioningSerialSession = Start-TestbedCommissioningSerialSession \$guestInput/,
+      /Write-TestbedPhase "start-simulated-hardware"\s+\$commissioningSerialSession = Start-TestbedCommissioningSerialSession \$guestInput\s+Write-TestbedSerialDiscoveryAdapter/,
     );
     assert.doesNotMatch(
       guestScript,
       /if \(\$Mode -eq "full"\) \{\s+Write-TestbedPhase "start-simulated-hardware"/,
+    );
+    assert.ok(
+      guestScript.indexOf('Write-TestbedPhase "start-simulated-hardware"') <
+        guestScript.indexOf("$daemonProcess = Start-Process"),
     );
     assert.match(
       guestScript,
@@ -1202,9 +1206,10 @@ describe("Windows D cache contract", () => {
     );
     assert.ok(
       claim >= 0 &&
+        serialStart < claim &&
         claimedRestart > claim &&
         claimedReady > claimedRestart &&
-        serialStart > claimedReady &&
+        hardwareBinding > claimedReady &&
         reboundReady > hardwareBinding &&
         daemonEvidence > reboundReady,
     );
