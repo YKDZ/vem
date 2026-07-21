@@ -214,7 +214,8 @@ export async function runLocalOperationsGuest(options) {
     const operationFrames = manualDispenseFrames(beforeEvidence, evidence);
     report.serial.operationFrames = operationFrames;
     report.boundaries.serial = ["VEND", "F0", "F1", "AF", "F2"].every(
-      (opcode) => operationFrames.some((frame) => frame?.parsedOpcode === opcode),
+      (opcode) =>
+        operationFrames.some((frame) => frame?.parsedOpcode === opcode),
     );
     if (diagnostic.outcome !== "completed" || !report.boundaries.serial)
       throw new Error(

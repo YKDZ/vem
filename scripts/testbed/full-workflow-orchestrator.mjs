@@ -770,7 +770,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
       return withClient((client) => refreshCatalogPageFromClient({ client }));
     },
     captureTerminal: async (track, context) => {
-      await waitForDaemonReadyRefresh(handoff);
+      refreshDaemonReadyHandoff({ handoffPath, handoff });
       return captureTrackTerminalFacts({
         track,
         context,

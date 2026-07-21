@@ -309,9 +309,10 @@ async function commandEnvironment({
       afterFrameCount: serialFrameCount(afterEvidence),
       protocolFrames: serialProtocolFrames(afterEvidence, beforeFrameCount),
       expectedOpcode,
-      protocolFrameObserved: serialProtocolFrames(afterEvidence, beforeFrameCount).includes(
-        expectedOpcode,
-      ),
+      protocolFrameObserved: serialProtocolFrames(
+        afterEvidence,
+        beforeFrameCount,
+      ).includes(expectedOpcode),
     },
   };
 }

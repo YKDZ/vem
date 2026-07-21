@@ -147,6 +147,17 @@ function daemonGet(handoff, path) {
   });
 }
 
+function daemonPost(handoff, path, body = {}) {
+  return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 function control(guestInput, path, body = {}) {
   return fetchJson(
     `${required(guestInput.hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
@@ -167,6 +178,75 @@ function platform(guestInput, runId, machineCode, sessionId) {
     machineCode,
     ...(sessionId ? { sessionId } : {}),
   }).then((value) => value.report);
+}
+
+export async function recoverWholeMachineLockAfterFulfillmentFailure({
+  guestInput,
+  handoff,
+  runId,
+  machineCode,
+  controlRequest = control,
+  waitForReady = waitForDaemonReadyRefresh,
+  waitForBindings = waitForHardwareBindings,
+  daemonGetRequest = daemonGet,
+  daemonPostRequest = daemonPost,
+}) {
+  const recoverySession = await controlRequest(
+    guestInput,
+    "/v1/serial-sessions/start",
+    {
+      runId,
+      machineCode,
+      serialScenario: "normal",
+      saleCorrelationId: `sale-correlation://serial-recovery-${Date.now()}`,
+      targetIdentity: required(
+        guestInput.hostControlPlane?.targetIdentity,
+        "hostControlPlane.targetIdentity",
+      ),
+      runtimeBase: required(
+        guestInput.hostControlPlane?.runtimeBaseIdentity,
+        "hostControlPlane.runtimeBaseIdentity",
+      ),
+    },
+  );
+  try {
+    await waitForReady(handoff);
+    const hardwareBindings = await waitForBindings(handoff, recoverySession);
+    const selfCheck = await daemonPostRequest(
+      handoff,
+      "/v1/hardware/self-check",
+      {},
+    );
+    if (selfCheck?.online !== true) {
+      throw new Error(
+        `lower-controller recovery self-check failed: ${JSON.stringify(selfCheck)}`,
+      );
+    }
+    const clear = await daemonPostRequest(
+      handoff,
+      "/v1/maintenance/whole-machine-lock/clear",
+      { operatorNote: "testbed fulfillment failure recovery" },
+    );
+    const capability = await daemonGetRequest(
+      handoff,
+      "/v1/sale-start-capability",
+    );
+    if (
+      capability?.blockers?.some(
+        (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
+      )
+    ) {
+      throw new Error(
+        "whole-machine lock remained after healthy controller recovery",
+      );
+    }
+    return { hardwareBindings, selfCheck, clear, capability };
+  } finally {
+    await controlRequest(
+      guestInput,
+      `/v1/serial-sessions/${recoverySession.sessionId}/abort`,
+    ).catch(() => undefined);
+  }
 }
 
 async function waitForCommand(handoff, sale, timeoutMs = 30_000) {
@@ -622,6 +702,15 @@ export async function runSerialFulfillmentErrorGuest(options) {
       daemon: report.evidence.daemon,
       ui: report.evidence.resultUi,
     });
+    stage = "recover-whole-machine-lock";
+    await cleanup();
+    report.evidence.wholeMachineLockRecovery =
+      await recoverWholeMachineLockAfterFulfillmentFailure({
+        guestInput,
+        handoff,
+        runId,
+        machineCode,
+      });
     report.ok = true;
     stage = "complete";
   } catch (error) {

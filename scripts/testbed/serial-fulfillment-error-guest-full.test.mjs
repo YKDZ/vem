@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 import {
   parseSerialFulfillmentErrorGuestArgs,
+  recoverWholeMachineLockAfterFulfillmentFailure,
   validateSerialFulfillmentErrorEvidence,
 } from "./serial-fulfillment-error-guest-full.mjs";
 
@@ -109,6 +110,50 @@ describe("serial fulfillment error guest full", () => {
     assert.match(source, /waitForHardwareBindings/);
     assert.match(source, /handoff,\s*session/);
     assert.match(source, /waitForSaleStartCapability/);
+  });
+
+  it("recovers a persisted machine lock through a healthy controller session", async () => {
+    const calls = [];
+    const result = await recoverWholeMachineLockAfterFulfillmentFailure({
+      guestInput: {
+        hostControlPlane: {
+          targetIdentity: "target-1",
+          runtimeBaseIdentity: "base-1",
+        },
+      },
+      handoff: {},
+      runId: "run-1",
+      machineCode: "machine-1",
+      controlRequest: async (_input, path, body) => {
+        calls.push({ kind: "control", path, body });
+        return path.endsWith("/start") ? { sessionId: "recovery-1" } : {};
+      },
+      waitForReady: async () => calls.push({ kind: "ready" }),
+      waitForBindings: async () => ({ lowerController: "COM4" }),
+      daemonPostRequest: async (_handoff, path, body) => {
+        calls.push({ kind: "post", path, body });
+        return path.endsWith("self-check")
+          ? { online: true, adapter: "serial" }
+          : { cleared: true };
+      },
+      daemonGetRequest: async (_handoff, path) => {
+        calls.push({ kind: "get", path });
+        return { blockers: [] };
+      },
+    });
+
+    assert.equal(result.selfCheck.online, true);
+    assert.deepEqual(
+      calls.map(({ kind, path }) => [kind, path]),
+      [
+        ["control", "/v1/serial-sessions/start"],
+        ["ready", undefined],
+        ["post", "/v1/hardware/self-check"],
+        ["post", "/v1/maintenance/whole-machine-lock/clear"],
+        ["get", "/v1/sale-start-capability"],
+        ["control", "/v1/serial-sessions/recovery-1/abort"],
+      ],
+    );
   });
 
   it("accepts only a bound E6 terminal journey with no F2, movement, or stock delta", () => {

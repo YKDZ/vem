@@ -184,10 +184,7 @@ describe("runtime testbed scheduler contract", () => {
     assert.ok(refresh >= 0 && refresh < guest);
     assert.match(source, /host-runtime-refresh-pass-\$\{pass\}\.json/);
     assert.match(source, /hostRuntimeRefresh:[\s\S]*timing: refresh\.timing/);
-    assert.match(
-      source.slice(refresh, guest),
-      /"--run-id",\s*options\.runId/,
-    );
+    assert.match(source.slice(refresh, guest), /"--run-id",\s*options\.runId/);
     assert.match(
       source,
       /guestInput:[\s\S]*sha256: refresh\.guestInput\.sha256/,
