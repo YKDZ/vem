@@ -165,6 +165,15 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("compresses the commit archive before the guest transfer", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /source-pass-\$\{pass\}\.tar\.gz/);
+    assert.match(source, /"--format=tar\.gz"/);
+  });
+
   it("reuses the existing cached PowerShell 7 guest entrypoint", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),

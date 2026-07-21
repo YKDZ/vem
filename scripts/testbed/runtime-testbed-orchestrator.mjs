@@ -393,11 +393,11 @@ async function stageAndRunGuest({
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
-  const archive = join(runRoot, `source-pass-${pass}.tar`);
+  const archive = join(runRoot, `source-pass-${pass}.tar.gz`);
   await runProcess("git", [
     `--git-dir=${config.mirrorPath}`,
     "archive",
-    "--format=tar",
+    "--format=tar.gz",
     `--output=${archive}`,
     commit,
   ]);
