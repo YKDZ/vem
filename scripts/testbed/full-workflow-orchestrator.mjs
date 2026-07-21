@@ -433,9 +433,7 @@ async function serviceApiRequest(guestInput, path, options = {}) {
   const response = await boundedFetch(`${baseUrl}${path}`, {
     method: options.method ?? "GET",
     headers: {
-      ...(options.token
-        ? { authorization: `Bearer ${options.token}` }
-        : {}),
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       ...(options.body ? { "content-type": "application/json" } : {}),
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
@@ -477,11 +475,9 @@ export async function waitForPlatformFixtureStock({
   const deadline = Date.now() + timeoutMs;
   let last = [];
   while (Date.now() < deadline) {
-    const page = await request(
-      guestInput,
-      "/inventories?page=1&pageSize=100",
-      { token },
-    );
+    const page = await request(guestInput, "/inventories?page=1&pageSize=100", {
+      token,
+    });
     last = fixtures.map((fixture) => {
       const inventory = (page?.items ?? []).find(
         (entry) => entry?.id === fixture.inventoryId,
