@@ -119,75 +119,42 @@ pnpm fmt:check
 cargo fmt --all -- --check
 ```
 
-## Machine 触屏 E2E
+## Machine 安装态验收
 
-机器端 UI 是核心交付物。涉及 `apps/machine` 的购买链路、结果页、离线页、维护页、UI Debug 场景或视觉布局时，优先补充或更新触屏 E2E。
+Machine 的购买、支付、出货、恢复、视觉、音频和维护链路统一在可重置的 Windows VM 中验收。浏览器内的 Machine Playwright 路径已经移除；不要为测试新增绕过 daemon、真实路由控制或设备适配边界的业务路径。
 
-触屏 smoke：
-
-```bash
-pnpm -F machine test:e2e:touch-smoke
-```
-
-daemon / runtime E2E：
+从测试床主机运行当前提交的全部业务集合：
 
 ```bash
-pnpm -F machine exec playwright test --project=machine-runtime-touchscreen tests/machine-daemon-client.spec.ts tests/machine-real-daemon.spec.ts
+node scripts/testbed/runtime-testbed-trigger.mjs run \
+  --mode full \
+  --commit "$(git rev-parse HEAD)" \
+  --config /path/to/host-config.json \
+  --out /path/to/result.json
 ```
 
-注意：
-
-- 测试视口固定为 `1080x1920`。
-- Playwright 项目会启动 machine dev server，避免同时跑多个需要端口 `1420` 的项目。
-- 触屏交互应使用测试支持函数，避免只用鼠标点击覆盖触摸链路。
-
-## Machine 截图巡检系统
-
-截图系统用于人工快速检查 Machine Runtime Console 的主要 UI 状态是否崩坏、错位或风格不一致。它不替代断言型 E2E；它生成可下载 artifact 和拼接总览，方便 review。
-
-本地生成全部截图：
+日常反馈可在已重建的平台上选择一个或多个业务集合执行 warm fast；可用集合以 `scripts/testbed/business-check-registry.mjs` 为准：
 
 ```bash
-pnpm -F machine test:e2e:screenshots
-pnpm -F machine screenshots:runtime:stitch
+node scripts/testbed/runtime-testbed-trigger.mjs run \
+  --mode fast \
+  --focus sale \
+  --focus paymentRecovery \
+  --commit "$(git rev-parse HEAD)" \
+  --config /path/to/host-config.json \
+  --out /path/to/result.json
 ```
 
-产物位置：
-
-```text
-apps/machine/runtime-screenshot-artifacts/
-├── manifest.json
-├── screenshots/
-└── overview/
-```
-
-其中：
-
-- `screenshots/` 保存每个场景的 `1080x1920` 原图。
-- `overview/runtime-screenshot-overview-*.png` 保存高分辨率拼接总览。
-- `manifest.json` 记录场景 id、名称、分类、目标路由和截图路径。
-
-只生成部分场景：
+VM 固定使用 `1080x1920`。截图是可单独运行的辅助检查，复用安装态 Machine 的 CDP 会话；交易中页面应由对应业务集合自然到达，不能通过调试 fixture 伪造：
 
 ```bash
-VEM_MACHINE_RUNTIME_SCREENSHOT_SCENARIOS=payment-qr,dispensing,maintenance pnpm -F machine test:e2e:screenshots
-pnpm -F machine screenshots:runtime:stitch
+node scripts/testbed/machine-ui-screenshot-scenarios.mjs \
+  --scenario catalog \
+  --scenario maintenance-status \
+  --remote VEMKiosk@windows-host \
+  --identity /path/to/windows-key \
+  --out /path/to/screenshots
 ```
-
-新增截图场景：
-
-1. 在 `apps/machine/src/dev/runtime-scenarios.ts` 增加或更新场景。
-2. 确保场景能通过 UI Debug fixture 直接加载到目标页面。
-3. 将场景标记为 `screenshot: "included"`。
-4. 在 `apps/machine/tests/machine-runtime-screenshots.spec.ts` 添加必要的核心元素断言。
-5. 运行截图命令并检查 `overview/` 总览。
-
-CI 中的截图 artifact：
-
-- PR 默认不上传截图 artifact，避免每个 PR 生成大文件。
-- `workflow_dispatch` 和 `main` push 会运行 `Machine Runtime Screenshot Artifacts` job。
-- 手动运行 CI 时可以填写 `machine_runtime_screenshot_scenarios`，用逗号分隔场景 id。
-- job 完成后下载 artifact：`machine-runtime-screenshot-artifacts`。
 
 ## PR 要求
 
@@ -221,7 +188,7 @@ PR 正文建议包含：
 ## 截图或 artifact
 ```
 
-如果改了 UI，请附截图、截图 artifact 或说明如何生成。Machine Runtime Console 的 UI 改动优先附 `runtime-screenshot-artifacts/overview` 总览。
+如果改了 UI，请附安装态 VM 截图或说明对应的截图场景与业务集合。
 
 ## CI
 
@@ -269,10 +236,4 @@ pnpm turbo typecheck
 pnpm turbo lint
 pnpm turbo test
 pnpm turbo test:e2e
-```
-
-```bash
-pnpm -F machine test:e2e:touch-smoke
-pnpm -F machine test:e2e:screenshots
-pnpm -F machine screenshots:runtime:stitch
 ```
