@@ -23,6 +23,7 @@ import {
   buildHostLocalServiceApiEnvironment,
   buildMigrationEnvironment,
   buildHostControlPlaneUnitPlan,
+  buildRefreshHostRuntimePlan,
   buildReconstructionPlan,
   buildServiceApiUnitPlan,
   ensureLowerControllerSimCached,
@@ -32,6 +33,7 @@ import {
   parseOptions,
   paymentMockCreateGatePaths,
   seedThroughSupportedApis,
+  validateRefreshGuestInput,
   validateBaselineContract,
 } from "./local-testbed.mjs";
 
@@ -302,6 +304,91 @@ async function publishCurrentManifest(root) {
 }
 
 describe("local testbed orchestration", () => {
+  it("plans a non-destructive host runtime refresh from the committed workspace", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const parsedOptions = parseOptions(
+        [
+          "refresh-host-runtime",
+          "--workspace",
+          root,
+          "--state-root",
+          join(root, "state"),
+          "--baseline-contract",
+          join(root, "baseline.json"),
+          "--host-private-address",
+          "10.0.0.15",
+          "--out",
+          join(root, "refresh.json"),
+        ],
+        { observeNetworkInterfaces: observedNetworkInterfaces },
+      );
+      assert.equal(parsedOptions.command, "refresh-host-runtime");
+      assert.equal("mode" in parsedOptions, false);
+      const rendered = buildRefreshHostRuntimePlan(parsedOptions)
+        .map((step) => `${step.command} ${step.args.join(" ")}`)
+        .join("\n");
+      assert.match(
+        rendered,
+        /pnpm turbo build --filter @vem\/shared --filter @vem\/db --filter service-api/,
+      );
+      assert.match(rendered, /pnpm --filter @vem\/db migrate/);
+      assert.doesNotMatch(rendered, /docker|volume|reconstruct|seed/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires refresh to retain the existing guest identity and control-plane token", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const parsedOptions = {
+        hostPrivateAddress: "10.0.0.15",
+      };
+      const guestInput = {
+        schemaVersion: "vem-local-testbed-guest-input/v1",
+        machineCode: "VEM-TESTBED-LOCAL",
+        claimCode: "ABCD-EFGH",
+        fixtureAllocation: { sale: { slotCode: "A1" } },
+        hostControlPlane: {
+          endpoint: "http://10.0.0.15:26851",
+          token: "retained-host-control-plane-token",
+        },
+      };
+      assert.equal(
+        validateRefreshGuestInput(guestInput, parsedOptions),
+        guestInput,
+      );
+      assert.throws(
+        () =>
+          validateRefreshGuestInput(
+            {
+              ...guestInput,
+              hostControlPlane: { ...guestInput.hostControlPlane, token: "" },
+            },
+            parsedOptions,
+          ),
+        /retain machine, claim, fixture, and host control plane token/,
+      );
+      assert.throws(
+        () =>
+          validateRefreshGuestInput(
+            {
+              ...guestInput,
+              hostControlPlane: {
+                ...guestInput.hostControlPlane,
+                endpoint: "http:\/\/10.0.0.16:26851",
+              },
+            },
+            parsedOptions,
+          ),
+        /endpoint is invalid/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("waits for PostgreSQL before running schema migration", () => {
     const source = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),
@@ -557,6 +644,16 @@ describe("local testbed orchestration", () => {
       );
       assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
       assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
+      const retainedTokenPlan = buildHostControlPlaneUnitPlan(
+        options(root),
+        value,
+        { token: "retained-host-control-plane-token" },
+      );
+      assert.ok(
+        retainedTokenPlan
+          .at(-1)
+          .args.includes("retained-host-control-plane-token"),
+      );
       assert.doesNotMatch(rendered.at(-1), /fake-vm-host-adapter/);
       const implementation = readFileSync(
         new URL("./local-testbed.mjs", import.meta.url),

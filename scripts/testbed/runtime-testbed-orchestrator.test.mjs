@@ -174,6 +174,22 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /"--format=tar\.gz"/);
   });
 
+  it("refreshes the current commit host runtime before every fast guest pass", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    const refresh = source.indexOf('"refresh-host-runtime"');
+    const guest = source.indexOf("await stageAndRunGuest({", refresh);
+    assert.ok(refresh >= 0 && refresh < guest);
+    assert.match(source, /host-runtime-refresh-pass-\$\{pass\}\.json/);
+    assert.match(source, /hostRuntimeRefresh:[\s\S]*timing: refresh\.timing/);
+    assert.match(
+      source,
+      /guestInput:[\s\S]*sha256: refresh\.guestInput\.sha256/,
+    );
+  });
+
   it("reuses the existing cached PowerShell 7 guest entrypoint", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),

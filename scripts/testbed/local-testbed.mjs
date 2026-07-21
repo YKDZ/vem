@@ -212,22 +212,17 @@ export function parseOptions(
   { observeNetworkInterfaces = networkInterfaces } = {},
 ) {
   const command = args[0];
-  if (command !== "reconstruct") {
+  if (!new Set(["reconstruct", "refresh-host-runtime"]).has(command)) {
     throw new Error(
-      "usage: local-testbed.mjs reconstruct --mode fast|full|clear_cache ...",
+      "usage: local-testbed.mjs reconstruct|refresh-host-runtime ...",
     );
   }
-  const mode = option(args, "mode");
-  if (!MODES.has(mode))
-    throw new Error("--mode must be fast, full, or clear_cache");
   const hostPrivateAddress = validateHostPrivateAddress(
     option(args, "host-private-address"),
     { observeNetworkInterfaces },
   );
-  return {
+  const common = {
     command,
-    mode,
-    runId: required(option(args, "run-id"), "--run-id"),
     workspace: absolute(option(args, "workspace"), "--workspace"),
     stateRoot: absolute(option(args, "state-root"), "--state-root"),
     baselineContract: absolute(
@@ -237,6 +232,15 @@ export function parseOptions(
     hostPrivateAddress,
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
+  };
+  if (command === "refresh-host-runtime") return common;
+  const mode = option(args, "mode");
+  if (!MODES.has(mode))
+    throw new Error("--mode must be fast, full, or clear_cache");
+  return {
+    ...common,
+    mode,
+    runId: required(option(args, "run-id"), "--run-id"),
   };
 }
 
@@ -618,6 +622,7 @@ async function removeOutdatedLowerControllerSimCaches({
 export async function ensureLowerControllerSimCached({
   options,
   sourceDigest,
+  pruneCaches = true,
   dependencies = {},
 }) {
   const resolvedSourceDigest =
@@ -650,7 +655,7 @@ export async function ensureLowerControllerSimCached({
     (await isExecutable(layout.binaryPath)) &&
     (await markerPresent(layout.successMarkerPath))
   ) {
-    await pruneOldCaches();
+    if (pruneCaches) await pruneOldCaches();
     return { ...layout, cache: "hit" };
   }
   const ensureDirectory = dependencies.ensureDirectory ?? mkdir;
@@ -675,7 +680,7 @@ export async function ensureLowerControllerSimCached({
     `${JSON.stringify({ sourceDigest: resolvedSourceDigest })}\n`,
     "utf8",
   );
-  await pruneOldCaches();
+  if (pruneCaches) await pruneOldCaches();
   return { ...layout, cache: "miss" };
 }
 
@@ -788,14 +793,14 @@ export function buildHostControlPlaneUnitPlan(
       options.workspace,
       "target/debug/lower-controller-sim",
     ),
+    token = createHash("sha256")
+      .update(
+        `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
+      )
+      .digest("hex"),
   } = {},
 ) {
   const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
-  const token = createHash("sha256")
-    .update(
-      `${options.runId}\n${options.hostPrivateAddress}\n${options.stateRoot}`,
-    )
-    .digest("hex");
   const adapterPath = join(
     options.workspace,
     "scripts/testbed/qemu-usb-serial-host-adapter.mjs",
@@ -1034,6 +1039,19 @@ async function waitForApi(baseUrl) {
   throw new Error("local testbed Service API did not become ready");
 }
 
+async function waitForHostControlPlane(endpoint, token) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await fetch(`${endpoint}/healthz`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+  }
+  throw new Error("local testbed host control plane did not become ready");
+}
+
 async function serviceApiFailure(error) {
   let journal = { kind: "unavailable", text: "journalctl was not attempted" };
   try {
@@ -1224,7 +1242,7 @@ export async function seedThroughSupportedApis({
       size: entry.size,
       silhouetteAssetId: tryOnSilhouetteAsset.id,
       silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
-  }));
+    }));
   return {
     machine,
     claim,
@@ -1286,9 +1304,11 @@ async function startHostControlPlaneUnit(
   options,
   contract,
   lowerControllerSimPath,
+  token,
 ) {
   const start = buildHostControlPlaneUnitPlan(options, contract, {
     lowerControllerSimPath,
+    ...(token ? { token } : {}),
   }).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
 }
@@ -1306,6 +1326,164 @@ async function stopHeadlessVncActivatorUnit(options, contract) {
 async function startHeadlessVncActivatorUnit(options, contract) {
   const start = buildHeadlessVncActivatorUnitPlan(options, contract).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
+}
+
+export function buildRefreshHostRuntimePlan(options) {
+  return [
+    commandLine("pnpm", [
+      "turbo",
+      "build",
+      "--filter",
+      "@vem/shared",
+      "--filter",
+      "@vem/db",
+      "--filter",
+      "service-api",
+    ]),
+    commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
+      env: buildMigrationEnvironment(options),
+    }),
+  ];
+}
+
+export function validateRefreshGuestInput(input, options) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("existing guest input must be an object");
+  }
+  if (input.schemaVersion !== "vem-local-testbed-guest-input/v1") {
+    throw new Error("existing guest input schemaVersion is invalid");
+  }
+  if (
+    typeof input.machineCode !== "string" ||
+    typeof input.claimCode !== "string" ||
+    !input.fixtureAllocation ||
+    typeof input.fixtureAllocation !== "object" ||
+    !input.hostControlPlane ||
+    typeof input.hostControlPlane !== "object" ||
+    typeof input.hostControlPlane.token !== "string" ||
+    input.hostControlPlane.token.length === 0
+  ) {
+    throw new Error(
+      "existing guest input must retain machine, claim, fixture, and host control plane token",
+    );
+  }
+  const endpoint = `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`;
+  if (input.hostControlPlane.endpoint !== endpoint) {
+    throw new Error(
+      "existing guest input host control plane endpoint is invalid",
+    );
+  }
+  return input;
+}
+
+async function stageExistingGuestInput(options, contract) {
+  const guest = contract.testbed.guest;
+  const ssh = [
+    "-i",
+    guest.identityFile,
+    "-o",
+    `UserKnownHostsFile=${guest.knownHostsFile}`,
+  ];
+  await run("ssh", [
+    ...ssh,
+    `${guest.user}@${guest.host}`,
+    `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${guest.stagingPath}') | Out-Null\"`,
+  ]);
+  await run("scp", [
+    ...ssh,
+    join(options.stateRoot, "guest-input.json"),
+    `${guest.user}@${guest.host}:${guest.stagingPath}`,
+  ]);
+}
+
+export async function refreshHostRuntime(options) {
+  const contract = await readFile(options.baselineContract, "utf8")
+    .then(JSON.parse)
+    .then(validateBaselineContract);
+  const guestInputPath = join(options.stateRoot, "guest-input.json");
+  const guestInputRaw = await readFile(guestInputPath, "utf8");
+  const guestInput = validateRefreshGuestInput(
+    JSON.parse(guestInputRaw),
+    options,
+  );
+  const plan = buildRefreshHostRuntimePlan(options);
+  const startedAt = new Date().toISOString();
+  if (options.dryRun) {
+    return {
+      schemaVersion: "vem-local-testbed-host-runtime-refresh/v1",
+      dryRun: true,
+      plan,
+      guestInput: {
+        sha256: `sha256:${createHash("sha256").update(guestInputRaw).digest("hex")}`,
+        machineCode: guestInput.machineCode,
+        claimCode: guestInput.claimCode,
+      },
+    };
+  }
+  const buildStartedAt = new Date().toISOString();
+  for (const step of plan) {
+    await run(step.command, step.args, {
+      cwd: options.workspace,
+      env: step.env,
+    });
+  }
+  const hostSimulator = await ensureLowerControllerSimCached({
+    options,
+    pruneCaches: false,
+  });
+  const buildFinishedAt = new Date().toISOString();
+  await stopServiceApiUnit(options);
+  await stopHostControlPlaneUnit(options, contract);
+  const restartStartedAt = new Date().toISOString();
+  await startServiceApiUnit(options);
+  const apiBaseUrl = "http://127.0.0.1:26849/api";
+  try {
+    await waitForApi(apiBaseUrl);
+  } catch (error) {
+    throw await serviceApiFailure(error);
+  }
+  await startHostControlPlaneUnit(
+    options,
+    contract,
+    hostSimulator.binaryPath,
+    guestInput.hostControlPlane.token,
+  );
+  await waitForHostControlPlane(
+    guestInput.hostControlPlane.endpoint,
+    guestInput.hostControlPlane.token,
+  );
+  await stageExistingGuestInput(options, contract);
+  const finishedAt = new Date().toISOString();
+  return {
+    schemaVersion: "vem-local-testbed-host-runtime-refresh/v1",
+    workspace: options.workspace,
+    guestInput: {
+      sha256: `sha256:${createHash("sha256").update(guestInputRaw).digest("hex")}`,
+      machineCode: guestInput.machineCode,
+      claimCode: guestInput.claimCode,
+      fixtureAllocation: guestInput.fixtureAllocation,
+      hostControlPlane: { endpoint: guestInput.hostControlPlane.endpoint },
+    },
+    hostSimulator: {
+      cache: hostSimulator.cache,
+      sourceDigest: hostSimulator.sourceDigest,
+    },
+    timing: {
+      startedAt,
+      finishedAt,
+      durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+      build: {
+        startedAt: buildStartedAt,
+        finishedAt: buildFinishedAt,
+        durationMs: Date.parse(buildFinishedAt) - Date.parse(buildStartedAt),
+      },
+      restart: {
+        startedAt: restartStartedAt,
+        finishedAt,
+        durationMs: Date.parse(finishedAt) - Date.parse(restartStartedAt),
+      },
+    },
+  };
 }
 
 async function reconstruct(options) {
@@ -1541,7 +1719,10 @@ async function reconstruct(options) {
 
 async function main() {
   const options = parseOptions(process.argv.slice(2));
-  const result = await reconstruct(options);
+  const result =
+    options.command === "refresh-host-runtime"
+      ? await refreshHostRuntime(options)
+      : await reconstruct(options);
   await mkdir(dirname(options.out), { recursive: true });
   await writeFile(options.out, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(result)}\n`);

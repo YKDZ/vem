@@ -610,6 +610,43 @@ async function executeRun(options, config) {
           },
         );
       }
+      if (options.mode === "fast") {
+        await update({ phase: `refresh-host-runtime-pass-${pass}`, pass });
+        const refreshOut = join(root, `host-runtime-refresh-pass-${pass}.json`);
+        await runProcess(
+          process.execPath,
+          [
+            "scripts/testbed/local-testbed.mjs",
+            "refresh-host-runtime",
+            "--workspace",
+            workspace,
+            "--state-root",
+            config.stateRoot,
+            "--baseline-contract",
+            config.baselineContract,
+            "--host-private-address",
+            config.hostPrivateAddress,
+            "--out",
+            refreshOut,
+          ],
+          {
+            cwd: workspace,
+            env: { ...environment, GITHUB_SHA: options.commit },
+          },
+        );
+        const refresh = JSON.parse(await readFile(refreshOut, "utf8"));
+        await update({
+          hostRuntimeRefresh: {
+            workspace: refresh.workspace,
+            guestInput: {
+              sha256: refresh.guestInput.sha256,
+              machineCode: refresh.guestInput.machineCode,
+              hostControlPlane: refresh.guestInput.hostControlPlane,
+            },
+            timing: refresh.timing,
+          },
+        });
+      }
       await update({ phase: `guest-pass-${pass}` });
       await stageAndRunGuest({
         config,
