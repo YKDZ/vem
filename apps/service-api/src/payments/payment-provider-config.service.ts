@@ -61,12 +61,6 @@ type PaymentProviderConfigBindingSnapshot = {
   boundAt: string;
 };
 
-export type ProductionPilotPaymentEvidence = {
-  providerCode: string;
-  method: "qr_code" | "payment_code";
-  mode: string | null;
-};
-
 export type PaymentChannelProviderReadiness = {
   channelKey: PaymentChannelKey;
   providerCode: "alipay" | "wechat_pay";
@@ -787,39 +781,5 @@ export class PaymentProviderConfigService {
     if (providerCode === "wechat_pay") return "production";
     const result = alipayEffectiveEnvironmentSchema.safeParse(publicConfigJson);
     return result.success ? result.data.mode : null;
-  }
-
-  async listProductionPilotPaymentEvidenceForMachine(
-    machineId: string,
-  ): Promise<ProductionPilotPaymentEvidence[]> {
-    const evidence: ProductionPilotPaymentEvidence[] = [];
-    for (const providerCode of ["alipay", "wechat_pay"] as const) {
-      try {
-        // oxlint-disable-next-line no-await-in-loop
-        const config = await this.resolveForPayment({
-          providerCode,
-          machineId,
-        });
-        const mode = this.productionModeEvidence(
-          providerCode,
-          config.publicConfigJson,
-        );
-        evidence.push({ providerCode, method: "qr_code", mode });
-      } catch {
-        // Unavailable providers are not production pilot payment evidence.
-      }
-    }
-    return evidence;
-  }
-
-  private productionModeEvidence(
-    providerCode: "alipay" | "wechat_pay",
-    publicConfigJson: Record<string, unknown>,
-  ): string | null {
-    if (providerCode === "alipay") {
-      const mode = publicConfigJson["mode"];
-      return typeof mode === "string" ? mode : null;
-    }
-    return "production";
   }
 }

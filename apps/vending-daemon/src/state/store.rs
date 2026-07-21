@@ -28,7 +28,7 @@ use super::schema::{
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
-    EnvironmentControlResultPayload, HardwareStatus,
+    EnvironmentControlResultPayload, HardwareStatus, LowerControllerFault,
 };
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
@@ -333,6 +333,14 @@ pub struct MachinePlanogramSlotInput {
     pub price_cents: i64,
     pub product_sort_order: i64,
     pub target_gender: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalPlanogramSlot {
+    pub slot_id: String,
+    pub slot_code: String,
+    pub layer_no: u32,
+    pub cell_no: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,6 +729,42 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
+    pub async fn active_planogram_slot_by_code(
+        &self,
+        slot_code: &str,
+    ) -> Result<Option<CanonicalPlanogramSlot>, StoreError> {
+        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT s.slot_id,s.slot_code,s.layer_no,s.cell_no
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version=s.planogram_version AND v.active=1
+             WHERE s.slot_code=?1
+             LIMIT 1",
+        )
+        .bind(slot_code)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((slot_id, slot_code, layer_no, cell_no)) = row else {
+            return Ok(None);
+        };
+        let layer_no = u32::try_from(layer_no).map_err(|_| {
+            StoreError::InvalidStockInput(format!(
+                "active slot {slot_code} has invalid layer number"
+            ))
+        })?;
+        let cell_no = u32::try_from(cell_no).map_err(|_| {
+            StoreError::InvalidStockInput(format!(
+                "active slot {slot_code} has invalid cell number"
+            ))
+        })?;
+        Ok(Some(CanonicalPlanogramSlot {
+            slot_id,
+            slot_code,
+            layer_no,
+            cell_no,
+        }))
+    }
+
     #[cfg(test)]
     pub async fn close_for_tests(&self) {
         self.pool.close().await;
@@ -2230,18 +2274,21 @@ impl LocalStateStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(order_no, status, next_action, updated_at)| {
-            let status = status.and_then(|value| parse_order_status(&value)).or(Some(
-                vending_core::domain::OrderSessionStatus::WaitingPayment,
-            ));
-            vending_core::domain::InternalTransactionSnapshot {
-                order_no,
-                status,
-                next_action: next_action
-                    .filter(|value| !value.is_empty())
-                    .and_then(|value| InternalCheckoutFlowAction::normalize_recovered(&value)),
-                updated_at,
-            }
+        let Some((order_no, status, next_action, updated_at)) = row else {
+            return Ok(None);
+        };
+        let status = status.and_then(|value| parse_order_status(&value)).or(Some(
+            vending_core::domain::OrderSessionStatus::WaitingPayment,
+        ));
+        let next_action = next_action
+            .filter(|value| !value.is_empty())
+            .map(|value| parse_persisted_checkout_flow_action(&value))
+            .transpose()?;
+        Ok(Some(vending_core::domain::InternalTransactionSnapshot {
+            order_no,
+            status,
+            next_action,
+            updated_at,
         }))
     }
 
@@ -5058,12 +5105,13 @@ impl LocalStateStore {
         command: &DispenseCommandPayload,
         error_code: Option<&str>,
         message: Option<&str>,
+        lower_controller_fault: Option<LowerControllerFault>,
     ) -> Result<Option<SaleViewSnapshot>, StoreError> {
         let slot_sales_state = match error_code {
             Some("NO_DROP") => "suspect",
             _ => "frozen",
         };
-        if is_whole_machine_dispense_failure(error_code, message) {
+        if lower_controller_fault.is_some_and(LowerControllerFault::requires_whole_machine_lock) {
             self.put_metadata(
                 WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
                 &WholeMachineMaintenanceLock {
@@ -5843,31 +5891,13 @@ fn is_supported_slot_sales_state(value: &str) -> bool {
     )
 }
 
-fn is_whole_machine_dispense_failure(error_code: Option<&str>, message: Option<&str>) -> bool {
-    match error_code {
-        Some("JAMMED" | "MOTOR_TIMEOUT") => true,
-        _ => {
-            let message = message.unwrap_or_default().to_ascii_lowercase();
-            message.contains("mechanical fault")
-                || message.contains("pickup platform blocked")
-                || message.contains("heartbeat missing")
-                || message.contains("timed out before completion")
-        }
-    }
-}
-
 pub fn classify_whole_machine_hardware_status_fault(
     status: &HardwareStatus,
 ) -> Option<&'static str> {
-    if status.online {
-        return None;
-    }
-    let message = status.message.to_ascii_lowercase();
-    if message.contains("mechanical fault") || message.contains("pickup platform blocked") {
-        Some("JAMMED")
-    } else {
-        None
-    }
+    status
+        .lower_controller_fault
+        .filter(|fault| fault.requires_whole_machine_lock())
+        .map(|_| "JAMMED")
 }
 
 struct PreviousSlotProjection {
@@ -6346,10 +6376,7 @@ fn order_session_reserves_local_stock(
     matches!(
         status,
         "waiting_payment" | "pending_payment" | "payment_submitted" | "paid" | "dispensing"
-    ) || matches!(
-        next_action,
-        "wait_payment" | "submit_payment" | "dispensing"
-    )
+    ) || matches!(next_action, "wait_payment" | "dispensing")
 }
 
 fn order_session_expires_at(input: &OrderSessionUpsert<'_>) -> String {
@@ -6536,6 +6563,12 @@ fn to_current_transaction_snapshot(
         .payment_attempt_json
         .as_deref()
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+    let next_action = backend
+        .as_ref()
+        .and_then(|value| value.get("nextAction"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(row.next_action.as_str());
+    let next_action = Some(parse_persisted_checkout_flow_action(next_action)?);
 
     Ok(vending_core::domain::InternalCurrentTransactionSnapshot {
         order_id: backend
@@ -6593,12 +6626,7 @@ fn to_current_transaction_snapshot(
             .and_then(|v| v.get("totalAmountCents"))
             .and_then(|v| v.as_i64()),
         vending: backend.as_ref().and_then(map_vending_summary),
-        next_action: backend
-            .as_ref()
-            .and_then(|v| v.get("nextAction"))
-            .and_then(|v| v.as_str())
-            .or(Some(row.next_action.as_str()))
-            .and_then(InternalCheckoutFlowAction::normalize_recovered),
+        next_action,
         masked_auth_code: attempt
             .as_ref()
             .and_then(|v| v.get("maskedAuthCode"))
@@ -6713,8 +6741,13 @@ fn map_payment_code_attempt_summary(
 }
 
 fn parse_new_checkout_flow_action(action: &str) -> Result<&'static str, StoreError> {
+    parse_persisted_checkout_flow_action(action).map(InternalCheckoutFlowAction::as_str)
+}
+
+fn parse_persisted_checkout_flow_action(
+    action: &str,
+) -> Result<InternalCheckoutFlowAction, StoreError> {
     InternalCheckoutFlowAction::from_current_contract(action)
-        .map(InternalCheckoutFlowAction::as_str)
         .ok_or_else(|| StoreError::InvalidCheckoutFlowAction(action.to_string()))
 }
 
@@ -9053,6 +9086,7 @@ mod tests {
             error_code: None,
             message: "F2 reset completed before v18 migration".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
         store
             .record_command_result_journal(&command, &result)
@@ -9601,6 +9635,7 @@ mod tests {
                 &dispense_command_for_slot("CMD-NO-DROP"),
                 Some("NO_DROP"),
                 Some("drop sensor did not confirm item movement"),
+                None,
             )
             .await
             .expect("block")
@@ -9612,6 +9647,71 @@ mod tests {
             .await
             .expect("lock lookup")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_resolves_coordinates_only_from_the_active_planogram() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let slot = store
+            .active_planogram_slot_by_code("A1")
+            .await
+            .expect("slot lookup")
+            .expect("active slot");
+        assert_eq!(slot.slot_code, "A1");
+        assert_eq!(slot.layer_no, 1);
+        assert_eq!(slot.cell_no, 1);
+        assert!(store
+            .active_planogram_slot_by_code("UNKNOWN")
+            .await
+            .expect("unknown lookup")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn local_and_transport_dispense_failures_never_create_a_whole_machine_lock() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        for (index, error_code, message) in [
+            (1, "MOTOR_TIMEOUT", "slot motor timed out"),
+            (
+                2,
+                "MOTOR_TIMEOUT",
+                "dispense command timed out before completion frame",
+            ),
+            (3, "MOTOR_TIMEOUT", "lower controller heartbeat missing"),
+            (
+                4,
+                "LOWER_CONTROLLER_BINDING_UNAVAILABLE",
+                "controller disconnected",
+            ),
+        ] {
+            store
+                .block_slot_for_dispense_failure(
+                    &dispense_command_for_slot(&format!("CMD-LOCAL-{index}")),
+                    Some(error_code),
+                    Some(message),
+                    None,
+                )
+                .await
+                .expect("block slot");
+            assert!(
+                store
+                    .whole_machine_maintenance_lock()
+                    .await
+                    .expect("lock lookup")
+                    .is_none(),
+                "{message} must remain local or live readiness evidence"
+            );
+        }
     }
 
     #[tokio::test]
@@ -9641,6 +9741,7 @@ mod tests {
             error_code: None,
             message: "serial: dispense completed".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
         let event = OutboxInput::dispense_result("MACHINE-1", &result);
 
@@ -9798,6 +9899,7 @@ mod tests {
             error_code: None,
             message: "serial: F2 reset completed".to_string(),
             reported_at: "2026-06-13T09:00:31.000Z".to_string(),
+            lower_controller_fault: None,
         };
         let event = OutboxInput::dispense_result("MACHINE-1", &result);
         assert!(store
@@ -9861,6 +9963,7 @@ mod tests {
             error_code: None,
             message: "F2 reset completed".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
         let event = OutboxInput::dispense_result("MACHINE-1", &result);
 
@@ -10998,6 +11101,7 @@ mod tests {
                 &dispense_command_for_slot("CMD-JAMMED"),
                 Some("JAMMED"),
                 Some("lower controller reported mechanical fault during dispense"),
+                Some(LowerControllerFault::SharedMechanical),
             )
             .await
             .expect("block")
@@ -11012,6 +11116,33 @@ mod tests {
         assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
         assert_eq!(lock.command_no, "CMD-JAMMED");
         assert_eq!(lock.slot_code, "A1");
+    }
+
+    #[test]
+    fn hardware_status_lock_classification_requires_an_explicit_protocol_fault() {
+        let unavailable = HardwareStatus {
+            adapter: "serial".to_string(),
+            online: false,
+            message: "lower controller heartbeat missing".to_string(),
+            port_path: None,
+            resolution_source: None,
+            bound_usb_identity: None,
+            candidates: vec![],
+            lower_controller_fault: None,
+        };
+        assert_eq!(
+            classify_whole_machine_hardware_status_fault(&unavailable),
+            None
+        );
+
+        let shared_fault = HardwareStatus {
+            lower_controller_fault: Some(LowerControllerFault::PickupPlatformBlocked),
+            ..unavailable
+        };
+        assert_eq!(
+            classify_whole_machine_hardware_status_fault(&shared_fault),
+            Some("JAMMED")
+        );
     }
 
     #[tokio::test]
@@ -11069,6 +11200,7 @@ mod tests {
                 &dispense_command_for_slot("CMD-JAM-BEFORE-REFILL"),
                 Some("JAMMED"),
                 Some("lower controller reported pickup platform blocked"),
+                Some(LowerControllerFault::PickupPlatformBlocked),
             )
             .await
             .expect("block")
@@ -11076,6 +11208,16 @@ mod tests {
         assert_eq!(frozen.items[0].physical_stock, 4);
         assert_eq!(frozen.items[0].saleable_stock, 4);
         assert_eq!(frozen.items[0].slot_sales_state, "frozen");
+        assert_eq!(
+            store
+                .whole_machine_maintenance_lock()
+                .await
+                .expect("lock lookup")
+                .expect("pickup platform lock")
+                .error_code
+                .as_deref(),
+            Some("JAMMED")
+        );
 
         let refilled = store
             .record_stock_movement(StockMovementInput {
@@ -11120,6 +11262,7 @@ mod tests {
             error_code: None,
             message: "ok".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
 
         let event = OutboxInput::dispense_result("MACHINE-1", &result);
@@ -11163,6 +11306,7 @@ mod tests {
             error_code: None,
             message: "F2 reset completed".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
         store
             .record_command_result_journal(&command, &result)
@@ -11193,6 +11337,7 @@ mod tests {
                 error_code: Some("TEST".to_string()),
                 message: "committed history".to_string(),
                 reported_at: "2030-01-01T00:00:00Z".to_string(),
+                lower_controller_fault: None,
             })
             .unwrap())
             .execute(tx.as_mut())
@@ -13046,71 +13191,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_transaction_snapshot_normalizes_legacy_submit_payment_on_recovery() {
+    async fn current_transaction_snapshot_rejects_retired_persisted_actions() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("open");
 
-        sqlx::query(
-            "INSERT INTO order_sessions(
-                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
-                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
-             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
-        )
-        .bind("ORDER-LEGACY-SUBMIT")
-        .bind("submit_payment")
-        .bind(now_iso())
-        .execute(store.pool())
-        .await
-        .expect("seed legacy row");
-
-        let snapshot = store
-            .current_transaction_snapshot()
+        for (order_no, action) in [
+            ("ORDER-RETIRED-SUBMIT", "submit_payment"),
+            ("ORDER-RETIRED-COLLECT", "collect_goods"),
+        ] {
+            sqlx::query(
+                "INSERT INTO order_sessions(
+                    order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                    next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+                 ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
+            )
+            .bind(order_no)
+            .bind(action)
+            .bind(now_iso())
+            .execute(store.pool())
             .await
-            .expect("snapshot")
-            .expect("current transaction");
+            .expect("seed retired row");
 
-        assert_eq!(
-            snapshot.next_action,
-            Some(InternalCheckoutFlowAction::WaitPayment)
-        );
-        let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
-        assert!(!value.contains("submit_payment"));
-    }
+            assert!(matches!(
+                store.current_transaction_snapshot().await,
+                Err(StoreError::InvalidCheckoutFlowAction(value)) if value == action
+            ));
 
-    #[tokio::test]
-    async fn current_transaction_snapshot_normalizes_legacy_collect_goods_on_recovery() {
-        let temp = TempDir::new().expect("temp");
-        let store = LocalStateStore::open(&temp.path().join("state.db"))
-            .await
-            .expect("open");
-
-        sqlx::query(
-            "INSERT INTO order_sessions(
-                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
-                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
-             ) VALUES (?1,'payment_code','alipay',NULL,'[]','dispensing',?2,NULL,NULL,NULL,'local',?3)",
-        )
-        .bind("ORDER-LEGACY-COLLECT")
-        .bind("collect_goods")
-        .bind(now_iso())
-        .execute(store.pool())
-        .await
-        .expect("seed legacy row");
-
-        let snapshot = store
-            .current_transaction_snapshot()
-            .await
-            .expect("snapshot")
-            .expect("current transaction");
-
-        assert_eq!(
-            snapshot.next_action,
-            Some(InternalCheckoutFlowAction::Dispensing)
-        );
-        let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
-        assert!(!value.contains("collect_goods"));
+            sqlx::query("UPDATE order_sessions SET status = 'closed' WHERE order_no = ?1")
+                .bind(order_no)
+                .execute(store.pool())
+                .await
+                .expect("close retired row");
+        }
     }
 
     #[tokio::test]
@@ -13147,25 +13261,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_transaction_snapshot_normalizes_cached_backend_legacy_next_action() {
+    async fn current_transaction_snapshot_rejects_retired_cached_backend_actions() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("open");
 
-        for (order_no, row_next_action, cached_next_action, expected) in [
-            (
-                "ORDER-CACHED-SUBMIT",
-                "wait_payment",
-                "submit_payment",
-                InternalCheckoutFlowAction::WaitPayment,
-            ),
-            (
-                "ORDER-CACHED-COLLECT",
-                "dispensing",
-                "collect_goods",
-                InternalCheckoutFlowAction::Dispensing,
-            ),
+        for (order_no, row_next_action, cached_next_action) in [
+            ("ORDER-CACHED-SUBMIT", "wait_payment", "submit_payment"),
+            ("ORDER-CACHED-COLLECT", "dispensing", "collect_goods"),
         ] {
             sqlx::query(
                 "INSERT INTO order_sessions(
@@ -13188,15 +13292,10 @@ mod tests {
             .await
             .expect("seed cached backend legacy row");
 
-            let snapshot = store
-                .current_transaction_snapshot()
-                .await
-                .expect("snapshot")
-                .expect("current transaction");
-            assert_eq!(snapshot.next_action, Some(expected));
-            let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
-            assert!(!value.contains("submit_payment"));
-            assert!(!value.contains("collect_goods"));
+            assert!(matches!(
+                store.current_transaction_snapshot().await,
+                Err(StoreError::InvalidCheckoutFlowAction(value)) if value == cached_next_action
+            ));
 
             sqlx::query("UPDATE order_sessions SET status = 'closed' WHERE order_no = ?1")
                 .bind(order_no)
@@ -13432,6 +13531,7 @@ mod tests {
             error_code: None,
             message: "serial: dispense completed".to_string(),
             reported_at: "2026-06-13T09:00:01.000Z".to_string(),
+            lower_controller_fault: None,
         };
         store
             .apply_dispense_result_to_order_session(&command, &result)
@@ -13787,6 +13887,7 @@ mod tests {
                     error_code: None,
                     message: "serial: dispense completed".to_string(),
                     reported_at: now_iso(),
+                    lower_controller_fault: None,
                 },
             )
             .await
@@ -13892,6 +13993,7 @@ mod tests {
             error_code: None,
             message: "ok".to_string(),
             reported_at: now_iso(),
+            lower_controller_fault: None,
         };
         let event = OutboxInput::dispense_result("MACHINE-1", &result);
 

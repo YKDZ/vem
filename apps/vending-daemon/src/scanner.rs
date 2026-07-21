@@ -8,7 +8,7 @@ use std::{
     },
 };
 use tokio::sync::{broadcast, mpsc};
-use tokio_serial::SerialPortBuilderExt;
+use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, StopBits};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -283,7 +283,12 @@ impl ScannerRuntime {
                 return Ok(());
             };
 
-            match tokio_serial::new(&port_path, self.config.baud_rate).open_native_async() {
+            match tokio_serial::new(&port_path, self.config.baud_rate)
+                .data_bits(DataBits::Eight)
+                .parity(Parity::None)
+                .stop_bits(StopBits::One)
+                .open_native_async()
+            {
                 Ok(port) => {
                     backoff_ms = 500;
                     self.emit_health(self.health_snapshot_with_port(
@@ -584,6 +589,41 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_controller_reports_ready_while_the_reader_is_idle() {
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open scanner pty");
+        grantpt(&master).expect("grant scanner pty");
+        unlockpt(&master).expect("unlock scanner pty");
+        let port_path = ptsname_r(&master).expect("scanner slave path");
+        let (raw_tx, _raw_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let controller =
+            ScannerRuntimeController::new(raw_tx, event_tx, PaymentCodeScanArmer::default());
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            controller.reconfigure(ScannerRuntimeConfig {
+                port_path: Some(port_path.clone()),
+                baud_rate: 9_600,
+                source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            }),
+        )
+        .await
+        .expect("idle reader startup must not wait for a scan")
+        .expect("idle reader startup");
+
+        let event = event_rx.recv().await.expect("scanner ready event");
+        let payload = serde_json::to_value(event).expect("event json");
+        assert_eq!(payload["snapshot"]["code"], "SCANNER_READY");
+        assert_eq!(payload["snapshot"]["port"], port_path);
+        controller.stop().await.expect("stop idle reader");
     }
 
     #[tokio::test]

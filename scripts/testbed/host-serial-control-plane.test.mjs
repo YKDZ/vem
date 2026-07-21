@@ -315,6 +315,14 @@ describe("host serial control plane", () => {
     assert.match(implementation, /run-vm-host-adapter\.mjs/);
     assert.match(implementation, /vem-local-testbed-mosquitto/);
     assert.match(implementation, /commands\/dispense/);
+    assert.match(implementation, /device-lifecycle/);
+    assert.match(implementation, /detach-device/);
+    assert.match(implementation, /attach-device/);
+    assert.match(implementation, /machineMqtt/);
+    assert.match(
+      implementation,
+      /vem\/machines\/\$\{required\(machineCode, "machineCode"\)\}\/#/,
+    );
     assert.match(implementation, /collect-serial-evidence/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
   });

@@ -64,7 +64,6 @@ type MachineResponseExtras = {
   latestEnvironment?: AdminMachineResponse["latestEnvironment"];
   reportedRuntimeConfiguration?: AdminMachineResponse["reportedRuntimeConfiguration"];
   latestEnvironmentCommand?: MachineCommandResponseRow | null;
-  productionPilotReadiness?: AdminMachineResponse["productionPilotReadiness"];
 };
 
 function toIsoString(value: Date | string): string {
@@ -261,9 +260,6 @@ export function toAdminMachineResponse(
             ? toAdminMachineCommandResponse(row.latestEnvironmentCommand)
             : null,
         }),
-    ...(row.productionPilotReadiness === undefined
-      ? {}
-      : { productionPilotReadiness: row.productionPilotReadiness }),
   } satisfies AdminMachineResponse;
   return response;
 }

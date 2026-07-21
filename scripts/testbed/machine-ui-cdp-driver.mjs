@@ -26,11 +26,7 @@ const MAX_CONTINUOUS_CHECKPOINTS =
   Math.ceil(
     CONTINUOUS_CAPTURE_BUDGET_MS / DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS,
   ) + CONTINUOUS_CAPTURE_HEADROOM_CHECKPOINTS;
-const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = [
-  "/maintenance",
-  "/offline",
-  "/bring-up",
-];
+const INITIAL_FORBIDDEN_CUSTOMER_ROUTES = ["/maintenance", "/offline"];
 const PAYMENT_BARRIER_ALLOWED_ROUTES = ["/payment", "/dispensing", "/result"];
 const PAYMENT_BARRIER_ARMING_ALLOWED_ROUTES = [
   "/checkout",
@@ -1008,6 +1004,9 @@ export async function captureScreenshot(client, options = {}) {
   if (bytes.toString("base64") !== result.data) {
     throw new Error("Page.captureScreenshot returned noncanonical base64");
   }
+  if (options.validatePng === true) {
+    validatePngScreenshot(bytes, options.expectedDimensions);
+  }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   let ref = null;
   if (options.screenshotSink) {
@@ -1028,6 +1027,33 @@ export async function captureScreenshot(client, options = {}) {
     format,
     ref,
   };
+}
+
+export function validatePngScreenshot(
+  bytes,
+  expected = { width: 1080, height: 1920 },
+) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 24) {
+    throw new Error("screenshot is not a readable PNG");
+  }
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (!bytes.subarray(0, 8).equals(signature)) {
+    throw new Error("screenshot is not a readable PNG");
+  }
+  if (
+    bytes.readUInt32BE(8) !== 13 ||
+    bytes.toString("ascii", 12, 16) !== "IHDR"
+  ) {
+    throw new Error("PNG screenshot is missing IHDR");
+  }
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (width !== expected.width || height !== expected.height) {
+    throw new Error(
+      `PNG screenshot dimensions must be ${expected.width}x${expected.height}; got ${width}x${height}`,
+    );
+  }
+  return { format: "png", width, height };
 }
 
 export async function captureCheckpoint(client, label, options = {}) {

@@ -177,7 +177,7 @@ function actionFeedback(action: EnvironmentControlAction): string[] {
           </div>
 
           <div class="flex items-center gap-3">
-            <span class="w-24">风速</span>
+            <span class="w-24">出风口与风速</span>
             <select
               :value="String(form.ventSpeed)"
               :disabled="controlsDisabled"

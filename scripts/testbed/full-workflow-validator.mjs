@@ -1,35 +1,8 @@
-import { readFileSync } from "node:fs";
-
-import { validateFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
-
 function requiredString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
-}
-
-function jsonReport(path, label) {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw new Error(
-      `${label} report is unreadable at ${path}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function reportOrFailure(path, label) {
-  try {
-    return { value: jsonReport(path, label), error: null };
-  } catch (error) {
-    return {
-      value: null,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
 }
 
 function trackResult({
@@ -48,10 +21,6 @@ function trackResult({
     reason,
     details,
   };
-}
-
-function skippedTrack(key, label, reason) {
-  return trackResult({ key, label, status: "skipped", reason });
 }
 
 function failedTrack(key, label, reportPath, reason, details = null) {
@@ -175,8 +144,8 @@ function validateScannerTrack(report, reportPath) {
     report?.ok !== true
   ) {
     return failedTrack(
-      "scanner",
-      "scanner",
+      "scannerPayment",
+      "scanner payment",
       reportPath,
       "scanner payment-code acceptance did not finish successfully",
     );
@@ -196,7 +165,7 @@ function validateScannerTrack(report, reportPath) {
     platformAttempt.status === "succeeded" &&
     report.platformAssertions?.movement &&
     finalResult.kind === "success"
-      ? passedTrack("scanner", "scanner", reportPath, {
+      ? passedTrack("scannerPayment", "scanner payment", reportPath, {
           orderId,
           paymentId,
           orderNo,
@@ -206,8 +175,8 @@ function validateScannerTrack(report, reportPath) {
             null,
         })
       : failedTrack(
-          "scanner",
-          "scanner",
+          "scannerPayment",
+          "scanner payment",
           reportPath,
           "scanner payment-code success path is incomplete",
           {
@@ -224,8 +193,8 @@ function validateScannerTrack(report, reportPath) {
     timeout.paymentDelta !== 0
   ) {
     return failedTrack(
-      "scanner",
-      "scanner",
+      "scannerPayment",
+      "scanner payment",
       reportPath,
       "scanner malformed/timeout evidence is incomplete",
       { malformed, timeout },
@@ -284,8 +253,8 @@ function validateFulfillmentFailureTrack(report, reportPath) {
     report?.ok !== true
   ) {
     return failedTrack(
-      "fulfillmentFailure",
-      "fulfillment failure",
+      "fulfillmentRecovery",
+      "fulfillment recovery",
       reportPath,
       "serial fulfillment failure track did not finish successfully",
     );
@@ -300,8 +269,8 @@ function validateFulfillmentFailureTrack(report, reportPath) {
     report.paymentCompletion == null
   ) {
     return failedTrack(
-      "fulfillmentFailure",
-      "fulfillment failure",
+      "fulfillmentRecovery",
+      "fulfillment recovery",
       reportPath,
       "post-payment fulfillment failure evidence is incomplete",
       {
@@ -311,10 +280,227 @@ function validateFulfillmentFailureTrack(report, reportPath) {
       },
     );
   }
-  return passedTrack("fulfillmentFailure", "fulfillment failure", reportPath, {
-    orderStatus: report.assertions.orderStatus,
-    commandId: report.assertions.commandId,
-    inventoryDelta: report.assertions.inventoryDelta,
+  return passedTrack(
+    "fulfillmentRecovery",
+    "fulfillment recovery",
+    reportPath,
+    {
+      orderStatus: report.assertions.orderStatus,
+      commandId: report.assertions.commandId,
+      inventoryDelta: report.assertions.inventoryDelta,
+    },
+  );
+}
+
+function validatePaymentRecoveryTrack(report, reportPath) {
+  if (
+    report?.schemaVersion !== "vem-payment-recovery-guest-full/v1" ||
+    report?.ok !== true
+  ) {
+    return failedTrack(
+      "paymentRecovery",
+      "payment recovery",
+      reportPath,
+      "payment recovery track did not finish successfully",
+    );
+  }
+  const action = report.recovery?.action ?? {};
+  if (
+    report.boundaries?.serviceApi !== true ||
+    report.boundaries?.mqtt !== true ||
+    report.boundaries?.daemon !== true ||
+    !report.payment?.id ||
+    !["query_payment", "close_or_reverse_uncertain_payment"].includes(
+      action.action,
+    ) ||
+    report.assertions?.duplicatePaymentCount !== 0 ||
+    report.assertions?.dispenseStarted === true
+  ) {
+    return failedTrack(
+      "paymentRecovery",
+      "payment recovery",
+      reportPath,
+      "payment recovery evidence is incomplete",
+      {
+        boundaries: report.boundaries ?? null,
+        payment: report.payment ?? null,
+        recovery: report.recovery ?? null,
+        assertions: report.assertions ?? null,
+      },
+    );
+  }
+  return passedTrack("paymentRecovery", "payment recovery", reportPath, {
+    paymentId: report.payment.id,
+    action: action.action,
+    duplicatePaymentCount: report.assertions.duplicatePaymentCount,
+  });
+}
+
+function validateLocalOperationsTrack(report, reportPath) {
+  if (
+    report?.schemaVersion !== "vem-local-operations-guest-full/v1" ||
+    report?.ok !== true
+  ) {
+    return failedTrack(
+      "localOperations",
+      "local operations",
+      reportPath,
+      "local operations track did not finish successfully",
+    );
+  }
+  if (
+    report.boundaries?.daemon !== true ||
+    report.boundaries?.hardwareSelfCheck !== true ||
+    report.boundaries?.serial !== true ||
+    report.planogram?.canonical !== true ||
+    !report.planogram?.planogramVersion ||
+    !report.planogram?.slotCode ||
+    !["completed", "failed", "result_unknown"].includes(
+      report.manualDispense?.outcome,
+    ) ||
+    report.manualDispense?.slotCode !== report.planogram.slotCode
+  ) {
+    return failedTrack(
+      "localOperations",
+      "local operations",
+      reportPath,
+      "local operations evidence is incomplete",
+      {
+        boundaries: report.boundaries ?? null,
+        planogram: report.planogram ?? null,
+        manualDispense: report.manualDispense ?? null,
+      },
+    );
+  }
+  return passedTrack("localOperations", "local operations", reportPath, {
+    slotCode: report.planogram.slotCode,
+    planogramVersion: report.planogram.planogramVersion,
+    manualOutcome: report.manualDispense.outcome,
+  });
+}
+
+function validateHardwareLifecycleTrack(report, reportPath) {
+  if (
+    report?.schemaVersion !== "vem-hardware-lifecycle-guest-full/v1" ||
+    report?.ok !== true
+  ) {
+    return failedTrack(
+      "hardwareLifecycle",
+      "hardware lifecycle",
+      reportPath,
+      "hardware lifecycle track did not finish successfully",
+    );
+  }
+  const discovery = report.discovery ?? {};
+  const readiness = report.readiness ?? {};
+  const lifecycle = Array.isArray(report.lifecycle) ? report.lifecycle : [];
+  const byRole = new Map(lifecycle.map((entry) => [entry?.role, entry]));
+  const lower = byRole.get("lower_controller");
+  const scanner = byRole.get("scanner");
+  const roles = Array.isArray(discovery.roles) ? discovery.roles : [];
+  const qemuMappings = Array.isArray(discovery.qemuUsbSerialMappings)
+    ? discovery.qemuUsbSerialMappings
+    : [];
+  const stableReadiness =
+    readiness.before?.canStartSale === true &&
+    readiness.after?.canStartSale === true &&
+    Number.isInteger(readiness.before?.revision) &&
+    Number.isInteger(readiness.after?.revision) &&
+    readiness.after.revision >= readiness.before.revision;
+  const validLifecycle = [lower, scanner].every(
+    (entry) =>
+      entry?.disconnect?.host?.operation === "disconnect" &&
+      entry.disconnect?.daemon?.ready === false &&
+      entry.disconnect?.saleStartCapability?.canStartSale === false &&
+      entry?.reconnect?.host?.operation === "reconnect" &&
+      entry.reconnect?.daemon?.ready === true &&
+      Number.isInteger(entry.reconnect?.bindingRevision) &&
+      entry.reconnect.bindingRevision >= entry.initialBindingRevision,
+  );
+  if (
+    roles.length < 2 ||
+    qemuMappings.length < 2 ||
+    discovery.dynamicRoleDiscovery !== true ||
+    discovery.fixedComSelection !== false ||
+    stableReadiness !== true ||
+    validLifecycle !== true
+  ) {
+    return failedTrack(
+      "hardwareLifecycle",
+      "hardware lifecycle",
+      reportPath,
+      "hardware lifecycle evidence is incomplete",
+      { discovery, readiness, lifecycle },
+    );
+  }
+  return passedTrack("hardwareLifecycle", "hardware lifecycle", reportPath, {
+    roles: roles.map((role) => role.role),
+    readinessRevision: readiness.after.revision,
+    lifecycleRoles: lifecycle.map((entry) => entry.role),
+  });
+}
+
+function validateEnvironmentControlTrack(report, reportPath) {
+  if (
+    report?.schemaVersion !== "vem-environment-control-guest-full/v1" ||
+    report?.ok !== true
+  ) {
+    return failedTrack(
+      "environmentControl",
+      "environment control",
+      reportPath,
+      "environment control track did not finish successfully",
+    );
+  }
+  const commands = Array.isArray(report.commands) ? report.commands : [];
+  const byAction = new Map(commands.map((entry) => [entry?.action, entry]));
+  const requiredActions = [
+    "airConditionerOnTrue",
+    "airConditionerOnFalse",
+    "ventSpeed",
+  ];
+  const optionalTemperature = byAction.get("targetTemperatureCelsius") ?? null;
+  const hasRequiredActions = requiredActions.every((action) => {
+    const entry = byAction.get(action);
+    return (
+      entry?.admin?.commandNo &&
+      entry?.admin?.status === "sent" &&
+      entry?.result?.status === "succeeded" &&
+      entry?.result?.resultJson?.success === true &&
+      entry?.mqtt?.commandObserved === true &&
+      entry?.mqtt?.resultObserved === true &&
+      entry?.serial?.lowerBoundaryObserved === true
+    );
+  });
+  const hasTemperature =
+    optionalTemperature === null ||
+    (optionalTemperature.result?.status === "succeeded" &&
+      optionalTemperature.result?.resultJson?.success === true &&
+      optionalTemperature.serial?.lowerBoundaryObserved === true);
+  const overlap = report.overlapRejection ?? {};
+  if (
+    hasRequiredActions !== true ||
+    hasTemperature !== true ||
+    overlap.rejected !== true ||
+    overlap.httpStatus !== 409 ||
+    overlap.error !== "ENVIRONMENT_COMMAND_IN_PROGRESS" ||
+    report.boundaries?.adminApi !== true ||
+    report.boundaries?.mqtt !== true ||
+    report.boundaries?.daemonIpc !== true ||
+    report.boundaries?.lowerSerial !== true
+  ) {
+    return failedTrack(
+      "environmentControl",
+      "environment control",
+      reportPath,
+      "environment control evidence is incomplete",
+      { commands, overlap, boundaries: report.boundaries ?? null },
+    );
+  }
+  return passedTrack("environmentControl", "environment control", reportPath, {
+    commandNos: commands.map((entry) => entry.admin.commandNo),
+    overlapError: overlap.error,
+    temperatureProved: optionalTemperature !== null,
   });
 }
 
@@ -382,28 +568,134 @@ function validateVisionTrack(report, reportPath) {
   return { vision, tryOn };
 }
 
-function executionFailure(track, executedTracks) {
-  const entry = executedTracks.find((candidate) => candidate?.key === track);
-  if (!entry) return `required child ${track} was not executed`;
-  if (entry.exitCode !== 0)
-    return `child ${track} exited ${entry.exitCode ?? "without an exit code"}`;
-  if (entry.reportOk !== true)
-    return `child ${track} did not emit a valid passing report`;
-  return null;
+function canonicalResult(descriptor, result, reportPath) {
+  return {
+    ...result,
+    key: descriptor.name,
+    label: descriptor.name,
+    reportPath,
+  };
 }
 
-function failedForUnreadable(key, label, path, loaded) {
-  return loaded.error ? failedTrack(key, label, path, loaded.error) : null;
+export function validateBusinessCheckReport(descriptor, report, reportPath) {
+  if (!descriptor?.runner) {
+    return failedTrack(
+      descriptor?.name ?? "unknown",
+      descriptor?.name ?? "unknown",
+      reportPath,
+      descriptor?.blockedReason ?? "business runner is not implemented",
+    );
+  }
+  const validators = {
+    commissioning: (value, path) =>
+      value?.schemaVersion === "vem-runtime-commissioning-acceptance/v1" &&
+      value?.ok === true &&
+      value?.admission?.status === "provisioned" &&
+      typeof value.admission.machineCode === "string"
+        ? passedTrack("commissioning", "commissioning", path, value.admission)
+        : failedTrack(
+            "commissioning",
+            "commissioning",
+            path,
+            "commissioning admission evidence is incomplete",
+          ),
+    sale: validateFastTrack,
+    scannerPayment: validateScannerTrack,
+    pickupProtocol: validateDelayedAudioTrack,
+    behaviorAudio: validateDelayedAudioTrack,
+    ipcRecovery: validateIpcRecoveryTrack,
+    fulfillmentRecovery: validateFulfillmentFailureTrack,
+    paymentRecovery: validatePaymentRecoveryTrack,
+    hardwareLifecycle: validateHardwareLifecycleTrack,
+    localOperations: validateLocalOperationsTrack,
+    environmentControl: validateEnvironmentControlTrack,
+  };
+  if (descriptor.validator === "visionExperience") {
+    const result = validateVisionTrack(report, reportPath);
+    const failed = Object.values(result).find(
+      (entry) => entry.status !== "passed",
+    );
+    return canonicalResult(
+      descriptor,
+      failed ??
+        passedTrack("visionExperience", "vision experience", reportPath, {
+          vision: result.vision.details,
+          tryOn: result.tryOn.details,
+        }),
+      reportPath,
+    );
+  }
+  const validator = validators[descriptor.validator];
+  if (!validator) {
+    return failedTrack(
+      descriptor.name,
+      descriptor.name,
+      reportPath,
+      `no validator is registered for ${descriptor.name}`,
+    );
+  }
+  return canonicalResult(descriptor, validator(report, reportPath), reportPath);
+}
+
+function buildRegistryWorkflowAggregate({
+  mode,
+  selectedDescriptors,
+  executedTracks,
+  evidenceManifestPath,
+  identity,
+}) {
+  const expected = selectedDescriptors.map((descriptor) => descriptor.name);
+  const executed = executedTracks.map((entry) => entry.key);
+  const failures = [];
+  if (JSON.stringify(expected) !== JSON.stringify(executed)) {
+    failures.push({
+      set: "execution",
+      reason: `business check execution order must be ${expected.join(" -> ")}; received ${executed.join(" -> ")}`,
+      reportPath: null,
+    });
+  }
+  const sets = Object.fromEntries(
+    selectedDescriptors.map((descriptor) => {
+      const execution = executedTracks.find(
+        (entry) => entry.key === descriptor.name,
+      );
+      const result =
+        execution?.validator ??
+        failedTrack(
+          descriptor.name,
+          descriptor.name,
+          null,
+          "registered business check was not executed",
+        );
+      if (result.status !== "passed") {
+        failures.push({
+          set: descriptor.name,
+          reason: result.reason ?? execution?.error ?? "business check failed",
+          reportPath: result.reportPath ?? execution?.reportPath ?? null,
+        });
+      }
+      return [descriptor.name, result];
+    }),
+  );
+  return {
+    schemaVersion: "vem-local-testbed-full-workflow/v4",
+    mode,
+    ok: failures.length === 0,
+    execution: {
+      selectedBusinessSets: expected,
+      executedTracks,
+    },
+    businessSets: sets,
+    failures,
+    businessOutcome: { ok: failures.length === 0, failures },
+    evidenceInventory: { reportPath: evidenceManifestPath },
+    identity,
+  };
 }
 
 export function buildFullWorkflowAggregate({
   mode,
-  fastReportPath,
-  ipcRecoveryReportPath = null,
-  fulfillmentFailureReportPath = null,
-  scannerReportPath = null,
-  delayedPickupReportPath = null,
-  visionTryOnReportPath = null,
+  selectedDescriptors,
   evidenceManifestPath = null,
   identity = null,
   executedTracks = [],
@@ -412,254 +704,14 @@ export function buildFullWorkflowAggregate({
   if (!["fast", "full"].includes(normalizedMode)) {
     throw new Error("full workflow mode must be fast or full");
   }
-  const loadedFast = reportOrFailure(fastReportPath, "fast route");
-  const fast =
-    failedForUnreadable(
-      "standardSale",
-      "standard sale",
-      fastReportPath,
-      loadedFast,
-    ) ?? validateFastTrack(loadedFast.value, fastReportPath);
-  let audio = skippedTrack("audio", "audio", "full mode only");
-  let ipcRecovery = skippedTrack(
-    "ipcRecovery",
-    "IPC recovery",
-    "full mode only",
-  );
-  let fulfillmentFailure = skippedTrack(
-    "fulfillmentFailure",
-    "fulfillment failure",
-    "full mode only",
-  );
-  let scanner = skippedTrack("scanner", "scanner", "full mode only");
-  let vision = skippedTrack("vision", "Vision", "full mode only");
-  let tryOn = skippedTrack("tryOn", "try-on", "full mode only");
-  let error = skippedTrack("error", "error", "full mode only");
-  let evidence = skippedTrack(
-    "evidence",
-    "evidence manifest",
-    "full mode only",
-  );
-  const requiredChildren =
-    normalizedMode === "full"
-      ? [
-          "fast",
-          "scanner",
-          "visionTryOn",
-          "delayedPickup",
-          "ipcRecovery",
-          "fulfillmentFailure",
-        ]
-      : ["fast"];
-  const executionFailures = requiredChildren
-    .map((track) => executionFailure(track, executedTracks))
-    .filter(Boolean);
-  if (
-    JSON.stringify(executedTracks.map((track) => track?.key)) !==
-    JSON.stringify(requiredChildren)
-  ) {
-    executionFailures.push(
-      `child execution order must be ${requiredChildren.join(" -> ")}; received ${executedTracks.map((track) => track?.key).join(" -> ")}`,
-    );
+  if (!Array.isArray(selectedDescriptors)) {
+    throw new Error("selected business descriptors are required");
   }
-  if (normalizedMode === "full") {
-    const evidenceManifest = reportOrFailure(
-      evidenceManifestPath,
-      "full workflow evidence manifest",
-    );
-    const evidenceFailures = evidenceManifest.error
-      ? [evidenceManifest.error]
-      : validateFullWorkflowEvidenceManifest(evidenceManifest.value);
-    evidence =
-      evidenceFailures.length === 0
-        ? passedTrack("evidence", "evidence manifest", evidenceManifestPath, {
-            totals: evidenceManifest.value.totals,
-          })
-        : failedTrack(
-            "evidence",
-            "evidence manifest",
-            evidenceManifestPath,
-            "bounded evidence manifest is incomplete",
-            { failures: evidenceFailures },
-          );
-    const ipcRecoveryLoaded = reportOrFailure(
-      ipcRecoveryReportPath,
-      "installed IPC recovery",
-    );
-    const fulfillmentFailureLoaded = reportOrFailure(
-      fulfillmentFailureReportPath,
-      "serial fulfillment failure",
-    );
-    const delayed = reportOrFailure(delayedPickupReportPath, "delayed pickup");
-    const scanned = reportOrFailure(scannerReportPath, "scanner payment-code");
-    const visualLoaded = reportOrFailure(
-      visionTryOnReportPath,
-      "vision try-on",
-    );
-    ipcRecovery =
-      failedForUnreadable(
-        "ipcRecovery",
-        "IPC recovery",
-        ipcRecoveryReportPath,
-        ipcRecoveryLoaded,
-      ) ??
-      validateIpcRecoveryTrack(ipcRecoveryLoaded.value, ipcRecoveryReportPath);
-    fulfillmentFailure =
-      failedForUnreadable(
-        "fulfillmentFailure",
-        "fulfillment failure",
-        fulfillmentFailureReportPath,
-        fulfillmentFailureLoaded,
-      ) ??
-      validateFulfillmentFailureTrack(
-        fulfillmentFailureLoaded.value,
-        fulfillmentFailureReportPath,
-      );
-    audio =
-      failedForUnreadable("audio", "audio", delayedPickupReportPath, delayed) ??
-      validateDelayedAudioTrack(delayed.value, delayedPickupReportPath);
-    scanner =
-      failedForUnreadable("scanner", "scanner", scannerReportPath, scanned) ??
-      validateScannerTrack(scanned.value, scannerReportPath);
-    const visualResult = failedForUnreadable(
-      "vision",
-      "Vision",
-      visionTryOnReportPath,
-      visualLoaded,
-    );
-    const visualTracks = visualResult
-      ? {
-          vision: visualResult,
-          tryOn: failedTrack(
-            "tryOn",
-            "try-on",
-            visionTryOnReportPath,
-            visualResult.reason,
-          ),
-        }
-      : validateVisionTrack(visualLoaded.value, visionTryOnReportPath);
-    vision = visualTracks.vision;
-    tryOn = visualTracks.tryOn;
-    if (
-      fast.status === "passed" &&
-      ipcRecovery.status === "passed" &&
-      fulfillmentFailure.status === "passed" &&
-      scanner.status === "passed" &&
-      evidence.status === "passed"
-    ) {
-      error = passedTrack("error", "error", fastReportPath, {
-        scenarios: {
-          visionRepeatedAction: fast.reportPath,
-          scannerRecovery: scanner.reportPath,
-          ipcRecovery: ipcRecovery.reportPath,
-          serialE6: fulfillmentFailure.reportPath,
-        },
-      });
-    } else {
-      error = failedTrack(
-        "error",
-        "error",
-        fastReportPath,
-        "installed error-recovery evidence is incomplete",
-        {
-          standardSale: fast.status,
-          ipcRecovery: ipcRecovery.status,
-          fulfillmentFailure: fulfillmentFailure.status,
-          scanner: scanner.status,
-          evidence: evidence.status,
-        },
-      );
-    }
-  }
-  if (executionFailures.length > 0) {
-    for (const failure of executionFailures) {
-      if (failure.includes("fast"))
-        ((fast.status = "failed"), (fast.reason = failure));
-      else if (failure.includes("ipcRecovery"))
-        ((ipcRecovery.status = "failed"), (ipcRecovery.reason = failure));
-      else if (failure.includes("fulfillmentFailure"))
-        ((fulfillmentFailure.status = "failed"),
-          (fulfillmentFailure.reason = failure));
-      else if (failure.includes("delayedPickup"))
-        ((audio.status = "failed"), (audio.reason = failure));
-      else if (failure.includes("scanner"))
-        ((scanner.status = "failed"), (scanner.reason = failure));
-      else if (failure.includes("visionTryOn"))
-        ((vision.status = "failed"), (vision.reason = failure));
-    }
-    error = failedTrack(
-      "error",
-      "error",
-      fastReportPath,
-      "full workflow child execution did not complete",
-      { executionFailures },
-    );
-  }
-  const tracks = {
-    standardSale: fast,
-    ipcRecovery,
-    fulfillmentFailure,
-    audio,
-    scanner,
-    vision,
-    tryOn,
-    evidence,
-    error,
-  };
-  const failures = Object.values(tracks)
-    .filter((track) => track.status === "failed")
-    .map((track) => ({
-      track: track.key,
-      label: track.label,
-      reason: track.reason,
-      reportPath: track.reportPath,
-    }));
-  const businessFailures = Object.values(tracks)
-    .filter(
-      (track) =>
-        !["evidence", "error"].includes(track.key) && track.status === "failed",
-    )
-    .map((track) => ({
-      track: track.key,
-      reason: track.reason,
-      reportPath: track.reportPath,
-    }));
-  const evidenceCompleteness =
-    normalizedMode === "full"
-      ? {
-          ok: evidence.status === "passed",
-          status: evidence.status,
-          reportPath: evidence.reportPath,
-        }
-      : { ok: true, status: "not-required", reportPath: null };
-  return {
-    schemaVersion: "vem-local-testbed-full-workflow/v3",
+  return buildRegistryWorkflowAggregate({
     mode: normalizedMode,
-    ok: businessFailures.length === 0 && evidenceCompleteness.ok,
-    execution: {
-      checkoutBuildDeployCount: 1,
-      rebuildBetweenTracks: false,
-      resetBetweenTracks: false,
-      validationOrder: [
-        "standardSale",
-        "audio",
-        "scanner",
-        "ipcRecovery",
-        "fulfillmentFailure",
-        "vision",
-        "tryOn",
-        "evidence",
-        "error",
-      ],
-      executedTracks,
-    },
-    tracks,
-    failures,
-    businessOutcome: {
-      ok: businessFailures.length === 0,
-      failures: businessFailures,
-    },
-    evidenceCompleteness,
+    selectedDescriptors,
+    executedTracks,
+    evidenceManifestPath,
     identity,
-  };
+  });
 }

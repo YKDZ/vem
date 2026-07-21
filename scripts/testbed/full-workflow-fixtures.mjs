@@ -1,9 +1,9 @@
 const FIXTURE_TRACK_KEYS = Object.freeze([
-  "fast",
-  "scanner",
-  "visionTryOn",
-  "fulfillmentFailure",
-  "delayedPickup",
+  "sale",
+  "scannerPayment",
+  "visionExperience",
+  "fulfillmentRecovery",
+  "pickupProtocol",
   "ipcRecovery",
 ]);
 

@@ -64,6 +64,63 @@ impl LocalDeviceRole {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareModelRoleError {
+    message: String,
+}
+
+impl HardwareModelRoleError {
+    pub fn unsupported(hardware_model: &str, topology_identity: &str) -> Self {
+        Self {
+            message: format!(
+                "hardware model {hardware_model:?} with topology {topology_identity:?} has no production serial role registry"
+            ),
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        "HARDWARE_MODEL_UNSUPPORTED"
+    }
+}
+
+impl std::fmt::Display for HardwareModelRoleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HardwareModelRoleError {}
+
+/// Static USB role knowledge belongs to the production hardware model, never
+/// to observed COM addresses or mutable local configuration.
+pub fn production_hardware_role_candidates<'a>(
+    hardware_model: &str,
+    topology_identity: &str,
+    role: LocalDeviceRole,
+    observed: &'a [ObservedSerialDevice],
+) -> Result<Vec<&'a ObservedSerialDevice>, HardwareModelRoleError> {
+    let hardware_id = match (hardware_model, topology_identity, role) {
+        ("vem-prod-24", "vem-prod-24", LocalDeviceRole::LowerController) => {
+            "USB\\VID_1A86&PID_7523"
+        }
+        ("vem-prod-24", "vem-prod-24", LocalDeviceRole::Scanner) => "USB\\VID_1A86&PID_55D3",
+        _ => {
+            return Err(HardwareModelRoleError::unsupported(
+                hardware_model,
+                topology_identity,
+            ))
+        }
+    };
+
+    Ok(observed
+        .iter()
+        .filter(|candidate| {
+            StableSerialDeviceIdentity::try_from_observation(candidate)
+                .is_ok_and(|identity| identity.hardware_ids.iter().any(|id| id == hardware_id))
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalSerialRoleBinding {
@@ -264,63 +321,24 @@ impl WindowsSerialDevicePlatform {
                     }
                 }
                 LocalDeviceRole::Scanner => {
-                    use tokio::io::AsyncReadExt as _;
-                    use tokio_serial::SerialPortBuilderExt as _;
+                    use tokio_serial::{DataBits, Parity, SerialPortBuilderExt as _, StopBits};
                     let _serial_guard = if cfg!(windows) {
                         Some(vending_core::serial::acquire_serial_operation_guard().await)
                     } else {
                         None
                     };
                     match tokio_serial::new(&candidate.current_port, probe_config.scanner_baud_rate)
+                        .data_bits(DataBits::Eight)
+                        .parity(Parity::None)
+                        .stop_bits(StopBits::One)
                         .open_native_async()
                     {
-                        Ok(mut port) => {
-                            let probe =
-                                tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                                    let mut framer = vending_core::scanner::ScannerFramer::new(
-                                        probe_config.scanner_frame_suffix,
-                                    );
-                                    let mut chunk = [0_u8; 64];
-                                    loop {
-                                        let read =
-                                            port.read(&mut chunk).await.map_err(|error| {
-                                                format!(
-                                                    "read scanner protocol frame failed: {error}"
-                                                )
-                                            })?;
-                                        if read == 0 {
-                                            tokio::task::yield_now().await;
-                                            continue;
-                                        }
-                                        if !framer
-                                            .push_bytes(
-                                                &chunk[..read],
-                                                crate::state::store::now_millis(),
-                                            )
-                                            .is_empty()
-                                        {
-                                            return Ok(());
-                                        }
-                                    }
-                                })
-                                .await;
-                            match probe {
-                                Ok(Ok(())) => (
-                                    true,
-                                    "SCANNER_PROTOCOL_FRAME_READY",
-                                    "scanner emitted a valid delimited protocol frame".to_string(),
-                                ),
-                                Ok(Err(error)) => {
-                                    (false, "SCANNER_PROTOCOL_READ_FAILED", error)
-                                }
-                                Err(_) => (
-                                    false,
-                                    "SCANNER_PROTOCOL_FRAME_TIMEOUT",
-                                    "scanner port opened but emitted no valid protocol frame within 2 seconds"
-                                        .to_string(),
-                                ),
-                            }
-                        }
+                        Ok(_) => (
+                            true,
+                            "SCANNER_PORT_OPEN_READY",
+                            "scanner port opened at the configured 8N1 transport settings"
+                                .to_string(),
+                        ),
                         Err(error) => (
                             false,
                             "SCANNER_PORT_OPEN_FAILED",
@@ -802,6 +820,92 @@ mod tests {
         assert_eq!(peak.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn production_model_classifies_usb_roles_without_protocol_probing() {
+        let scanner = ObservedSerialDevice {
+            current_port: "COM3".to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_55D3\\SCANNER-01".to_string()),
+            container_id: Some("{11111111-2222-3333-4444-555555555555}".to_string()),
+            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+            serial_number: Some("SCANNER-01".to_string()),
+            friendly_name: Some("arbitrary label".to_string()),
+        };
+        let controller = ObservedSerialDevice {
+            current_port: "COM10".to_string(),
+            instance_id: Some("USB\\VID_1A86&PID_7523\\CONTROLLER-01".to_string()),
+            container_id: Some("{66666666-7777-8888-9999-aaaaaaaaaaaa}".to_string()),
+            hardware_ids: vec!["USB\\VID_1A86&PID_7523".to_string()],
+            serial_number: Some("CONTROLLER-01".to_string()),
+            friendly_name: Some("another arbitrary label".to_string()),
+        };
+        let observed = vec![scanner, controller];
+
+        let scanner_candidates = production_hardware_role_candidates(
+            "vem-prod-24",
+            "vem-prod-24",
+            LocalDeviceRole::Scanner,
+            &observed,
+        )
+        .expect("known model");
+        assert_eq!(scanner_candidates.len(), 1);
+        assert_eq!(scanner_candidates[0].current_port, "COM3");
+
+        let controller_candidates = production_hardware_role_candidates(
+            "vem-prod-24",
+            "vem-prod-24",
+            LocalDeviceRole::LowerController,
+            &observed,
+        )
+        .expect("known model");
+        assert_eq!(controller_candidates.len(), 1);
+        assert_eq!(controller_candidates[0].current_port, "COM10");
+
+        let error = production_hardware_role_candidates(
+            "unknown-model",
+            "unknown-topology",
+            LocalDeviceRole::Scanner,
+            &observed,
+        )
+        .expect_err("unsupported model must not fall back");
+        assert_eq!(error.code(), "HARDWARE_MODEL_UNSUPPORTED");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scanner_candidate_is_ready_after_idle_port_open_without_a_frame() {
+        use nix::fcntl::OFlag;
+        use nix::pty::{grantpt, posix_openpt, ptsname_r, unlockpt};
+
+        let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY).expect("open pty");
+        grantpt(&master).expect("grant pty");
+        unlockpt(&master).expect("unlock pty");
+        let candidate = ObservedSerialDevice {
+            current_port: ptsname_r(&master).expect("slave path"),
+            instance_id: Some("USB\\VID_1A86&PID_55D3\\SCANNER-IDLE".to_string()),
+            container_id: Some("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}".to_string()),
+            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
+            serial_number: Some("SCANNER-IDLE".to_string()),
+            friendly_name: None,
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            WindowsSerialDevicePlatform.test_candidate(
+                LocalDeviceRole::Scanner,
+                &candidate,
+                &SerialDeviceRoleProbeConfig::default(),
+            ),
+        )
+        .await
+        .expect("idle scanner test must not wait for input");
+
+        assert!(
+            result.success,
+            "unexpected scanner port failure: {result:?}"
+        );
+        assert_eq!(result.code, "SCANNER_PORT_OPEN_READY");
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn scanner_candidate_rejects_an_oversized_protocol_frame() {
@@ -845,8 +949,11 @@ mod tests {
             )
             .await;
 
-        assert!(!result.success);
-        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_TIMEOUT");
+        assert!(
+            result.success,
+            "scanner role test must not inspect payload bytes: {result:?}"
+        );
+        assert_eq!(result.code, "SCANNER_PORT_OPEN_READY");
     }
 
     #[tokio::test]
@@ -891,7 +998,7 @@ mod tests {
             .await;
 
         assert!(result.success, "unexpected probe failure: {result:?}");
-        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_READY");
+        assert_eq!(result.code, "SCANNER_PORT_OPEN_READY");
     }
 
     #[tokio::test]
@@ -991,7 +1098,7 @@ mod tests {
             .await;
 
         assert!(result.success, "unexpected probe failure: {result:?}");
-        assert_eq!(result.code, "SCANNER_PROTOCOL_FRAME_READY");
+        assert_eq!(result.code, "SCANNER_PORT_OPEN_READY");
     }
 
     #[test]

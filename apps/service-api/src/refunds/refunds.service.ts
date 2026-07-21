@@ -456,20 +456,12 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         paymentId: payments.id,
         providerId: payments.providerId,
         amountCents: payments.amountCents,
-        orderIsDrill: orders.isDrill,
-        paymentIsDrill: payments.isDrill,
       })
       .from(orders)
       .innerJoin(payments, eq(payments.id, orders.paymentId))
       .where(eq(orders.id, input.orderId))
       .orderBy(desc(payments.createdAt));
     if (!row) throw new NotFoundException("Order payment not found");
-    if (row.orderIsDrill || row.paymentIsDrill) {
-      throw new ConflictException(
-        "Protected payment drill orders cannot use the production refund flow",
-      );
-    }
-
     const [refund] = await tx
       .insert(refunds)
       .values({
@@ -549,8 +541,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerId: payments.providerId,
         providerCode: paymentProviders.code,
         paymentAmountCents: payments.amountCents,
-        orderIsDrill: orders.isDrill,
-        paymentIsDrill: payments.isDrill,
       })
       .from(orders)
       .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -558,11 +548,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(orders.id, input.orderId))
       .orderBy(desc(payments.createdAt));
     if (!row) throw new NotFoundException("Order payment not found");
-    if (row.orderIsDrill || row.paymentIsDrill) {
-      throw new ConflictException(
-        "Protected payment drill orders cannot use the production refund flow",
-      );
-    }
     if (input.amountCents >= row.paymentAmountCents) {
       throw new ConflictException(
         "Partial refund amount must be less than payment amount",
@@ -681,7 +666,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     const candidates = await this.db
       .select({ id: refunds.id })
       .from(refunds)
-      .where(and(isDispatchable, eq(refunds.isDrill, false)))
+      .where(isDispatchable)
       .limit(limit);
     let dispatched = 0;
     // oxlint-disable no-await-in-loop -- each refund is CAS-claimed before one provider request
@@ -710,7 +695,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
                   )`,
                 ),
               ),
-              eq(refunds.isDrill, false),
             ),
           )
           .returning({ id: refunds.id });
@@ -863,8 +847,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
           providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
-          isDrill: orders.isDrill,
-          paymentIsDrill: payments.isDrill,
         })
         .from(orders)
         .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -876,12 +858,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(orders.id, input.orderId))
         .orderBy(desc(payments.createdAt));
       if (!row) throw new NotFoundException("Order payment not found");
-      if (row.isDrill || row.paymentIsDrill) {
-        throw new ConflictException(
-          "Protected payment drill orders cannot use the production refund flow",
-        );
-      }
-
       const [existing] = await tx
         .select()
         .from(refunds)
@@ -1147,8 +1123,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
           providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
-          isDrill: orders.isDrill,
-          paymentIsDrill: payments.isDrill,
         })
         .from(orders)
         .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -1160,11 +1134,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(orders.id, input.orderId))
         .orderBy(desc(payments.createdAt));
       if (!row) throw new NotFoundException("Order payment not found");
-      if (row.isDrill || row.paymentIsDrill) {
-        throw new ConflictException(
-          "Protected payment drill orders cannot use the production refund flow",
-        );
-      }
       if (input.amountCents >= row.paymentAmountCents) {
         throw new ConflictException(
           "Partial refund amount must be less than payment amount",
@@ -1443,9 +1412,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
-        isDrill: refunds.isDrill,
-        paymentIsDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -1454,9 +1420,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           eq(refunds.status, "processing"),
-          eq(refunds.isDrill, false),
-          eq(payments.isDrill, false),
-          eq(orders.isDrill, false),
           sql`exists (
             select 1 from refund_events dispatched_event
             where dispatched_event.refund_id = ${refunds.id}
@@ -1485,9 +1448,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     // oxlint-disable no-await-in-loop -- sequential retry/reconciliation loop; parallel execution would be incorrect here
     for (const refund of processingRefunds) {
       try {
-        if (refund.isDrill || refund.paymentIsDrill || refund.orderIsDrill) {
-          continue;
-        }
         if (!this.paymentProviderRegistry.has(refund.providerCode)) continue;
         const provider = this.paymentProviderRegistry.get(refund.providerCode);
         if (!provider.queryRefund) continue;
@@ -1665,9 +1625,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
-        isDrill: refunds.isDrill,
-        paymentIsDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -1677,13 +1634,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .limit(1);
 
     if (!refund) throw new NotFoundException("Refund not found");
-    if (refund.isDrill || refund.paymentIsDrill || refund.orderIsDrill) {
-      return {
-        status: refund.status,
-        reconciled: false,
-        reason: "protected_payment_drill",
-      };
-    }
     if (refund.status !== "processing" && refund.status !== "created") {
       return {
         status: refund.status,
@@ -1896,9 +1846,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerRefundNo: refunds.providerRefundNo,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
-        isDrill: refunds.isDrill,
-        paymentIsDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -1908,10 +1855,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .limit(1);
 
     if (!row) return { handled: false, reason: "refund_not_found" };
-    if (row.isDrill || row.paymentIsDrill || row.orderIsDrill) {
-      return { handled: false, reason: "protected_payment_drill" };
-    }
-
     // A provider webhook is verified by one merchant configuration. It must
     // match the immutable configuration binding captured for this payment.
     if (

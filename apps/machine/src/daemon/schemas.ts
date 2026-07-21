@@ -143,41 +143,6 @@ export const provisioningClaimResponseSchema = z.object({
   restartRequested: z.boolean(),
 });
 
-export const maintenanceEnrollmentStatusSchema = z.object({
-  state: z.enum([
-    "not_enrolled",
-    "tunnel_applied",
-    "handshake_pending",
-    "handshake_verified",
-    "handshake_evidence_persist_pending",
-    "maintenance_recovery_pending",
-    "lifecycle_unavailable",
-    "tunnel_apply_pending",
-    "tunnel_degraded",
-    "reclaim_request_pending",
-    "reclaim_handshake_pending",
-    "reclaim_handshake_evidence_persist_pending",
-    "reclaim_handshake_verified",
-    "reclaim_timed_out_recovered",
-    "failed",
-    "decommissioned",
-  ]),
-  publicKey: z.string().nullable(),
-  tunnelAddress: z.string().nullable(),
-  endpoint: z.string().nullable(),
-  handshakeVerified: z.boolean(),
-  tunnelConnected: z.boolean().default(false),
-  firstHandshakeVerifiedAt: z.string().nullable().default(null),
-  lastHandshakeAt: z.string().nullable(),
-  lastError: z.string().nullable(),
-  alertCode: z.string().nullable().default(null),
-  activePublicKey: z.string().nullable().default(null),
-  pendingPublicKey: z.string().nullable().default(null),
-  reclaimExpiresAt: z.string().nullable().default(null),
-  activeIdentityRetained: z.boolean().default(false),
-  updatedAt: z.string(),
-});
-
 type TransactionSnapshotParseResult =
   | { success: true; data: DaemonIpcTransactionSnapshot }
   | { success: false; error: unknown };
@@ -440,9 +405,6 @@ export type ProvisioningClaimResponse = z.infer<
 >;
 export type WifiNetwork = z.infer<typeof wifiNetworkSchema>;
 export type WifiScanResponse = z.infer<typeof wifiScanResponseSchema>;
-export type MaintenanceEnrollmentStatus = z.infer<
-  typeof maintenanceEnrollmentStatusSchema
->;
 export type TransactionSnapshot = DaemonIpcTransactionSnapshot;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;

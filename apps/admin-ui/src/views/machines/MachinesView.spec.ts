@@ -1080,9 +1080,9 @@ describe("MachinesView environment controls", () => {
     );
     const speedRow = requireElement(
       Array.from(dialog.querySelectorAll("div.flex")).find((row) =>
-        row.textContent?.includes("风速"),
+        row.textContent?.includes("出风口与风速"),
       ),
-      "speed row",
+      "outlet and speed row",
     );
 
     expect(speedRow.textContent).toContain("请求：全");

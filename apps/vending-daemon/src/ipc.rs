@@ -117,8 +117,6 @@ struct ClearWholeMachineMaintenanceLockRequest {
 struct ManualDispenseDiagnosticRequest {
     idempotency_key: String,
     slot_code: String,
-    layer_no: u32,
-    cell_no: u32,
     #[serde(default = "default_manual_dispense_quantity")]
     quantity: u32,
     #[serde(default = "default_manual_dispense_timeout")]
@@ -306,6 +304,7 @@ impl RuntimeStatusCache {
                     resolution_source: None,
                     bound_usb_identity: None,
                     candidates: vec![],
+                    lower_controller_fault: None,
                 },
             )),
             scanner: Arc::new(tokio::sync::RwLock::new(scanner_health(
@@ -1830,6 +1829,42 @@ async fn hardware_self_check(
     }
     let status = ctx.hardware.self_check().await;
     *ctx.ui.status_cache.hardware.write().await = status.clone();
+    if status.online {
+        let production_dispense_path_ready = status.adapter == "serial"
+            && status
+                .port_path
+                .as_deref()
+                .is_some_and(|path| !path.trim_start().starts_with("tcp://"));
+        let evidence = crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+            adapter: status.adapter.clone(),
+            online: status.online,
+            message: status.message.clone(),
+            port_path: status.port_path.clone(),
+            checked_at: crate::state::store::now_iso(),
+            production_dispense_path_ready,
+            production_dispense_path_code: if production_dispense_path_ready {
+                "PRODUCTION_DISPENSE_PATH_READY".to_string()
+            } else {
+                "PRODUCTION_DISPENSE_PATH_REQUIRED".to_string()
+            },
+            production_dispense_path_message: if production_dispense_path_ready {
+                "lower-controller self-check confirmed a production serial path".to_string()
+            } else {
+                "lower-controller self-check did not confirm a production serial path".to_string()
+            },
+        };
+        if let Err(error) = ctx
+            .state
+            .record_whole_machine_lock_recovery_evidence(&evidence)
+            .await
+        {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "whole_machine_lock_evidence_write_failed",
+                error.to_string(),
+            );
+        }
+    }
     invalidate_sale_start_capability(&ctx).await;
     Json(status).into_response()
 }
@@ -1957,17 +1992,41 @@ async fn manual_dispense_diagnostic(
         || request.slot_code.len() > 32
         || request.quantity != 1
         || !(1..=120).contains(&request.timeout_seconds)
-        || request.layer_no == 0
-        || request.layer_no > 255
-        || request.cell_no == 0
-        || request.cell_no > 255
     {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_manual_dispense_diagnostic_request",
-            "bounded idempotencyKey, slot, quantity=1 and timeoutSeconds 1..120 are required",
+            "bounded idempotencyKey, slotCode, quantity=1 and timeoutSeconds 1..120 are required",
         );
     }
+    let slot = match ctx
+        .state
+        .active_planogram_slot_by_code(request.slot_code.trim())
+        .await
+    {
+        Ok(Some(slot)) if slot.layer_no <= 255 && slot.cell_no <= 255 => slot,
+        Ok(Some(_)) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_slot_out_of_protocol_range",
+                "the selected active slot is outside the lower-controller protocol range",
+            );
+        }
+        Ok(None) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "manual_dispense_slot_not_active",
+                "the selected slot is not present in the active planogram",
+            );
+        }
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "manual_dispense_slot_lookup_failed",
+                error.to_string(),
+            );
+        }
+    };
     let _lease = match ctx.sale_binding_gate.try_acquire_manual_dispense() {
         Ok(value) => value,
         Err(_) => {
@@ -2059,9 +2118,9 @@ async fn manual_dispense_diagnostic(
         command_no: diagnostic_id.clone(),
         order_no: "MANUAL-DIAGNOSTIC".to_string(),
         slot: vending_core::hardware::SlotPayload {
-            layer_no: request.layer_no,
-            cell_no: request.cell_no,
-            slot_code: request.slot_code.trim().to_string(),
+            layer_no: slot.layer_no,
+            cell_no: slot.cell_no,
+            slot_code: slot.slot_code.clone(),
         },
         quantity: request.quantity,
         timeout_seconds: request.timeout_seconds,
@@ -2070,9 +2129,9 @@ async fn manual_dispense_diagnostic(
         diagnostic_id: diagnostic_id.clone(),
         idempotency_key: key.to_string(),
         request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
-            request.slot_code.trim(),
-            u64::from(request.layer_no),
-            u64::from(request.cell_no),
+            &slot.slot_code,
+            u64::from(slot.layer_no),
+            u64::from(slot.cell_no),
             u64::from(request.quantity),
             request.timeout_seconds,
         ),
@@ -2144,6 +2203,7 @@ async fn manual_dispense_diagnostic(
             error_code: Some("RESULT_UNKNOWN".to_string()),
             message: "manual dispense result unknown after local timeout".to_string(),
             reported_at: crate::state::store::now_iso(),
+            lower_controller_fault: None,
         },
     };
     let outcome = if result.success {
@@ -2327,11 +2387,20 @@ async fn test_binding(
             return error_response(StatusCode::CONFLICT, "runtime_bootstrap_invalid", error);
         }
     };
-    let scanner_protocol = effective_scanner_protocol(
+    let scanner_protocol = match effective_scanner_protocol(
         &settings,
         bootstrap.hardware_model.as_str(),
         bootstrap.topology.identity.as_str(),
-    );
+    ) {
+        Ok(protocol) => protocol,
+        Err(error) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "hardware_model_unsupported",
+                format!("{}: {error}", error.code()),
+            );
+        }
+    };
     let result = ctx
         .serial_device_platform
         .test_candidate(
@@ -2562,7 +2631,7 @@ async fn activate_binding(
                     bootstrap.hardware_model.as_str(),
                     bootstrap.topology.identity.as_str(),
                     Some(port),
-                ))
+                )?)
                 .await?;
         }
     }
@@ -2760,16 +2829,26 @@ async fn set_scanner_protocol(
         if let Ok(port) =
             device_binding::resolve_runtime_port(LocalDeviceRole::Scanner, binding, &observed)
         {
-            if let Err(error) = ctx
-                .scanner_runtime
-                .reconfigure(scanner_config(
-                    &settings,
-                    bootstrap.hardware_model.as_str(),
-                    bootstrap.topology.identity.as_str(),
-                    Some(port),
-                ))
-                .await
-            {
+            let config = match scanner_config(
+                &settings,
+                bootstrap.hardware_model.as_str(),
+                bootstrap.topology.identity.as_str(),
+                Some(port),
+            ) {
+                Ok(config) => config,
+                Err(error) => {
+                    let _ = ctx
+                        .runtime_sources
+                        .set_local_scanner_protocol(previous)
+                        .await;
+                    return error_response(
+                        StatusCode::CONFLICT,
+                        "hardware_model_unsupported",
+                        error,
+                    );
+                }
+            };
+            if let Err(error) = ctx.scanner_runtime.reconfigure(config).await {
                 let _ = ctx
                     .runtime_sources
                     .set_local_scanner_protocol(previous)
@@ -3051,14 +3130,15 @@ fn scanner_config(
     hardware_model: &str,
     topology_identity: &str,
     port_path: Option<String>,
-) -> ScannerRuntimeConfig {
-    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity);
-    ScannerRuntimeConfig {
+) -> Result<ScannerRuntimeConfig, String> {
+    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity)
+        .map_err(|error| format!("{}: {error}", error.code()))?;
+    Ok(ScannerRuntimeConfig {
         port_path,
         baud_rate: protocol.baud_rate,
         frame_suffix: protocol.frame_suffix,
         source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-    }
+    })
 }
 fn scanner_health(code: &str, message: &str) -> vending_core::scanner::ScannerHealthSnapshot {
     vending_core::scanner::ScannerHealthSnapshot {
@@ -3480,6 +3560,7 @@ mod tests {
             resolution_source: Some("stable_usb_binding".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
+            lower_controller_fault: None,
         };
         let profile: daemon_ipc_contracts::MachineProvisioningProfile =
             serde_json::from_value(claim_profile(&server.uri())).expect("profile");
@@ -3685,6 +3766,7 @@ mod tests {
             resolution_source: Some("stable_usb_binding".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
+            lower_controller_fault: None,
         };
         ctx.ui.status_cache.sync.write().await.mqtt_connected = true;
         *ctx.ui.status_cache.scanner.write().await = vending_core::scanner::ScannerHealthSnapshot {
@@ -4022,7 +4104,7 @@ mod tests {
             .expect("lock response");
         assert_eq!(lock_response.status(), StatusCode::OK);
 
-        let manual_response = build_router(ctx)
+        let manual_response = build_router(ctx.clone())
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -4030,13 +4112,32 @@ mod tests {
                     .header("authorization", "Bearer test-token")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"idempotencyKey":"manual-ops-1","slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}"#,
+                        r#"{"idempotencyKey":"manual-ops-1","slotCode":"A1","quantity":1,"timeoutSeconds":5}"#,
                     ))
                     .expect("manual request"),
             )
             .await
             .expect("manual response");
         assert_eq!(manual_response.status(), StatusCode::CONFLICT);
+
+        let retired_shape_response = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/maintenance/manual-dispense-diagnostic")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"idempotencyKey":"manual-ops-old","slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}"#,
+                    ))
+                    .expect("retired manual request"),
+            )
+            .await
+            .expect("retired manual response");
+        assert_eq!(
+            retired_shape_response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     fn profile_cache(

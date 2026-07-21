@@ -1,0 +1,63 @@
+name: Admin Browser Acceptance
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  admin-browser:
+    name: Admin Browser Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js and restore pnpm cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: ${{ runner.os }}-turbo-admin-browser-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-admin-browser-
+            ${{ runner.os }}-turbo-
+
+      - name: Run Admin browser acceptance
+        run: node tools/check-ci.mjs --job admin-e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-browser-playwright-report
+          path: |
+            apps/admin-ui/playwright-report/
+            apps/admin-ui/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload application logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-browser-logs
+          path: |
+            service-api.log
+            admin-ui.log
+          if-no-files-found: warn
+          retention-days: 3

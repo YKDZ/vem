@@ -37,8 +37,6 @@ export const permissionCodeSchema = z.enum([
   "hardwareErrorPolicies.write",
   "maintenanceWorkOrders.read",
   "maintenanceWorkOrders.write",
-  "maintenanceAccess.read",
-  "maintenanceAccess.write",
 ]);
 export type PermissionCode = z.infer<typeof permissionCodeSchema>;
 export const permissionCodes = permissionCodeSchema.options;

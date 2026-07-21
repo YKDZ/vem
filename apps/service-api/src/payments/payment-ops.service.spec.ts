@@ -318,7 +318,7 @@ describe("PaymentOpsService.getReadiness", () => {
     expect(webhookCheck?.passed).toBe(false);
   });
 
-  it("recent payment failures block production readiness", async () => {
+  it("reports recent payment failures as an operational diagnostic", async () => {
     const db = makeDb();
     buildSelectSequence(db, [
       [], // mock provider check
@@ -561,7 +561,7 @@ describe("PaymentOpsService.getReadiness", () => {
     );
   });
 
-  it("blocks production readiness when enabled real channels only have sandbox provider setup", async () => {
+  it("reports enabled real channels that only have sandbox provider setup", async () => {
     const db = makeDb();
     let selectCallCount = 0;
     db.select.mockImplementation(() => {
@@ -648,7 +648,7 @@ describe("PaymentOpsService.getReadiness", () => {
   });
 
   it.each(["global-first", "machine-first"])(
-    "blocks production readiness for a machine sandbox override regardless of row order: %s",
+    "reports a machine sandbox override regardless of row order: %s",
     async (order) => {
       const db = makeDb();
       const globalProduction = {
@@ -844,7 +844,7 @@ describe("PaymentOpsService.getReadiness", () => {
     });
   });
 
-  it("ignores disabled channels and unused provider certificates in production gate", async () => {
+  it("ignores disabled channels and unused provider certificates in diagnostics", async () => {
     const db = makeDb();
     let selectCallCount = 0;
     db.select.mockImplementation(() => {

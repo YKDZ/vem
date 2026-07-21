@@ -32,7 +32,6 @@ const ROUTE_ICON_MAP: Record<string, Component> = {
   "system-settings": SettingOutlined,
   notifications: BellOutlined,
   "audit-logs": AuditOutlined,
-  "maintenance-access": SettingOutlined,
 };
 
 type MenuItem = {

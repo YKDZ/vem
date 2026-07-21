@@ -34,8 +34,6 @@ import {
   machineHeartbeats,
   mediaAssets,
   machines,
-  maintenancePeers,
-  maintenanceSessions,
   productCategories,
   productVariants,
   products,
@@ -78,7 +76,6 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
-import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -114,7 +111,6 @@ import {
   weatherConditionClassesFor,
   type WeatherConditionClass,
 } from "./natural-context-weather";
-import { evaluateProductionPilotReadiness } from "./production-pilot-readiness";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
@@ -711,8 +707,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
-    @Inject(MaintenanceAccessService)
-    private readonly maintenanceAccessService: MaintenanceAccessService,
     @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     @Inject(AuditService)
@@ -884,14 +878,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
-    const [paymentEvidence, latestEnvironmentCommand] = await Promise.all([
-      this.paymentProviderConfigService.listProductionPilotPaymentEvidenceForMachine(
-        id,
-      ),
-      this.getLatestEnvironmentCommand(id),
-    ]);
-    const activeAcknowledgedPlanogramVersion =
-      await this.getActiveAcknowledgedPlanogramVersion(id);
+    const latestEnvironmentCommand = await this.getLatestEnvironmentCommand(id);
     return {
       ...toAdminMachineResponse(machine),
       latestHeartbeatStatus: toAdminMachineHeartbeatStatus(
@@ -904,26 +891,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       reportedRuntimeConfiguration:
         latestHeartbeat?.statusPayload.reportedRuntimeConfiguration ?? null,
       latestEnvironmentCommand,
-      productionPilotReadiness: evaluateProductionPilotReadiness({
-        machine,
-        latestHeartbeat,
-        paymentOptions: paymentEvidence,
-        machineHeartbeatTimeoutSeconds:
-          this.config.machineHeartbeatTimeoutSeconds,
-        platformPlanogram: {
-          activeAcknowledgedPlanogramVersion,
-        },
-        externalNaturalEnvironment: {
-          status: (
-            await externalNaturalEnvironmentSnapshot(
-              machine,
-              new Date(),
-              this.getExternalNaturalEnvironmentProvider(),
-              this.externalNaturalEnvironmentCaches(),
-            )
-          ).status,
-        },
-      }),
     };
   }
 
@@ -2907,50 +2874,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         })
         .returning();
 
-      const peers = await tx
-        .select({ id: maintenancePeers.id })
-        .from(maintenancePeers)
-        .where(
-          and(
-            eq(maintenancePeers.machineId, machine.id),
-            inArray(maintenancePeers.status, [
-              "active",
-              "pending_reclaim",
-              "reclaim_failed",
-            ]),
-            isNull(maintenancePeers.revokedAt),
-          ),
-        )
-        .for("update");
-      const peerIds = peers.map((peer) => peer.id);
-      const revokedSessions = await tx
-        .update(maintenanceSessions)
-        .set({ revokedAt: now })
-        .where(
-          and(
-            or(
-              eq(maintenanceSessions.targetMachineId, machine.id),
-              peerIds.length > 0
-                ? inArray(maintenanceSessions.sourcePeerId, peerIds)
-                : undefined,
-            ),
-            isNull(maintenanceSessions.revokedAt),
-          ),
-        )
-        .returning({ id: maintenanceSessions.id });
-      if (peerIds.length > 0) {
-        await tx
-          .update(maintenancePeers)
-          .set({
-            status: "revoked",
-            revokedAt: now,
-            reclaimExpiresAt: null,
-            reclaimFailedAt: null,
-            reclaimFailureReason: null,
-            updatedAt: now,
-          })
-          .where(inArray(maintenancePeers.id, peerIds));
-      }
       await tx
         .update(machineClaimCodes)
         .set({ state: "revoked", revokedAt: now, updatedAt: now })
@@ -2980,55 +2903,26 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           credentialRevokedAt: machines.credentialRevokedAt,
         });
 
-      await this.maintenanceAccessService.projectDesiredStateAfterPeerMutation(
-        tx,
-        now,
-      );
-      await tx.insert(auditLogs).values([
-        {
-          adminUserId: adminUserId,
-          action: "machines.secureDecommission",
-          resourceType: "machine",
-          resourceId: machine.id,
-          beforeJson: {
-            status: machine.status,
-            credentialRevokedAt: machine.credentialRevokedAt,
-            hadBusinessCredentials: Boolean(machine.secretHash),
-            peerIds,
-          },
-          afterJson: {
-            status: "disabled",
-            credentialRevokedAt: now.toISOString(),
-            revokedPeerIds: peerIds,
-            revokedSessionIds: revokedSessions.map((session) => session.id),
-            reconnectDenied: true,
-            decommissionCommandId: command.id,
-            localCleanupState: deliveryPayload
-              ? "delivery_pending"
-              : "denied_on_reconnect",
-          },
+      await tx.insert(auditLogs).values({
+        adminUserId: adminUserId,
+        action: "machines.secureDecommission",
+        resourceType: "machine",
+        resourceId: machine.id,
+        beforeJson: {
+          status: machine.status,
+          credentialRevokedAt: machine.credentialRevokedAt,
+          hadBusinessCredentials: Boolean(machine.secretHash),
         },
-        ...peerIds.map((peerId) => ({
-          adminUserId,
-          action: "maintenanceAccess.peer.revoke",
-          resourceType: "maintenance_peer",
-          resourceId: peerId,
-          afterJson: {
-            reason: "secure_decommission",
-            revokedAt: now.toISOString(),
-          },
-        })),
-        ...revokedSessions.map((session) => ({
-          adminUserId,
-          action: "maintenanceAccess.session.revoke",
-          resourceType: "maintenance_session",
-          resourceId: session.id,
-          afterJson: {
-            reason: "secure_decommission",
-            revokedAt: now.toISOString(),
-          },
-        })),
-      ]);
+        afterJson: {
+          status: "disabled",
+          credentialRevokedAt: now.toISOString(),
+          reconnectDenied: true,
+          decommissionCommandId: command.id,
+          localCleanupState: deliveryPayload
+            ? "delivery_pending"
+            : "denied_on_reconnect",
+        },
+      });
 
       return {
         machine: { ...machine, ...updated },
@@ -3426,40 +3320,5 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     if (accepted && verified.payload.success) {
       await this.deliverSecureDecommissionCommand(record.commandId);
     }
-  }
-
-  async getOwnMaintenanceIdentity(machineId: string) {
-    await this.maintenanceAccessService.sweepPendingReclaims();
-    const identities = await this.db
-      .select({
-        publicKey: maintenancePeers.publicKey,
-        status: maintenancePeers.status,
-        reclaimExpiresAt: maintenancePeers.reclaimExpiresAt,
-        handshakeVerifiedAt: maintenancePeers.handshakeVerifiedAt,
-        reclaimFailedAt: maintenancePeers.reclaimFailedAt,
-        reclaimFailureReason: maintenancePeers.reclaimFailureReason,
-      })
-      .from(maintenancePeers)
-      .where(
-        and(
-          eq(maintenancePeers.machineId, machineId),
-          inArray(maintenancePeers.status, [
-            "active",
-            "pending_reclaim",
-            "reclaim_failed",
-          ]),
-          isNull(maintenancePeers.revokedAt),
-        ),
-      );
-    return {
-      machineId,
-      identities: identities.map((identity) => ({
-        ...identity,
-        reclaimExpiresAt: identity.reclaimExpiresAt?.toISOString() ?? null,
-        handshakeVerifiedAt:
-          identity.handshakeVerifiedAt?.toISOString() ?? null,
-        reclaimFailedAt: identity.reclaimFailedAt?.toISOString() ?? null,
-      })),
-    };
   }
 }

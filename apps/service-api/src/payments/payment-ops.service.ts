@@ -237,9 +237,7 @@ export class PaymentOpsService {
         failed: sql<number>`count(*) filter (where ${payments.status} = 'failed')`,
       })
       .from(payments)
-      .where(
-        and(sql`${payments.createdAt} >= ${from}`, eq(payments.isDrill, false)),
-      );
+      .where(sql`${payments.createdAt} >= ${from}`);
 
     const [webhookTotals] = await this.db
       .select({
@@ -259,7 +257,6 @@ export class PaymentOpsService {
       .where(
         and(
           sql`${paymentReconciliationAttempts.createdAt} >= ${from}`,
-          eq(payments.isDrill, false),
           sql`${paymentReconciliationAttempts.status} in ('network_error', 'config_error', 'max_attempts_exceeded')`,
         ),
       );
@@ -270,9 +267,7 @@ export class PaymentOpsService {
         overdue: sql<number>`count(*) filter (where ${refunds.status} = 'processing' and ${refunds.updatedAt} < ${new Date(measuredAt.getTime() - 30 * 60_000)})`,
       })
       .from(refunds)
-      .where(
-        and(sql`${refunds.createdAt} >= ${from}`, eq(refunds.isDrill, false)),
-      );
+      .where(sql`${refunds.createdAt} >= ${from}`);
 
     const [paymentCodeTotals] = await this.db
       .select({
@@ -281,12 +276,7 @@ export class PaymentOpsService {
       })
       .from(paymentCodeAttempts)
       .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
-      .where(
-        and(
-          sql`${paymentCodeAttempts.createdAt} >= ${from}`,
-          eq(payments.isDrill, false),
-        ),
-      );
+      .where(and(sql`${paymentCodeAttempts.createdAt} >= ${from}`));
 
     const [paymentCodeDuplicateRejected] = await this.db
       .select({ total: count() })
@@ -1135,7 +1125,6 @@ export class PaymentOpsService {
       .where(
         and(
           sql`${payments.createdAt} >= ${from}`,
-          eq(payments.isDrill, false),
           eq(payments.status, "failed"),
         ),
       );
@@ -1190,7 +1179,6 @@ export class PaymentOpsService {
       .from(refunds)
       .where(
         and(
-          eq(refunds.isDrill, false),
           sql`${refunds.status} = 'failed' or (${refunds.status} = 'processing' and ${refunds.updatedAt} < ${overdueBefore})`,
         ),
       );

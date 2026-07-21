@@ -58,6 +58,7 @@ export type AudioCoordinator = {
     sourceUrl: string,
     volume: number,
   ): Promise<string | null>;
+  refreshPreferences(): Promise<void>;
   activeRequest(): AudioCoordinatorRequest | null;
   queuedRequestIds(): string[];
   trace(): readonly MachineRuntimeTraceEntry[];
@@ -225,6 +226,32 @@ export function createAudioCoordinator(
     return request.requestId;
   }
 
+  async function refreshPreferences(): Promise<void> {
+    if (disposed) return;
+    const preferences = options.preferences();
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const request = queue[index];
+      if (!request || preferencesAllow(preferences, request.category)) continue;
+      queue.splice(index, 1);
+      recordTerminal(request, {
+        status: "stopped",
+        message: "audio cue preference disabled",
+      });
+    }
+    if (active && !preferencesAllow(preferences, active.category)) {
+      stoppingActive = true;
+      try {
+        await options.driver.stop();
+      } catch (error) {
+        finishActive({
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    await startNext();
+  }
+
   function createRequest(
     input: Omit<AudioCoordinatorRequest, "requestId">,
   ): QueuedAudioRequest {
@@ -348,6 +375,7 @@ export function createAudioCoordinator(
   return {
     accept,
     requestTestPlayback,
+    refreshPreferences,
     activeRequest: () => active,
     queuedRequestIds: () => queue.map((request) => request.requestId),
     trace: () => trace.entries(),

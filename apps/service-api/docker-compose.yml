@@ -1,41 +1,92 @@
-name: vem-service-api
+name: vem-backend
 
 services:
   postgres:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     environment:
-      POSTGRES_DB: vem
-      POSTGRES_USER: vem
-      POSTGRES_PASSWORD: vem_password
+      POSTGRES_DB: ${POSTGRES_DB:-vem}
+      POSTGRES_USER: ${POSTGRES_USER:-vem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - vem-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vem -d vem"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
-    volumes:
-      - vem-postgres-data:/var/lib/postgresql/data
 
   mqtt:
-    build:
-      context: ./mosquitto
-      dockerfile: Dockerfile
+    image: ${MQTT_IMAGE:-eclipse-mosquitto:2}
     ports:
-      - "1883:1883"
-      - "9001:9001"
-    environment:
-      MQTT_USERNAME: ${MQTT_USERNAME:-vem_mqtt}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-vem_mqtt_password}
+      - "${MQTT_PORT:-1883}:1883"
     volumes:
       - vem-mqtt-data:/mosquitto/data
-    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        printf 'listener 1883\nallow_anonymous false\npassword_file /mosquitto/data/passwordfile\n' > /tmp/mosquitto.conf
+        && mosquitto_passwd -b -c /mosquitto/data/passwordfile "$${MQTT_USERNAME}" "$${MQTT_PASSWORD}"
+        && chown mosquitto:mosquitto /mosquitto/data/passwordfile
+        && exec mosquitto -c /tmp/mosquitto.conf
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME is required}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD is required}
     healthcheck:
       test:
         [
           "CMD-SHELL",
           'mosquitto_pub -h localhost -p 1883 -t vem/healthcheck -m ok -u "$${MQTT_USERNAME}" -P "$${MQTT_PASSWORD}"',
         ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  service-api:
+    image: ${SERVICE_API_IMAGE:?SERVICE_API_IMAGE is required}
+    environment:
+      NODE_ENV: production
+      SERVICE_PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vem}
+      MQTT_URL: mqtt://mqtt:1883
+      MQTT_USERNAME: ${MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      PAYMENT_MOCK_ENABLED: ${PAYMENT_MOCK_ENABLED:-false}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?BOOTSTRAP_ADMIN_PASSWORD is required}
+      MACHINE_JWT_SECRET: ${MACHINE_JWT_SECRET:?MACHINE_JWT_SECRET is required}
+      MACHINE_CREDENTIAL_ENCRYPTION_KEY: ${MACHINE_CREDENTIAL_ENCRYPTION_KEY:?MACHINE_CREDENTIAL_ENCRYPTION_KEY is required}
+    ports:
+      - "${SERVICE_API_PORT:-3000}:3000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mqtt: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(async r => { const b = await r.json(); if (!r.ok || b.database !== 'ok' || b.mqtt !== 'connected') process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  admin-ui:
+    image: ${ADMIN_UI_IMAGE:?ADMIN_UI_IMAGE is required}
+    environment:
+      API_URL: ${API_URL:-http://service-api:3000}
+    ports:
+      - "${ADMIN_UI_PORT:-8080}:80"
+    depends_on:
+      service-api: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/"]
       interval: 5s
       timeout: 3s
       retries: 20

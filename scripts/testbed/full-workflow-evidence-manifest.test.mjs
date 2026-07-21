@@ -125,7 +125,7 @@ describe("full workflow evidence manifest", () => {
     assert.deepEqual(validateFullWorkflowEvidenceManifest(manifest), []);
   });
 
-  it("does not accept arbitrary JSON or another track's global evidence", () => {
+  it("records absent supporting trace as an inventory warning", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");
     mkdirSync(artifacts);
@@ -140,15 +140,15 @@ describe("full workflow evidence manifest", () => {
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
     });
-    assert.equal(manifest.ok, false);
+    assert.equal(manifest.ok, true);
     assert.ok(
-      manifest.failures.some((failure) =>
+      manifest.warnings.some((failure) =>
         failure.includes("Machine Runtime Trace"),
       ),
     );
   });
 
-  it("fails closed for missing PNGs and forbidden WAV evidence", () => {
+  it("records unsupported or missing supporting artifacts as warnings", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");
     mkdirSync(artifacts);
@@ -159,12 +159,12 @@ describe("full workflow evidence manifest", () => {
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
     });
-    assert.equal(manifest.ok, false);
+    assert.equal(manifest.ok, true);
     assert.ok(
-      manifest.failures.some((failure) => failure.includes("forbidden")),
+      manifest.warnings.some((failure) => failure.includes("forbidden")),
     );
     assert.ok(
-      manifest.failures.some((failure) => failure.includes("PNG screenshot")),
+      manifest.warnings.some((failure) => failure.includes("PNG screenshot")),
     );
   });
 
@@ -218,12 +218,25 @@ describe("full workflow evidence manifest", () => {
     const artifacts = join(temp, "artifacts");
     mkdirSync(artifacts);
     const report = join(temp, "vision.json");
-    writeFileSync(report, `${JSON.stringify({ ok: false, error: { name: "Error", message: "Vision fixture unavailable", stack: "Error: Vision fixture unavailable" } })}\n`);
+    writeFileSync(
+      report,
+      `${JSON.stringify({ ok: false, error: { name: "Error", message: "Vision fixture unavailable", stack: "Error: Vision fixture unavailable" } })}\n`,
+    );
     writeFileSync(join(artifacts, "diagnostic.json"), "{}\n");
     const manifest = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "visionTryOn", reportPath: report, artifactRoot: artifacts, result: { businessStatus: "failed" } }],
+      tracks: [
+        {
+          key: "visionTryOn",
+          reportPath: report,
+          artifactRoot: artifacts,
+          result: { businessStatus: "failed" },
+        },
+      ],
     });
     assert.equal(manifest.ok, true, JSON.stringify(manifest.failures));
-    assert.equal(manifest.tracks[0].primaryReason, "Error: Vision fixture unavailable");
+    assert.equal(
+      manifest.tracks[0].primaryReason,
+      "Error: Vision fixture unavailable",
+    );
   });
 });

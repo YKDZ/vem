@@ -322,34 +322,6 @@ function serialSessionForOperation(operation, scannerCode) {
   };
 }
 
-function readStrictJsonObjectOption(name) {
-  const raw = readOption(name, { optional: true });
-  if (raw === null) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("not an object");
-    return parsed;
-  } catch {
-    throw new Error(`${name} must be a JSON object`);
-  }
-}
-
-function maintenanceEndpointContextFromOptions() {
-  const maintenanceRelaySession = readStrictJsonObjectOption(
-    "--maintenance-relay-session-json",
-  );
-  const maintenanceEndpointPolicy = readStrictJsonObjectOption(
-    "--maintenance-endpoint-policy-json",
-  );
-  if (maintenanceEndpointPolicy !== null && maintenanceRelaySession === null) {
-    throw new Error(
-      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
-    );
-  }
-  return { maintenanceRelaySession, maintenanceEndpointPolicy };
-}
-
 function assertActiveRuntimeOperation(operation) {
   if (["clean-install", "capture-approved-base"].includes(operation)) {
     throw new Error(
@@ -387,7 +359,6 @@ async function main() {
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
   const serialSession = serialSessionForOperation(operation, scannerCode);
-  const maintenanceEndpointContext = maintenanceEndpointContextFromOptions();
   if (serialSession?.scannerInjection?.operationNonce === null)
     serialSession.scannerInjection.operationNonce = nonce;
   const request = createVmHostAdapterRequest({
@@ -411,7 +382,6 @@ async function main() {
     audioCapture,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
-    ...maintenanceEndpointContext,
     serialSession,
   });
   mkdirSync(dirname(out), { recursive: true });

@@ -237,14 +237,3 @@ export const invalidCurrentDaemonIpcTransactionSnapshots = {
     nextAction: "collect_goods",
   },
 } as const;
-
-export const legacyDaemonIpcTransactionRecoveryCases = [
-  {
-    legacyAction: "submit_payment",
-    currentAction: "wait_payment",
-  },
-  {
-    legacyAction: "collect_goods",
-    currentAction: "dispensing",
-  },
-] as const;

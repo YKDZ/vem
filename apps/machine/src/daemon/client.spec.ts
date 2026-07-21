@@ -569,28 +569,6 @@ describe("DaemonApiClient direct runtime intents", () => {
     );
   });
 
-  it("decodes maintenance status without exposing credential material", async () => {
-    vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce(
-        jsonResponse({
-          state: "handshake_pending",
-          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-          tunnelAddress: "10.91.16.10/32",
-          endpoint: "https://relay.example",
-          handshakeVerified: false,
-          lastHandshakeAt: null,
-          lastError: "first WireGuard handshake has not been observed",
-          updatedAt: "2026-07-10T00:00:00Z",
-        }),
-      );
-    const client = new DaemonApiClient();
-
-    await expect(client.getMaintenanceStatus()).resolves.toMatchObject({
-      state: "handshake_pending",
-      publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-    });
-  });
-
   it("posts customer cancellation with the current order number and validates its terminal snapshot", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       jsonResponse({

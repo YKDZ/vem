@@ -457,6 +457,35 @@ describe("Customer Journey Transition Projector", () => {
     ).toEqual([]);
   });
 
+  it("introduces a category once at product-list entry, not at later product selection", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+    const categoryEntry = {
+      entryId: "category-entry-socks-1",
+      category: "袜子",
+      enteredAt: "2026-07-18T08:16:00.000Z",
+    };
+
+    expect(projector.project({ categoryEntry })).toContainEqual(
+      expect.objectContaining({
+        transitionId: "category:category-entry-socks-1",
+        kind: "category.entered",
+        productCategory: "袜子",
+      }),
+    );
+    expect(projector.project({ categoryEntry })).toEqual([]);
+    expect(
+      projector.project({
+        categoryEntry,
+        selectedProduct: {
+          selectionId: "product-selection-socks-1",
+          productId: "socks-1",
+          category: "袜子",
+          selectedAt: "2026-07-18T08:16:01.000Z",
+        },
+      }),
+    ).not.toContainEqual(expect.objectContaining({ kind: "category.entered" }));
+  });
+
   it("does not replay persistent transaction or product states after 256 unrelated identities", () => {
     const projector = createCustomerJourneyTransitionProjector();
     const persistentTransaction = {

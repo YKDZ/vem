@@ -220,8 +220,8 @@ async fn daemon_reports_vision_disabled_from_the_accepted_profile_without_a_pin_
         "machineCode": "MACHINE-VISION",
         "apiBaseUrl": "http://127.0.0.1:9/api",
         "mqttUrl": "mqtt://127.0.0.1:1883",
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" },
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" },
         "hardwareProfile": {
             "profile": "production",
             "controller": { "required": true, "protocol": "vem-vending-controller" },
@@ -251,8 +251,8 @@ async fn daemon_starts_vision_when_recommendations_are_supported_but_vision_is_n
         "machineCode": "MACHINE-VISION-RECOMMENDATIONS",
         "apiBaseUrl": "http://127.0.0.1:9/api",
         "mqttUrl": "mqtt://127.0.0.1:1883",
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" },
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" },
         "hardwareProfile": {
             "profile": "production",
             "controller": { "required": true, "protocol": "vem-vending-controller" },

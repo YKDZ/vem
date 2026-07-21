@@ -611,97 +611,6 @@ describe("RefundsService.requestPartialRefund", () => {
 });
 
 describe("RefundsService partial refund terminal states", () => {
-  it("manual refund query skips protected payment drill refunds without calling provider", async () => {
-    const db = makeDb();
-    const queryRefund = vi.fn();
-    db.select.mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    ...makeRefundRow({
-                      id: "rfd-drill-001",
-                      refundNo: "DRILL-RFD001",
-                    }),
-                    providerCode: "mock",
-                    providerId: "prov-mock",
-                    paymentNo: "DRILL-PAY001",
-                    providerTradeNo: "DRILL-ORD001",
-                    machineId: "mach-001",
-                    providerConfigId: null,
-                    fulfillmentState: "manual_handling",
-                    isDrill: true,
-                    paymentIsDrill: true,
-                    orderIsDrill: true,
-                  },
-                ]),
-              }),
-            }),
-          }),
-        }),
-      }),
-    });
-
-    const service = makeService({ db, queryRefund });
-
-    await expect(
-      service.queryRefund("rfd-drill-001", "manual"),
-    ).resolves.toEqual({
-      status: "processing",
-      reconciled: false,
-      reason: "protected_payment_drill",
-    });
-    expect(queryRefund).not.toHaveBeenCalled();
-  });
-
-  it("scheduled refund reconciliation skips protected payment drill refunds", async () => {
-    const db = makeDb();
-    const queryRefund = vi.fn();
-    db.select.mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    ...makeRefundRow({
-                      id: "rfd-drill-001",
-                      refundNo: "DRILL-RFD001",
-                    }),
-                    providerCode: "mock",
-                    providerId: "prov-mock",
-                    paymentNo: "DRILL-PAY001",
-                    providerTradeNo: "DRILL-ORD001",
-                    machineId: "mach-001",
-                    providerConfigId: null,
-                    fulfillmentState: "manual_handling",
-                    isDrill: true,
-                    paymentIsDrill: true,
-                    orderIsDrill: true,
-                  },
-                ]),
-              }),
-            }),
-          }),
-        }),
-      }),
-    });
-
-    const service = makeService({ db, queryRefund });
-
-    await service.reconcileProcessingRefunds(
-      new Date("2026-06-27T09:00:00.000Z"),
-    );
-
-    expect(queryRefund).not.toHaveBeenCalled();
-    expect(db.insert).not.toHaveBeenCalled();
-    expect(db.update).not.toHaveBeenCalled();
-  });
-
   it("reconciles a processing partial refund to partial_refunded without full-refunding the order", async () => {
     const db = makeDb();
     const updateSets: Record<string, unknown>[] = [];
@@ -946,9 +855,6 @@ describe("RefundsService.applyProviderRefundWebhook", () => {
       providerRefundNo: "WX-RFD001",
       reason: "admin_refund",
       fulfillmentState: "manual_handling",
-      isDrill: false,
-      paymentIsDrill: false,
-      orderIsDrill: false,
     };
   }
 

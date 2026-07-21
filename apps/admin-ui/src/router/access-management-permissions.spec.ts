@@ -5,19 +5,13 @@ import { routes } from "./routes";
 
 describe("Admin Identity permission gates", () => {
   it("uses shared Permission Code values for identity routes and actions", () => {
-    const maintenanceAccessRoute = routes
+    const routeNames = routes
       .flatMap((route) => route.children ?? [])
-      .find((route) => route.name === "maintenance-access");
-
-    expect(maintenanceAccessRoute?.meta?.requiredPermissions).toEqual([
-      permissionCodeSchema.parse("maintenanceAccess.read"),
-    ]);
+      .map((route) => route.name);
+    expect(routeNames).toContain("system-settings");
 
     expect(permissionCodeSchema.parse("adminUsers.write")).toBe(
       "adminUsers.write",
-    );
-    expect(permissionCodeSchema.parse("maintenanceAccess.write")).toBe(
-      "maintenanceAccess.write",
     );
   });
 });

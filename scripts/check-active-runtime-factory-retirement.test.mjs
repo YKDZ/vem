@@ -14,15 +14,8 @@ import { describe, it } from "node:test";
 
 const activeRuntimeFiles = [
   ".github/workflows/ci.yml",
-  ".github/workflows/vm-runtime-acceptance.yml",
   "package.json",
   "tools/check-ci.mjs",
-  "public/managed-machine-update.md",
-  "public/machine-provisioning-default-api-base-url.md",
-  "public/maintenance-relay-bring-up.md",
-  "public/near-field-customer-speaker-acceptance.md",
-  "public/unified-field-delivery.md",
-  "public/windows-bringup-bundle.md",
 ];
 
 const runtimeEntrypoints = [
@@ -252,21 +245,26 @@ describe("active Windows runtime Factory retirement guard", () => {
       "utf8",
     );
     for (const path of [
-      "scripts/testbed/win10-vem-e2e.mjs",
-      "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
       "scripts/testbed/factory-image-acceptance.mjs",
       "scripts/testbed/factory-maintenance-relay-attestation.mjs",
+      "scripts/windows/prepare-factory-runtime.ps1",
+      "scripts/windows/verify-factory-runtime.ps1",
+      "scripts/windows/verify-progressive-delivery.mjs",
+      "scripts/windows/verify-progressive-delivery.test.mjs",
     ]) {
-      const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const escaped = path.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
       const block = inventory.match(
-        new RegExp(`path: "${escaped}"[\\s\\S]*?\\n  \\},`),
+        new RegExp(`path: \"${escaped}\"[\\s\\S]*?\\n  \\},`),
       )?.[0];
-      assert.ok(block, `missing inventory block for ${path}`);
-      assert.doesNotMatch(block, /runtime acceptance|testbed workflows/);
+      assert.equal(
+        block,
+        undefined,
+        `retired path must not be retained: ${path}`,
+      );
     }
     assert.match(
       inventory,
-      /path: "scripts\/testbed\/installed-runtime-smoke\.mjs"[\s\S]*?runtime acceptance/,
+      /path: "scripts\/testbed\/installed-kiosk-sale-acceptance\.mjs"[\s\S]*?runtime acceptance/,
     );
   });
 
@@ -294,7 +292,7 @@ describe("active Windows runtime Factory retirement guard", () => {
     });
   }
 
-  it("removes retired workflow entrypoints and active runbook inventory", () => {
+  it("removes retired workflow entrypoints", () => {
     for (const path of [
       ".github/workflows/build-factory-iso.yml",
       ".github/workflows/factory-image-acceptance.yml",
@@ -306,21 +304,6 @@ describe("active Windows runtime Factory retirement guard", () => {
       "scripts/windows/vision-release-materialization.psm1",
     ]) {
       assert.equal(existsSync(path), false, `${path} must remain disabled`);
-    }
-    const inventory = readFileSync(
-      "scripts/check-repository-script-inventory.mjs",
-      "utf8",
-    );
-    for (const path of [
-      "public/customer-accessible-kiosk-lockdown.md",
-      "public/production-pilot-sop.md",
-      "public/vision-release-bundle.md",
-    ]) {
-      assert.doesNotMatch(
-        inventory,
-        new RegExp(`path: ${JSON.stringify(path)}`),
-        `${path} must not be an active public runbook`,
-      );
     }
   });
 });

@@ -149,7 +149,7 @@ async fn prepare_runtime_sources(
     extracted_secrets: &[(&str, &str)],
 ) -> Result<(), String> {
     let root = data_dir.parent().unwrap_or(data_dir);
-    let hardware_model = fixture_string(fixture, "hardwareModel", "vem-test-24");
+    let hardware_model = fixture_string(fixture, "hardwareModel", "vem-prod-24");
     let topology = fixture
         .get("hardwareSlotTopology")
         .cloned()

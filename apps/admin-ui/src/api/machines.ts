@@ -7,8 +7,6 @@ import type {
   MachineClaimCodeListResponse,
   MachineClaimCodeSnapshot,
   PageResult,
-  ProductionPilotReadinessCheck,
-  ProductionPilotReadinessDiagnosticContract,
 } from "@vem/shared";
 
 import {
@@ -39,30 +37,17 @@ export type MachineGeoLocation = {
   timezone: string;
 };
 
-export type Machine = AdminMachineResponse & {
-  productionPilotReadiness?: ProductionPilotReadinessDiagnosticContract | null;
-};
+export type Machine = AdminMachineResponse;
 
 export type MachineCommand = AdminMachineCommandResponse;
 
 export type MachineSlot = AdminMachineSlotResponse;
 export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
 export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
-export type {
-  MachineClaimCodeSnapshot,
-  PageResult,
-  ProductionPilotReadinessCheck,
-};
+export type { MachineClaimCodeSnapshot, PageResult };
 
 function toMachine(response: AdminMachineResponse): Machine {
-  const { productionPilotReadiness, ...machine } = response;
-  if (productionPilotReadiness === undefined) {
-    return machine;
-  }
-  return {
-    ...machine,
-    productionPilotReadiness,
-  };
+  return response;
 }
 
 export async function listMachines(

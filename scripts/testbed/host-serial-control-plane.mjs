@@ -20,6 +20,7 @@ import {
   writePaymentMockCreateGateState,
 } from "./mock-payment-create-gate.mjs";
 import {
+  parseLibvirtUsbSerialMappings,
   qemuUsbSerialSessionPaths,
   readRawSerialJournal,
   stopQemuScannerBindingProbe,
@@ -113,6 +114,10 @@ export function parseHostSerialControlPlaneArgs(args) {
 
 export function buildMqttTopic(machineCode) {
   return `vem/machines/${required(machineCode, "machineCode")}/commands/dispense`;
+}
+
+function buildMachineMqttTopic(machineCode) {
+  return `vem/machines/${required(machineCode, "machineCode")}/#`;
 }
 
 function normalizeSerialScenario(value) {
@@ -540,8 +545,11 @@ function writeProtectedTempFile(root, prefix, contents) {
   return path;
 }
 
-function spawnMqttCapture({ machineCode }) {
-  const topic = buildMqttTopic(machineCode);
+function spawnMqttCapture({
+  machineCode,
+  topic = buildMqttTopic(machineCode),
+  limit = 4,
+}) {
   const child = spawn(
     "docker",
     [
@@ -549,7 +557,7 @@ function spawnMqttCapture({ machineCode }) {
       MOSQUITTO_CONTAINER,
       "sh",
       "-lc",
-      `mosquitto_sub -h 127.0.0.1 -p 1883 -t '${topic}' -C 4 -W 180`,
+      `mosquitto_sub -h 127.0.0.1 -p 1883 -t '${topic}' -C ${limit} -W 180 -v`,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -561,10 +569,18 @@ function spawnMqttCapture({ machineCode }) {
     for (const line of String(chunk).split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+      const firstSpace = trimmed.indexOf(" ");
+      const observedTopic =
+        firstSpace > 0 ? trimmed.slice(0, firstSpace) : topic;
+      const payloadText =
+        firstSpace > 0 ? trimmed.slice(firstSpace + 1).trim() : trimmed;
       try {
-        messages.push({ topic, payload: JSON.parse(trimmed) });
+        messages.push({
+          topic: observedTopic,
+          payload: JSON.parse(payloadText),
+        });
       } catch {
-        messages.push({ topic, payload: trimmed });
+        messages.push({ topic: observedTopic, payload: payloadText });
       }
     }
   });
@@ -739,17 +755,34 @@ async function waitForSessionFrame(server, input) {
 
 async function stopScannerBindingProbe(server, input) {
   const session = requireSession(server, input.sessionId);
-  return {
-    sessionId: session.id,
-    scannerBindingProbe: await stopQemuScannerBindingProbe({
-      stateRoot: required(
-        process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
-        "VEM_VM_HOST_ADAPTER_STATE_ROOT",
-      ),
-      serialSessionId: session.binding.serialSessionId,
-      reason: "daemon_binding_confirmed",
-    }),
-  };
+  const root = required(
+    process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+    "VEM_VM_HOST_ADAPTER_STATE_ROOT",
+  );
+  const serialSessionId = session.binding.serialSessionId;
+  const paths = qemuUsbSerialSessionPaths(root, serialSessionId);
+  try {
+    return {
+      sessionId: session.id,
+      scannerBindingProbe: await stopQemuScannerBindingProbe({
+        stateRoot: root,
+        serialSessionId,
+        reason: "daemon_binding_confirmed",
+      }),
+    };
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
+    return {
+      sessionId: session.id,
+      scannerBindingProbe: {
+        ...state.scannerBindingProbe,
+        stoppedAt: new Date().toISOString(),
+        stopReason: "daemon_binding_confirmed",
+        alreadyExited: true,
+      },
+    };
+  }
 }
 
 function releaseSessionF2(server, input) {
@@ -831,12 +864,138 @@ function boundedSessionEvidence(server, input) {
       ...session.mqttCapture.snapshot(),
       messages: session.mqttCapture.snapshot().messages.slice(-4),
     },
+    machineMqtt: {
+      ...session.machineMqttCapture.snapshot(),
+      messages: session.machineMqttCapture.snapshot().messages.slice(-40),
+    },
+    deviceLifecycle: session.deviceLifecycle ?? [],
     simulatorLog,
     references: {
       journal: paths.journalPath,
       simulatorLog: paths.logPath,
     },
   };
+}
+
+function normalizeLifecycleRole(value) {
+  const role = required(value, "role");
+  if (role === "lower_controller") return "lower-controller";
+  if (role === "lower-controller" || role === "scanner") return role;
+  throw new Error("role must be lower-controller or scanner");
+}
+
+function normalizeLifecycleOperation(value) {
+  const operation = required(value, "operation");
+  if (operation !== "disconnect" && operation !== "reconnect") {
+    throw new Error("operation must be disconnect or reconnect");
+  }
+  return operation;
+}
+
+function serialDeviceXmlForRole(domainXml, role) {
+  const alias = `serial-${normalizeLifecycleRole(role)}`;
+  const match = domainXml.match(
+    new RegExp(
+      `<serial\\b[\\s\\S]*?<alias\\s+name="${alias}"\\s*/>[\\s\\S]*?</serial>`,
+    ),
+  );
+  if (!match) throw new Error(`live libvirt domain XML omitted ${alias}`);
+  return match[0];
+}
+
+function runVirshDeviceLifecycle(server, { role, operation, xml }) {
+  const paths = qemuUsbSerialSessionPaths(
+    server.options.stateRoot,
+    `host-control-plane-device-${role}-${operation}-${randomUUID()}`,
+  );
+  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+  const xmlPath = join(paths.directory, `${role}-${operation}.xml`);
+  writeFileSync(xmlPath, `${xml}\n`, { mode: 0o600 });
+  const command =
+    operation === "disconnect" ? "detach-device" : "attach-device";
+  const result = spawnSync(
+    "virsh",
+    [
+      "--connect",
+      server.options.libvirtUri,
+      command,
+      server.options.domainName,
+      xmlPath,
+      "--live",
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `virsh ${command} ${role} failed: ${(result.stderr || result.stdout || "").trim() || result.error?.message || `exit ${result.status ?? 1}`}`,
+    );
+  }
+  return {
+    command,
+    xmlPath,
+    stdout: String(result.stdout ?? "")
+      .trim()
+      .slice(-4 * 1024),
+    stderr: String(result.stderr ?? "")
+      .trim()
+      .slice(-4 * 1024),
+  };
+}
+
+function dumpDomainXml(server) {
+  const result = spawnSync(
+    "virsh",
+    [
+      "--connect",
+      server.options.libvirtUri,
+      "dumpxml",
+      server.options.domainName,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `virsh dumpxml failed: ${(result.stderr || result.stdout || "").trim() || result.error?.message || `exit ${result.status ?? 1}`}`,
+    );
+  }
+  return String(result.stdout ?? "");
+}
+
+function serialDeviceLifecycle(server, input) {
+  const session = requireSession(server, input.sessionId);
+  const role = normalizeLifecycleRole(input.role);
+  const operation = normalizeLifecycleOperation(input.operation);
+  const domainXml = dumpDomainXml(server);
+  const xml =
+    operation === "reconnect" && session.detachedDeviceXml?.[role]
+      ? session.detachedDeviceXml[role]
+      : serialDeviceXmlForRole(domainXml, role);
+  const before = parseLibvirtUsbSerialMappings(domainXml).filter(
+    (mapping) => mapping.role === role,
+  );
+  const virsh = runVirshDeviceLifecycle(server, { role, operation, xml });
+  if (operation === "disconnect") {
+    session.detachedDeviceXml = {
+      ...(session.detachedDeviceXml ?? {}),
+      [role]: xml,
+    };
+  }
+  const afterXml = dumpDomainXml(server);
+  const after = parseLibvirtUsbSerialMappings(afterXml).filter(
+    (mapping) => mapping.role === role,
+  );
+  const lifecycle = {
+    role,
+    operation,
+    libvirtUri: server.options.libvirtUri,
+    domainName: server.options.domainName,
+    beforeMappingCount: before.length,
+    afterMappingCount: after.length,
+    evidence: virsh,
+    capturedAt: new Date().toISOString(),
+  };
+  session.deviceLifecycle.push(lifecycle);
+  return { sessionId: session.id, lifecycle };
 }
 
 function audioCaptureProductionBinding(server, session) {
@@ -1103,6 +1262,31 @@ async function abortSession(server, input) {
     survivingProcessCount: 0,
     survivingSocketCount: 0,
   };
+  for (const [role, xml] of Object.entries(session.detachedDeviceXml ?? {})) {
+    try {
+      const evidence = runVirshDeviceLifecycle(server, {
+        role,
+        operation: "reconnect",
+        xml,
+      });
+      session.deviceLifecycle.push({
+        role,
+        operation: "reconnect",
+        libvirtUri: server.options.libvirtUri,
+        domainName: server.options.domainName,
+        beforeMappingCount: null,
+        afterMappingCount: null,
+        evidence,
+        capturedAt: new Date().toISOString(),
+        cleanup: true,
+      });
+      delete session.detachedDeviceXml[role];
+    } catch (error) {
+      cleanup.errors.push(
+        `restore ${role}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   if (existsSync(paths.statePath)) {
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
     for (const [label, pid] of [
@@ -1143,6 +1327,7 @@ async function abortSession(server, input) {
     });
   }
   session.mqttCapture.stop();
+  session.machineMqttCapture.stop();
   if (
     cleanup.errors.length ||
     cleanup.survivingProcessCount ||
@@ -1217,6 +1402,11 @@ async function createSerialSession(server, input) {
   const { stdout } = await runJsonCommand(command);
   const report = parseJsonLine(stdout, outPath);
   const mqttCapture = spawnMqttCapture({ machineCode });
+  const machineMqttCapture = spawnMqttCapture({
+    machineCode,
+    topic: buildMachineMqttTopic(machineCode),
+    limit: 40,
+  });
   const session = {
     id: sessionId,
     dir,
@@ -1234,6 +1424,9 @@ async function createSerialSession(server, input) {
       deviceMappingDigest: report.serialSession.deviceMappingDigest,
     },
     mqttCapture,
+    machineMqttCapture,
+    deviceLifecycle: [],
+    detachedDeviceXml: {},
     injectReport: null,
     collectReport: null,
     stopReports: [],
@@ -1391,6 +1584,7 @@ async function stopSerialSession(server, input) {
   session.stopReports.push(report);
   if (input.idempotencyCheck !== true) {
     session.mqttCapture.stop();
+    session.machineMqttCapture.stop();
   }
   return {
     sessionId: session.id,
@@ -1523,7 +1717,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         return;
       }
       const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|abort|collect|stop|stop-scanner-probe))?$/,
+        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|device-lifecycle|abort|collect|stop|stop-scanner-probe))?$/,
       );
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
@@ -1633,6 +1827,14 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
           ok: true,
           sessionId,
           ...boundedSessionEvidence(serverState, body),
+        });
+        return;
+      }
+      if (request.method === "POST" && action === "device-lifecycle") {
+        jsonResponse(response, 200, {
+          ok: true,
+          sessionId,
+          ...serialDeviceLifecycle(serverState, body),
         });
         return;
       }

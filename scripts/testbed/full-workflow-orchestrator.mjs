@@ -5,9 +5,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  BUSINESS_CHECK_REGISTRY,
+  selectBusinessChecks,
+} from "./business-check-registry.mjs";
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { buildFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
-import { buildFullWorkflowAggregate } from "./full-workflow-validator.mjs";
+import {
+  buildFullWorkflowAggregate,
+  validateBusinessCheckReport,
+} from "./full-workflow-validator.mjs";
 import {
   activateVisibleSelector,
   CdpClient,
@@ -23,18 +30,6 @@ import {
   recoverTrackHandoff,
 } from "./track-handoff-recovery.mjs";
 
-const PASSED_EVIDENCE = Object.freeze({
-  trace: true,
-  logs: true,
-  screenshot: true,
-});
-const FAILED_EVIDENCE = Object.freeze({
-  primaryReason: true,
-  diagnostic: true,
-  trace: false,
-  logs: false,
-  screenshot: false,
-});
 const PAYMENT_CANCEL_SELECTOR = '[data-test="payment-cancel"]:not(:disabled)';
 const PAYMENT_RETURN_WAIT_MS = 30_000;
 const CONTROL_PLANE_TIMEOUT_MS = 10_000;
@@ -43,94 +38,8 @@ const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 const STOCK_READY_TIMEOUT_MS = 30_000;
 
-export const FULL_WORKFLOW_TRACK_DESCRIPTORS = Object.freeze(
-  [
-    [
-      "fast",
-      false,
-      true,
-      "fast-route-stress-sale.json",
-      "fast-route-stress-sale-artifacts",
-      "node",
-      "scripts/testbed/fast-route-stress-sale.mjs",
-      [],
-    ],
-    [
-      "scanner",
-      true,
-      true,
-      "scanner-payment-code.json",
-      "scanner-payment-code-artifacts",
-      "node",
-      "scripts/testbed/scanner-payment-code-guest-full.mjs",
-      ["--mode", "full"],
-    ],
-    [
-      "visionTryOn",
-      true,
-      false,
-      "vision-try-on-acceptance.json",
-      "vision-try-on-acceptance-artifacts",
-      "powershell",
-      "scripts/testbed/run-full-vision-try-on-track.ps1",
-      [],
-    ],
-    [
-      "delayedPickup",
-      true,
-      true,
-      "delayed-pickup-native-audio.json",
-      "delayed-pickup-native-audio-artifacts",
-      "node",
-      "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
-      ["--mode", "full"],
-    ],
-    [
-      "ipcRecovery",
-      true,
-      true,
-      "installed-ipc-recovery.json",
-      "ipc-recovery-artifacts",
-      "node",
-      "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
-      ["--mode", "full"],
-    ],
-    [
-      "fulfillmentFailure",
-      true,
-      true,
-      "serial-fulfillment-error.json",
-      "serial-fulfillment-error-artifacts",
-      "node",
-      "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
-      ["--mode", "full"],
-    ],
-  ].map(
-    ([
-      key,
-      fullOnly,
-      transactionProducing,
-      reportFileName,
-      artifactDirectory,
-      kind,
-      script,
-      args,
-    ]) =>
-      Object.freeze({
-        key,
-        fullOnly,
-        transactionProducing,
-        fixtureKey: key,
-        reportFileName,
-        artifactDirectory,
-        command: Object.freeze({ kind, script, args }),
-        evidence: Object.freeze({
-          passed: PASSED_EVIDENCE,
-          failed: FAILED_EVIDENCE,
-        }),
-      }),
-  ),
-);
+// This is the one canonical registry for business acceptance.
+export const FULL_WORKFLOW_TRACK_DESCRIPTORS = BUSINESS_CHECK_REGISTRY;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -145,12 +54,28 @@ function option(args, name) {
   return required(args[index + 1], name);
 }
 
+function repeatableOption(args, name) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== `--${name}`) continue;
+    values.push(required(args[index + 1], name));
+    index += 1;
+  }
+  return values;
+}
+
 function parseArgs(args) {
   const mode = option(args, "mode");
   if (!["fast", "full"].includes(mode))
     throw new Error("--mode must be fast or full");
+  const commit = args.includes("--commit") ? option(args, "commit") : null;
+  if (commit && !/^[0-9a-f]{40}$/i.test(commit)) {
+    throw new Error("--commit must be a full 40-character Git SHA");
+  }
   return {
     mode,
+    focus: repeatableOption(args, "focus"),
+    commit: commit?.toLowerCase() ?? null,
     guestInputPath: option(args, "guest-input"),
     handoffPath: option(args, "handoff"),
     outPath: option(args, "out"),
@@ -197,8 +122,9 @@ function jsonIfPresent(path) {
   }
 }
 
-function workflowIdentity(guestInputPath) {
-  return jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
+function workflowIdentity(guestInputPath, commit = null) {
+  const identity = jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
+  return commit ? { ...identity, githubSha: commit } : identity;
 }
 
 function writeJson(path, value) {
@@ -224,13 +150,14 @@ export function refreshDaemonReadyHandoff({
 }
 
 function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
-  if (track.command.kind === "powershell") {
+  if (!track.runner) return null;
+  if (track.runner.kind === "powershell") {
     return [
       "pwsh",
       "-NoProfile",
       "-NonInteractive",
       "-File",
-      track.command.script,
+      track.runner.script,
       "-GuestInputPath",
       guestInputPath,
       "-HandoffPath",
@@ -243,8 +170,8 @@ function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
   }
   return [
     process.execPath,
-    track.command.script,
-    ...(track.command.args.length ? track.command.args : ["--mode", mode]),
+    track.runner.script,
+    ...(track.runner.args.length ? track.runner.args : ["--mode", mode]),
     "--guest-input",
     guestInputPath,
     "--handoff",
@@ -258,35 +185,26 @@ function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
 
 export function buildWorkflowTrackCommands({
   mode,
+  focus = [],
   guestInputPath,
   handoffPath,
   outPath,
 }) {
   const root = dirname(resolve(outPath));
-  const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
-    (track) => mode === "full" || !track.fullOnly,
-  ).map((descriptor) => {
+  const tracks = selectBusinessChecks({ mode, focus }).map((descriptor) => {
+    const runner = descriptor.runner;
     const track = {
       ...descriptor,
-      reportPath: join(root, descriptor.reportFileName),
-      artifactRoot: join(root, descriptor.artifactDirectory),
+      key: descriptor.name,
+      reportPath: runner ? join(root, runner.reportFileName) : null,
+      artifactRoot: runner ? join(root, runner.artifactDirectory) : null,
     };
     return {
       ...track,
       command: commandForTrack(track, { mode, guestInputPath, handoffPath }),
     };
   });
-  const reportPathFor = (key) =>
-    tracks.find((track) => track.key === key)?.reportPath ?? null;
-  return {
-    fastReportPath: reportPathFor("fast"),
-    ipcRecoveryReportPath: reportPathFor("ipcRecovery"),
-    fulfillmentFailureReportPath: reportPathFor("fulfillmentFailure"),
-    scannerReportPath: reportPathFor("scanner"),
-    delayedPickupReportPath: reportPathFor("delayedPickup"),
-    visionTryOnReportPath: reportPathFor("visionTryOn"),
-    tracks,
-  };
+  return { tracks };
 }
 
 function shortError(result) {
@@ -308,8 +226,17 @@ export async function runSerialTrackLifecycle({
     const startedAt = now().toISOString();
     let child;
     try {
-      await beforeTrack(track);
-      child = await executeTrack(track);
+      if (!track.runner) {
+        child = {
+          status: "blocked",
+          exitCode: null,
+          stderr: track.blockedReason,
+          report: null,
+        };
+      } else {
+        await beforeTrack(track);
+        child = await executeTrack(track);
+      }
     } catch (error) {
       child = {
         status: "failed",
@@ -329,7 +256,13 @@ export async function runSerialTrackLifecycle({
       };
     }
     const finishedAt = now().toISOString();
-    const childFailed = child.status !== "passed" || report?.ok !== true;
+    const validation = validateBusinessCheckReport(
+      track,
+      report,
+      track.reportPath,
+    );
+    const childFailed =
+      child.status !== "passed" || validation.status !== "passed";
     const terminalFailed = terminal?.ok !== true;
     const recoveryStartedAt = now().toISOString();
     let recovery;
@@ -352,6 +285,7 @@ export async function runSerialTrackLifecycle({
       businessStatus: childFailed || terminalFailed ? "failed" : "passed",
       exitCode: child.exitCode,
       reportOk: report?.ok ?? null,
+      validator: validation,
       startedAt,
       finishedAt,
       durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
@@ -361,7 +295,9 @@ export async function runSerialTrackLifecycle({
           ? "terminal-state"
           : null,
       error: childFailed
-        ? shortError(child)
+        ? child.stderr?.startsWith("track preflight failed:")
+          ? shortError(child)
+          : (validation.reason ?? shortError(child))
         : terminalFailed
           ? (terminal.reason ?? "terminal facts are incomplete")
           : null,
@@ -892,13 +828,8 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   writeJson(evidenceManifestPath, evidenceManifest);
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,
-    fastReportPath: plan.fastReportPath,
-    ipcRecoveryReportPath: plan.ipcRecoveryReportPath,
-    fulfillmentFailureReportPath: plan.fulfillmentFailureReportPath,
-    scannerReportPath: plan.scannerReportPath,
-    delayedPickupReportPath: plan.delayedPickupReportPath,
-    visionTryOnReportPath: plan.visionTryOnReportPath,
-    identity: workflowIdentity(options.guestInputPath),
+    selectedDescriptors: plan.tracks,
+    identity: workflowIdentity(options.guestInputPath, options.commit),
     executedTracks,
     evidenceManifestPath,
   });

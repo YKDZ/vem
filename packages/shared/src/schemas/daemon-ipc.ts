@@ -521,19 +521,6 @@ export type DaemonIpcCheckoutFlowAction = z.infer<
   typeof daemonIpcCheckoutFlowActionSchema
 >;
 
-export function normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery(
-  action: unknown,
-): DaemonIpcCheckoutFlowAction | null {
-  if (action === "submit_payment") {
-    return "wait_payment";
-  }
-  if (action === "collect_goods") {
-    return "dispensing";
-  }
-  const current = daemonIpcCheckoutFlowActionSchema.safeParse(action);
-  return current.success ? current.data : null;
-}
-
 export const daemonIpcMachinePaymentProviderSchema = z.enum([
   "mock",
   "wechat_pay",

@@ -30,8 +30,6 @@ import {
   createInventorySchema,
   createProductVariantSchema,
   createProductSchema,
-  createProtectedFulfillmentDrillSchema,
-  createProtectedPaymentDrillSchema,
   createRoleSchema,
   dashboardSalesTrendResponseSchema,
   dashboardSummarySchema,
@@ -104,10 +102,6 @@ import {
   updatePaymentProviderSchema,
   paymentReconciliationAttemptQuerySchema,
   publishMachinePlanogramVersionSchema,
-  protectedFulfillmentDrillRecoveryActionSchema,
-  protectedFulfillmentDrillScenarioSchema,
-  protectedPaymentDrillRecoveryActionSchema,
-  protectedPaymentDrillScenarioSchema,
   roleListQuerySchema,
   roleStatuses,
   rotateMachineCredentialsResponseSchema,
@@ -3461,121 +3455,6 @@ describe("shared API contract", () => {
         trigger: "machine_status_poll",
       });
       expect(result.trigger).toBe("machine_status_poll");
-    });
-
-    it("parses protected payment drill contracts and requires operator reasons", () => {
-      expect(
-        protectedPaymentDrillScenarioSchema.parse("payment_code_unknown"),
-      ).toBe("payment_code_unknown");
-      expect(
-        createProtectedPaymentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "qr_reconcile_failed",
-          reason: "pre-launch payment recovery rehearsal",
-        }),
-      ).toEqual({
-        machineId: "550e8400-e29b-41d4-a716-446655440000",
-        scenario: "qr_reconcile_failed",
-        reason: "pre-launch payment recovery rehearsal",
-      });
-      expect(() =>
-        createProtectedPaymentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "qr_reconcile_failed",
-          reason: " ",
-        }),
-      ).toThrow();
-      expect(() =>
-        createProtectedPaymentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "qr_reconcile_failed",
-          reason: "pre-launch payment recovery rehearsal",
-          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
-        }),
-      ).toThrow();
-      expect(() =>
-        protectedPaymentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "",
-        }),
-      ).toThrow();
-      expect(() =>
-        protectedPaymentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "operator rehearsed refund recovery",
-          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
-        }),
-      ).toThrow();
-      expect(() =>
-        protectedPaymentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "operator rehearsed refund recovery",
-          extra: "must be rejected",
-        }),
-      ).toThrow();
-    });
-
-    it("parses protected fulfillment drill contracts and rejects target orders", () => {
-      expect(
-        protectedFulfillmentDrillScenarioSchema.parse(
-          "unknown_dispense_result",
-        ),
-      ).toBe("unknown_dispense_result");
-      expect(
-        createProtectedFulfillmentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "dispense_failed",
-          reason: "pre-launch fulfillment recovery rehearsal",
-        }),
-      ).toEqual({
-        machineId: "550e8400-e29b-41d4-a716-446655440000",
-        scenario: "dispense_failed",
-        reason: "pre-launch fulfillment recovery rehearsal",
-      });
-      expect(() =>
-        createProtectedFulfillmentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "dispense_failed",
-          reason: " ",
-        }),
-      ).toThrow();
-      expect(() =>
-        createProtectedFulfillmentDrillSchema.parse({
-          machineId: "550e8400-e29b-41d4-a716-446655440000",
-          scenario: "dispense_failed",
-          reason: "pre-launch fulfillment recovery rehearsal",
-          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
-        }),
-      ).toThrow();
-      expect(
-        protectedFulfillmentDrillRecoveryActionSchema.parse({
-          action: "confirm_not_dispensed",
-          reason: "operator confirmed the drill item did not dispense",
-        }),
-      ).toEqual({
-        action: "confirm_not_dispensed",
-        reason: "operator confirmed the drill item did not dispense",
-      });
-      expect(() =>
-        protectedFulfillmentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "",
-        }),
-      ).toThrow();
-      expect(() =>
-        protectedFulfillmentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "operator rehearsed refund recovery",
-          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
-        }),
-      ).toThrow();
-      expect(() =>
-        protectedFulfillmentDrillRecoveryActionSchema.parse({
-          action: "request_refund",
-          reason: "operator rehearsed refund recovery",
-          extra: "must be rejected",
-        }),
-      ).toThrow();
     });
   });
 });

@@ -1,5 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][ValidateSet("fast", "full", "clear_cache")][string]$Mode,
+  [string]$Commit,
+  [string[]]$Focus = @(),
   [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json"
 )
 
@@ -401,6 +403,23 @@ Require-Path $GuestInputPath
 $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
 Write-TestbedPhase "bootstrap"
+$handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
+$claim = $null
+$commissioningSerialSession = $null
+if ($Mode -eq "fast") {
+  Require-Path $handoffPath
+  $existingHandoff = Get-Content -Raw -LiteralPath $handoffPath -Encoding UTF8 | ConvertFrom-Json
+  if ($existingHandoff.schemaVersion -ne "vem-installed-runtime-handoff/v1" -or
+    $existingHandoff.claim.status -ne "provisioned" -or
+    $existingHandoff.claim.machineCode -ne $guestInput.machineCode) {
+    throw "warm fast run requires the existing provisioned runtime handoff"
+  }
+  $claim = $existingHandoff.claim
+  $commissioningSerialSession = $existingHandoff.commissioningSerialSession
+  if ($null -eq $commissioningSerialSession) { throw "warm fast run requires the existing commissioning serial session" }
+  Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
+  Write-TestbedPhase "warm-baseline-recovery"
+}
 
 if ($Mode -eq "full") {
   Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
@@ -455,6 +474,7 @@ Require-Path $pnpmLockPath
 $pnpmLockDigest = (Get-FileHash -LiteralPath $pnpmLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $pnpmVirtualStorePath = Join-Path $env:PNPM_VIRTUAL_STORE_ROOT $pnpmLockDigest
 $pnpmFetchCompletePath = Join-Path $pnpmVirtualStorePath ".fetch-complete"
+$pnpmWorkspaceMarker = Join-Path $repoRoot "node_modules\.vem-lock-hash"
 Write-TestbedPhase "dependencies"
 & $pnpm config set store-dir $env:PNPM_STORE_PATH --location global
 if ($LASTEXITCODE -ne 0) { throw "pnpm store configuration failed" }
@@ -465,10 +485,14 @@ if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { t
 if (-not (Test-Path -LiteralPath $pnpmFetchCompletePath -PathType Leaf)) {
   & $pnpm fetch --frozen-lockfile --trust-lockfile
   if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
-  New-Item -ItemType File -Force -Path $pnpmFetchCompletePath | Out-Null
+  Set-Content -LiteralPath $pnpmFetchCompletePath -Value $pnpmLockDigest -Encoding ascii
 }
-& $pnpm install --frozen-lockfile --offline --trust-lockfile
-if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
+  (Get-Content -Raw -LiteralPath $pnpmWorkspaceMarker).Trim() -ne $pnpmLockDigest) {
+  & $pnpm install --frozen-lockfile --offline --trust-lockfile
+  if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+  Set-Content -LiteralPath $pnpmWorkspaceMarker -Value $pnpmLockDigest -Encoding ascii
+}
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
 Write-TestbedPhase "machine-build"
@@ -506,25 +530,35 @@ if (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) {
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
-$guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
+if ($Mode -eq "full") {
+  $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
+}
 Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
 $daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
 $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
-Write-TestbedPhase "claim-runtime"
-$claim = Invoke-Claim $guestInput
-if (-not [bool]$claim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon restart" }
-Write-TestbedPhase "restart-claimed-runtime"
-$daemonProcess | Stop-Process -Force
-if (-not $daemonProcess.WaitForExit(5000)) { throw "pre-claim daemon did not stop for the requested restart" }
-Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
-$daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
+if ($Mode -eq "full") {
+  Write-TestbedPhase "claim-runtime"
+  $claim = Invoke-Claim $guestInput
+  if (-not [bool]$claim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon restart" }
+  Write-TestbedPhase "restart-claimed-runtime"
+  $daemonProcess | Stop-Process -Force
+  if (-not $daemonProcess.WaitForExit(5000)) { throw "pre-claim daemon did not stop for the requested restart" }
+  Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
+  $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
+} else {
+  Write-TestbedPhase "restart-warm-runtime"
+}
 $runtimeReady = Wait-RuntimeReady
-Write-TestbedPhase "start-simulated-hardware"
-$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
+if ($Mode -eq "full") {
+  Write-TestbedPhase "start-simulated-hardware"
+  $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
+}
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
-Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+if ($Mode -eq "full") {
+  Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+}
 Write-TestbedPhase "wait-bound-runtime-ready"
 $runtimeReady = Wait-RuntimeReady
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
@@ -556,7 +590,6 @@ if ($observedInteractiveUser -ine $expectedInteractiveUser) {
 }
 $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
 $runtimeReady = Wait-RuntimeReady
-$handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
 [string]$ipcRecoveryOutPath = Join-Path $handoffRoot "installed-ipc-recovery.json"
@@ -620,7 +653,12 @@ $workflowFailure = $null
 $bundleFailure = $null
 try {
   Write-TestbedPhase "acceptance-tracks"
-  node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
+  $focusArguments = @()
+  foreach ($name in $Focus) {
+    if ([string]::IsNullOrWhiteSpace($name)) { throw "--focus requires a business check set name" }
+    $focusArguments += @("--focus", $name)
+  }
+  node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --commit $Commit @focusArguments --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
   if ($LASTEXITCODE -ne 0) { $workflowFailure = "local testbed workflow aggregate failed" }
 } catch {
   $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"

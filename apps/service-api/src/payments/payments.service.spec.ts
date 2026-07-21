@@ -208,7 +208,7 @@ describe("PaymentsService", () => {
   });
 
   describe("listRefunds", () => {
-    it("projects drill markers in the admin refund list", async () => {
+    it("projects the canonical admin refund list fields", async () => {
       const db = makeDb();
       let selectedFields: Record<string, unknown> | undefined;
 
@@ -251,9 +251,8 @@ describe("PaymentsService", () => {
 
       expect(selectedFields).toEqual(
         expect.objectContaining({
-          isDrill: expect.anything(),
-          isTest: expect.anything(),
-          scenario: expect.anything(),
+          id: expect.anything(),
+          refundNo: expect.anything(),
         }),
       );
     });
@@ -361,7 +360,7 @@ describe("PaymentsService", () => {
   });
 
   describe("listPayments", () => {
-    it("projects drill markers in the admin payment list", async () => {
+    it("projects the canonical admin payment list fields", async () => {
       const db = makeDb();
       let selectedFields: Record<string, unknown> | undefined;
 
@@ -400,9 +399,8 @@ describe("PaymentsService", () => {
 
       expect(selectedFields).toEqual(
         expect.objectContaining({
-          isDrill: expect.anything(),
-          isTest: expect.anything(),
-          scenario: expect.anything(),
+          id: expect.anything(),
+          paymentNo: expect.anything(),
         }),
       );
     });
@@ -703,49 +701,6 @@ describe("PaymentsService", () => {
   });
 
   describe("reconcilePendingPayments", () => {
-    it("skips drill payments without calling the provider", async () => {
-      const queryPayment = vi.fn();
-      const provider = { queryPayment };
-
-      const db = makeDb();
-      db.select.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: "pay-drill-001",
-                    paymentNo: "DRILL-PAY001",
-                    providerId: "prov-001",
-                    providerCode: "wechat_pay",
-                    providerTradeNo: "DRILL-ORD001",
-                    orderId: "ord-drill-001",
-                    machineId: "mach-001",
-                    providerConfigId: null,
-                    isDrill: true,
-                  },
-                ]),
-              }),
-            }),
-          }),
-        }),
-      });
-
-      const service = makeService({
-        db,
-        registry: {
-          has: vi.fn().mockReturnValue(true),
-          get: vi.fn().mockReturnValue(provider),
-        } as unknown as PaymentProviderRegistry,
-      });
-
-      const { reconciled } = await service.reconcilePendingPayments();
-
-      expect(reconciled).toBe(0);
-      expect(queryPayment).not.toHaveBeenCalled();
-    });
-
     it("leaves payment-code reconciliation to the durable attempt worker", async () => {
       const queryPayment = vi.fn();
       const provider = { queryPayment };
@@ -766,7 +721,6 @@ describe("PaymentsService", () => {
                     orderId: "ord-code-001",
                     machineId: "mach-001",
                     providerConfigId: null,
-                    isDrill: false,
                   },
                 ]),
               }),
@@ -943,54 +897,6 @@ describe("PaymentsService", () => {
   });
 
   describe("reconcilePendingPaymentOnRead", () => {
-    it("skips protected payment drill payments without calling the provider", async () => {
-      const queryPayment = vi.fn();
-      const provider = { queryPayment };
-      const db = makeDb();
-
-      db.select.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: "pay-drill-001",
-                    paymentNo: "DRILL-PAY001",
-                    status: "processing",
-                    providerId: "prov-001",
-                    providerCode: "wechat_pay",
-                    providerTradeNo: "DRILL-ORD001",
-                    orderId: "ord-drill-001",
-                    machineId: "mach-001",
-                    providerConfigId: null,
-                    isDrill: true,
-                    orderIsDrill: true,
-                  },
-                ]),
-              }),
-            }),
-          }),
-        }),
-      });
-      const service = makeService({
-        db,
-        registry: {
-          has: vi.fn().mockReturnValue(true),
-          get: vi.fn().mockReturnValue(provider),
-        } as unknown as PaymentProviderRegistry,
-      });
-
-      await expect(
-        service.reconcilePendingPaymentOnRead("pay-drill-001"),
-      ).resolves.toEqual({
-        status: "processing",
-        reconciled: false,
-        reason: "protected_payment_drill",
-      });
-      expect(queryPayment).not.toHaveBeenCalled();
-    });
-
     it("does not query a payment-code parent payment on read", async () => {
       const queryPayment = vi.fn();
       const provider = { queryPayment };
@@ -1012,8 +918,6 @@ describe("PaymentsService", () => {
                     orderId: "ord-code-001",
                     machineId: "mach-001",
                     providerConfigId: null,
-                    isDrill: false,
-                    orderIsDrill: false,
                   },
                 ]),
               }),
@@ -1054,8 +958,6 @@ describe("PaymentsService", () => {
         orderId?: string;
         machineId?: string;
         providerConfigId?: string | null;
-        isDrill?: boolean;
-        orderIsDrill?: boolean;
       },
     ) {
       db.select.mockReturnValueOnce({
@@ -1075,8 +977,6 @@ describe("PaymentsService", () => {
                     orderId: "ord-001",
                     machineId: "mach-001",
                     providerConfigId: null,
-                    isDrill: false,
-                    orderIsDrill: false,
                     ...payment,
                   },
                 ]),
@@ -1222,8 +1122,6 @@ describe("PaymentsService", () => {
                       orderId: "ord-close-001",
                       orderStatus: "pending_payment",
                       machineId: "mach-001",
-                      isDrill: false,
-                      orderIsDrill: false,
                     },
                   ]),
                 }),
@@ -1305,8 +1203,6 @@ describe("PaymentsService", () => {
                       orderId: "ord-code-incident-001",
                       orderStatus: "manual_handling",
                       machineId: "mach-001",
-                      isDrill: false,
-                      orderIsDrill: false,
                     },
                   ]),
                 }),
@@ -1395,8 +1291,6 @@ describe("PaymentsService", () => {
                     machineId: "mach-001",
                     providerConfigId: null,
                     providerConfigSnapshotJson: {},
-                    isDrill: false,
-                    orderIsDrill: false,
                   },
                 ]),
               }),
@@ -1522,74 +1416,6 @@ describe("PaymentsService", () => {
         requestedByAdminUserId: "admin-1",
       });
       expect(createAndDispatchCommands).not.toHaveBeenCalled();
-    });
-
-    it("skips protected payment drill payments without calling the provider", async () => {
-      const queryPayment = vi.fn();
-      const provider = { queryPayment };
-      const db = makeDb();
-
-      db.select.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: "pay-drill-001",
-                    paymentNo: "DRILL-PAY001",
-                    status: "processing",
-                    providerId: "prov-001",
-                    providerCode: "wechat_pay",
-                    providerTradeNo: "DRILL-ORD001",
-                    orderId: "ord-drill-001",
-                    machineId: "mach-001",
-                    providerConfigId: null,
-                    isDrill: true,
-                    orderIsDrill: true,
-                  },
-                ]),
-              }),
-            }),
-          }),
-        }),
-      });
-      const audit = { record: vi.fn().mockResolvedValue(undefined) };
-
-      const service = makeService({
-        db,
-        registry: {
-          has: vi.fn().mockReturnValue(true),
-          get: vi.fn().mockReturnValue(provider),
-        } as unknown as PaymentProviderRegistry,
-        auditService: audit,
-      });
-
-      await expect(
-        service.manualReconcile(
-          "pay-drill-001",
-          "admin-1",
-          "operator verified protected drill should not hit provider",
-        ),
-      ).resolves.toEqual({
-        status: "processing",
-        reconciled: false,
-        reason: "protected_payment_drill",
-      });
-      expect(queryPayment).not.toHaveBeenCalled();
-      expect(audit.record).toHaveBeenCalledWith({
-        adminUserId: "admin-1",
-        action: "payments.manual_reconcile",
-        resourceType: "payment",
-        resourceId: "pay-drill-001",
-        afterJson: {
-          reason: "operator verified protected drill should not hit provider",
-          paymentNo: "DRILL-PAY001",
-          providerStatus: "processing",
-          applied: false,
-          outcome: "protected_payment_drill",
-        },
-      });
     });
 
     it("audits already-terminal manual reconcile attempts without calling the provider", async () => {
@@ -3355,12 +3181,10 @@ describe("PaymentsService", () => {
                 paymentId: input.paymentId,
                 paymentStatus: "pending",
                 paymentExpiresAt: input.expiresAt,
-                paymentIsDrill: false,
                 orderId: input.orderId,
                 orderStatus: "pending_payment",
                 paymentState: "awaiting_payment",
                 fulfillmentState: "awaiting_fulfillment",
-                orderIsDrill: false,
               },
             ]),
           }),

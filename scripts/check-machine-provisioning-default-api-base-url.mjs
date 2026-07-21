@@ -12,11 +12,9 @@ function readText(path) {
 
 const smokePath = "scripts/windows/vending-daemon-smoke.ps1";
 const examplePath = "scripts/windows/runtime-bootstrap.example.json";
-const runbookPath = "public/machine-provisioning-default-api-base-url.md";
 
 const smoke = readText(smokePath);
 const example = readText(examplePath);
-const runbook = readText(runbookPath);
 
 addCheck(
   "smoke-script-accepts-default-api-base-url",
@@ -83,24 +81,6 @@ addCheck(
   typeof exampleJson.provisioningApiBaseUrl === "string" &&
     exampleJson.provisioningApiBaseUrl.endsWith("/api"),
   `${examplePath} should show a provisioning API Base URL`,
-);
-
-addCheck(
-  "runbook-documents-runtime-bootstrap",
-  runbook.includes("Runtime Bootstrap") &&
-    runbook.includes("Provisioning Profile Cache"),
-  `${runbookPath} should describe Runtime Bootstrap and the accepted profile cache`,
-);
-addCheck(
-  "runbook-documents-claim-endpoint-smoke",
-  runbook.includes("claim") && runbook.includes("Runtime Bootstrap"),
-  `${runbookPath} should explain how Runtime Bootstrap feeds clean claim`,
-);
-addCheck(
-  "runbook-documents-override-behavior",
-  runbook.includes("Runtime Bootstrap") &&
-    !runbook.includes("VEM_DEFAULT_API_BASE_URL"),
-  `${runbookPath} should document Runtime Bootstrap without env overrides`,
 );
 
 const failures = checks.filter((check) => !check.passed);

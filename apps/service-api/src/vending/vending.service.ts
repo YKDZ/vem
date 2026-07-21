@@ -70,15 +70,6 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
-function isProtectedFulfillmentDrillPayload(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Reflect.get(value, "kind") === "protected_fulfillment_drill" &&
-    Reflect.get(value, "isDrill") === true
-  );
-}
-
 @Injectable()
 export class VendingService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(VendingService.name);
@@ -727,7 +718,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         status: vendingCommands.status,
         payloadJson: vendingCommands.payloadJson,
         orderNo: orders.orderNo,
-        orderIsDrill: orders.isDrill,
       })
       .from(vendingCommands)
       .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
@@ -736,15 +726,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     if (!command) {
       throw new NotFoundException("Vending command not found");
     }
-    if (
-      command.orderIsDrill ||
-      isProtectedFulfillmentDrillPayload(command.payloadJson)
-    ) {
-      throw new ConflictException(
-        "Protected drill commands cannot be resolved through normal vending endpoints",
-      );
-    }
-
     if (input.result === "dispensed") {
       return await this.resolveCommandAsDispensed(command);
     }
@@ -1086,9 +1067,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .where(inArray(vendingCommands.status, ["sent", "acknowledged"]));
 
     const toProcess = candidates.filter((command) => {
-      if (isProtectedFulfillmentDrillPayload(command.payloadJson)) {
-        return false;
-      }
       const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
       const baseAt = command.ackAt ?? command.sentAt;
       if (!baseAt) return false;
@@ -1291,7 +1269,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           status: vendingCommands.status,
           payloadJson: vendingCommands.payloadJson,
           orderNo: orders.orderNo,
-          orderIsDrill: orders.isDrill,
         })
         .from(vendingCommands)
         .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
@@ -1310,19 +1287,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         });
         return null;
       }
-      if (
-        command.orderIsDrill ||
-        isProtectedFulfillmentDrillPayload(command.payloadJson)
-      ) {
-        await this.insertDispenseResultInboxEvent(tx, {
-          machineId: machine.id,
-          payload,
-          topic,
-          messageId,
-        });
-        return null;
-      }
-
       if (payload.success) {
         if (command.status === "failed") {
           await this.insertDispenseResultInboxEvent(tx, {

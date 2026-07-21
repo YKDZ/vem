@@ -766,7 +766,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <a-drawer
       v-model:open="environmentDrawerOpen"
       :title="environmentDrawerTitle"
-      width="520"
+      size="520"
       :destroy-on-hidden="true"
     >
       <div v-if="environmentLoading" class="text-sm text-gray-500">加载中</div>
@@ -793,7 +793,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <a-drawer
       v-model:open="slotDrawerOpen"
       title="货道列表"
-      width="600"
+      size="600"
       :destroy-on-hidden="true"
     >
       <div class="mb-3">
@@ -883,7 +883,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <a-drawer
       v-model:open="claimCodeDrawerOpen"
       :title="claimCodeDrawerTitle"
-      width="720"
+      size="720"
       :destroy-on-hidden="true"
     >
       <template v-if="claimCodeMachine">

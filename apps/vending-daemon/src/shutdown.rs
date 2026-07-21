@@ -161,7 +161,7 @@ async fn run_console_cycle(
             bootstrap.hardware_model.as_str(),
             bootstrap.topology.identity.as_str(),
             scanner_port,
-        ))
+        )?)
         .await?;
 
     let backend_url = profile
@@ -428,14 +428,15 @@ fn scanner_runtime_config(
     hardware_model: &str,
     topology_identity: &str,
     port_path: Option<String>,
-) -> ScannerRuntimeConfig {
-    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity);
-    ScannerRuntimeConfig {
+) -> Result<ScannerRuntimeConfig, String> {
+    let protocol = effective_scanner_protocol(settings, hardware_model, topology_identity)
+        .map_err(|error| format!("{}: {error}", error.code()))?;
+    Ok(ScannerRuntimeConfig {
         port_path,
         baud_rate: protocol.baud_rate,
         frame_suffix: protocol.frame_suffix,
         source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-    }
+    })
 }
 
 fn role_requires_reconfiguration(
@@ -529,6 +530,28 @@ async fn run_device_binding_watch(
                 continue;
             }
         };
+        if let Err(error) =
+            effective_scanner_protocol(&settings, &hardware_model, &topology_identity)
+        {
+            set_hardware_model_unsupported(
+                &status_cache,
+                LocalDeviceRole::LowerController,
+                error.to_string(),
+            )
+            .await;
+            set_hardware_model_unsupported(
+                &status_cache,
+                LocalDeviceRole::Scanner,
+                error.to_string(),
+            )
+            .await;
+            if sale_capability_inputs_changed(&status_cache, &previous_hardware, &previous_scanner)
+                .await
+            {
+                ipc::invalidate_sale_start_capability(&sale_start_context).await;
+            }
+            continue;
+        }
         if !device_bindings_require_reconfiguration(
             &settings,
             &observed,
@@ -552,48 +575,72 @@ async fn run_device_binding_watch(
             continue;
         }
         let scanner_protocol =
-            effective_scanner_protocol(&settings, &hardware_model, &topology_identity);
+            effective_scanner_protocol(&settings, &hardware_model, &topology_identity)
+                .expect("hardware model was validated before acquiring the reconfiguration lease");
         let probe = SerialDeviceRoleProbeConfig::from(&scanner_protocol);
+        let mut scanner_started_port: Option<String> = None;
         for role in [LocalDeviceRole::LowerController, LocalDeviceRole::Scanner] {
             if binding_for_role(&settings, role).is_none() {
-                let mut ready = Vec::new();
-                for candidate in &observed {
-                    if candidate_is_claimed_by_other_role(&settings, role, candidate, &observed) {
+                let candidates = match device_binding::production_hardware_role_candidates(
+                    &hardware_model,
+                    &topology_identity,
+                    role,
+                    &observed,
+                ) {
+                    Ok(candidates) => candidates,
+                    Err(error) => {
+                        set_hardware_model_unsupported(&status_cache, role, error.to_string())
+                            .await;
                         continue;
                     }
-                    let result = platform.test_candidate(role, candidate, &probe).await;
-                    if result.success {
-                        ready.push((candidate, result));
-                    }
-                }
-                if ready.len() == 1 {
-                    let (candidate, result) = ready.pop().expect("one verified serial candidate");
-                    if let Ok(identity) =
-                        device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
-                    {
-                        let binding = LocalSerialRoleBinding {
-                            identity,
-                            confirmed_at: crate::state::store::now_iso(),
-                            confirmed_by: "daemon_auto_bind".to_string(),
-                            test_evidence_code: result.code,
-                        };
-                        if let Ok((_, revision)) =
-                            runtime_sources.local_device_binding_snapshot(role).await
-                        {
-                            if runtime_sources
-                                .save_local_device_binding_if_revision(
+                };
+                match candidates.as_slice() {
+                    [candidate] => match role {
+                        LocalDeviceRole::LowerController => {
+                            let result = platform.test_candidate(role, candidate, &probe).await;
+                            if result.success {
+                                binding_changed |= persist_auto_binding(
+                                    &runtime_sources,
+                                    &mut settings,
                                     role,
-                                    binding.clone(),
-                                    &revision,
+                                    candidate,
+                                    result.code,
                                 )
-                                .await
-                                .is_ok()
-                            {
-                                set_binding_for_role(&mut settings, role, Some(binding));
-                                binding_changed = true;
+                                .await;
                             }
                         }
-                    }
+                        LocalDeviceRole::Scanner => {
+                            // The scanner runtime is the only reader. Its successful open is
+                            // the role test and remains alive for the first customer scan.
+                            match scanner_runtime
+                                .reconfigure(scanner_runtime_config(
+                                    &settings,
+                                    &hardware_model,
+                                    &topology_identity,
+                                    Some(candidate.current_port.clone()),
+                                )?)
+                                .await
+                            {
+                                Ok(()) => {
+                                    scanner_started_port = Some(candidate.current_port.clone());
+                                    binding_changed |= persist_auto_binding(
+                                        &runtime_sources,
+                                        &mut settings,
+                                        role,
+                                        candidate,
+                                        "SCANNER_READER_READY".to_string(),
+                                    )
+                                    .await;
+                                }
+                                Err(error) => {
+                                    *status_cache.scanner.write().await =
+                                        scanner_unavailable("SCANNER_READER_START_FAILED", error);
+                                }
+                            }
+                        }
+                    },
+                    [] => {}
+                    _ => set_auto_binding_ambiguous(&status_cache, role, candidates.len()).await,
                 }
             }
 
@@ -630,8 +677,9 @@ async fn run_device_binding_watch(
                     if let Some(binding) = settings.scanner_binding.as_ref() {
                         match device_binding::resolve_runtime_port(role, binding, &observed) {
                             Ok(port)
-                                if status_cache.scanner.read().await.port.as_deref()
-                                    != Some(port.as_str()) =>
+                                if scanner_started_port.as_deref() != Some(port.as_str())
+                                    && status_cache.scanner.read().await.port.as_deref()
+                                        != Some(port.as_str()) =>
                             {
                                 if let Err(error) = scanner_runtime
                                     .reconfigure(scanner_runtime_config(
@@ -639,7 +687,7 @@ async fn run_device_binding_watch(
                                         &hardware_model,
                                         &topology_identity,
                                         Some(port),
-                                    ))
+                                    )?)
                                     .await
                                 {
                                     *status_cache.scanner.write().await =
@@ -663,6 +711,72 @@ async fn run_device_binding_watch(
                 .await
         {
             ipc::invalidate_sale_start_capability(&sale_start_context).await;
+        }
+    }
+}
+
+async fn persist_auto_binding(
+    runtime_sources: &RuntimeSources,
+    settings: &mut LocalRuntimeSettings,
+    role: LocalDeviceRole,
+    candidate: &device_binding::ObservedSerialDevice,
+    test_evidence_code: String,
+) -> bool {
+    let Ok(identity) = device_binding::StableSerialDeviceIdentity::try_from_observation(candidate)
+    else {
+        return false;
+    };
+    let binding = LocalSerialRoleBinding {
+        identity,
+        confirmed_at: crate::state::store::now_iso(),
+        confirmed_by: "daemon_auto_bind".to_string(),
+        test_evidence_code,
+    };
+    let Ok((current, revision)) = runtime_sources.local_device_binding_snapshot(role).await else {
+        return false;
+    };
+    // The role may have been bound by an operator while the automatic probe was
+    // running. Automatic discovery must never replace that newer decision.
+    if current.is_some() {
+        return false;
+    }
+    if runtime_sources
+        .save_local_device_binding_if_revision(role, binding.clone(), &revision)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    set_binding_for_role(settings, role, Some(binding));
+    true
+}
+
+async fn set_hardware_model_unsupported(
+    cache: &ipc::RuntimeStatusCache,
+    role: LocalDeviceRole,
+    message: String,
+) {
+    match role {
+        LocalDeviceRole::LowerController => set_lower_unavailable(cache, message).await,
+        LocalDeviceRole::Scanner => {
+            *cache.scanner.write().await =
+                scanner_unavailable("HARDWARE_MODEL_UNSUPPORTED", message);
+        }
+    }
+}
+
+async fn set_auto_binding_ambiguous(
+    cache: &ipc::RuntimeStatusCache,
+    role: LocalDeviceRole,
+    candidates: usize,
+) {
+    let message =
+        format!("{candidates} present production hardware candidates require operator binding");
+    match role {
+        LocalDeviceRole::LowerController => set_lower_unavailable(cache, message).await,
+        LocalDeviceRole::Scanner => {
+            *cache.scanner.write().await =
+                scanner_unavailable("SCANNER_BINDING_AMBIGUOUS", message);
         }
     }
 }
@@ -692,23 +806,6 @@ fn binding_for_role(
         LocalDeviceRole::LowerController => settings.lower_controller_binding.as_ref(),
         LocalDeviceRole::Scanner => settings.scanner_binding.as_ref(),
     }
-}
-
-fn candidate_is_claimed_by_other_role(
-    settings: &crate::local_runtime_settings::LocalRuntimeSettings,
-    role: LocalDeviceRole,
-    candidate: &device_binding::ObservedSerialDevice,
-    observed: &[device_binding::ObservedSerialDevice],
-) -> bool {
-    let other_role = match role {
-        LocalDeviceRole::LowerController => LocalDeviceRole::Scanner,
-        LocalDeviceRole::Scanner => LocalDeviceRole::LowerController,
-    };
-    binding_for_role(settings, other_role)
-        .and_then(|binding| {
-            device_binding::resolve_runtime_port(other_role, binding, observed).ok()
-        })
-        .is_some_and(|port| port.eq_ignore_ascii_case(&candidate.current_port))
 }
 
 fn set_binding_for_role(
@@ -1186,9 +1283,8 @@ mod tests {
     };
 
     use super::{
-        cache_daemon_events, candidate_is_claimed_by_other_role,
-        device_bindings_require_reconfiguration, refresh_provisioning_profile_once,
-        run_vision_watch, sale_start_capability_input_changed,
+        cache_daemon_events, device_bindings_require_reconfiguration,
+        refresh_provisioning_profile_once, run_vision_watch, sale_start_capability_input_changed,
     };
 
     #[tokio::test]
@@ -1260,45 +1356,16 @@ mod tests {
             "the lease must precede the one active-sale observation"
         );
         assert!(
-            watch.find("save_local_device_binding_if_revision")
-                < watch.find("reconfigure_from_serial_port"),
+            watch.find("persist_auto_binding(") < watch.find("reconfigure_from_serial_port"),
             "the same leased tick must activate the binding it persisted"
         );
-    }
-
-    #[test]
-    fn auto_binding_does_not_probe_a_port_claimed_by_the_other_role() {
-        let observed = crate::device_binding::ObservedSerialDevice {
-            current_port: "COM4".to_string(),
-            instance_id: Some("USB\\VID_1A86&PID_55D3\\CTRL-01".to_string()),
-            container_id: None,
-            hardware_ids: vec!["USB\\VID_1A86&PID_55D3".to_string()],
-            serial_number: Some("CTRL-01".to_string()),
-            friendly_name: Some("lower controller".to_string()),
-        };
-        let mut settings = crate::local_runtime_settings::LocalRuntimeSettings::default();
-        settings.lower_controller_binding = Some(crate::device_binding::LocalSerialRoleBinding {
-            identity: crate::device_binding::StableSerialDeviceIdentity::try_from_observation(
-                &observed,
-            )
-            .expect("stable identity"),
-            confirmed_at: "2026-07-19T00:00:00Z".to_string(),
-            confirmed_by: "test".to_string(),
-            test_evidence_code: "LOWER_CONTROLLER_HANDSHAKE_READY".to_string(),
-        });
-
-        assert!(candidate_is_claimed_by_other_role(
-            &settings,
-            crate::device_binding::LocalDeviceRole::Scanner,
-            &observed,
-            std::slice::from_ref(&observed),
-        ));
-        assert!(!candidate_is_claimed_by_other_role(
-            &settings,
-            crate::device_binding::LocalDeviceRole::LowerController,
-            &observed,
-            std::slice::from_ref(&observed),
-        ));
+        let persistence = &source[source
+            .find("async fn persist_auto_binding")
+            .expect("auto binding persistence")..];
+        assert!(
+            persistence.contains("save_local_device_binding_if_revision"),
+            "auto binding persistence must use the binding revision CAS"
+        );
     }
 
     #[test]

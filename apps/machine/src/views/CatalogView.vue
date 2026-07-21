@@ -28,10 +28,12 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
+import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 const catalogStore = useCatalogStore();
+const customerJourneyStore = useCustomerJourneyStore();
 const machineStore = useMachineStore();
 const { currentProfile } = useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
@@ -248,6 +250,10 @@ function selectTopCategory(key: CatalogSelectionKey): void {
   if (!categoryHasProducts(key)) return;
   selectedTopCategoryKey.value = key;
   activeGenderFilter.value = "all";
+  customerJourneyStore.enterCategory({
+    categoryKey: key,
+    category: key === "other" ? "其他" : homeCategoryMeta[key].label,
+  });
 }
 
 function categoryHasProducts(key: CatalogSelectionKey): boolean {
@@ -265,6 +271,7 @@ function categoryHasProducts(key: CatalogSelectionKey): boolean {
 function backToHome(): void {
   selectedTopCategoryKey.value = null;
   activeGenderFilter.value = "all";
+  customerJourneyStore.leaveCategory();
 }
 
 function genderForItem(item: MachineCatalogItem): ProductGenderFilter {
@@ -339,6 +346,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  customerJourneyStore.leaveCategory();
   catalogStore.stopAutoRefresh();
   stopCarouselAutoAdvance();
 });

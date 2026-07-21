@@ -12,9 +12,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { isIP } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   CdpClient,
@@ -29,18 +28,6 @@ import {
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { validateSerialConformanceReport } from "./vm-host-adapter-serial-conformance.mjs";
-
-async function loadFactoryAcceptanceAdmission() {
-  throw new Error(
-    "Factory acceptance is retired; use the VM runtime baseline and Runtime Bootstrap",
-  );
-}
-
-async function loadFactoryPersonalizationMedia() {
-  throw new Error(
-    "Factory personalization media is retired; use Runtime Bootstrap and Provisioning Profile Cache",
-  );
-}
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -64,14 +51,6 @@ const PROTECTED_PATH_PREFIXES = [
 ];
 
 const PROTECTED_SERVICE_NAMES = new Set(["tailscale", "sshd"]);
-const ALLOWED_SCHEDULED_TASKS = new Set([
-  "vemmachineui",
-  "vemmaintenanceui",
-  "vem\\startvisionserver",
-]);
-
-const STARTUP_BRINGUP_EVIDENCE_FILE =
-  "C:\\ProgramData\\VEM\\vending-daemon\\startup-bringup-evidence.json";
 const TESTBED_PROVISIONING_EVIDENCE_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\testbed-provisioning-evidence.json";
 const RUNTIME_ACCEPTANCE_REPORT_FILE =
@@ -86,158 +65,7 @@ const INSTALLED_KIOSK_SALE_DEBUG_LAUNCHER =
 const INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER =
   "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const INSTALLED_KIOSK_SALE_MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
-const CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME =
-  "clean-base-factory-acceptance.json";
-const FACTORY_IMAGE_DELIVERY_UNIT_FILE_NAME =
-  "factory-image-delivery-unit-report.json";
-const CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION =
-  "clean-base-factory-acceptance-report/v1";
-const CLEAN_BASE_FACTORY_ACCEPTANCE_KIND = "clean-base-factory-acceptance";
-const FACTORY_IMAGE_DELIVERY_UNIT_REPORT_SCHEMA_VERSION =
-  "factory-image-delivery-unit-report/v1";
-const FACTORY_IMAGE_DELIVERY_UNIT_KIND = "factory-image-delivery-unit";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const FACTORY_WINDOWS_BASELINE_POLICY = {
-  schemaVersion: "factory-windows-baseline-policy/v1",
-  model: "allowlist",
-  requiredCapabilities: [
-    "defender_enabled",
-    "firewall_enabled",
-    "no_default_product_remote_ingress",
-    "vem_runtime_defender_exclusions",
-    "openssh_server_for_maintenance_users",
-    "tailscale_not_installed_by_default",
-    "kiosk_account_denied_remote_access",
-    "windows_event_logging",
-    "powershell_management",
-    "networking_certificates_time_sync",
-    "webview2_runtime_support",
-    "display_touch_usb_serial_drivers",
-    "fonts_input_methods",
-  ],
-  disabledRuntimeInterference: [
-    "windows_auto_update_installation",
-    "windows_auto_update_auto_restart",
-    "sleep",
-    "hibernation",
-    "testsigning",
-    "store_automatic_app_updates",
-    "consumer_experience_autostart",
-    "consumer_experience_foreground_popups",
-    "consumer_experience_kiosk_foreground_takeover_best_effort",
-  ],
-  evidenceFields: {
-    windowsUpdatePolicy: "assertions.windowsUpdatePolicy",
-    powerPolicy: "assertions.powerPolicy",
-    bootPolicy: "assertions.bootPolicy",
-    securityPosture: "assertions.securityPosture",
-    remoteMaintenanceCapability:
-      "assertions.factoryRemoteMaintenanceCapability",
-    consumerExperienceInterference: "assertions.consumerExperienceInterference",
-  },
-};
-const REQUIRED_CLEAN_BASE_ASSERTIONS = [
-  "displayOrientationResolution",
-  "sshReachability",
-  "tailscaleDefaultAbsent",
-  "windowsUpdatePolicy",
-  "powerPolicy",
-  "bootPolicy",
-  "securityPosture",
-  "factoryRemoteMaintenanceCapability",
-  "consumerExperienceInterference",
-  "sleepDisabled",
-  "testsigningOff",
-  "autologonConfigured",
-  "startupLauncherMode",
-  "daemonService",
-  "uiLauncherTask",
-  "runtimeResetGateClean",
-  "hardwareProfileMode",
-  "startupReachesBringUpOrSalesEligible",
-  "preflightNoMachineIdentity",
-  "preflightNoProvisioningProfile",
-  "preflightNoProtectedSecrets",
-  "preflightNoDaemonState",
-  "preflightNoPreviousVemEvidence",
-];
-const CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES = [
-  {
-    code: "preflightNoMachineIdentity",
-    paths: [
-      "C:\\ProgramData\\VEM\\provisioning",
-      "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json",
-      "C:\\ProgramData\\VEM\\bringup\\local-runtime-settings.json",
-    ],
-    services: [],
-    tasks: [],
-  },
-  {
-    code: "preflightNoProvisioningProfile",
-    paths: ["C:\\ProgramData\\VEM\\provisioning"],
-    services: [],
-    tasks: [],
-  },
-  {
-    code: "preflightNoProtectedSecrets",
-    paths: ["C:\\ProgramData\\VEM\\secrets", "C:\\ProgramData\\VEM\\overrides"],
-    services: [],
-    tasks: [],
-  },
-  {
-    code: "preflightNoDaemonState",
-    paths: [
-      "C:\\VEM\\bringup",
-      "C:\\ProgramData\\VEM\\factory",
-      "C:\\ProgramData\\VEM\\bringup",
-      "C:\\ProgramData\\VEM\\vending-daemon",
-      "C:\\ProgramData\\VEM\\maintenance",
-      "C:\\ProgramData\\ssh\\sshd_config",
-    ],
-    services: [
-      "VemVendingDaemon",
-      "WireGuardTunnel$VEM-Maintenance",
-      "WireGuardTunnelVEM-Maintenance",
-    ],
-    tasks: ["VEMMachineUI", "VEM\\StartVisionServer"],
-  },
-  {
-    code: "preflightNoPreviousVemEvidence",
-    paths: ["C:\\ProgramData\\VEM\\evidence"],
-    services: [],
-    tasks: [],
-  },
-];
-const KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS = [
-  "100.68.189.11",
-  "192.168.2.161",
-  "win10-vem-e2e",
-  "desktop-2stvs5b",
-  "dirty",
-  "retained",
-];
-const KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS = [
-  "100.66.207.119",
-  "desktop-2idrn2k",
-  "vem-win10-real-01",
-  "admin@real",
-  "admin@100.66.207.119",
-  "admin@desktop-2idrn2k",
-];
-const KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_TOKENS = new Set(["vem", "real"]);
-const FACTORY_SUPPORT_SCRIPT_NAMES = [
-  "prepare-factory-runtime.ps1",
-  "verify-factory-runtime.ps1",
-  "setup-scheduled-tasks.ps1",
-  "verify-kiosk-lockdown.ps1",
-  "verify-vem-runtime.ps1",
-  "apply-managed-update.ps1",
-  "provision-vision-factory-release.ps1",
-  "install-vision-release.ps1",
-  "vision-release-materialization.psm1",
-  "vision-diagnostic-redaction.psm1",
-  "test-wireguard-localsystem-acceptance.ps1",
-];
 
 const PLATFORM_TARGETS = {
   "vem-vps": {
@@ -269,85 +97,33 @@ const FINAL_PUBLIC_CONFIG_FIELDS = [
 ];
 
 const EXPECTED_KIOSK_USER = "VEMKiosk";
+const EXPECTED_DAEMON_USER = "Admin";
+const EXPECTED_DAEMON_PATH = "C:\\VEM\\bringup\\vending-daemon.exe";
 const TESTBED_MACHINE_CODE_PREFIX = "VEM-TESTBED-";
-const EXPECTED_MACHINE_UI_TASK_NAME = "VEMMachineUI";
-const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
-const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
-const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
+const EXPECTED_MACHINE_UI_PATH = "C:\\VEM\\bringup\\machine.exe";
 const EXPECTED_VISION_TASK_NAME = "VEM\\StartVisionServer";
 const EXPECTED_VISION_COMMAND = "C:\\Windows\\System32\\cmd.exe";
 const EXPECTED_VISION_LAUNCHER = "C:\\VEM\\bringup\\start_vision.bat";
 const EXPECTED_VISION_WORKING_DIRECTORY = "C:\\VEM\\vision\\app";
 const EXPECTED_VISION_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const EXPECTED_VISION_ENTRYPOINT = "C:\\VEM\\vision\\app\\vending-vision.exe";
+const DEFAULT_RUNTIME_REMOTE = "operator@runtime.test";
+const ALLOWED_SCHEDULED_TASKS = new Set([
+  "vemmachineui",
+  "vem\\startvisionserver",
+]);
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
-const DEFAULT_CONTROLLED_MAINTENANCE_USER = "Admin";
-const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
-  "controlled-maintenance-ingress.local";
-const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_CONTROLLED_MAINTENANCE_USER}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
 const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
 const EPHEMERAL_DATABASE_URL_ENV = "VEM_EPHEMERAL_DATABASE_URL";
 const INSTALLED_KIOSK_SALE_DATABASE_URL_ENV =
   "VEM_INSTALLED_KIOSK_SALE_DATABASE_URL";
-const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
-  "artifacts/clean-base-factory-acceptance";
 
 export function nonQueryChildEnvironment(environment = process.env) {
   const childEnvironment = { ...environment };
   delete childEnvironment.DATABASE_URL;
   return childEnvironment;
-}
-
-export function buildBringUpPlan(options = {}) {
-  const maintenanceIngressSourceAllowlist = String(
-    options.maintenanceIngressSourceAllowlist ?? "",
-  ).trim();
-  return {
-    setupScript:
-      options.setupScript ??
-      "C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1",
-    requiredSecretEnvironment: [
-      "VEM_KIOSK_PASSWORD",
-      "VEM_MAINTENANCE_PASSWORD",
-      "VEM_AUTOLOGON_PASSWORD",
-    ],
-    arguments: {
-      KioskUser: "VEMKiosk",
-      MaintenanceUser: "Admin",
-      RunAsUser: "Admin",
-      AutoLogonDomain: "$env:COMPUTERNAME",
-      BringupDir: "C:\\VEM\\bringup",
-      DaemonExe: "C:\\VEM\\bringup\\vending-daemon.exe",
-      DaemonDataDir: "C:\\ProgramData\\VEM\\vending-daemon",
-      DaemonReadyFile:
-        "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json",
-      StartupBringupEvidenceFile: STARTUP_BRINGUP_EVIDENCE_FILE,
-      MachineUiExe: "C:\\VEM\\bringup\\machine.exe",
-      MachineUiLauncher: "C:\\VEM\\bringup\\launch-machine-ui.vbs",
-      MachineUiDebugLauncher: "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs",
-      VisionLauncher: "C:\\VEM\\bringup\\start_vision.bat",
-      VisionWorkingDirectory: EXPECTED_VISION_WORKING_DIRECTORY,
-      KioskPassword: "$env:VEM_KIOSK_PASSWORD",
-      MaintenancePassword: "$env:VEM_MAINTENANCE_PASSWORD",
-      AutoLogonPassword: "$env:VEM_AUTOLOGON_PASSWORD",
-      ...(maintenanceIngressSourceAllowlist
-        ? {
-            MaintenanceIngressSourceAllowlist:
-              maintenanceIngressSourceAllowlist,
-          }
-        : {}),
-    },
-    switches: [
-      "ConfigureKioskAccounts",
-      "UseKioskAccount",
-      "ConfigureAutoLogon",
-      ...(maintenanceIngressSourceAllowlist
-        ? ["ConfigureControlledMaintenanceIngress"]
-        : []),
-    ],
-  };
 }
 
 export function assertTestbedMachineCode(machineCode) {
@@ -800,64 +576,6 @@ function isSha256(value) {
   return /^[a-fA-F0-9]{64}$/.test(String(value ?? ""));
 }
 
-async function admitFactoryMediaBeforeAcceptance(options) {
-  const supplied = [
-    options.factoryIso,
-    options.factoryAssemblyMode,
-    options.factoryManifest,
-    options.factoryProvenance,
-    options.factoryProvenanceDigest,
-    options.factoryManifestPath,
-    options.factoryProvenancePath,
-    options.factoryIsoPath,
-    options.factoryUdfExtractorPath,
-    options.factoryUdfWriterPath,
-    options.factoryWimlibPath,
-  ];
-  if (supplied.every((value) => value === undefined)) return null;
-  if (supplied.some((value) => typeof value !== "string" || value.length === 0))
-    throw new Error(
-      "Factory acceptance requires complete host-owned Factory media provenance inputs",
-    );
-  if (options.factoryAssemblyMode !== "windows-serviced-iso")
-    throw new Error(
-      "Factory acceptance requires windows-serviced-iso assembly",
-    );
-  const digest = /^sha256:[a-f0-9]{64}$/;
-  if (
-    !/^factory-cas:\/\/sha256\/[a-f0-9]{64}$/.test(options.factoryIso) ||
-    !digest.test(options.factoryManifest) ||
-    !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(
-      options.factoryProvenance,
-    ) ||
-    !digest.test(options.factoryProvenanceDigest)
-  )
-    throw new Error(
-      "Factory acceptance requires immutable Factory media identities",
-    );
-  if (
-    options.factoryProvenance !==
-    `factory-evidence://${options.factoryProvenanceDigest.replace(":", "/")}`
-  )
-    throw new Error(
-      "Factory acceptance provenance identity does not bind its digest",
-    );
-  const outputDigest = `sha256:${options.factoryIso.slice("factory-cas://sha256/".length)}`;
-  const { admitFactoryAcceptance } = await loadFactoryAcceptanceAdmission();
-  return admitFactoryAcceptance({
-    manifestPath: options.factoryManifestPath,
-    provenancePath: options.factoryProvenancePath,
-    outputIsoPath: options.factoryIsoPath,
-    manifestIdentity: options.factoryManifest,
-    provenanceDigest: options.factoryProvenanceDigest,
-    outputIdentity: options.factoryIso,
-    outputDigest,
-    udfExtractorPath: options.factoryUdfExtractorPath,
-    udfWriterPath: options.factoryUdfWriterPath,
-    wimlibPath: options.factoryWimlibPath,
-  });
-}
-
 function addDiagnostic(diagnostics, code, message) {
   diagnostics.push({ code, message });
 }
@@ -948,151 +666,16 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     );
   }
   if (
-    facts.serviceState?.daemonService?.installed !== true ||
-    facts.serviceState?.daemonService?.running !== true ||
-    facts.serviceState?.daemonService?.startupType !== "automatic"
+    facts.daemonRuntime?.processRunning !== true ||
+    !Number.isInteger(facts.daemonRuntime?.processId) ||
+    facts.daemonRuntime?.processUser !== EXPECTED_DAEMON_USER ||
+    facts.daemonRuntime?.executablePath !== EXPECTED_DAEMON_PATH
   ) {
     addDiagnostic(
       diagnostics,
-      "daemon_service_not_running",
-      "Vending Daemon must be installed, running, and configured for automatic startup.",
+      "daemon_process_not_ready",
+      "The manually started daemon process must run as Admin from C:\\VEM\\bringup\\vending-daemon.exe.",
     );
-  }
-  if (facts.startupBringup?.machineUiStartup?.mode === "scheduled_task") {
-    if (facts.serviceState?.machineUiTask?.exists !== true) {
-      addDiagnostic(
-        diagnostics,
-        "machine_ui_task_missing",
-        "VEMMachineUI scheduled task must exist before runtime-ready can pass.",
-      );
-    }
-    if (facts.serviceState?.machineUiTask?.enabled !== true) {
-      addDiagnostic(
-        diagnostics,
-        "machine_ui_task_disabled",
-        "VEMMachineUI scheduled task must be enabled before runtime-ready can pass.",
-      );
-    }
-    if (facts.serviceState?.machineUiTask?.runAsUser !== EXPECTED_KIOSK_USER) {
-      addDiagnostic(
-        diagnostics,
-        "machine_ui_task_user_mismatch",
-        "VEMMachineUI scheduled task must run as the VEMKiosk user.",
-      );
-    }
-  }
-  if (
-    facts.startupBringup?.configuredBy !==
-      "scripts/windows/setup-scheduled-tasks.ps1" ||
-    facts.startupBringup?.productionBringup !== true
-  ) {
-    addDiagnostic(
-      diagnostics,
-      "production_bringup_required",
-      "Fresh Bring-Up Acceptance must use the production bring-up script path.",
-    );
-  }
-  if (facts.startupBringup?.daemonOwnedInitialization === true) {
-    addDiagnostic(
-      diagnostics,
-      "daemon_owned_startup_initialization",
-      "Winlogon auto-logon and customer startup must not be daemon-owned initialization.",
-    );
-  }
-  if (facts.startupBringup?.autoLogon?.configured !== true) {
-    addDiagnostic(
-      diagnostics,
-      "winlogon_autologon_missing",
-      "Winlogon auto-logon must be configured by production bring-up before runtime-ready can pass.",
-    );
-  }
-  if (facts.startupBringup?.autoLogon?.user !== EXPECTED_KIOSK_USER) {
-    addDiagnostic(
-      diagnostics,
-      "winlogon_autologon_user_mismatch",
-      "Winlogon auto-logon must target the VEMKiosk customer session.",
-    );
-  }
-  if (facts.startupBringup?.autoLogon?.force !== true) {
-    addDiagnostic(
-      diagnostics,
-      "winlogon_force_autologon_missing",
-      "Winlogon ForceAutoLogon must be enabled for unattended cold boot acceptance.",
-    );
-  }
-  if (facts.startupBringup?.machineUiStartup?.configured !== true) {
-    addDiagnostic(
-      diagnostics,
-      "machine_ui_startup_missing",
-      "Machine UI startup must be configured by production bring-up.",
-    );
-  }
-  if (
-    facts.startupBringup?.machineUiStartup?.runAsUser !== EXPECTED_KIOSK_USER
-  ) {
-    addDiagnostic(
-      diagnostics,
-      "machine_ui_startup_user_mismatch",
-      "Machine UI startup must target the VEMKiosk customer session.",
-    );
-  }
-  if (facts.startupBringup?.machineUiStartup?.mode === "scheduled_task") {
-    const machineUiStartupCommand = facts.startupBringup?.startupCommands?.find(
-      (command) =>
-        command?.name === EXPECTED_MACHINE_UI_TASK_NAME ||
-        command?.name === `\\${EXPECTED_MACHINE_UI_TASK_NAME}`,
-    );
-
-    if (machineUiStartupCommand?.exists !== true) {
-      addDiagnostic(
-        diagnostics,
-        "machine_ui_startup_command_missing",
-        "Production bring-up must provide live VEMMachineUI startup command evidence.",
-      );
-    } else {
-      if (machineUiStartupCommand.enabled !== true) {
-        addDiagnostic(
-          diagnostics,
-          "machine_ui_startup_command_disabled",
-          "VEMMachineUI startup command must be enabled.",
-        );
-      }
-      if (machineUiStartupCommand.runAsUser !== EXPECTED_KIOSK_USER) {
-        addDiagnostic(
-          diagnostics,
-          "machine_ui_startup_command_user_mismatch",
-          "VEMMachineUI startup command must run as the VEMKiosk user.",
-        );
-      }
-      if (machineUiStartupCommand.command !== EXPECTED_MACHINE_UI_COMMAND) {
-        addDiagnostic(
-          diagnostics,
-          "machine_ui_startup_command_path_mismatch",
-          "VEMMachineUI startup command must use the production wscript launcher path.",
-        );
-      }
-      if (
-        !String(machineUiStartupCommand.arguments ?? "").includes(
-          EXPECTED_MACHINE_UI_LAUNCHER,
-        )
-      ) {
-        addDiagnostic(
-          diagnostics,
-          "machine_ui_startup_arguments_mismatch",
-          "VEMMachineUI startup arguments must point at the production machine UI launcher.",
-        );
-      }
-      if (
-        machineUiStartupCommand.workingDirectory !==
-        EXPECTED_MACHINE_UI_WORKING_DIRECTORY
-      ) {
-        addDiagnostic(
-          diagnostics,
-          "machine_ui_startup_working_directory_mismatch",
-          "VEMMachineUI startup working directory must be the production bring-up directory.",
-        );
-      }
-    }
   }
   if (facts.provisioning?.provisioned !== true) {
     addDiagnostic(
@@ -1127,42 +710,6 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       diagnostics,
       "mqtt_connectivity_failed",
       "Daemon health must report MQTT connectivity.",
-    );
-  }
-  if (
-    facts.serviceState?.visionTask?.exists !== true ||
-    facts.serviceState?.visionTask?.enabled !== true
-  ) {
-    addDiagnostic(
-      diagnostics,
-      "vision_task_not_ready",
-      "The installed Vision runtime task must exist and be enabled.",
-    );
-  }
-  const visionStartupCommand = facts.startupBringup?.startupCommands?.find(
-    (command) =>
-      command?.name === EXPECTED_VISION_TASK_NAME ||
-      command?.name === `\\${EXPECTED_VISION_TASK_NAME}`,
-  );
-  if (visionStartupCommand?.exists !== true) {
-    addDiagnostic(
-      diagnostics,
-      "vision_task_startup_command_missing",
-      "Production bring-up must provide live Vision task startup command evidence.",
-    );
-  } else if (
-    visionStartupCommand.enabled !== true ||
-    visionStartupCommand.runAsUser !== EXPECTED_KIOSK_USER ||
-    visionStartupCommand.command !== EXPECTED_VISION_COMMAND ||
-    !String(visionStartupCommand.arguments ?? "").includes(
-      EXPECTED_VISION_LAUNCHER,
-    ) ||
-    visionStartupCommand.workingDirectory !== EXPECTED_VISION_WORKING_DIRECTORY
-  ) {
-    addDiagnostic(
-      diagnostics,
-      "vision_task_working_directory_mismatch",
-      "Vision startup must run the fixed app launcher from C:\\VEM\\vision\\app.",
     );
   }
   if (
@@ -1283,8 +830,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   if (
     !Number.isInteger(facts.kioskRuntime?.processId) ||
     facts.kioskRuntime?.machineProcessCount !== 1 ||
-    facts.kioskRuntime?.machineExecutablePath !==
-      INSTALLED_KIOSK_SALE_MACHINE_PATH
+    facts.kioskRuntime?.machineExecutablePath !== EXPECTED_MACHINE_UI_PATH
   ) {
     addDiagnostic(
       diagnostics,
@@ -1362,6 +908,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   return {
     schemaVersion: "runtime-acceptance-report/v1",
     ...facts,
+    mode: "installed_runtime",
     result: {
       runtimeReady:
         diagnostics.length === 0
@@ -1580,20 +1127,14 @@ export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
 export function buildResetPlan() {
   return {
     stopServices: ["VemVendingDaemon"],
-    unregisterScheduledTasks: [
-      "VEMMachineUI",
-      "VEMMaintenanceUI",
-      "VEM\\StartVisionServer",
-    ],
+    unregisterScheduledTasks: ["VEMMachineUI", "VEM\\StartVisionServer"],
     removeDirectories: [...VEM_RESET_ROOTS],
     removeFiles: [...VEM_RESET_FILES],
     preservedResources: [
       "Windows OS",
       "display setup",
       "OpenSSH",
-      "Controlled Maintenance Ingress configuration",
       "WebView2",
-      "Admin maintenance account",
       "base networking",
     ],
   };
@@ -1651,17 +1192,6 @@ function psArray(values) {
   return `@(${values.map(psString).join(", ")})`;
 }
 
-function psCleanBasePreflightProbeArray() {
-  return `@(${CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES.map(
-    (probe) =>
-      `[ordered]@{ code = ${psString(probe.code)}; paths = ${psArray(
-        probe.paths,
-      )}; services = ${psArray(probe.services)}; tasks = ${psArray(
-        probe.tasks,
-      )} }`,
-  ).join(", ")})`;
-}
-
 function psArgumentValue(value) {
   if (Array.isArray(value)) {
     return psArray(value);
@@ -1682,36 +1212,6 @@ function sanitizeRunId(value) {
   return runId;
 }
 
-function normalizeRemoteForSafety(remote) {
-  const value = String(remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE).trim();
-  const lastAt = value.lastIndexOf("@");
-  if (lastAt === -1) {
-    return { user: null, host: value };
-  }
-  return {
-    user: value.slice(0, lastAt),
-    host: value.slice(lastAt + 1),
-  };
-}
-
-function assertCleanBaseRemoteSafety(options = {}) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return;
-  }
-  const remote = normalizeRemoteForSafety(options.remote);
-  const refusal = classifyUnsafeCleanBaseSource([
-    options.cleanBaseSource,
-    options.cleanBaseSnapshot,
-    remote.user,
-    remote.host,
-  ]);
-  if (refusal) {
-    throw new Error(
-      `clean-base factory acceptance refuses ${refusal} remote before staging: ${options.remote}`,
-    );
-  }
-}
-
 function sha256File(path) {
   const hash = createHash("sha256");
   hash.update(readFileSync(path));
@@ -1726,13 +1226,6 @@ function assertSha256Hash(value, label) {
   return hash;
 }
 
-function splitCsvOption(value) {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
   const sidecarPath = join(
     dirname(machineUiArtifactPath),
@@ -1744,290 +1237,6 @@ function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
     );
   }
   return sidecarPath;
-}
-
-export function assertTrustedProtectedFactoryPersonalizationGate(
-  environment = process.env,
-) {
-  const requiredLabels = ["self-hosted", "Linux", "X64", "vem-factory"];
-  let labels;
-  try {
-    labels = JSON.parse(
-      environment.VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS ?? "",
-    );
-  } catch {
-    throw new Error(
-      "Factory Personalization Media requires the protected runner label assertion",
-    );
-  }
-  if (
-    !Array.isArray(labels) ||
-    !requiredLabels.every((label) => labels.includes(label))
-  ) {
-    throw new Error(
-      "Factory Personalization Media requires exact protected factory runner labels",
-    );
-  }
-  const repository = String(environment.GITHUB_REPOSITORY ?? "");
-  const ref = String(environment.GITHUB_REF ?? "");
-  const expectedWorkflow = `${repository}/.github/workflows/factory-image-acceptance.yml@${ref}`;
-  if (
-    environment.GITHUB_ACTIONS !== "true" ||
-    environment.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
-    (ref !== "refs/heads/main" && !/^refs\/tags\/factory-v/.test(ref)) ||
-    environment.GITHUB_WORKFLOW_REF !== expectedWorkflow ||
-    environment.GITHUB_ACTOR !== environment.GITHUB_REPOSITORY_OWNER ||
-    environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE !== "approved" ||
-    !environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME ||
-    environment.VEM_FACTORY_PERSONALIZATION_RUNNER_NAME !==
-      environment.VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME
-  ) {
-    throw new Error(
-      "Factory Personalization Media requires the approved protected GitHub gate and exact runner identity",
-    );
-  }
-  return {
-    workflowRef: expectedWorkflow,
-    runnerName: environment.VEM_FACTORY_PERSONALIZATION_RUNNER_NAME,
-  };
-}
-
-async function resolveHostOwnedFactoryPersonalizationMedia(options = {}) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return null;
-  }
-  assertTrustedProtectedFactoryPersonalizationGate();
-  const mediaPath = process.env.VEM_FACTORY_PERSONALIZATION_MEDIA_PATH;
-  if (!mediaPath) {
-    throw new Error(
-      "clean-base factory acceptance requires host-owned VEM_FACTORY_PERSONALIZATION_MEDIA_PATH after the trusted protected gate",
-    );
-  }
-  const {
-    readFactoryPersonalizationMediaSnapshot,
-    redactFactoryPersonalizationMedia,
-  } = await loadFactoryPersonalizationMedia();
-  const snapshot = await readFactoryPersonalizationMediaSnapshot(mediaPath);
-  const media = snapshot.media;
-  const expectedProfile = options.runtimeImageProfile ?? "testbed";
-  if (media.profile !== expectedProfile) {
-    throw new Error(
-      "Factory Personalization Media profile does not match --factory-profile",
-    );
-  }
-  return {
-    snapshot,
-    redacted: redactFactoryPersonalizationMedia(media, {
-      mediaConsumed: true,
-      stagingRetained: false,
-    }),
-  };
-}
-
-export function resolveCleanBaseFactoryCapabilityInputs(options = {}) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return null;
-  }
-  const runtimeImageProfile = String(options.runtimeImageProfile ?? "").trim();
-  if (!new Set(["production", "testbed"]).has(runtimeImageProfile)) {
-    throw new Error(
-      "clean-base factory capability requires explicit --factory-profile production|testbed",
-    );
-  }
-  const required = [
-    ["openssh-package", "openSshPackage"],
-    ["wireguard-package", "wireGuardPackage"],
-    ["maintenance-ca-public-key", "maintenanceCaPublicKey"],
-    ["openssh-package-version", "openSshPackageVersion", false],
-    [
-      "openssh-approved-signer-thumbprint",
-      "openSshApprovedSignerThumbprint",
-      false,
-    ],
-    [
-      "openssh-approved-root-thumbprint",
-      "openSshApprovedRootThumbprint",
-      false,
-    ],
-    ["wireguard-package-version", "wireGuardPackageVersion", false],
-    [
-      "wireguard-approved-signer-thumbprint",
-      "wireGuardApprovedSignerThumbprint",
-      false,
-    ],
-    [
-      "wireguard-approved-root-thumbprint",
-      "wireGuardApprovedRootThumbprint",
-      false,
-    ],
-    [
-      "maintenance-wireguard-listen-address",
-      "maintenanceWireGuardListenAddress",
-      false,
-    ],
-    ["factory-hardware-model", "factoryHardwareModel", false],
-    ["factory-topology-identity", "factoryTopologyIdentity", false],
-    ["factory-topology-version", "factoryTopologyVersion", false],
-  ];
-  for (const [label, key, isFile = true] of required) {
-    if (!options[key] || (isFile && !existsSync(options[key]))) {
-      throw new Error(`clean-base factory capability requires --${label}`);
-    }
-  }
-  for (const [label, value] of [
-    ["OpenSSH approved signer", options.openSshApprovedSignerThumbprint],
-    ["OpenSSH approved root", options.openSshApprovedRootThumbprint],
-    ["WireGuard approved signer", options.wireGuardApprovedSignerThumbprint],
-    ["WireGuard approved root", options.wireGuardApprovedRootThumbprint],
-  ]) {
-    if (!/^[0-9a-fA-F]{40}$/.test(String(value))) {
-      throw new Error(`${label} thumbprint must be 40 hexadecimal characters`);
-    }
-  }
-  const caLines = readFileSync(options.maintenanceCaPublicKey, "utf8")
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-  if (
-    caLines.length !== 1 ||
-    !caLines[0].endsWith(` vem-maintenance-ca:${runtimeImageProfile}`)
-  ) {
-    throw new Error(
-      `Maintenance SSH CA must contain exactly one key for profile ${runtimeImageProfile}`,
-    );
-  }
-  if (runtimeImageProfile === "production") {
-    if (!options.platformApiBaseUrl || !options.platformMqttUrl) {
-      throw new Error(
-        "production factory capability requires explicit production platform API and MQTT endpoints",
-      );
-    }
-    const productionInputs = [
-      options.remote,
-      options.factoryHardwareModel,
-      options.factoryTopologyIdentity,
-      options.maintenanceCaPublicKey,
-      options.platformApiBaseUrl,
-      options.platformMqttUrl,
-    ].join(" ");
-    if (
-      /testbed|simulator|shared-password|test-ca|test-peer|118\.25\.104\.160/iu.test(
-        productionInputs,
-      )
-    ) {
-      throw new Error(
-        "production factory capability rejects testbed or simulator inputs",
-      );
-    }
-  }
-  const runnerSources = splitCsvOption(
-    options.maintenanceRunnerSourceAllowlist,
-  );
-  const maintainerSources = splitCsvOption(
-    options.maintenanceMaintainerSourceAllowlist,
-  );
-  if (runnerSources.length === 0 || maintainerSources.length === 0) {
-    throw new Error(
-      "clean-base factory capability requires runner and maintainer role pools",
-    );
-  }
-  const packageInputs = [
-    ["openSshPackage", "openSshPackageSha256", "OpenSSH package"],
-    ["wireGuardPackage", "wireGuardPackageSha256", "WireGuard package"],
-    [
-      "maintenanceCaPublicKey",
-      "maintenanceCaPublicKeySha256",
-      "Maintenance SSH CA public key",
-    ],
-  ].map(([pathKey, hashKey, label]) => {
-    const actual = sha256File(options[pathKey]);
-    if (
-      options[hashKey] &&
-      actual !== assertSha256Hash(options[hashKey], label)
-    ) {
-      throw new Error(
-        `${label} hash mismatch: expected ${options[hashKey]}, got ${actual}`,
-      );
-    }
-    return { pathKey, hash: actual };
-  });
-  return {
-    runtimeImageProfile,
-    maintenanceUser: "Admin",
-    hardwareMode:
-      runtimeImageProfile === "production" ? "production" : "simulated",
-    openSshPackageSha256: packageInputs[0].hash,
-    wireGuardPackageSha256: packageInputs[1].hash,
-    maintenanceCaPublicKeySha256: packageInputs[2].hash,
-    wireGuardListenAddress: normalizeWireGuardHostAddress(
-      options.maintenanceWireGuardListenAddress,
-    ),
-    runnerSources,
-    maintainerSources,
-  };
-}
-
-function normalizeWireGuardHostAddress(value) {
-  const parts = String(value ?? "")
-    .trim()
-    .split("/");
-  const address = parts[0];
-  const version = isIP(address);
-  const expectedPrefix = version === 6 ? "128" : "32";
-  if (
-    version === 0 ||
-    ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(address) ||
-    parts.length > 2 ||
-    (parts.length === 2 && parts[1] !== expectedPrefix)
-  ) {
-    throw new Error(
-      "maintenance WireGuard listen address must be a concrete bare IP or single-host CIDR",
-    );
-  }
-  return address;
-}
-
-function resolveCleanBaseArtifactInputs(options = {}) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return null;
-  }
-  if (!options.daemonArtifact || !options.machineUiArtifact) {
-    throw new Error(
-      "clean-base factory acceptance live mode requires --daemon-artifact and --machine-ui-artifact",
-    );
-  }
-  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
-  const daemonSha256 = sha256File(options.daemonArtifact);
-  const machineUiSha256 = sha256File(options.machineUiArtifact);
-  if (
-    options.daemonArtifactSha256 &&
-    daemonSha256 !==
-      assertSha256Hash(
-        options.daemonArtifactSha256,
-        "clean-base factory acceptance daemon artifact",
-      )
-  ) {
-    throw new Error(
-      `clean-base factory acceptance daemon artifact hash mismatch: expected ${options.daemonArtifactSha256}, got ${daemonSha256}`,
-    );
-  }
-  if (
-    options.machineUiArtifactSha256 &&
-    machineUiSha256 !==
-      assertSha256Hash(
-        options.machineUiArtifactSha256,
-        "clean-base factory acceptance machine UI artifact",
-      )
-  ) {
-    throw new Error(
-      `clean-base factory acceptance machine UI artifact hash mismatch: expected ${options.machineUiArtifactSha256}, got ${machineUiSha256}`,
-    );
-  }
-  return {
-    source: "uploaded_local_artifacts",
-    daemonSha256,
-    machineUiSha256,
-  };
 }
 
 function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
@@ -2054,531 +1263,6 @@ function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
     source: "uploaded_local_artifacts",
     daemonSha256: sha256File(options.daemonArtifact),
     machineUiSha256: sha256File(options.machineUiArtifact),
-  };
-}
-
-function resolveAcceptanceArtifactHashes(options = {}, label) {
-  if (options.daemonArtifactSha256 && options.machineUiArtifactSha256) {
-    return {
-      source: "declared_artifact_hashes",
-      daemonSha256: assertSha256Hash(
-        options.daemonArtifactSha256,
-        `${label} daemon artifact`,
-      ),
-      machineUiSha256: assertSha256Hash(
-        options.machineUiArtifactSha256,
-        `${label} machine UI artifact`,
-      ),
-    };
-  }
-  if (!options.daemonArtifact || !options.machineUiArtifact) {
-    throw new Error(
-      `${label} requires --daemon-artifact and --machine-ui-artifact, or explicit artifact SHA-256 values`,
-    );
-  }
-  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
-  return {
-    source: "local_artifacts",
-    daemonSha256: sha256File(options.daemonArtifact),
-    machineUiSha256: sha256File(options.machineUiArtifact),
-  };
-}
-
-function requireCleanBaseSource(value) {
-  const source = String(value ?? "").trim();
-  if (source.length === 0) {
-    throw new Error(
-      "clean-base factory acceptance requires --clean-base-source identifying a clean Windows base or VM source",
-    );
-  }
-  const refusal = classifyUnsafeCleanBaseSource(source);
-  if (refusal) {
-    throw new Error(
-      `clean-base factory acceptance refuses ${refusal} source: ${source}`,
-    );
-  }
-  return source;
-}
-
-function collectCleanBaseSourceStrings(value, strings = []) {
-  if (value === null || value === undefined) {
-    return strings;
-  }
-  if (typeof value === "string" || typeof value === "number") {
-    strings.push(String(value));
-    return strings;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectCleanBaseSourceStrings(item, strings);
-    }
-    return strings;
-  }
-  if (typeof value === "object") {
-    for (const item of Object.values(value)) {
-      collectCleanBaseSourceStrings(item, strings);
-    }
-  }
-  return strings;
-}
-
-function hasUnsafeCleanBaseToken(value) {
-  const tokens = String(value)
-    .toLowerCase()
-    .split(/[^a-z0-9.-]+/u)
-    .filter(Boolean);
-  return tokens.some((token) =>
-    KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_TOKENS.has(token),
-  );
-}
-
-function classifyUnsafeCleanBaseSource(value) {
-  const values = collectCleanBaseSourceStrings(value).map((item) =>
-    item.toLowerCase(),
-  );
-  for (const item of values) {
-    if (
-      KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS.some((marker) =>
-        item.includes(marker),
-      )
-    ) {
-      return "known dirty-host";
-    }
-    if (
-      KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS.some((marker) =>
-        item.includes(marker),
-      ) ||
-      hasUnsafeCleanBaseToken(item)
-    ) {
-      return "production machine";
-    }
-  }
-  return null;
-}
-
-function cleanBaseValidationFailure(message, detail = null) {
-  return {
-    schemaVersion: "clean-base-factory-acceptance-validation/v1",
-    kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
-    status: "failed",
-    asserted: false,
-    message,
-    detail,
-  };
-}
-
-function sameStringArray(actual, expected) {
-  return (
-    Array.isArray(actual) &&
-    actual.length === expected.length &&
-    expected.every((value, index) => actual[index] === value)
-  );
-}
-
-function sameStringMap(actual, expected) {
-  if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
-    return false;
-  }
-  const actualEntries = Object.entries(actual);
-  const expectedEntries = Object.entries(expected);
-  return (
-    actualEntries.length === expectedEntries.length &&
-    expectedEntries.every(([key, value]) => actual[key] === value)
-  );
-}
-
-export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
-  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must be a JSON object",
-    );
-  }
-  if (
-    evidence.schemaVersion !==
-    CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION
-  ) {
-    return cleanBaseValidationFailure(
-      `clean-base evidence requires schemaVersion ${CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION}`,
-    );
-  }
-  if (evidence.kind !== CLEAN_BASE_FACTORY_ACCEPTANCE_KIND) {
-    return cleanBaseValidationFailure(
-      `clean-base evidence requires kind ${CLEAN_BASE_FACTORY_ACCEPTANCE_KIND}`,
-    );
-  }
-  if (evidence.result !== "passed" || evidence.ok !== true) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence result must be passed with ok true",
-    );
-  }
-  if (evidence.dryRun === true || evidence.planOnly === true) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must be verifier output, not dry-run or plan output",
-    );
-  }
-  const source = evidence.source;
-  if (!source || typeof source !== "object" || Array.isArray(source)) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires structured source",
-    );
-  }
-  if (source.kind !== "clean-windows-base") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence source.kind must be clean-windows-base",
-    );
-  }
-  const sourceUri = String(source.uri ?? "").trim();
-  if (sourceUri.length === 0) {
-    return cleanBaseValidationFailure("clean-base evidence source.uri missing");
-  }
-  const sourceRefusal = classifyUnsafeCleanBaseSource(source);
-  if (sourceRefusal) {
-    return cleanBaseValidationFailure(
-      `clean-base evidence refuses ${sourceRefusal} source`,
-      source,
-    );
-  }
-  const runtimeImageProfile = evidence.runtimeImageProfile;
-  if (!new Set(["production", "testbed"]).has(runtimeImageProfile)) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires an explicit production or testbed runtimeImageProfile",
-    );
-  }
-  const factoryWindowsBaselinePolicy = evidence.factoryWindowsBaselinePolicy;
-  if (
-    !factoryWindowsBaselinePolicy ||
-    typeof factoryWindowsBaselinePolicy !== "object" ||
-    Array.isArray(factoryWindowsBaselinePolicy)
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires Factory Windows Baseline policy",
-    );
-  }
-  if (
-    factoryWindowsBaselinePolicy.schemaVersion !==
-      FACTORY_WINDOWS_BASELINE_POLICY.schemaVersion ||
-    factoryWindowsBaselinePolicy.model !== FACTORY_WINDOWS_BASELINE_POLICY.model
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence Factory Windows Baseline policy schema/model mismatch",
-    );
-  }
-  if (
-    !sameStringArray(
-      factoryWindowsBaselinePolicy.requiredCapabilities,
-      FACTORY_WINDOWS_BASELINE_POLICY.requiredCapabilities,
-    )
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence Factory Windows Baseline policy requiredCapabilities mismatch",
-    );
-  }
-  if (
-    !sameStringArray(
-      factoryWindowsBaselinePolicy.disabledRuntimeInterference,
-      FACTORY_WINDOWS_BASELINE_POLICY.disabledRuntimeInterference,
-    )
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence Factory Windows Baseline policy disabledRuntimeInterference mismatch",
-    );
-  }
-  if (
-    !sameStringMap(
-      factoryWindowsBaselinePolicy.evidenceFields,
-      FACTORY_WINDOWS_BASELINE_POLICY.evidenceFields,
-    )
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence Factory Windows Baseline policy evidenceFields mismatch",
-    );
-  }
-
-  const daemonSha256 = evidence.artifacts?.daemonSha256;
-  const machineUiSha256 = evidence.artifacts?.machineUiSha256;
-  if (!SHA256_PATTERN.test(String(daemonSha256 ?? ""))) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires daemon SHA-256 hash",
-    );
-  }
-  if (!SHA256_PATTERN.test(String(machineUiSha256 ?? ""))) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires machine UI SHA-256 hash",
-    );
-  }
-
-  const readiness = evidence.readiness;
-  if (!readiness || typeof readiness !== "object") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires readiness summary",
-    );
-  }
-  if (readiness.cleanBasePreparationAcceptance !== "passed") {
-    return cleanBaseValidationFailure(
-      "clean-base readiness must pass cleanBasePreparationAcceptance",
-    );
-  }
-  if (readiness.runtimeReady !== "not_asserted") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must not assert runtimeReady",
-    );
-  }
-  if (readiness.simulatedHardwareReady !== "not_asserted") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must not assert simulatedHardwareReady",
-    );
-  }
-  if (readiness.sellReady !== "not_asserted") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence must not assert sellReady",
-    );
-  }
-
-  const assertions = evidence.assertions;
-  if (!assertions || typeof assertions !== "object") {
-    return cleanBaseValidationFailure(
-      "clean-base evidence requires assertions",
-    );
-  }
-  const failedAssertions = REQUIRED_CLEAN_BASE_ASSERTIONS.filter(
-    (name) => assertions[name]?.status !== "passed",
-  );
-  if (failedAssertions.length > 0) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence required assertions are not all passed",
-      { failedAssertions },
-    );
-  }
-  const display = assertions.displayOrientationResolution;
-  if (
-    display.orientation !== "portrait" ||
-    display.widthPx !== 1080 ||
-    display.heightPx !== 1920
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base display assertion must be 1080x1920 portrait",
-    );
-  }
-  const hardwareProfileMode = assertions.hardwareProfileMode;
-  if (hardwareProfileMode.profile !== runtimeImageProfile) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence runtimeImageProfile must match the hardware profile assertion",
-    );
-  }
-  const expectedHardwareMode =
-    hardwareProfileMode.profile === "production" ? "production" : "simulated";
-  if (hardwareProfileMode.mode !== expectedHardwareMode) {
-    return cleanBaseValidationFailure(
-      "clean-base evidence hardware mode must match its factory profile",
-    );
-  }
-  const windowsUpdatePolicy = assertions.windowsUpdatePolicy;
-  if (
-    windowsUpdatePolicy.automaticUpdateInstallation !== "disabled" ||
-    windowsUpdatePolicy.automaticRestart !== "disabled"
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base Windows update policy must disable automatic installation and automatic restart",
-    );
-  }
-  const powerPolicy = assertions.powerPolicy;
-  if (
-    powerPolicy.sleep !== "disabled" ||
-    powerPolicy.hibernation !== "disabled"
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base power policy must disable sleep and hibernation",
-    );
-  }
-  const bootPolicy = assertions.bootPolicy;
-  if (bootPolicy.testsigning !== "off") {
-    return cleanBaseValidationFailure(
-      "clean-base boot policy must verify testsigning off",
-    );
-  }
-  const securityPosture = assertions.securityPosture;
-  if (
-    securityPosture.defender !== "enabled" ||
-    securityPosture.firewall !== "enabled" ||
-    securityPosture.fileAndPrinterSharing !== "not_enabled" ||
-    !Array.isArray(securityPosture.enabledVemInboundRules) ||
-    securityPosture.enabledVemInboundRules.length !== 0
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base security posture must preserve Defender/firewall and avoid SMB/File Sharing maintenance ingress",
-    );
-  }
-  const remoteMaintenance = assertions.factoryRemoteMaintenanceCapability;
-  if (
-    remoteMaintenance.opensshServer !== "available" ||
-    remoteMaintenance.tailscale !== "not_installed_by_default" ||
-    remoteMaintenance.kioskRemoteAccess !== "denied" ||
-    remoteMaintenance.sshdConfigDeniesKioskUser !== true ||
-    remoteMaintenance.maintenanceInOpenSshUsers !== true ||
-    remoteMaintenance.kioskInOpenSshUsers !== false ||
-    remoteMaintenance.kioskInRemoteDesktopUsers !== false
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base remote maintenance capability must preserve maintenance access and explicitly deny kiosk SSH",
-    );
-  }
-  const consumerExperience = assertions.consumerExperienceInterference;
-  if (
-    consumerExperience.componentAutostart !== "policy_configured" ||
-    consumerExperience.foregroundPopups !== "policy_configured" ||
-    consumerExperience.storeAutomaticAppUpdates !== "disabled" ||
-    consumerExperience.kioskForegroundTakeover !==
-      "best_effort_policy_configured"
-  ) {
-    return cleanBaseValidationFailure(
-      "clean-base consumer-experience interference must be configured as best-effort policy evidence",
-    );
-  }
-  const startup = assertions.startupReachesBringUpOrSalesEligible;
-  if (!["bring_up", "sales_eligible"].includes(String(startup.state ?? ""))) {
-    return cleanBaseValidationFailure(
-      "clean-base startup assertion must reach bring_up or sales_eligible",
-    );
-  }
-
-  return {
-    schemaVersion: "clean-base-factory-acceptance-validation/v1",
-    kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
-    status: "passed",
-    asserted: true,
-    source,
-    runtimeImageProfile,
-    readiness,
-    factoryWindowsBaselinePolicy,
-    requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
-  };
-}
-
-export function validateCleanBaseFactoryAcceptanceEvidenceFile(path) {
-  const evidence = JSON.parse(readFileSync(path, "utf8"));
-  return validateCleanBaseFactoryAcceptanceEvidence(evidence);
-}
-
-export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
-  const runId = normalizeEphemeralRunId(options.runId);
-  const cleanBaseSource = requireCleanBaseSource(options.cleanBaseSource);
-  const cleanBaseSnapshot = String(options.cleanBaseSnapshot ?? "").trim();
-  const runtimeImageProfile = String(options.runtimeImageProfile ?? "").trim();
-  const visionInputs =
-    runtimeImageProfile === "production"
-      ? {
-          factoryMediaRoot: String(options.factoryMediaRoot ?? "").trim(),
-          visionConfigurationSourcePath: String(
-            options.visionConfigurationSourcePath ?? "",
-          ).trim(),
-        }
-      : null;
-  if (
-    visionInputs &&
-    (!visionInputs.factoryMediaRoot ||
-      !visionInputs.visionConfigurationSourcePath)
-  ) {
-    throw new Error(
-      "production clean-base factory acceptance requires --factory-media-root and --vision-configuration-source-path",
-    );
-  }
-  const artifacts = resolveAcceptanceArtifactHashes(
-    options,
-    "clean-base factory acceptance",
-  );
-  const evidenceRoot = `${
-    options.evidenceRoot ?? DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT
-  }/${runId}`;
-  const report = `${evidenceRoot}/${CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME}`;
-
-  return {
-    schemaVersion: "clean-base-factory-acceptance-plan/v1",
-    mode: "clean-base-factory-acceptance",
-    runId,
-    cleanBase: {
-      source: cleanBaseSource,
-      snapshot: cleanBaseSnapshot || null,
-      requiresCleanWindowsBase: true,
-      ...(visionInputs ? { visionInputs } : {}),
-      factoryWindowsBaselinePolicy: structuredClone(
-        FACTORY_WINDOWS_BASELINE_POLICY,
-      ),
-      requiredBaseline: {
-        displayOrientationResolution: {
-          orientation: "portrait",
-          widthPx: 1080,
-          heightPx: 1920,
-        },
-        sshReachability: "required",
-        tailscaleDefaultAbsent: "required",
-        sleepDisabled: "required",
-        testsigningOff: "required",
-        autologonConfigured: "required",
-        startupLauncherMode: ["shell_launcher", "scheduled_task"],
-        daemonService: "VemVendingDaemon",
-        uiLauncherTask: "VEMMachineUI",
-        runtimeResetGateClean: "required",
-        hardwareProfileMode: "required",
-        startupReachesBringUpOrSalesEligible: "required",
-      },
-    },
-    evidenceRoot,
-    report,
-    reportContract: {
-      schemaVersion: CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION,
-      kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
-      sourceKind: "clean-windows-base",
-      factoryWindowsBaselinePolicy: structuredClone(
-        FACTORY_WINDOWS_BASELINE_POLICY,
-      ),
-      requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
-      dryRunAccepted: false,
-      resultRequired: "passed",
-    },
-    artifacts: {
-      cleanBaseFactoryAcceptance: report,
-      logsRoot: `${evidenceRoot}/logs`,
-      daemonSha256: artifacts.daemonSha256,
-      machineUiSha256: artifacts.machineUiSha256,
-      source: artifacts.source,
-    },
-    preflightAbsenceProbes: structuredClone(
-      CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES,
-    ),
-    steps: [
-      {
-        name: "record clean base source",
-        status: "planned",
-        destructive: false,
-      },
-      {
-        name: "verify clean-base preflight absence",
-        status: "planned",
-        destructive: false,
-      },
-      {
-        name: "prepare factory runtime",
-        status: "planned",
-        destructive: true,
-        requires: ["--allow-clean-base-prepare"],
-      },
-      {
-        name: "verify prepared runtime",
-        status: "planned",
-        destructive: false,
-      },
-      {
-        name: "capture reusable snapshot and report",
-        status: "planned",
-        destructive: false,
-      },
-    ],
-    readinessLevels: {
-      cleanBasePreparationAcceptance: "asserted_by_clean_base_step",
-      runtimeReady: "not_asserted",
-      simulatedHardwareReady: "not_asserted",
-      sellReady: "not_asserted",
-    },
   };
 }
 
@@ -2611,12 +1295,6 @@ export function buildAcceptanceScriptCommand(
   }
   if (options.sshHostKeyAlias) {
     command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
-  }
-  if (options.maintenanceIngressSourceAllowlist) {
-    command.push(
-      "--maintenance-ingress-source-allowlist",
-      options.maintenanceIngressSourceAllowlist,
-    );
   }
   if (options.expectedTestbedUser) {
     command.push("--expected-testbed-user", options.expectedTestbedUser);
@@ -2720,7 +1398,9 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
     typeof task.xmlBase64 !== "string" ||
     !/^[a-f0-9]{64}$/i.test(task.xmlSha256 ?? "")
   ) {
-    throw new Error("installed kiosk cleanup requires the complete original VEMMachineUI task XML");
+    throw new Error(
+      "installed kiosk cleanup requires the complete original VEMMachineUI task XML",
+    );
   }
   const taskXmlBase64 = task.xmlBase64.replaceAll("'", "''");
   const taskXmlSha256 = task.xmlSha256.toLowerCase();
@@ -2983,8 +1663,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   const screenshotsRoot = `${evidenceRoot}/screenshots`;
   const sessionsRoot = `${evidenceRoot}/sessions`;
   const ephemeralPlatformEvidence = `${evidenceRoot}/ephemeral-platform.json`;
-  const cleanBaseFactoryAcceptance =
-    options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
   const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
   const postSaleRuntimeAcceptanceReport = `${evidenceRoot}/post-sale-runtime-acceptance-response.json`;
   const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
@@ -3071,9 +1749,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       saleComplete: `${evidenceRoot}/failure-matrix/dispense-failed/sale-complete-response.json`,
     },
   };
-  const serialLifecycleReference =
-    options.maintenanceEndpointPolicy?.lifecycleReference ??
-    `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
+  const serialLifecycleReference = `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
   const buildInstalledKioskSaleCommand = (profile, out, alreadyClaimed) => {
     const command = [
       process.execPath,
@@ -3114,13 +1790,10 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
         "--runtime-guest-endpoint-json",
         options.runtimeGuestEndpointJson,
         "--expected-testbed-user",
-        options.expectedTestbedUser ?? DEFAULT_CONTROLLED_MAINTENANCE_USER,
+        options.expectedTestbedUser ?? "Admin",
       );
     } else {
-      command.push(
-        "--remote",
-        options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
-      );
+      command.push("--remote", options.remote ?? DEFAULT_RUNTIME_REMOTE);
       if (options.sshPort) command.push("--ssh-port", String(options.sshPort));
     }
     if (options.sshKnownHostsPath) {
@@ -3128,18 +1801,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     }
     if (options.sshHostKeyAlias) {
       command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
-    }
-    if (options.maintenanceRelaySession !== undefined) {
-      command.push(
-        "--maintenance-relay-session-json",
-        JSON.stringify(options.maintenanceRelaySession),
-      );
-    }
-    if (options.maintenanceEndpointPolicy !== undefined) {
-      command.push(
-        "--maintenance-endpoint-policy-json",
-        JSON.stringify(options.maintenanceEndpointPolicy),
-      );
     }
     return command;
   };
@@ -3280,53 +1941,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     "--out",
     serialConformanceReport,
   ];
-  if (options.maintenanceEndpointPolicy !== undefined) {
-    if (options.maintenanceRelaySession === undefined)
-      throw new Error(
-        "VM runtime serial conformance endpoint policy requires a maintenance relay session",
-      );
-  }
-  if (options.maintenanceRelaySession !== undefined) {
-    saleFlowCommand.splice(
-      saleFlowCommand.indexOf("--out"),
-      0,
-      "--maintenance-relay-session-json",
-      JSON.stringify(options.maintenanceRelaySession),
-    );
-    if (options.maintenanceEndpointPolicy !== undefined)
-      saleFlowCommand.splice(
-        saleFlowCommand.indexOf("--out"),
-        0,
-        "--maintenance-endpoint-policy-json",
-        JSON.stringify(options.maintenanceEndpointPolicy),
-      );
-  }
-
-  const cleanBaseStep = cleanBaseFactoryAcceptance
-    ? [
-        {
-          name: "clean-base factory preparation acceptance",
-          mode: "clean-base-factory-acceptance",
-          status: "planned",
-          command: [
-            process.execPath,
-            "scripts/testbed/win10-vem-e2e.mjs",
-            "--mode",
-            "validate-clean-base-evidence",
-            "--clean-base-evidence",
-            cleanBaseFactoryAcceptance,
-          ],
-          report: cleanBaseFactoryAcceptance,
-          blocksOnFailure: false,
-          evidenceContract: {
-            schemaVersion: CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION,
-            kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
-            requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
-          },
-        },
-      ]
-    : [];
-
   return {
     schemaVersion: "vm-runtime-acceptance-plan/v1",
     mode: "vm-runtime-acceptance",
@@ -3336,7 +1950,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       machineCode,
       machineCodePrefix,
       platformTarget,
-      remote: options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
+      remote: options.remote ?? DEFAULT_RUNTIME_REMOTE,
     },
     evidenceRoot,
     artifacts: {
@@ -3346,7 +1960,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       screenshotsRoot,
       sessionsRoot,
       ephemeralPlatformEvidence,
-      cleanBaseFactoryAcceptance,
       runtimeBase: options.approvedRuntimeBase ?? null,
       runtimeAcceptance: runtimeAcceptanceReport,
       postSaleRuntimeAcceptance: postSaleRuntimeAcceptanceReport,
@@ -3374,15 +1987,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
     readinessLevels: {
       runtimeBase: "asserted_by_overlay_restore",
-      cleanBasePreparationAcceptance: cleanBaseFactoryAcceptance
-        ? "asserted_by_clean_base_step"
-        : "not_asserted",
       runtimeReady: "asserted_by_runtime_acceptance_step",
       simulatedHardwareReady: "asserted_by_sale_flow_step",
       sellReady: "not_asserted",
     },
     steps: [
-      ...cleanBaseStep,
       {
         name: "ephemeral platform setup",
         mode: "prepare-ephemeral-platform",
@@ -3401,21 +2010,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
           mqttUrl,
           "--machine-code-prefix",
           machineCodePrefix,
-          ...(options.maintenanceRelayPeerId
-            ? ["--maintenance-relay-peer-id", options.maintenanceRelayPeerId]
-            : []),
-          ...(options.maintenanceRelayPublicKey
-            ? [
-                "--maintenance-relay-public-key",
-                options.maintenanceRelayPublicKey,
-              ]
-            : []),
-          ...(options.maintenanceRelayTunnelAddress
-            ? [
-                "--maintenance-relay-tunnel-address",
-                options.maintenanceRelayTunnelAddress,
-              ]
-            : []),
           "--allow-ephemeral-target",
           "--allow-mock-payment",
           "--reset",
@@ -3510,7 +2104,12 @@ function readJsonIfPresent(path) {
 
 function readFailureMatrixArtifacts(paths) {
   if (!paths || typeof paths !== "object") return null;
-  const artifactKinds = ["report", "salePrepare", "saleComplete", "runtimeRecovery"];
+  const artifactKinds = [
+    "report",
+    "salePrepare",
+    "saleComplete",
+    "runtimeRecovery",
+  ];
   return Object.fromEntries(
     Object.entries(paths).map(([failureMode, entries]) => [
       failureMode,
@@ -3594,10 +2193,6 @@ function sanitizeReportValue(value) {
       ];
     }),
   );
-}
-
-export function sanitizeFactoryPreclaimReport(report) {
-  return sanitizeReportValue(report);
 }
 
 function sanitizeVmRuntimeAcceptancePlan(plan) {
@@ -3729,311 +2324,6 @@ function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
   };
 }
 
-function normalizeDeliveryEvidenceItems(items) {
-  return Array.isArray(items)
-    ? items
-        .filter((item) => item !== null && item !== undefined)
-        .map((item) =>
-          typeof item === "string" ? { path: item } : sanitizeReportValue(item),
-        )
-    : [];
-}
-
-function deliveryEvidenceIndex(index, missingReason, itemFieldName) {
-  if (index && typeof index === "object" && !Array.isArray(index)) {
-    const items = normalizeDeliveryEvidenceItems(
-      Array.isArray(index[itemFieldName]) ? index[itemFieldName] : index.items,
-    );
-    const status =
-      typeof index.status === "string"
-        ? index.status
-        : items.length > 0
-          ? "indexed"
-          : "missing";
-    return {
-      ...sanitizeReportValue(index),
-      status,
-      missingReason:
-        items.length > 0 ? null : (index.missingReason ?? missingReason),
-    };
-  }
-  const normalizedItems = normalizeDeliveryEvidenceItems(index);
-  return {
-    status: normalizedItems.length > 0 ? "indexed" : "missing",
-    missingReason: normalizedItems.length > 0 ? null : missingReason,
-    [itemFieldName]: normalizedItems,
-  };
-}
-
-function deliveryReadinessAssertion(status) {
-  return {
-    status: status ?? "missing",
-    asserted: status === "passed",
-  };
-}
-
-function cleanBasePreparationLogs(cleanBaseAcceptance) {
-  const evidence = cleanBaseAcceptance.evidence ?? {};
-  const logs = [];
-  if (evidence.preparationOutput) {
-    logs.push({
-      kind: "factory-runtime-preparation",
-      path: evidence.preparationOutput,
-    });
-  }
-  if (evidence.verificationAction) {
-    logs.push({
-      kind: "factory-runtime-verification-action",
-      path: evidence.verificationAction,
-    });
-  }
-  for (const action of Array.isArray(evidence.actions)
-    ? evidence.actions
-    : []) {
-    if (action?.outputPath) {
-      logs.push({
-        kind: String(action.name ?? "factory-action-output"),
-        path: action.outputPath,
-        status: action.status ?? "unknown",
-      });
-    }
-  }
-  return {
-    status: logs.length > 0 ? "indexed" : "missing",
-    missingReason: logs.length > 0 ? null : "no_preparation_logs",
-    logs: sanitizeReportValue(logs),
-  };
-}
-
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function validateFactoryImageDeliveryUnitCleanBaseEvidence(
-  cleanBaseAcceptance,
-) {
-  const baseValidation =
-    validateCleanBaseFactoryAcceptanceEvidence(cleanBaseAcceptance);
-  if (baseValidation.status !== "passed") {
-    return baseValidation;
-  }
-
-  const missingEvidence = [];
-  const evidence = cleanBaseAcceptance.evidence;
-  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
-    missingEvidence.push("evidence");
-  } else {
-    if (
-      evidence.runtimeImageProfile !== cleanBaseAcceptance.runtimeImageProfile
-    ) {
-      missingEvidence.push("evidence.runtimeImageProfile");
-    }
-    if (!isNonEmptyString(evidence.preparationOutput)) {
-      missingEvidence.push("evidence.preparationOutput");
-    }
-    if (!isNonEmptyString(evidence.verificationAction)) {
-      missingEvidence.push("evidence.verificationAction");
-    }
-    if (!isNonEmptyString(evidence.verifierEvidence)) {
-      missingEvidence.push("evidence.verifierEvidence");
-    }
-    const verification = evidence.factoryRuntimeVerification;
-    if (
-      !verification ||
-      typeof verification !== "object" ||
-      Array.isArray(verification)
-    ) {
-      missingEvidence.push("evidence.factoryRuntimeVerification");
-    } else {
-      if (verification.ok !== true) {
-        missingEvidence.push("evidence.factoryRuntimeVerification.ok");
-      }
-      if (!isNonEmptyString(verification.manifestPath)) {
-        missingEvidence.push(
-          "evidence.factoryRuntimeVerification.manifestPath",
-        );
-      }
-      const manifest = verification.checks?.manifest;
-      if (
-        !manifest ||
-        typeof manifest !== "object" ||
-        Array.isArray(manifest)
-      ) {
-        missingEvidence.push(
-          "evidence.factoryRuntimeVerification.checks.manifest",
-        );
-      } else {
-        for (const field of [
-          "schemaVersion",
-          "runtimeImageProfile",
-          "hardwareMode",
-          "hardwareModel",
-          "topologyIdentity",
-          "topologyVersion",
-        ]) {
-          if (!isNonEmptyString(manifest[field])) {
-            missingEvidence.push(
-              `evidence.factoryRuntimeVerification.checks.manifest.${field}`,
-            );
-          }
-        }
-        if (
-          manifest.runtimeImageProfile !==
-          cleanBaseAcceptance.runtimeImageProfile
-        ) {
-          missingEvidence.push(
-            "evidence.factoryRuntimeVerification.checks.manifest.runtimeImageProfile mismatch",
-          );
-        }
-      }
-    }
-  }
-
-  if (missingEvidence.length > 0) {
-    return cleanBaseValidationFailure(
-      "Factory Image Delivery Unit requires completed prep run evidence",
-      { missingEvidence },
-    );
-  }
-
-  return baseValidation;
-}
-
-function readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, directory) {
-  if (!cleanBaseAcceptancePath) {
-    return null;
-  }
-  return readJsonIfPresent(
-    join(dirname(cleanBaseAcceptancePath), directory, "index.json"),
-  );
-}
-
-export function buildFactoryImageDeliveryUnitReport({
-  cleanBaseAcceptance,
-  cleanBaseAcceptancePath,
-  reportPath = null,
-  screenshots = null,
-  sessions = null,
-} = {}) {
-  const validation =
-    validateFactoryImageDeliveryUnitCleanBaseEvidence(cleanBaseAcceptance);
-  if (validation.status !== "passed") {
-    throw new Error(
-      `Factory Image Delivery Unit requires completed clean-base acceptance: ${validation.message}`,
-    );
-  }
-
-  const evidence = cleanBaseAcceptance.evidence ?? {};
-  const factoryRuntimeVerification =
-    evidence.factoryRuntimeVerification ?? null;
-  const manifestPath =
-    factoryRuntimeVerification?.manifestPath ??
-    evidence.factoryManifest ??
-    "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json";
-  const manifest = factoryRuntimeVerification?.checks?.manifest ?? null;
-  const readiness = cleanBaseAcceptance.readiness ?? {};
-  const screenshotEvidence =
-    screenshots ??
-    evidence.screenshots ??
-    readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, "screenshots");
-  const sessionEvidence =
-    sessions ??
-    evidence.sessions ??
-    readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, "sessions");
-  const report = {
-    schemaVersion: FACTORY_IMAGE_DELIVERY_UNIT_REPORT_SCHEMA_VERSION,
-    kind: FACTORY_IMAGE_DELIVERY_UNIT_KIND,
-    runId: cleanBaseAcceptance.runId ?? null,
-    result: cleanBaseAcceptance.result,
-    ok: cleanBaseAcceptance.ok === true,
-    reportPath,
-    imageSource: cleanBaseAcceptance.source,
-    runtimeImageProfile: cleanBaseAcceptance.runtimeImageProfile,
-    declaredBuildInputs: {
-      source: cleanBaseAcceptance.source,
-      artifacts: {
-        daemonSha256: cleanBaseAcceptance.artifacts?.daemonSha256,
-        machineUiSha256: cleanBaseAcceptance.artifacts?.machineUiSha256,
-        webView2Sidecar: cleanBaseAcceptance.artifacts?.webView2Sidecar,
-      },
-      factoryManifest: {
-        path: manifestPath,
-        schemaVersion: manifest?.schemaVersion ?? null,
-        runtimeImageProfile: manifest?.runtimeImageProfile ?? null,
-        hardwareMode: manifest?.hardwareMode ?? null,
-        hardwareModel: manifest?.hardwareModel ?? null,
-        topologyIdentity: manifest?.topologyIdentity ?? null,
-        topologyVersion: manifest?.topologyVersion ?? null,
-      },
-      factoryWindowsBaselinePolicy:
-        cleanBaseAcceptance.factoryWindowsBaselinePolicy,
-    },
-    artifacts: {
-      daemonSha256: cleanBaseAcceptance.artifacts?.daemonSha256,
-      machineUiSha256: cleanBaseAcceptance.artifacts?.machineUiSha256,
-      source: cleanBaseAcceptance.artifacts?.source ?? "unknown",
-      webView2Sidecar: cleanBaseAcceptance.artifacts?.webView2Sidecar ?? null,
-    },
-    factoryManifest: {
-      path: manifestPath,
-      runtimeImageProfile: manifest?.runtimeImageProfile ?? null,
-      summary: manifest,
-    },
-    preparationLogs: cleanBasePreparationLogs(cleanBaseAcceptance),
-    verifierEvidence: {
-      status: evidence.verifierEvidence ? "indexed" : "missing",
-      missingReason: evidence.verifierEvidence
-        ? null
-        : "no_verifier_evidence_path",
-      factoryRuntimeVerification: {
-        path: evidence.verifierEvidence ?? null,
-        summary: factoryRuntimeVerification
-          ? {
-              ok: factoryRuntimeVerification.ok ?? null,
-              manifestPath: factoryRuntimeVerification.manifestPath ?? null,
-              failures: factoryRuntimeVerification.failures ?? [],
-            }
-          : null,
-      },
-      verificationAction: evidence.verificationAction
-        ? { path: evidence.verificationAction }
-        : null,
-    },
-    cleanBaseAcceptanceReport: {
-      path: cleanBaseAcceptancePath ?? null,
-      schemaVersion: cleanBaseAcceptance.schemaVersion,
-      kind: cleanBaseAcceptance.kind,
-      result: cleanBaseAcceptance.result,
-      ok: cleanBaseAcceptance.ok === true,
-    },
-    evidenceReview: {
-      screenshots: deliveryEvidenceIndex(
-        screenshotEvidence,
-        "no_screenshot_artifacts",
-        "screenshots",
-      ),
-      sessions: deliveryEvidenceIndex(
-        sessionEvidence,
-        "no_session_evidence",
-        "sessions",
-      ),
-    },
-    readiness: {
-      cleanBasePreparationAcceptance: deliveryReadinessAssertion(
-        readiness.cleanBasePreparationAcceptance,
-      ),
-      runtimeReady: deliveryReadinessAssertion(readiness.runtimeReady),
-      simulatedHardwareReady: deliveryReadinessAssertion(
-        readiness.simulatedHardwareReady,
-      ),
-      sellReady: deliveryReadinessAssertion(readiness.sellReady),
-    },
-    diagnostics: sanitizeReportValue(cleanBaseAcceptance.diagnostics ?? []),
-  };
-
-  return sanitizeReportValue(report);
-}
-
 export function writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
   const indexes = buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
   mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
@@ -4049,77 +2339,6 @@ export function writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
     "utf8",
   );
   return indexes;
-}
-
-function evaluateCleanBasePreparationStep(step) {
-  if (!step) {
-    return {
-      status: "not_asserted",
-      asserted: false,
-      diagnostic: null,
-      validation: null,
-    };
-  }
-
-  const validation = validateCleanBaseFactoryAcceptanceEvidence(step.parsed);
-  if (step.status === "passed" && validation.status === "passed") {
-    return {
-      status: "passed",
-      asserted: true,
-      diagnostic: null,
-      validation,
-    };
-  }
-
-  const status = step.status === "blocked" ? "blocked" : "failed";
-  const validationMessage =
-    validation.status === "passed"
-      ? `${step.name} ${step.status}`
-      : validation.message;
-  return {
-    status,
-    asserted: false,
-    validation,
-    diagnostic: {
-      code:
-        validation.status === "passed"
-          ? `${step.mode}_${status}`
-          : `${step.mode}_invalid`,
-      message:
-        validation.status === "passed"
-          ? `${step.name} ${status}`
-          : `${step.name} invalid`,
-      detail: validationMessage,
-    },
-  };
-}
-
-function evaluateApprovedPreclaimBaseStep(step) {
-  const report = step?.parsed;
-  const validEvidence =
-    report?.ok === true &&
-    report?.schemaVersion === "factory-preclaim-verification/v1" &&
-    report?.kind === "factory-preclaim-verification";
-  if (step?.status === "passed" && validEvidence) {
-    return { status: "passed", asserted: true, diagnostic: null };
-  }
-  const status = step?.status === "blocked" ? "blocked" : "failed";
-  const evidenceInvalid = step?.status === "passed" && !validEvidence;
-  return {
-    status,
-    asserted: false,
-    diagnostic: {
-      code: evidenceInvalid
-        ? "factory-preclaim-verify_invalid"
-        : `factory-preclaim-verify_${status}`,
-      message: evidenceInvalid
-        ? "approved preclaim base verification returned invalid evidence"
-        : "approved preclaim base verification failed",
-      detail: evidenceInvalid
-        ? "expected ok=true and factory-preclaim-verification/v1 schema and kind"
-        : (step?.error ?? "approved preclaim base verification is missing"),
-    },
-  };
 }
 
 function windowsComPathFromGuestIdentity(identity) {
@@ -4433,7 +2652,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const scannerTimeout = failureByMode.get("scanner-timeout");
   const dispenseFailed = failureByMode.get("dispense-failed");
   const dispenseFailedSale =
-    failureArtifacts?.["dispense-failed"]?.saleComplete?.simulatedHardwareSaleFlow ??
+    failureArtifacts?.["dispense-failed"]?.saleComplete
+      ?.simulatedHardwareSaleFlow ??
     failureArtifacts?.["dispense-failed"]?.saleComplete ??
     null;
   const dispenseFailedSaleFacts = dispenseFailedSale?.sale ?? null;
@@ -4445,13 +2665,17 @@ export function evaluateSimulatedHardwareSerialEvidence({
     dispenseFailed?.vendingCommandId &&
     dispenseFailedSaleFacts?.orderId === dispenseFailed.orderId &&
     dispenseFailedSaleFacts?.paymentId === dispenseFailed.paymentId &&
-    dispenseFailedSaleFacts?.vendingCommandId === dispenseFailed.vendingCommandId &&
+    dispenseFailedSaleFacts?.vendingCommandId ===
+      dispenseFailed.vendingCommandId &&
     ["succeeded", "refund_pending", "refunded"].includes(
       String(dispenseFailedSaleFacts?.paymentStatus ?? ""),
     ) &&
-    ["dispense_failed", "refund_pending", "refunded", "manual_handling"].includes(
-      String(dispenseFailedSaleFacts?.orderStatus ?? ""),
-    ) &&
+    [
+      "dispense_failed",
+      "refund_pending",
+      "refunded",
+      "manual_handling",
+    ].includes(String(dispenseFailedSaleFacts?.orderStatus ?? "")) &&
     dispenseFailedSaleFacts?.customerResult !== "success" &&
     dispenseFailedSaleFacts?.dispenseSucceeded !== true &&
     dispenseFailedPlatform?.fulfillmentStatus === "dispense_failed" &&
@@ -4540,11 +2764,13 @@ export function evaluateSimulatedHardwareSerialEvidence({
                 vendingCommandId: dispenseFailed.vendingCommandId ?? null,
                 orderStatus: dispenseFailedSaleFacts?.orderStatus ?? null,
                 paymentStatus: dispenseFailedSaleFacts?.paymentStatus ?? null,
-                fulfillmentStatus: dispenseFailedPlatform?.fulfillmentStatus ?? null,
+                fulfillmentStatus:
+                  dispenseFailedPlatform?.fulfillmentStatus ?? null,
                 stockMovementAccepted:
                   dispenseFailedPlatform?.stockMovementAccepted ?? null,
                 movementStatus:
-                  dispenseFailedPlatform?.postSaleDispenseMovement?.status ?? null,
+                  dispenseFailedPlatform?.postSaleDispenseMovement?.status ??
+                  null,
               }
             : null,
       },
@@ -4780,7 +3006,6 @@ function evaluateDelayedPickupNativeAudioEvidence(step) {
 
 export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
-  const cleanBase = stepMap.get("clean-base factory preparation acceptance");
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
   const saleFlow = stepMap.get("simulated hardware sale flow");
@@ -4790,7 +3015,9 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleIpcRecovery = stepMap.get("installed kiosk sale ipc recovery");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const delayedPickup = stepMap.get("delayed pickup native audio live sale");
-  const failureArtifacts = readFailureMatrixArtifacts(plan?.artifacts?.failureMatrix);
+  const failureArtifacts = readFailureMatrixArtifacts(
+    plan?.artifacts?.failureMatrix,
+  );
   const simulatedHardwareEvidence = evaluateSimulatedHardwareSerialEvidence({
     saleFlow: saleFlow?.parsed,
     serialConformance: saleFlow?.serialConformance,
@@ -4850,14 +3077,11 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       delayedPickupNativeAudio: delayedPickupEvidence.evidence,
     },
   };
-  const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
   const diagnostics = [
-    ...(cleanBaseEvaluation.diagnostic ? [cleanBaseEvaluation.diagnostic] : []),
     ...simulatedHardwareEvidence.diagnostics,
     ...installedKioskEvidence.diagnostics,
     ...steps
       .filter((step) => step.status !== "passed")
-      .filter((step) => step !== cleanBase)
       .map((step) => ({
         code:
           step.status === "blocked"
@@ -4880,7 +3104,6 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     steps: steps.map(sanitizeVmRuntimeAcceptanceStep),
     preparationVerifierStatus: "not_asserted",
     bringUpStateProgression: {
-      cleanBasePreparationAcceptance: cleanBaseEvaluation.status,
       runtimeBase: "asserted_by_overlay_restore",
       ephemeralPlatformSetup: ephemeral?.status ?? "missing",
       runtimeAcceptance: runtime?.status ?? "missing",
@@ -4965,10 +3188,6 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
       runtimeBase: {
         status: "asserted_by_overlay_restore",
         asserted: true,
-      },
-      cleanBasePreparationAcceptance: {
-        status: cleanBaseEvaluation.status,
-        asserted: cleanBaseEvaluation.asserted,
       },
       runtimeReady: postSaleRuntime?.parsed?.runtimeAcceptanceReport?.result
         ?.runtimeReady ?? {
@@ -5127,11 +3346,6 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
     }
 
     const report = buildVmRuntimeAcceptanceReport({ plan, steps });
-    if (options.factoryMediaAdmission) {
-      report.factoryMediaAdmission = structuredClone(
-        options.factoryMediaAdmission,
-      );
-    }
     writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
     writeFileSync(
       plan.artifacts.report,
@@ -5192,28 +3406,6 @@ function createRunScopedScannerCodeCopy(source, root, stepIndex) {
   return target;
 }
 
-function runFactoryImageDeliveryUnit(options) {
-  if (!options.cleanBaseEvidence) {
-    throw new Error(
-      "factory-image-delivery-unit requires --clean-base-evidence",
-    );
-  }
-  const cleanBaseAcceptance = JSON.parse(
-    readFileSync(options.cleanBaseEvidence, "utf8"),
-  );
-  const reportPath =
-    options.out ??
-    `${dirname(options.cleanBaseEvidence)}/${FACTORY_IMAGE_DELIVERY_UNIT_FILE_NAME}`;
-  const report = buildFactoryImageDeliveryUnitReport({
-    cleanBaseAcceptance,
-    cleanBaseAcceptancePath: options.cleanBaseEvidence,
-    reportPath,
-  });
-  mkdirSync(dirname(reportPath), { recursive: true });
-  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  return report;
-}
-
 function writeJsonOutput(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -5230,219 +3422,6 @@ function splitTaskName(taskName) {
   };
 }
 
-export function buildFactoryPreclaimVerificationScript(options = {}) {
-  const runId = sanitizeRunId(options.runId);
-  const machineCode = assertTestbedMachineCode(options.machineCode);
-  const verifierPath = "C:\\VEM\\bringup\\scripts\\verify-factory-runtime.ps1";
-  const verifierEvidencePath = `C:\\Windows\\Temp\\vem-factory-preclaim-${runId}.json`;
-  const machineConfigPath =
-    "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json";
-  const oobeStatusPath =
-    "C:\\ProgramData\\VEM\\factory\\oobe-bootstrap-status.json";
-  const cleanupStatusPath =
-    "C:\\ProgramData\\VEM\\factory\\oobe-cleanup-status.json";
-  const deprecatedOobeAnswerPath =
-    "C:\\ProgramData\\VEM\\factory\\oobe-unattend.xml";
-  const retainedKioskAutologonHandoffPath =
-    "C:\\ProgramData\\VEM\\factory\\oobe-kiosk-autologon-password";
-  const identityPaths = [
-    "C:\\ProgramData\\VEM\\provisioning\\machine-profile.json",
-    "C:\\ProgramData\\VEM\\provisioning\\provisioning-profile.json",
-  ];
-  return `
-$ErrorActionPreference = 'Stop'
-$verifierPath = ${psString(verifierPath)}
-$verifierEvidencePath = ${psString(verifierEvidencePath)}
-$machineConfigPath = ${psString(machineConfigPath)}
-$oobeStatusPath = ${psString(oobeStatusPath)}
-$cleanupStatusPath = ${psString(cleanupStatusPath)}
-$deprecatedOobeAnswerPath = ${psString(deprecatedOobeAnswerPath)}
-$retainedKioskAutologonHandoffPath = ${psString(retainedKioskAutologonHandoffPath)}
-$identityPaths = ${psString(JSON.stringify(identityPaths))} | ConvertFrom-Json
-if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
-  throw "Factory ISO verifier is missing: $verifierPath"
-}
-function ConvertTo-BootIdentity($Value) {
-  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
-  return ([DateTime]$Value).ToUniversalTime().ToString('o')
-}
-
-try {
-  $oobeDeadline = (Get-Date).AddMinutes(30)
-  do {
-    $oobeStatus = if (Test-Path -LiteralPath $oobeStatusPath -PathType Leaf) {
-      Get-Content -LiteralPath $oobeStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
-    } else { $null }
-    $cleanupStatus = if (Test-Path -LiteralPath $cleanupStatusPath -PathType Leaf) {
-      Get-Content -LiteralPath $cleanupStatusPath -Raw | ConvertFrom-Json -ErrorAction Stop
-    } else { $null }
-    $setupState = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\Setup' -ErrorAction Stop
-    $cleanupTask = Get-ScheduledTask -TaskName 'VEMFactoryOobeCleanup' -ErrorAction SilentlyContinue
-    $personalizationVolumes = @(Get-Volume -FileSystemLabel 'VEM_PERSONALIZATION' -ErrorAction SilentlyContinue)
-    $retainedKioskAutologonHandoffPresent = Test-Path -LiteralPath $retainedKioskAutologonHandoffPath
-    $currentBoot = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-    $currentBootIdentity = ConvertTo-BootIdentity $currentBoot.LastBootUpTime
-    $console = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-    $consoleUser = [string]$console.UserName
-    $consoleUserName = if ([string]::IsNullOrWhiteSpace($consoleUser)) { $null } else { $consoleUser.Split('\\')[-1] }
-    $activeVemKioskConsoleSession = $consoleUserName -ceq 'VEMKiosk'
-    $rebootOriginBootIdentity = if ($null -ne $cleanupStatus) { ConvertTo-BootIdentity $cleanupStatus.rebootOriginBootIdentity } else { $null }
-    $completedBootIdentity = if ($null -ne $cleanupStatus) { ConvertTo-BootIdentity $cleanupStatus.completedBootIdentity } else { $null }
-    $completedBootProofIsPostReboot =
-      -not [string]::IsNullOrWhiteSpace($completedBootIdentity) -and
-      $completedBootIdentity -cne $rebootOriginBootIdentity
-    $currentBootIsPostReboot =
-      -not [string]::IsNullOrWhiteSpace([string]$currentBootIdentity) -and
-      $currentBootIdentity -cne $rebootOriginBootIdentity
-    $cleanupComplete =
-      $null -ne $cleanupStatus -and
-      $cleanupStatus.schemaVersion -ceq 'vem-factory-oobe-cleanup-status/v1' -and
-      $cleanupStatus.phase -ceq 'complete' -and
-      -not [string]::IsNullOrWhiteSpace($rebootOriginBootIdentity) -and
-      $completedBootProofIsPostReboot -and
-      $currentBootIsPostReboot -and
-      [string]$cleanupStatus.kioskConsoleSession.user -ceq 'VEMKiosk'
-    $oobeComplete =
-      $null -ne $oobeStatus -and
-      $oobeStatus.state -eq 'succeeded' -and
-      $oobeStatus.stage -eq 'complete' -and
-      [int]$setupState.OOBEInProgress -eq 0 -and
-      [int]$setupState.SystemSetupInProgress -eq 0 -and
-      [int]$setupState.SetupType -eq 0 -and
-    [string]::IsNullOrWhiteSpace([string]$setupState.UnattendFile) -and
-    -not (Test-Path -LiteralPath $deprecatedOobeAnswerPath) -and
-      -not $retainedKioskAutologonHandoffPresent -and
-      $null -eq (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue) -and
-      $null -eq $cleanupTask -and
-      $personalizationVolumes.Count -eq 0 -and
-      $cleanupComplete -and
-      $activeVemKioskConsoleSession
-    if ($oobeComplete) { break }
-    Start-Sleep -Seconds 10
-  } while ((Get-Date) -lt $oobeDeadline)
-
-  $factoryVerificationJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifierPath -EvidencePath $verifierEvidencePath
-  $factoryVerifierExit = $LASTEXITCODE
-  $factoryVerification = $factoryVerificationJson | ConvertFrom-Json
-  $identityFiles = @($identityPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
-  $machineConfig = [ordered]@{
-    exists = Test-Path -LiteralPath $machineConfigPath -PathType Leaf
-    structurallyValid = $false
-    unclaimed = $false
-    identityFields = @()
-    credentialFields = @()
-  }
-  if ($machineConfig.exists) {
-    try {
-      $machineConfigDocument = Get-Content -LiteralPath $machineConfigPath -Raw | ConvertFrom-Json -ErrorAction Stop
-      $machineCodeProperty = $machineConfigDocument.PSObject.Properties['machineCode']
-      $machineConfig.structurallyValid =
-        $machineConfigDocument -is [pscustomobject] -and
-        $null -ne $machineCodeProperty -and
-        $null -eq $machineCodeProperty.Value
-
-      $machineConfig.identityFields = @(
-        'machineCode', 'machineId', 'machineName', 'machineStatus',
-        'machineLocationLabel', 'mqttClientId', 'runtimeEndpoints',
-        'hardwareProfile', 'paymentCapability', 'provisioningMetadata' |
-          Where-Object {
-            $property = $machineConfigDocument.PSObject.Properties[$_]
-            $null -ne $property -and
-              $null -ne $property.Value -and
-              ($property.Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($property.Value))
-          }
-      )
-      $machineConfig.credentialFields = @(
-        'machineSecret', 'mqttSigningSecret', 'mqttPassword', 'mqttUsername' |
-          Where-Object {
-            $property = $machineConfigDocument.PSObject.Properties[$_]
-            $null -ne $property -and
-              $null -ne $property.Value -and
-              ($property.Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($property.Value))
-          }
-      ) + @(
-        'machineSecretConfigured', 'mqttSigningSecretConfigured', 'mqttPasswordConfigured' |
-          Where-Object {
-            $property = $machineConfigDocument.PSObject.Properties[$_]
-            $null -ne $property -and $property.Value -eq $true
-          }
-      )
-      $machineConfig.unclaimed =
-        $machineConfig.structurallyValid -and
-        $machineConfig.identityFields.Count -eq 0 -and
-        $machineConfig.credentialFields.Count -eq 0
-    } catch {
-      # A malformed config cannot prove this Factory image is unclaimed.
-    }
-  }
-  $provisioningFiles = if (Test-Path -LiteralPath 'C:\\ProgramData\\VEM\\provisioning') {
-    @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\VEM\\provisioning' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { $_.FullName })
-  } else { @() }
-  $identityAbsent =
-    $machineConfig.unclaimed -and
-    $identityFiles.Count -eq 0 -and
-    $provisioningFiles.Count -eq 0
-  $result = [ordered]@{
-    schemaVersion = 'factory-preclaim-verification/v1'
-    kind = 'factory-preclaim-verification'
-    runId = ${psString(runId)}
-    expectedUnclaimedMachineCode = ${psString(machineCode)}
-    readOnly = $true
-    ok = $factoryVerifierExit -eq 0 -and [bool]$factoryVerification.ok -and $identityAbsent -and $oobeComplete
-    checks = [ordered]@{
-      factoryRuntime = [ordered]@{
-        ok = [bool]$factoryVerification.ok
-        failureCount = @($factoryVerification.failures).Count
-        failures = @($factoryVerification.failures | ForEach-Object { [string]$_ })
-        baseline = $factoryVerification.checks.manifest
-        packages = $factoryVerification.checks.factoryRemoteMaintenanceCapability.packageVersions
-        daemonService = $factoryVerification.checks.daemonService
-        machineUiStartup = $factoryVerification.checks.machineUiStartup
-        maintenanceSshCa = $factoryVerification.checks.factoryRemoteMaintenanceCapability.caFingerprint
-        passwordSsh = $factoryVerification.checks.factoryRemoteMaintenanceCapability.passwordAuthentication
-        accounts = $factoryVerification.checks.factoryRemoteMaintenanceCapability.accountPolicy
-        kiosk = $factoryVerification.checks.kiosk
-      }
-      absentMachineIdentity = [ordered]@{
-        asserted = $identityAbsent
-        machineIdentityFileCount = $identityFiles.Count
-        machineConfig = $machineConfig
-        provisioningFileCount = $provisioningFiles.Count
-      }
-      oobeComplete = [ordered]@{
-        asserted = $oobeComplete
-        bootstrapState = if ($null -ne $oobeStatus) { $oobeStatus.state } else { $null }
-        bootstrapStage = if ($null -ne $oobeStatus) { $oobeStatus.stage } else { $null }
-        oobeInProgress = $setupState.OOBEInProgress
-        systemSetupInProgress = $setupState.SystemSetupInProgress
-        setupType = $setupState.SetupType
-        unattendOverride = $setupState.UnattendFile
-        deprecatedAnswerPresent = Test-Path -LiteralPath $deprecatedOobeAnswerPath
-        retainedKioskAutologonHandoffPresent = $retainedKioskAutologonHandoffPresent
-        retainedKioskAutologonHandoffPath = $retainedKioskAutologonHandoffPath
-        bootstrapAccountPresent = $null -ne (Get-LocalUser -Name 'VEMOobeBootstrap' -ErrorAction SilentlyContinue)
-        cleanupTaskPresent = $null -ne $cleanupTask
-        personalizationVolumeCount = $personalizationVolumes.Count
-        cleanupPhase = if ($null -ne $cleanupStatus) { [string]$cleanupStatus.phase } else { $null }
-        rebootOriginBootIdentity = $rebootOriginBootIdentity
-        completedBootIdentity = $completedBootIdentity
-        currentBootIdentity = $currentBootIdentity
-        completedBootProofIsPostReboot = $completedBootProofIsPostReboot
-        currentBootIsPostReboot = $currentBootIsPostReboot
-        postRebootBootIdentityChanged = $cleanupComplete
-        activeVemKioskConsoleSession = $activeVemKioskConsoleSession
-        consoleUser = $consoleUser
-      }
-    }
-  }
-  [pscustomobject]$result | ConvertTo-Json -Depth 40
-  if (-not [bool]$result.ok) { exit 1 }
-} finally {
-  Remove-Item -LiteralPath $verifierEvidencePath -Force -ErrorAction SilentlyContinue
-}
-`;
-}
-
 export function buildRemotePowerShellScript(options = {}) {
   const mode = options.mode ?? "inventory";
   const machineCode = options.machineCode ?? "VEM-TESTBED-WINVM-01";
@@ -5450,36 +3429,20 @@ export function buildRemotePowerShellScript(options = {}) {
     "inventory",
     "reset",
     "inventory-reset",
-    "bring-up",
     "provision",
     "runtime-acceptance",
     "simulated-hardware-sale-flow",
-    "clean-base-factory-acceptance",
-    "factory-preclaim-verify",
   ];
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
   }
-  if (
-    mode !== "clean-base-factory-acceptance" &&
-    mode !== "factory-preclaim-verify"
-  ) {
-    assertTestbedMachineCode(machineCode);
-  }
-  if (mode === "factory-preclaim-verify") {
-    return buildFactoryPreclaimVerificationScript(options);
-  }
+  assertTestbedMachineCode(machineCode);
   const runId =
-    mode === "clean-base-factory-acceptance" ||
     mode === "simulated-hardware-sale-flow" ||
     ((mode === "provision" || mode === "runtime-acceptance") &&
       options.ephemeralPlatformEvidence)
       ? sanitizeRunId(options.runId)
       : "not-applicable";
-  const cleanBasePlan =
-    mode === "clean-base-factory-acceptance"
-      ? buildCleanBaseFactoryAcceptancePlan({ ...options, runId })
-      : null;
   const ephemeralPlatformSetup = readEphemeralPlatformSetupEvidence({
     ...options,
     mode,
@@ -5516,33 +3479,7 @@ export function buildRemotePowerShellScript(options = {}) {
   if (mode === "provision" && String(claimCode).trim().length === 0) {
     throw new Error("provision mode requires --claim-code");
   }
-  const cleanBaseEvidenceRoot =
-    mode === "clean-base-factory-acceptance"
-      ? `C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\${runId}`
-      : "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\not-applicable";
-  const remoteSupportScriptRoot = options.remoteSupportScriptRoot ?? "";
-  const remoteUploadedArtifactRoot = options.remoteUploadedArtifactRoot ?? "";
-  const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
-  const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
-  const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
-  const cleanBaseRuntimeImageProfile = String(
-    options.runtimeImageProfile ?? "",
-  );
-  const cleanBaseEnvironmentName = `vps-fresh-${cleanBaseRuntimeImageProfile}-clean-base`;
-  const cleanBaseFactoryMediaRoot = String(options.factoryMediaRoot ?? "");
-  const cleanBaseVisionConfigurationSourcePath = String(
-    options.visionConfigurationSourcePath ?? "",
-  );
-  const cleanBaseMaintenanceUser = "Admin";
-  const cleanBaseHardwareMode =
-    cleanBaseRuntimeImageProfile === "production" ? "production" : "simulated";
-  const cleanBaseSnapshot = cleanBasePlan?.cleanBase.snapshot ?? "";
-  const factoryWindowsBaselinePolicyJson = JSON.stringify(
-    FACTORY_WINDOWS_BASELINE_POLICY,
-  );
-
   const plan = assertResetPlanPreservesTestbed(buildResetPlan());
-  const bringUpPlan = buildBringUpPlan(options);
   const taskRemovals = plan.unregisterScheduledTasks
     .map((task) => {
       const { taskPath, taskName } = splitTaskName(task);
@@ -5600,20 +3537,6 @@ Assert-ResetPostcondition $resetActions "file ${path} removed" {
 }`,
     )
     .join("\n");
-  const bringUpArgumentLines = Object.entries(bringUpPlan.arguments)
-    .map(([name, value]) => `    ${psString(name)} = ${psArgumentValue(value)}`)
-    .join("\n");
-  const bringUpReportArgumentLines = Object.entries(bringUpPlan.arguments)
-    .map(([name, value]) => {
-      const reportValue = String(value).startsWith("$env:")
-        ? `<${String(value).slice(1)}>`
-        : String(value);
-      return `        ${psString(name)} = ${psString(reportValue)}`;
-    })
-    .join("\n");
-  const bringUpSwitchLines = bringUpPlan.switches
-    .map((name) => `  $setupArgs[${psString(name)}] = $true`)
-    .join("\n");
 
   return `$ErrorActionPreference = "Stop"
 
@@ -5652,41 +3575,6 @@ function Test-LocalAdmin {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Assert-RequiredSecretEnvironment([string]$Name) {
-  if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($Name, "Process"))) {
-    throw "required secret environment variable is missing: $Name"
-  }
-}
-
-function Invoke-ProductionBringUp($Actions) {
-  $status = "succeeded"
-  $message = $null
-  $output = @()
-  try {
-    foreach ($secretName in ${psArray(bringUpPlan.requiredSecretEnvironment)}) {
-      Assert-RequiredSecretEnvironment $secretName
-    }
-    $setupScript = ${psString(bringUpPlan.setupScript)}
-    if (-not (Test-Path -LiteralPath $setupScript)) {
-      throw "production bring-up script not found: $setupScript"
-    }
-    $setupArgs = @{
-${bringUpArgumentLines}
-    }
-${bringUpSwitchLines}
-    $output = @(& $setupScript @setupArgs *>&1 | ForEach-Object { [string]$_ })
-  } catch {
-    $status = "failed"
-    $message = [string]$_
-  }
-  $Actions.Add([pscustomobject]@{
-    name = "run production bring-up"
-    status = $status
-    message = $message
-    setupScript = ${psString(bringUpPlan.setupScript)}
-    output = $output
-  }) | Out-Null
-}
 
 function Test-PathEvidence([string]$Path) {
   $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -5698,6 +3586,91 @@ function Test-PathEvidence([string]$Path) {
     exists = $true
     kind = if ($item.PSIsContainer) { "directory" } else { "file" }
   }
+}
+
+function Get-ManualProcessEvidence([string]$Name, [string]$ExpectedPath) {
+  $matches = @(Get-CimInstance Win32_Process -Filter "Name = '$Name'" -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $ExpectedPath)
+  })
+  if ($matches.Count -ne 1) {
+    return [ordered]@{
+      running = $false
+      processId = $null
+      user = "unknown"
+      executablePath = if ($matches.Count -gt 0) { [string]$matches[0].ExecutablePath } else { $ExpectedPath }
+    }
+  }
+  $cim = $matches[0]
+  $owner = Invoke-CimMethod -InputObject $cim -MethodName GetOwner -ErrorAction SilentlyContinue
+  return [ordered]@{
+    running = $true
+    processId = [int]$cim.ProcessId
+    user = if ($null -ne $owner -and -not [string]::IsNullOrWhiteSpace($owner.User)) { [string]$owner.User } else { "unknown" }
+    executablePath = [IO.Path]::GetFullPath($cim.ExecutablePath)
+  }
+}
+
+function Get-ArtifactSha256([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } catch { return $null }
+}
+
+function Test-ReadyFileReadableByKioskUser([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  try {
+    $acl = Get-Acl -LiteralPath $Path
+    return @($acl.Access | Where-Object { [string]$_.IdentityReference -match "(^|\\)VEMKiosk$" -and $_.AccessControlType -eq "Allow" -and ("Read", "ReadAndExecute", "FullControl" -contains [string]$_.FileSystemRights) }).Count -gt 0
+  } catch { return $false }
+}
+
+function New-RuntimeAcceptanceAssertion([string]$Status, [bool]$Asserted) {
+  return [ordered]@{ status = $Status; asserted = $Asserted }
+}
+
+function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message) {
+  $Diagnostics.Add([ordered]@{ code = $Code; message = $Message }) | Out-Null
+}
+
+function Classify-RuntimeAcceptanceReport($Facts) {
+  $diagnostics = [System.Collections.Generic.List[object]]::new()
+  if (-not ([string]$Facts.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) { Add-RuntimeAcceptanceDiagnostic $diagnostics "testbed_machine_identity_required" "Runtime acceptance requires a VEM-TESTBED-* machine identity." }
+  if ([string]$Facts.provisioning.machineCode -ne [string]$Facts.target.machineCode) { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_mismatch" "Daemon-observed machine identity must match the requested testbed target." }
+  if (-not [bool]$Facts.readyFile.exists) { Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_missing" "Daemon ready file must exist before runtime-ready can pass." }
+  if (-not [bool]$Facts.readyFile.readableByKioskUser) { Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_not_readable_by_kiosk" "Daemon ready file must be readable by VEMKiosk." }
+  if (-not [bool]$Facts.readyFile.ipcEndpointPresent -or -not [bool]$Facts.readyFile.tokenPresent) { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_handoff_missing" "Ready file must include the daemon IPC endpoint and token." }
+  if (-not [bool]$Facts.daemonRuntime.processRunning -or [int]$Facts.daemonRuntime.processId -lt 1 -or [string]$Facts.daemonRuntime.processUser -ne "Admin" -or [string]$Facts.daemonRuntime.executablePath -ine "C:\\VEM\\bringup\\vending-daemon.exe") { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_process_not_ready" "The manually started daemon process must run as Admin from C:\\VEM\\bringup\\vending-daemon.exe." }
+  if (-not [bool]$Facts.daemonRuntime.ipcReachable) { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_unreachable" "Daemon IPC must be reachable through the ready-file handoff." }
+  if (-not [bool]$Facts.provisioning.provisioned) { Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_incomplete" "Machine Provisioning must complete before runtime-ready can pass." }
+  if (-not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute) { Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_bypassed_daemon_ipc" "Machine Provisioning must use the daemon IPC claim path." }
+  if (-not [bool]$Facts.daemonRuntime.readyz.ready) { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_readyz_not_ready" "Daemon readyz must report ready before runtime-ready can pass." }
+  if (-not [bool]$Facts.daemonRuntime.healthz.backendOnline -or -not [bool]$Facts.daemonRuntime.healthz.mqttConnected) { Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_connectivity_failed" "Daemon health must report backend and MQTT connectivity." }
+  if (-not [bool]$Facts.kioskRuntime.webviewRunning -or [string]$Facts.kioskRuntime.sessionUser -ne "VEMKiosk" -or [int]$Facts.kioskRuntime.processId -lt 1 -or [int]$Facts.kioskRuntime.machineProcessCount -ne 1 -or [string]$Facts.kioskRuntime.machineExecutablePath -ine "C:\\VEM\\bringup\\machine.exe") { Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_process_not_ready" "The manually started Machine UI must be the unique VEMKiosk process from C:\\VEM\\bringup\\machine.exe." }
+  if ([string]$Facts.kioskRuntime.sessionId -ne [string]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId -or [string]$Facts.kioskRuntime.sessionId -ne [string]$Facts.displayEvidence.portraitKioskAcceptance.sessionId) { Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_mismatch" "Machine UI evidence must match the active VEMKiosk interactive session." }
+  if ([string]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.status -ne "passed" -or [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.widthPx -ne 1080 -or [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.heightPx -ne 1920) { Add-RuntimeAcceptanceDiagnostic $diagnostics "interactive_desktop_display_baseline_missing" "Interactive display must be 1080x1920." }
+  if ([string]$Facts.displayEvidence.portraitKioskAcceptance.status -ne "passed" -or [string]$Facts.displayEvidence.portraitKioskAcceptance.source -ne "interactive_kiosk_session" -or [int]$Facts.displayEvidence.portraitKioskAcceptance.widthPx -ne 1080 -or [int]$Facts.displayEvidence.portraitKioskAcceptance.heightPx -ne 1920) { Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_acceptance_missing" "Portrait kiosk evidence must be 1080x1920 from the interactive kiosk session." }
+  return [ordered]@{ schemaVersion = "runtime-acceptance-report/v1"; mode = $Facts.mode; target = $Facts.target; artifacts = $Facts.artifacts; displayEvidence = $Facts.displayEvidence; readyFile = $Facts.readyFile; provisioning = $Facts.provisioning; daemonRuntime = $Facts.daemonRuntime; kioskRuntime = $Facts.kioskRuntime; result = [ordered]@{ runtimeReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }; simulatedHardwareReady = New-RuntimeAcceptanceAssertion "not_asserted" $false; sellReady = New-RuntimeAcceptanceAssertion "not_asserted" $false }; diagnostics = @($diagnostics) }
+}
+
+function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
+  $inventory = Get-InventoryFacts $ProvisioningActions
+  $factsSubset = $inventory.runtimeAcceptanceFactsSubset
+  $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
+  $facts = [ordered]@{
+    mode = "installed_runtime"
+    target = $factsSubset.target
+    artifacts = [ordered]@{ daemonSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\vending-daemon.exe"; machineUiSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\machine.exe" }
+    displayEvidence = $factsSubset.displayEvidence
+    readyFile = [ordered]@{ exists = [bool]$daemonIpc.readyFile.exists; readableByKioskUser = Test-ReadyFileReadableByKioskUser "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"; ipcEndpointPresent = [bool]$daemonIpc.readyFile.ipcEndpointPresent; tokenPresent = [bool]$daemonIpc.readyFile.tokenPresent }
+    provisioning = $factsSubset.provisioning
+    daemonRuntime = $factsSubset.daemonRuntime
+    kioskRuntime = $factsSubset.kioskRuntime
+  }
+  $facts.daemonRuntime.ipcReachable = [bool]$daemonIpc.healthz.observed -and [bool]$daemonIpc.readyz.observed
+  $facts.daemonRuntime.healthz = [ordered]@{ backendOnline = [bool]$daemonIpc.healthz.backendOnline; mqttConnected = [bool]$daemonIpc.healthz.mqttConnected }
+  $facts.daemonRuntime.readyz = [ordered]@{ ready = [bool]$daemonIpc.readyz.ready }
+  $report = Classify-RuntimeAcceptanceReport $facts
+  Write-JsonFile ${psString(RUNTIME_ACCEPTANCE_REPORT_FILE)} $report
+  return [ordered]@{ path = ${psString(RUNTIME_ACCEPTANCE_REPORT_FILE)}; report = $report }
 }
 
 function Get-IpcBaseUrl($Ready) {
@@ -5871,7 +3844,6 @@ function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
       machineSecretConfigured = $machineSecret
       mqttSigningSecretConfigured = $mqttSigningSecret
       mqttPasswordConfigured = $mqttPassword
-      maintenancePinConfigured = $true
       provisioned = $profileAccepted -and $machineSecret -and $mqttSigningSecret
       provisioningIssues = @()
       runtimeBootstrapConfigured = $true
@@ -5888,16 +3860,14 @@ function Get-ConfigSnapshotFromRuntimeSummary($Summary) {
   if (-not [bool]$state.machineSecretConfigured) { $issues.Add("machine_secret_missing") }
   if (-not [bool]$state.mqttSigningSecretConfigured) { $issues.Add("mqtt_signing_secret_missing") }
   if ($null -ne $public.mqttUsername -and -not [bool]$state.mqttPasswordConfigured) { $issues.Add("mqtt_password_missing") }
-  if (-not [bool]$state.maintenancePinConfigured) { $issues.Add("maintenance_pin_not_configured") }
   return [pscustomobject]@{
     public = $public
     machineSecretConfigured = [bool]$state.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$state.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$state.mqttPasswordConfigured
-    maintenancePinConfigured = [bool]$state.maintenancePinConfigured
     provisioned = $issues.Count -eq 0
     provisioningIssues = @($issues)
-    runtimeBootstrapConfigured = [bool]$state.factoryManifest
+    runtimeBootstrapConfigured = [bool]$state.runtimeManifest
   }
 }
 
@@ -6242,7 +4212,7 @@ function Confirm-ExistingTestbedProvisioningClaim($Actions) {
     ) {
       throw "persisted daemon IPC claim evidence does not bind this sale fixture to the same run, identity, and platform"
     }
-    $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $daemonIpc = Wait-DaemonIpc "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
     $config = Get-ConfigSnapshotFromRuntimeSummary (Invoke-IpcJson "GET" "$($daemonIpc.baseUrl)/v1/runtime-configuration" $daemonIpc.headers)
     if (
       [bool]$config.provisioned -ne $true -or
@@ -6278,7 +4248,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
   $message = $null
   $evidence = [ordered]@{
     usedDaemonIpcTaskExecute = $false
-    readyFile = ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    readyFile = "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
     endpoint = $null
     runId = ${psString(runId)}
     claimCodeId = ${psString(ephemeralPlatformSetup?.claimCodeId ?? "")}
@@ -6324,7 +4294,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $runtimeBootstrap = [ordered]@{
       schemaVersion = 1
       provisioningApiBaseUrl = ${psString(platform.apiBaseUrl)}
-      hardwareModel = ${psString(options.runtimeHardwareModel ?? options.factoryHardwareModel ?? "vem-prod-24")}
+      hardwareModel = ${psString(options.runtimeHardwareModel ?? "vem-prod-24")}
       topology = [ordered]@{
         identity = ${psString(platform.hardwareTopologyIdentity)}
         version = ${psString(platform.hardwareTopologyVersion)}
@@ -6333,7 +4303,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     Write-JsonFile -Path $runtimeBootstrapPath -Value $runtimeBootstrap
     Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
 
-    $daemonIpc = Wait-DaemonIpc ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $daemonIpc = Wait-DaemonIpc "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
     $ready = $daemonIpc.ready
     $baseUrl = $daemonIpc.baseUrl
     $headers = $daemonIpc.headers
@@ -6354,7 +4324,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     }
     $evidence.endpoint = "$baseUrl/v1/provisioning/claim"
     $evidence.usedDaemonIpcTaskExecute = $true
-    $preClaimReadyGeneration = [long](Get-Item -LiteralPath ${psString(bringUpPlan.arguments.DaemonReadyFile)} -ErrorAction Stop).LastWriteTimeUtc.Ticks
+    $preClaimReadyGeneration = [long](Get-Item -LiteralPath "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json" -ErrorAction Stop).LastWriteTimeUtc.Ticks
     try {
       $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
@@ -6373,7 +4343,7 @@ function Invoke-TestbedProvisioningClaim($Actions) {
       throw "daemon Claim did not request the required runtime reconfigure"
     }
     try {
-      $recoveredIpc = Wait-DaemonIpcAfterProvisioning ${psString(bringUpPlan.arguments.DaemonReadyFile)} $preClaimReadyGeneration $evidence.machineCode $evidence.claimResult
+      $recoveredIpc = Wait-DaemonIpcAfterProvisioning "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json" $preClaimReadyGeneration $evidence.machineCode $evidence.claimResult
       $ready = $recoveredIpc.ready
       $baseUrl = $recoveredIpc.baseUrl
       $headers = $recoveredIpc.headers
@@ -6490,2853 +4460,6 @@ function Get-LocalUserEvidence([string]$Name) {
   }
 }
 
-function Get-ScheduledTaskEvidence([string]$TaskName, [string]$TaskPath) {
-  $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
-  if ($null -eq $task) {
-    return [pscustomobject]@{
-      name = "$TaskPath$TaskName"
-      exists = $false
-      state = $null
-      enabled = $false
-      runAsUser = $null
-      command = $null
-      arguments = $null
-      workingDirectory = $null
-    }
-  }
-  $principal = $task.Principal
-  $action = @($task.Actions | Select-Object -First 1)
-  return [pscustomobject]@{
-    name = "$TaskPath$TaskName"
-    exists = $true
-    state = [string]$task.State
-    enabled = [string]$task.State -ne "Disabled"
-    runAsUser = if ($null -ne $principal) { [string]$principal.UserId } else { $null }
-    command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }
-    arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }
-    workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null }
-  }
-}
-
-function Get-WinlogonAutoLogonEvidence {
-  $winlogon = Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" -ErrorAction SilentlyContinue
-  if ($null -eq $winlogon) {
-    return [ordered]@{
-      configured = $false
-      user = "unknown"
-      domain = "unknown"
-      force = $false
-    }
-  }
-  return [ordered]@{
-    configured = [string]$winlogon.AutoAdminLogon -eq "1"
-    user = if ([string]::IsNullOrWhiteSpace($winlogon.DefaultUserName)) { "unknown" } else { [string]$winlogon.DefaultUserName }
-    domain = if ([string]::IsNullOrWhiteSpace($winlogon.DefaultDomainName)) { "unknown" } else { [string]$winlogon.DefaultDomainName }
-    force = [string]$winlogon.ForceAutoLogon -eq "1"
-  }
-}
-
-function Get-MachineUiStartupEvidence($MachineUiTask) {
-  $task = Get-ScheduledTask -TaskName "VEMMachineUI" -TaskPath "\\" -ErrorAction SilentlyContinue
-  if ($null -eq $task) {
-    return [ordered]@{
-      configured = $false
-      mode = "scheduled_task"
-      runAsUser = "unknown"
-      command = "unknown"
-    }
-  }
-  $action = @($task.Actions | Select-Object -First 1)
-  return [ordered]@{
-    configured = [bool]$MachineUiTask.exists -and [bool]$MachineUiTask.enabled
-    mode = "scheduled_task"
-    runAsUser = if ([string]::IsNullOrWhiteSpace($MachineUiTask.runAsUser)) { "unknown" } else { [string]$MachineUiTask.runAsUser }
-    command = if ($action.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($action[0].Execute)) { [string]$action[0].Execute } else { "unknown" }
-  }
-}
-
-function Convert-StartupCommandEvidence($Command) {
-  return [ordered]@{
-    name = if ([string]::IsNullOrWhiteSpace($Command.name)) { "unknown" } else { [string]$Command.name }
-    exists = [bool]$Command.exists
-    enabled = [bool]$Command.enabled
-    runAsUser = if ([string]::IsNullOrWhiteSpace($Command.runAsUser)) { $null } else { [string]$Command.runAsUser }
-    command = if ([string]::IsNullOrWhiteSpace($Command.command)) { $null } else { [string]$Command.command }
-    arguments = if ([string]::IsNullOrWhiteSpace($Command.arguments)) { $null } else { [string]$Command.arguments }
-    workingDirectory = if ([string]::IsNullOrWhiteSpace($Command.workingDirectory)) { $null } else { [string]$Command.workingDirectory }
-  }
-}
-
-function Get-MissingStartupBringupEvidence {
-  return [ordered]@{
-    configuredBy = "missing"
-    productionBringup = $false
-    daemonOwnedInitialization = $true
-    autoLogon = [ordered]@{
-      configured = $false
-      user = "unknown"
-      domain = "unknown"
-      force = $false
-    }
-    machineUiStartup = [ordered]@{
-      configured = $false
-      mode = "scheduled_task"
-      runAsUser = "unknown"
-      command = "unknown"
-    }
-    startupCommands = @()
-  }
-}
-
-function Get-StartupBringupEvidence {
-  $path = ${psString(STARTUP_BRINGUP_EVIDENCE_FILE)}
-  if (-not (Test-Path -LiteralPath $path)) {
-    return Get-MissingStartupBringupEvidence
-  }
-
-  $evidence = Read-JsonFile $path
-  $startupCommands = @($evidence.startupCommands | ForEach-Object {
-    Convert-StartupCommandEvidence $_
-  })
-  return [ordered]@{
-    configuredBy = if ([string]::IsNullOrWhiteSpace($evidence.configuredBy)) { "unknown" } else { [string]$evidence.configuredBy }
-    productionBringup = [bool]$evidence.productionBringup
-    daemonOwnedInitialization = [bool]$evidence.daemonOwnedInitialization
-    autoLogon = [ordered]@{
-      configured = [bool]$evidence.autoLogon.configured
-      user = if ([string]::IsNullOrWhiteSpace($evidence.autoLogon.user)) { "unknown" } else { [string]$evidence.autoLogon.user }
-      domain = if ([string]::IsNullOrWhiteSpace($evidence.autoLogon.domain)) { "unknown" } else { [string]$evidence.autoLogon.domain }
-      force = [bool]$evidence.autoLogon.force
-    }
-    machineUiStartup = [ordered]@{
-      configured = [bool]$evidence.machineUiStartup.configured
-      mode = if ([string]$evidence.machineUiStartup.mode -eq "shell_launcher") { "shell_launcher" } else { "scheduled_task" }
-      runAsUser = if ([string]::IsNullOrWhiteSpace($evidence.machineUiStartup.runAsUser)) { "unknown" } else { [string]$evidence.machineUiStartup.runAsUser }
-      command = if ([string]::IsNullOrWhiteSpace($evidence.machineUiStartup.command)) { "unknown" } else { [string]$evidence.machineUiStartup.command }
-    }
-    startupCommands = $startupCommands
-  }
-}
-
-function Get-WebView2Presence {
-  $paths = @(
-    "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application",
-    "C:\\Program Files\\Microsoft\\EdgeWebView\\Application"
-  )
-  $existing = @($paths | Where-Object { Test-Path -LiteralPath $_ })
-  return [pscustomobject]@{
-    installed = $existing.Count -gt 0
-    paths = $existing
-  }
-}
-
-function Get-DisplayEvidence {
-  Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-  $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
-    [pscustomobject]@{
-      deviceName = $_.DeviceName
-      primary = [bool]$_.Primary
-      widthPx = [int]$_.Bounds.Width
-      heightPx = [int]$_.Bounds.Height
-    }
-  })
-  return [pscustomobject]@{
-    source = "ssh_service_session"
-    screens = $screens
-  }
-}
-
-function Get-ProcessOwnerEvidence($Process) {
-  $owner = $null
-  try {
-    $ownerResult = Invoke-CimMethod -InputObject $Process -MethodName GetOwner -ErrorAction Stop
-    if ($ownerResult.ReturnValue -eq 0) {
-      $owner = [pscustomobject]@{
-        user = [string]$ownerResult.User
-        domain = [string]$ownerResult.Domain
-      }
-    }
-  } catch {
-    $owner = $null
-  }
-  return $owner
-}
-
-function Get-MachineUiProcessEvidence {
-  $processes = @(Get-CimInstance Win32_Process -Filter "name = 'machine.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    $owner = Get-ProcessOwnerEvidence $_
-    [pscustomobject]@{
-      processId = [int]$_.ProcessId
-      sessionId = [int]$_.SessionId
-      executablePath = if ($null -ne $_.ExecutablePath) { [string]$_.ExecutablePath } else { $null }
-      commandLine = if ($null -ne $_.CommandLine) { [string]$_.CommandLine } else { $null }
-      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
-      ownerDomain = if ($null -ne $owner) { [string]$owner.domain } else { "unknown" }
-    }
-  })
-  return $processes
-}
-
-function Get-WebView2ProcessEvidence {
-  $processes = @(Get-CimInstance Win32_Process -Filter "name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    $owner = Get-ProcessOwnerEvidence $_
-    [pscustomobject]@{
-      processId = [int]$_.ProcessId
-      sessionId = [int]$_.SessionId
-      executablePath = if ($null -ne $_.ExecutablePath) { [string]$_.ExecutablePath } else { $null }
-      commandLine = if ($null -ne $_.CommandLine) { [string]$_.CommandLine } else { $null }
-      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
-      ownerDomain = if ($null -ne $owner) { [string]$owner.domain } else { "unknown" }
-    }
-  })
-  return $processes
-}
-
-function Get-SessionProcessEvidence([string]$Name, $ActiveKioskSession) {
-  if ($null -eq $ActiveKioskSession) {
-    return @()
-  }
-  $safeName = $Name.Replace("'", "''")
-  return @(Get-CimInstance Win32_Process -Filter "name = '$safeName'" -ErrorAction SilentlyContinue | Where-Object {
-    [int]$_.SessionId -eq [int]$ActiveKioskSession.sessionId
-  } | ForEach-Object {
-    $owner = Get-ProcessOwnerEvidence $_
-    [pscustomobject]@{
-      processId = [int]$_.ProcessId
-      sessionId = [int]$_.SessionId
-      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
-    }
-  } | Where-Object {
-    $_.ownerUser -eq "VEMKiosk"
-  })
-}
-
-function Get-KioskDesktopEscapeEvidence($ActiveKioskSession) {
-  $explorerProcesses = @(Get-SessionProcessEvidence "explorer.exe" $ActiveKioskSession)
-  $edgeProcesses = @(Get-SessionProcessEvidence "msedge.exe" $ActiveKioskSession)
-  $startProcesses = @(Get-SessionProcessEvidence "StartMenuExperienceHost.exe" $ActiveKioskSession)
-  return [ordered]@{
-    status = "asserted"
-    source = "session_process_surface_probe"
-    interactiveProbe = [ordered]@{
-      status = "observed"
-      message = "desktop shell surfaces were probed in the active VEMKiosk session"
-    }
-    processPresence = [ordered]@{
-      explorer = $explorerProcesses
-      edge = $edgeProcesses
-      startMenu = $startProcesses
-    }
-    desktopVisible = $explorerProcesses.Count -gt 0
-    taskbarVisible = $explorerProcesses.Count -gt 0
-    startMenuVisible = $startProcesses.Count -gt 0
-    edgeReachable = $edgeProcesses.Count -gt 0
-    fileExplorerReachable = $explorerProcesses.Count -gt 0
-  }
-}
-
-function Convert-QuserSessionLine([string]$Line) {
-  if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
-  $match = [regex]::Match($Line, '^\\s*>?\\s*(?<user>\\S+)\\s+(?:(?<sessionName>\\S+)\\s+)?(?<id>\\d+)\\s+(?<state>\\S+)')
-  if (-not $match.Success) { return $null }
-  $user = [string]$match.Groups["user"].Value
-  if ($user.Contains("\\")) {
-    $user = $user.Split("\\")[-1]
-  }
-  return [pscustomobject]@{
-    user = $user
-    sessionName = if ($match.Groups["sessionName"].Success) { [string]$match.Groups["sessionName"].Value } else { $null }
-    sessionId = [int]$match.Groups["id"].Value
-    state = [string]$match.Groups["state"].Value
-    source = "quser"
-  }
-}
-
-function Test-ActiveKioskQuserSession($Session) {
-  if ($null -eq $Session) { return $false }
-  $state = ([string]$Session.state).Trim().ToLowerInvariant()
-  $sessionName = ([string]$Session.sessionName).Trim().ToLowerInvariant()
-  if ([string]$Session.user -ne "VEMKiosk") { return $false }
-  if ([string]$Session.source -eq "ssh_service_session") { return $false }
-  if ($state -eq "active") { return $true }
-  return $sessionName -eq "console" -and
-    $state -ne "disc" -and
-    $state -ne "disconnected" -and
-    $state -ne "listen"
-}
-
-function Get-InteractiveWindowsSessionEvidence {
-  $sessions = @()
-  $errorMessage = $null
-  try {
-    $lines = @(quser 2>&1 | Select-Object -Skip 1)
-    $sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } | Where-Object { $null -ne $_ })
-  } catch {
-    $errorMessage = [string]$_
-  }
-  $activeKioskSession = @($sessions | Where-Object {
-    Test-ActiveKioskQuserSession $_
-  } | Select-Object -First 1)
-  return [pscustomobject]@{
-    source = "quser"
-    sessions = $sessions
-    activeKioskSessionId = if ($activeKioskSession.Count -gt 0) { [int]$activeKioskSession[0].sessionId } else { $null }
-    activeKioskSession = if ($activeKioskSession.Count -gt 0) { $activeKioskSession[0] } else { $null }
-    error = $errorMessage
-  }
-}
-
-function Get-ActiveKioskSession($SessionEvidence) {
-  if ($null -eq $SessionEvidence) { return $null }
-  $session = @($SessionEvidence.sessions | Where-Object {
-    Test-ActiveKioskQuserSession $_
-  } | Select-Object -First 1)
-  if ($session.Count -eq 0) { return $null }
-  return $session[0]
-}
-
-function Get-CurrentDesktopScreenDimensions {
-  try {
-    if ($null -eq ("VemDisplaySettings" -as [type])) {
-      Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-public struct VemDevMode {
-  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-  public string dmDeviceName;
-  public short dmSpecVersion;
-  public short dmDriverVersion;
-  public short dmSize;
-  public short dmDriverExtra;
-  public int dmFields;
-  public int dmPositionX;
-  public int dmPositionY;
-  public int dmDisplayOrientation;
-  public int dmDisplayFixedOutput;
-  public short dmColor;
-  public short dmDuplex;
-  public short dmYResolution;
-  public short dmTTOption;
-  public short dmCollate;
-  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-  public string dmFormName;
-  public short dmLogPixels;
-  public int dmBitsPerPel;
-  public int dmPelsWidth;
-  public int dmPelsHeight;
-  public int dmDisplayFlags;
-  public int dmDisplayFrequency;
-  public int dmICMMethod;
-  public int dmICMIntent;
-  public int dmMediaType;
-  public int dmDitherType;
-  public int dmReserved1;
-  public int dmReserved2;
-  public int dmPanningWidth;
-  public int dmPanningHeight;
-}
-
-public static class VemDisplaySettings {
-  public const int ENUM_CURRENT_SETTINGS = -1;
-
-  [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref VemDevMode devMode);
-}
-"@ -ErrorAction Stop
-    }
-    $mode = New-Object VemDevMode
-    $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([VemDevMode])
-    if ([VemDisplaySettings]::EnumDisplaySettings($null, [VemDisplaySettings]::ENUM_CURRENT_SETTINGS, [ref]$mode)) {
-      return [pscustomobject]@{
-        deviceName = "interactive-desktop-current-settings"
-        primary = $true
-        widthPx = [int]$mode.dmPelsWidth
-        heightPx = [int]$mode.dmPelsHeight
-        source = "enum_display_settings"
-      }
-    }
-  } catch {
-    return $null
-  }
-  return $null
-}
-
-function Get-InteractiveDesktopDisplayEvidence($ActiveKioskSession) {
-  if ($null -eq $ActiveKioskSession) {
-    return [pscustomobject]@{
-      source = "interactive_kiosk_session"
-      status = "missing"
-      reason = "active VEMKiosk interactive Windows session was not observed"
-      sessionUser = "unknown"
-      sessionId = $null
-      screens = @()
-      kioskUiWindow = $null
-    }
-  }
-
-  $screen = Get-CurrentDesktopScreenDimensions
-  if ($null -eq $screen) {
-    $probePath = "C:\\Users\\VEMKiosk\\AppData\\Local\\VEM\\kiosk-display-evidence.json"
-    if (Test-Path -LiteralPath $probePath -PathType Leaf) {
-      try {
-        $probe = Get-Content -LiteralPath $probePath -Raw | ConvertFrom-Json
-        $probeScreen = @($probe.screens | Where-Object { $_.primary } | Select-Object -First 1)
-        if ($probeScreen.Count -eq 0) {
-          $probeScreen = @($probe.screens | Select-Object -First 1)
-        }
-        if ($probeScreen.Count -gt 0) {
-          $screen = [pscustomobject]@{
-            deviceName = if ([string]::IsNullOrWhiteSpace($probeScreen[0].deviceName)) { "kiosk-display-probe" } else { [string]$probeScreen[0].deviceName }
-            primary = [bool]$probeScreen[0].primary
-            widthPx = [int]$probeScreen[0].widthPx
-            heightPx = [int]$probeScreen[0].heightPx
-            source = "kiosk_logon_display_probe"
-          }
-        }
-      } catch {
-        $screen = $null
-      }
-    }
-  }
-
-  if ($null -eq $screen) {
-    return [pscustomobject]@{
-      source = "interactive_kiosk_session"
-      status = "missing"
-      reason = "interactive desktop screen dimensions were not available"
-      sessionUser = [string]$ActiveKioskSession.user
-      sessionId = [int]$ActiveKioskSession.sessionId
-      screens = @()
-      kioskUiWindow = $null
-    }
-  }
-
-  return [pscustomobject]@{
-    source = "interactive_kiosk_session"
-    status = "observed"
-    reason = $null
-    sessionUser = [string]$ActiveKioskSession.user
-    sessionId = [int]$ActiveKioskSession.sessionId
-    screens = @($screen)
-    kioskUiWindow = $null
-  }
-}
-
-function Convert-DisplayDimensionsEvidence($Display) {
-  $screen = @($Display.screens | Where-Object { $_.primary } | Select-Object -First 1)
-  if ($screen.Count -eq 0) {
-    $screen = @($Display.screens | Select-Object -First 1)
-  }
-  if ($screen.Count -eq 0) {
-    return [ordered]@{
-      status = "missing"
-      widthPx = 0
-      heightPx = 0
-    }
-  }
-  return [ordered]@{
-    status = "observed"
-    widthPx = [int]$screen.widthPx
-    heightPx = [int]$screen.heightPx
-  }
-}
-
-function Convert-InteractiveDisplayDimensionsEvidence($Display) {
-  $dimensions = Convert-DisplayDimensionsEvidence $Display
-  $passed = (
-    $Display.status -eq "observed" -and
-    $dimensions.widthPx -eq 1080 -and $dimensions.heightPx -eq 1920 -and
-    $Display.sessionUser -eq "VEMKiosk"
-  )
-  return [ordered]@{
-    status = if ($passed) { "passed" } elseif ($dimensions.status -eq "missing") { "missing" } else { "failed" }
-    widthPx = [int]$dimensions.widthPx
-    heightPx = [int]$dimensions.heightPx
-    sessionUser = if ([string]::IsNullOrWhiteSpace($Display.sessionUser)) { "unknown" } else { [string]$Display.sessionUser }
-    sessionId = if ($null -ne $Display.sessionId) { [int]$Display.sessionId } else { $null }
-  }
-}
-
-function Convert-PortraitKioskAcceptanceEvidence($Dimensions) {
-  $passed = (
-    $Dimensions.status -eq "passed" -and
-    $Dimensions.widthPx -eq 1080 -and $Dimensions.heightPx -eq 1920 -and
-    $Dimensions.sessionUser -eq "VEMKiosk"
-  )
-  return [ordered]@{
-    status = if ($passed) { "passed" } else { "failed" }
-    widthPx = [int]$Dimensions.widthPx
-    heightPx = [int]$Dimensions.heightPx
-    sessionUser = if ([string]::IsNullOrWhiteSpace($Dimensions.sessionUser)) { "unknown" } else { [string]$Dimensions.sessionUser }
-    sessionId = if ($null -ne $Dimensions.sessionId) { [int]$Dimensions.sessionId } else { $null }
-    source = "interactive_kiosk_session"
-  }
-}
-
-function Test-TauriHashRouteUrl([string]$Url) {
-  try {
-    $uri = [System.Uri]::new($Url)
-    return (
-      $uri.Scheme -eq "http" -and
-      $uri.Host -eq "tauri.localhost" -and
-      $uri.AbsolutePath -eq "/" -and
-      $uri.Fragment.StartsWith("#/")
-    )
-  } catch {
-    return $false
-  }
-}
-
-function Get-CdpListenerProcessBinding($KioskProcess, $ActiveKioskSession) {
-  if ($null -eq $KioskProcess -or $null -eq $ActiveKioskSession) {
-    return $null
-  }
-  $listeners = @(Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)
-  foreach ($listener in $listeners) {
-    $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$listener.OwningProcess)" -ErrorAction SilentlyContinue
-    if ($null -eq $listenerProcess -or [int]$listenerProcess.SessionId -ne [int]$ActiveKioskSession.sessionId) {
-      continue
-    }
-    $cursor = $listenerProcess
-    for ($depth = 0; $depth -lt 32 -and $null -ne $cursor; $depth++) {
-      if ([int]$cursor.ProcessId -eq [int]$KioskProcess.processId) {
-        return [pscustomobject]@{
-          processId = [int]$listenerProcess.ProcessId
-          sessionId = [int]$listenerProcess.SessionId
-          machineAncestorProcessId = [int]$KioskProcess.processId
-          bound = $true
-        }
-      }
-      $parentId = [int]$cursor.ParentProcessId
-      if ($parentId -le 0 -or $parentId -eq [int]$cursor.ProcessId) { break }
-      $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
-    }
-  }
-  return $null
-}
-
-function Get-WebViewCdpUrlEvidence {
-  try {
-    $targets = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:9222/json" -TimeoutSec 3)
-    $target = @($targets | Where-Object {
-      Test-TauriHashRouteUrl ([string]$_.url)
-    } | Select-Object -First 1)
-    if ($target.Count -gt 0) {
-      return [pscustomobject]@{
-        available = $true
-        url = [string]$target[0].url
-        cdpTargetId = if ([string]::IsNullOrWhiteSpace([string]$target[0].id)) { $null } else { [string]$target[0].id }
-        source = "webview_cdp"
-        error = $null
-      }
-    }
-    return [pscustomobject]@{
-      available = $true
-      url = "unavailable:no-tauri-hash-route-target"
-      cdpTargetId = $null
-      source = "webview_cdp"
-      error = "no_tauri_hash_route_target"
-    }
-  } catch {
-    return [pscustomobject]@{
-      available = $false
-      url = "unavailable:webview-cdp"
-      cdpTargetId = $null
-      source = "webview_cdp"
-      error = [string]$_
-    }
-  }
-}
-
-function Get-KioskRuntimeEvidence($ActiveKioskSession) {
-  $machineProcesses = @(Get-MachineUiProcessEvidence)
-  $kioskMachineProcesses = @($machineProcesses | Where-Object {
-    $null -ne $ActiveKioskSession -and
-    $_.ownerUser -eq "VEMKiosk" -and
-    $_.sessionId -eq $ActiveKioskSession.sessionId
-  })
-  $kioskProcess = @($kioskMachineProcesses | Where-Object {
-    [string]$_.executablePath -ieq "C:\\VEM\\bringup\\machine.exe"
-  } | Select-Object -First 1)
-  $webView2Processes = @(Get-WebView2ProcessEvidence)
-  $kioskWebView2Processes = @($webView2Processes | Where-Object {
-    $null -ne $ActiveKioskSession -and
-    $_.ownerUser -eq "VEMKiosk" -and
-    $_.sessionId -eq $ActiveKioskSession.sessionId
-  })
-  $kioskWebView2Process = @($kioskWebView2Processes | Select-Object -First 1)
-  $cdpListener = if ($kioskProcess.Count -gt 0) {
-    Get-CdpListenerProcessBinding $kioskProcess[0] $ActiveKioskSession
-  } else {
-    $null
-  }
-  $cdp = Get-WebViewCdpUrlEvidence
-  $cdpVerified = $kioskProcess.Count -gt 0 -and $null -ne $cdpListener -and [bool]$cdpListener.bound -and (Test-TauriHashRouteUrl ([string]$cdp.url)) -and -not [string]::IsNullOrWhiteSpace([string]$cdp.cdpTargetId)
-  $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
-  $machineUiTask = Get-ScheduledTask -TaskName "VEMMachineUI" -TaskPath "\\" -ErrorAction SilentlyContinue
-  $machineUiAction = @($machineUiTask.Actions | Select-Object -First 1)
-  $acceptanceOverlayCdp = $cdpVerified -and $machineUiAction.Count -eq 1 -and [string]$machineUiAction[0].Arguments -match [regex]::Escape("C:\\VEM\\bringup\\launch-machine-ui-debug.vbs")
-  return [ordered]@{
-    webviewRunning = $kioskMachineProcesses.Count -eq 1 -and ($cdpVerified -or $productionWebViewVerified)
-    url = if ($cdpVerified) { [string]$cdp.url } elseif ($productionWebViewVerified) { "unavailable:production-cdp-disabled" } else { [string]$cdp.url }
-    sessionUser = if ($null -ne $ActiveKioskSession) { [string]$ActiveKioskSession.user } else { "unknown" }
-    source = if ($cdpVerified) { $cdp.source } elseif ($productionWebViewVerified) { "webview2_process" } else { $cdp.source }
-    processId = if ($kioskProcess.Count -gt 0) { $kioskProcess[0].processId } else { $null }
-    machineProcessCount = $kioskMachineProcesses.Count
-    machineExecutablePath = if ($kioskProcess.Count -gt 0) { [string]$kioskProcess[0].executablePath } else { $null }
-    webView2ProcessId = if ($kioskWebView2Process.Count -gt 0) { $kioskWebView2Process[0].processId } else { $null }
-    webView2ProcessCount = $kioskWebView2Processes.Count
-    cdpListenerProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.processId } else { $null }
-    cdpListenerSessionId = if ($null -ne $cdpListener) { [int]$cdpListener.sessionId } else { $null }
-    cdpMachineAncestorProcessId = if ($null -ne $cdpListener) { [int]$cdpListener.machineAncestorProcessId } else { $null }
-    sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
-    cdpAvailable = [bool]$cdp.available
-    cdpTargetId = if ($cdpVerified) { [string]$cdp.cdpTargetId } else { $null }
-    acceptanceOverlayCdp = [bool]$acceptanceOverlayCdp
-    error = $cdp.error
-  }
-}
-
-function Get-ArtifactSha256([string]$Path) {
-  try {
-    if (-not (Test-Path -LiteralPath $Path)) {
-      return "0000000000000000000000000000000000000000000000000000000000000000"
-    }
-    return [string](Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-  } catch {
-    return "0000000000000000000000000000000000000000000000000000000000000000"
-  }
-}
-
-function Copy-FactoryAcceptanceInputs([string]$StageRoot) {
-  $artifactRoot = Join-Path $StageRoot "artifact-backup"
-  $scriptRoot = Join-Path $StageRoot "script-bundle"
-  New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
-  New-Item -ItemType Directory -Path $scriptRoot -Force | Out-Null
-
-  $uploadedArtifactRoot = ${psString(remoteUploadedArtifactRoot)}
-  if ([string]::IsNullOrWhiteSpace($uploadedArtifactRoot)) {
-    throw "factory acceptance requires uploaded artifact root"
-  }
-  $daemonSource = Join-Path $uploadedArtifactRoot "vending-daemon.exe"
-  $machineUiSource = Join-Path $uploadedArtifactRoot "machine.exe"
-  $machineUiSidecarSource = Join-Path $uploadedArtifactRoot "WebView2Loader.dll"
-  $artifactSource = "uploaded_local_artifacts"
-  $daemonBackup = Join-Path $artifactRoot "vending-daemon.exe"
-  $machineUiBackup = Join-Path $artifactRoot "machine.exe"
-  $machineUiSidecarBackup = Join-Path $artifactRoot "WebView2Loader.dll"
-  Copy-Item -LiteralPath $daemonSource -Destination $daemonBackup -Force -ErrorAction Stop
-  Copy-Item -LiteralPath $machineUiSource -Destination $machineUiBackup -Force -ErrorAction Stop
-  Copy-Item -LiteralPath $machineUiSidecarSource -Destination $machineUiSidecarBackup -Force -ErrorAction Stop
-  $daemonBackupSha256 = Get-ArtifactSha256 $daemonBackup
-  $machineUiBackupSha256 = Get-ArtifactSha256 $machineUiBackup
-  $expectedDaemonSha256 = ${psString(expectedDaemonArtifactSha256)}
-  $expectedMachineUiSha256 = ${psString(expectedMachineUiArtifactSha256)}
-  if (-not [string]::IsNullOrWhiteSpace($expectedDaemonSha256) -and $daemonBackupSha256 -ne $expectedDaemonSha256) {
-    throw "uploaded vending-daemon.exe hash mismatch: expected $expectedDaemonSha256, got $daemonBackupSha256"
-  }
-  if (-not [string]::IsNullOrWhiteSpace($expectedMachineUiSha256) -and $machineUiBackupSha256 -ne $expectedMachineUiSha256) {
-    throw "uploaded machine.exe hash mismatch: expected $expectedMachineUiSha256, got $machineUiBackupSha256"
-  }
-
-  $supportSourceRoots = @(
-    ${psString(remoteSupportScriptRoot)},
-    "C:\\VEM\\bringup\\scripts"
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-  foreach ($scriptName in ${psArray(FACTORY_SUPPORT_SCRIPT_NAMES)}) {
-    $source = $null
-    foreach ($sourceRoot in $supportSourceRoots) {
-      $candidate = Join-Path $sourceRoot $scriptName
-      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-        $source = $candidate
-        break
-      }
-    }
-    if ($null -eq $source) {
-      throw "required factory support script not found in staged or installed script roots: $scriptName"
-    }
-    Copy-Item -LiteralPath $source -Destination (Join-Path $scriptRoot $scriptName) -Force -ErrorAction Stop
-  }
-
-  return [ordered]@{
-    artifactRoot = $artifactRoot
-    artifactSource = $artifactSource
-    scriptRoot = $scriptRoot
-    daemonArtifactPath = $daemonBackup
-    daemonSha256 = $daemonBackupSha256
-    expectedDaemonSha256 = $expectedDaemonSha256
-    machineUiArtifactPath = $machineUiBackup
-    machineUiSidecarPath = $machineUiSidecarBackup
-    machineUiSha256 = $machineUiBackupSha256
-    expectedMachineUiSha256 = $expectedMachineUiSha256
-    prepareScript = Join-Path $scriptRoot "prepare-factory-runtime.ps1"
-    verifierScript = Join-Path $scriptRoot "verify-factory-runtime.ps1"
-  }
-}
-
-function Convert-FactoryChildStructuredJsonOutput($Output) {
-  $text = (@($Output) -join [Environment]::NewLine).Trim()
-  if ([string]::IsNullOrWhiteSpace($text)) {
-    throw "factory child did not write structured JSON to stdout"
-  }
-  $start = $text.IndexOf("{")
-  $end = $text.LastIndexOf("}")
-  if ($start -lt 0 -or $end -lt $start) {
-    throw "factory child stdout did not contain a JSON object"
-  }
-  return $text.Substring($start, $end - $start + 1) | ConvertFrom-Json -ErrorAction Stop
-}
-
-function Invoke-FactoryChildPowerShell($Actions, [string]$Name, [string]$ScriptPath, [hashtable]$Arguments, [string]$OutputPath, [bool]$WriteStructuredJsonOutput = $false) {
-  $status = "succeeded"
-  $message = $null
-  $output = @()
-  $stderr = @()
-  $exitCode = 0
-  $structuredOutput = $null
-  try {
-    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
-      throw "script not found: $ScriptPath"
-    }
-    $argumentList = @(
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      $ScriptPath
-    )
-    foreach ($entry in $Arguments.GetEnumerator()) {
-      if ($entry.Value -is [bool]) {
-        if ([bool]$entry.Value) {
-          $argumentList += "-$($entry.Key)"
-        }
-      } elseif ($entry.Value -is [array]) {
-        $argumentList += "-$($entry.Key)"
-        foreach ($item in @($entry.Value)) {
-          $argumentList += [string]$item
-        }
-      } else {
-        $argumentList += "-$($entry.Key)"
-        $argumentList += [string]$entry.Value
-      }
-    }
-    $stdoutPath = Join-Path $env:TEMP ("vem-factory-child-" + [guid]::NewGuid().ToString("N") + ".stdout.txt")
-    $stderrPath = Join-Path $env:TEMP ("vem-factory-child-" + [guid]::NewGuid().ToString("N") + ".stderr.txt")
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $exitCode = [int]$process.ExitCode
-    if (Test-Path -LiteralPath $stdoutPath) {
-      $output = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ })
-      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-    }
-    if (Test-Path -LiteralPath $stderrPath) {
-      $stderr = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ })
-      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
-    }
-    if ($exitCode -ne 0) {
-      $status = "failed"
-      $message = "$Name exited with code $exitCode"
-    }
-  } catch {
-    $status = "failed"
-    $message = [string]$_
-  }
-  if ($status -eq "succeeded" -and $WriteStructuredJsonOutput) {
-    try {
-      $structuredOutput = Convert-FactoryChildStructuredJsonOutput $output
-    } catch {
-      $status = "failed"
-      $message = [string]$_
-    }
-  }
-
-  $action = [ordered]@{
-    name = $Name
-    status = $status
-    message = $message
-    scriptPath = $ScriptPath
-    outputPath = $OutputPath
-    structuredJsonOutput = $WriteStructuredJsonOutput
-    exitCode = $exitCode
-    output = $output
-    stderr = $stderr
-  }
-  if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-    if ($WriteStructuredJsonOutput -and $status -eq "succeeded") {
-      Write-JsonFile $OutputPath $structuredOutput
-    } else {
-      Write-JsonFile $OutputPath ([pscustomobject]$action)
-    }
-  }
-  $Actions.Add([pscustomobject]$action) | Out-Null
-}
-
-function Add-FactoryAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message, $Detail = $null) {
-  $entry = [ordered]@{
-    code = $Code
-    message = $Message
-  }
-  if ($null -ne $Detail) {
-    $entry.detail = $Detail
-  }
-  $Diagnostics.Add($entry) | Out-Null
-}
-
-function Get-CleanBaseFactoryIdentity {
-  $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-  return [ordered]@{
-    hostName = if ($null -ne $computer) { [string]$computer.Name } else { $env:COMPUTERNAME }
-    user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-  }
-}
-
-function Assert-CleanBaseFactoryIdentitySafety($Identity) {
-  $values = @(
-    ${psString(cleanBaseSource)},
-    ${psString(cleanBaseSnapshot)},
-    [string]$Identity.hostName,
-    [string]$Identity.user
-  )
-  $dirtyMarkers = ${psArray(KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS)}
-  $productionMarkers = ${psArray(KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS)}
-  foreach ($value in $values) {
-    $normalized = [string]$value
-    if ([string]::IsNullOrWhiteSpace($normalized)) {
-      continue
-    }
-    $lower = $normalized.ToLowerInvariant()
-    foreach ($marker in $dirtyMarkers) {
-      if ($lower.Contains([string]$marker)) {
-        throw "clean-base factory acceptance refuses known dirty-host identity before staging: $normalized"
-      }
-    }
-    foreach ($marker in $productionMarkers) {
-      if ($lower.Contains([string]$marker)) {
-        throw "clean-base factory acceptance refuses production identity before staging: $normalized"
-      }
-    }
-    $tokens = @($lower -split "[^a-z0-9.-]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    foreach ($token in $tokens) {
-      if ($token -eq "vem" -or $token -eq "real") {
-        throw "clean-base factory acceptance refuses production identity token before staging: $normalized"
-      }
-    }
-  }
-}
-
-function Get-CleanBaseScheduledTaskState([string]$Task) {
-  $normalized = $Task.Trim("\\")
-  $separator = $normalized.LastIndexOf("\\")
-  if ($separator -ge 0) {
-    $taskPath = "\\" + $normalized.Substring(0, $separator) + "\\"
-    $taskName = $normalized.Substring($separator + 1)
-  } else {
-    $taskPath = "\\"
-    $taskName = $normalized
-  }
-  $taskObject = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
-  if ($null -eq $taskObject) {
-    return $null
-  }
-  return [ordered]@{
-    name = $Task
-    taskName = $taskName
-    taskPath = $taskPath
-    state = [string]$taskObject.State
-  }
-}
-
-function Assert-CleanBasePreflightAbsence {
-  $probes = ${psCleanBasePreflightProbeArray()}
-  $results = @()
-  $dirty = @()
-  foreach ($probe in $probes) {
-    $observedPaths = @()
-    $observedServices = @()
-    $observedTasks = @()
-    foreach ($path in @($probe.paths)) {
-      if (Test-Path -LiteralPath $path) {
-        $observedPaths += $path
-      }
-    }
-    foreach ($serviceName in @($probe.services)) {
-      $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-      if ($null -ne $service) {
-        $observedServices += [ordered]@{
-          name = [string]$service.Name
-          status = [string]$service.Status
-          startType = [string]$service.StartType
-        }
-      }
-    }
-    foreach ($taskName in @($probe.tasks)) {
-      $task = Get-CleanBaseScheduledTaskState $taskName
-      if ($null -ne $task) {
-        $observedTasks += $task
-      }
-    }
-    $passed = $observedPaths.Count -eq 0 -and $observedServices.Count -eq 0 -and $observedTasks.Count -eq 0
-    $results += [ordered]@{
-      code = [string]$probe.code
-      status = if ($passed) { "passed" } else { "failed" }
-      paths = @($probe.paths)
-      services = @($probe.services)
-      tasks = @($probe.tasks)
-      observed = @($observedPaths)
-      observedPaths = @($observedPaths)
-      observedServices = @($observedServices)
-      observedTasks = @($observedTasks)
-    }
-    if (-not $passed) {
-      $dirty += [string]$probe.code
-    }
-  }
-  if ($dirty.Count -gt 0) {
-    throw "clean-base preflight found retained VEM state: $($dirty -join ', ')"
-  }
-  return @($results)
-}
-
-function Test-CleanBaseFactoryAssertionsPassed($Assertions) {
-  if ($null -eq $Assertions) {
-    return $false
-  }
-  $required = ${psArray(REQUIRED_CLEAN_BASE_ASSERTIONS)}
-  foreach ($name in $required) {
-    if ([string]$Assertions.$name.status -ne "passed") {
-      return $false
-    }
-  }
-  return $true
-}
-
-function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence) {
-  $checks = $VerifierEvidence.checks
-  $display = $checks.display
-  $displayLive = $display.live
-  $displayExpected = $display.expected
-  $machineUiStartupMode = [string]$checks.machineUiStartup.mode
-  $machineUiTask = $checks.machineUiStartup.machineUiTask
-  $preflightByCode = @{}
-  foreach ($probe in @($PreflightAbsence)) {
-    $preflightByCode[[string]$probe.code] = $probe
-  }
-  return [ordered]@{
-    displayOrientationResolution = [ordered]@{
-      status = if ([string]$displayLive.orientation -eq [string]$displayExpected.orientation -and [int]$displayLive.width -eq [int]$displayExpected.width -and [int]$displayLive.height -eq [int]$displayExpected.height) { "passed" } else { "failed" }
-      orientation = [string]$displayExpected.orientation
-      widthPx = [int]$displayExpected.width
-      heightPx = [int]$displayExpected.height
-      live = $displayLive
-    }
-    sshReachability = [ordered]@{ status = if ([string]$checks.factoryRemoteMaintenanceCapability.opensshServer -eq "available") { "passed" } else { "failed" } }
-    tailscaleDefaultAbsent = [ordered]@{ status = if ([string]$checks.factoryRemoteMaintenanceCapability.tailscale -eq "not_installed_by_default") { "passed" } else { "failed" } }
-    windowsUpdatePolicy = $checks.windowsUpdatePolicy
-    powerPolicy = $checks.powerPolicy
-    bootPolicy = $checks.bootPolicy
-    securityPosture = $checks.securityPosture
-    factoryRemoteMaintenanceCapability = $checks.factoryRemoteMaintenanceCapability
-    maintenanceCapability = [ordered]@{
-      status = if ([string]$checks.factoryRemoteMaintenanceCapability.status -eq "passed") { "passed" } else { "failed" }
-      evidence = $checks.factoryRemoteMaintenanceCapability
-    }
-    consumerExperienceInterference = $checks.consumerExperienceInterference
-    sleepDisabled = [ordered]@{ status = if ([string]$checks.powerPolicy.sleep -eq "disabled") { "passed" } else { "failed" } }
-    testsigningOff = [ordered]@{ status = if ([string]$checks.bootPolicy.testsigning -eq "off") { "passed" } else { "failed" } }
-    autologonConfigured = [ordered]@{ status = if ([bool]$checks.autoLogon.live.configured -and [bool]$checks.autoLogon.live.force) { "passed" } else { "failed" } }
-    startupLauncherMode = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task") { "passed" } else { "failed" }; mode = $machineUiStartupMode }
-    daemonService = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and [string]$checks.daemonService.startType -eq "Automatic") { "passed" } else { "failed" }; service = $checks.daemonService }
-    uiLauncherTask = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or [bool]$machineUiTask.exists) { "passed" } else { "failed" }; task = $machineUiTask }
-    runtimeResetGateClean = [ordered]@{ status = "passed"; preflightAbsence = @($PreflightAbsence) }
-    hardwareProfileMode = [ordered]@{
-      status = if (([string]$checks.manifest.runtimeImageProfile -eq "production" -and [string]$checks.manifest.hardwareMode -eq "production") -or ([string]$checks.manifest.runtimeImageProfile -eq "testbed" -and [string]$checks.manifest.hardwareMode -eq "simulated")) { "passed" } else { "failed" }
-      profile = [string]$checks.manifest.runtimeImageProfile
-      mode = [string]$checks.manifest.hardwareMode
-    }
-    startupReachesBringUpOrSalesEligible = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task")) { "passed" } else { "failed" }; state = "bring_up" }
-    preflightNoMachineIdentity = [ordered]@{ status = [string]$preflightByCode["preflightNoMachineIdentity"].status }
-    preflightNoProvisioningProfile = [ordered]@{ status = [string]$preflightByCode["preflightNoProvisioningProfile"].status }
-    preflightNoProtectedSecrets = [ordered]@{ status = [string]$preflightByCode["preflightNoProtectedSecrets"].status }
-    preflightNoDaemonState = [ordered]@{ status = [string]$preflightByCode["preflightNoDaemonState"].status }
-    preflightNoPreviousVemEvidence = [ordered]@{ status = [string]$preflightByCode["preflightNoPreviousVemEvidence"].status }
-  }
-}
-
-function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
-  $runId = ${psString(runId)}
-  $runRoot = ${psString(cleanBaseEvidenceRoot)}
-  $stageRoot = Join-Path ${psString(remoteSupportScriptRoot)} "clean-base-staging"
-  $acceptancePath = Join-Path $runRoot ${psString(CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME)}
-  $preparationOutputPath = Join-Path $runRoot "factory-runtime-preparation.json"
-  $verificationOutputPath = Join-Path $runRoot "factory-runtime-verification-action.json"
-  $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
-  $diagnostics = [System.Collections.Generic.List[object]]::new()
-  $identity = $null
-  $personalizationEvidence = $null
-  $preflightAbsence = @()
-  $staged = $null
-
-  try {
-    $identity = Get-CleanBaseFactoryIdentity
-    Assert-CleanBaseFactoryIdentitySafety $identity
-    $FactoryActions.Add([pscustomobject]@{
-      name = "guard clean-base source identity"
-      status = "succeeded"
-      message = $null
-      identity = $identity
-    }) | Out-Null
-  } catch {
-    Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_identity_refused" ([string]$_) $identity
-    $FactoryActions.Add([pscustomobject]@{
-      name = "guard clean-base source identity"
-      status = "failed"
-      message = [string]$_
-      identity = $identity
-    }) | Out-Null
-  }
-
-  if ($diagnostics.Count -eq 0) {
-    try {
-      $personalizationEvidence = [ordered]@{
-        profile = ${psString(cleanBaseRuntimeImageProfile)}
-        source = "trusted_protected_gate"
-        credentials = "not_logged"
-        wireGuardPrivateKey = "not-supplied; generated-locally"
-      }
-      if (-not [string]::IsNullOrWhiteSpace(${psString(options.remotePersonalizationMediaPath ?? "")})) {
-        $FactoryActions.Add([pscustomobject]@{
-          name = "mount clean-base Factory Personalization Media"
-          status = "succeeded"
-          message = $null
-          personalizationEvidence = $personalizationEvidence
-        }) | Out-Null
-      } else {
-        throw "Factory Personalization Media staging path is missing"
-      }
-    } catch {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_personalization_failed" ([string]$_) $personalizationEvidence
-      $FactoryActions.Add([pscustomobject]@{
-        name = "mount clean-base Factory Personalization Media"
-        status = "failed"
-        message = [string]$_
-        personalizationEvidence = $personalizationEvidence
-      }) | Out-Null
-    }
-  }
-
-  if ($diagnostics.Count -eq 0) {
-    try {
-      $preflightAbsence = Assert-CleanBasePreflightAbsence
-      $FactoryActions.Add([pscustomobject]@{
-        name = "verify clean-base preflight absence"
-        status = "succeeded"
-        message = $null
-        probes = @($preflightAbsence)
-      }) | Out-Null
-    } catch {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_preflight_failed" ([string]$_) @($preflightAbsence)
-      $FactoryActions.Add([pscustomobject]@{
-        name = "verify clean-base preflight absence"
-        status = "failed"
-        message = [string]$_
-        probes = @($preflightAbsence)
-      }) | Out-Null
-    }
-  }
-
-  if ($diagnostics.Count -eq 0) {
-    try {
-      $staged = Copy-FactoryAcceptanceInputs $stageRoot
-      $FactoryActions.Add([pscustomobject]@{
-        name = "stage clean-base factory inputs"
-        status = "succeeded"
-        message = $null
-        evidenceRoot = $runRoot
-        stageRoot = $stageRoot
-        staged = $staged
-      }) | Out-Null
-    } catch {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_input_staging_failed" ([string]$_)
-      $FactoryActions.Add([pscustomobject]@{
-        name = "stage clean-base factory inputs"
-        status = "failed"
-        message = [string]$_
-        evidenceRoot = $runRoot
-        staged = $null
-      }) | Out-Null
-    }
-  }
-
-  if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
-    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted clean-base factory runtime preparation" -ScriptPath ([string]$staged.prepareScript) -Arguments @{
-      DaemonArtifactPath = [string]$staged.daemonArtifactPath
-      DaemonSha256 = [string]$staged.daemonSha256
-      MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
-      MachineUiSha256 = [string]$staged.machineUiSha256
-      EnvironmentName = ${psString(cleanBaseEnvironmentName)}
-      DeploymentBatch = ${psString(`clean-base-${cleanBaseRuntimeImageProfile}-v1`)}
-      ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
-      MqttUrl = ${psString(platform.mqttUrl)}
-      HardwareMode = ${psString(cleanBaseHardwareMode)}
-      HardwareModel = ${psString(options.factoryHardwareModel ?? "")}
-      TopologyIdentity = ${psString(options.factoryTopologyIdentity ?? "")}
-      TopologyVersion = ${psString(options.factoryTopologyVersion ?? "")}
-      ExpectedDisplayWidth = "1080"
-      ExpectedDisplayHeight = "1920"
-      ExpectedDisplayOrientation = "portrait"
-      ExpectedKioskUser = "VEMKiosk"
-      ExpectedMaintenanceUser = ${psString(cleanBaseMaintenanceUser)}
-      ExpectedAutoLogonUser = "VEMKiosk"
-      ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
-      TargetLayoutVersion = "win10-runtime-layout/v1"
-      RuntimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
-      FactoryMediaRoot = ${psString(cleanBaseFactoryMediaRoot)}
-      VisionConfigurationSourcePath = ${psString(cleanBaseVisionConfigurationSourcePath)}
-      PersonalizationMediaPath = ${psString(options.remotePersonalizationMediaPath ?? "")}
-      ResetExistingVemState = $false
-      OpenSshPackagePath = ${psString(options.remoteOpenSshPackagePath ?? "")}
-      OpenSshPackageSource = "local-pinned"
-      OpenSshPackageVersion = ${psString(options.openSshPackageVersion ?? "")}
-      OpenSshPackageSha256 = ${psString(options.openSshPackageSha256 ?? "")}
-      OpenSshApprovedSignerThumbprint = ${psString(options.openSshApprovedSignerThumbprint ?? "")}
-      OpenSshApprovedRootThumbprint = ${psString(options.openSshApprovedRootThumbprint ?? "")}
-      WireGuardPackagePath = ${psString(options.remoteWireGuardPackagePath ?? "")}
-      WireGuardPackageSource = "local-pinned"
-      WireGuardPackageVersion = ${psString(options.wireGuardPackageVersion ?? "")}
-      WireGuardPackageSha256 = ${psString(options.wireGuardPackageSha256 ?? "")}
-      WireGuardApprovedSignerThumbprint = ${psString(options.wireGuardApprovedSignerThumbprint ?? "")}
-      WireGuardApprovedRootThumbprint = ${psString(options.wireGuardApprovedRootThumbprint ?? "")}
-      MaintenanceSshCaPublicKeyPath = ${psString(options.remoteMaintenanceCaPublicKeyPath ?? "")}
-      MaintenanceSshCaPublicKeySha256 = ${psString(options.maintenanceCaPublicKeySha256 ?? "")}
-      MaintenanceRunnerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRunnerSourceAllowlist))}
-      MaintenanceMaintainerSourceAllowlist = ${psArray(splitCsvOption(options.maintenanceMaintainerSourceAllowlist))}
-      MaintenanceWireGuardListenAddress = ${psString(options.maintenanceWireGuardListenAddress ?? "")}
-    } -OutputPath $preparationOutputPath -WriteStructuredJsonOutput $true
-    $preparationAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime preparation" } | Select-Object -Last 1)
-    if ($preparationAction.Count -eq 0 -or [string]$preparationAction[0].status -ne "succeeded") {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_preparation_failed" "Factory runtime preparation failed." $preparationAction[0]
-    }
-  }
-
-  if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
-    Invoke-FactoryChildPowerShell -Actions $FactoryActions -Name "run scripted clean-base factory runtime verifier" -ScriptPath ([string]$staged.verifierScript) -Arguments @{
-      ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
-      EvidencePath = $verifierEvidencePath
-    } -OutputPath $verificationOutputPath -WriteStructuredJsonOutput $true
-    $verifierAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime verifier" } | Select-Object -Last 1)
-    if ($verifierAction.Count -eq 0 -or [string]$verifierAction[0].status -ne "succeeded") {
-      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_verifier_failed" "Factory runtime verifier failed." $verifierAction[0]
-    }
-  }
-
-  $verifierEvidence = if (Test-Path -LiteralPath $verifierEvidencePath -PathType Leaf) {
-    Read-JsonFile $verifierEvidencePath
-  } else {
-    $null
-  }
-  if ($diagnostics.Count -eq 0 -and ($null -eq $verifierEvidence -or [bool]$verifierEvidence.ok -ne $true)) {
-    Add-FactoryAcceptanceDiagnostic $diagnostics "factory_verifier_failed" "Factory runtime verifier evidence did not pass." $verifierEvidence
-  }
-
-  $factoryWindowsBaselinePolicy = ${psString(factoryWindowsBaselinePolicyJson)} | ConvertFrom-Json
-  $assertions = if ($null -ne $verifierEvidence) {
-    Convert-CleanBaseFactoryAssertions $verifierEvidence $preflightAbsence
-  } else {
-    [ordered]@{
-      runtimeResetGateClean = [ordered]@{ status = if ($preflightAbsence.Count -gt 0) { "passed" } else { "failed" }; preflightAbsence = @($preflightAbsence) }
-    }
-  }
-  $assertionsPassed = Test-CleanBaseFactoryAssertionsPassed $assertions
-  if ($diagnostics.Count -eq 0 -and -not $assertionsPassed) {
-    Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_assertions_failed" "One or more converted clean-base assertions did not pass." $assertions
-  }
-  $passed = $diagnostics.Count -eq 0 -and $assertionsPassed
-  $report = [ordered]@{
-    schemaVersion = "clean-base-factory-acceptance-report/v1"
-    kind = "clean-base-factory-acceptance"
-    runId = $runId
-    result = if ($passed) { "passed" } else { "failed" }
-    ok = $passed
-    dryRun = $false
-    runtimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
-    source = [ordered]@{
-      kind = "clean-windows-base"
-      uri = ${psString(cleanBaseSource)}
-      snapshot = ${psString(cleanBaseSnapshot)}
-      identity = $identity
-    }
-    factoryWindowsBaselinePolicy = $factoryWindowsBaselinePolicy
-    artifacts = [ordered]@{
-      daemonSha256 = if ($null -ne $staged) { [string]$staged.daemonSha256 } else { ${psString(expectedDaemonArtifactSha256)} }
-      machineUiSha256 = if ($null -ne $staged) { [string]$staged.machineUiSha256 } else { ${psString(expectedMachineUiArtifactSha256)} }
-      source = if ($null -ne $staged) { [string]$staged.artifactSource } else { "uploaded_local_artifacts" }
-      webView2Sidecar = if ($null -ne $staged) { [string]$staged.machineUiSidecarPath } else { $null }
-    }
-    readiness = [ordered]@{
-      cleanBasePreparationAcceptance = if ($passed) { "passed" } else { "failed" }
-      runtimeReady = "not_asserted"
-      simulatedHardwareReady = "not_asserted"
-      sellReady = "not_asserted"
-    }
-    assertions = $assertions
-    diagnostics = @($diagnostics)
-    evidence = [ordered]@{
-      runtimeImageProfile = ${psString(cleanBaseRuntimeImageProfile)}
-      preparationOutput = $preparationOutputPath
-      verificationAction = $verificationOutputPath
-      verifierEvidence = $verifierEvidencePath
-      factoryRuntimeVerification = $verifierEvidence
-      preflightAbsence = @($preflightAbsence)
-      actions = @($FactoryActions)
-    }
-  }
-  Write-JsonFile $acceptancePath ([pscustomobject]$report)
-  return [ordered]@{
-    runId = $runId
-    evidenceRoot = $runRoot
-    acceptancePath = $acceptancePath
-    preparationOutputPath = $preparationOutputPath
-    verificationOutputPath = $verificationOutputPath
-    verifierEvidencePath = $verifierEvidencePath
-    staged = $staged
-    identity = $identity
-    personalizationEvidence = $personalizationEvidence
-    preflightAbsence = @($preflightAbsence)
-    report = $report
-  }
-}
-
-function Test-ReadyFileReadableByKioskUser([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) {
-    return $false
-  }
-  try {
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    foreach ($rule in @($acl.Access)) {
-      $identity = [string]$rule.IdentityReference
-      $rights = [string]$rule.FileSystemRights
-      if (
-        $rule.AccessControlType -eq "Allow" -and
-        ($identity.EndsWith("\\VEMKiosk", [StringComparison]::OrdinalIgnoreCase) -or
-          $identity -eq "BUILTIN\\Users" -or
-          $identity -eq "Everyone") -and
-        ($rights.Contains("Read") -or $rights.Contains("FullControl"))
-      ) {
-        return $true
-      }
-    }
-  } catch {
-    return $false
-  }
-  return $false
-}
-
-function Convert-DaemonRuntimeEvidence($DaemonIpc) {
-  return [ordered]@{
-    ipcReachable = [bool]$DaemonIpc.healthz.observed -or [bool]$DaemonIpc.readyz.observed -or [bool]$DaemonIpc.config.observed
-    healthz = [ordered]@{
-      backendOnline = [bool]$DaemonIpc.healthz.backendOnline
-      mqttConnected = [bool]$DaemonIpc.healthz.mqttConnected
-      hardwareOnline = [bool]$DaemonIpc.healthz.hardwareOnline
-      scannerOnline = [bool]$DaemonIpc.healthz.scannerOnline
-    }
-    readyz = [ordered]@{
-      ready = [bool]$DaemonIpc.readyz.ready
-    }
-  }
-}
-
-function New-RuntimeAcceptanceAssertion([string]$Status, [bool]$Asserted) {
-  return [ordered]@{
-    status = $Status
-    asserted = $Asserted
-  }
-}
-
-function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message) {
-  $Diagnostics.Add([ordered]@{
-    code = $Code
-    message = $Message
-  }) | Out-Null
-}
-
-function Get-VisionLoopbackListenerBinding {
-  $listeners = $null
-  $source = $null
-  if ($null -ne (Get-Command -Name Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-    try {
-      $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object {
-        [string]$_.LocalAddress -ceq "127.0.0.1"
-      })
-      $source = "Get-NetTCPConnection"
-    } catch {
-      $listeners = $null
-    }
-  }
-  if ($null -eq $listeners) {
-    $netstatPath = Join-Path $env:SystemRoot "System32\\netstat.exe"
-    $listeners = @()
-    foreach ($line in @(& $netstatPath -ano -p tcp)) {
-      $match = [regex]::Match([string]$line, '^\\s*TCP\\s+127\\.0\\.0\\.1:7892\\s+\\S+\\s+LISTENING\\s+(\\d+)\\s*$')
-      if ($match.Success) {
-        $listeners += [pscustomobject]@{ OwningProcess = $match.Groups[1].Value }
-      }
-    }
-    $source = "netstat"
-  }
-  if ($listeners.Count -ne 1) {
-    throw "Vision must have exactly one 127.0.0.1:7892 LISTEN owner; found $($listeners.Count)"
-  }
-  [int]$listenerProcessId = 0
-  if (
-    -not [int]::TryParse([string]$listeners[0].OwningProcess, [ref]$listenerProcessId) -or
-    $listenerProcessId -lt 1
-  ) {
-    throw "Vision 127.0.0.1:7892 LISTEN owner has an invalid process identity"
-  }
-  return [ordered]@{
-    processId = $listenerProcessId
-    ownerCount = $listeners.Count
-    source = $source
-  }
-}
-
-function Test-VisionProtocolTimestamp($Value) {
-  if ($Value -is [DateTime]) {
-    return $Value.Kind -eq [DateTimeKind]::Utc
-  }
-  if ($Value -isnot [string] -or $Value -notmatch '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$') {
-    return $false
-  }
-  $timestampWithoutFraction = [regex]::Replace($Value, '\\.\\d+(?=Z$)', '')
-  [DateTime]$parsed = [DateTime]::MinValue
-  return [DateTime]::TryParseExact(
-    $timestampWithoutFraction,
-    "yyyy-MM-dd'T'HH:mm:ss'Z'",
-    [Globalization.CultureInfo]::InvariantCulture,
-    ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal),
-    [ref]$parsed
-  )
-}
-
-function Get-VisionInstalledRuntimeBinding {
-  $appDirectory = "C:\\VEM\\vision\\app"
-  $entrypoint = "C:\\VEM\\vision\\app\\vending-vision.exe"
-  $installedPath = "C:\\ProgramData\\VEM\\vision\\installed.json"
-  if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
-    throw "Vision installed record is missing"
-  }
-  if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
-    throw "Vision fixed app entrypoint is missing"
-  }
-  $installed = Get-Content -LiteralPath $installedPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-  if (
-    [string]$installed.schemaVersion -cne "vem-vision-installed/v1" -or
-    [string]$installed.commit -notmatch '^[a-f0-9]{40}$' -or
-    [string]::IsNullOrWhiteSpace([string]$installed.installedAt) -or
-    [string]$installed.appDirectory -cne $appDirectory -or
-    [string]$installed.runtime -cne "vending-vision.exe" -or
-    [string]$installed.runtimeWorkDirectory -cne "C:\\ProgramData\\VEM\\vision\\runtime"
-  ) {
-    throw "Vision installed record does not bind the fixed app"
-  }
-  $listenerBinding = Get-VisionLoopbackListenerBinding
-  $process = Get-Process -Id $listenerBinding.processId -ErrorAction Stop
-  try {
-    if (
-      $process.HasExited -or
-      $process.Path -cne $entrypoint
-    ) {
-      throw "Vision listener does not bind the fixed app entrypoint"
-    }
-  } finally {
-    $process.Dispose()
-  }
-  return [ordered]@{
-    bound = $true
-    installedCommit = [string]$installed.commit
-    installedRuntime = [string]$installed.runtime
-    installedAppDirectory = [string]$installed.appDirectory
-    installedRuntimeWorkDirectory = [string]$installed.runtimeWorkDirectory
-    processId = $listenerBinding.processId
-    executablePath = $entrypoint
-    listenerProcessId = $listenerBinding.processId
-    listenerOwnerCount = $listenerBinding.ownerCount
-    listenerBindingSource = $listenerBinding.source
-  }
-}
-
-function Get-VisionRuntimeEvidence {
-  $evidence = [ordered]@{
-    healthReachable = $false
-    healthStatus = $null
-    healthProtocol = $null
-    healthModule = $null
-    healthMockScenario = $null
-    healthVersion = $null
-    cameraReady = $null
-    modelReady = $null
-    installedProcessBound = $false
-    installedRecordPresent = $false
-    installedCommit = $null
-    installedRuntime = $null
-    installedAppDirectory = $null
-    installedRuntimeWorkDirectory = $null
-    processId = $null
-    executablePath = $null
-    listenerBound = $false
-    listenerProcessId = $null
-    listenerOwnerCount = $null
-    listenerBindingSource = $null
-    webSocketConnected = $false
-    readyProtocol = $null
-    readyType = $null
-    readyMessageId = $null
-    readyTimestamp = $null
-    readyServerName = $null
-    readyServerVersion = $null
-    readyCameraReady = $null
-    readyModelReady = $null
-    readyCapabilities = @()
-    error = $null
-  }
-  $deadline = (Get-Date).AddSeconds(45)
-  $lastError = $null
-  while ((Get-Date) -lt $deadline) {
-    $socket = $null
-    $cancellation = $null
-    try {
-      $runtimeBinding = Get-VisionInstalledRuntimeBinding
-      $evidence.installedProcessBound = [bool]$runtimeBinding.bound
-      $evidence.installedRecordPresent = $true
-      $evidence.installedCommit = [string]$runtimeBinding.installedCommit
-      $evidence.installedRuntime = [string]$runtimeBinding.installedRuntime
-      $evidence.installedAppDirectory = [string]$runtimeBinding.installedAppDirectory
-      $evidence.installedRuntimeWorkDirectory = [string]$runtimeBinding.installedRuntimeWorkDirectory
-      $evidence.processId = $runtimeBinding.processId
-      $evidence.executablePath = [string]$runtimeBinding.executablePath
-      $evidence.listenerBound = $true
-      $evidence.listenerProcessId = $runtimeBinding.listenerProcessId
-      $evidence.listenerOwnerCount = $runtimeBinding.listenerOwnerCount
-      $evidence.listenerBindingSource = [string]$runtimeBinding.listenerBindingSource
-      $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
-      $healthTimeoutSeconds = [Math]::Min(3, $remainingSeconds)
-      $health = Invoke-RestMethod -Uri "http://127.0.0.1:7892/health" -Method Get -TimeoutSec $healthTimeoutSeconds -ErrorAction Stop
-      if (
-        $health.status -isnot [string] -or
-        $health.status -notin @("ok", "degraded") -or
-        $health.module -isnot [string] -or
-        $health.module -cne "vision" -or
-        $health.protocol -isnot [string] -or
-        $health.protocol -cne "vem.vision.v1" -or
-        $health.mockScenario -isnot [string] -or
-        $health.mockScenario -cne "off" -or
-        $health.cameraReady -isnot [bool] -or
-        $health.modelReady -isnot [bool] -or
-        $health.modelReady -ne $true
-      ) {
-        throw "Vision health does not satisfy the fixed installed app contract"
-      }
-      $evidence.healthReachable = $true
-      $evidence.healthStatus = [string]$health.status
-      $evidence.healthProtocol = [string]$health.protocol
-      $evidence.healthModule = [string]$health.module
-      $evidence.healthMockScenario = $health.mockScenario
-      if ($null -ne $health.PSObject.Properties["version"]) {
-        $evidence.healthVersion = [string]$health.version
-      }
-      $evidence.cameraReady = $health.cameraReady
-      $evidence.modelReady = $health.modelReady
-
-      $socket = [Net.WebSockets.ClientWebSocket]::new()
-      $socket.Options.SetRequestHeader("Origin", "http://tauri.localhost")
-      $webSocketTimeoutSeconds = [Math]::Min(5, $remainingSeconds)
-      $cancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($webSocketTimeoutSeconds))
-      $socket.ConnectAsync([Uri]"ws://127.0.0.1:7892/ws", $cancellation.Token).GetAwaiter().GetResult()
-      $message = [ordered]@{
-        protocol = "vem.vision.v1"
-        type = "vision.hello"
-        messageId = "factory-runtime-hello"
-        timestamp = (Get-Date).ToUniversalTime().ToString("o")
-        payload = [ordered]@{
-          protocolVersion = 1
-          capabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
-          clientRole = "machine"
-          machineCode = "VEM-TESTBED-RUNTIME-ACCEPTANCE"
-        }
-      }
-      $messageBytes = [Text.Encoding]::UTF8.GetBytes(($message | ConvertTo-Json -Depth 8 -Compress))
-      $sendSegment = [ArraySegment[byte]]::new($messageBytes)
-      $socket.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
-      $maxMessageBytes = 65536
-      $messageStream = New-Object IO.MemoryStream
-      try {
-        do {
-          $buffer = New-Object byte[] 4096
-          $received = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $cancellation.Token).GetAwaiter().GetResult()
-          if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text) {
-            throw "Vision handshake must return a text message"
-          }
-          if (($messageStream.Length + $received.Count) -gt $maxMessageBytes) {
-            throw "Vision handshake response exceeds $maxMessageBytes bytes"
-          }
-          if ($received.Count -gt 0) {
-            $messageStream.Write($buffer, 0, $received.Count)
-          }
-        } while (-not $received.EndOfMessage)
-        $ready = [Text.Encoding]::UTF8.GetString($messageStream.ToArray()) | ConvertFrom-Json -ErrorAction Stop
-      } finally {
-        $messageStream.Dispose()
-      }
-      $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
-      if (
-        $null -eq $ready -or
-        $ready.protocol -isnot [string] -or
-        $ready.protocol -cne "vem.vision.v1" -or
-        $ready.type -isnot [string] -or
-        $ready.type -cne "vision.ready" -or
-        $ready.messageId -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($ready.messageId) -or
-        $ready.messageId.Length -gt 128 -or
-        -not (Test-VisionProtocolTimestamp $ready.timestamp) -or
-        $null -eq $ready.PSObject.Properties["payload"] -or
-        $ready.payload -isnot [System.Management.Automation.PSCustomObject] -or
-        $ready.payload.serverName -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($ready.payload.serverName) -or
-        $ready.payload.serverName.Length -gt 128 -or
-        $ready.payload.cameraReady -isnot [bool] -or
-        $ready.payload.cameraReady -ne $health.cameraReady -or
-        $ready.payload.modelReady -isnot [bool] -or
-        $ready.payload.modelReady -ne $true -or
-        $ready.payload.modelReady -ne $health.modelReady -or
-        $ready.payload.capabilities -isnot [array] -or
-        (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
-        (@($requiredCapabilities | Where-Object { $ready.payload.capabilities -cnotcontains $_ }).Count -ne 0)
-      ) {
-        throw "Vision WebSocket ready does not satisfy the fixed installed app contract"
-      }
-      $evidence.webSocketConnected = $true
-      $evidence.readyProtocol = [string]$ready.protocol
-      $evidence.readyType = [string]$ready.type
-      $evidence.readyMessageId = [string]$ready.messageId
-      $evidence.readyTimestamp = if ($ready.timestamp -is [DateTime]) {
-        $ready.timestamp.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffff'Z'")
-      } else {
-        [string]$ready.timestamp
-      }
-      $evidence.readyServerName = [string]$ready.payload.serverName
-      if ($null -ne $ready.payload.PSObject.Properties["serverVersion"]) {
-        $evidence.readyServerVersion = [string]$ready.payload.serverVersion
-      }
-      $evidence.readyCameraReady = $ready.payload.cameraReady
-      $evidence.readyModelReady = $ready.payload.modelReady
-      $evidence.readyCapabilities = @($ready.payload.capabilities)
-      return $evidence
-    } catch {
-      $lastError = $_
-    } finally {
-      if ($null -ne $socket) { $socket.Dispose() }
-      if ($null -ne $cancellation) { $cancellation.Dispose() }
-    }
-    if ((Get-Date) -lt $deadline) {
-      Start-Sleep -Milliseconds 500
-    }
-  }
-  $evidence.error = "Vision runtime did not become ready within 45 seconds: $lastError"
-  return $evidence
-}
-
-function Test-RuntimeAcceptanceTauriHashRouteUrl([string]$Url) {
-  return Test-TauriHashRouteUrl $Url
-}
-
-function Classify-RuntimeAcceptanceReport($Facts) {
-  $diagnostics = [System.Collections.Generic.List[object]]::new()
-  $zeroHash = "0000000000000000000000000000000000000000000000000000000000000000"
-
-  if (-not ([string]$Facts.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "testbed_machine_identity_required" "Machine Runtime Testbed MVP reports must use a VEM-TESTBED-* machine identity."
-  }
-  $observedMachineCode = if ($null -ne $Facts.provisioning) { [string]$Facts.provisioning.machineCode } else { "" }
-  if ([string]::IsNullOrWhiteSpace($observedMachineCode)) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_missing" "Runtime acceptance must include the daemon-observed machine identity from config IPC."
-  } elseif (-not $observedMachineCode.StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_required" "Daemon-observed machine identity must be a VEM-TESTBED-* machine identity."
-  } elseif ($observedMachineCode -ne [string]$Facts.target.machineCode) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_mismatch" "Daemon-observed machine identity must match the requested testbed target."
-  }
-  if ($Facts.artifacts.daemonSha256 -eq $zeroHash) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_artifact_hash_missing" "Runtime acceptance requires a SHA-256 hash for vending-daemon.exe."
-  }
-  if ($Facts.artifacts.machineUiSha256 -eq $zeroHash) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_artifact_hash_missing" "Runtime acceptance requires a SHA-256 hash for machine.exe."
-  }
-  if (-not [bool]$Facts.readyFile.exists) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_missing" "Daemon ready file must exist before runtime-ready can pass."
-  }
-  if (-not [bool]$Facts.readyFile.readableByKioskUser) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_not_readable_by_kiosk" "Daemon ready file must be readable by the VEMKiosk user."
-  }
-  if (-not [bool]$Facts.readyFile.ipcEndpointPresent -or -not [bool]$Facts.readyFile.tokenPresent) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_handoff_missing" "Ready file must include the daemon IPC endpoint and token."
-  }
-  if (-not [bool]$Facts.daemonRuntime.ipcReachable) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_unreachable" "Daemon IPC must be reachable through the ready-file handoff."
-  }
-  if (
-    -not [bool]$Facts.serviceState.daemonService.installed -or
-    -not [bool]$Facts.serviceState.daemonService.running -or
-    [string]$Facts.serviceState.daemonService.startupType -ne "automatic"
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_service_not_running" "Vending Daemon must be installed, running, and configured for automatic startup."
-  }
-  if ([string]$Facts.startupBringup.machineUiStartup.mode -eq "scheduled_task") {
-    if (-not [bool]$Facts.serviceState.machineUiTask.exists) {
-      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_missing" "VEMMachineUI scheduled task must exist before runtime-ready can pass."
-    }
-    if (-not [bool]$Facts.serviceState.machineUiTask.enabled) {
-      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_disabled" "VEMMachineUI scheduled task must be enabled before runtime-ready can pass."
-    }
-    if ([string]$Facts.serviceState.machineUiTask.runAsUser -ne "VEMKiosk") {
-      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_user_mismatch" "VEMMachineUI scheduled task must run as the VEMKiosk user."
-    }
-  }
-  if ([string]$Facts.startupBringup.configuredBy -ne "scripts/windows/setup-scheduled-tasks.ps1" -or -not [bool]$Facts.startupBringup.productionBringup) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "production_bringup_required" "Fresh Bring-Up Acceptance must use the production bring-up script path."
-  }
-  if ([bool]$Facts.startupBringup.daemonOwnedInitialization) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_owned_startup_initialization" "Winlogon auto-logon and customer startup must not be daemon-owned initialization."
-  }
-  if (-not [bool]$Facts.startupBringup.autoLogon.configured) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_autologon_missing" "Winlogon auto-logon must be configured by production bring-up before runtime-ready can pass."
-  }
-  if ([string]$Facts.startupBringup.autoLogon.user -ne "VEMKiosk") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_autologon_user_mismatch" "Winlogon auto-logon must target the VEMKiosk customer session."
-  }
-  if (-not [bool]$Facts.startupBringup.autoLogon.force) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_force_autologon_missing" "Winlogon ForceAutoLogon must be enabled for unattended cold boot acceptance."
-  }
-  if (-not [bool]$Facts.startupBringup.machineUiStartup.configured) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_missing" "Machine UI startup must be configured by production bring-up."
-  }
-  if ([string]$Facts.startupBringup.machineUiStartup.runAsUser -ne "VEMKiosk") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_user_mismatch" "Machine UI startup must target the VEMKiosk customer session."
-  }
-  if ([string]$Facts.startupBringup.machineUiStartup.mode -eq "scheduled_task") {
-    $machineUiStartupCommand = @($Facts.startupBringup.startupCommands | Where-Object {
-      [string]$_.name -eq "VEMMachineUI" -or [string]$_.name -eq "\\VEMMachineUI"
-    } | Select-Object -First 1)
-
-    if ($machineUiStartupCommand.Count -eq 0 -or -not [bool]$machineUiStartupCommand[0].exists) {
-      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_missing" "Production bring-up must provide live VEMMachineUI startup command evidence."
-    } else {
-      $commandEvidence = $machineUiStartupCommand[0]
-      if (-not [bool]$commandEvidence.enabled) {
-        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_disabled" "VEMMachineUI startup command must be enabled."
-      }
-      if ([string]$commandEvidence.runAsUser -ne "VEMKiosk") {
-        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_user_mismatch" "VEMMachineUI startup command must run as the VEMKiosk user."
-      }
-      if ([string]$commandEvidence.command -ne "C:\\Windows\\System32\\wscript.exe") {
-        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_path_mismatch" "VEMMachineUI startup command must use the production wscript launcher path."
-      }
-      if (-not ([string]$commandEvidence.arguments).Contains("C:\\VEM\\bringup\\launch-machine-ui.vbs")) {
-        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_arguments_mismatch" "VEMMachineUI startup arguments must point at the production machine UI launcher."
-      }
-      if ([string]$commandEvidence.workingDirectory -ne "C:\\VEM\\bringup") {
-        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_working_directory_mismatch" "VEMMachineUI startup working directory must be the production bring-up directory."
-      }
-    }
-  }
-  if (-not [bool]$Facts.provisioning.provisioned) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_incomplete" "Machine Provisioning must complete before runtime-ready can pass."
-  }
-  if (-not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_bypassed_daemon_ipc" "Machine Provisioning must use the daemon IPC claim path."
-  }
-  if (-not [bool]$Facts.daemonRuntime.readyz.ready) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_readyz_not_ready" "Daemon readyz must report ready before runtime-ready can pass."
-  }
-  if (-not [bool]$Facts.daemonRuntime.healthz.backendOnline) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "backend_connectivity_failed" "Daemon health must report backend connectivity."
-  }
-  if (-not [bool]$Facts.daemonRuntime.healthz.mqttConnected) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "mqtt_connectivity_failed" "Daemon health must report MQTT connectivity."
-  }
-  if (-not [bool]$Facts.serviceState.visionTask.exists -or -not [bool]$Facts.serviceState.visionTask.enabled) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_not_ready" "The installed Vision runtime task must exist and be enabled."
-  }
-  $visionStartupCommand = @($Facts.startupBringup.startupCommands | Where-Object {
-    [string]$_.name -eq "VEM\\StartVisionServer" -or [string]$_.name -eq "\\VEM\\StartVisionServer"
-  } | Select-Object -First 1)
-  if ($visionStartupCommand.Count -eq 0 -or -not [bool]$visionStartupCommand[0].exists) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_startup_command_missing" "Production bring-up must provide live Vision task startup command evidence."
-  } else {
-    $visionCommandEvidence = $visionStartupCommand[0]
-    if (
-      -not [bool]$visionCommandEvidence.enabled -or
-      [string]$visionCommandEvidence.runAsUser -ne "VEMKiosk" -or
-      [string]$visionCommandEvidence.command -ne "C:\\Windows\\System32\\cmd.exe" -or
-      -not ([string]$visionCommandEvidence.arguments).Contains("C:\\VEM\\bringup\\start_vision.bat") -or
-      [string]$visionCommandEvidence.workingDirectory -ne "C:\\VEM\\vision\\app"
-    ) {
-      Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_task_working_directory_mismatch" "Vision startup must run the fixed app launcher from C:\\VEM\\vision\\app."
-    }
-  }
-  if (
-    -not [bool]$Facts.visionRuntime.healthReachable -or
-    [string]$Facts.visionRuntime.healthStatus -notin @("ok", "degraded") -or
-    [string]$Facts.visionRuntime.healthProtocol -ne "vem.vision.v1" -or
-    [string]$Facts.visionRuntime.healthModule -ne "vision" -or
-    [string]$Facts.visionRuntime.healthMockScenario -cne "off" -or
-    -not [bool]$Facts.visionRuntime.modelReady
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_health_not_ready" "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models."
-  }
-  if (
-    -not [bool]$Facts.visionRuntime.installedProcessBound -or
-    -not [bool]$Facts.visionRuntime.installedRecordPresent -or
-    [string]$Facts.visionRuntime.installedCommit -notmatch '^[a-f0-9]{40}$' -or
-    [string]$Facts.visionRuntime.installedRuntime -ne "vending-vision.exe" -or
-    [string]$Facts.visionRuntime.installedAppDirectory -ne "C:\\VEM\\vision\\app" -or
-    [string]$Facts.visionRuntime.installedRuntimeWorkDirectory -ne "C:\\ProgramData\\VEM\\vision\\runtime" -or
-    [string]$Facts.visionRuntime.executablePath -ne "C:\\VEM\\vision\\app\\vending-vision.exe" -or
-    $Facts.visionRuntime.processId -isnot [int] -or
-    $Facts.visionRuntime.processId -lt 1 -or
-    -not [bool]$Facts.visionRuntime.listenerBound -or
-    $Facts.visionRuntime.listenerProcessId -isnot [int] -or
-    $Facts.visionRuntime.listenerProcessId -ne $Facts.visionRuntime.processId -or
-    $Facts.visionRuntime.listenerOwnerCount -ne 1 -or
-    [string]$Facts.visionRuntime.listenerBindingSource -notin @("Get-NetTCPConnection", "netstat")
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_installed_process_not_bound" "Vision acceptance must bind the listener to the fixed installed app and installed.json record."
-  }
-  if (
-    -not [bool]$Facts.visionRuntime.webSocketConnected -or
-    [string]$Facts.visionRuntime.readyProtocol -ne "vem.vision.v1" -or
-    [string]$Facts.visionRuntime.readyType -ne "vision.ready" -or
-    $Facts.visionRuntime.readyMessageId -isnot [string] -or
-    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyMessageId) -or
-    $Facts.visionRuntime.readyMessageId.Length -gt 128 -or
-    -not (Test-VisionProtocolTimestamp $Facts.visionRuntime.readyTimestamp) -or
-    $Facts.visionRuntime.readyServerName -isnot [string] -or
-    [string]::IsNullOrWhiteSpace($Facts.visionRuntime.readyServerName) -or
-    $Facts.visionRuntime.readyServerName.Length -gt 128 -or
-    $Facts.visionRuntime.readyCameraReady -isnot [bool] -or
-    $Facts.visionRuntime.readyCameraReady -ne $Facts.visionRuntime.cameraReady -or
-    $Facts.visionRuntime.readyModelReady -isnot [bool] -or
-    $Facts.visionRuntime.readyModelReady -ne $true -or
-    $Facts.visionRuntime.readyModelReady -ne $Facts.visionRuntime.modelReady -or
-    $Facts.visionRuntime.readyCapabilities -isnot [array] -or
-    (@($Facts.visionRuntime.readyCapabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -ne 0) -or
-    (@(@("profile_push", "presence_status", "person_departed", "try_on_session") | Where-Object { $Facts.visionRuntime.readyCapabilities -cnotcontains $_ }).Count -ne 0)
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "vision_protocol_not_ready" "The installed Vision runtime must complete the vem.vision.v1 hello handshake."
-  }
-  if (-not [bool]$Facts.kioskRuntime.webviewRunning) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_webview_missing" "Machine Runtime Console must be running as a Tauri WebView in the active VEMKiosk session."
-  }
-  if ([string]$Facts.kioskRuntime.sessionUser -ne "VEMKiosk") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_user_mismatch" "Machine Runtime Console must run in the VEMKiosk customer session."
-  }
-  if (
-    $Facts.kioskRuntime.processId -isnot [int] -or
-    [int]$Facts.kioskRuntime.machineProcessCount -ne 1 -or
-    [string]$Facts.kioskRuntime.machineExecutablePath -cne "C:\\VEM\\bringup\\machine.exe"
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_normal_process_not_unique" "Runtime acceptance requires exactly one installed machine.exe in the active VEMKiosk session."
-  }
-  if (
-    $null -eq $Facts.kioskRuntime.sessionId -or
-    $null -eq $Facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId -or
-    $null -eq $Facts.displayEvidence.portraitKioskAcceptance.sessionId
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_missing" "Runtime acceptance requires observed interactive VEMKiosk session ids."
-  }
-  if (
-    $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId -or
-    $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.portraitKioskAcceptance.sessionId
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_mismatch" "Machine Runtime Console evidence must match the active VEMKiosk interactive session."
-  }
-  if ([string]$Facts.displayEvidence.portraitKioskAcceptance.sessionUser -ne "VEMKiosk") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_session_user_mismatch" "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session."
-  }
-  if (
-    [string]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.status -ne "passed" -or
-    [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.widthPx -ne 1080 -or
-    [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.heightPx -ne 1920
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "interactive_desktop_display_baseline_missing" "Interactive Desktop Display Baseline must pass at exactly 1080x1920 before runtime-ready can pass."
-  }
-  if (
-    [string]$Facts.displayEvidence.portraitKioskAcceptance.status -ne "passed" -or
-    [string]$Facts.displayEvidence.portraitKioskAcceptance.source -ne "interactive_kiosk_session" -or
-    [int]$Facts.displayEvidence.portraitKioskAcceptance.widthPx -ne 1080 -or
-    [int]$Facts.displayEvidence.portraitKioskAcceptance.heightPx -ne 1920
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_acceptance_missing" "Portrait Kiosk Acceptance requires 1080x1920 evidence from the interactive kiosk session."
-  }
-
-  return [ordered]@{
-    schemaVersion = "runtime-acceptance-report/v1"
-    mode = $Facts.mode
-    target = $Facts.target
-    artifacts = $Facts.artifacts
-    displayEvidence = $Facts.displayEvidence
-    serviceState = $Facts.serviceState
-    startupBringup = $Facts.startupBringup
-    readyFile = $Facts.readyFile
-    provisioning = $Facts.provisioning
-    daemonRuntime = $Facts.daemonRuntime
-    visionRuntime = $Facts.visionRuntime
-    kioskRuntime = $Facts.kioskRuntime
-    kioskDesktopEscape = $Facts.kioskDesktopEscape
-    result = [ordered]@{
-      runtimeReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }
-      simulatedHardwareReady = [ordered]@{
-        status = "not_asserted"
-        asserted = $false
-      }
-      sellReady = [ordered]@{
-        status = "not_asserted"
-        asserted = $false
-      }
-    }
-    diagnostics = @($diagnostics)
-  }
-}
-
-function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
-  $inventory = Get-InventoryFacts $ProvisioningActions
-  $factsSubset = $inventory.runtimeAcceptanceFactsSubset
-  $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
-  $daemonRuntime = Convert-DaemonRuntimeEvidence $daemonIpc
-  $readyFilePath = "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
-  $facts = [ordered]@{
-    mode = "fresh_bring_up"
-    target = $factsSubset.target
-    artifacts = [ordered]@{
-      daemonSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\vending-daemon.exe"
-      machineUiSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\machine.exe"
-    }
-    displayEvidence = $factsSubset.displayEvidence
-    serviceState = $factsSubset.serviceState
-    startupBringup = $factsSubset.startupBringup
-    readyFile = [ordered]@{
-      exists = [bool]$daemonIpc.readyFile.exists
-      readableByKioskUser = Test-ReadyFileReadableByKioskUser $readyFilePath
-      ipcEndpointPresent = [bool]$daemonIpc.readyFile.ipcEndpointPresent
-      tokenPresent = [bool]$daemonIpc.readyFile.tokenPresent
-    }
-    provisioning = [ordered]@{
-      provisioned = [bool]$factsSubset.provisioning.provisioned
-      usedDaemonIpcTaskExecute = [bool]$factsSubset.provisioning.usedDaemonIpcTaskExecute
-      machineCode = if ([string]::IsNullOrWhiteSpace($daemonIpc.config.machineCode)) { $null } else { [string]$daemonIpc.config.machineCode }
-    }
-    daemonRuntime = [ordered]@{
-      ipcReachable = $daemonRuntime.ipcReachable
-      healthz = $daemonRuntime.healthz
-      readyz = $daemonRuntime.readyz
-    }
-    visionRuntime = Get-VisionRuntimeEvidence
-    kioskRuntime = $factsSubset.kioskRuntime
-    kioskDesktopEscape = $factsSubset.kioskDesktopEscape
-  }
-  $runtimeAcceptanceReport = Classify-RuntimeAcceptanceReport $facts
-  $runtimeAcceptanceReportPath = ${psString(RUNTIME_ACCEPTANCE_REPORT_FILE)}
-  $runtimeAcceptanceReportDirectory = Split-Path -Parent $runtimeAcceptanceReportPath
-  if (-not (Test-Path -LiteralPath $runtimeAcceptanceReportDirectory)) {
-    New-Item -ItemType Directory -Path $runtimeAcceptanceReportDirectory -Force | Out-Null
-  }
-  $runtimeAcceptanceReportJson = $runtimeAcceptanceReport | ConvertTo-Json -Depth 40
-  Set-Content -LiteralPath $runtimeAcceptanceReportPath -Value $runtimeAcceptanceReportJson -Encoding UTF8
-  return [ordered]@{
-    path = $runtimeAcceptanceReportPath
-    report = $runtimeAcceptanceReport
-  }
-}
-
-function Classify-SimulatedHardwareSaleFlowReport($Facts) {
-  $diagnostics = [System.Collections.Generic.List[object]]::new()
-
-  if (-not ([string]$Facts.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "testbed_machine_identity_required" "Simulated hardware sale-flow evidence must use a VEM-TESTBED-* machine identity."
-  }
-  if ([string]$Facts.provisioning.machineCode -ne [string]$Facts.target.machineCode) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_mismatch" "Daemon-observed machine identity must match the requested testbed target."
-  }
-  if ([string]$Facts.runtimeState.hardwareMode -ne "simulated") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_hardware_mode_required" "Simulated hardware sale-flow evidence must be captured in Simulated Hardware Mode."
-  }
-  if (-not [bool]$Facts.runtimeState.uiDiagnosticsExplicit) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "ui_simulated_hardware_diagnostics_missing" "Machine UI diagnostics must explicitly identify Simulated Hardware Mode."
-  }
-  if (-not [bool]$Facts.platformSetup.ephemeral) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "ephemeral_platform_stack_required" "Simulated hardware sale-flow evidence must use an ephemeral platform stack."
-  }
-  if (
-    [string]$Facts.platformSetup.evidenceStatus -ne "prepared" -or
-    [string]$Facts.platformSetup.preparedRunId -ne [string]$Facts.provisioning.claim.runId -or
-    [string]$Facts.platformSetup.target -ne [string]$Facts.target.platformTarget
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "ephemeral_platform_evidence_required" "Simulated hardware sale-flow evidence must prove ephemeral platform setup for the same run and target."
-  }
-  if (
-    (Test-SharedPlatformTarget $Facts.target.platformTarget) -or
-    (Test-SharedPlatformTarget $Facts.platformSetup.target) -or
-    (Test-SharedPlatformTarget $Facts.platformSetup.apiBaseUrl) -or
-    (Test-SharedPlatformTarget $Facts.platformSetup.mqttUrl)
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "shared_platform_target_rejected" "Simulated hardware sale-flow evidence must not target the shared vem-vps platform."
-  }
-  if (-not [bool]$Facts.platformSetup.mockPaymentReady) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "mock_payment_readiness_missing" "Ephemeral platform setup must prepare mock payment readiness for the sale flow."
-  }
-  if (
-    -not [bool]$Facts.provisioning.provisioned -or
-    -not [bool]$Facts.provisioning.usedMachineClaimCodePath -or
-    -not [bool]$Facts.provisioning.usedDaemonIpcTaskExecute -or
-    -not [bool]$Facts.provisioning.profileApplied -or
-    [string]$Facts.provisioning.profile.status -ne "applied" -or
-    -not [bool]$Facts.provisioning.profile.machineSecretConfigured -or
-    -not [bool]$Facts.provisioning.profile.mqttSigningSecretConfigured
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_claim_profile_path_incomplete" "Testbed provisioning must use the Machine Claim Code path through daemon IPC and apply the platform profile."
-  }
-  if (
-    [string]$Facts.provisioning.claim.runId -ne [string]$Facts.platformSetup.preparedRunId -or
-    [string]$Facts.provisioning.claim.status -ne "provisioned" -or
-    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -or
-    [int]$Facts.provisioning.claim.httpStatus -ne 200
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "fresh_machine_claim_evidence_required" "Simulated hardware sale-flow evidence must include a successful daemon IPC claim from the same run."
-  }
-  if (-not [bool]$Facts.topology.verified) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "hardware_topology_not_verified" "Daemon must verify the expected hardware slot topology before simulated sale flow."
-  }
-  $lowerControllerPort = [string]$Facts.daemonSerialConfiguration.lowerControllerPort
-  $scannerPort = [string]$Facts.daemonSerialConfiguration.scannerPort
-  if ([string]$Facts.daemonSerialConfiguration.hardwareAdapter -ne "serial") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "serial_lower_controller_adapter_required" "Simulated hardware acceptance requires hardwareAdapter=serial; daemon mock adapters are not serial evidence."
-  }
-  if ([string]$Facts.daemonSerialConfiguration.scannerAdapter -ne "serial_text") {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "serial_scanner_adapter_required" "Simulated hardware acceptance requires scannerAdapter=serial_text."
-  }
-  if (
-    -not (Test-WindowsComPath $lowerControllerPort) -or
-    -not (Test-WindowsComPath $scannerPort) -or
-    -not [bool]$Facts.daemonSerialConfiguration.lowerControllerPortObserved -or
-    -not [bool]$Facts.daemonSerialConfiguration.scannerPortObserved
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "windows_com_path_evidence_required" "Both daemon adapters must use observed Windows COM paths; TCP and unobserved paths are not acceptance evidence."
-  }
-  if (
-    [string]::IsNullOrWhiteSpace($lowerControllerPort) -or
-    [string]::IsNullOrWhiteSpace($scannerPort) -or
-    $lowerControllerPort.Equals($scannerPort, [StringComparison]::OrdinalIgnoreCase)
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "distinct_virtual_com_mapping_required" "Lower-controller and scanner evidence must bind two distinct virtual COM mappings."
-  }
-  if (
-    -not [bool]$Facts.planogram.syncedFromPlatform -or
-    -not [bool]$Facts.planogram.applied -or
-    -not [bool]$Facts.planogram.acknowledged
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_planogram_not_acknowledged" "Daemon must sync, apply, and acknowledge the platform planogram before simulated sale flow."
-  }
-  if ([string]$Facts.stock.planogramVersion -ne [string]$Facts.planogram.planogramVersion) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "stock_planogram_mismatch" "Initial stock evidence must be recorded against the active acknowledged planogram."
-  }
-  if ([int]$Facts.stock.saleableSlots -lt 1 -or [int]$Facts.stock.totalOnHand -lt 1) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "initial_stock_missing" "Initial stock must be established through stock attestation or stock movement paths."
-  }
-  if ([string]$Facts.stock.uploadStatus -ne "accepted" -or [string]::IsNullOrWhiteSpace($Facts.stock.platformMovementId)) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "stock_upload_not_accepted" "Initial stock evidence must include an accepted platform stock movement or attestation upload."
-  }
-  if (
-    -not [bool]$Facts.sale.saleViewReady -or
-    [string]::IsNullOrWhiteSpace($Facts.sale.orderId) -or
-    [string]::IsNullOrWhiteSpace($Facts.sale.orderNo) -or
-    [string]$Facts.sale.orderStatus -ne "fulfilled" -or
-    [string]$Facts.sale.paymentMethod -ne "payment_code" -or
-    [string]$Facts.sale.paymentProviderCode -ne "mock" -or
-    [string]::IsNullOrWhiteSpace($Facts.sale.paymentId) -or
-    [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
-    [string]$Facts.sale.paymentStatus -ne "succeeded" -or
-    -not [bool]$Facts.sale.paymentSucceeded -or
-    [string]::IsNullOrWhiteSpace($Facts.sale.vendingCommandId) -or
-    -not [bool]$Facts.sale.dispenseSimulated -or
-    [string]$Facts.sale.dispenseResult -ne "dispensed" -or
-    -not [bool]$Facts.sale.dispenseSucceeded -or
-    [string]$Facts.sale.customerResult -ne "success"
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_customer_sale_not_successful" "Simulated payment and simulated dispense must reach a successful customer-facing result."
-  }
-  if (
-    [string]$Facts.platformState.paymentStatus -ne "succeeded" -or
-    [string]$Facts.platformState.fulfillmentStatus -ne "dispensed" -or
-    -not [bool]$Facts.platformState.stockMovementAccepted -or
-    [string]$Facts.platformState.postSaleDispenseMovement.status -ne "accepted" -or
-    [string]::IsNullOrWhiteSpace([string]$Facts.platformState.postSaleDispenseMovement.movementId) -or
-    [string]$Facts.platformState.postSaleDispenseMovement.orderId -ne [string]$Facts.sale.orderId -or
-    [string]$Facts.platformState.postSaleDispenseMovement.vendingCommandId -ne [string]$Facts.sale.vendingCommandId -or
-    [int]$Facts.platformState.postSaleDispenseMovement.quantity -ne 1 -or
-    [int]$Facts.platformState.postSaleDispenseMovement.deltaQuantity -ne -1
-  ) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must bind this fulfilled sale to an accepted post-sale dispense movement and its inventory delta."
-  }
-
-  return [ordered]@{
-    schemaVersion = "simulated-hardware-sale-flow/v1"
-    mode = $Facts.mode
-    target = $Facts.target
-    runtimeState = $Facts.runtimeState
-    provisioning = $Facts.provisioning
-    platformSetup = $Facts.platformSetup
-    topology = $Facts.topology
-    daemonSerialConfiguration = $Facts.daemonSerialConfiguration
-    guestSerialEvidence = $Facts.guestSerialEvidence
-    planogram = $Facts.planogram
-    stock = $Facts.stock
-    sale = $Facts.sale
-    platformState = $Facts.platformState
-    result = [ordered]@{
-      simulatedHardwareReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "not_asserted" $false } else { New-RuntimeAcceptanceAssertion "failed" $false }
-      sellReady = [ordered]@{
-        status = "not_asserted"
-        asserted = $false
-      }
-    }
-    diagnostics = @($diagnostics)
-  }
-}
-
-function Test-SharedPlatformTarget($Value) {
-  $text = ([string]$Value).ToLowerInvariant()
-  return $text.Contains("vem-vps") -or $text.Contains("118.25.104.160")
-}
-
-function Test-WindowsComPath([string]$Value) {
-  return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '^COM[1-9][0-9]*$'
-}
-
-function Get-WindowsComPortEvidence([string]$Port) {
-  $normalizedPort = ([string]$Port).Trim().ToUpperInvariant()
-  if (-not (Test-WindowsComPath $normalizedPort)) {
-    return [ordered]@{ port = $null; observed = $false }
-  }
-  try {
-    $observed = @(
-      Get-CimInstance -ClassName Win32_SerialPort -ErrorAction Stop | Where-Object {
-        ([string]$_.DeviceID).Equals($normalizedPort, [StringComparison]::OrdinalIgnoreCase)
-      }
-    ).Count -eq 1
-    return [ordered]@{ port = $normalizedPort; observed = $observed }
-  } catch {
-    return [ordered]@{ port = $normalizedPort; observed = $false }
-  }
-}
-
-function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, $DaemonApiBaseUrl, $DaemonMqttUrl, [string]$HardwareMode, $PlatformSetup) {
-  if (-not ([string]$Target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
-    return [ordered]@{ ok = $false; code = "testbed_machine_identity_required" }
-  }
-  if ([string]$DaemonMachineCode -ne [string]$Target.machineCode) {
-    return [ordered]@{ ok = $false; code = "daemon_machine_identity_mismatch" }
-  }
-  if ($HardwareMode -ne "simulated") {
-    return [ordered]@{ ok = $false; code = "simulated_hardware_mode_required" }
-  }
-  if (
-    (Test-SharedPlatformTarget $Target.platformTarget) -or
-    (Test-SharedPlatformTarget $PlatformSetup.target) -or
-    (Test-SharedPlatformTarget $PlatformSetup.apiBaseUrl) -or
-    (Test-SharedPlatformTarget $PlatformSetup.mqttUrl)
-  ) {
-    return [ordered]@{ ok = $false; code = "shared_platform_target_rejected" }
-  }
-  if ([string]$PlatformSetup.evidenceStatus -ne "prepared" -or [string]$PlatformSetup.target -ne [string]$Target.platformTarget) {
-    return [ordered]@{ ok = $false; code = "ephemeral_platform_evidence_required" }
-  }
-  if ([string]$DaemonApiBaseUrl -ne [string]$PlatformSetup.apiBaseUrl -or [string]$DaemonMqttUrl -ne [string]$PlatformSetup.mqttUrl) {
-    return [ordered]@{ ok = $false; code = "ephemeral_platform_target_mismatch" }
-  }
-  return [ordered]@{ ok = $true; code = "pre_mutation_target_verified" }
-}
-
-function Get-HardwareMappingFaultProbeContext(
-  [string]$ContextPath,
-  [string]$RunId
-) {
-  if (-not (Test-Path -LiteralPath $ContextPath -PathType Leaf)) {
-    throw "hardware mapping fault probe requires a successful sale-prepare context"
-  }
-
-  $Context = Read-JsonFile $ContextPath
-  if ([string]$Context.runId -ne [string]$RunId) {
-    throw "hardware mapping fault probe context belongs to a different run"
-  }
-  if (
-    $null -eq $Context.successfulPrepare -or
-    [string]$Context.successfulPrepare.runId -ne [string]$RunId -or
-    [string]$Context.successfulPrepare.status -ne "succeeded" -or
-    [string]$Context.successfulPrepare.phase -ne "prepare" -or
-    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.orderId) -or
-    [string]::IsNullOrWhiteSpace([string]$Context.successfulPrepare.paymentId)
-  ) {
-    throw "hardware mapping fault probe context has no successful sale-prepare baseline"
-  }
-  if (
-    $null -eq $Context.saleView -or
-    [string]::IsNullOrWhiteSpace([string]$Context.saleView.planogramVersion) -or
-    $null -eq $Context.selectedItem -or
-    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.inventoryId) -or
-    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotId) -or
-    [string]::IsNullOrWhiteSpace([string]$Context.selectedItem.slotCode)
-  ) {
-    throw "hardware mapping fault probe context has no saleable baseline item"
-  }
-  if ($null -eq $Context.paymentOptions -or $null -eq $Context.paymentOptions.options) {
-    throw "hardware mapping fault probe context has no payment options"
-  }
-
-  $contextPaymentOptions = @($Context.paymentOptions.options | Where-Object {
-    $null -ne $_ -and
-    $_.disabled -ne $true -and
-    [string]$_.method -ne "payment_code" -and
-    -not [string]::IsNullOrWhiteSpace([string]$_.optionKey) -and
-    -not [string]::IsNullOrWhiteSpace([string]$_.method) -and
-    -not [string]::IsNullOrWhiteSpace([string]$_.providerCode)
-  })
-  $paymentOption = @($contextPaymentOptions | Where-Object {
-    [string]$_.method -eq "qr_code"
-  } | Select-Object -First 1)
-  if ($paymentOption.Count -eq 0) {
-    $paymentOption = @($contextPaymentOptions | Select-Object -First 1)
-  }
-  if ($paymentOption.Count -eq 0) {
-    throw "hardware mapping fault probe requires an available non-scanner payment option"
-  }
-
-  return [ordered]@{
-    selectedItem = $Context.selectedItem
-    planogramVersion = [string]$Context.saleView.planogramVersion
-    paymentOption = $paymentOption[0]
-  }
-}
-
-function Resolve-HardwareMappingFaultPaymentOption(
-  $ContextPaymentOption,
-  [string]$BaseUrl,
-  $Headers
-) {
-  $livePaymentOptions = Invoke-IpcJson "GET" "$BaseUrl/v1/payment-options" $Headers
-  $matchingOption = @($livePaymentOptions.options | Where-Object {
-    $_.disabled -ne $true -and
-    [string]$_.optionKey -eq [string]$ContextPaymentOption.optionKey -and
-    [string]$_.method -eq [string]$ContextPaymentOption.method -and
-    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
-  } | Select-Object -First 1)
-  if ($matchingOption.Count -eq 0) {
-    throw "hardware mapping fault probe payment option is no longer available"
-  }
-  $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
-  $readyPaymentOption = @($saleCapability.paymentOptions.options | Where-Object {
-    $_.ready -eq $true -and
-    [string]$_.method -eq [string]$ContextPaymentOption.method -and
-    [string]$_.providerCode -eq [string]$ContextPaymentOption.providerCode
-  } | Select-Object -First 1)
-  if ($readyPaymentOption.Count -eq 0) {
-    throw "hardware mapping fault probe payment option is not ready"
-  }
-  return [ordered]@{
-    option = $matchingOption[0]
-    ready = $true
-  }
-}
-
-function Invoke-HardwareMappingFaultProbe(
-  [string]$BaseUrl,
-  $Headers,
-  $DaemonIpc,
-  [string]$ContextPath,
-  [string]$RunId
-) {
-  $healthz = $DaemonIpc.healthz
-  $readyz = $DaemonIpc.readyz
-  $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
-  $capabilityBlockerCodes = @($saleCapability.blockers | ForEach-Object { [string]$_.code })
-  $mappingFault = [ordered]@{
-    healthzObserved = $null -ne $healthz -and $healthz.observed -eq $true
-    readyzObserved = $null -ne $readyz -and $readyz.observed -eq $true
-    capabilityObserved = $null -ne $saleCapability
-    hardwareOnline = if ($null -ne $healthz) { [bool]$healthz.hardwareOnline } else { $null }
-    capabilityBlockerCodes = $capabilityBlockerCodes
-    exactLowerControllerBlocker =
-      $capabilityBlockerCodes.Count -eq 1 -and
-      $capabilityBlockerCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
-    adapterSession = [ordered]@{
-      serialSessionId = ${psString(process.env.VEM_VM_HOST_FAULT_SESSION_ID ?? "")}
-      startOperationReference = ${psString(process.env.VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE ?? "")}
-      deviceMappingDigest = ${psString(process.env.VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST ?? "")}
-      faultStartedAt = ${psString(process.env.VEM_VM_HOST_FAULT_STARTED_AT ?? "")}
-    }
-  }
-  $transactionEntry = [ordered]@{
-    endpoint = "/v1/intents/create-order"
-    attempted = $false
-    rejected = $false
-    statusCode = $null
-    responseCode = $null
-    capabilityBlockerCodes = $capabilityBlockerCodes
-    responseBlockingCodes = @()
-    context = $null
-    request = $null
-    orderId = $null
-    paymentId = $null
-    vendingCommandId = $null
-  }
-
-  if (
-    $mappingFault.healthzObserved -ne $true -or
-    $mappingFault.readyzObserved -ne $true -or
-    $mappingFault.capabilityObserved -ne $true -or
-    $healthz.hardwareOnline -ne $false -or
-    $null -eq $readyz
-  ) {
-    throw "hardware mapping fault probe requires observed unhealthy daemon IPC healthz, readyz, and sale capability"
-  }
-
-  $probeContext = Get-HardwareMappingFaultProbeContext $ContextPath $RunId
-  $resolvedPaymentOption = Resolve-HardwareMappingFaultPaymentOption $probeContext.paymentOption $BaseUrl $Headers
-  $paymentOption = $resolvedPaymentOption.option
-  $createOrderRequest = [ordered]@{
-    inventoryId = [string]$probeContext.selectedItem.inventoryId
-    quantity = 1
-    planogramVersion = [string]$probeContext.planogramVersion
-    slotId = [string]$probeContext.selectedItem.slotId
-    slotCode = [string]$probeContext.selectedItem.slotCode
-    paymentMethod = [string]$paymentOption.method
-    paymentProviderCode = [string]$paymentOption.providerCode
-    profileSnapshot = [ordered]@{ source = "hardware_mapping_fault_probe"; runId = $RunId }
-  }
-  $transactionEntry.context = [ordered]@{
-    runId = $RunId
-    successfulPrepare = [ordered]@{
-      runId = $RunId
-      status = "succeeded"
-      phase = "prepare"
-    }
-    selectedItem = [ordered]@{
-      inventoryId = [string]$probeContext.selectedItem.inventoryId
-      slotId = [string]$probeContext.selectedItem.slotId
-      slotCode = [string]$probeContext.selectedItem.slotCode
-    }
-    planogramVersion = [string]$probeContext.planogramVersion
-    paymentOption = [ordered]@{
-      optionKey = [string]$paymentOption.optionKey
-      method = [string]$paymentOption.method
-      providerCode = [string]$paymentOption.providerCode
-      ready = [bool]$resolvedPaymentOption.ready
-    }
-  }
-  $transactionEntry.request = $createOrderRequest
-  $transactionEntry.attempted = $true
-  try {
-    Invoke-IpcJson "POST" "$BaseUrl/v1/intents/create-order" $Headers $createOrderRequest | Out-Null
-    $transactionEntry.responseCode = "transaction_creation_accepted"
-  } catch {
-    $rejection = Get-HttpErrorInfo $_
-    $transactionEntry.statusCode = $rejection.statusCode
-    $transactionEntry.responseCode = Convert-ClaimFailureClassification $rejection
-    $transactionEntry.responseBlockingCodes = @(Get-NetworkSaleResponseBlockingCodes $rejection)
-    $transactionEntry.rejected =
-      $transactionEntry.statusCode -eq 400 -and
-      $transactionEntry.responseCode -eq "create_order_blocked" -and
-      $transactionEntry.responseBlockingCodes.Count -eq 1 -and
-      $transactionEntry.responseBlockingCodes[0] -eq "LOWER_CONTROLLER_UNAVAILABLE"
-  }
-
-  return [ordered]@{
-    mappingFault = $mappingFault
-    transactionEntry = $transactionEntry
-  }
-}
-
-function Wait-SaleCapabilityAfterStockAttestation(
-  [string]$BaseUrl,
-  $Headers
-) {
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  $saleCapability = $null
-  do {
-    $saleCapability = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-start-capability" $Headers
-    $saleView = Invoke-IpcJson "GET" "$BaseUrl/v1/sale-view" $Headers
-    $saleableSlots = @($saleView.items | Where-Object {
-      [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
-    })
-
-    if ($saleableSlots.Count -gt 0 -and [bool]$saleCapability.canStartSale) {
-      return [ordered]@{
-        saleCapability = $saleCapability
-        saleView = $saleView
-      }
-    }
-
-    Start-Sleep -Milliseconds 500
-  } while ([DateTime]::UtcNow -lt $deadline)
-
-  $lastCapability = if ($null -eq $saleCapability) { "null" } else { $saleCapability | ConvertTo-Json -Compress -Depth 12 }
-  throw "timed out waiting for sale-start capability after stock attestation: $lastCapability"
-}
-
-function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
-  $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
-  $contextPath = ${psString(SIMULATED_HARDWARE_SALE_CONTEXT_FILE)}
-  $salePhase = ${psString(options.salePhase ?? "single")}
-  $ready = $null
-  $baseUrl = $null
-  $headers = $null
-  $bringUp = $null
-  $configSummary = $null
-  $daemonIpcBeforeMutation = $null
-  $syncPlanogram = $null
-  $saleViewBeforeStock = $null
-  $attestation = $null
-  $saleView = $null
-  $paymentOptions = $null
-  $renderedSaleBinding = $null
-  $currentTransaction = $null
-  $postSaleDispenseMovement = $null
-  $selectedItem = $null
-  $flowError = $null
-  $effectiveProvisioningActions = @($ProvisioningActions)
-
-  try {
-    $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-    if ([string]::IsNullOrWhiteSpace($ready.ipcToken)) {
-      throw "ipcToken missing from daemon ready file"
-    }
-    $baseUrl = Get-IpcBaseUrl $ready
-    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
-    $maintenanceSession = Invoke-IpcJson "POST" "$baseUrl/v1/maintenance/sessions" $headers ([ordered]@{
-      pin = ${psString(process.env.VEM_TESTBED_MAINTENANCE_PIN ?? "2468")}
-      operatorId = "vm-runtime-acceptance"
-    })
-    if ([string]::IsNullOrWhiteSpace([string]$maintenanceSession.sessionId)) {
-      throw "testbed maintenance session response has no session id"
-    }
-    $headers["x-vem-maintenance-session"] = [string]$maintenanceSession.sessionId
-
-    if ($salePhase -eq "complete") {
-      if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) {
-        throw "simulated sale fixture context is missing"
-      }
-      $context = Read-JsonFile $contextPath
-      if ([string]$context.kind -ne "simulated_hardware_sale_fixture") {
-        throw "simulated sale completion requires fixture-only context"
-      }
-      $renderedSaleBinding = ${psString(options.saleBindingJson ?? "")} | ConvertFrom-Json
-      foreach ($field in @("orderId", "paymentId", "orderNo")) {
-        if ([string]::IsNullOrWhiteSpace([string]$renderedSaleBinding.$field)) {
-          throw "simulated sale completion requires rendered $field"
-        }
-      }
-      $bringUp = $context.bringUp
-      $configSummary = $context.configSummary
-      $daemonIpcBeforeMutation = $context.daemonIpcBeforeMutation
-      $syncPlanogram = $context.syncPlanogram
-      $saleViewBeforeStock = $context.saleViewBeforeStock
-      $attestation = $context.attestation
-      $saleView = $context.saleView
-      $paymentOptions = $context.paymentOptions
-      $selectedItem = $context.selectedItem
-      $effectiveProvisioningActions = @($context.provisioningActions)
-    } else {
-    $bringUp = [pscustomobject]@{ hardwareMode = "serial" }
-    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/runtime-configuration" $headers
-    $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
-    $hardwareMappingFaultProbeRequired =
-      $daemonIpcBeforeMutation.healthz.observed -eq $true -and
-      $daemonIpcBeforeMutation.healthz.hardwareOnline -eq $false
-    if ($hardwareMappingFaultProbeRequired) {
-      throw "fixture-only sale setup requires healthy serial hardware before customer checkout"
-    }
-    $platformSetupGuardEvidence = [ordered]@{
-      target = ${psString(ephemeralPlatformSetup?.target ?? "")}
-      apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
-      mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
-      evidenceStatus = "prepared"
-    }
-    $preMutationGuard = Assert-SimulatedSaleFlowPreMutationTarget ([ordered]@{
-      machineCode = ${psString(machineCode)}
-      platformTarget = ${psString(platformTarget)}
-    }) $daemonIpcBeforeMutation.config.machineCode $daemonIpcBeforeMutation.config.apiBaseUrl $daemonIpcBeforeMutation.config.mqttUrl ([string]$bringUp.hardwareMode) $platformSetupGuardEvidence
-    if (-not [bool]$preMutationGuard.ok) {
-      throw "simulated sale-flow pre-mutation target guard failed: $($preMutationGuard.code)"
-    }
-
-    $syncPlanogram = Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync" $headers
-    $saleViewBeforeStock = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
-    $selectedItem = @($saleViewBeforeStock.items | Where-Object {
-      -not [string]::IsNullOrWhiteSpace($_.slotId) -and
-      -not [string]::IsNullOrWhiteSpace($_.slotCode) -and
-      -not [string]::IsNullOrWhiteSpace($_.sku)
-    } | Select-Object -First 1)
-    if ($selectedItem.Count -eq 0) {
-      throw "sale view does not contain a slot for simulated stock attestation"
-    }
-    $selectedItem = $selectedItem[0]
-    $stockQuantity = if ([int]$selectedItem.physicalStock -gt 0) { [int]$selectedItem.physicalStock } elseif ([int]$selectedItem.parLevel -gt 0) { [int]$selectedItem.parLevel } else { 1 }
-    $attestationPayload = [ordered]@{
-      attestationId = "SIM-HW-${runId}"
-      planogramVersion = [string]$saleViewBeforeStock.planogramVersion
-      operatorId = "testbed-orchestrator"
-      slots = @($saleViewBeforeStock.items | ForEach-Object {
-        [ordered]@{
-          slotId = [string]$_.slotId
-          slotCode = [string]$_.slotCode
-          sku = [string]$_.sku
-          quantity = if ([int]$_.physicalStock -gt 0) { [int]$_.physicalStock } elseif ([int]$_.parLevel -gt 0) { [int]$_.parLevel } else { 1 }
-          enabled = $true
-        }
-      })
-    }
-    $attestationSubmission = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
-    $stockAcceptance = Wait-SaleCapabilityAfterStockAttestation $baseUrl $headers
-    $saleView = $stockAcceptance.saleView
-    $selectedItem = @($saleView.items | Where-Object {
-      [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
-    } | Select-Object -First 1)
-    $attestation = [ordered]@{
-      attestationId = [string]$attestationPayload.attestationId
-      accepted = $true
-      status = "accepted"
-      uploadStatus = "accepted"
-      acceptedAt = $null
-      platformMovementId = $null
-      submission = $attestationSubmission
-    }
-    if ($selectedItem.Count -eq 0) {
-      throw "sale view does not contain a sale-ready simulated slot after stock attestation"
-    }
-    $selectedItem = $selectedItem[0]
-    $paymentOptions = Invoke-IpcJson "GET" "$baseUrl/v1/payment-options" $headers
-    if ($salePhase -eq "fixture") {
-      Write-JsonFile $contextPath ([ordered]@{
-        kind = "simulated_hardware_sale_fixture"
-        runId = ${psString(runId)}
-        fixture = [ordered]@{
-          planogramVersion = [string]$saleView.planogramVersion
-          selectedItem = $selectedItem
-          stockAttestationId = [string]$attestation.attestationId
-          paymentOptionCount = @($paymentOptions.options).Count
-        }
-        bringUp = $bringUp
-        configSummary = $configSummary
-        daemonIpcBeforeMutation = $daemonIpcBeforeMutation
-        syncPlanogram = $syncPlanogram
-        saleViewBeforeStock = $saleViewBeforeStock
-        attestation = $attestation
-        saleView = $saleView
-        paymentOptions = $paymentOptions
-        selectedItem = $selectedItem
-        provisioningActions = @($ProvisioningActions)
-      })
-    }
-    }
-    if ($salePhase -eq "complete") {
-      $deadline = [DateTime]::UtcNow.AddSeconds(120)
-      do {
-        $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
-        if (
-          [string]$currentTransaction.vending.status -eq "succeeded" -or
-          [string]$currentTransaction.vending.status -eq "failed" -or
-          [string]$currentTransaction.paymentStatus -eq "failed"
-        ) { break }
-        Start-Sleep -Milliseconds 500
-      } while ([DateTime]::UtcNow -lt $deadline)
-    }
-  } catch {
-    $flowError = [string]$_
-  }
-
-  $daemonIpc = if ($null -ne $daemonIpcBeforeMutation) { $daemonIpcBeforeMutation } else { Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)} }
-  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($effectiveProvisioningActions)
-  $activePlanogramVersion = if ($null -ne $saleView -and -not [string]::IsNullOrWhiteSpace($saleView.planogramVersion)) {
-    [string]$saleView.planogramVersion
-  } elseif ($null -ne $saleViewBeforeStock -and -not [string]::IsNullOrWhiteSpace($saleViewBeforeStock.planogramVersion)) {
-    [string]$saleViewBeforeStock.planogramVersion
-  } else {
-    "unknown"
-  }
-  $saleableSlots = if ($null -ne $saleView) {
-    @($saleView.items | Where-Object { [int]$_.saleableStock -gt 0 -and [string]$_.slotSalesState -eq "sale_ready" }).Count
-  } else {
-    0
-  }
-  $totalOnHand = if ($null -ne $saleView) {
-    $stockSum = @($saleView.items | Measure-Object -Property physicalStock -Sum).Sum
-    if ($null -eq $stockSum) { 0 } else { [int]$stockSum }
-  } else {
-    0
-  }
-  $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
-    [string]$currentTransaction.paymentStatus
-  } else {
-    "unknown"
-  }
-  $fulfillmentStatus = if ([string]$currentTransaction.vending.status -eq "succeeded") {
-    "dispensed"
-  } elseif ([string]$currentTransaction.vending.status -eq "failed") {
-    "dispense_failed"
-  } else {
-    "unknown"
-  }
-  $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
-    [string]$currentTransaction.orderStatus
-  } else {
-    "unknown"
-  }
-  $planogramAcknowledgmentId = if ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.acknowledgmentId)) {
-    [string]$syncPlanogram.acknowledgmentId
-  } elseif ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.ackId)) {
-    [string]$syncPlanogram.ackId
-  } else {
-    $null
-  }
-  $planogramSyncStatus = if ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.status)) {
-    $rawPlanogramStatus = [string]$syncPlanogram.status
-    if (@("acknowledged", "failed", "missing") -contains $rawPlanogramStatus) {
-      $rawPlanogramStatus
-    } elseif ($null -ne $planogramAcknowledgmentId) {
-      "acknowledged"
-    } else {
-      "missing"
-    }
-  } elseif ($null -ne $planogramAcknowledgmentId) {
-    "acknowledged"
-  } elseif ($null -ne $syncPlanogram) {
-    "missing"
-  } else {
-    "failed"
-  }
-  $stockUploadStatus = if ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.uploadStatus)) {
-    $rawStockUploadStatus = [string]$attestation.uploadStatus
-    if (@("accepted", "rejected", "missing") -contains $rawStockUploadStatus) {
-      $rawStockUploadStatus
-    } elseif ([bool]$attestation.accepted) {
-      "accepted"
-    } else {
-      "missing"
-    }
-  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.status)) {
-    $rawStockStatus = [string]$attestation.status
-    if (@("accepted", "rejected", "missing") -contains $rawStockStatus) {
-      $rawStockStatus
-    } elseif ([bool]$attestation.accepted) {
-      "accepted"
-    } else {
-      "missing"
-    }
-  } elseif ($null -ne $attestation -and [bool]$attestation.accepted) {
-    "accepted"
-  } elseif ($null -ne $attestation) {
-    "missing"
-  } else {
-    "failed"
-  }
-  $platformMovementId = if ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.platformMovementId)) {
-    [string]$attestation.platformMovementId
-  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.stockMovementId)) {
-    [string]$attestation.stockMovementId
-  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.movementId)) {
-    [string]$attestation.movementId
-  } else {
-    $null
-  }
-  $orderId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderId)) {
-    [string]$currentTransaction.orderId
-  } else {
-    $null
-  }
-  $orderNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderNo)) {
-    [string]$currentTransaction.orderNo
-  } else {
-    $null
-  }
-  $paymentNo = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentNo)) {
-    [string]$currentTransaction.paymentNo
-  } else {
-    $null
-  }
-  $paymentId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentId)) {
-    [string]$currentTransaction.paymentId
-  } else {
-    $null
-  }
-  $observedReservationIds = @()
-  $reservationSource = "not_exposed"
-  if ($null -ne $currentTransaction -and $null -ne $currentTransaction.PSObject.Properties["reservations"]) {
-    $reservationSource = "current_transaction.reservations"
-    foreach ($reservation in @($currentTransaction.reservations)) {
-      if ($null -ne $reservation -and -not [string]::IsNullOrWhiteSpace([string]$reservation.reservationId)) {
-        $observedReservationIds += [string]$reservation.reservationId
-      }
-    }
-  } elseif ($null -ne $currentTransaction -and $null -ne $currentTransaction.PSObject.Properties["reservationId"]) {
-    $reservationSource = "current_transaction.reservationId"
-    if (-not [string]::IsNullOrWhiteSpace([string]$currentTransaction.reservationId)) {
-      $observedReservationIds += [string]$currentTransaction.reservationId
-    }
-  }
-  $reservationEvidence = [ordered]@{
-    source = $reservationSource
-    exposed = $reservationSource -ne "not_exposed"
-    rawRecordCount = @($observedReservationIds).Count
-  }
-  if ($salePhase -eq "complete" -and (
-    $orderId -ne [string]$renderedSaleBinding.orderId -or
-    $paymentId -ne [string]$renderedSaleBinding.paymentId -or
-    $orderNo -ne [string]$renderedSaleBinding.orderNo
-  )) {
-    throw "completed simulated sale does not match the rendered payment binding"
-  }
-  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vending.commandId)) {
-    [string]$currentTransaction.vending.commandId
-  } elseif ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.dispenseCommandId)) {
-    [string]$currentTransaction.dispenseCommandId
-  } else {
-    $null
-  }
-  $lowerControllerCom = [ordered]@{ observed = $false; reason = "dynamic_device_binding" }
-  $scannerCom = [ordered]@{ observed = $false; reason = "dynamic_device_binding" }
-  if ($null -ne $orderId -and $null -ne $vendingCommandId) {
-    $orderQuery = [uri]::EscapeDataString($orderId)
-    $commandQuery = [uri]::EscapeDataString($vendingCommandId)
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {
-      try {
-        $postSaleDispenseMovement = Invoke-IpcJson "GET" "$baseUrl/v1/stock/movements/dispense-confirmation?orderId=$orderQuery&vendingCommandId=$commandQuery" $headers
-        break
-      } catch {
-        Start-Sleep -Seconds 1
-      }
-    }
-  }
-  $dispenseResult = if ($fulfillmentStatus -eq "dispensed") {
-    "dispensed"
-  } elseif ($fulfillmentStatus -eq "dispense_failed") {
-    "failed"
-  } else {
-    "unknown"
-  }
-  $observedOrderIds = @($orderId)
-  $observedPaymentIds = @($paymentId)
-  $observedOrderNos = @($orderNo)
-  $observedCommandIds = @($vendingCommandId)
-  $observedMovementIds = @()
-  if ($null -ne $postSaleDispenseMovement) {
-    $observedMovementIds += [string]$postSaleDispenseMovement.movementId
-  }
-
-  $facts = [ordered]@{
-    mode = "simulated_hardware_fresh_bring_up_sale_flow"
-    target = [ordered]@{
-      testbedName = "win10-vem-e2e"
-      machineCode = ${psString(machineCode)}
-      platformTarget = ${psString(platformTarget)}
-    }
-    runtimeState = [ordered]@{
-      hardwareMode = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.hardwareMode)) { [string]$bringUp.hardwareMode } else { "unknown" }
-      hardwareModel = if ($null -ne $configSummary -and $null -ne $configSummary.factoryManifest -and -not [string]::IsNullOrWhiteSpace($configSummary.factoryManifest.hardwareModel)) { [string]$configSummary.factoryManifest.hardwareModel } else { "unknown" }
-      bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
-      uiDiagnosticsExplicit = $null -ne $bringUp -and [string]$bringUp.hardwareMode -eq "simulated"
-    }
-    daemonHealth = [ordered]@{
-      hardwareOnline = [bool]$daemonIpc.healthz.hardwareOnline
-      scannerOnline = [bool]$daemonIpc.healthz.scannerOnline
-    }
-    provisioning = [ordered]@{
-      provisioned = [bool]$provisioningFacts.provisioned
-      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
-      usedDaemonIpcTaskExecute = [bool]$provisioningFacts.usedDaemonIpcTaskExecute
-      profileApplied = [bool]$provisioningFacts.machineSecretConfigured -and [bool]$provisioningFacts.mqttSigningSecretConfigured
-      machineCode = $provisioningFacts.machineCode
-      claim = $provisioningFacts.claim
-      profile = $provisioningFacts.profile
-    }
-    platformSetup = [ordered]@{
-      ephemeral = $true
-      preparedRunId = ${psString(runId)}
-      target = ${psString(ephemeralPlatformSetup?.target ?? "")}
-      apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
-      mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
-      evidenceStatus = "prepared"
-      claimPath = ${psString(ephemeralPlatformSetup?.claimPath ?? "/api/machines/claim")}
-      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "payment_code" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
-    }
-    topology = [ordered]@{
-      expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
-      expectedVersion = ${psString(ephemeralPlatformSetup?.hardwareTopologyVersion ?? "unknown")}
-      verified = $null -ne $bringUp -and @($bringUp.diagnostics | Where-Object { [string]$_.component -eq "topology" -or [string]$_.code -match "TOPOLOGY|HARDWARE_SLOT" }).Count -eq 0 -and [string]$bringUp.state -ne "topology_mismatch"
-    }
-    daemonSerialConfiguration = [ordered]@{
-      hardwareAdapter = if ($null -ne $daemonIpc.config.hardwareAdapter) { [string]$daemonIpc.config.hardwareAdapter } else { "unknown" }
-      scannerAdapter = if ($null -ne $daemonIpc.config.scannerAdapter) { [string]$daemonIpc.config.scannerAdapter } else { "unknown" }
-      lowerControllerPort = $lowerControllerCom.port
-      scannerPort = $scannerCom.port
-      lowerControllerPortObserved = [bool]$lowerControllerCom.observed
-      scannerPortObserved = [bool]$scannerCom.observed
-    }
-    guestSerialEvidence = [ordered]@{
-      status = "pending_host_serial_conformance"
-      serialSessionId = $null
-      deviceMappingDigest = $null
-      scannerInputTransport = $null
-      mappings = @()
-      frames = @()
-    }
-    planogram = [ordered]@{
-      syncedFromPlatform = $null -ne $syncPlanogram
-      applied = $activePlanogramVersion -ne "unknown"
-      acknowledged = $null -ne $syncPlanogram
-      acknowledgmentId = $planogramAcknowledgmentId
-      syncStatus = $planogramSyncStatus
-      planogramVersion = $activePlanogramVersion
-      slotCount = if ($null -ne $saleView) { @($saleView.items).Count } else { 0 }
-    }
-    stock = [ordered]@{
-      establishedBy = "stock_attestation"
-      evidenceId = "SIM-HW-${runId}"
-      uploadStatus = $stockUploadStatus
-      platformMovementId = $platformMovementId
-      planogramVersion = $activePlanogramVersion
-      saleableSlots = $saleableSlots
-      totalOnHand = $totalOnHand
-    }
-    sale = [ordered]@{
-      saleViewReady = $saleableSlots -gt 0
-      selectedSlotCode = if ($null -ne $selectedItem -and -not [string]::IsNullOrWhiteSpace($selectedItem.slotCode)) { [string]$selectedItem.slotCode } else { "unknown" }
-      orderId = $orderId
-      orderNo = $orderNo
-      orderStatus = $orderStatus
-      paymentMethod = "payment_code"
-      paymentProviderCode = "mock"
-      paymentId = $paymentId
-      paymentNo = $paymentNo
-      paymentStatus = $paymentStatus
-      paymentSucceeded = $paymentStatus -eq "succeeded"
-      vendingCommandId = $vendingCommandId
-      dispenseSimulated = $true
-      dispenseResult = $dispenseResult
-      dispenseSucceeded = $fulfillmentStatus -eq "dispensed"
-      customerResult = if ($paymentStatus -eq "succeeded" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
-    }
-    platformState = [ordered]@{
-      orderStatus = $orderStatus
-      paymentStatus = $paymentStatus
-      fulfillmentStatus = $fulfillmentStatus
-      stockMovementAccepted = $null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted"
-      postSaleDispenseMovement = [ordered]@{
-        movementId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.movementId } else { $null }
-        orderId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.orderId } else { $null }
-        vendingCommandId = if ($null -ne $postSaleDispenseMovement) { [string]$postSaleDispenseMovement.vendingCommandId } else { $null }
-        quantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.quantity } else { $null }
-        beforeQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.beforeQuantity } else { $null }
-        afterQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.afterQuantity } else { $null }
-        deltaQuantity = if ($null -ne $postSaleDispenseMovement) { [int]$postSaleDispenseMovement.deltaQuantity } else { $null }
-        status = if ($null -ne $postSaleDispenseMovement -and [string]$postSaleDispenseMovement.status -eq "accepted") { "accepted" } else { "missing" }
-      }
-      reservation = $reservationEvidence
-      observedIdentities = [ordered]@{
-        orderIds = @($observedOrderIds)
-        paymentIds = @($observedPaymentIds)
-        reservationIds = @($observedReservationIds)
-        orderNos = @($observedOrderNos)
-        commandIds = @($observedCommandIds)
-        movementIds = @($observedMovementIds)
-      }
-    }
-  }
-
-  $report = if ($salePhase -eq "fixture") {
-    [ordered]@{
-      schemaVersion = "simulated-hardware-sale-fixture/v1"
-      phase = "fixture"
-      fixture = [ordered]@{
-        planogramVersion = $facts.planogram.planogramVersion
-        stockAttestationId = $facts.stock.evidenceId
-        saleableSlots = $facts.stock.saleableSlots
-        paymentMethodReady = $facts.platformSetup.mockPaymentReady
-      }
-      runtimeState = $facts.runtimeState
-      daemonHealth = $facts.daemonHealth
-      topology = $facts.topology
-      result = [ordered]@{
-        simulatedHardwareReady = New-RuntimeAcceptanceAssertion "fixture_ready" $true
-        sellReady = [ordered]@{ status = "not_asserted"; asserted = $false }
-      }
-      diagnostics = @()
-    }
-  } else {
-    $classified = Classify-SimulatedHardwareSaleFlowReport $facts
-    $classified["phase"] = "complete"
-    $classified["hostSerialEvidencePending"] = $true
-    $classified
-  }
-  if ($null -ne $flowError) {
-    $diagnostics = [System.Collections.Generic.List[object]]::new()
-    foreach ($diagnostic in @($report.diagnostics)) {
-      $diagnostics.Add($diagnostic) | Out-Null
-    }
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_sale_flow_error" $flowError
-    $report.diagnostics = @($diagnostics)
-    $report.result.simulatedHardwareReady = New-RuntimeAcceptanceAssertion "failed" $false
-  }
-  Write-JsonFile $reportPath $report
-  return [ordered]@{
-    path = $reportPath
-    report = $report
-  }
-}
-
-function Invoke-ResetStep($Actions, [string]$Name, [scriptblock]$Script) {
-  $status = "succeeded"
-  $message = $null
-  try {
-    & $Script
-  } catch {
-    $status = "failed"
-    $message = [string]$_
-  }
-  $Actions.Add([pscustomobject]@{
-    name = $Name
-    status = $status
-    message = $message
-  }) | Out-Null
-}
-
-function Assert-ResetPostcondition($Actions, [string]$Name, [scriptblock]$Condition) {
-  $status = "succeeded"
-  $message = $null
-  try {
-    if (-not (& $Condition)) {
-      $status = "failed"
-      $message = "postcondition failed"
-    }
-  } catch {
-    $status = "failed"
-    $message = [string]$_
-  }
-  $Actions.Add([pscustomobject]@{
-    name = $Name
-    status = $status
-    message = $message
-  }) | Out-Null
-}
-
 function Get-InventoryFacts($ProvisioningActions = @()) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $os = Get-CimInstance Win32_OperatingSystem
@@ -9350,17 +4473,13 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $portraitKioskAcceptance = Convert-PortraitKioskAcceptanceEvidence $interactiveDesktopDisplayBaseline
   $kioskRuntime = Get-KioskRuntimeEvidence $activeKioskSession
   $kioskDesktopEscape = Get-KioskDesktopEscapeEvidence $activeKioskSession
-  $daemonService = Get-ServiceStateOrNull -Name "VemVendingDaemon"
-  $machineUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMachineUI" -TaskPath "\\"
-  $maintenanceUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMaintenanceUI" -TaskPath "\\"
-  $visionTask = Get-ScheduledTaskEvidence -TaskName "StartVisionServer" -TaskPath "\\VEM\\"
+  $daemonProcess = Get-ManualProcessEvidence "vending-daemon.exe" "C:\\VEM\\bringup\\vending-daemon.exe"
   $readyFile = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\runtime-bootstrap.json"
-  $startupBringup = Get-StartupBringupEvidence
   $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $provisioningFacts = Convert-ProvisioningFacts $daemonIpc (@($ProvisioningActions) + @(Get-PersistedProvisioningActions))
   $runtimeAcceptanceFactsSubset = [ordered]@{
-    mode = "fresh_bring_up"
+    mode = "installed_runtime"
     target = [ordered]@{
       testbedName = "win10-vem-e2e"
       machineCode = ${psString(machineCode)}
@@ -9372,28 +4491,14 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       sshServiceSessionScreenDimensions = $displayDimensionsEvidence
       portraitKioskAcceptance = $portraitKioskAcceptance
     }
-    serviceState = [ordered]@{
-      daemonService = [ordered]@{
-        installed = $null -ne $daemonService
-        running = $null -ne $daemonService -and $daemonService.status -eq "Running"
-        startupType = if ($null -ne $daemonService) { $daemonService.startType.ToLowerInvariant() } else { "unknown" }
-      }
-      machineUiTask = [ordered]@{
-        name = "VEMMachineUI"
-        exists = [bool]$machineUiTask.exists
-        enabled = [bool]$machineUiTask.enabled
-        runAsUser = if ([string]::IsNullOrWhiteSpace($machineUiTask.runAsUser)) { "unknown" } else { [string]$machineUiTask.runAsUser }
-      }
-      visionTask = [ordered]@{
-        name = "VEM\\StartVisionServer"
-        exists = [bool]$visionTask.exists
-        enabled = [bool]$visionTask.enabled
-        runAsUser = if ([string]::IsNullOrWhiteSpace($visionTask.runAsUser)) { "unknown" } else { [string]$visionTask.runAsUser }
-      }
-    }
-    startupBringup = $startupBringup
     readyFile = $daemonIpc.readyFile
     provisioning = $provisioningFacts
+    daemonRuntime = [ordered]@{
+      processRunning = $daemonProcess.running
+      processId = $daemonProcess.processId
+      processUser = $daemonProcess.user
+      executablePath = $daemonProcess.executablePath
+    }
     kioskRuntime = [ordered]@{
       webviewRunning = $kioskRuntime.webviewRunning
       url = $kioskRuntime.url
@@ -9431,7 +4536,6 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
     user = [ordered]@{
       current = [string]$identity.Name
       isAdmin = Test-LocalAdmin
-      maintenance = Get-LocalUserEvidence "Admin"
       kiosk = Get-LocalUserEvidence "VEMKiosk"
     }
     access = [ordered]@{
@@ -9446,10 +4550,6 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       daemonDataDirectory = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon"
       readyFile = $readyFile
       daemonConfig = $daemonConfig
-      daemonService = $daemonService
-      machineUiTask = $machineUiTask
-      maintenanceUiTask = $maintenanceUiTask
-      visionTask = $visionTask
     }
     displayEvidence = [ordered]@{
       hostDisplayBaseline = $hostDisplay
@@ -9462,8 +4562,6 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       powershell = $PSVersionTable.PSVersion.ToString()
       expandArchiveAvailable = $null -ne (Get-Command Expand-Archive -ErrorAction SilentlyContinue)
       getFileHashAvailable = $null -ne (Get-Command Get-FileHash -ErrorAction SilentlyContinue)
-      scheduledTasksAvailable = $null -ne (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)
-      serviceControlAvailable = $null -ne (Get-Command sc.exe -ErrorAction SilentlyContinue)
     }
     runtimeAcceptanceFactsSubset = $runtimeAcceptanceFactsSubset
     runtimeAcceptanceReportPreparation = [ordered]@{
@@ -9489,10 +4587,7 @@ $resetPlan = [ordered]@{
   preservedResources = ${psArray(plan.preservedResources)}
 }
 $resetActions = [System.Collections.Generic.List[object]]::new()
-$bringUpActions = [System.Collections.Generic.List[object]]::new()
 $provisioningActions = [System.Collections.Generic.List[object]]::new()
-$factoryActions = [System.Collections.Generic.List[object]]::new()
-$factoryAcceptancePaths = $null
 $simulatedHardwareSaleFlowResult = $null
 
 if ($mode -eq "reset" -or $mode -eq "inventory-reset") {
@@ -9500,10 +4595,6 @@ ${serviceStops}
 ${taskRemovals}
 ${fileRemovals}
 ${directoryRemovals}
-}
-
-if ($mode -eq "bring-up") {
-  Invoke-ProductionBringUp $bringUpActions
 }
 
 if ($mode -eq "provision") {
@@ -9518,10 +4609,6 @@ if ($mode -eq "runtime-acceptance" -and ${ephemeralPlatformSetup ? "$true" : "$f
   }
 }
 
-if ($mode -eq "clean-base-factory-acceptance") {
-  $factoryAcceptancePaths = Invoke-CleanBaseFactoryAcceptance $factoryActions
-}
-
 if ($mode -eq "simulated-hardware-sale-flow") {
   if (${psString(options.salePhase ?? "single")} -ne "complete") {
     if (${options.alreadyClaimed ? "$true" : "$false"}) {
@@ -9534,19 +4621,13 @@ if ($mode -eq "simulated-hardware-sale-flow") {
 }
 
 $inventoryAfter = if ($mode -eq "inventory-reset") { Get-InventoryFacts } else { $null }
-$inventoryAfterBringUp = if ($mode -eq "bring-up") { Get-InventoryFacts } else { $null }
 $inventoryAfterProvision = if ($mode -eq "provision") { Get-InventoryFacts $provisioningActions } else { $null }
 $runtimeAcceptanceReportResult = if ($mode -eq "runtime-acceptance") { Get-RuntimeAcceptanceReport $provisioningActions } else { $null }
 $runtimeAcceptanceReport = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.report } else { $null }
 $simulatedHardwareSaleFlowReport = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.report } else { $null }
-$actionsOk = (((@($resetActions) + @($bringUpActions) + @($provisioningActions) + @($factoryActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
+$actionsOk = (((@($resetActions) + @($provisioningActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
 $runtimeAcceptanceOk = if ($mode -eq "runtime-acceptance") {
   $null -ne $runtimeAcceptanceReport -and [string]$runtimeAcceptanceReport.result.runtimeReady.status -eq "passed"
-} else {
-  $true
-}
-$cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
-  $null -ne $factoryAcceptancePaths -and $null -ne $factoryAcceptancePaths.report -and [bool]$factoryAcceptancePaths.report.ok
 } else {
   $true
 }
@@ -9560,35 +4641,18 @@ $simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
 }
 
 $result = [ordered]@{
-  ok = $actionsOk -and $runtimeAcceptanceOk -and $cleanBaseFactoryAcceptanceOk -and $simulatedHardwareSaleFlowOk
+  ok = $actionsOk -and $runtimeAcceptanceOk -and $simulatedHardwareSaleFlowOk
   mode = $mode
   inventory = $inventoryBefore
-  cleanBaseFactoryAcceptance = if ($mode -eq "clean-base-factory-acceptance") {
-    if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.report } else { $null }
-  } else {
-    $null
-  }
   reset = [ordered]@{
     plan = $resetPlan
     actions = @($resetActions)
     idempotent = $true
   }
-  bringUp = [ordered]@{
-    plan = [ordered]@{
-      setupScript = ${psString(bringUpPlan.setupScript)}
-      requiredSecretEnvironment = ${psArray(bringUpPlan.requiredSecretEnvironment)}
-      arguments = [ordered]@{
-${bringUpReportArgumentLines}
-      }
-      switches = ${psArray(bringUpPlan.switches)}
-    }
-    actions = @($bringUpActions)
-  }
   provisioning = [ordered]@{
     actions = @($provisioningActions)
   }
   inventoryAfterReset = $inventoryAfter
-  inventoryAfterBringUp = $inventoryAfterBringUp
   inventoryAfterProvision = $inventoryAfterProvision
   runtimeAcceptanceReportPath = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.path } else { $null }
   runtimeAcceptanceReport = $runtimeAcceptanceReport
@@ -9604,150 +4668,8 @@ export function buildSshCommand(options = {}) {
   return [
     "ssh",
     ...buildSshOptionArgs(options),
-    options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
+    options.remote ?? DEFAULT_RUNTIME_REMOTE,
   ];
-}
-
-function factoryAcceptanceRemoteStagingPaths(options = {}) {
-  const remoteTempRoot =
-    options.mode === "clean-base-factory-acceptance"
-      ? "C:\\Windows\\Temp"
-      : "C:\\Users\\Admin\\AppData\\Local\\Temp";
-  const remoteSupportScriptRoot = `${remoteTempRoot}\\vem-factory-acceptance-staging`;
-  return {
-    remoteTempRoot,
-    remoteSupportScriptRoot,
-    remoteScriptPath: `${remoteTempRoot}\\vem-factory-acceptance-run.ps1`,
-  };
-}
-
-export function createFactoryAcceptanceCancellationController({
-  cleanupRemoteFactoryStaging,
-  cleanupLocalFactoryStaging,
-  removeLocalTempDirectory,
-}) {
-  let cancellationSignal = null;
-  let cleanupFailure = null;
-  const abortController = new AbortController();
-
-  const cleanupStep = (name, action) => {
-    try {
-      if (action() !== true) {
-        cleanupFailure ??= `${name} cleanup verification failed`;
-      }
-    } catch (error) {
-      cleanupFailure ??=
-        error instanceof Error
-          ? `${name} cleanup failed: ${error.message}`
-          : `${name} cleanup failed`;
-    }
-  };
-
-  return {
-    requestCancellation(signal) {
-      if (!cancellationSignal) {
-        cancellationSignal = signal;
-        abortController.abort(
-          new Error(`factory acceptance cancelled by ${signal}`),
-        );
-      }
-    },
-    throwIfCancellationRequested() {
-      if (cancellationSignal) {
-        throw new Error(
-          `factory acceptance cancelled by ${cancellationSignal}`,
-        );
-      }
-    },
-    finalize() {
-      cleanupStep("local factory staging", cleanupLocalFactoryStaging);
-      cleanupStep("remote factory staging", cleanupRemoteFactoryStaging);
-      cleanupStep(
-        "local factory temporary directory",
-        removeLocalTempDirectory,
-      );
-      if (cleanupFailure) {
-        const cancellation = cancellationSignal
-          ? ` after ${cancellationSignal}`
-          : "";
-        throw new Error(
-          `factory staging cleanup verification failed${cancellation}: ${cleanupFailure}`,
-        );
-      }
-      this.throwIfCancellationRequested();
-    },
-    get state() {
-      return { cancellationSignal, cleanupFailure };
-    },
-    get signal() {
-      return abortController.signal;
-    },
-  };
-}
-
-export function installFactoryAcceptanceSignalHandlers(
-  controller,
-  signalSource = process,
-) {
-  const handlers = new Map(
-    ["SIGINT", "SIGTERM"].map((signal) => [
-      signal,
-      () => controller.requestCancellation(signal),
-    ]),
-  );
-  for (const [signal, handler] of handlers) {
-    signalSource.once(signal, handler);
-  }
-  return () => {
-    for (const [signal, handler] of handlers) {
-      signalSource.removeListener(signal, handler);
-    }
-  };
-}
-
-export function cleanupFactoryAcceptanceStaging(
-  options = {},
-  {
-    spawn = spawnSync,
-    localTempDirectory = join(tmpdir(), "vem-factory-acceptance-staging"),
-    cleanupLocal = true,
-  } = {},
-) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    throw new Error(
-      "factory staging cleanup requires a factory acceptance mode",
-    );
-  }
-  const { remoteSupportScriptRoot, remoteScriptPath } =
-    factoryAcceptanceRemoteStagingPaths(options);
-  const sshOptions = { ...options };
-  if (options.mode === "clean-base-factory-acceptance") {
-    mkdirSync(localTempDirectory, { recursive: true, mode: 0o700 });
-    sshOptions.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
-  }
-  let remoteCleaned = false;
-  try {
-    const sshCommand = buildSshCommand(sshOptions);
-    const cleanup = spawn(
-      sshCommand[0],
-      [
-        ...sshCommand.slice(1),
-        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)}) { throw 'factory staging cleanup retained protected media' }"`,
-      ],
-      {
-        encoding: "utf8",
-        stdio: "ignore",
-        env: nonQueryChildEnvironment(),
-      },
-    );
-    remoteCleaned = cleanup.status === 0;
-  } finally {
-    if (cleanupLocal) {
-      rmSync(localTempDirectory, { recursive: true, force: true });
-    }
-  }
-  const localCleaned = cleanupLocal ? !existsSync(localTempDirectory) : true;
-  return { localCleaned, remoteCleaned };
 }
 
 function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
@@ -9812,7 +4734,7 @@ export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
-  const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
+  const remote = options.remote ?? DEFAULT_RUNTIME_REMOTE;
   return [
     "scp",
     "-O",
@@ -9922,173 +4844,6 @@ export function buildStdinPowerShellCommand() {
   return "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -";
 }
 
-export function buildCleanBaseRemoteIdentityProbeCommand() {
-  return buildEncodedPowerShellCommand(`
-$ErrorActionPreference = 'SilentlyContinue'
-$computer = Get-CimInstance Win32_ComputerSystem
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-[pscustomobject]@{
-  hostName = [string]$computer.Name
-  user = [string]$identity.Name
-} | ConvertTo-Json -Depth 10
-`);
-}
-
-export function buildCleanBaseRemotePreflightAbsenceProbeCommand() {
-  const probesJson = JSON.stringify(CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES);
-  return buildEncodedPowerShellCommand(`
-$ErrorActionPreference = 'Stop'
-$probes = '${probesJson.replaceAll("'", "''")}' | ConvertFrom-Json
-
-function Get-CleanBaseScheduledTaskState([string]$Task) {
-  $normalized = $Task.Trim("\\")
-  $separator = $normalized.LastIndexOf("\\")
-  if ($separator -ge 0) {
-    $taskPath = "\\" + $normalized.Substring(0, $separator) + "\\"
-    $taskName = $normalized.Substring($separator + 1)
-  } else {
-    $taskPath = "\\"
-    $taskName = $normalized
-  }
-  $taskObject = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
-  if ($null -eq $taskObject) {
-    return $null
-  }
-  return [ordered]@{
-    name = $Task
-    taskName = $taskName
-    taskPath = $taskPath
-    state = [string]$taskObject.State
-  }
-}
-
-$results = @()
-foreach ($probe in @($probes)) {
-  $observedPaths = @()
-  $observedServices = @()
-  $observedTasks = @()
-  foreach ($path in @($probe.paths)) {
-    if (Test-Path -LiteralPath $path) {
-      $observedPaths += [string]$path
-    }
-  }
-  foreach ($serviceName in @($probe.services)) {
-    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-    if ($null -ne $service) {
-      $observedServices += [ordered]@{
-        name = [string]$service.Name
-        status = [string]$service.Status
-        startType = [string]$service.StartType
-      }
-    }
-  }
-  foreach ($taskName in @($probe.tasks)) {
-    $task = Get-CleanBaseScheduledTaskState $taskName
-    if ($null -ne $task) {
-      $observedTasks += $task
-    }
-  }
-  $passed = $observedPaths.Count -eq 0 -and $observedServices.Count -eq 0 -and $observedTasks.Count -eq 0
-  $results += [ordered]@{
-    code = [string]$probe.code
-    status = if ($passed) { "passed" } else { "failed" }
-    paths = @($probe.paths)
-    services = @($probe.services)
-    tasks = @($probe.tasks)
-    observed = @($observedPaths)
-    observedPaths = @($observedPaths)
-    observedServices = @($observedServices)
-    observedTasks = @($observedTasks)
-  }
-}
-
-[pscustomobject]@{
-  ok = @($results | Where-Object { [string]$_.status -ne "passed" }).Count -eq 0
-  probes = @($results)
-} | ConvertTo-Json -Depth 20
-`);
-}
-
-function assertCleanBaseRemoteIdentityProbe(options, sshCommand) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return;
-  }
-  const probeCommand = buildCleanBaseRemoteIdentityProbeCommand();
-  const result = spawnSync(
-    sshCommand[0],
-    [...sshCommand.slice(1), probeCommand],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: nonQueryChildEnvironment(),
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `clean-base factory acceptance could not verify remote identity before staging: ${
-        result.stderr || result.stdout || `ssh exited ${result.status}`
-      }`,
-    );
-  }
-  let identity;
-  try {
-    identity = JSON.parse(result.stdout || "null");
-  } catch {
-    throw new Error(
-      `clean-base factory acceptance remote identity probe returned invalid JSON: ${result.stdout}`,
-    );
-  }
-  const refusal = classifyUnsafeCleanBaseSource(identity);
-  if (refusal) {
-    throw new Error(
-      `clean-base factory acceptance refuses ${refusal} remote identity before staging`,
-    );
-  }
-}
-
-function assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand) {
-  if (options.mode !== "clean-base-factory-acceptance") {
-    return;
-  }
-  const probeCommand = buildCleanBaseRemotePreflightAbsenceProbeCommand();
-  const result = spawnSync(
-    sshCommand[0],
-    [...sshCommand.slice(1), probeCommand],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: nonQueryChildEnvironment(),
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `clean-base factory acceptance could not verify retained-state absence before staging: ${
-        result.stderr || result.stdout || `ssh exited ${result.status}`
-      }`,
-    );
-  }
-  let preflight;
-  try {
-    preflight = JSON.parse(result.stdout || "null");
-  } catch {
-    throw new Error(
-      `clean-base factory acceptance remote retained-state preflight returned invalid JSON: ${result.stdout}`,
-    );
-  }
-  if (preflight?.ok !== true) {
-    const failed = Array.isArray(preflight?.probes)
-      ? preflight.probes
-          .filter((probe) => probe?.status !== "passed")
-          .map((probe) => probe?.code)
-      : ["unknown"];
-    throw new Error(
-      `clean-base factory acceptance retained-state preflight failed before staging: ${failed.join(
-        ", ",
-      )}`,
-    );
-  }
-}
-
 export function getRuntimeAcceptanceExitStatus({
   mode,
   sshStatus,
@@ -10097,17 +4852,6 @@ export function getRuntimeAcceptanceExitStatus({
   const status = sshStatus ?? 1;
   if (status !== 0) {
     return status;
-  }
-  if (mode === "clean-base-factory-acceptance") {
-    try {
-      const output = JSON.parse(String(stdout ?? ""));
-      return output?.ok === true &&
-        output?.cleanBaseFactoryAcceptance?.ok === true
-        ? 0
-        : 1;
-    } catch {
-      return 1;
-    }
   }
   if (mode === "simulated-hardware-sale-flow") {
     try {
@@ -10144,30 +4888,19 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|factory-preclaim-verify|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-media-root PATH] [--vision-configuration-source-path PATH] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--expected-testbed-user USER] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|provision|runtime-acceptance|simulated-hardware-sale-flow|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--runtime-base URI] [--remote USER@HOST] [--ssh-port PORT] [--runtime-guest-endpoint-json JSON] [--expected-testbed-user USER] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
-  --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
+  --remote ${DEFAULT_RUNTIME_REMOTE}
   --mode inventory
-
-Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
 
 Provision mode starts and reads the daemon IPC, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
 
-Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
+Runtime-acceptance mode writes C:\ProgramData\VEM\vending-daemon\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 
-Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
+Simulated hardware sale-flow mode writes C:\ProgramData\VEM\vending-daemon\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
 
-Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
-Clean-base factory acceptance requires an explicit profile, hardware/topology metadata, fixed local OpenSSH and WireGuard packages, approved Authenticode signer/root thumbprints, one profile-bound CA public key, a WireGuard listen address, and explicit runner and maintainer role pools. A production run also requires --factory-media-root and --vision-configuration-source-path, which must already be accessible on the clean Windows base for the child Factory preparation entrypoint. The clean-base path stages under C:\Windows\Temp and does not infer platform host identity, simulator, or production platform metadata. No Windows Capability, online package, shared WireGuard private key, maintenance password input, or password SSH fallback is accepted.
-
-Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
-
-Factory-image-delivery-unit mode reads a completed clean-base factory acceptance report and writes a sanitized Factory Image Delivery Unit report that indexes source identity, declared inputs, artifacts, manifest, preparation logs, verifier evidence, screenshots/session availability, readiness, and acceptance evidence without mutating a VM.
-
-Factory-preclaim-verify mode connects only through an adapter-discovered certificate SSH endpoint, invokes the Factory ISO-installed verifier without preparation, and emits structured baseline and unclaimed-identity evidence before approved-base capture.
-
-VM runtime acceptance mode is the CI/manual gate entrypoint. It verifies the restored approved preclaim base through certificate-only SSH, then runs ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, VEM_EPHEMERAL_DATABASE_URL, explicit --ephemeral-api-base-url/--ephemeral-mqtt-url, and certificate SSH inputs. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
+VM runtime acceptance mode is the CI/manual gate entrypoint. It uses the restored runtime base, then runs ephemeral platform setup, runtime acceptance, installed kiosk sale checks, serial conformance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, VEM_EPHEMERAL_DATABASE_URL, explicit --ephemeral-api-base-url/--ephemeral-mqtt-url, --runtime-base, --scanner-code-file, and certificate SSH inputs. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
 `);
 }
 
@@ -10261,15 +4994,6 @@ function parseArgs(argv) {
     } else if (arg === "--machine-code-prefix") {
       options.machineCodePrefix = next;
       index += 1;
-    } else if (arg === "--clean-base-source") {
-      options.cleanBaseSource = next;
-      index += 1;
-    } else if (arg === "--clean-base-snapshot") {
-      options.cleanBaseSnapshot = next;
-      index += 1;
-    } else if (arg === "--clean-base-evidence") {
-      options.cleanBaseEvidence = next;
-      index += 1;
     } else if (arg === "--platform-api-base-url") {
       options.platformApiBaseUrl = next;
       index += 1;
@@ -10297,132 +5021,14 @@ function parseArgs(argv) {
     } else if (arg === "--out") {
       options.out = next;
       index += 1;
-    } else if (arg === "--maintenance-ingress-source-allowlist") {
-      options.maintenanceIngressSourceAllowlist = next;
-      index += 1;
-    } else if (arg === "--factory-profile") {
-      options.runtimeImageProfile = next;
-      index += 1;
-    } else if (arg === "--factory-media-root") {
-      options.factoryMediaRoot = next;
-      index += 1;
-    } else if (arg === "--vision-configuration-source-path") {
-      options.visionConfigurationSourcePath = next;
-      index += 1;
-    } else if (arg === "--factory-iso") {
-      options.factoryIso = next;
-      index += 1;
     } else if (arg === "--runtime-guest-endpoint-json") {
       options.runtimeGuestEndpointJson = next;
       index += 1;
-    } else if (arg === "--maintenance-relay-session-json") {
-      options.maintenanceRelaySession = parseJsonObjectArgument(arg, next);
-      index += 1;
-    } else if (arg === "--maintenance-relay-peer-id") {
-      options.maintenanceRelayPeerId = next;
-      index += 1;
-    } else if (arg === "--maintenance-relay-public-key") {
-      options.maintenanceRelayPublicKey = next;
-      index += 1;
-    } else if (arg === "--maintenance-relay-tunnel-address") {
-      options.maintenanceRelayTunnelAddress = next;
-      index += 1;
-    } else if (arg === "--maintenance-endpoint-policy-json") {
-      options.maintenanceEndpointPolicy = parseJsonObjectArgument(arg, next);
-      index += 1;
-    } else if (arg === "--factory-assembly-mode") {
-      options.factoryAssemblyMode = next;
-      index += 1;
-    } else if (arg === "--factory-manifest") {
-      options.factoryManifest = next;
-      index += 1;
-    } else if (arg === "--factory-provenance") {
-      options.factoryProvenance = next;
-      index += 1;
-    } else if (arg === "--factory-provenance-digest") {
-      options.factoryProvenanceDigest = next;
-      index += 1;
-    } else if (arg === "--factory-manifest-path") {
-      options.factoryManifestPath = next;
-      index += 1;
-    } else if (arg === "--factory-provenance-path") {
-      options.factoryProvenancePath = next;
-      index += 1;
-    } else if (arg === "--factory-iso-path") {
-      options.factoryIsoPath = next;
-      index += 1;
-    } else if (arg === "--factory-udf-extractor") {
-      options.factoryUdfExtractorPath = next;
-      index += 1;
-    } else if (arg === "--factory-udf-writer") {
-      options.factoryUdfWriterPath = next;
-      index += 1;
-    } else if (arg === "--factory-wimlib") {
-      options.factoryWimlibPath = next;
-      index += 1;
-    } else if (arg === "--openssh-package") {
-      options.openSshPackage = next;
-      index += 1;
-    } else if (arg === "--openssh-package-sha256") {
-      options.openSshPackageSha256 = next;
-      index += 1;
-    } else if (arg === "--openssh-package-version") {
-      options.openSshPackageVersion = next;
-      index += 1;
-    } else if (arg === "--openssh-approved-signer-thumbprint") {
-      options.openSshApprovedSignerThumbprint = next;
-      index += 1;
-    } else if (arg === "--openssh-approved-root-thumbprint") {
-      options.openSshApprovedRootThumbprint = next;
-      index += 1;
-    } else if (arg === "--wireguard-package") {
-      options.wireGuardPackage = next;
-      index += 1;
-    } else if (arg === "--wireguard-package-sha256") {
-      options.wireGuardPackageSha256 = next;
-      index += 1;
-    } else if (arg === "--wireguard-package-version") {
-      options.wireGuardPackageVersion = next;
-      index += 1;
-    } else if (arg === "--wireguard-approved-signer-thumbprint") {
-      options.wireGuardApprovedSignerThumbprint = next;
-      index += 1;
-    } else if (arg === "--wireguard-approved-root-thumbprint") {
-      options.wireGuardApprovedRootThumbprint = next;
-      index += 1;
-    } else if (arg === "--maintenance-ca-public-key") {
-      options.maintenanceCaPublicKey = next;
-      index += 1;
-    } else if (arg === "--maintenance-ca-sha256") {
-      options.maintenanceCaPublicKeySha256 = next;
-      index += 1;
-    } else if (arg === "--maintenance-wireguard-listen-address") {
-      options.maintenanceWireGuardListenAddress = next;
-      index += 1;
-    } else if (arg === "--factory-hardware-model") {
-      options.factoryHardwareModel = next;
-      index += 1;
-    } else if (arg === "--factory-topology-identity") {
-      options.factoryTopologyIdentity = next;
-      index += 1;
-    } else if (arg === "--factory-topology-version") {
-      options.factoryTopologyVersion = next;
-      index += 1;
-    } else if (arg === "--maintenance-runner-source-allowlist") {
-      options.maintenanceRunnerSourceAllowlist = next;
-      index += 1;
-    } else if (arg === "--maintenance-maintainer-source-allowlist") {
-      options.maintenanceMaintainerSourceAllowlist = next;
-      index += 1;
-    } else if (arg === "--allow-clean-base-prepare") {
-      options.allowCleanBasePrepare = true;
     } else if (arg === "--expected-testbed-user") {
       options.expectedTestbedUser = next;
       index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
-    } else if (arg === "--cleanup-factory-staging") {
-      options.cleanupFactoryStaging = true;
     } else if (arg === "-h" || arg === "--help") {
       options.help = true;
     } else {
@@ -10432,26 +5038,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function parseJsonObjectArgument(option, value) {
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("not an object");
-    return parsed;
-  } catch {
-    throw new Error(`${option} must be a JSON object`);
-  }
-}
-
-function applyFactoryGuestEndpoint(options) {
-  if (
-    options.maintenanceEndpointPolicy !== undefined &&
-    options.maintenanceRelaySession === undefined
-  ) {
-    throw new Error(
-      "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
-    );
-  }
+function applyRuntimeGuestEndpoint(options) {
   if (!options.runtimeGuestEndpointJson) return options;
   let endpoint;
   try {
@@ -10464,36 +5051,18 @@ function applyFactoryGuestEndpoint(options) {
   if (
     endpoint?.protocol !== "ssh" ||
     typeof endpoint.host !== "string" ||
-    isIP(endpoint.host) === 0 ||
+    endpoint.host.trim().length === 0 ||
     ["0.0.0.0", "::", "127.0.0.1", "::1"].includes(endpoint.host) ||
     !Number.isInteger(endpoint.port) ||
     endpoint.port !== 22 ||
     !["discovered", "authenticated"].includes(endpoint.reachability) ||
+    endpoint.transport !== "testbed-runner-direct" ||
     !options.expectedTestbedUser ||
     options.remote ||
     options.sshPort
   ) {
     throw new Error(
-      "Factory verification and post-claim acceptance require an adapter-discovered SSH endpoint, --expected-testbed-user, and no caller-supplied remote or SSH port",
-    );
-  }
-  if (endpoint.transport === "testbed-runner-direct") {
-    if (
-      endpoint.relayProof !== undefined ||
-      ![
-        "factory-preclaim-verify",
-        "provision",
-        "runtime-acceptance",
-        "vm-runtime-acceptance",
-      ].includes(options.mode)
-    ) {
-      throw new Error(
-        "testbed runner-direct Factory endpoint is valid only for Factory lifecycle SSH without Relay proof",
-      );
-    }
-  } else if (endpoint.transport !== "wireguard") {
-    throw new Error(
-      "Factory endpoint transport must be wireguard or testbed-runner-direct",
+      "runtime guest endpoint requires adapter-discovered direct SSH, --expected-testbed-user, and no caller-supplied remote or SSH port",
     );
   }
   return {
@@ -10502,70 +5071,19 @@ function applyFactoryGuestEndpoint(options) {
     sshPort: endpoint.port,
     sshHostKeyAlias:
       options.sshHostKeyAlias ??
-      `vem-factory-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
+      `vem-runtime-${normalizeEphemeralRunId(options.runId).toLowerCase()}`,
   };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   void (async () => {
     try {
-      const options = applyFactoryGuestEndpoint(
+      const options = applyRuntimeGuestEndpoint(
         parseArgs(process.argv.slice(2)),
       );
       if (options.help) {
         usage();
         process.exit(0);
-      }
-      if (options.cleanupFactoryStaging === true) {
-        const cleanup = cleanupFactoryAcceptanceStaging(options);
-        if (!cleanup.localCleaned || !cleanup.remoteCleaned) {
-          throw new Error("factory staging cleanup verification failed");
-        }
-        process.exitCode = 0;
-        return;
-      }
-      options.factoryMediaAdmission =
-        await admitFactoryMediaBeforeAcceptance(options);
-      if (options.mode === "factory-preclaim-verify") {
-        const ownsSshTrust = !options.sshKnownHostsPath;
-        const localTempDirectory = ownsSshTrust
-          ? mkdtempSync(join(tmpdir(), "vem-factory-preclaim-"))
-          : null;
-        try {
-          if (ownsSshTrust) {
-            options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
-          }
-          const sshCommand = buildSshCommand(options);
-          const remoteScript = buildRemotePowerShellScript(options);
-          const remoteCommand = buildStdinPowerShellCommand();
-          const result = await runTransientSshOperation(
-            sshCommand[0],
-            [...sshCommand.slice(1), remoteCommand],
-            {
-              input: `${remoteScript}\n`,
-              maxAttempts: 72,
-              retryDelayMs: 5000,
-            },
-          );
-          if (result.stderr) process.stderr.write(result.stderr);
-          const report = parseStructuredSshVerifierEvidence(result.stdout);
-          if (report === null) {
-            throw new Error(
-              "factory-preclaim-verify did not return structured verifier evidence",
-            );
-          }
-          const sanitizedReport = sanitizeFactoryPreclaimReport(report);
-          process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
-          if (options.out) writeJsonOutput(options.out, sanitizedReport);
-          if (result.status !== 0 || report.ok !== true) {
-            process.exitCode = 1;
-          }
-        } finally {
-          if (ownsSshTrust) {
-            rmSync(localTempDirectory, { recursive: true, force: true });
-          }
-        }
-        return;
       }
       if (options.mode === "vm-runtime-acceptance") {
         const plan = buildVmRuntimeAcceptancePlan(options);
@@ -10586,334 +5104,56 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         }
         process.exit(report.ok ? 0 : 1);
       }
-      if (options.mode === "clean-base-factory-acceptance") {
-        const plan = buildCleanBaseFactoryAcceptancePlan(options);
-        if (options.dryRun) {
-          if (options.out) {
-            writeJsonOutput(options.out, plan);
-          }
-          console.log(JSON.stringify(plan, null, 2));
-          process.exit(0);
-        }
-        if (options.allowCleanBasePrepare !== true) {
-          throw new Error(
-            "clean-base factory acceptance live mode requires --allow-clean-base-prepare",
-          );
-        }
-      }
-      if (options.mode === "validate-clean-base-evidence") {
-        if (!options.cleanBaseEvidence) {
-          throw new Error(
-            "validate-clean-base-evidence requires --clean-base-evidence",
-          );
-        }
-        const validation = validateCleanBaseFactoryAcceptanceEvidenceFile(
-          options.cleanBaseEvidence,
-        );
-        process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
-        process.exit(validation.status === "passed" ? 0 : 1);
-      }
-      if (options.mode === "factory-image-delivery-unit") {
-        const report = runFactoryImageDeliveryUnit(options);
-        console.error(`wrote report: ${report.reportPath}`);
-        if (!options.out) {
-          process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-        }
-        process.exit(report.ok ? 0 : 1);
-      }
-      assertCleanBaseRemoteSafety(options);
-      const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
-      const cleanBaseFactoryCapability =
-        resolveCleanBaseFactoryCapabilityInputs(options);
-      if (cleanBaseArtifacts) {
-        options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
-        options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
-      }
-      if (cleanBaseFactoryCapability) {
-        options.openSshPackageSha256 =
-          cleanBaseFactoryCapability.openSshPackageSha256;
-        options.wireGuardPackageSha256 =
-          cleanBaseFactoryCapability.wireGuardPackageSha256;
-        options.maintenanceCaPublicKeySha256 =
-          cleanBaseFactoryCapability.maintenanceCaPublicKeySha256;
-        options.maintenanceRunnerSourceAllowlist =
-          cleanBaseFactoryCapability.runnerSources.join(",");
-        options.maintenanceMaintainerSourceAllowlist =
-          cleanBaseFactoryCapability.maintainerSources.join(",");
-      }
-      const { remoteTempRoot, remoteSupportScriptRoot, remoteScriptPath } =
-        factoryAcceptanceRemoteStagingPaths(options);
-      const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
-      if (options.mode === "clean-base-factory-acceptance") {
-        options.remoteSupportScriptRoot = remoteSupportScriptRoot;
-        options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
-        options.remotePersonalizationMediaPath = `${remoteSupportScriptRoot}\\personalization\\factory-personalization-media.json`;
-        if (cleanBaseFactoryCapability) {
-          options.remoteOpenSshPackagePath = `${remoteUploadedArtifactRoot}\\${basename(options.openSshPackage)}`;
-          options.remoteWireGuardPackagePath = `${remoteUploadedArtifactRoot}\\${basename(options.wireGuardPackage)}`;
-          options.remoteMaintenanceCaPublicKeyPath = `${remoteUploadedArtifactRoot}\\maintenance-ca.pub`;
-        }
-      }
-      const factoryAcceptanceMode =
-        options.mode === "clean-base-factory-acceptance";
-      const localTempDirectory = factoryAcceptanceMode
-        ? join(tmpdir(), "vem-factory-acceptance-staging")
-        : mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
-      if (factoryAcceptanceMode) {
-        // A deterministic local root makes retained secret staging visible and
-        // removable before retry after a prior uncatchable interruption.
-        rmSync(localTempDirectory, { recursive: true, force: true });
-        mkdirSync(localTempDirectory, { recursive: true, mode: 0o700 });
-      }
-      if (
-        !options.sshKnownHostsPath &&
-        (options.mode === "clean-base-factory-acceptance" ||
-          options.runtimeGuestEndpointJson)
-      ) {
-        options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
-      }
-      const script = buildRemotePowerShellScript(options);
-      const sshCommand = buildSshCommand(options);
-      assertCleanBaseRemoteIdentityProbe(options, sshCommand);
-      assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand);
-      // The host-owned secret file is opened only after the remote identity and
-      // retained-state gates have accepted this clean-base target.
-      const personalizationMedia =
-        options.dryRun === true
-          ? null
-          : await resolveHostOwnedFactoryPersonalizationMedia(options);
-      const { createFactoryPersonalizationStagingCopy } =
-        await loadFactoryPersonalizationMedia();
-      const localPersonalizationStaging = personalizationMedia
-        ? await createFactoryPersonalizationStagingCopy({
-            snapshot: personalizationMedia.snapshot,
-            stagingRoot: join(localTempDirectory, "factory-personalization"),
-          })
-        : null;
-      const localScriptPath = join(localTempDirectory, "run.ps1");
-      const scpCommand = buildScpCommand(
-        localScriptPath,
-        remoteScriptPath,
-        options,
-      );
-      const remoteCommand = buildRemotePowerShellCommand(
-        remoteScriptPath,
-        options,
-      );
 
-      if (options.dryRun) {
-        console.log(
-          JSON.stringify(
-            {
-              sshCommand,
-              scpCommand,
-              remoteCommand,
-              transport: "scp-temp-ps1",
-              resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
-              bringUpPlan: buildBringUpPlan(options),
-              runId:
-                options.mode === "simulated-hardware-sale-flow"
-                  ? sanitizeRunId(options.runId)
-                  : null,
-              cleanBaseFactoryCapability: cleanBaseFactoryCapability
-                ? {
-                    openSshPackageSha256:
-                      cleanBaseFactoryCapability.openSshPackageSha256,
-                    wireGuardPackageSha256:
-                      cleanBaseFactoryCapability.wireGuardPackageSha256,
-                    maintenanceCaPublicKeySha256:
-                      cleanBaseFactoryCapability.maintenanceCaPublicKeySha256,
-                    runnerSources: cleanBaseFactoryCapability.runnerSources,
-                    maintainerSources:
-                      cleanBaseFactoryCapability.maintainerSources,
-                  }
-                : null,
-            },
-            null,
-            2,
-          ),
-        );
-        rmSync(localTempDirectory, { recursive: true, force: true });
-        process.exitCode = 0;
-        return;
-      }
-
-      const cleanupRemoteFactoryStaging = () =>
-        factoryAcceptanceMode
-          ? cleanupFactoryAcceptanceStaging(options, {
-              localTempDirectory,
-              cleanupLocal: false,
-            }).remoteCleaned
-          : true;
-      const cleanupLocalFactoryStaging = () => {
-        if (!localPersonalizationStaging) {
-          return true;
-        }
-        rmSync(join(localTempDirectory, "factory-personalization"), {
-          recursive: true,
-          force: true,
-        });
-        return !existsSync(join(localTempDirectory, "factory-personalization"));
-      };
-      const cancellation = createFactoryAcceptanceCancellationController({
-        cleanupRemoteFactoryStaging,
-        cleanupLocalFactoryStaging,
-        removeLocalTempDirectory: () => {
-          rmSync(localTempDirectory, { recursive: true, force: true });
-          return !existsSync(localTempDirectory);
-        },
-      });
-      const removeSignalHandlers =
-        installFactoryAcceptanceSignalHandlers(cancellation);
-
+      const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
       try {
-        // Clear a deterministic retained root before every retry. This also covers
-        // an earlier catchable cancellation; uncatchable loss is cleaned here on
-        // the next invocation.
-        cancellation.throwIfCancellationRequested();
-        if (!cleanupRemoteFactoryStaging()) {
-          throw new Error(
-            "factory stale staging cleanup verification failed before retry",
+        const script = buildRemotePowerShellScript(options);
+        const sshCommand = buildSshCommand(options);
+        const localScriptPath = join(localTempDirectory, "run.ps1");
+        const remoteScriptPath = `C:\\Users\\Admin\\AppData\\Local\\Temp\\vem-win10-e2e-${process.pid}-${Date.now()}.ps1`;
+        const scpCommand = buildScpCommand(
+          localScriptPath,
+          remoteScriptPath,
+          options,
+        );
+        const remoteCommand = buildRemotePowerShellCommand(
+          remoteScriptPath,
+          options,
+        );
+
+        if (options.dryRun) {
+          console.log(
+            JSON.stringify(
+              {
+                sshCommand,
+                scpCommand,
+                remoteCommand,
+                transport: "scp-temp-ps1",
+                resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
+                runId:
+                  options.mode === "simulated-hardware-sale-flow"
+                    ? sanitizeRunId(options.runId)
+                    : null,
+              },
+              null,
+              2,
+            ),
           );
+          process.exitCode = 0;
+          return;
         }
+
         writeFileSync(localScriptPath, script, "utf8");
         const upload = await runTransientSshOperation(
           scpCommand[0],
           scpCommand.slice(1),
-          { signal: cancellation.signal },
         );
-        cancellation.throwIfCancellationRequested();
-        if (upload.stdout) {
-          process.stdout.write(upload.stdout);
-        }
-        if (upload.stderr) {
-          process.stderr.write(upload.stderr);
-        }
+        if (upload.stdout) process.stdout.write(upload.stdout);
+        if (upload.stderr) process.stderr.write(upload.stderr);
         if (upload.status !== 0) {
           throw new Error(
-            `Factory acceptance script upload failed with status ${upload.status ?? 1}`,
+            `remote script upload failed with status ${upload.status ?? 1}`,
           );
-        }
-
-        if (options.mode === "clean-base-factory-acceptance") {
-          const personalizationDirectory = `${remoteSupportScriptRoot}\\personalization`;
-          const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; function Assert-VemFactoryPersonalizationAcl([string]\$Path, [bool]\$Directory) { \$acl = Get-Acl -LiteralPath \$Path -ErrorAction Stop; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected) { throw 'factory personalization ACL owner or inheritance is unsafe' }; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$rules.Count -ne 2 -or @('\$system', '\$admin').Count -ne 2) { throw 'factory personalization ACL rule count is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization ACL grants an unsafe principal or right' } } }; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Force | Out-Null; \$acl = Get-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)}; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -LiteralPath ${quotePowerShellSingleQuoted(personalizationDirectory)} -AclObject \$acl; & icacls.exe ${quotePowerShellSingleQuoted(personalizationDirectory)} /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization staging' }; Assert-VemFactoryPersonalizationAcl -Path ${quotePowerShellSingleQuoted(personalizationDirectory)} -Directory \$true"`;
-          const createSupportRoot = await runTransientSshOperation(
-            sshCommand[0],
-            [...sshCommand.slice(1), createSupportRootCommand],
-            { signal: cancellation.signal },
-          );
-          if (createSupportRoot.stdout) {
-            process.stdout.write(createSupportRoot.stdout);
-          }
-          if (createSupportRoot.stderr) {
-            process.stderr.write(createSupportRoot.stderr);
-          }
-          if (createSupportRoot.status !== 0) {
-            throw new Error(
-              `Factory personalization staging ACL setup failed with status ${createSupportRoot.status ?? 1}`,
-            );
-          }
-
-          for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) {
-            const supportUpload = buildScpCommand(
-              `scripts/windows/${scriptName}`,
-              `${remoteSupportScriptRoot}\\${scriptName}`,
-              options,
-            );
-            const uploadSupportScript = await runTransientSshOperation(
-              supportUpload[0],
-              supportUpload.slice(1),
-              { signal: cancellation.signal },
-            );
-            if (uploadSupportScript.stdout) {
-              process.stdout.write(uploadSupportScript.stdout);
-            }
-            if (uploadSupportScript.stderr) {
-              process.stderr.write(uploadSupportScript.stderr);
-            }
-            if (uploadSupportScript.status !== 0) {
-              throw new Error(
-                `Factory support script upload failed with status ${uploadSupportScript.status ?? 1}`,
-              );
-            }
-          }
-
-          const artifactUploads = [
-            ["daemonArtifact", "vending-daemon.exe"],
-            ["machineUiArtifact", "machine.exe"],
-            [
-              "machineUiSidecarArtifact",
-              "WebView2Loader.dll",
-              options.machineUiArtifact
-                ? resolveMachineUiSidecarArtifactPath(options.machineUiArtifact)
-                : null,
-            ],
-          ];
-          if (cleanBaseFactoryCapability) {
-            artifactUploads.push(
-              ["openSshPackage", basename(options.openSshPackage)],
-              ["wireGuardPackage", basename(options.wireGuardPackage)],
-              ["maintenanceCaPublicKey", "maintenance-ca.pub"],
-            );
-          }
-          for (const [
-            optionName,
-            remoteFileName,
-            explicitLocalPath,
-          ] of artifactUploads) {
-            const localPath = explicitLocalPath ?? options[optionName];
-            if (!localPath) {
-              continue;
-            }
-            const artifactUpload = buildScpCommand(
-              localPath,
-              `${remoteUploadedArtifactRoot}\\${remoteFileName}`,
-              options,
-            );
-            const uploadArtifact = await runTransientSshOperation(
-              artifactUpload[0],
-              artifactUpload.slice(1),
-              { signal: cancellation.signal },
-            );
-            if (uploadArtifact.stdout) {
-              process.stdout.write(uploadArtifact.stdout);
-            }
-            if (uploadArtifact.stderr) {
-              process.stderr.write(uploadArtifact.stderr);
-            }
-            if (uploadArtifact.status !== 0) {
-              throw new Error(
-                `Factory artifact upload failed with status ${uploadArtifact.status ?? 1}`,
-              );
-            }
-          }
-          if (localPersonalizationStaging) {
-            const mediaUpload = buildScpCommand(
-              localPersonalizationStaging.stagedPath,
-              options.remotePersonalizationMediaPath,
-              options,
-            );
-            const uploadedMedia = await runTransientSshOperation(
-              mediaUpload[0],
-              mediaUpload.slice(1),
-              { signal: cancellation.signal },
-            );
-            if (uploadedMedia.status !== 0) {
-              throw new Error("Factory Personalization Media upload failed");
-            }
-            const verifyMediaAclCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; \$path = ${quotePowerShellSingleQuoted(options.remotePersonalizationMediaPath)}; if (-not (Test-Path -LiteralPath \$path -PathType Leaf)) { throw 'factory personalization media is missing' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$acl.SetAccessRuleProtection(\$true, \$false); foreach (\$rule in @(\$acl.Access)) { [void]\$acl.RemoveAccessRuleAll(\$rule) }; \$admin = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); \$system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); \$acl.SetOwner(\$admin); foreach (\$sid in @(\$system, \$admin)) { \$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(\$sid, 'FullControl', 'None', 'None', 'Allow'))) }; Set-Acl -LiteralPath \$path -AclObject \$acl; & icacls.exe \$path /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; if (\$LASTEXITCODE -ne 0) { throw 'icacls failed to protect factory personalization media' }; \$acl = Get-Acl -LiteralPath \$path -ErrorAction Stop; \$owner = (New-Object System.Security.Principal.NTAccount(\$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value; \$rules = @(@(\$acl.Access) | Where-Object { -not \$_.IsInherited }); if (\$owner -ne \$admin.Value -or -not \$acl.AreAccessRulesProtected -or \$rules.Count -ne 2) { throw 'factory personalization media ACL is unsafe' }; foreach (\$rule in \$rules) { \$sid = \$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (\$sid -notin @('S-1-5-18', 'S-1-5-32-544') -or \$rule.AccessControlType -ne 'Allow' -or (\$rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'factory personalization media ACL grants an unsafe principal or right' } }"`;
-            const verifiedMediaAcl = await runTransientSshOperation(
-              sshCommand[0],
-              [...sshCommand.slice(1), verifyMediaAclCommand],
-              { signal: cancellation.signal },
-            );
-            if (verifiedMediaAcl.status !== 0) {
-              throw new Error(
-                "Factory Personalization Media ACL verification failed before Windows reads it",
-              );
-            }
-          }
         }
 
         const result = spawnSync(
@@ -10925,7 +5165,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             env: nonQueryChildEnvironment(),
           },
         );
-        cancellation.throwIfCancellationRequested();
+        await runTransientSshOperation(
+          sshCommand[0],
+          [
+            ...sshCommand.slice(1),
+            buildEncodedPowerShellCommand(
+              `Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue`,
+            ),
+          ],
+          { maxAttempts: 1 },
+        );
         if (result.stdout && options.out) {
           writeFileSync(options.out, result.stdout, "utf8");
           console.error(`wrote report: ${options.out}`);
@@ -10941,19 +5190,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           stdout: result.stdout,
         });
       } finally {
-        try {
-          cancellation.finalize();
-        } finally {
-          removeSignalHandlers();
-        }
+        rmSync(localTempDirectory, { recursive: true, force: true });
       }
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       usage();
-      process.exitCode =
-        error instanceof Error && /cancelled by SIG/.test(error.message)
-          ? 128
-          : 2;
+      process.exitCode = 2;
     }
   })();
 }

@@ -16,13 +16,6 @@ param(
   [string]$VisionSiteConfiguration = "C:\ProgramData\VEM\vision\site.json",
   [string]$VisionInstallRecord = "C:\ProgramData\VEM\vision\installed.json",
   [string]$VisionFixtureDirectory = "C:\ProgramData\VEM\vision\fixtures",
-  [string]$StartupBringupEvidenceFile = "C:\ProgramData\VEM\vending-daemon\startup-bringup-evidence.json",
-  [switch]$RequireProductionBringup,
-  [string]$ExpectedAutoLogonUser = "VEMKiosk",
-  [string]$MachineUiTaskName = "VEMMachineUI",
-  [string]$ExpectedMachineUiCommand = "C:\Windows\System32\wscript.exe",
-  [string]$ExpectedMachineUiLauncher = "C:\VEM\bringup\launch-machine-ui.vbs",
-  [string]$ExpectedMachineUiWorkingDirectory = "C:\VEM\bringup",
   [string]$ExpectedMachineUiExe = "C:\VEM\bringup\machine.exe"
 )
 
@@ -83,56 +76,6 @@ function Test-VisionRuntimeBinding {
     $result.protocolValid=$probe.ready.type -ceq "vision.ready"
   } catch { Add-VisionFailure $Failures $_.Exception.Message }
   return [pscustomobject]$result
-}
-
-function Get-WinlogonAutoLogonEvidence {
-  $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction SilentlyContinue
-  if ($null -eq $winlogon) {
-    return [pscustomobject]@{
-      configured = $false
-      user = $null
-      domain = $null
-      force = $false
-    }
-  }
-
-  return [pscustomobject]@{
-    configured = [string]$winlogon.AutoAdminLogon -eq "1"
-    user = if ([string]::IsNullOrWhiteSpace($winlogon.DefaultUserName)) { $null } else { [string]$winlogon.DefaultUserName }
-    domain = if ([string]::IsNullOrWhiteSpace($winlogon.DefaultDomainName)) { $null } else { [string]$winlogon.DefaultDomainName }
-    force = [string]$winlogon.ForceAutoLogon -eq "1"
-  }
-}
-
-function Get-ScheduledTaskStartupEvidence {
-  param(
-    [string]$TaskName,
-    [string]$TaskPath = "\"
-  )
-
-  $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
-  if ($null -eq $task) {
-    return [pscustomobject]@{
-      name = "$TaskPath$TaskName"
-      exists = $false
-      enabled = $false
-      runAsUser = $null
-      command = $null
-      arguments = $null
-      workingDirectory = $null
-    }
-  }
-
-  $action = @($task.Actions | Select-Object -First 1)
-  return [pscustomobject]@{
-    name = "$TaskPath$TaskName"
-    exists = $true
-    enabled = [string]$task.State -ne "Disabled"
-    runAsUser = if ($null -ne $task.Principal) { [string]$task.Principal.UserId } else { $null }
-    command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }
-    arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }
-    workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null }
-  }
 }
 
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -218,112 +161,6 @@ if ($RequireVisionOnline) {
     Add-Failure $failures "direct Vision application, site configuration, or install record is missing"
   }
   $checks.vision.binding = @(Test-VisionRuntimeBinding $failures)[-1]
-}
-
-$startupEvidenceExists = Test-Path -LiteralPath $StartupBringupEvidenceFile
-$startupEvidence = if ($startupEvidenceExists) {
-  Read-JsonFile $StartupBringupEvidenceFile
-} else {
-  $null
-}
-$liveAutoLogon = Get-WinlogonAutoLogonEvidence
-$liveMachineUiTask = Get-ScheduledTaskStartupEvidence -TaskName $MachineUiTaskName
-$machineUiStartupMode = if (
-  $null -ne $startupEvidence -and
-  [string]$startupEvidence.machineUiStartup.mode -eq "shell_launcher"
-) {
-  "shell_launcher"
-} else {
-  "scheduled_task"
-}
-$checks.startupBringup = [pscustomobject]@{
-  evidenceFile = $StartupBringupEvidenceFile
-  evidenceFileExists = $startupEvidenceExists
-  evidence = $startupEvidence
-  liveAutoLogon = $liveAutoLogon
-  liveStartupCommands = @($liveMachineUiTask)
-  expectedMachineUi = [pscustomobject]@{
-    mode = $machineUiStartupMode
-    taskName = $MachineUiTaskName
-    runAsUser = $ExpectedAutoLogonUser
-    command = $ExpectedMachineUiCommand
-    argumentsContain = $ExpectedMachineUiLauncher
-    workingDirectory = $ExpectedMachineUiWorkingDirectory
-    shellCommand = $ExpectedMachineUiExe
-  }
-}
-
-if ($RequireProductionBringup) {
-  if (-not $startupEvidenceExists) {
-    Add-Failure $failures "production bring-up evidence not found: $StartupBringupEvidenceFile"
-  } else {
-    if ([string]$startupEvidence.configuredBy -ne "scripts/windows/setup-scheduled-tasks.ps1") {
-      Add-Failure $failures "startup was not configured by production bring-up: $($startupEvidence.configuredBy)"
-    }
-    if (-not [bool]$startupEvidence.productionBringup) {
-      Add-Failure $failures "startup evidence does not assert productionBringup"
-    }
-    if ([bool]$startupEvidence.daemonOwnedInitialization) {
-      Add-Failure $failures "startup evidence reports daemon-owned initialization"
-    }
-    if (-not [bool]$startupEvidence.autoLogon.configured) {
-      Add-Failure $failures "Winlogon auto-logon is not configured in production bring-up evidence"
-    }
-    if ([string]$startupEvidence.autoLogon.user -ne $ExpectedAutoLogonUser) {
-      Add-Failure $failures "Winlogon auto-logon target mismatch: expected $ExpectedAutoLogonUser, got $($startupEvidence.autoLogon.user)"
-    }
-    if (-not [bool]$startupEvidence.autoLogon.force) {
-      Add-Failure $failures "Winlogon ForceAutoLogon is not enabled in production bring-up evidence"
-    }
-    if (-not [bool]$startupEvidence.machineUiStartup.configured) {
-      Add-Failure $failures "machine UI startup is not configured in production bring-up evidence"
-    }
-    if ([string]$startupEvidence.machineUiStartup.runAsUser -ne $ExpectedAutoLogonUser) {
-      Add-Failure $failures "machine UI startup user mismatch: expected $ExpectedAutoLogonUser, got $($startupEvidence.machineUiStartup.runAsUser)"
-    }
-    if (@($startupEvidence.startupCommands).Count -eq 0) {
-      Add-Failure $failures "startup commands evidence is empty"
-    }
-  }
-
-  if (-not [bool]$liveAutoLogon.configured) {
-    Add-Failure $failures "live Winlogon auto-logon is not configured"
-  }
-  if ([string]$liveAutoLogon.user -ne $ExpectedAutoLogonUser) {
-    Add-Failure $failures "live Winlogon auto-logon target mismatch: expected $ExpectedAutoLogonUser, got $($liveAutoLogon.user)"
-  }
-  if (-not [bool]$liveAutoLogon.force) {
-    Add-Failure $failures "live Winlogon ForceAutoLogon is not enabled"
-  }
-
-  if ($machineUiStartupMode -eq "scheduled_task") {
-    if (-not [bool]$liveMachineUiTask.exists) {
-      Add-Failure $failures "live VEMMachineUI scheduled task not found: $MachineUiTaskName"
-    } else {
-      if (-not [bool]$liveMachineUiTask.enabled) {
-        Add-Failure $failures "live VEMMachineUI scheduled task is disabled: $MachineUiTaskName"
-      }
-      if ([string]$liveMachineUiTask.runAsUser -ne $ExpectedAutoLogonUser) {
-        Add-Failure $failures "live VEMMachineUI runAsUser mismatch: expected $ExpectedAutoLogonUser, got $($liveMachineUiTask.runAsUser)"
-      }
-      if ([string]$liveMachineUiTask.command -ne $ExpectedMachineUiCommand) {
-        Add-Failure $failures "live VEMMachineUI command mismatch: expected $ExpectedMachineUiCommand, got $($liveMachineUiTask.command)"
-      }
-      if (-not ([string]$liveMachineUiTask.arguments).Contains($ExpectedMachineUiLauncher)) {
-        Add-Failure $failures "live VEMMachineUI arguments do not reference $ExpectedMachineUiLauncher`: $($liveMachineUiTask.arguments)"
-      }
-      if ([string]$liveMachineUiTask.workingDirectory -ne $ExpectedMachineUiWorkingDirectory) {
-        Add-Failure $failures "live VEMMachineUI working directory mismatch: expected $ExpectedMachineUiWorkingDirectory, got $($liveMachineUiTask.workingDirectory)"
-      }
-    }
-  } elseif ($machineUiStartupMode -eq "shell_launcher") {
-    if (-not (Test-Path -LiteralPath $ExpectedMachineUiExe)) {
-      Add-Failure $failures "shell launcher machine UI executable not found: $ExpectedMachineUiExe"
-    }
-    if ([bool]$liveMachineUiTask.exists -and [bool]$liveMachineUiTask.enabled) {
-      Add-Failure $failures "VEMMachineUI scheduled task should be removed or disabled when Shell Launcher owns startup"
-    }
-  }
 }
 
 if (-not $VisionOnly -and (Test-Path $ReadyFile)) {

@@ -8,11 +8,6 @@ import { PaymentProvidersModule } from "../payments/payment-providers.module";
 import { PaymentsModule } from "../payments/payments.module";
 import { RefundsModule } from "../refunds/refunds.module";
 import { VendingModule } from "../vending/vending.module";
-import { FulfillmentDrillsController } from "./fulfillment-drills.controller";
-import {
-  DrizzleFulfillmentDrillStore,
-  FulfillmentDrillsService,
-} from "./fulfillment-drills.service";
 import { MachineOrdersController } from "./machine-orders.controller";
 import { OrdersController } from "./orders.controller";
 import { OrdersService } from "./orders.service";
@@ -28,16 +23,8 @@ import { OrdersService } from "./orders.service";
     AuditModule,
     VendingModule,
   ],
-  controllers: [
-    OrdersController,
-    MachineOrdersController,
-    FulfillmentDrillsController,
-  ],
-  providers: [
-    OrdersService,
-    DrizzleFulfillmentDrillStore,
-    FulfillmentDrillsService,
-  ],
+  controllers: [OrdersController, MachineOrdersController],
+  providers: [OrdersService],
   exports: [OrdersService],
 })
 export class OrdersModule {}

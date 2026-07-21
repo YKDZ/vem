@@ -110,6 +110,7 @@ describe("usePresenceInteraction", () => {
   });
 
   it("applies explicit vision presence and departure facts", async () => {
+    vi.useFakeTimers();
     const presence = await mountPresence();
 
     emitPresenceStatus({
@@ -127,10 +128,12 @@ describe("usePresenceInteraction", () => {
       absenceDurationMs: 1200,
     });
     await nextTick();
+    await vi.advanceTimersByTimeAsync(3_000);
 
     expect(presence.state?.value).toEqual({
       eventId: "VISION-DEPARTURE-EVENT-001",
       personPresent: false,
+      occupancyState: "none",
       lastSeenAt: "2026-06-29T10:00:06.000Z",
       departedAt: "2026-06-29T10:00:08.000Z",
       lastInteractionAt: null,
@@ -181,6 +184,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       eventId: "VISION-PRESENCE-EVENT-STALE",
       personPresent: false,
+      occupancyState: "none",
       lastSeenAt: "2026-06-29T10:00:00.000Z",
       departedAt: "2026-06-29T10:00:01.000Z",
       lastInteractionAt: null,
@@ -199,6 +203,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       eventId: null,
       personPresent: true,
+      occupancyState: "unknown",
       lastSeenAt: "2026-06-29T11:00:00.000Z",
       departedAt: null,
       lastInteractionAt: "2026-06-29T11:00:00.000Z",
@@ -219,6 +224,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       eventId: null,
       personPresent: false,
+      occupancyState: "none",
       lastSeenAt: "2026-06-29T11:10:00.000Z",
       departedAt: "2026-06-29T11:10:03.000Z",
       lastInteractionAt: "2026-06-29T11:10:00.000Z",

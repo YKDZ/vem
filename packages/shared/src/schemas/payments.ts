@@ -491,9 +491,6 @@ export const paymentAdminResponseSchema = z.strictObject({
   method: z.string().min(1).max(64),
   status: paymentStatusSchema,
   amountCents: z.int().nonnegative(),
-  isDrill: z.boolean().optional(),
-  isTest: z.boolean().optional(),
-  scenario: z.string().nullable().optional(),
   paymentUrl: z.string().nullable().optional(),
   expiresAt: z.iso.datetime().nullable(),
   paidAt: z.iso.datetime().nullable(),
@@ -602,9 +599,6 @@ export const refundAdminResponseSchema = z.strictObject({
   providerCode: z.string().min(1).max(64),
   status: refundStatusSchema,
   amountCents: z.int().nonnegative(),
-  isDrill: z.boolean().optional(),
-  isTest: z.boolean().optional(),
-  scenario: z.string().nullable().optional(),
   reason: z.string().min(1).max(1000),
   providerRefundNo: z.string().max(128).nullable(),
   refundedAt: z.iso.datetime().nullable(),
@@ -749,43 +743,6 @@ export type PaymentIncidentActionRequest = z.infer<
 >;
 export type PaymentIncidentActionResponse = z.infer<
   typeof paymentIncidentActionResponseSchema
->;
-
-export const protectedPaymentDrillScenarioSchema = z.enum([
-  "payment_code_unknown",
-  "user_confirming_timeout",
-  "query_failed_then_reversed",
-  "qr_reconcile_failed",
-  "refund_required",
-  "manual_handling",
-]);
-
-export type ProtectedPaymentDrillScenario = z.infer<
-  typeof protectedPaymentDrillScenarioSchema
->;
-
-export const createProtectedPaymentDrillSchema = z.strictObject({
-  machineId: z.uuid(),
-  scenario: protectedPaymentDrillScenarioSchema,
-  reason: z.string().trim().min(1).max(500),
-});
-
-export const protectedPaymentDrillRecoveryActionSchema = z.strictObject({
-  action: z.enum([
-    "query_payment_code",
-    "reverse_payment_code",
-    "reconcile_qr",
-    "request_refund",
-    "mark_manual_handling",
-  ]),
-  reason: z.string().trim().min(1).max(500),
-});
-
-export type CreateProtectedPaymentDrillInput = z.infer<
-  typeof createProtectedPaymentDrillSchema
->;
-export type ProtectedPaymentDrillRecoveryAction = z.infer<
-  typeof protectedPaymentDrillRecoveryActionSchema
 >;
 
 // ---- Payment Ops / Readiness / Preflight -----------------------------------

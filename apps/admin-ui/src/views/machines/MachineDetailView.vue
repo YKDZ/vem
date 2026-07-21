@@ -55,10 +55,6 @@ import {
   formatEnvironmentNumber,
 } from "./machine-environment-display";
 import MachineEnvironmentCard from "./MachineEnvironmentCard.vue";
-import {
-  productionPilotStatusLabel,
-  projectProductionPilotReadinessCheck,
-} from "./production-pilot-readiness-copy";
 
 type WholeMachineMaintenanceLockHeartbeat = {
   code?: string;
@@ -219,19 +215,6 @@ const environmentCommandDisabled = computed(
 );
 
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
-const productionPilotReadiness = computed(
-  () => machine.value?.productionPilotReadiness ?? null,
-);
-const productionPilotReadinessRows = computed(
-  () =>
-    productionPilotReadiness.value?.checks.map((check) => ({
-      ...projectProductionPilotReadinessCheck(check),
-      status: check.status,
-      kind: check.kind,
-      reasonCode: check.reasonCode,
-      actionCode: check.actionCode,
-    })) ?? [],
-);
 const wholeMachineMaintenanceLock = computed(
   () =>
     (heartbeat.value
@@ -309,14 +292,6 @@ const reconciliationColumns = [
   { title: "关联", key: "linked" },
   { title: "上报时间", dataIndex: "receivedAt", key: "receivedAt" },
   { title: "操作", key: "actions" },
-];
-
-const productionPilotReadinessColumns = [
-  { title: "检查项", dataIndex: "label", key: "label" },
-  { title: "状态", dataIndex: "status", key: "status" },
-  { title: "说明", dataIndex: "message", key: "message" },
-  { title: "操作建议", dataIndex: "operatorAction", key: "operatorAction" },
-  { title: "代码", dataIndex: "code", key: "code" },
 ];
 
 function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
@@ -406,23 +381,6 @@ function hardwareStatusLabel(status: string | undefined): string {
   if (status === "degraded") return "降级";
   if (status === "faulted") return "异常";
   return "未知";
-}
-
-function productionPilotReadinessStatusLabel(
-  status: string | undefined,
-): string {
-  if (status === "ready") return "生产试运营就绪";
-  if (status === "blocked") return "生产试运营阻塞";
-  if (status === "degraded") return "生产试运营降级";
-  return "生产试运营未知";
-}
-
-function readinessCheckStatusColor(status: string | undefined): string {
-  if (status === "ready") return "success";
-  if (status === "degraded") return "warning";
-  if (status === "blocked") return "error";
-  if (status === "missing") return "default";
-  return "default";
 }
 
 function inventoryAvailableQty(inventory: Inventory): number {
@@ -1075,55 +1033,6 @@ onBeforeUnmount(() => {
           }}
         </div>
       </div>
-    </a-card>
-
-    <a-card v-if="productionPilotReadiness">
-      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 class="text-lg font-semibold">生产试运营诊断门禁</h2>
-        </div>
-        <a-space>
-          <a-tag
-            :color="readinessCheckStatusColor(productionPilotReadiness.status)"
-          >
-            {{
-              productionPilotReadinessStatusLabel(
-                productionPilotReadiness.status,
-              )
-            }}
-          </a-tag>
-          <span class="text-sm text-slate-500">
-            阻塞 {{ productionPilotReadiness.blockers.length }} · 降级
-            {{ productionPilotReadiness.degraded.length }}
-          </span>
-        </a-space>
-      </div>
-      <a-table
-        :columns="productionPilotReadinessColumns"
-        :data-source="productionPilotReadinessRows"
-        row-key="code"
-        :pagination="false"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
-            <a-tag :color="readinessCheckStatusColor(record.status)">
-              {{ productionPilotStatusLabel(record.status) }}
-            </a-tag>
-          </template>
-          <template v-else-if="column.key === 'code'">
-            <span class="font-mono text-xs">{{ record.code }}</span>
-          </template>
-          <template v-else-if="column.key === 'label'">
-            {{ record.label }}
-          </template>
-          <template v-else-if="column.key === 'message'">
-            {{ record.message }}
-          </template>
-          <template v-else-if="column.key === 'operatorAction'">
-            {{ record.operatorAction }}
-          </template>
-        </template>
-      </a-table>
     </a-card>
 
     <a-card title="货道与库存">

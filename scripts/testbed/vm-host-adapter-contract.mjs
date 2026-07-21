@@ -35,7 +35,6 @@ const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const WIREGUARD_PUBLIC_KEY = /^[A-Za-z0-9+/]{43}=$/;
 const AUDIO_ENCODING = new Set([
   "pcm_u8",
   "pcm_s16le",
@@ -61,18 +60,6 @@ export const VM_HOST_ADAPTER_OPERATIONS = new Set([
   "stop-serial-session",
   "cleanup",
   "cancel",
-]);
-
-const TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS = new Set([
-  "clean-install",
-  "capture-approved-base",
-  "create-disposable-overlay",
-  "capture-display",
-  "capture-default-audio",
-  "start-serial-session",
-  "inject-scanner-code",
-  "collect-serial-evidence",
-  "stop-serial-session",
 ]);
 
 export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
@@ -450,13 +437,27 @@ function assertGuestUsbTopology(value, path, issues) {
     )
   )
     return;
-  if (typeof value.alias !== "string" || !/^serial-(?:lower-controller|scanner)$/.test(value.alias))
-    issue(issues, `${path}.alias`, "must identify a supported libvirt serial role");
+  if (
+    typeof value.alias !== "string" ||
+    !/^serial-(?:lower-controller|scanner)$/.test(value.alias)
+  )
+    issue(
+      issues,
+      `${path}.alias`,
+      "must identify a supported libvirt serial role",
+    );
   if (!Number.isInteger(value.targetPort) || value.targetPort < 0)
-    issue(issues, `${path}.targetPort`, "must be a non-negative libvirt target port");
+    issue(
+      issues,
+      `${path}.targetPort`,
+      "must be a non-negative libvirt target port",
+    );
   if (!Number.isInteger(value.usbBus) || value.usbBus < 0)
     issue(issues, `${path}.usbBus`, "must be a non-negative libvirt USB bus");
-  if (typeof value.usbPort !== "string" || !/^\d+(?:\.\d+)*$/.test(value.usbPort))
+  if (
+    typeof value.usbPort !== "string" ||
+    !/^\d+(?:\.\d+)*$/.test(value.usbPort)
+  )
     issue(issues, `${path}.usbPort`, "must be a libvirt USB address port");
 }
 
@@ -819,7 +820,11 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
     "simulatorSocketIdentity",
   ])
     assertLogicalIdentity(mapping[key], `${path}.${key}`, issues);
-  assertGuestUsbTopology(mapping.guestUsbTopology, `${path}.guestUsbTopology`, issues);
+  assertGuestUsbTopology(
+    mapping.guestUsbTopology,
+    `${path}.guestUsbTopology`,
+    issues,
+  );
   if (!new Set(["connected", "disconnected"]).has(mapping.connectionState))
     issue(
       issues,
@@ -2224,258 +2229,6 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     );
 }
 
-function assertMaintenanceRelaySession(session, path, issues) {
-  if (
-    !assertExactKeys(
-      session,
-      [
-        "sessionId",
-        "relayPeer",
-        "sourceTunnelAddress",
-        "endpointTunnelAddress",
-      ],
-      path,
-      issues,
-    )
-  )
-    return;
-  if (typeof session.sessionId !== "string" || !UUID.test(session.sessionId))
-    issue(issues, `${path}.sessionId`, "must be a maintenance session UUID");
-  if (
-    assertExactKeys(
-      session.relayPeer,
-      ["publicKey", "tunnelAddress"],
-      `${path}.relayPeer`,
-      issues,
-    )
-  ) {
-    if (
-      typeof session.relayPeer.publicKey !== "string" ||
-      !WIREGUARD_PUBLIC_KEY.test(session.relayPeer.publicKey)
-    )
-      issue(
-        issues,
-        `${path}.relayPeer.publicKey`,
-        "must be a canonical WireGuard public key",
-      );
-    if (isIP(session.relayPeer.tunnelAddress) !== 4)
-      issue(
-        issues,
-        `${path}.relayPeer.tunnelAddress`,
-        "must be an IPv4 Relay tunnel address",
-      );
-  }
-  for (const key of ["sourceTunnelAddress", "endpointTunnelAddress"])
-    if (isIP(session[key]) !== 4)
-      issue(issues, `${path}.${key}`, "must be an IPv4 tunnel address");
-}
-
-function assertMaintenanceRelayProof(proof, session, endpoint, path, issues) {
-  if (
-    !assertExactKeys(
-      proof,
-      [
-        "sessionId",
-        "relayPeer",
-        "sourceTunnelAddress",
-        "endpointTunnelAddress",
-        "endpointAllowedIp",
-        "endpointRoute",
-        "handshakeUnixSeconds",
-      ],
-      path,
-      issues,
-    )
-  )
-    return;
-  assertMaintenanceRelaySession(
-    {
-      sessionId: proof.sessionId,
-      relayPeer: proof.relayPeer,
-      sourceTunnelAddress: proof.sourceTunnelAddress,
-      endpointTunnelAddress: proof.endpointTunnelAddress,
-    },
-    path,
-    issues,
-  );
-  for (const key of [
-    "sessionId",
-    "relayPeer",
-    "sourceTunnelAddress",
-    "endpointTunnelAddress",
-  ])
-    if (JSON.stringify(proof[key]) !== JSON.stringify(session[key]))
-      issue(issues, `${path}.${key}`, "does not match maintenance session");
-  const endpointCidr = `${session.endpointTunnelAddress}/32`;
-  if (endpoint.host !== session.endpointTunnelAddress)
-    issue(
-      issues,
-      `${path}.endpointTunnelAddress`,
-      "does not bind the discovered endpoint host",
-    );
-  for (const key of ["endpointAllowedIp", "endpointRoute"])
-    if (proof[key] !== endpointCidr)
-      issue(issues, `${path}.${key}`, "must bind the endpoint /32 route");
-  if (
-    !Number.isInteger(proof.handshakeUnixSeconds) ||
-    proof.handshakeUnixSeconds < 1
-  )
-    issue(
-      issues,
-      `${path}.handshakeUnixSeconds`,
-      "must prove a WireGuard handshake timestamp",
-    );
-}
-
-function isConcreteHostIp(value) {
-  return (
-    typeof value === "string" &&
-    isIP(value) !== 0 &&
-    !["0.0.0.0", "::", "127.0.0.1", "::1"].includes(value)
-  );
-}
-
-function assertMaintenanceEndpointPolicy(policy, request, path, issues) {
-  if (policy === null) return;
-  if (
-    !assertExactKeys(
-      policy,
-      ["transport", "runnerSourceAllowlist", "lifecycleReference"],
-      path,
-      issues,
-    )
-  )
-    return;
-  if (policy.transport !== "testbed-runner-direct")
-    issue(issues, `${path}.transport`, "must be testbed-runner-direct");
-  if (policy.lifecycleReference !== request.lifecycleReference)
-    issue(
-      issues,
-      `${path}.lifecycleReference`,
-      "must bind this request lifecycle",
-    );
-  if (!TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS.has(request.operation))
-    issue(
-      issues,
-      path,
-      "is permitted only for Factory lifecycle guest-endpoint operations",
-    );
-  if (request.maintenanceRelaySession === null)
-    issue(issues, path, "requires the retained maintenance Relay session");
-  if (
-    !Array.isArray(policy.runnerSourceAllowlist) ||
-    policy.runnerSourceAllowlist.length === 0
-  )
-    issue(
-      issues,
-      `${path}.runnerSourceAllowlist`,
-      "must contain explicit runner host addresses",
-    );
-  else {
-    const seen = new Set();
-    policy.runnerSourceAllowlist.forEach((source, index) => {
-      const parts = typeof source === "string" ? source.split("/") : [];
-      const address = parts[0];
-      const version = isIP(address ?? "");
-      const expectedPrefix = version === 6 ? "128" : "32";
-      if (
-        !isConcreteHostIp(address) ||
-        parts.length > 2 ||
-        (parts.length === 2 && parts[1] !== expectedPrefix)
-      )
-        issue(
-          issues,
-          `${path}.runnerSourceAllowlist[${index}]`,
-          "must be a concrete bare IP or single-host CIDR",
-        );
-      if (seen.has(address))
-        issue(
-          issues,
-          `${path}.runnerSourceAllowlist[${index}]`,
-          "must not be duplicated",
-        );
-      seen.add(address);
-    });
-  }
-}
-
-function assertGuestMaintenanceEndpoint(
-  endpoint,
-  session,
-  policy,
-  operation,
-  path,
-  issues,
-) {
-  const transport = endpoint?.transport;
-  if (
-    !assertExactKeys(
-      endpoint,
-      [
-        "transport",
-        "protocol",
-        "host",
-        "port",
-        "reachability",
-        ...(transport === "wireguard" && session !== null
-          ? ["relayProof"]
-          : []),
-      ],
-      path,
-      issues,
-    )
-  )
-    return;
-  if (!new Set(["wireguard", "testbed-runner-direct"]).has(transport))
-    issue(
-      issues,
-      `${path}.transport`,
-      "must be wireguard or testbed-runner-direct",
-    );
-  if (endpoint.protocol !== "ssh")
-    issue(issues, `${path}.protocol`, "must be ssh");
-  if (
-    endpoint.reachability !== "unavailable" &&
-    !isConcreteHostIp(endpoint.host)
-  )
-    issue(issues, `${path}.host`, "must be a concrete IP address");
-  else assertNoHostReference(endpoint.host, `${path}.host`, issues);
-  if (endpoint.port !== 22)
-    issue(issues, `${path}.port`, "must be the SSH port 22");
-  if (
-    !new Set(["discovered", "authenticated", "unavailable"]).has(
-      endpoint.reachability,
-    )
-  )
-    issue(
-      issues,
-      `${path}.reachability`,
-      "must be a supported reachability state",
-    );
-  if (transport === "wireguard") {
-    if (session !== null)
-      assertMaintenanceRelayProof(
-        endpoint.relayProof,
-        session,
-        endpoint,
-        `${path}.relayProof`,
-        issues,
-      );
-  }
-  if (transport === "testbed-runner-direct") {
-    if (
-      policy === null ||
-      policy.transport !== "testbed-runner-direct" ||
-      !TESTBED_RUNNER_DIRECT_ENDPOINT_OPERATIONS.has(operation)
-    )
-      issue(
-        issues,
-        `${path}.transport`,
-        "is allowed only for Factory lifecycle guest-endpoint operations with the explicit testbed runner-direct policy",
-      );
-  }
-}
-
 function assertCleanupObservation(observed, path, issues) {
   if (
     !assertExactKeys(
@@ -2545,8 +2298,6 @@ function requestEcho(request) {
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
-    maintenanceRelaySession: request.maintenanceRelaySession,
-    maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2572,8 +2323,6 @@ function reconstructRequest(request) {
       digest: asset?.digest,
     })),
     requestedCapabilities: [...(request.requestedCapabilities ?? [])],
-    maintenanceRelaySession: request.maintenanceRelaySession ?? null,
-    maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
@@ -2594,10 +2343,6 @@ function lifecycleSourceAsset(request) {
 
 export function validateVmHostAdapterRequest(input) {
   const request = structuredClone(input);
-  if (!("maintenanceRelaySession" in request))
-    request.maintenanceRelaySession = null;
-  if (!("maintenanceEndpointPolicy" in request))
-    request.maintenanceEndpointPolicy = null;
   const issues = [];
   assertExactKeys(
     request,
@@ -2617,8 +2362,6 @@ export function validateVmHostAdapterRequest(input) {
       "audioCapture",
       "assets",
       "requestedCapabilities",
-      "maintenanceRelaySession",
-      "maintenanceEndpointPolicy",
       ...(isV2Request(request) ? ["serialSession"] : []),
     ],
     "request",
@@ -2690,18 +2433,6 @@ export function validateVmHostAdapterRequest(input) {
   }
   if (isV2Request(request) || isSerialSessionOperation(request.operation))
     assertSerialSessionRequest(request.serialSession, request, issues);
-  if (request.maintenanceRelaySession !== null)
-    assertMaintenanceRelaySession(
-      request.maintenanceRelaySession,
-      "request.maintenanceRelaySession",
-      issues,
-    );
-  assertMaintenanceEndpointPolicy(
-    request.maintenanceEndpointPolicy,
-    request,
-    "request.maintenanceEndpointPolicy",
-    issues,
-  );
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
     if (
       typeof request.target.identity !== "string" ||
@@ -3014,8 +2745,6 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "displayCapture",
         "audioCapture",
         "requestedCapabilities",
-        "maintenanceRelaySession",
-        "maintenanceEndpointPolicy",
         ...(isV2Request(request) ? ["serialSession"] : []),
       ],
       "report.request",
@@ -3192,42 +2921,11 @@ export function validateVmHostAdapterReport(input, requestInput) {
   if (
     assertExactKeys(
       report.guest,
-      [
-        "maintenanceEndpointIdentity",
-        "maintenanceEndpoint",
-        "deviceMappings",
-        "defaultAudioIdentity",
-      ],
+      ["deviceMappings", "defaultAudioIdentity"],
       "report.guest",
       issues,
     )
   ) {
-    assertLogicalIdentity(
-      report.guest.maintenanceEndpointIdentity,
-      "report.guest.maintenanceEndpointIdentity",
-      issues,
-    );
-    assertGuestMaintenanceEndpoint(
-      report.guest.maintenanceEndpoint,
-      request.maintenanceRelaySession,
-      request.maintenanceEndpointPolicy,
-      request.operation,
-      "report.guest.maintenanceEndpoint",
-      issues,
-    );
-    if (
-      report.result === "succeeded" &&
-      !["cleanup", "cancel"].includes(request.operation) &&
-      !isPostCleanupIdempotentCapture(request, report) &&
-      !["discovered", "authenticated"].includes(
-        report.guest.maintenanceEndpoint?.reachability,
-      )
-    )
-      issue(
-        issues,
-        "report.guest.maintenanceEndpoint.reachability",
-        "must be discovered by the host or authenticated by the workflow before a successful operation is accepted",
-      );
     assertLogicalIdentity(
       report.guest.defaultAudioIdentity,
       "report.guest.defaultAudioIdentity",
@@ -3492,25 +3190,6 @@ export function validateVmHostAdapterReport(input, requestInput) {
       digest: asset.digest,
     })),
     guest: {
-      maintenanceEndpointIdentity: report.guest.maintenanceEndpointIdentity,
-      maintenanceEndpoint: {
-        transport: report.guest.maintenanceEndpoint.transport,
-        protocol: report.guest.maintenanceEndpoint.protocol,
-        host: report.guest.maintenanceEndpoint.host,
-        port: report.guest.maintenanceEndpoint.port,
-        reachability: report.guest.maintenanceEndpoint.reachability,
-        ...(report.guest.maintenanceEndpoint.transport === "wireguard" &&
-        report.guest.maintenanceEndpoint.relayProof
-          ? {
-              relayProof: {
-                ...report.guest.maintenanceEndpoint.relayProof,
-                relayPeer: {
-                  ...report.guest.maintenanceEndpoint.relayProof.relayPeer,
-                },
-              },
-            }
-          : {}),
-      },
       deviceMappings: report.guest.deviceMappings.map((mapping) => ({
         role: mapping.role,
         guestDeviceIdentity: mapping.guestDeviceIdentity,
@@ -4121,8 +3800,6 @@ function cleanupRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
-    maintenanceRelaySession: null,
-    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cleanup", "cancellation"],
     ...(isV2Request(request)
       ? {
@@ -4143,8 +3820,6 @@ function cancelRequestFor(request) {
     factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
-    maintenanceRelaySession: null,
-    maintenanceEndpointPolicy: null,
     requestedCapabilities: ["cancellation", "cleanup"],
     ...(isV2Request(request)
       ? {

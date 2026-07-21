@@ -3,8 +3,11 @@ import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
+
+import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 
 const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
   let activeTerminal:
@@ -45,7 +48,9 @@ vi.mock("@/audio-playback/machine-audio-playback", () => ({
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
+import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 import { createCustomerJourneyAudioRuntime } from "./customer-journey-audio-runtime";
 
@@ -103,12 +108,14 @@ describe("Customer journey audio runtime", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
+    resetCustomerPresenceSessionForTests();
     runtime = null;
     vi.clearAllMocks();
   });
 
   afterEach(async () => {
     await runtime?.dispose();
+    resetCustomerPresenceSessionForTests();
   });
 
   it("plays transaction transitions with effective customer audio settings and rejects later disabled cues", async () => {
@@ -136,6 +143,9 @@ describe("Customer journey audio runtime", () => {
     machineStore.applyEffectiveRuntimeConfiguration(
       effectiveConfiguration({ volume: 0.34, transactionCuesEnabled: false }),
     );
+    await vi.waitFor(() => {
+      expect(nativePlaybackDriver.stop).toHaveBeenCalledOnce();
+    });
     useCheckoutStore(pinia).applyTransaction(transaction("payment_failed"));
 
     await vi.waitFor(() => {
@@ -150,5 +160,120 @@ describe("Customer journey audio runtime", () => {
       );
     });
     expect(nativePlaybackDriver.playLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays each category introduction at product-list entry only", async () => {
+    useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
+      effectiveConfiguration({ volume: 0.52, transactionCuesEnabled: true }),
+    );
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    const journeyStore = useCustomerJourneyStore(pinia);
+
+    journeyStore.enterCategory({ categoryKey: "socks", category: "袜子" });
+    await vi.waitFor(() => {
+      expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
+        "/audio/voice/product/socks.mp3",
+        expect.objectContaining({ volume: 0.52 }),
+      );
+    });
+
+    journeyStore.enterCategory({ categoryKey: "socks", category: "袜子" });
+    expect(nativePlaybackDriver.playLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay welcome when a transient Vision absence recovers", async () => {
+    vi.useFakeTimers();
+    useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
+      effectiveConfiguration({ volume: 0.7, transactionCuesEnabled: true }),
+    );
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    const visionStore = useVisionStore(pinia);
+
+    visionStore.applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENT-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+    });
+    await vi.waitFor(() => {
+      expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
+        "/audio/voice/interaction/awakened.mp3",
+        expect.any(Object),
+      );
+    });
+
+    visionStore.applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-TRANSIENT-EMPTY-001",
+      state: "empty",
+      reason: "no_person",
+      detectedAt: "2026-07-19T08:00:01.000Z",
+      personPresent: false,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: false },
+    });
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(2_999);
+    visionStore.applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENT-002",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:04.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+    });
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(nativePlaybackDriver.playLocal).toHaveBeenCalledTimes(1);
+    expect(
+      runtime
+        ?.trace()
+        .filter(
+          (entry) =>
+            entry.type === "journey_transition" &&
+            entry.transitionId.endsWith(":welcome"),
+        ),
+    ).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("does not project touchscreen inactivity as a Vision departure cue", async () => {
+    vi.useFakeTimers();
+    useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
+      effectiveConfiguration({ volume: 0.7, transactionCuesEnabled: true }),
+    );
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(45_000);
+
+    expect(
+      runtime
+        .trace()
+        .filter(
+          (entry) =>
+            entry.type === "journey_transition" &&
+            entry.transitionId.endsWith(":departed"),
+        ),
+    ).toHaveLength(0);
+    expect(nativePlaybackDriver.playLocal).not.toHaveBeenCalledWith(
+      expect.stringContaining("/departure/"),
+      expect.any(Object),
+    );
+    vi.useRealTimers();
   });
 });

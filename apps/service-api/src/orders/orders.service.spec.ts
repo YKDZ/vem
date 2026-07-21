@@ -557,7 +557,7 @@ function collectDebugTokens(value: unknown): string[] {
 
 describe("OrdersService", () => {
   describe("listOrders", () => {
-    it("projects drill markers in the admin order list", async () => {
+    it("projects the canonical admin order list fields", async () => {
       const db = makeDb();
       let selectedFields: Record<string, unknown> | undefined;
 
@@ -590,9 +590,8 @@ describe("OrdersService", () => {
 
       expect(selectedFields).toEqual(
         expect.objectContaining({
-          isDrill: expect.anything(),
-          isTest: expect.anything(),
-          scenario: expect.anything(),
+          id: expect.anything(),
+          orderNo: expect.anything(),
         }),
       );
     });
@@ -1102,33 +1101,6 @@ describe("OrdersService", () => {
         note: "operator found product in slot",
         requestRefund: false,
       });
-      expect(requestFullRefund).not.toHaveBeenCalled();
-    });
-
-    it("blocks normal recovery for drill orders before vending or refund side effects", async () => {
-      const { db, tx } = makeRecoveryDb([
-        [{ ...resultUnknownCommand, isDrill: true }],
-        [],
-        [],
-      ]);
-      const requestFullRefund = vi.fn();
-      const resolveCommand = vi.fn();
-      const service = makeService({
-        db: db as never,
-        refundsService: { requestFullRefund },
-        vendingService: { resolveCommand },
-      });
-
-      await expect(
-        service.createRecoveryAction("order-1", "admin-1", {
-          action: "confirm_dispensed",
-          note: "must use protected drill recovery",
-        }),
-      ).rejects.toThrow(
-        "Protected drill recovery uses drill simulation endpoints",
-      );
-      expect(tx.insert).not.toHaveBeenCalled();
-      expect(resolveCommand).not.toHaveBeenCalled();
       expect(requestFullRefund).not.toHaveBeenCalled();
     });
 
@@ -3572,40 +3544,6 @@ describe("OrdersService (transaction boundary)", () => {
         ...overrides,
       };
     }
-
-    it("does not reconcile-on-read for protected payment drill orders", async () => {
-      const db = makeDb();
-      const reconcilePendingPaymentOnRead = vi.fn();
-      db.select
-        .mockReturnValueOnce(
-          makeJoinedSelectResult([
-            machineOrderStatusRow({
-              orderNo: "DRILL-ORD001",
-              paymentNo: "DRILL-PAY001",
-              isDrill: true,
-              isTest: true,
-              scenario: "qr_reconcile_failed",
-            }),
-          ]),
-        )
-        .mockReturnValueOnce(makeEmptyLatestSelectResult())
-        .mockReturnValueOnce(makeEmptyLatestSelectResult())
-        .mockReturnValueOnce(makeEmptyLatestSelectResult())
-        .mockReturnValueOnce(makeEmptyLatestSelectResult());
-
-      const service = makeService({
-        db,
-        paymentsService: { reconcilePendingPaymentOnRead },
-      });
-
-      const result = await service.getMachineOrderStatus("DRILL-ORD001", {
-        machineCode: "M001",
-      });
-
-      expect(reconcilePendingPaymentOnRead).not.toHaveBeenCalled();
-      expect(result.orderNo).toBe("DRILL-ORD001");
-      expect(result.payment.status).toBe("pending");
-    });
 
     it("tries immediate reconcile for pending qr_code and returns refreshed status", async () => {
       const db = makeDb();

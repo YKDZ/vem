@@ -2,95 +2,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { describe, it } from "node:test";
 
+import { BUSINESS_CHECK_REGISTRY } from "./business-check-registry.mjs";
 import { buildStabilityGateReport } from "./full-workflow-stability-gate.mjs";
-import { buildFullWorkflowAggregate } from "./full-workflow-validator.mjs";
+import {
+  buildFullWorkflowAggregate,
+  validateBusinessCheckReport,
+} from "./full-workflow-validator.mjs";
 
-const roots = [];
-
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-function tempRoot() {
-  const root = mkdtempSync(join(tmpdir(), "vem-full-workflow-"));
-  roots.push(root);
-  return root;
-}
-
-function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function sampleEvidenceManifest(path) {
-  return {
-    schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
-    ok: true,
-    limits: {
-      reportPerFileBytes: 512 * 1024,
-      tracePerTrackBytes: 512 * 1024,
-      logPerFileBytes: 256 * 1024,
-      screenshotPerFileBytes: 2 * 1024 * 1024,
-      totalBytes: 8 * 1024 * 1024,
-    },
-    requiredKinds: ["machineRuntimeTrace", "logs", "screenshots"],
-    totals: {
-      byteLength: 2,
-      tracks: 1,
-      reports: 1,
-      machineRuntimeTrace: 1,
-      logs: 1,
-      screenshots: 1,
-    },
-    tracks: [
-      {
-        key: "fast",
-        report: path,
-        machineRuntimeTrace: `${path}#runtimeTrace`,
-        logs: [`${path}#logs`],
-        screenshots: [`${path}.png`],
-      },
-    ],
-    files: [
-      {
-        path,
-        track: "fast",
-        kind: "reports",
-        byteLength: 1,
-        sha256: "a".repeat(64),
-      },
-      {
-        path: `${path}.png`,
-        track: "fast",
-        kind: "screenshots",
-        byteLength: 1,
-        sha256: "b".repeat(64),
-      },
-    ],
-    sections: [
-      {
-        path: `${path}#runtimeTrace`,
-        track: "fast",
-        kind: "machineRuntimeTrace",
-        byteLength: 1,
-        sha256: "c".repeat(64),
-      },
-      {
-        path: `${path}#logs`,
-        track: "fast",
-        kind: "logs",
-        byteLength: 1,
-        sha256: "d".repeat(64),
-      },
-    ],
-    failures: [],
-  };
-}
-
-function sampleFastReport() {
+function saleReport() {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
     ok: true,
@@ -101,492 +22,336 @@ function sampleFastReport() {
       protocol: ["VEND", "F0", "F1", "F2"],
       daemonStockDeltaAfterF2: -1,
       platformStockDeltaAfterF2: -1,
-      guardedNavigationReason: "active_transaction_route",
       visionEventId: "VISION-1",
-      repeatedPhysicalTouchTraceId: 18,
+      repeatedPhysicalTouchTraceId: 1,
     },
   };
 }
 
-function sampleIdentity(reconstruction = "a") {
+function descriptor(name) {
+  return BUSINESS_CHECK_REGISTRY.find((entry) => entry.name === name);
+}
+
+function hardwareLifecycleReport() {
+  return {
+    schemaVersion: "vem-hardware-lifecycle-guest-full/v1",
+    ok: true,
+    discovery: {
+      dynamicRoleDiscovery: true,
+      fixedComSelection: false,
+      roles: [{ role: "lower_controller" }, { role: "scanner" }],
+      qemuUsbSerialMappings: [
+        { role: "lower-controller" },
+        { role: "scanner" },
+      ],
+    },
+    readiness: {
+      before: { canStartSale: true, revision: 7 },
+      after: { canStartSale: true, revision: 11 },
+    },
+    lifecycle: [
+      {
+        role: "lower_controller",
+        initialBindingRevision: 3,
+        disconnect: {
+          host: { operation: "disconnect" },
+          daemon: { ready: false },
+          saleStartCapability: { canStartSale: false },
+        },
+        reconnect: {
+          host: { operation: "reconnect" },
+          daemon: { ready: true },
+          bindingRevision: 4,
+        },
+      },
+      {
+        role: "scanner",
+        initialBindingRevision: 5,
+        disconnect: {
+          host: { operation: "disconnect" },
+          daemon: { ready: false },
+          saleStartCapability: { canStartSale: false },
+        },
+        reconnect: {
+          host: { operation: "reconnect" },
+          daemon: { ready: true },
+          bindingRevision: 6,
+        },
+      },
+    ],
+  };
+}
+
+function environmentCommand(action, commandNo, resultJson = { success: true }) {
+  return {
+    action,
+    admin: { commandNo, status: "sent" },
+    result: { status: "succeeded", resultJson },
+    mqtt: { commandObserved: true, resultObserved: true },
+    serial: { lowerBoundaryObserved: true },
+  };
+}
+
+function environmentControlReport() {
+  return {
+    schemaVersion: "vem-environment-control-guest-full/v1",
+    ok: true,
+    commands: [
+      environmentCommand("airConditionerOnTrue", "MCMD-1"),
+      environmentCommand("airConditionerOnFalse", "MCMD-2"),
+      environmentCommand("ventSpeed", "MCMD-3"),
+      environmentCommand("targetTemperatureCelsius", "MCMD-4"),
+    ],
+    overlapRejection: {
+      rejected: true,
+      httpStatus: 409,
+      error: "ENVIRONMENT_COMMAND_IN_PROGRESS",
+    },
+    boundaries: {
+      adminApi: true,
+      mqtt: true,
+      daemonIpc: true,
+      lowerSerial: true,
+    },
+  };
+}
+
+function paymentRecoveryReport() {
+  return {
+    schemaVersion: "vem-payment-recovery-guest-full/v1",
+    ok: true,
+    boundaries: { serviceApi: true, mqtt: true, daemon: true },
+    payment: { id: "payment-recovery-1" },
+    recovery: { action: { action: "query_payment" } },
+    assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
+  };
+}
+
+function localOperationsReport() {
+  return {
+    schemaVersion: "vem-local-operations-guest-full/v1",
+    ok: true,
+    boundaries: { daemon: true, hardwareSelfCheck: true, serial: true },
+    planogram: {
+      canonical: true,
+      planogramVersion: "PLAN-OPS",
+      slotCode: "R7C1",
+    },
+    manualDispense: { slotCode: "R7C1", outcome: "completed" },
+  };
+}
+
+function identity(reconstruction) {
+  const caches = [
+    "D:\\runtime-cache\\v1\\pnpm-store",
+    "D:\\runtime-cache\\v1\\pnpm-virtual-store",
+    "D:\\runtime-cache\\v1\\cargo-home",
+    "D:\\runtime-cache\\v1\\target",
+    "D:\\runtime-cache\\v1\\sccache",
+    "D:\\runtime-cache\\v1\\turbo",
+    "D:\\runtime-cache\\v1\\vision-main",
+    "D:\\runtime-cache\\v1\\powershell",
+  ];
   return {
     githubSha: "c".repeat(40),
     baseline: {
       releaseId: "win10-runtime-20260718",
-      digest: `sha256:${"b".repeat(64)}`,
+      digest: `sha256:${"a".repeat(64)}`,
     },
-    runtimeBase: `runtime-base://sha256/${"d".repeat(64)}`,
+    runtimeBase: `runtime-base://sha256/${"b".repeat(64)}`,
     reconstructionId: `reconstruction://sha256/${reconstruction.repeat(64).slice(0, 64)}`,
-    retainedCaches: [
-      "D:\\runtime-cache\\v1\\pnpm-store",
-      "D:\\runtime-cache\\v1\\pnpm-virtual-store",
-      "D:\\runtime-cache\\v1\\cargo-home",
-      "D:\\runtime-cache\\v1\\target",
-      "D:\\runtime-cache\\v1\\sccache",
-      "D:\\runtime-cache\\v1\\turbo",
-      "D:\\runtime-cache\\v1\\vision-main",
-      "D:\\runtime-cache\\v1\\powershell",
-    ],
-    observedRetainedCaches: [
-      "D:\\runtime-cache\\v1\\pnpm-store",
-      "D:\\runtime-cache\\v1\\pnpm-virtual-store",
-      "D:\\runtime-cache\\v1\\cargo-home",
-      "D:\\runtime-cache\\v1\\target",
-      "D:\\runtime-cache\\v1\\sccache",
-      "D:\\runtime-cache\\v1\\turbo",
-      "D:\\runtime-cache\\v1\\vision-main",
-      "D:\\runtime-cache\\v1\\powershell",
-    ],
+    retainedCaches: caches,
+    observedRetainedCaches: caches,
     removedUndeclaredCaches: [],
   };
 }
 
-function sampleDelayedReport() {
-  return {
-    schemaVersion: "local-testbed-delayed-pickup-native-audio/v1",
-    ok: true,
-    delayedPickupNativeAudio: {
-      schemaVersion: "delayed-pickup-native-audio-production-acceptance/v3",
-      result: "passed",
-      controller: {
-        cueStartLatencyMs: {
-          pickup_waiting: 100,
-          ordinary_warning: 100,
-          urgent_warning: 100,
-          reset_progress: 100,
-          dispense_succeeded: 100,
-        },
-      },
-      audio: {
-        source: "windows_default_output",
-        capture: { nonSilentFrameCount: 4_800, peakAbsoluteSample: 1_024 },
-        cueWindows: [{ kind: "passed", label: "default_output_capture" }],
-      },
+function passingExecution(descriptors) {
+  return descriptors.map((descriptor) => ({
+    key: descriptor.name,
+    validator: {
+      key: descriptor.name,
+      label: descriptor.name,
+      status: "passed",
+      reportPath: `/reports/${descriptor.name}.json`,
     },
-  };
-}
-
-function sampleIpcRecoveryReport() {
-  return {
-    schemaVersion: "vem-installed-ipc-recovery-guest-full/v1",
-    ok: true,
-    renderedSale: {
-      orderId: "ORDER-1",
-      paymentId: "PAYMENT-1",
-      orderNo: "NO-1",
-    },
-    liveSale: {
-      vendingCommandId: "COMMAND-1",
-    },
-    result: {
-      kind: "success",
-    },
-    ipcRecovery: {
-      evidence: {
-        status: "passed",
-      },
-      assertions: {
-        overlayObserved: true,
-        retainedOrderCredential: "NO-1",
-        resumedOrderCredential: "NO-1",
-        daemonTransportPhase: "recovered",
-      },
-    },
-    cleanup: {
-      ok: true,
-    },
-  };
-}
-
-function sampleFulfillmentFailureReport() {
-  return {
-    schemaVersion: "vem-serial-fulfillment-error-guest-full/v1",
-    ok: true,
-    paymentCompletion: {
-      ok: true,
-    },
-    assertions: {
-      orderStatus: "refunded",
-      commandId: "COMMAND-1",
-      inventoryDelta: 0,
-    },
-    cleanup: {
-      stopped: true,
-    },
-  };
-}
-
-function sampleScannerReport() {
-  return {
-    schemaVersion: "vem-scanner-payment-code-guest-full/v1",
-    ok: true,
-    renderedSale: {
-      orderId: "ORDER-1",
-      paymentId: "PAYMENT-1",
-      orderNo: "NO-1",
-    },
-    scannerAttempt: {
-      status: "succeeded",
-      source: "serial_text",
-      scannerEventId: "SCAN-1",
-    },
-    platformAssertions: {
-      attempt: {
-        status: "succeeded",
-      },
-      movement: {
-        id: "MOVE-1",
-      },
-    },
-    invalidScanEvidence: {
-      malformed: {
-        attemptCount: 0,
-        paymentDelta: 0,
-      },
-      timeout: {
-        attemptCount: 0,
-        paymentDelta: 0,
-      },
-    },
-    final: {
-      result: {
-        kind: "success",
-      },
-    },
-  };
-}
-
-function sampleVisionReport() {
-  return {
-    schemaVersion: "vem-vision-try-on-acceptance/v1",
-    ok: true,
-    health: {
-      vision: {
-        protocolSummary: { ok: true },
-      },
-    },
-    ui: {
-      tryOnSummary: {
-        width: 640,
-        height: 360,
-        silhouetteHttpStatus: 200,
-      },
-      tryOnAttempts: [{ attempt: 1, result: "passed" }],
-    },
-    degradations: {
-      visionDown: {
-        experienceCapabilityDegraded: true,
-        saleStartStillAvailable: true,
-      },
-    },
-  };
+  }));
 }
 
 describe("full workflow aggregate validator", () => {
-  it("builds a passed full aggregate from compact track reports", () => {
-    const root = tempRoot();
-    const fastPath = join(root, "fast.json");
-    const ipcRecoveryPath = join(root, "ipc-recovery.json");
-    const fulfillmentFailurePath = join(root, "fulfillment-failure.json");
-    const scannerPath = join(root, "scanner.json");
-    const delayedPath = join(root, "delayed.json");
-    const visionPath = join(root, "vision.json");
-    const manifestPath = join(root, "manifest.json");
-    writeJson(fastPath, sampleFastReport());
-    writeJson(ipcRecoveryPath, sampleIpcRecoveryReport());
-    writeJson(fulfillmentFailurePath, sampleFulfillmentFailureReport());
-    writeJson(scannerPath, sampleScannerReport());
-    writeJson(delayedPath, sampleDelayedReport());
-    writeJson(visionPath, sampleVisionReport());
-    writeJson(manifestPath, sampleEvidenceManifest(fastPath));
-    const report = buildFullWorkflowAggregate({
-      mode: "full",
-      fastReportPath: fastPath,
-      ipcRecoveryReportPath: ipcRecoveryPath,
-      fulfillmentFailureReportPath: fulfillmentFailurePath,
-      scannerReportPath: scannerPath,
-      delayedPickupReportPath: delayedPath,
-      visionTryOnReportPath: visionPath,
-      evidenceManifestPath: manifestPath,
-      executedTracks: [
-        { key: "fast", status: "passed", exitCode: 0, reportOk: true },
-        { key: "scanner", status: "passed", exitCode: 0, reportOk: true },
-        { key: "visionTryOn", status: "passed", exitCode: 0, reportOk: true },
-        { key: "delayedPickup", status: "passed", exitCode: 0, reportOk: true },
-        { key: "ipcRecovery", status: "passed", exitCode: 0, reportOk: true },
+  it("lets the owning sale validator decide its business claim", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("sale"),
+        saleReport(),
+        "/reports/sale.json",
+      ).status,
+      "passed",
+    );
+  });
+
+  it("accepts hardware lifecycle evidence only with QEMU role lifecycle and readiness revisions", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("hardwareLifecycle"),
+        hardwareLifecycleReport(),
+        "/reports/hardware-lifecycle.json",
+      ).status,
+      "passed",
+    );
+    const missingDisconnect = hardwareLifecycleReport();
+    missingDisconnect.lifecycle[0].disconnect.daemon.ready = true;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("hardwareLifecycle"),
+        missingDisconnect,
+        "/reports/hardware-lifecycle.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts environment control only with Admin, MQTT, daemon IPC, and lower serial evidence", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        environmentControlReport(),
+        "/reports/environment-control.json",
+      ).status,
+      "passed",
+    );
+    const missingSerial = environmentControlReport();
+    missingSerial.commands[2].serial.lowerBoundaryObserved = false;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        missingSerial,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts payment recovery only with Service API, MQTT, daemon, and no duplicate dispense", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentRecovery"),
+        paymentRecoveryReport(),
+        "/reports/payment-recovery.json",
+      ).status,
+      "passed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentRecovery"),
         {
-          key: "fulfillmentFailure",
-          status: "passed",
-          exitCode: 0,
-          reportOk: true,
+          ...paymentRecoveryReport(),
+          boundaries: { serviceApi: true, mqtt: false, daemon: true },
+        },
+        "/reports/payment-recovery.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts local operations only with canonical planogram and manual slot evidence", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("localOperations"),
+        localOperationsReport(),
+        "/reports/local-operations.json",
+      ).status,
+      "passed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("localOperations"),
+        {
+          ...localOperationsReport(),
+          manualDispense: { slotCode: "R8C2", outcome: "completed" },
+        },
+        "/reports/local-operations.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("derives focused aggregation and canonical ordering from selected descriptors", () => {
+    const descriptors = BUSINESS_CHECK_REGISTRY.filter((descriptor) =>
+      ["sale", "ipcRecovery"].includes(descriptor.name),
+    );
+    const aggregate = buildFullWorkflowAggregate({
+      mode: "fast",
+      selectedDescriptors: descriptors,
+      executedTracks: passingExecution(descriptors),
+      evidenceManifestPath: "/reports/evidence.json",
+    });
+    assert.equal(aggregate.ok, true);
+    assert.deepEqual(aggregate.execution.selectedBusinessSets, [
+      "sale",
+      "ipcRecovery",
+    ]);
+    assert.deepEqual(Object.keys(aggregate.businessSets), [
+      "sale",
+      "ipcRecovery",
+    ]);
+  });
+
+  it("fails a full aggregate when a required registered set has incomplete evidence", () => {
+    const blocked = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "paymentRecovery",
+    );
+    const aggregate = buildFullWorkflowAggregate({
+      mode: "full",
+      selectedDescriptors: [blocked],
+      executedTracks: [
+        {
+          key: blocked.name,
+          validator: validateBusinessCheckReport(blocked, null, null),
         },
       ],
     });
-    assert.equal(report.ok, true);
-    assert.equal(report.tracks.standardSale.status, "passed");
-    assert.equal(report.tracks.ipcRecovery.status, "passed");
-    assert.equal(report.tracks.fulfillmentFailure.status, "passed");
-    assert.equal(report.tracks.audio.status, "passed");
-    assert.equal(report.tracks.scanner.status, "passed");
-    assert.equal(report.tracks.vision.status, "passed");
-    assert.equal(report.tracks.tryOn.status, "passed");
-    assert.equal(report.tracks.evidence.status, "passed");
-    assert.equal(report.tracks.error.status, "passed");
-    assert.equal(report.businessOutcome.ok, true);
-    assert.equal(report.evidenceCompleteness.ok, true);
-  });
-
-  it("marks full aggregate failed when the scanner invalid-scan evidence is incomplete", () => {
-    const root = tempRoot();
-    const fastPath = join(root, "fast.json");
-    const ipcRecoveryPath = join(root, "ipc-recovery.json");
-    const fulfillmentFailurePath = join(root, "fulfillment-failure.json");
-    const scannerPath = join(root, "scanner.json");
-    const delayedPath = join(root, "delayed.json");
-    const visionPath = join(root, "vision.json");
-    const manifestPath = join(root, "manifest.json");
-    const scanner = sampleScannerReport();
-    scanner.invalidScanEvidence.timeout.paymentDelta = 1;
-    writeJson(fastPath, sampleFastReport());
-    writeJson(ipcRecoveryPath, sampleIpcRecoveryReport());
-    writeJson(fulfillmentFailurePath, sampleFulfillmentFailureReport());
-    writeJson(scannerPath, scanner);
-    writeJson(delayedPath, sampleDelayedReport());
-    writeJson(visionPath, sampleVisionReport());
-    writeJson(manifestPath, sampleEvidenceManifest(fastPath));
-    const report = buildFullWorkflowAggregate({
-      mode: "full",
-      fastReportPath: fastPath,
-      ipcRecoveryReportPath: ipcRecoveryPath,
-      fulfillmentFailureReportPath: fulfillmentFailurePath,
-      scannerReportPath: scannerPath,
-      delayedPickupReportPath: delayedPath,
-      visionTryOnReportPath: visionPath,
-      evidenceManifestPath: manifestPath,
-      executedTracks: [
-        { key: "fast", exitCode: 0, reportOk: true },
-        { key: "delayedPickup", exitCode: 0, reportOk: true },
-        { key: "scanner", exitCode: 0, reportOk: true },
-        { key: "ipcRecovery", exitCode: 0, reportOk: true },
-        { key: "fulfillmentFailure", exitCode: 0, reportOk: true },
-        { key: "visionTryOn", exitCode: 0, reportOk: true },
-      ],
-    });
-    assert.equal(report.ok, false);
-    assert.equal(report.tracks.error.status, "failed");
-    assert.equal(report.businessOutcome.ok, false);
-    assert.equal(report.evidenceCompleteness.ok, true);
-  });
-
-  it("returns an aggregate failure when a required child report is missing", () => {
-    const root = tempRoot();
-    const fastPath = join(root, "fast.json");
-    const manifestPath = join(root, "manifest.json");
-    writeJson(fastPath, sampleFastReport());
-    writeJson(manifestPath, sampleEvidenceManifest(fastPath));
-    const report = buildFullWorkflowAggregate({
-      mode: "full",
-      fastReportPath: fastPath,
-      evidenceManifestPath: manifestPath,
-      executedTracks: [{ key: "fast", exitCode: 0, reportOk: true }],
-    });
-    assert.equal(report.ok, false);
-    assert.equal(report.tracks.audio.status, "failed");
-    assert.equal(report.tracks.error.status, "failed");
-  });
-
-  it("rejects a child that exits zero but emits an invalid report", () => {
-    const root = tempRoot();
-    const fastPath = join(root, "fast.json");
-    const ipcPath = join(root, "ipc.json");
-    const fulfillmentPath = join(root, "fulfillment.json");
-    const scannerPath = join(root, "scanner.json");
-    const delayedPath = join(root, "delayed.json");
-    const visionPath = join(root, "vision.json");
-    const manifestPath = join(root, "manifest.json");
-    writeJson(fastPath, sampleFastReport());
-    writeJson(ipcPath, { ok: true });
-    writeJson(fulfillmentPath, sampleFulfillmentFailureReport());
-    writeJson(scannerPath, sampleScannerReport());
-    writeJson(delayedPath, sampleDelayedReport());
-    writeJson(visionPath, sampleVisionReport());
-    writeJson(manifestPath, sampleEvidenceManifest(fastPath));
-    const report = buildFullWorkflowAggregate({
-      mode: "full",
-      fastReportPath: fastPath,
-      ipcRecoveryReportPath: ipcPath,
-      fulfillmentFailureReportPath: fulfillmentPath,
-      scannerReportPath: scannerPath,
-      delayedPickupReportPath: delayedPath,
-      visionTryOnReportPath: visionPath,
-      evidenceManifestPath: manifestPath,
-      executedTracks: [
-        "fast",
-        "ipcRecovery",
-        "fulfillmentFailure",
-        "delayedPickup",
-        "scanner",
-        "visionTryOn",
-      ].map((key) => ({ key, exitCode: 0, reportOk: true })),
-    });
-    assert.equal(report.ok, false);
-    assert.equal(report.tracks.ipcRecovery.status, "failed");
+    assert.equal(aggregate.ok, false);
+    assert.match(aggregate.failures[0].reason, /did not finish successfully/);
   });
 });
 
 describe("full workflow stability gate", () => {
-  it("accepts two passed full workflow reports for the same commit", () => {
-    const root = tempRoot();
-    const passA = join(root, "pass-a.json");
-    const passB = join(root, "pass-b.json");
-    const fullAggregate = {
-      schemaVersion: "vem-local-testbed-full-workflow/v3",
-      mode: "full",
-      ok: true,
-      failures: [],
-      tracks: {
-        standardSale: { status: "passed" },
-        ipcRecovery: { status: "passed" },
-        fulfillmentFailure: { status: "passed" },
-        audio: { status: "passed" },
-        scanner: { status: "passed" },
-        vision: { status: "passed" },
-        tryOn: { status: "passed" },
-        evidence: { status: "passed" },
-        error: { status: "passed" },
-      },
-      execution: {
-        executedTracks: [
-          "fast",
-          "scanner",
-          "visionTryOn",
-          "fulfillmentFailure",
-          "delayedPickup",
-          "ipcRecovery",
-        ].map((key) => ({ key })),
-      },
-      identity: sampleIdentity(),
-    };
-    writeJson(passA, fullAggregate);
-    writeJson(passB, {
-      ...fullAggregate,
-      identity: sampleIdentity("e"),
-    });
-    const report = buildStabilityGateReport({
-      commit: "c".repeat(40),
-      passAPath: passA,
-      passBPath: passB,
-    });
-    assert.equal(report.ok, true);
-    assert.deepEqual(report.gateFailures, []);
-    assert.equal(
-      report.declaredStateReconstruction.retainedCachesAllowlist.length,
-      8,
-    );
-  });
-
-  it("rejects a repeated reconstruction ID", () => {
-    const root = tempRoot();
-    const passA = join(root, "pass-a.json");
-    const passB = join(root, "pass-b.json");
-    const aggregate = {
-      schemaVersion: "vem-local-testbed-full-workflow/v3",
-      mode: "full",
-      ok: true,
-      failures: [],
-      tracks: Object.fromEntries(
-        [
-          "standardSale",
-          "ipcRecovery",
-          "fulfillmentFailure",
-          "audio",
-          "scanner",
-          "vision",
-          "tryOn",
-          "evidence",
-          "error",
-        ].map((key) => [key, { status: "passed" }]),
-      ),
-      execution: {
-        executedTracks: [
-          "fast",
-          "ipcRecovery",
-          "fulfillmentFailure",
-          "delayedPickup",
-          "scanner",
-          "visionTryOn",
-        ].map((key) => ({ key })),
-      },
-      identity: sampleIdentity("a"),
-    };
-    writeJson(passA, aggregate);
-    writeJson(passB, aggregate);
-    const report = buildStabilityGateReport({
-      commit: "c".repeat(40),
-      passAPath: passA,
-      passBPath: passB,
-    });
-    assert.equal(report.ok, false);
-    assert.ok(
-      report.gateFailures.includes("two passes reused one reconstruction ID"),
-    );
-  });
-
-  it("rejects when observed retained caches drift from the allowlist", () => {
-    const root = tempRoot();
-    const passA = join(root, "pass-a.json");
-    const passB = join(root, "pass-b.json");
-    const aggregate = {
-      schemaVersion: "vem-local-testbed-full-workflow/v3",
-      mode: "full",
-      ok: true,
-      failures: [],
-      tracks: Object.fromEntries(
-        [
-          "standardSale",
-          "ipcRecovery",
-          "fulfillmentFailure",
-          "audio",
-          "scanner",
-          "vision",
-          "tryOn",
-          "evidence",
-          "error",
-        ].map((key) => [key, { status: "passed" }]),
-      ),
-      execution: {
-        executedTracks: [
-          "fast",
-          "scanner",
-          "visionTryOn",
-          "fulfillmentFailure",
-          "delayedPickup",
-          "ipcRecovery",
-        ].map((key) => ({ key })),
-      },
-      identity: sampleIdentity("a"),
-    };
-    writeJson(passA, {
-      ...aggregate,
-      identity: {
-        ...sampleIdentity("a"),
-        observedRetainedCaches: sampleIdentity(
-          "a",
-        ).observedRetainedCaches.slice(0, -1),
-      },
-    });
-    writeJson(passB, {
-      ...aggregate,
-      identity: sampleIdentity("b"),
-    });
-    const report = buildStabilityGateReport({
-      commit: "c".repeat(40),
-      passAPath: passA,
-      passBPath: passB,
-    });
-    assert.equal(report.ok, false);
-    assert.ok(
-      report.gateFailures.includes("passA observed retained caches drifted"),
-    );
+  it("compares the registered full business-set order across two reconstructed passes", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
+    try {
+      const descriptors = BUSINESS_CHECK_REGISTRY;
+      const report = (reconstruction) => ({
+        schemaVersion: "vem-local-testbed-full-workflow/v4",
+        mode: "full",
+        ok: true,
+        businessSets: Object.fromEntries(
+          descriptors.map((descriptor) => [
+            descriptor.name,
+            { status: "passed" },
+          ]),
+        ),
+        execution: {
+          selectedBusinessSets: descriptors.map(
+            (descriptor) => descriptor.name,
+          ),
+        },
+        identity: identity(reconstruction),
+      });
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      writeFileSync(passA, `${JSON.stringify(report("a"))}\n`);
+      writeFileSync(passB, `${JSON.stringify(report("b"))}\n`);
+      assert.equal(
+        buildStabilityGateReport({
+          commit: "c".repeat(40),
+          passAPath: passA,
+          passBPath: passB,
+        }).ok,
+        true,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

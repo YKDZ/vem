@@ -21,7 +21,6 @@ import {
   exportDaemonIpcJsonSchemaDefinitions,
   exportDaemonIpcTransactionCheckoutJsonSchema,
   machineOrderStatusNextActionSchema,
-  normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery,
   parseDaemonIpcTransactionSnapshotBoundary,
   validateDaemonIpcTransactionSnapshotBoundary,
 } from ".";
@@ -31,7 +30,6 @@ import {
 } from "./fixtures/daemon-ipc-scanner";
 import {
   invalidCurrentDaemonIpcTransactionSnapshots,
-  legacyDaemonIpcTransactionRecoveryCases,
   validCurrentDaemonIpcTransactionSnapshots,
 } from "./fixtures/daemon-ipc-transaction";
 
@@ -464,26 +462,6 @@ describe("Daemon IPC Contract Area", () => {
       validCurrentDaemonIpcTransactionSnapshots.terminalDispenseFailed
         .nextAction,
     ).toBe("dispense_failed");
-  });
-
-  it("isolates legacy checkout action normalization to recovery helpers", () => {
-    for (const {
-      legacyAction,
-      currentAction,
-    } of legacyDaemonIpcTransactionRecoveryCases) {
-      expect(() =>
-        daemonIpcCheckoutFlowActionSchema.parse(legacyAction),
-      ).toThrow();
-      expect(() =>
-        daemonIpcTransactionSnapshotSchema.parse({
-          ...awaitingPaymentTransaction,
-          nextAction: legacyAction,
-        }),
-      ).toThrow();
-      expect(
-        normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery(legacyAction),
-      ).toBe(currentAction);
-    }
   });
 
   it("rejects unknown fields in transaction snapshots and nested daemon-owned objects", () => {

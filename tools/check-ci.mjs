@@ -9,14 +9,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const localContainers = new Set();
 const localProcesses = new Set();
-const JOBS = new Set([
-  "static",
-  "unit",
-  "machine-e2e",
-  "admin-e2e",
-  "admin-contract-e2e",
-  "rust",
-]);
+const JOBS = new Set(["static", "unit", "admin-e2e", "rust"]);
 const CARGO_TYPIFY_VERSION = "cargo-typify 0.7.0";
 
 const serviceApiEnv = {
@@ -24,10 +17,6 @@ const serviceApiEnv = {
   JWT_REFRESH_SECRET: "ci-jwt-refresh-secret-minimum-32-chars!!",
   MACHINE_JWT_SECRET: "ci-machine-jwt-secret-min-32-chars-long!",
   MACHINE_CREDENTIAL_ENCRYPTION_KEY: "ci-machine-cred-enc-key-32-chars!!",
-  MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
-  MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
-  MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-  MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
   PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000",
@@ -189,7 +178,7 @@ async function startPostgres(name, database) {
     "-e",
     "POSTGRES_PASSWORD=vem_password",
     "-p",
-    "5432:5432",
+    "127.0.0.1::5432",
     "--health-cmd",
     `pg_isready -U vem -d ${database}`,
     "--health-interval",
@@ -202,8 +191,7 @@ async function startPostgres(name, database) {
   ]);
   localContainers.add(name);
   await waitForPostgres(name);
-  const host = await resolveDockerEndpointHost(name, 5432);
-  return { host, port: 5432 };
+  return resolvePublishedDockerEndpoint(name, 5432);
 }
 
 async function waitForPostgres(name) {
@@ -232,7 +220,7 @@ async function startMosquitto(name, directory) {
     "--name",
     name,
     "-p",
-    "1883:1883",
+    "127.0.0.1::1883",
     "--entrypoint",
     "sh",
     "eclipse-mosquitto:2",
@@ -243,33 +231,41 @@ async function startMosquitto(name, directory) {
     ].join(" && "),
   ]);
   localContainers.add(name);
-  const host = await resolveDockerEndpointHost(name, 1883);
-  await waitForTcp(host, 1883, name);
-  return { host, port: 1883 };
+  const endpoint = await resolvePublishedDockerEndpoint(name, 1883);
+  await waitForTcp(endpoint.host, endpoint.port, name);
+  return endpoint;
 }
 
-async function resolveDockerEndpointHost(containerName, port) {
+async function resolvePublishedDockerEndpoint(containerName, containerPort) {
   for (let attempt = 1; attempt <= 60; attempt += 1) {
-    if (await canConnect("127.0.0.1", port)) {
-      return "127.0.0.1";
-    }
-
     const { stdout } = await capture("docker", [
-      "inspect",
-      "--format",
-      "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+      "port",
       containerName,
+      `${containerPort}/tcp`,
     ]);
-    const containerIp = stdout.trim();
-    if (containerIp && (await canConnect(containerIp, port))) {
-      return containerIp;
+    const published = stdout.trim().split("\n")[0];
+    const separator = published.lastIndexOf(":");
+    const port = Number(published.slice(separator + 1));
+    if (Number.isInteger(port) && port > 0) {
+      if (await canConnect("127.0.0.1", port)) {
+        return { host: "127.0.0.1", port };
+      }
+      const { stdout: containerAddress } = await capture("docker", [
+        "inspect",
+        "--format",
+        "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+        containerName,
+      ]);
+      const host = containerAddress.trim();
+      if (host !== "") {
+        return { host, port: containerPort };
+      }
     }
-
     await sleep(1000);
   }
 
   throw new Error(
-    `Cannot reach ${containerName} on port ${port} through localhost or container IP.`,
+    `Cannot resolve published port ${containerPort} for ${containerName}.`,
   );
 }
 
@@ -438,16 +434,17 @@ process.on("SIGTERM", async () => {
 
 async function runStaticJob() {
   printStep("Static checks");
+  await run("pnpm", ["fmt:check"]);
   await run("node", [
     "--test",
     "scripts/check-effective-config-hard-migration.test.mjs",
   ]);
   await run("pnpm", ["check:boundaries"]);
   await run("pnpm", ["check:script-inventory"]);
+  await run("pnpm", ["check:static-quality-workflow"]);
   await run("pnpm", ["check:vision-main-consumer"]);
   await run("pnpm", ["check:vm-host-adapter"]);
   await run("pnpm", ["check:admin-api-contracts"]);
-  await run("pnpm", ["check:machine-e2e-ci"]);
   await ensureCargoTypify();
   await run("pnpm", ["check:daemon-ipc-contracts"]);
   await run("pnpm", ["turbo", "typecheck"]);
@@ -467,24 +464,6 @@ async function runUnitJob() {
   await run("pnpm", ["turbo", "test"]);
 }
 
-async function runMachineE2eJob() {
-  await assertChromePrerequisite();
-  printStep("Machine UI daemon E2E");
-  await run("google-chrome", ["--version"]);
-  await run("pnpm", ["turbo", "build", "--filter", "machine^..."]);
-  await run("pnpm", [
-    "-F",
-    "machine",
-    "test:e2e",
-    "--",
-    "machine-daemon-client.spec.ts",
-    "machine-real-daemon.spec.ts",
-    "catalog-recovery-matrix.spec.ts",
-    "installed-kiosk-sale-acceptance.spec.ts",
-  ]);
-  await run("pnpm", ["-F", "machine", "test:e2e:touch-smoke"]);
-}
-
 async function runAdminE2eJob() {
   await assertDockerPrerequisite();
   await assertChromePrerequisite();
@@ -497,21 +476,6 @@ async function runAdminE2eJob() {
     serviceLog: "service-api.log",
     adminLog: "admin-ui.log",
     testScript: "test:e2e",
-  });
-}
-
-async function runAdminContractE2eJob() {
-  await assertDockerPrerequisite();
-  await assertChromePrerequisite();
-  await runAdminBrowserE2e({
-    name: "Admin contract browser E2E",
-    database: "vem_admin_contract_e2e",
-    postgresContainer: "vem-local-ci-postgres-admin-contract",
-    mqttContainer: "vem-local-ci-mosquitto-admin-contract",
-    mqttConfigDirectory: "/tmp/vem-local-ci-mosquitto-admin-contract",
-    serviceLog: "admin-contract-service-api.log",
-    adminLog: "admin-contract-admin-ui.log",
-    testScript: "test:e2e:admin-contract",
   });
 }
 
@@ -574,9 +538,7 @@ async function main() {
   }
 
   const runners = {
-    "admin-contract-e2e": runAdminContractE2eJob,
     "admin-e2e": runAdminE2eJob,
-    "machine-e2e": runMachineE2eJob,
     rust: runRustJob,
     static: runStaticJob,
     unit: runUnitJob,

@@ -4,10 +4,9 @@ const EXPECTED_KIOSK_USER = "VEMKiosk";
 const TESTBED_MACHINE_CODE_PREFIX = "VEM-TESTBED-";
 const PORTRAIT_WIDTH_PX = 1080;
 const PORTRAIT_HEIGHT_PX = 1920;
-const EXPECTED_MACHINE_UI_TASK_NAME = "VEMMachineUI";
-const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
-const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
-const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
+const EXPECTED_DAEMON_USER = "Admin";
+const EXPECTED_DAEMON_PATH = "C:\\VEM\\bringup\\vending-daemon.exe";
+const EXPECTED_MACHINE_UI_PATH = "C:\\VEM\\bringup\\machine.exe";
 const sha256Schema = z.string().regex(/^[a-fA-F0-9]{64}$/);
 const sessionIdSchema = z.int().nonnegative().nullable();
 
@@ -17,18 +16,8 @@ const displayDimensionsEvidenceSchema = z.strictObject({
   heightPx: z.int().nonnegative(),
 });
 
-const startupCommandEvidenceSchema = z.strictObject({
-  name: z.string().min(1),
-  exists: z.boolean(),
-  enabled: z.boolean(),
-  runAsUser: z.string().nullable(),
-  command: z.string().nullable(),
-  arguments: z.string().nullable(),
-  workingDirectory: z.string().nullable(),
-});
-
 export const runtimeAcceptanceFactsSchema = z.strictObject({
-  mode: z.literal("fresh_bring_up"),
+  mode: z.literal("installed_runtime"),
   target: z.strictObject({
     testbedName: z.string().min(1),
     machineCode: z.string().min(1),
@@ -51,37 +40,6 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
       source: z.enum(["interactive_kiosk_session", "ssh_service_session"]),
     }),
   }),
-  serviceState: z.strictObject({
-    daemonService: z.strictObject({
-      installed: z.boolean(),
-      running: z.boolean(),
-      startupType: z.enum(["automatic", "manual", "disabled", "unknown"]),
-    }),
-    machineUiTask: z.strictObject({
-      name: z.string().min(1),
-      exists: z.boolean(),
-      enabled: z.boolean(),
-      runAsUser: z.string().min(1),
-    }),
-  }),
-  startupBringup: z.strictObject({
-    configuredBy: z.string().min(1),
-    productionBringup: z.boolean(),
-    daemonOwnedInitialization: z.boolean(),
-    autoLogon: z.strictObject({
-      configured: z.boolean(),
-      user: z.string().min(1),
-      domain: z.string().min(1),
-      force: z.boolean(),
-    }),
-    machineUiStartup: z.strictObject({
-      configured: z.boolean(),
-      mode: z.enum(["scheduled_task", "shell_launcher"]),
-      runAsUser: z.string().min(1),
-      command: z.string().min(1),
-    }),
-    startupCommands: z.array(startupCommandEvidenceSchema),
-  }),
   readyFile: z.strictObject({
     exists: z.boolean(),
     readableByKioskUser: z.boolean(),
@@ -90,10 +48,14 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
   }),
   provisioning: z.strictObject({
     provisioned: z.boolean(),
-    usedDaemonIpcClaimPath: z.boolean(),
+    usedDaemonIpcTaskExecute: z.boolean(),
     machineCode: z.string().min(1).nullable(),
   }),
   daemonRuntime: z.strictObject({
+    processRunning: z.boolean(),
+    processId: z.int().positive().nullable(),
+    processUser: z.string().min(1),
+    executablePath: z.string().min(1),
     ipcReachable: z.boolean(),
     healthz: z.strictObject({
       backendOnline: z.boolean(),
@@ -110,6 +72,9 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
     url: z.string().min(1),
     sessionUser: z.string().min(1),
     sessionId: sessionIdSchema,
+    processId: z.int().positive().nullable(),
+    machineProcessCount: z.int().nonnegative(),
+    machineExecutablePath: z.string().min(1),
   }),
 });
 
@@ -235,132 +200,25 @@ export function classifyRuntimeAcceptanceReport(
     );
   }
   if (
-    !facts.serviceState.daemonService.installed ||
-    !facts.serviceState.daemonService.running ||
-    facts.serviceState.daemonService.startupType !== "automatic"
+    !facts.daemonRuntime.processRunning ||
+    facts.daemonRuntime.processId === null ||
+    facts.daemonRuntime.processUser !== EXPECTED_DAEMON_USER ||
+    facts.daemonRuntime.executablePath !== EXPECTED_DAEMON_PATH
   ) {
     addDiagnostic(
-      "daemon_service_not_running",
-      "Vending Daemon must be installed, running, and configured for automatic startup.",
+      "daemon_process_not_ready",
+      "The manually started daemon process must run as Admin from C:\\VEM\\bringup\\vending-daemon.exe.",
     );
-  }
-  if (facts.startupBringup.machineUiStartup.mode === "scheduled_task") {
-    if (!facts.serviceState.machineUiTask.exists) {
-      addDiagnostic(
-        "machine_ui_task_missing",
-        "VEMMachineUI scheduled task must exist before runtime-ready can pass.",
-      );
-    }
-    if (!facts.serviceState.machineUiTask.enabled) {
-      addDiagnostic(
-        "machine_ui_task_disabled",
-        "VEMMachineUI scheduled task must be enabled before runtime-ready can pass.",
-      );
-    }
-    if (facts.serviceState.machineUiTask.runAsUser !== EXPECTED_KIOSK_USER) {
-      addDiagnostic(
-        "machine_ui_task_user_mismatch",
-        "VEMMachineUI scheduled task must run as the VEMKiosk user.",
-      );
-    }
   }
   if (
-    facts.startupBringup.configuredBy !==
-      "scripts/windows/setup-scheduled-tasks.ps1" ||
-    !facts.startupBringup.productionBringup
+    facts.kioskRuntime.processId === null ||
+    facts.kioskRuntime.machineProcessCount !== 1 ||
+    facts.kioskRuntime.machineExecutablePath !== EXPECTED_MACHINE_UI_PATH
   ) {
     addDiagnostic(
-      "production_bringup_required",
-      "Fresh Bring-Up Acceptance must use the production bring-up script path.",
+      "machine_ui_process_not_ready",
+      "The manually started Machine UI must be the unique VEMKiosk process from C:\\VEM\\bringup\\machine.exe.",
     );
-  }
-  if (facts.startupBringup.daemonOwnedInitialization) {
-    addDiagnostic(
-      "daemon_owned_startup_initialization",
-      "Winlogon auto-logon and customer startup must not be daemon-owned initialization.",
-    );
-  }
-  if (!facts.startupBringup.autoLogon.configured) {
-    addDiagnostic(
-      "winlogon_autologon_missing",
-      "Winlogon auto-logon must be configured by production bring-up before runtime-ready can pass.",
-    );
-  }
-  if (facts.startupBringup.autoLogon.user !== EXPECTED_KIOSK_USER) {
-    addDiagnostic(
-      "winlogon_autologon_user_mismatch",
-      "Winlogon auto-logon must target the VEMKiosk customer session.",
-    );
-  }
-  if (!facts.startupBringup.autoLogon.force) {
-    addDiagnostic(
-      "winlogon_force_autologon_missing",
-      "Winlogon ForceAutoLogon must be enabled for unattended cold boot acceptance.",
-    );
-  }
-  if (!facts.startupBringup.machineUiStartup.configured) {
-    addDiagnostic(
-      "machine_ui_startup_missing",
-      "Machine UI startup must be configured by production bring-up.",
-    );
-  }
-  if (facts.startupBringup.machineUiStartup.runAsUser !== EXPECTED_KIOSK_USER) {
-    addDiagnostic(
-      "machine_ui_startup_user_mismatch",
-      "Machine UI startup must target the VEMKiosk customer session.",
-    );
-  }
-  if (facts.startupBringup.machineUiStartup.mode === "scheduled_task") {
-    const machineUiStartupCommand = facts.startupBringup.startupCommands.find(
-      (command) =>
-        command.name === EXPECTED_MACHINE_UI_TASK_NAME ||
-        command.name === `\\${EXPECTED_MACHINE_UI_TASK_NAME}`,
-    );
-
-    if (!machineUiStartupCommand?.exists) {
-      addDiagnostic(
-        "machine_ui_startup_command_missing",
-        "Production bring-up must provide live VEMMachineUI startup command evidence.",
-      );
-    } else {
-      if (!machineUiStartupCommand.enabled) {
-        addDiagnostic(
-          "machine_ui_startup_command_disabled",
-          "VEMMachineUI startup command must be enabled.",
-        );
-      }
-      if (machineUiStartupCommand.runAsUser !== EXPECTED_KIOSK_USER) {
-        addDiagnostic(
-          "machine_ui_startup_command_user_mismatch",
-          "VEMMachineUI startup command must run as the VEMKiosk user.",
-        );
-      }
-      if (machineUiStartupCommand.command !== EXPECTED_MACHINE_UI_COMMAND) {
-        addDiagnostic(
-          "machine_ui_startup_command_path_mismatch",
-          "VEMMachineUI startup command must use the production wscript launcher path.",
-        );
-      }
-      if (
-        !machineUiStartupCommand.arguments?.includes(
-          EXPECTED_MACHINE_UI_LAUNCHER,
-        )
-      ) {
-        addDiagnostic(
-          "machine_ui_startup_arguments_mismatch",
-          "VEMMachineUI startup arguments must point at the production machine UI launcher.",
-        );
-      }
-      if (
-        machineUiStartupCommand.workingDirectory !==
-        EXPECTED_MACHINE_UI_WORKING_DIRECTORY
-      ) {
-        addDiagnostic(
-          "machine_ui_startup_working_directory_mismatch",
-          "VEMMachineUI startup working directory must be the production bring-up directory.",
-        );
-      }
-    }
   }
   if (!facts.provisioning.provisioned) {
     addDiagnostic(
@@ -368,7 +226,7 @@ export function classifyRuntimeAcceptanceReport(
       "Machine Provisioning must complete before runtime-ready can pass.",
     );
   }
-  if (!facts.provisioning.usedDaemonIpcClaimPath) {
+  if (!facts.provisioning.usedDaemonIpcTaskExecute) {
     addDiagnostic(
       "machine_provisioning_bypassed_daemon_ipc",
       "Machine Provisioning must use the daemon IPC claim path.",

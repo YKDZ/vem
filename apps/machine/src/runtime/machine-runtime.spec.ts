@@ -279,7 +279,9 @@ describe("Machine runtime coordinator", () => {
     presenceRuntime = createApp(
       defineComponent({
         setup() {
-          installPresenceDepartureNavigation();
+          installPresenceDepartureNavigation({
+            visionDepartureHysteresisMs: 0,
+          });
           return () => null;
         },
       }),

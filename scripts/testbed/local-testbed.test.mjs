@@ -1240,7 +1240,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile --trust-lockfile[\s\S]*New-Item -ItemType File -Force -Path \$pnpmFetchCompletePath/,
+      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile --trust-lockfile[\s\S]*Set-Content -LiteralPath \$pnpmFetchCompletePath/,
     );
     assert.match(
       guest,
@@ -1277,6 +1277,44 @@ describe("Windows D cache contract", () => {
     );
   });
 
+  it("keeps fast runs on the build/deploy path without replacing claimed state", () => {
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    const fast = guest.indexOf('if ($Mode -eq "fast")');
+    const dependencies = guest.indexOf('Write-TestbedPhase "dependencies"');
+    const machineBuild = guest.indexOf('Write-TestbedPhase "machine-build"');
+    const deploy = guest.indexOf('Write-TestbedPhase "deploy-runtime"');
+    const acceptance = guest.indexOf('Write-TestbedPhase "acceptance-tracks"');
+    assert.ok(fast >= 0 && fast < dependencies && dependencies < machineBuild);
+    assert.doesNotMatch(guest.slice(fast, dependencies), /exit 0/);
+    assert.ok(machineBuild < deploy && deploy < acceptance);
+    assert.match(
+      guest,
+      /if \(\$Mode -eq "full"\) \{\s+\$guestInput\.runtimeBootstrap[\s\S]*Set-Content -LiteralPath \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"/,
+    );
+    assert.match(
+      guest,
+      /if \(\$Mode -eq "fast"\) \{[\s\S]*existingHandoff[\s\S]*claim\.status -ne "provisioned"[\s\S]*Require-Path \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"\)/,
+    );
+    assert.match(
+      guest,
+      /if \(\$Mode -eq "full"\) \{[\s\S]*Invoke-Claim \$guestInput/,
+    );
+    assert.match(
+      guest,
+      /if \(\$Mode -eq "full"\) \{[\s\S]*Start-TestbedCommissioningSerialSession \$guestInput[\s\S]*Stop-TestbedScannerBindingProbe/,
+    );
+    assert.match(guest, /Write-TestbedPhase "restart-warm-runtime"/);
+    assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$daemonDataRoot/);
+    assert.match(
+      guest,
+      /Get-CanonicalProcessEvidence "machine\.exe" \$machinePath/,
+    );
+    assert.match(guest, /Get-CdpProcessBinding \$machineEvidence\.processId/);
+  });
+
   it("installs the real Vision artifact and runs the independent try-on acceptance only in full mode", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
@@ -1306,12 +1344,9 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /delayed-pickup-native-audio\.json/);
     assert.match(guest, /scanner-payment-code\.json/);
     assert.match(guest, /full-workflow-tracks\.json/);
-    assert.match(orchestrator, /installed-ipc-recovery-guest-full\.mjs/);
-    assert.match(orchestrator, /serial-fulfillment-error-guest-full\.mjs/);
-    assert.match(
-      orchestrator,
-      /scanner-payment-code-guest-full\.mjs[\s\S]*"--mode",[\s\S]*"full"/,
-    );
+    assert.match(orchestrator, /business-check-registry\.mjs/);
+    assert.match(orchestrator, /selectBusinessChecks/);
+    assert.match(orchestrator, /runner\.script[\s\S]*runner\.args/);
     assert.match(
       guest,
       /if \(\$Mode -eq "full"\) \{\s+Write-RecordedVisionSiteConfiguration/,
@@ -1327,7 +1362,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /\$workflowFailure = \$null/);
     assert.match(guest, /\$bundleFailure = \$null/);
     const orchestratorStart = guest.indexOf(
-      "node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath",
+      "node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --commit $Commit @focusArguments --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath",
     );
     const bundleSection = guest.indexOf(
       'if ($Mode -ne "clear_cache")',

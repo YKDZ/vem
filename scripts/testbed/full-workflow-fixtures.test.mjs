@@ -20,7 +20,7 @@ describe("full workflow fixture allocation", () => {
       ["A1", "A2", "A3", "A4", "A5", "B1"],
     );
     assert.equal(
-      catalogProductSelectorForFixture(allocation, "scanner"),
+      catalogProductSelectorForFixture(allocation, "scannerPayment"),
       '[data-test="catalog-product"][data-slot-code="A2"]',
     );
   });

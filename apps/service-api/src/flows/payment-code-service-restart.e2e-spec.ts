@@ -93,11 +93,6 @@ async function startService(responseDelayMs: number): Promise<ServiceProcess> {
       MQTT_URL: "mqtt://127.0.0.1:9",
       MACHINE_MQTT_URL: "mqtt://127.0.0.1:9",
       MACHINE_PROVISIONING_PROFILE: "testbed",
-      MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
-      MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
-      MAINTENANCE_RELAY_PUBLIC_KEY:
-        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
       PAYMENT_MOCK_ENABLED: "true",
       PAYMENT_MOCK_PROVIDER_RESPONSE_DELAY_MS: String(responseDelayMs),
       PAYMENT_WEBHOOK_BASE_URL: `http://127.0.0.1:${port}/api/payments/webhooks`,

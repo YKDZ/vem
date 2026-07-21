@@ -31,6 +31,26 @@ pub struct DispenseResultPayload {
     pub error_code: Option<String>,
     pub message: String,
     pub reported_at: String,
+    /// Internal protocol classification. The externally published error code stays stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_controller_fault: Option<LowerControllerFault>,
+}
+
+/// A lower-controller fault that explicitly identifies shared hardware.
+///
+/// Transport failures and command timeouts deliberately do not appear here: they
+/// are current readiness evidence rather than a persistent maintenance lock.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LowerControllerFault {
+    SharedMechanical,
+    PickupPlatformBlocked,
+}
+
+impl LowerControllerFault {
+    pub const fn requires_whole_machine_lock(self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +113,9 @@ pub struct HardwareStatus {
     pub bound_usb_identity: Option<SerialPortUsbIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<LowerControllerDiscoveryCandidate>,
+    /// Internal classification of an explicit lower-controller status fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_controller_fault: Option<LowerControllerFault>,
 }
 
 #[async_trait]
@@ -145,6 +168,7 @@ impl HardwareAdapter for MockHardwareAdapter {
             resolution_source: Some("mock".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
+            lower_controller_fault: None,
         }
     }
 
@@ -174,6 +198,7 @@ impl HardwareAdapter for MockHardwareAdapter {
             error_code: None,
             message: "mock: dispense succeeded".to_string(),
             reported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            lower_controller_fault: None,
         }
     }
 }

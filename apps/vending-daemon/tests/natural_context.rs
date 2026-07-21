@@ -10,8 +10,8 @@ fn configured_daemon(api_base_url: String) -> serde_json::Value {
         "machineCode": "MACHINE-NATURAL",
         "apiBaseUrl": api_base_url,
         "mqttUrl": "mqtt://127.0.0.1:1883",
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" }
     })
 }
 

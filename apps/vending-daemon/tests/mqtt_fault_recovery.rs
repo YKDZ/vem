@@ -23,8 +23,8 @@ fn mqtt_config(mqtt_url: String) -> serde_json::Value {
         "machineCode": "MACHINE-MQTT",
         "apiBaseUrl": "http://127.0.0.1:9/api",
         "mqttUrl": mqtt_url,
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" }
     })
 }
 
@@ -334,6 +334,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
         error_code: None,
         message: "seeded before restart".to_string(),
         reported_at: vending_daemon::state::store::now_iso(),
+        lower_controller_fault: None,
     };
     let mut event =
         vending_daemon::state::store::OutboxInput::dispense_result("MACHINE-MQTT", &result);

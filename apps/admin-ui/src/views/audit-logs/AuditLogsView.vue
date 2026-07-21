@@ -105,7 +105,7 @@ onMounted(() => void loadAuditLogs());
       v-model:open="detailOpen"
       title="审计详情"
       :footer="null"
-      width="700"
+      size="700"
     >
       <template v-if="detailLog">
         <a-descriptions :column="1" bordered size="small">

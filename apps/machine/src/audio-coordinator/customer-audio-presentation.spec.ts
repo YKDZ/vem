@@ -42,7 +42,7 @@ describe("customer journey audio presentation", () => {
     ["presence.welcome", "interaction/awakened.mp3", 30],
     ["privacy.crowd_detected", "privacy/crowd_detected.mp3", 80],
     ["presence.departed", "departure/normal_weather/sunny.mp3", 60],
-    ["product.selected", "interaction/product_selected.mp3", 35],
+    ["category.entered", "interaction/product_selected.mp3", 35],
     ["payment.prompt", "payment/prompt.mp3", 35],
     ["payment.succeeded", "payment/succeeded.mp3", 40],
     ["payment.failed", "payment/failed.mp3", 90],
@@ -158,18 +158,27 @@ describe("customer journey audio presentation", () => {
     ["袜子", "product/socks.mp3"],
     ["其他", "interaction/product_selected.mp3"],
   ])(
-    "uses the category variant for %s without changing product transition identity",
+    "uses the category variant for %s without changing category entry identity",
     (category, path) => {
-      const selected = transition("product.selected", {
-        transitionId: "product:selection-1",
+      const selected = transition("category.entered", {
+        transitionId: "category:entry-1",
         productCategory: category,
       });
       expect(
         mapCustomerJourneyAudioPresentation(selected, defaultContext),
       ).toMatchObject({ sourceUrl: `${VOICE_BASE_PATH}/${path}` });
-      expect(selected.transitionId).toBe("product:selection-1");
+      expect(selected.transitionId).toBe("category:entry-1");
     },
   );
+
+  it("does not defer a category introduction to product detail selection", () => {
+    expect(
+      mapCustomerJourneyAudioPresentation(
+        transition("product.selected", { productCategory: "袜子" }),
+        defaultContext,
+      ),
+    ).toBeNull();
+  });
 
   it.each([
     [null, [], "departure/normal_weather/sunny.mp3"],

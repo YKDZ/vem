@@ -10,9 +10,8 @@ const PROTECTED_PAGES = [
   { path: "/inventory", label: "库存管理" },
   { path: "/orders", label: "订单管理" },
   { path: "/payments", label: "支付管理" },
+  { path: "/system-settings", label: "系统配置" },
   { path: "/notifications", label: "通知中心" },
-  { path: "/admin-users", label: "后台用户" },
-  { path: "/roles", label: "角色权限" },
   { path: "/audit-logs", label: "系统审计" },
 ];
 
@@ -39,18 +38,42 @@ test.describe("admin-smoke", () => {
       await expect(page).toHaveURL(/\/dashboard/, { timeout: 10_000 });
     });
 
-    for (const { path, label } of PROTECTED_PAGES) {
-      test(`${label} (${path}) loads without 5xx error`, async ({ page }) => {
-        await page.goto(path);
-        // Wait for the authenticated layout sidebar — rendered without API calls.
-        // This confirms the route mounted and auth guard passed.
-        await expect(page.locator(".ant-layout-sider")).toBeVisible({
+    test("every visible sidebar destination settles without browser or API failures", async ({
+      page,
+    }) => {
+      const failures: string[] = [];
+      page.on("pageerror", (error) => failures.push(`page: ${error.message}`));
+      page.on("console", (message) => {
+        if (message.type() === "error") {
+          failures.push(`console: ${message.text()}`);
+        }
+      });
+      page.on("requestfailed", (request) => {
+        failures.push(
+          `request: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
+        );
+      });
+      page.on("response", (response) => {
+        if (response.url().includes("/api/") && response.status() >= 400) {
+          failures.push(`response: ${response.status()} ${response.url()}`);
+        }
+      });
+
+      const sidebar = page.locator(".ant-layout-sider");
+      await expect(sidebar).toBeVisible({ timeout: 10_000 });
+      /* eslint-disable no-await-in-loop -- each navigation must settle before the next click */
+      for (const { path, label } of PROTECTED_PAGES) {
+        await sidebar.getByText(label, { exact: true }).click();
+        await expect(page).toHaveURL(new RegExp(`${path}$`), {
           timeout: 10_000,
         });
-        const bodyText = await page.locator("body").innerText();
-        expect(bodyText).not.toContain("Internal Server Error");
-      });
-    }
+        await expect(sidebar).toBeVisible();
+        await page.waitForTimeout(250);
+      }
+      /* eslint-enable no-await-in-loop */
+
+      expect(failures).toEqual([]);
+    });
 
     test("creates a product", async ({ page }) => {
       await page.goto("/products");

@@ -5,6 +5,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { BUSINESS_CHECK_REGISTRY } from "./business-check-registry.mjs";
+
 const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\pnpm-store",
   "D:\\runtime-cache\\v1\\pnpm-virtual-store",
@@ -15,14 +17,11 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\vision-main",
   "D:\\runtime-cache\\v1\\powershell",
 ]);
-const REQUIRED_EXECUTION_ORDER = Object.freeze([
-  "fast",
-  "scanner",
-  "visionTryOn",
-  "fulfillmentFailure",
-  "delayedPickup",
-  "ipcRecovery",
-]);
+const REQUIRED_EXECUTION_ORDER = Object.freeze(
+  BUSINESS_CHECK_REGISTRY.filter((descriptor) => descriptor.fullRequired).map(
+    (descriptor) => descriptor.name,
+  ),
+);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -40,7 +39,7 @@ function option(args, name) {
 function loadReport(path, label) {
   try {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    if (value?.schemaVersion !== "vem-local-testbed-full-workflow/v3") {
+    if (value?.schemaVersion !== "vem-local-testbed-full-workflow/v4") {
       throw new Error("unexpected schema version");
     }
     return value;
@@ -64,28 +63,17 @@ export function buildStabilityGateReport({
 } = {}) {
   const passA = loadReport(passAPath, "passA");
   const passB = loadReport(passBPath, "passB");
-  const tracks = [
-    "standardSale",
-    "ipcRecovery",
-    "fulfillmentFailure",
-    "audio",
-    "scanner",
-    "vision",
-    "tryOn",
-    "evidence",
-    "error",
-  ];
   const gateFailures = [];
   if (passA.mode !== "full" || passB.mode !== "full") {
     gateFailures.push("stability gate requires two full workflow passes");
   }
   if (passA.ok !== true) gateFailures.push("pass A did not pass");
   if (passB.ok !== true) gateFailures.push("pass B did not pass");
-  for (const key of tracks) {
-    if (passA.tracks?.[key]?.status !== "passed") {
+  for (const key of REQUIRED_EXECUTION_ORDER) {
+    if (passA.businessSets?.[key]?.status !== "passed") {
       gateFailures.push(`pass A ${key} status is not passed`);
     }
-    if (passB.tracks?.[key]?.status !== "passed") {
+    if (passB.businessSets?.[key]?.status !== "passed") {
       gateFailures.push(`pass B ${key} status is not passed`);
     }
   }
@@ -133,23 +121,21 @@ export function buildStabilityGateReport({
       );
     }
     if (
-      JSON.stringify(
-        passA.execution?.executedTracks?.map((track) => track.key),
-      ) !== JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
+      JSON.stringify(passA.execution?.selectedBusinessSets) !==
+        JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passA"
     ) {
       gateFailures.push(
-        "pass A execution order is not fast -> scanner -> Vision -> fulfillment failure -> delayed audio -> IPC recovery",
+        "pass A execution order does not match the business-set registry",
       );
     }
     if (
-      JSON.stringify(
-        passB.execution?.executedTracks?.map((track) => track.key),
-      ) !== JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
+      JSON.stringify(passB.execution?.selectedBusinessSets) !==
+        JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passB"
     ) {
       gateFailures.push(
-        "pass B execution order is not fast -> scanner -> Vision -> fulfillment failure -> delayed audio -> IPC recovery",
+        "pass B execution order does not match the business-set registry",
       );
     }
   }

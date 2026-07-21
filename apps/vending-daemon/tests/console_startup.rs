@@ -6,8 +6,8 @@ fn unclaimed_bootstrap_fixture() -> serde_json::Value {
     serde_json::json!({
         "machineCode": null,
         "apiBaseUrl": "http://127.0.0.1:9/api",
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" }
     })
 }
 

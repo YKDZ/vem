@@ -41,11 +41,6 @@ function configureRuntimeEnvironment(database: string): void {
     MQTT_URL: "mqtt://127.0.0.1:9",
     MACHINE_MQTT_URL: "mqtt://127.0.0.1:9",
     MACHINE_PROVISIONING_PROFILE: "testbed",
-    MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
-    MAINTENANCE_RELAY_ENDPOINT: "127.0.0.1:51820",
-    MAINTENANCE_RELAY_PUBLIC_KEY:
-      "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-    MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
     PAYMENT_MOCK_ENABLED: "true",
     PAYMENT_WEBHOOK_BASE_URL: "http://127.0.0.1:3000/api/payments/webhooks",
     MACHINE_API_BASE_URL: "http://127.0.0.1:3000/api",

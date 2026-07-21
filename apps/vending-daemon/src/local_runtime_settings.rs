@@ -6,7 +6,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use tokio::{fs, sync::Mutex};
 
-use crate::device_binding::{LocalDeviceRole, LocalSerialRoleBinding};
+use crate::device_binding::{HardwareModelRoleError, LocalDeviceRole, LocalSerialRoleBinding};
 use crate::runtime_configuration::{remove_optional_file, write_atomic_bytes};
 
 /// Daemon-owned settings that may survive a Windows re-enumeration. Device
@@ -33,22 +33,22 @@ pub fn effective_scanner_protocol(
     settings: &LocalRuntimeSettings,
     hardware_model: &str,
     topology_identity: &str,
-) -> ScannerProtocolParameters {
-    settings.scanner_protocol.clone().unwrap_or_else(|| {
-        // Deployment bootstrap owns the model/topology selection. Keeping the
-        // fallback explicit prevents a local override clear from silently
-        // turning into a machine-independent serial setting.
-        match (hardware_model, topology_identity) {
-            ("vem-prod-24", "vem-prod-24") => ScannerProtocolParameters {
-                baud_rate: 9_600,
-                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
-            },
-            _ => ScannerProtocolParameters {
-                baud_rate: 9_600,
-                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
-            },
+) -> Result<ScannerProtocolParameters, HardwareModelRoleError> {
+    match (hardware_model, topology_identity) {
+        ("vem-prod-24", "vem-prod-24") => {
+            Ok(settings
+                .scanner_protocol
+                .clone()
+                .unwrap_or(ScannerProtocolParameters {
+                    baud_rate: 9_600,
+                    frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+                }))
         }
-    })
+        _ => Err(HardwareModelRoleError::unsupported(
+            hardware_model,
+            topology_identity,
+        )),
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -355,21 +355,24 @@ mod tests {
     }
 
     #[test]
-    fn scanner_protocol_defaults_follow_deployment_model_and_topology_with_a_safe_fallback() {
+    fn scanner_protocol_is_fixed_by_the_supported_production_model() {
         let settings = LocalRuntimeSettings::default();
-        let production = effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24");
-        let fallback = effective_scanner_protocol(&settings, "unknown-model", "unknown-topology");
+        let production = effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24")
+            .expect("known production model");
+        let unsupported =
+            effective_scanner_protocol(&settings, "unknown-model", "unknown-topology")
+                .expect_err("unknown model must not inherit scanner transport");
 
         assert_eq!(production.baud_rate, 9_600);
         assert_eq!(
             production.frame_suffix,
             vending_core::scanner::ScannerFrameSuffix::Crlf
         );
-        assert_eq!(fallback, production);
+        assert_eq!(unsupported.code(), "HARDWARE_MODEL_UNSUPPORTED");
     }
 
     #[test]
-    fn scanner_protocol_local_override_takes_precedence_over_deployment_defaults() {
+    fn scanner_protocol_local_override_changes_the_effective_transport() {
         let settings = LocalRuntimeSettings {
             scanner_protocol: Some(ScannerProtocolParameters {
                 baud_rate: 115_200,
@@ -379,8 +382,12 @@ mod tests {
         };
 
         assert_eq!(
-            effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24"),
-            settings.scanner_protocol.expect("override")
+            effective_scanner_protocol(&settings, "vem-prod-24", "vem-prod-24")
+                .expect("known production model"),
+            ScannerProtocolParameters {
+                baud_rate: 115_200,
+                frame_suffix: vending_core::scanner::ScannerFrameSuffix::Lf,
+            }
         );
     }
 }

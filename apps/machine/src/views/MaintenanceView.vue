@@ -526,9 +526,7 @@ const hardwareMaintenance = reactive({
 });
 
 const manualDispenseDiagnostic = reactive({
-  slotCode: "A1",
-  layerNo: 1,
-  cellNo: 1,
+  slotCode: "",
   loading: false,
   message: null as string | null,
 });
@@ -536,12 +534,19 @@ const manualDispenseDiagnostic = reactive({
 const MANUAL_DISPENSE_REQUEST_STORAGE_KEY =
   "vem.maintenance.manual-dispense-request.v1";
 
+const selectedManualDispenseSlot = computed(() =>
+  stockMaintenance.task?.slots.find(
+    (slot) => slot.slotCode === manualDispenseDiagnostic.slotCode,
+  ),
+);
+
 function manualDispenseRequestFingerprint(): string {
+  const slot = selectedManualDispenseSlot.value;
   return JSON.stringify({
-    cellNo: manualDispenseDiagnostic.cellNo,
-    layerNo: manualDispenseDiagnostic.layerNo,
+    cellNo: slot?.cellNo ?? null,
+    layerNo: slot?.layerNo ?? null,
     quantity: 1,
-    slotCode: manualDispenseDiagnostic.slotCode.trim(),
+    slotCode: slot?.slotCode ?? null,
     timeoutSeconds: 30,
   });
 }
@@ -591,14 +596,17 @@ function startNewManualDispenseDiagnostic(): void {
 }
 
 async function runManualDispenseDiagnostic(): Promise<void> {
+  const slot = selectedManualDispenseSlot.value;
+  if (!slot) {
+    manualDispenseDiagnostic.message = "请先从当前库存维护任务中选择一个货道。";
+    return;
+  }
   manualDispenseDiagnostic.loading = true;
   manualDispenseDiagnostic.message = null;
   try {
     const result = await daemonClient.runManualDispenseDiagnostic({
       idempotencyKey: currentManualDispenseIdempotencyKey(),
-      slotCode: manualDispenseDiagnostic.slotCode.trim(),
-      layerNo: manualDispenseDiagnostic.layerNo,
-      cellNo: manualDispenseDiagnostic.cellNo,
+      slotCode: slot.slotCode,
       quantity: 1,
       timeoutSeconds: 30,
     });
@@ -1142,6 +1150,11 @@ function applyStockMaintenanceTask(task: StockMaintenanceTask): void {
   );
   stockMaintenance.task = task;
   stockMaintenance.values = values;
+  manualDispenseDiagnostic.slotCode = task.slots.some(
+    (slot) => slot.slotCode === manualDispenseDiagnostic.slotCode,
+  )
+    ? manualDispenseDiagnostic.slotCode
+    : (task.slots[0]?.slotCode ?? "");
 }
 
 async function refreshStockMaintenanceView(): Promise<void> {
@@ -1479,44 +1492,48 @@ async function submitStockMaintenanceTask(): Promise<void> {
             </div>
           </div>
           <form
-            class="mt-4 grid gap-3 md:grid-cols-4"
+            class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]"
             @submit.prevent="runManualDispenseDiagnostic"
           >
             <label class="grid gap-1 text-left text-sm text-slate-200">
               货道
-              <input
-                v-model.trim="manualDispenseDiagnostic.slotCode"
+              <select
+                v-model="manualDispenseDiagnostic.slotCode"
                 class="rounded-xl bg-slate-950/60 p-3"
-                maxlength="32"
+                :disabled="
+                  manualDispenseDiagnostic.loading ||
+                  !stockMaintenance.task?.slots.length
+                "
                 required
-              />
-            </label>
-            <label class="grid gap-1 text-left text-sm text-slate-200">
-              层
-              <input
-                v-model.number="manualDispenseDiagnostic.layerNo"
-                class="rounded-xl bg-slate-950/60 p-3"
-                type="number"
-                min="1"
-                max="255"
-                required
-              />
-            </label>
-            <label class="grid gap-1 text-left text-sm text-slate-200">
-              格
-              <input
-                v-model.number="manualDispenseDiagnostic.cellNo"
-                class="rounded-xl bg-slate-950/60 p-3"
-                type="number"
-                min="1"
-                max="255"
-                required
-              />
+              >
+                <option disabled value="">请选择库存任务货道</option>
+                <option
+                  v-for="slot in stockMaintenance.task?.slots ?? []"
+                  :key="slot.slotCode"
+                  :value="slot.slotCode"
+                >
+                  {{ slot.slotCode }} ·
+                  {{ formatMachineSlotCoordinate(slot) }} ·
+                  {{ slot.productName }}
+                </option>
+              </select>
+              <span
+                v-if="selectedManualDispenseSlot"
+                class="text-xs text-slate-400"
+              >
+                {{ formatMachineSlotCoordinate(selectedManualDispenseSlot) }} ·
+                {{ selectedManualDispenseSlot.productName }}
+              </span>
+              <span v-else class="text-xs text-amber-200">
+                当前库存维护任务没有可诊断的货道。
+              </span>
             </label>
             <button
               class="kiosk-touch-target self-end rounded-xl bg-amber-200 px-4 py-3 font-bold text-slate-950 disabled:opacity-40"
               type="submit"
-              :disabled="manualDispenseDiagnostic.loading"
+              :disabled="
+                manualDispenseDiagnostic.loading || !selectedManualDispenseSlot
+              "
             >
               {{ manualDispenseDiagnostic.loading ? "执行中" : "出货一件" }}
             </button>

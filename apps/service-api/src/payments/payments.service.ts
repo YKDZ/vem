@@ -375,9 +375,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         method: payments.method,
         status: payments.status,
         amountCents: payments.amountCents,
-        isDrill: payments.isDrill,
-        isTest: payments.isDrill,
-        scenario: payments.drillScenario,
         paymentUrl: payments.paymentUrl,
         expiresAt: payments.expiresAt,
         paidAt: payments.paidAt,
@@ -881,12 +878,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               paymentId: payments.id,
               paymentStatus: payments.status,
               paymentExpiresAt: payments.expiresAt,
-              paymentIsDrill: payments.isDrill,
               orderId: orders.id,
               orderStatus: orders.status,
               paymentState: orders.paymentState,
               fulfillmentState: orders.fulfillmentState,
-              orderIsDrill: orders.isDrill,
             })
             .from(payments)
             .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -898,8 +893,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             );
           if (
             !current ||
-            current.paymentIsDrill ||
-            current.orderIsDrill ||
             !canApplyProviderTerminalStatus(current.paymentStatus) ||
             isPaymentIncidentLocked(current) ||
             !current.paymentExpiresAt ||
@@ -2321,7 +2314,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
-        isDrill: payments.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2330,8 +2322,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         and(
           inArray(payments.status, ["pending", "processing"]),
           sql`${payments.method} <> 'payment_code'`,
-          eq(payments.isDrill, false),
-          eq(orders.isDrill, false),
           or(
             isNull(payments.intentCreationLeaseExpiresAt),
             lt(payments.intentCreationLeaseExpiresAt, now),
@@ -2354,7 +2344,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await Promise.all(
       pendingPayments.map(async (payment) => {
         try {
-          if (payment.isDrill || payment.method === "payment_code") return;
+          if (payment.method === "payment_code") return;
           if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
 
           // Count previous scheduled attempts for backoff
@@ -2583,8 +2573,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
         intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
-        isDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2626,14 +2614,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
-      };
-    }
-
-    if (payment.isDrill || payment.orderIsDrill) {
-      return {
-        status: payment.status,
-        reconciled: false,
-        reason: "protected_payment_drill",
       };
     }
 
@@ -3247,8 +3227,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           paymentState: orders.paymentState,
           fulfillmentState: orders.fulfillmentState,
           paymentMethod: payments.method,
-          isDrill: payments.isDrill,
-          orderIsDrill: orders.isDrill,
           intentCreationLeaseOwnerToken: payments.intentCreationLeaseOwnerToken,
           intentCreationLeaseExpiresAt: payments.intentCreationLeaseExpiresAt,
           intentCreationLeaseFence: payments.intentCreationLeaseFence,
@@ -3257,7 +3235,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .innerJoin(orders, eq(orders.id, payments.orderId))
         .where(eq(payments.id, paymentId));
       if (!r) return { outcome: "stale" };
-      if (r.isDrill || r.orderIsDrill) return { outcome: "stale" };
       if (paymentCodeAttempt) {
         const [attempt] = await tx
           .select({
@@ -3659,9 +3636,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: paymentProviders.code,
         status: refunds.status,
         amountCents: refunds.amountCents,
-        isDrill: refunds.isDrill,
-        isTest: refunds.isDrill,
-        scenario: refunds.drillScenario,
         reason: refunds.reason,
         providerRefundNo: refunds.providerRefundNo,
         refundedAt: refunds.refundedAt,
@@ -4038,8 +4012,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         orderStatus: orders.status,
         machineId: orders.machineId,
-        isDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -4047,16 +4019,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(payments.id, paymentId))
       .limit(1);
     if (!payment) throw new NotFoundException("Payment not found");
-
-    if (payment.isDrill || payment.orderIsDrill) {
-      return this.toIncidentActionResponse({
-        action: "close_or_reverse_uncertain_payment",
-        status: payment.paymentStatus,
-        handled: false,
-        message: "演练订单不能执行真实渠道关闭",
-        protectedDiagnostics: { paymentNo: payment.paymentNo },
-      });
-    }
 
     if (
       !["created", "pending", "processing", "unknown"].includes(
@@ -4391,8 +4353,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
         providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
-        isDrill: payments.isDrill,
-        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -4445,23 +4405,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
-      };
-    }
-
-    if (payment.isDrill || payment.orderIsDrill) {
-      await this.recordManualReconcileAudit({
-        adminUserId,
-        operatorReason: reason,
-        paymentId: payment.id,
-        paymentNo: payment.paymentNo,
-        providerStatus: payment.status,
-        applied: false,
-        outcome: "protected_payment_drill",
-      });
-      return {
-        status: payment.status,
-        reconciled: false,
-        reason: "protected_payment_drill",
       };
     }
 

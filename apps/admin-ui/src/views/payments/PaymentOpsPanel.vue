@@ -265,7 +265,9 @@ onMounted(() => {
       :type="readinessColor"
       show-icon
       :message="
-        readiness.status === 'ready' ? '支付上线门禁通过' : '支付上线门禁阻塞'
+        readiness.status === 'ready'
+          ? '支付运营诊断正常'
+          : '支付运营诊断存在异常'
       "
       :description="`环境：${readinessEnvironmentLabel}，检查时间：${formatDateTime(readiness.checkedAt)}`"
     />

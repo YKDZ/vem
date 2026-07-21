@@ -706,85 +706,10 @@ describe("MachineDetailView", () => {
     expect(root.textContent).not.toContain("硬件ok");
   });
 
-  it("renders a distinct ready production pilot diagnostic gate summary for daily inspection", async () => {
-    apiMocks.getMachine.mockResolvedValue({
-      ...machineFixture(),
-      productionPilotReadiness: {
-        status: "ready",
-        checkedAt: "2026-06-27T02:00:00.000Z",
-        blockers: [],
-        degraded: [],
-        checks: [
-          {
-            kind: "machine_heartbeat",
-            reasonCode: "online",
-            status: "ready",
-            actionCode: "continue_daily_inspection",
-            evidence: {
-              machineStatus: "online",
-              heartbeatAgeSeconds: 0,
-              timeoutSeconds: 120,
-              latestHeartbeatReportedAt: "2026-06-27T02:00:00.000Z",
-              lastSeenAt: "2026-06-27T02:00:00.000Z",
-            },
-          },
-          {
-            kind: "payment_readiness",
-            reasonCode: "ready",
-            status: "ready",
-            actionCode: "continue_daily_inspection",
-            evidence: {
-              productionProviderCount: 1,
-            },
-          },
-        ],
-      },
-    });
-
-    const { root } = await mountView();
-
-    expect(root.textContent).toContain("生产试运营诊断门禁");
-    expect(root.textContent).toContain("生产试运营就绪");
-    expect(root.textContent).toContain("在线与心跳");
-    expect(root.textContent).toContain("真实支付就绪");
-    expect(root.textContent).toContain("机器在线，心跳仍在有效窗口内。");
-    expect(root.textContent).toContain("继续日常巡检。");
-    expect(root.textContent).not.toContain("Production Pilot Readiness");
-    expect(root.textContent).not.toContain("Machine Sale Readiness");
-    expect(root.textContent).not.toContain("Continue daily inspection.");
-  });
-
   it("renders Natural Context Readiness as degraded when External Natural Environment is unconfigured", async () => {
     apiMocks.getMachine.mockResolvedValue({
       ...machineFixture(),
       geoLocation: null,
-      productionPilotReadiness: {
-        status: "degraded",
-        checkedAt: "2026-06-30T14:00:00.000Z",
-        blockers: [],
-        degraded: [
-          {
-            kind: "natural_context_readiness",
-            reasonCode: "unconfigured",
-            status: "degraded",
-            actionCode: "configure_machine_geo_location",
-            evidence: {
-              externalNaturalEnvironmentStatus: "unconfigured",
-            },
-          },
-        ],
-        checks: [
-          {
-            kind: "natural_context_readiness",
-            reasonCode: "unconfigured",
-            status: "degraded",
-            actionCode: "configure_machine_geo_location",
-            evidence: {
-              externalNaturalEnvironmentStatus: "unconfigured",
-            },
-          },
-        ],
-      },
     });
     apiMocks.getExternalNaturalEnvironment.mockResolvedValue({
       machineId: "11111111-1111-4111-8111-111111111111",
@@ -803,17 +728,6 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain(
       "machine_geo_location_missing: 机器未配置地理坐标",
     );
-    expect(root.textContent).toContain("生产试运营诊断门禁");
-    expect(root.textContent).toContain("生产试运营降级");
-    expect(root.textContent).toContain("降级 1");
-    expect(root.textContent).toContain("自然上下文就绪");
-    expect(root.textContent).toContain(
-      "natural_context_readiness.unconfigured",
-    );
-    expect(root.textContent).toContain(
-      "机器尚未配置地理坐标，无法获取外部自然环境。",
-    );
-    expect(root.textContent).not.toContain("Natural Context Readiness");
     expect(root.textContent).not.toContain("Machine Geo Location is missing");
   });
 

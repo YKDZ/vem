@@ -4,18 +4,24 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_INVENTORY = [
+export const DEFAULT_INVENTORY = [
   ...[
     "delayed-pickup-native-audio-guest-full.mjs",
     "daemon-ready-refresh.mjs",
+    "business-check-registry.mjs",
+    "commissioning-acceptance.mjs",
     "full-workflow-fixtures.mjs",
     "full-workflow-evidence-manifest.mjs",
     "full-workflow-orchestrator.mjs",
     "full-workflow-stability-gate.mjs",
     "full-workflow-validator.mjs",
+    "hardware-lifecycle-guest-full.mjs",
     "installed-ipc-recovery-guest-full.mjs",
     "installed-system-touch-keyboard.mjs",
+    "environment-control-guest-full.mjs",
     "mock-payment-create-gate.mjs",
+    "payment-recovery-guest-full.mjs",
+    "local-operations-guest-full.mjs",
     "scanner-payment-code-guest-full.mjs",
     "serial-fulfillment-error-guest-full.mjs",
     "track-handoff-recovery.mjs",
@@ -28,11 +34,15 @@ const DEFAULT_INVENTORY = [
   })),
   ...[
     "ensure-testbed-pwsh.test.mjs",
+    "business-check-registry.test.mjs",
+    "commissioning-acceptance.test.mjs",
     "daemon-ready-refresh.test.mjs",
     "full-workflow-evidence-manifest.test.mjs",
     "full-workflow-fixtures.test.mjs",
     "full-workflow-orchestrator.test.mjs",
     "full-workflow-validator.test.mjs",
+    "payment-recovery-guest-full.test.mjs",
+    "local-operations-guest-full.test.mjs",
     "installed-system-touch-keyboard.test.mjs",
     "run-full-vision-try-on-track.test.mjs",
     "scanner-payment-code-guest-full.test.mjs",
@@ -132,6 +142,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance"],
   },
   {
+    path: "scripts/testbed/machine-ui-screenshot-scenarios.mjs",
+    owner: "machine-runtime-console",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/testbed/machine-ui-screenshot-scenarios.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
     path: "scripts/testbed/host-serial-control-plane.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
@@ -171,13 +193,25 @@ const DEFAULT_INVENTORY = [
     path: "scripts/testbed/installed-kiosk-sale-acceptance.mjs",
     owner: "machine-runtime-console",
     category: "test support operation",
-    workflows: ["factory preparation"],
+    workflows: ["runtime acceptance"],
   },
   {
     path: "scripts/testbed/installed-kiosk-sale-acceptance.test.mjs",
     owner: "machine-runtime-console",
     category: "verifier-test guard",
-    workflows: ["factory preparation"],
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/publish-backend-images.mjs",
+    owner: "backend-operations",
+    category: "canonical entrypoint",
+    workflows: ["backend deployment"],
+  },
+  {
+    path: "scripts/deploy-backend-stack.mjs",
+    owner: "backend-operations",
+    category: "canonical entrypoint",
+    workflows: ["backend deployment"],
   },
   {
     path: "scripts/check-machine-customer-payment-copy.mjs",
@@ -192,16 +226,10 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance"],
   },
   {
-    path: "scripts/factory/payment-secret-boundary.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
     path: "scripts/security/platform-private-key-scanner.mjs",
     owner: "platform-security",
     category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
+    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/check-admin-api-contracts.mjs",
@@ -214,24 +242,6 @@ const DEFAULT_INVENTORY = [
     owner: "shared-contracts",
     category: "verifier-test guard",
     workflows: ["admin api contract migration"],
-  },
-  {
-    path: "scripts/check-admin-contract-e2e-ci.mjs",
-    owner: "shared-contracts",
-    category: "verifier-test guard",
-    workflows: ["admin api contract migration"],
-  },
-  {
-    path: "scripts/check-admin-contract-e2e-ci.test.mjs",
-    owner: "shared-contracts",
-    category: "verifier-test guard",
-    workflows: ["admin api contract migration"],
-  },
-  {
-    path: "scripts/check-machine-e2e-ci.test.mjs",
-    owner: "machine-runtime-console",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance"],
   },
   {
     path: "scripts/check-effective-config-hard-migration.mjs",
@@ -252,221 +262,16 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/check-factory-runtime-prep.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/check-factory-manifest.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/check-factory-image-acceptance-workflow.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/build-factory-media.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/build-factory-media.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/oobe-registry.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/Dockerfile",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-builder-definition.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/content-addressed-store.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/content-addressed-store.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-cli.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-cli.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-acceptance-admission.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-manifest.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-manifest.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/vision-release.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/factory/vision-release.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/factory/experimental-vision-candidate.mjs",
-    owner: "field-operations",
-    category: "explicitly maintained legacy operation",
-    workflows: ["factory preparation"],
-    verifier: "scripts/windows/vision-main-consumer.test.mjs",
-  },
-  {
-    path: "scripts/factory/experimental-vision-candidate.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/factory/verify-vision-delivery-assembly.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/factory/run-vision-delivery-assembly-contract.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/factory/factory-personalization-media.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/factory-personalization-media.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/import-runtime-artifacts.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/import-runtime-artifacts.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/windows/runtime-artifact-descriptor.mjs",
-    owner: "machine-runtime",
-    category: "public runbook operation",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/factory/sanitize-build-evidence.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/sanitize-build-evidence.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/verify-asset-evidence.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/verify-asset-evidence.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/factory/verify-real-windows-source.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/check-windows-factory-maintenance.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
     path: "scripts/check-ci-workflow-needs.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["smoke", "testbed workflows"],
   },
   {
-    path: "scripts/check-windows-bringup-bundle.mjs",
-    owner: "machine-runtime",
-    category: "verifier-test guard",
-    workflows: ["smoke", "testbed workflows"],
-  },
-  {
-    path: "scripts/check-windows-bringup-bundle.test.mjs",
-    owner: "machine-runtime",
-    category: "verifier-test guard",
-    workflows: ["smoke", "testbed workflows"],
-  },
-  {
-    path: "scripts/check-windows-oobe-registry.test.mjs",
+    path: "scripts/check-static-quality-workflow.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
-    workflows: ["factory preparation"],
+    workflows: ["smoke", "testbed workflows"],
   },
   {
     path: "scripts/daemon-ipc-contracts/generate-contracts.ts",
@@ -494,44 +299,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["managed update"],
   },
   {
-    path: "scripts/check-managed-machine-update.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["managed update"],
-  },
-  {
-    path: "scripts/check-maintenance-relay-runbook.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/check-maintenance-ssh-ca-secrets.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "service deployment"],
-  },
-  {
-    path: "scripts/check-github-oidc-automation-workflow.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/check-vm-runtime-acceptance-workflow.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
     path: "scripts/check-repository-script-inventory.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: [
-      "factory preparation",
       "runtime acceptance",
-      "kiosk lockdown",
-      "managed update",
+      "runtime acceptance",
       "smoke",
       "testbed workflows",
     ],
@@ -541,56 +314,17 @@ const DEFAULT_INVENTORY = [
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: [
-      "factory preparation",
       "runtime acceptance",
-      "kiosk lockdown",
-      "managed update",
+      "runtime acceptance",
       "smoke",
       "testbed workflows",
     ],
   },
   {
-    path: "scripts/check-windows-kiosk-lockdown.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["kiosk lockdown"],
-  },
-  {
     path: "scripts/testbed/win10-vem-e2e.mjs",
     owner: "field-operations",
-    category: "explicitly maintained legacy operation",
-    verifier: "scripts/testbed/win10-vem-e2e.test.mjs",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/testbed/factory-image-acceptance.mjs",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/testbed/factory-image-acceptance.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/testbed/factory-maintenance-relay-attestation.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/testbed/factory-maintenance-relay-attestation.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/testbed/win10-vem-e2e.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
+    category: "test support operation",
+    workflows: ["runtime acceptance"],
   },
   {
     path: "scripts/testbed/validate-vm-runtime-acceptance-inputs.mjs",
@@ -725,18 +459,6 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/testbed/vm-host-adapter-conformance.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
-    path: "scripts/testbed/vm-host-adapter-conformance.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
-  },
-  {
     path: "scripts/testbed/vm-host-adapter-serial-conformance.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
@@ -803,27 +525,21 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/apply-managed-update.ps1",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["managed update"],
-  },
-  {
     path: "scripts/windows/vision-main-artifacts.psm1",
     owner: "field-operations",
-    category: "public runbook operation",
+    category: "operator operation",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/get-vision-main-artifacts.ps1",
     owner: "field-operations",
-    category: "public runbook operation",
+    category: "operator operation",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/install-vision-main-artifact.ps1",
     owner: "field-operations",
-    category: "public runbook operation",
+    category: "operator operation",
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
@@ -839,58 +555,16 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
-    path: "scripts/windows/payment-secret-guard.test.mjs",
-    owner: "platform-security",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "managed update"],
-  },
-  {
-    path: "scripts/windows/verify-progressive-delivery.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
-  },
-  {
-    path: "scripts/windows/verify-progressive-delivery.test.mjs",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation", "runtime acceptance", "managed update"],
+    path: "scripts/windows/runtime-artifact-descriptor.mjs",
+    owner: "machine-runtime",
+    category: "operator operation",
+    workflows: ["runtime acceptance", "smoke"],
   },
   {
     path: "scripts/windows/runtime-bootstrap.example.json",
     owner: "machine-runtime",
-    category: "public runbook operation",
+    category: "operator operation",
     workflows: ["smoke"],
-  },
-  {
-    path: "scripts/windows/prepare-factory-runtime.ps1",
-    owner: "field-operations",
-    category: "canonical entrypoint",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/windows/factory-maintenance-fixtures/clean-state-evidence.json",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/windows/setup-scheduled-tasks.ps1",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["factory preparation", "kiosk lockdown"],
-  },
-  {
-    path: "scripts/windows/test-factory-maintenance-fixtures.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/windows/test-wireguard-localsystem-acceptance.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
     path: "scripts/windows/start-lower-controller-sim.ps1",
@@ -906,73 +580,22 @@ const DEFAULT_INVENTORY = [
     verifier: "scripts/check-machine-provisioning-default-api-base-url.mjs",
   },
   {
-    path: "scripts/windows/verify-factory-runtime.ps1",
-    owner: "field-operations",
-    category: "verifier-test guard",
-    workflows: ["factory preparation"],
-  },
-  {
-    path: "scripts/windows/verify-kiosk-lockdown.ps1",
-    owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["kiosk lockdown"],
-  },
-  {
     path: "scripts/windows/verify-vem-runtime.ps1",
     owner: "field-operations",
-    category: "public runbook operation",
-    workflows: ["runtime acceptance", "smoke", "managed update"],
-  },
-];
-
-const DEFAULT_PUBLIC_RUNBOOKS = [
-  {
-    path: "public/windows-bringup-bundle.md",
-    scripts: [],
-    requiredText: ["Runtime Bootstrap", "certificate-only SSH"],
-  },
-  {
-    path: "public/managed-machine-update.md",
-    scripts: [],
-  },
-  {
-    path: "public/unified-field-delivery.md",
-    scripts: [],
+    category: "operator operation",
+    workflows: ["runtime acceptance", "smoke"],
   },
 ];
 
 const REQUIRED_CATEGORIES = new Set([
   "canonical entrypoint",
   "verifier-test guard",
-  "public runbook operation",
+  "operator operation",
   "explicitly maintained legacy operation",
   "test support operation",
 ]);
 
-const RETIRED_PUBLIC_RUNBOOKS = [
-  "public/clean-base-factory-acceptance.md",
-  "public/vm-runtime-acceptance.md",
-];
-
-const STALE_PUBLIC_CONTRACT_PATTERNS = [
-  { pattern: /\bunraid\b/i, label: "platform-specific host identity" },
-  { pattern: /\blibvirt\b/i, label: "platform-specific VM adapter" },
-  { pattern: /\bqcow2\b/i, label: "platform-specific disk format" },
-  { pattern: /\/mnt\/user\b/i, label: "host filesystem path" },
-  { pattern: /unraid:\/\//i, label: "platform-specific source URI" },
-  { pattern: /\biptables\b/i, label: "iptables renderer" },
-  { pattern: /maintenance-relay:plan/i, label: "static relay command" },
-  { pattern: /\bsshpass\b|\bSSHPASS\b/, label: "password SSH helper" },
-];
-
-const REQUIRED_WORKFLOWS = [
-  "factory preparation",
-  "runtime acceptance",
-  "kiosk lockdown",
-  "managed update",
-  "smoke",
-  "testbed workflows",
-];
+const REQUIRED_WORKFLOWS = ["runtime acceptance", "smoke", "testbed workflows"];
 
 const STALE_INTEGRATION_TEXT_EXEMPT_PATHS = new Set([
   "scripts/check-repository-script-inventory.mjs",
@@ -981,7 +604,7 @@ const STALE_INTEGRATION_TEXT_EXEMPT_PATHS = new Set([
 
 const ACCEPTED_MAINTENANCE_ARCHITECTURE_CATEGORIES = new Set([
   "canonical entrypoint",
-  "public runbook operation",
+  "operator operation",
   "explicitly maintained legacy operation",
 ]);
 
@@ -1150,30 +773,6 @@ function validateStaleIntegrationText(path, text) {
         `${path}:${index + 1} contains stale integration text (${stalePattern.label}): ${line.trim()}`,
       );
       continue;
-    }
-    if (
-      path.startsWith("public/") &&
-      /\b(?:Tailscale|tailnet)\b/i.test(line) &&
-      !isAllowedTailscaleNegativeBaseline(line)
-    ) {
-      failures.push(
-        `${path}:${index + 1} contains non-negative Tailscale wording: ${line.trim()}`,
-      );
-    }
-  }
-  return failures;
-}
-
-function validateStalePublicContractText(path, text) {
-  const failures = [];
-  const lines = text.split(/\r?\n/u);
-  for (const [index, line] of lines.entries()) {
-    for (const stalePattern of STALE_PUBLIC_CONTRACT_PATTERNS.filter((rule) =>
-      rule.pattern.test(line),
-    )) {
-      failures.push(
-        `${path}:${index + 1} contains retired public contract (${stalePattern.label}): ${line.trim()}`,
-      );
     }
   }
   return failures;
@@ -1372,29 +971,9 @@ function validatePreapprovalDeliveryAssembly(entry, entriesByPath) {
   return failures;
 }
 
-function scriptMaintainsFactoryDeliveryEvidence(source) {
-  return (
-    source.includes("factory-runtime-manifest.json") &&
-    source.includes("verify-factory-runtime") &&
-    source.includes("factory-runtime-verification")
-  );
-}
-
-function runbookReferencesScript(source, script) {
-  const normalizedSource = source.replaceAll("\\", "/");
-  const fileName = script.split("/").at(-1);
-  const deployedWindowsPath = `C:/VEM/bringup/scripts/${fileName}`;
-  return (
-    source.includes(script) ||
-    normalizedSource.includes(script) ||
-    normalizedSource.includes(deployedWindowsPath)
-  );
-}
-
 function legacyEvidenceReferences(entry) {
   return [
     entry.maintainedReference,
-    entry.runbook,
     entry.packageScript,
     entry.acceptance,
     entry.verifier,
@@ -1408,7 +987,7 @@ function validateLegacyEvidence(root, entry) {
   const references = legacyEvidenceReferences(entry);
   if (references.length === 0) {
     return [
-      `${entry.path} legacy operation missing maintainedReference or runbook/package/acceptance/verifier evidence`,
+      `${entry.path} legacy operation missing maintainedReference or package/acceptance/verifier evidence`,
     ];
   }
   return references
@@ -1418,145 +997,9 @@ function validateLegacyEvidence(root, entry) {
     .map((reference) => `${entry.path} legacy evidence missing: ${reference}`);
 }
 
-function isFactoryPreparationEntrypoint(entry) {
-  return (
-    entry.category === "canonical entrypoint" &&
-    entry.workflows?.includes("factory preparation")
-  );
-}
-
-function isRunbookFailure(failure) {
-  return (
-    failure.startsWith("public runbook") ||
-    failure.includes(" references a script outside the inventory: ") ||
-    failure.includes(" should reference ") ||
-    failure.includes(" contains forbidden runbook text: ") ||
-    failure.includes(" contains stale integration text ") ||
-    failure.includes(" contains non-negative Tailscale wording") ||
-    failure.includes(" contains retired public contract ") ||
-    failure.includes(" contains retired maintenance architecture ") ||
-    failure.startsWith("retired public runbook present") ||
-    failure.includes(" missing required runbook contract: ") ||
-    failure.includes(" invalid required runbook contract ") ||
-    failure.includes(" required runbook contract ")
-  );
-}
-
-function getValueAtPath(object, path) {
-  return path.split(".").reduce((value, segment) => {
-    if (value === null || typeof value !== "object") {
-      return undefined;
-    }
-    return value[segment];
-  }, object);
-}
-
-function findJsonContract(text, schemaVersion) {
-  const fencePattern = /```([^\n`]*)\n([\s\S]*?)```/g;
-  for (const match of text.matchAll(fencePattern)) {
-    const info = match[1].trim();
-    if (!info.split(/\s+/).includes("json") && !info.includes(schemaVersion)) {
-      continue;
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(match[2]);
-    } catch (error) {
-      if (info.includes(schemaVersion)) {
-        return { error };
-      }
-      continue;
-    }
-    if (parsed?.schemaVersion === schemaVersion) {
-      return { contract: parsed };
-    }
-  }
-  return {};
-}
-
-function validateRunbookContracts(runbook, text) {
-  const failures = [];
-  for (const forbiddenText of runbook.forbiddenText ?? []) {
-    if (text.includes(forbiddenText)) {
-      failures.push(
-        `${runbook.path} contains forbidden runbook text: ${forbiddenText}`,
-      );
-    }
-  }
-  for (const requiredText of runbook.requiredText ?? []) {
-    if (!text.includes(requiredText)) {
-      failures.push(
-        `${runbook.path} missing required runbook text: ${requiredText}`,
-      );
-    }
-  }
-  for (const requiredContract of runbook.requiredContracts ?? []) {
-    const { contract, error } = findJsonContract(
-      text,
-      requiredContract.schemaVersion,
-    );
-    if (error) {
-      failures.push(
-        `${runbook.path} invalid required runbook contract ${requiredContract.schemaVersion}: ${error.message}`,
-      );
-      continue;
-    }
-    if (!contract) {
-      failures.push(
-        `${runbook.path} missing required runbook contract: ${requiredContract.schemaVersion}`,
-      );
-      continue;
-    }
-
-    for (const [fieldPath, expected] of Object.entries(
-      requiredContract.requiredFields ?? {},
-    )) {
-      const actual = getValueAtPath(contract, fieldPath);
-      if (actual !== expected) {
-        failures.push(
-          `${runbook.path} required runbook contract ${requiredContract.schemaVersion} field ${fieldPath} expected ${JSON.stringify(expected)}`,
-        );
-      }
-    }
-
-    for (const [fieldPath, expectedPattern] of Object.entries(
-      requiredContract.requiredPatterns ?? {},
-    )) {
-      const actual = getValueAtPath(contract, fieldPath);
-      const pattern = new RegExp(expectedPattern);
-      if (typeof actual !== "string" || !pattern.test(actual)) {
-        failures.push(
-          `${runbook.path} required runbook contract ${requiredContract.schemaVersion} field ${fieldPath} should match ${expectedPattern}`,
-        );
-      }
-    }
-
-    for (const [fieldPath, requiredValues] of Object.entries(
-      requiredContract.requiredIncludes ?? {},
-    )) {
-      const actual = getValueAtPath(contract, fieldPath);
-      if (!Array.isArray(actual)) {
-        failures.push(
-          `${runbook.path} required runbook contract ${requiredContract.schemaVersion} field ${fieldPath} should be an array`,
-        );
-        continue;
-      }
-      for (const requiredValue of requiredValues) {
-        if (!actual.includes(requiredValue)) {
-          failures.push(
-            `${runbook.path} required runbook contract ${requiredContract.schemaVersion} field ${fieldPath} missing ${requiredValue}`,
-          );
-        }
-      }
-    }
-  }
-  return failures;
-}
-
 export function checkRepositoryScriptInventory(options = {}) {
   const root = options.root ?? process.cwd();
   const inventory = options.inventory ?? DEFAULT_INVENTORY;
-  const publicRunbooks = options.publicRunbooks ?? DEFAULT_PUBLIC_RUNBOOKS;
   const failures = [];
   const checks = [];
 
@@ -1572,14 +1015,6 @@ export function checkRepositoryScriptInventory(options = {}) {
     if (!scripts.includes(entry.path)) {
       failures.push(`classified script missing from repository: ${entry.path}`);
       continue;
-    }
-    if (
-      isFactoryPreparationEntrypoint(entry) &&
-      !scriptMaintainsFactoryDeliveryEvidence(readText(root, entry.path))
-    ) {
-      failures.push(
-        `image preparation shortcut bypasses factory delivery evidence: ${entry.path}`,
-      );
     }
     failures.push(
       ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
@@ -1619,42 +1054,6 @@ export function checkRepositoryScriptInventory(options = {}) {
     }
   }
 
-  for (const runbook of publicRunbooks) {
-    if (!pathExists(root, runbook.path)) {
-      failures.push(`public runbook missing: ${runbook.path}`);
-      continue;
-    }
-    const text = readText(root, runbook.path);
-    failures.push(...validateStaleIntegrationText(runbook.path, text));
-    for (const script of runbook.scripts) {
-      if (!entriesByPath.has(script)) {
-        failures.push(
-          `${runbook.path} references a script outside the inventory: ${script}`,
-        );
-      }
-      if (!runbookReferencesScript(text, script)) {
-        failures.push(`${runbook.path} should reference ${script}`);
-      }
-    }
-    failures.push(...validateRunbookContracts(runbook, text));
-  }
-
-  for (const retiredRunbook of RETIRED_PUBLIC_RUNBOOKS) {
-    if (pathExists(root, retiredRunbook)) {
-      failures.push(`retired public runbook present: ${retiredRunbook}`);
-    }
-  }
-
-  if (directoryExists(root, "public")) {
-    for (const path of listFiles(root, "public")) {
-      if (!path.endsWith(".md")) continue;
-      const text = readText(root, path);
-      failures.push(...validateStaleIntegrationText(path, text));
-      failures.push(...validateStalePublicContractText(path, text));
-      failures.push(...validateRetiredMaintenanceArchitectureText(path, text));
-    }
-  }
-
   if (directoryExists(root, ".github/workflows")) {
     for (const path of listFiles(root, ".github/workflows")) {
       if (!path.endsWith(".yml") && !path.endsWith(".yaml")) continue;
@@ -1673,33 +1072,11 @@ export function checkRepositoryScriptInventory(options = {}) {
     detail: "every file under scripts/ has an owner and use category",
   });
   checks.push({
-    name: "retired-public-runbooks-absent",
-    passed: !failures.some((failure) =>
-      failure.startsWith("retired public runbook present"),
-    ),
-    detail:
-      "superseded platform-specific public runbooks cannot re-enter the repository",
-  });
-  checks.push({
     name: "required-workflows-covered",
     passed: REQUIRED_WORKFLOWS.every((workflow) =>
       workflowCoverage.has(workflow),
     ),
-    detail:
-      "inventory covers factory preparation, runtime acceptance, kiosk lockdown, managed update, smoke, and testbed workflows",
-  });
-  checks.push({
-    name: "public-runbooks-match-retained-scripts",
-    passed: !failures.some(isRunbookFailure),
-    detail: "public runbooks reference retained canonical operations",
-  });
-  checks.push({
-    name: "factory-image-prep-retains-evidence-boundary",
-    passed: !failures.some((failure) =>
-      failure.startsWith("image preparation shortcut bypasses"),
-    ),
-    detail:
-      "factory image preparation scripts keep manifest, verifier, and evidence output in the delivery path",
+    detail: "inventory covers runtime acceptance, smoke, and testbed workflows",
   });
   checks.push({
     name: "delivery-assembly-static-classification",

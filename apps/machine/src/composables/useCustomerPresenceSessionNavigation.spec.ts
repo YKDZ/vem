@@ -67,6 +67,7 @@ describe("customer presence navigation", () => {
   });
 
   it("submits a typed departure intent without writing a route", async () => {
+    vi.useFakeTimers();
     const unmount = await mountPresenceDepartureNavigation();
 
     emitPresence(true, "2026-06-30T08:00:00.000Z");
@@ -80,20 +81,78 @@ describe("customer presence navigation", () => {
     });
     await nextTick();
 
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3_000);
+
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
       type: "presence.departed",
       eventId: "VISION-DEPARTURE-001",
     });
     unmount();
+    vi.useRealTimers();
   });
 
-  it("does not lose an explicit Vision departure after a local timeout", async () => {
+  it("keeps an active presence session through a transient Vision absence", async () => {
+    vi.useFakeTimers();
+    const unmount = await mountPresenceDepartureNavigation();
+
+    emitPresence(true, "2026-06-30T08:00:00.000Z");
+    await nextTick();
+    useVisionStore().applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENCE-TRANSIENT-EMPTY",
+      state: "empty",
+      reason: "no_person",
+      detectedAt: "2026-06-30T08:00:01.000Z",
+      personPresent: false,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: false },
+    });
+    await nextTick();
+
+    await vi.advanceTimersByTimeAsync(2_999);
+    emitPresence(true, "2026-06-30T08:00:04.000Z");
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it("confirms departure from the first sustained Vision absence", async () => {
+    vi.useFakeTimers();
+    const unmount = await mountPresenceDepartureNavigation();
+
+    emitPresence(true, "2026-06-30T08:00:00.000Z");
+    await nextTick();
+    emitPresence(false, "2026-06-30T08:00:01.000Z");
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
+    emitPresence(false, "2026-06-30T08:00:02.000Z");
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "presence.departed",
+      eventId: "VISION-PRESENCE-EMPTY",
+    });
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it("does not turn local inactivity into a Vision departure", async () => {
     vi.useFakeTimers();
     const host = document.createElement("div");
     document.body.appendChild(host);
     const App = defineComponent({
       setup() {
-        useCustomerPresenceSession({ presenceStaleMs: 10 });
+        useCustomerPresenceSession({
+          inactivityDepartureMs: 10,
+          presenceStaleMs: 60_000,
+        });
         installPresenceDepartureNavigation();
         return () => null;
       },
@@ -104,24 +163,8 @@ describe("customer presence navigation", () => {
 
     window.dispatchEvent(new Event("pointerdown"));
     await vi.advanceTimersByTimeAsync(10);
-    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
-      type: "presence.departed",
-      eventId: null,
-    });
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
 
-    useVisionStore().applyPersonDeparted({
-      source: "top",
-      eventId: "VISION-DEPARTURE-AFTER-TIMEOUT",
-      detectedAt: "2026-06-30T08:00:05.000Z",
-      lastSeenAt: "2026-06-30T08:00:04.000Z",
-      reason: "left_frame",
-    });
-    await nextTick();
-
-    expect(submitMachineNavigationIntentMock).toHaveBeenLastCalledWith({
-      type: "presence.departed",
-      eventId: "VISION-DEPARTURE-AFTER-TIMEOUT",
-    });
     app.unmount();
     vi.useRealTimers();
   });

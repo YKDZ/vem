@@ -13,20 +13,6 @@ const baseValidEnv = {
     "local-cred-enc-key-change-before-production!",
   MACHINE_CLAIM_LOOKUP_HMAC_KEY:
     "local-claim-lookup-hmac-key-change-before-production",
-  MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
-  MAINTENANCE_RELAY_ENDPOINT: "relay.example:51820",
-  MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-  MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
-  MAINTENANCE_RELAY_CREDENTIAL:
-    "local-maintenance-relay-credential-change-before-production",
-  MAINTENANCE_RELAY_JWT_SECRET:
-    "local-maintenance-relay-jwt-secret-change-before-production",
-  MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: "/run/secrets/maintenance-ssh-ca",
-  MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT:
-    "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-  MAINTENANCE_SSH_PROFILE: "testbed",
-  MAINTENANCE_SSH_TARGET_POLICY_PATH:
-    "/run/config/maintenance-ssh-target-policy.json",
   CORS_ORIGINS: "http://localhost:5173",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
@@ -40,143 +26,11 @@ const productionPaymentConfigEncryptionKey =
   "prod-payment-config-encryption-key-change-me-now";
 
 describe("validateEnv", () => {
-  it.each([
-    ["MAINTENANCE_GITHUB_OIDC_TRUST_POLICY", "{}"],
-    ["MAINTENANCE_GITHUB_OIDC_JWKS_JSON", '{"keys":[]}'],
-    [
-      "MAINTENANCE_GITHUB_OIDC_JWKS_URL",
-      "https://attacker.example/.well-known/jwks",
-    ],
-    ["MAINTENANCE_AUTOMATION_JWT_SECRET", "x".repeat(32)],
-  ])("rejects legacy or mutable automation trust config %s", (key, value) => {
-    expect(() => validateEnv({ ...baseValidEnv, [key]: value })).toThrow(
-      `${key} is not supported`,
-    );
-  });
-
-  it("accepts deployment-owned mounted paths for automation trust material", () => {
-    const env = validateEnv({
-      ...baseValidEnv,
-      MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH:
-        "/run/secrets/oidc-policy.json",
-      MAINTENANCE_GITHUB_OIDC_JWKS_PATH: "/run/config/github-oidc-jwks.json",
-      MAINTENANCE_AUTOMATION_JWT_SECRET_PATH:
-        "/run/secrets/maintenance-automation-jwt",
-    });
-
-    expect(env.MAINTENANCE_AUTOMATION_JWT_SECRET_PATH).toBe(
-      "/run/secrets/maintenance-automation-jwt",
-    );
-  });
-
   it("accepts valid development config with mock enabled", () => {
     const env = validateEnv(baseValidEnv);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(true);
     expect(env.NODE_ENV).toBe("development");
     expect(env.MACHINE_CLAIM_CODE_TTL_SECONDS).toBe(600);
-  });
-
-  it("accepts a WireGuard relay endpoint and rejects an HTTP URL", () => {
-    expect(
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RELAY_ENDPOINT: "relay.example:51820",
-      }).MAINTENANCE_RELAY_ENDPOINT,
-    ).toBe("relay.example:51820");
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RELAY_ENDPOINT: "https://relay.example:51820",
-      }),
-    ).toThrow();
-  });
-
-  it.each([
-    "MAINTENANCE_RELAY_PEER_ID",
-    "MAINTENANCE_RELAY_ENDPOINT",
-    "MAINTENANCE_RELAY_PUBLIC_KEY",
-    "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
-  ] as const)("requires deterministic machine claim setting %s", (key) => {
-    const { [key]: _, ...missing } = baseValidEnv;
-    expect(() => validateEnv(missing)).toThrow();
-  });
-
-  it("requires a complete Maintenance SSH CA configuration in production", () => {
-    const { MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: _, ...withoutCa } =
-      baseValidEnv;
-    expect(() =>
-      validateEnv({
-        ...withoutCa,
-        NODE_ENV: "production",
-        PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
-        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
-        MACHINE_API_BASE_URL: "https://platform.example.com/api",
-        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
-        MQTT_USERNAME: "u",
-        MQTT_PASSWORD: "p",
-      }),
-    ).toThrow("Maintenance SSH CA requires private key path");
-  });
-
-  it("fails startup validation for a malformed maintenance address pool CIDR", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.1.0",
-      }),
-    ).toThrow("Maintenance runner address pool is not IPv4 CIDR");
-  });
-
-  it("fails startup validation when a maintenance pool is not its network address", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_MACHINE_ADDRESS_POOL: "10.91.16.1/20",
-      }),
-    ).toThrow("Maintenance machine address pool must use its network address");
-  });
-
-  it("fails startup validation when a maintenance pool has no usable host addresses", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RELAY_ADDRESS_POOL: "10.91.0.0/31",
-      }),
-    ).toThrow(
-      "Maintenance relay address pool must contain usable host addresses",
-    );
-  });
-
-  it("fails startup validation when maintenance address pools overlap", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.0.0/25",
-      }),
-    ).toThrow("Maintenance address pools relay and runner must not overlap");
-  });
-
-  it("rejects broad maintenance source-role pools", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.64.0.0/10",
-      }),
-    ).toThrow(
-      "Maintenance runner address pool must use prefix /24 or narrower",
-    );
-  });
-
-  it("requires the selected relay address to belong to the relay pool", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.8.1",
-      }),
-    ).toThrow(
-      "Maintenance relay tunnel address must belong to its address pool",
-    );
   });
 
   it("accepts QWeather credentials and endpoint settings for External Natural Environment", () => {
@@ -277,7 +131,6 @@ describe("validateEnv", () => {
       ...baseValidEnv,
       NODE_ENV: "production",
       PAYMENT_MOCK_ENABLED: "false",
-      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
       MACHINE_API_BASE_URL: "https://platform.example.com/api",
       PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
@@ -286,37 +139,6 @@ describe("validateEnv", () => {
     });
     expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
     expect(env.MQTT_USERNAME).toBe("vem_service");
-  });
-
-  it("rejects production relay credentials reused as signing or HMAC secrets", () => {
-    const production = {
-      ...baseValidEnv,
-      NODE_ENV: "production",
-      PAYMENT_MOCK_ENABLED: "false",
-      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
-      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
-      MACHINE_API_BASE_URL: "https://platform.example.com/api",
-      PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
-      MQTT_USERNAME: "vem_service",
-      MQTT_PASSWORD: "strong-password-for-mqtt",
-    };
-
-    for (const secretName of [
-      "JWT_SECRET",
-      "JWT_REFRESH_SECRET",
-      "MACHINE_JWT_SECRET",
-      "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
-      "MAINTENANCE_RELAY_JWT_SECRET",
-    ] as const) {
-      expect(() =>
-        validateEnv({
-          ...production,
-          MAINTENANCE_RELAY_CREDENTIAL: production[secretName],
-        }),
-      ).toThrow(
-        "MAINTENANCE_RELAY_CREDENTIAL must differ from signing and HMAC secrets in production",
-      );
-    }
   });
 
   it("defaults PAYMENT_MOCK_ENABLED to false", () => {
@@ -371,7 +193,6 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
         MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
@@ -391,7 +212,6 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
         MACHINE_API_BASE_URL: "https://platform.example.com/api",
         MQTT_USERNAME: "u",
@@ -419,31 +239,12 @@ describe("validateEnv", () => {
     expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("https://pay.example.com");
   });
 
-  it("rejects production config without PAYMENT_PRODUCTION_READINESS_REQUIRED=true", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        NODE_ENV: "production",
-        PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_PRODUCTION_READINESS_REQUIRED: "false",
-        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
-        MACHINE_API_BASE_URL: "https://platform.example.com/api",
-        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
-        MQTT_USERNAME: "u",
-        MQTT_PASSWORD: "p",
-      }),
-    ).toThrow(
-      "PAYMENT_PRODUCTION_READINESS_REQUIRED must be true in production",
-    );
-  });
-
   it("rejects production config with http webhook base URL", () => {
     expect(() =>
       validateEnv({
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
         MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
@@ -453,19 +254,17 @@ describe("validateEnv", () => {
     ).toThrow("PAYMENT_WEBHOOK_BASE_URL must use https in production");
   });
 
-  it("accepts production config with https webhook and readiness required=true", () => {
+  it("accepts production config with an HTTPS webhook", () => {
     const env = validateEnv({
       ...baseValidEnv,
       NODE_ENV: "production",
       PAYMENT_MOCK_ENABLED: "false",
-      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
       MACHINE_API_BASE_URL: "https://platform.example.com/api",
       PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
       MQTT_USERNAME: "u",
       MQTT_PASSWORD: "p",
     });
-    expect(env.PAYMENT_PRODUCTION_READINESS_REQUIRED).toBe(true);
     expect(env.NODE_ENV).toBe("production");
   });
 });

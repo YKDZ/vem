@@ -24,7 +24,7 @@ const activeTab = ref(
       </p>
     </header>
 
-    <a-card :body-style="{ paddingTop: '8px' }">
+    <a-card :styles="{ body: { paddingTop: '8px' } }">
       <a-tabs v-model:active-key="activeTab">
         <a-tab-pane v-if="canViewWeather" key="weather" tab="天气服务">
           <QweatherTab />

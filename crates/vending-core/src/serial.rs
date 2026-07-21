@@ -17,7 +17,7 @@ use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits
 
 use crate::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressObserver, DispenseProgressStage,
-    DispenseResultPayload, HardwareAdapter, HardwareStatus,
+    DispenseResultPayload, HardwareAdapter, HardwareStatus, LowerControllerFault,
 };
 
 pub const FRAME_HEAD: u8 = 0x55;
@@ -1030,6 +1030,13 @@ impl HardwareAdapter for SerialHardwareAdapter {
                     resolution_source: Some(resolved.source.as_str().to_string()),
                     bound_usb_identity,
                     candidates: resolved.candidates,
+                    lower_controller_fault: match resolved.frame {
+                        LowerFrame::MechanicalError => Some(LowerControllerFault::SharedMechanical),
+                        LowerFrame::PickupPlatformBlocked => {
+                            Some(LowerControllerFault::PickupPlatformBlocked)
+                        }
+                        _ => None,
+                    },
                 }
             }
             Err(error) => HardwareStatus {
@@ -1040,6 +1047,7 @@ impl HardwareAdapter for SerialHardwareAdapter {
                 resolution_source: Some("unresolved".to_string()),
                 bound_usb_identity: None,
                 candidates: error.candidates,
+                lower_controller_fault: None,
             },
         }
     }
@@ -1061,6 +1069,7 @@ impl HardwareAdapter for SerialHardwareAdapter {
                 error_code: None,
                 message: "serial: dispense completed".to_string(),
                 reported_at,
+                lower_controller_fault: None,
             },
             Err(failure) => DispenseResultPayload {
                 command_no: command.command_no,
@@ -1068,6 +1077,7 @@ impl HardwareAdapter for SerialHardwareAdapter {
                 error_code: Some(failure.error_code),
                 message: failure.message,
                 reported_at,
+                lower_controller_fault: failure.lower_controller_fault,
             },
         }
     }
@@ -1077,6 +1087,7 @@ impl HardwareAdapter for SerialHardwareAdapter {
 pub struct DispenseFailure {
     pub error_code: String,
     pub message: String,
+    pub lower_controller_fault: Option<LowerControllerFault>,
 }
 
 impl DispenseFailure {
@@ -1084,13 +1095,7 @@ impl DispenseFailure {
         Self {
             error_code: "MOTOR_TIMEOUT".to_string(),
             message: message.into(),
-        }
-    }
-
-    fn jammed(message: impl Into<String>) -> Self {
-        Self {
-            error_code: "JAMMED".to_string(),
-            message: message.into(),
+            lower_controller_fault: None,
         }
     }
 
@@ -1098,6 +1103,23 @@ impl DispenseFailure {
         Self {
             error_code: "UNKNOWN".to_string(),
             message: message.into(),
+            lower_controller_fault: None,
+        }
+    }
+
+    fn shared_mechanical(message: impl Into<String>) -> Self {
+        Self {
+            error_code: "JAMMED".to_string(),
+            message: message.into(),
+            lower_controller_fault: Some(LowerControllerFault::SharedMechanical),
+        }
+    }
+
+    fn pickup_platform_blocked(message: impl Into<String>) -> Self {
+        Self {
+            error_code: "JAMMED".to_string(),
+            message: message.into(),
+            lower_controller_fault: Some(LowerControllerFault::PickupPlatformBlocked),
         }
     }
 }
@@ -1406,7 +1428,7 @@ impl LowerFrame {
             Self::CrcError => Some(DispenseFailure::unknown(
                 "lower controller rejected command: crc check failed",
             )),
-            Self::MechanicalError => Some(DispenseFailure::jammed(
+            Self::MechanicalError => Some(DispenseFailure::shared_mechanical(
                 "lower controller reported mechanical fault during dispense",
             )),
             Self::Busy => Some(DispenseFailure::unknown(
@@ -1415,7 +1437,7 @@ impl LowerFrame {
             Self::PickupTimeout => Some(DispenseFailure::timeout(
                 "lower controller reported pickup timed out during dispense",
             )),
-            Self::PickupPlatformBlocked => Some(DispenseFailure::jammed(
+            Self::PickupPlatformBlocked => Some(DispenseFailure::pickup_platform_blocked(
                 "lower controller reported pickup platform blocked",
             )),
             Self::Unknown(code) => Some(DispenseFailure::unknown(format!(
@@ -2425,6 +2447,34 @@ mod tests {
         assert_eq!(
             LowerFrame::from_code(0xE6),
             LowerFrame::PickupPlatformBlocked
+        );
+    }
+
+    #[test]
+    fn explicit_protocol_faults_preserve_error_code_and_classification() {
+        let mechanical = LowerFrame::MechanicalError
+            .to_failure()
+            .expect("mechanical failure");
+        assert_eq!(mechanical.error_code, "JAMMED");
+        assert_eq!(
+            mechanical.lower_controller_fault,
+            Some(LowerControllerFault::SharedMechanical)
+        );
+
+        let pickup = LowerFrame::PickupPlatformBlocked
+            .to_failure()
+            .expect("pickup platform failure");
+        assert_eq!(pickup.error_code, "JAMMED");
+        assert_eq!(
+            pickup.lower_controller_fault,
+            Some(LowerControllerFault::PickupPlatformBlocked)
+        );
+        assert_eq!(
+            LowerFrame::PickupTimeout
+                .to_failure()
+                .expect("pickup timeout")
+                .lower_controller_fault,
+            None
         );
     }
 

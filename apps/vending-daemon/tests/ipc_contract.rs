@@ -15,8 +15,8 @@ fn claimed_fixture() -> serde_json::Value {
         "machineCode": "MACHINE-IPC",
         "apiBaseUrl": "http://127.0.0.1:9/api",
         "mqttUrl": "mqtt://127.0.0.1:1883",
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" },
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" },
         "hardwareProfile": {
             "profile": "production",
             "controller": { "required": true, "protocol": "vem-vending-controller" },
@@ -172,8 +172,8 @@ async fn clean_start_claim_uses_bootstrap_and_persists_only_claim_sources() {
     let fixture = serde_json::json!({
         "machineCode": null,
         "apiBaseUrl": api_base_url,
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" }
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" }
     });
     let mut daemon = DaemonHarness::start(fixture, &[], &[])
         .await
@@ -256,8 +256,8 @@ fn claim_profile(api_base_url: &str) -> serde_json::Value {
             "paymentScanner": { "required": true, "supportsPaymentCode": true },
             "vision": { "required": false, "supportsRecommendations": false }
         },
-        "hardwareModel": "vem-test-24",
-        "hardwareSlotTopology": { "identity": "vem-test-24", "version": "2026-07-test" },
+        "hardwareModel": "vem-prod-24",
+        "hardwareSlotTopology": { "identity": "vem-prod-24", "version": "2026-07-test" },
         "paymentCapability": { "profile": "production", "qrCodeEnabled": true, "paymentCodeEnabled": true, "serverTime": "2026-07-17T00:00:00Z" },
         "metadata": { "profileVersion": 1, "profileRevision": 1, "claimCodeId": "550e8400-e29b-41d4-a716-446655440002", "claimedAt": "2026-07-17T00:00:00Z", "serverTime": "2026-07-17T00:00:00Z" }
     })

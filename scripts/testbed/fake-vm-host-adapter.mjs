@@ -262,7 +262,12 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_LOWER_CONTROLLER_GUEST_IDENTITY ??
         "guest-device://fake-lower-controller-001",
-      guestUsbTopology: { alias: "serial-lower-controller", targetPort: 0, usbBus: 0, usbPort: "1" },
+      guestUsbTopology: {
+        alias: "serial-lower-controller",
+        targetPort: 0,
+        usbBus: 0,
+        usbPort: "1",
+      },
       simulatorProcessIdentity: "simulator-process://fake-lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://fake-lower-controller-001",
       connectionState: state,
@@ -272,7 +277,12 @@ function serialMappings(state) {
       guestDeviceIdentity:
         process.env.VEM_VM_HOST_FAKE_SCANNER_GUEST_IDENTITY ??
         "guest-device://fake-scanner-001",
-      guestUsbTopology: { alias: "serial-scanner", targetPort: 1, usbBus: 0, usbPort: "2" },
+      guestUsbTopology: {
+        alias: "serial-scanner",
+        targetPort: 1,
+        usbBus: 0,
+        usbPort: "2",
+      },
       simulatorProcessIdentity: "simulator-process://fake-scanner-001",
       simulatorSocketIdentity: "simulator-socket://fake-scanner-001",
       connectionState: state,
@@ -475,8 +485,6 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
-      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
-      maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result,
@@ -502,36 +510,6 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     },
     consumedAssets: request.assets,
     guest: {
-      maintenanceEndpointIdentity:
-        "guest-maintenance://fake-runtime-testbed-001",
-      maintenanceEndpoint: {
-        transport:
-          request.maintenanceEndpointPolicy?.transport ===
-          "testbed-runner-direct"
-            ? "testbed-runner-direct"
-            : "wireguard",
-        protocol: "ssh",
-        host:
-          request.maintenanceEndpointPolicy?.transport ===
-          "testbed-runner-direct"
-            ? "192.0.2.42"
-            : (request.maintenanceRelaySession?.endpointTunnelAddress ??
-              "10.91.2.10"),
-        port: 22,
-        reachability: "discovered",
-        ...(request.maintenanceEndpointPolicy?.transport !==
-          "testbed-runner-direct" && request.maintenanceRelaySession
-          ? {
-              relayProof: {
-                ...request.maintenanceRelaySession,
-                relayPeer: { ...request.maintenanceRelaySession.relayPeer },
-                endpointAllowedIp: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
-                endpointRoute: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
-                handshakeUnixSeconds: 1_784_160_000,
-              },
-            }
-          : {}),
-      },
       deviceMappings,
       defaultAudioIdentity: "guest-audio://fake-runtime-testbed-001",
     },

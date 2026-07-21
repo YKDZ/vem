@@ -37,7 +37,7 @@ describe("maintenance system touch keyboard", () => {
     document.body.append(owner);
     const invoke = vi
       .fn<() => Promise<unknown>>()
-      .mockRejectedValueOnce(new Error("TabTip window was not observed"))
+      .mockRejectedValueOnce(new Error("Windows input pane rejected request"))
       .mockResolvedValue(undefined);
     const reportFailure = vi.fn();
     const dispose = installMaintenanceSystemTouchKeyboard(owner, {

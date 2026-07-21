@@ -18,9 +18,9 @@ import {
   type CustomerJourneyFacts,
 } from "@/customer-journey/transition-projector";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
-import { useVisionStore } from "@/stores/vision";
 
 export type CustomerJourneyAudioRuntime = {
   requestTestPlayback(
@@ -49,20 +49,26 @@ export function createCustomerJourneyAudioRuntime(
 
   scope.run(() => {
     const checkoutStore = useCheckoutStore(pinia);
-    const visionStore = useVisionStore(pinia);
+    const customerJourneyStore = useCustomerJourneyStore(pinia);
     const session = getCustomerPresenceSession();
 
     watch(
       () =>
         customerJourneyFacts({
           checkoutStore,
-          visionStore,
+          customerJourneyStore,
           session,
         }),
       (facts) => {
         void coordinator.accept(projector.project(facts));
       },
       { immediate: true, flush: "sync" },
+    );
+    watch(
+      () => useMachineStore(pinia).customerAudio,
+      () => {
+        void coordinator.refreshPreferences();
+      },
     );
   });
 
@@ -80,13 +86,13 @@ export function createCustomerJourneyAudioRuntime(
 
 function customerJourneyFacts(input: {
   checkoutStore: ReturnType<typeof useCheckoutStore>;
-  visionStore: ReturnType<typeof useVisionStore>;
+  customerJourneyStore: ReturnType<typeof useCustomerJourneyStore>;
   session: ReturnType<typeof getCustomerPresenceSession>;
 }): CustomerJourneyFacts {
   const selectedItem = input.checkoutStore.selectedItem;
   const transaction = input.checkoutStore.transaction;
+  const categoryEntry = input.customerJourneyStore.categoryEntry;
   const pickupReminder = transaction?.vending?.pickupReminder ?? null;
-  const presence = input.visionStore.presence;
   const customerSession = input.session.state.value;
 
   return {
@@ -95,14 +101,25 @@ function customerJourneyFacts(input: {
       source: customerSession.source,
       lastInteractionAt: customerSession.lastInteractionAt,
     },
-    vision: {
-      personPresent: presence.personPresent,
-      occupancyState: presence.occupancyState,
-      lastSeenAt: presence.lastSeenAt,
-      departedAt: presence.departedAt,
-      lastChangedAt: presence.lastChangedAt,
-      restored: presence.restoredFromRefresh,
-    },
+    vision:
+      customerSession.source === "vision"
+        ? {
+            personPresent: customerSession.personPresent,
+            occupancyState: customerSession.occupancyState,
+            lastSeenAt: customerSession.lastSeenAt,
+            departedAt: customerSession.departedAt,
+            lastChangedAt: customerSession.personPresent
+              ? customerSession.lastSeenAt
+              : customerSession.departedAt,
+          }
+        : null,
+    categoryEntry: categoryEntry
+      ? {
+          entryId: categoryEntry.entryId,
+          category: categoryEntry.category,
+          enteredAt: categoryEntry.enteredAt,
+        }
+      : null,
     selectedProduct:
       selectedItem && input.checkoutStore.checkoutAttemptIdempotencyKey
         ? {

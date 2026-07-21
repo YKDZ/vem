@@ -43,9 +43,44 @@ describe("runtime testbed scheduler contract", () => {
         command: "run",
         mode: "fast",
         commit: sha,
+        focus: [],
         runId: undefined,
         configPath: "/etc/vem/testbed.json",
       },
+    );
+  });
+
+  it("deduplicates selection later but preserves repeatable fast focus input", () => {
+    assert.deepEqual(
+      parseOrchestratorOptions([
+        "run",
+        "--mode",
+        "fast",
+        "--focus",
+        "sale",
+        "--focus",
+        "sale",
+        "--commit",
+        sha,
+        "--config",
+        "/etc/vem/testbed.json",
+      ]).focus,
+      ["sale", "sale"],
+    );
+    assert.throws(
+      () =>
+        parseOrchestratorOptions([
+          "run",
+          "--mode",
+          "full",
+          "--focus",
+          "sale",
+          "--commit",
+          sha,
+          "--config",
+          "/etc/vem/testbed.json",
+        ]),
+      /--focus is only valid with --mode fast/,
     );
   });
 
@@ -144,11 +179,7 @@ describe("runtime testbed scheduler contract", () => {
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
       "utf8",
     );
-    assert.ok(
-      source.includes(
-        'if (current.status === "superseded")',
-      ),
-    );
+    assert.ok(source.includes('if (current.status === "superseded")'));
   });
 
   it("writes compact terminal status before canonical status", () => {
@@ -157,7 +188,7 @@ describe("runtime testbed scheduler contract", () => {
       "utf8",
     );
     const compactWrite = source.indexOf(
-      "await writeJson(join(compact, \"status.json\"), status);",
+      'await writeJson(join(compact, "status.json"), status);',
     );
     const canonicalWrite = source.indexOf(
       "await writeJson(statusPath(config, options.runId), status);",
@@ -188,9 +219,7 @@ describe("runtime testbed scheduler contract", () => {
       "utf8",
     );
     assert.ok(
-      source.includes(
-        "if (processGroupExists(processGroupId)) {",
-      ) &&
+      source.includes("if (processGroupExists(processGroupId)) {") &&
         source.includes("failed to terminate process group"),
     );
   });
@@ -202,10 +231,7 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /worker\.stdout\.log/);
     assert.match(source, /worker\.stderr\.log/);
-    assert.match(
-      source,
-      /detached: true, stdio: \["ignore", stdout, stderr\]/,
-    );
+    assert.match(source, /detached: true, stdio: \["ignore", stdout, stderr\]/);
     assert.doesNotMatch(source, /detached: true, stdio: "inherit"/);
   });
 });

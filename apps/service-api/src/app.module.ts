@@ -19,7 +19,6 @@ import { InventoryModule } from "./inventory/inventory.module";
 import { MachineAuthModule } from "./machine-auth/machine-auth.module";
 import { MachineOpsModule } from "./machine-ops/machine-ops.module";
 import { MachinesModule } from "./machines/machines.module";
-import { MaintenanceAccessModule } from "./maintenance-access/maintenance-access.module";
 import { MaintenanceWorkOrdersModule } from "./maintenance-work-orders/maintenance-work-orders.module";
 import { MediaAssetsModule } from "./media-assets/media-assets.module";
 import { MqttModule } from "./mqtt/mqtt.module";
@@ -54,7 +53,6 @@ import { VendingModule } from "./vending/vending.module";
     MachineOpsModule,
     HardwareErrorPoliciesModule,
     MaintenanceWorkOrdersModule,
-    MaintenanceAccessModule,
     MediaAssetsModule,
   ],
   providers: [

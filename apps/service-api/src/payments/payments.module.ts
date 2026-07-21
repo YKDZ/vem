@@ -11,16 +11,10 @@ import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
 import { PaymentCodeRecoveryService } from "./payment-code-recovery.service";
 import { PaymentCodeController } from "./payment-code.controller";
-import { PaymentDrillsController } from "./payment-drills.controller";
-import {
-  DrizzlePaymentDrillStore,
-  PaymentDrillsService,
-} from "./payment-drills.service";
 import { PaymentOpsAlertService } from "./payment-ops-alert.service";
 import { PaymentOpsController } from "./payment-ops.controller";
 import { PaymentOpsService } from "./payment-ops.service";
 import { PaymentProvidersModule } from "./payment-providers.module";
-import { PaymentReadinessStartupGateService } from "./payment-readiness-startup-gate.service";
 import { PaymentReconciliationService } from "./payment-reconciliation.service";
 import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
 import { PaymentsController } from "./payments.controller";
@@ -40,18 +34,14 @@ import { PaymentsService } from "./payments.service";
     PaymentsController,
     PaymentOpsController,
     PaymentCodeController,
-    PaymentDrillsController,
   ],
   providers: [
     PaymentsService,
-    DrizzlePaymentDrillStore,
-    PaymentDrillsService,
     PaymentReconciliationService,
     PaymentWebhookAttemptRecorderService,
     PaymentOpsService,
     PaymentOpsAlertService,
     PaymentChannelPolicyService,
-    PaymentReadinessStartupGateService,
     PaymentCodeAttemptsService,
     PaymentCodeOrchestratorService,
     PaymentCodeRecoveryService,

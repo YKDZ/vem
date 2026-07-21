@@ -625,6 +625,28 @@ describe("Local Operations", () => {
   });
 
   it("runs hardware and manual dispense diagnostics directly without an authorization interstitial", async () => {
+    client.getStockMaintenanceTask.mockResolvedValueOnce({
+      taskId: "stock-task-01",
+      mode: "routine_refill",
+      status: "ready",
+      slots: [
+        {
+          slotCode: "A1",
+          layerNo: 1,
+          cellNo: 1,
+          productName: "Mineral Water",
+          sku: "WATER-001",
+          currentQuantity: 2,
+          capacity: 8,
+          submittedAddition: null,
+          submittedQuantity: null,
+          previewQuantity: null,
+          syncStatus: "not_submitted",
+          salesState: "sale_ready",
+          reconciliationReason: null,
+        },
+      ],
+    });
     const host = await render();
 
     button(host, "重新检查").click();
@@ -637,8 +659,6 @@ describe("Local Operations", () => {
     expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
         slotCode: "A1",
-        layerNo: 1,
-        cellNo: 1,
         quantity: 1,
         timeoutSeconds: 30,
       }),
@@ -654,9 +674,9 @@ describe("Local Operations", () => {
 
     button(host, "重新检查").click();
     await flush();
-    expect(host.querySelector("[aria-label='操作提示']")?.textContent).toContain(
-      "硬件检查未完成",
-    );
+    expect(
+      host.querySelector("[aria-label='操作提示']")?.textContent,
+    ).toContain("硬件检查未完成");
 
     button(host, "重新检查").click();
     await flush();
@@ -667,9 +687,9 @@ describe("Local Operations", () => {
     );
     button(host, "重新检查").click();
     await flush();
-    expect(host.querySelector("[aria-label='操作提示']")?.textContent).toContain(
-      "硬件检查未完成",
-    );
+    expect(
+      host.querySelector("[aria-label='操作提示']")?.textContent,
+    ).toContain("硬件检查未完成");
 
     button(host, "库存维护").click();
     await flush();
@@ -677,10 +697,39 @@ describe("Local Operations", () => {
   });
 
   it("keeps a manual dispense idempotency key across response loss until an operator starts a new diagnostic", async () => {
+    client.getStockMaintenanceTask.mockResolvedValueOnce({
+      taskId: "stock-task-01",
+      mode: "routine_refill",
+      status: "ready",
+      slots: [
+        {
+          slotCode: "A1",
+          layerNo: 1,
+          cellNo: 1,
+          productName: "Mineral Water",
+          sku: "WATER-001",
+          currentQuantity: 2,
+          capacity: 8,
+          submittedAddition: null,
+          submittedQuantity: null,
+          previewQuantity: null,
+          syncStatus: "not_submitted",
+          salesState: "sale_ready",
+          reconciliationReason: null,
+        },
+      ],
+    });
     client.runManualDispenseDiagnostic.mockRejectedValueOnce(
       new Error("diagnostic response lost"),
     );
     const host = await render();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector<HTMLSelectElement>(
+          "[data-test='manual-dispense-diagnostic'] select",
+        )?.value,
+      ).toBe("A1");
+    });
 
     button(host, "出货一件").click();
     await flush();
@@ -703,6 +752,70 @@ describe("Local Operations", () => {
     expect(newDiagnosticRequest?.idempotencyKey).not.toBe(
       firstRequest.idempotencyKey,
     );
+  });
+
+  it("submits only the selected canonical stock-task slot for manual dispense", async () => {
+    client.getStockMaintenanceTask.mockResolvedValueOnce({
+      taskId: "stock-task-01",
+      mode: "routine_refill",
+      status: "ready",
+      slots: [
+        {
+          slotCode: "A1",
+          layerNo: 1,
+          cellNo: 1,
+          productName: "Mineral Water",
+          sku: "WATER-001",
+          currentQuantity: 2,
+          capacity: 8,
+          submittedAddition: null,
+          submittedQuantity: null,
+          previewQuantity: null,
+          syncStatus: "not_submitted",
+          salesState: "sale_ready",
+          reconciliationReason: null,
+        },
+        {
+          slotCode: "B3",
+          layerNo: 2,
+          cellNo: 3,
+          productName: "Sparkling Water",
+          sku: "WATER-002",
+          currentQuantity: 4,
+          capacity: 8,
+          submittedAddition: null,
+          submittedQuantity: null,
+          previewQuantity: null,
+          syncStatus: "not_submitted",
+          salesState: "sale_ready",
+          reconciliationReason: null,
+        },
+      ],
+    });
+    const host = await render();
+    const slotSelect = host.querySelector<HTMLSelectElement>(
+      "[data-test='manual-dispense-diagnostic'] select",
+    );
+    if (!slotSelect) throw new Error("manual dispense slot selector not found");
+    await vi.waitFor(() => {
+      expect(slotSelect.value).toBe("A1");
+    });
+
+    slotSelect.value = "B3";
+    slotSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    button(host, "出货一件").click();
+    await flush();
+
+    expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith({
+      idempotencyKey: expect.any(String),
+      slotCode: "B3",
+      quantity: 1,
+      timeoutSeconds: 30,
+    });
+    expect(
+      host.querySelectorAll("[data-test='manual-dispense-diagnostic'] input"),
+    ).toHaveLength(0);
   });
 
   it("submits a bounded refill task directly and retains only the daemon task and recognizable slot facts", async () => {

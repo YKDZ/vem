@@ -75,8 +75,6 @@ function parseArgs(argv) {
     "target-identity",
     "runtime-base",
     "scanner-code-file",
-    "maintenance-relay-session-json",
-    "maintenance-endpoint-policy-json",
     "lifecycle-reference",
     "profile",
     "out",
@@ -1237,19 +1235,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
     [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: queryDatabaseUrl,
   };
   const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
-  const serialEndpointArgs = [];
-  if (options.maintenance_relay_session_json) {
-    serialEndpointArgs.push(
-      "--maintenance-relay-session-json",
-      options.maintenance_relay_session_json,
-    );
-  }
-  if (options.maintenance_endpoint_policy_json) {
-    serialEndpointArgs.push(
-      "--maintenance-endpoint-policy-json",
-      options.maintenance_endpoint_policy_json,
-    );
-  }
   let launch;
   let cleanup;
   let delayedPickupTrack;
@@ -1294,7 +1279,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
           `vm-lifecycle://${options.run_id.toLowerCase()}.installed-kiosk-sale`,
         "--sale-correlation-id",
         saleCorrelationId,
-        ...serialEndpointArgs,
         "--start-only",
         "--out",
         plan.artifacts.serialPrestartReport,
@@ -1518,19 +1502,6 @@ export async function runInstalledKioskSaleAcceptanceCli(
           "--out",
           plan.artifacts.serialReport,
         ];
-        if (
-          options.maintenance_endpoint_policy_json &&
-          !options.maintenance_relay_session_json
-        ) {
-          throw new Error(
-            "--maintenance-endpoint-policy-json requires --maintenance-relay-session-json",
-          );
-        }
-        serialCommand.splice(
-          serialCommand.indexOf("--out"),
-          0,
-          ...serialEndpointArgs,
-        );
         restoreConsumedSerialInputs(scanner, trust);
         await run(serialCommand, "serial conformance", {
           env: nonQueryEnvironment,

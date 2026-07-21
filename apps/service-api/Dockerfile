@@ -1,43 +1,30 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-slim AS base
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 WORKDIR /app
 
-FROM node:24-slim AS openssh-runtime
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client \
-  && rm -rf /var/lib/apt/lists/*
-
 FROM base AS pruner
-COPY package.json ./
-RUN TURBO_VERSION="$(node -p 'require("./package.json").devDependencies.turbo')" \
-  && npm install -g "turbo@${TURBO_VERSION}"
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+RUN corepack prepare "$(node -p 'require(\"./package.json\").packageManager')" --activate
 COPY . .
-RUN turbo prune service-api --docker
+RUN pnpm exec turbo prune service-api --docker
 
 FROM base AS builder
 COPY --from=pruner /app/out/json/ ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-  PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" \
-  && corepack prepare "${PNPM_VERSION}" --activate \
-  && pnpm install --frozen-lockfile
+RUN corepack prepare "$(node -p 'require(\"./package.json\").packageManager')" --activate
+RUN --mount=type=cache,id=vem-pnpm,target=/pnpm/store pnpm fetch --frozen-lockfile
 COPY --from=pruner /app/out/full/ ./
 COPY --from=pruner /app/tsconfig.base.json ./tsconfig.base.json
-RUN pnpm --filter @vem/shared build \
+RUN --mount=type=cache,id=vem-pnpm,target=/pnpm/store pnpm install --offline --frozen-lockfile \
+  && pnpm --filter @vem/shared build \
   && pnpm --filter @vem/db build \
   && pnpm --filter service-api build \
   && pnpm --filter service-api deploy --legacy --prod /prod/service-api
 
-FROM openssh-runtime AS maintenance-ssh-ca-test
-WORKDIR /app
-COPY --from=builder /app ./
-USER node
-ENTRYPOINT ["node", "node_modules/tsx/dist/cli.mjs", "apps/service-api/scripts/maintenance-ssh-ca-container-entry.ts"]
-
-FROM openssh-runtime AS runner
+FROM node:24-slim AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=builder /prod/service-api ./

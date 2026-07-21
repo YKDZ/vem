@@ -12,10 +12,6 @@ import {
   machineSlotCellNoSchema,
   machineSlotLayerNoSchema,
 } from "./machine-slot-coordinate";
-import {
-  maintenanceWireGuardEndpointSchema,
-  maintenanceWireGuardPublicKeySchema,
-} from "./maintenance-access";
 
 function isIanaTimeZone(value: string): boolean {
   try {
@@ -25,59 +21,6 @@ function isIanaTimeZone(value: string): boolean {
     return false;
   }
 }
-
-type ParsedIpv4Cidr = {
-  network: number;
-  broadcast: number;
-  prefixLength: number;
-};
-
-const IPV4_CIDR_PATTERN =
-  /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d|[12]\d|3[0-2])$/;
-
-function ipv4NumberToString(value: number): string {
-  return [24, 16, 8, 0]
-    .map((shift) => Math.floor(value / 2 ** shift) % 256)
-    .join(".");
-}
-
-function parseCanonicalIpv4Cidr(
-  value: string,
-  minimumPrefixLength: number,
-): ParsedIpv4Cidr | undefined {
-  const match = IPV4_CIDR_PATTERN.exec(value);
-  if (!match) return undefined;
-  const octets = match.slice(1, 5).map(Number);
-  if (octets.some((octet) => octet > 255)) return undefined;
-  const prefixLength = Number(match[5]);
-  if (prefixLength < minimumPrefixLength) return undefined;
-  const address =
-    octets[0] * 2 ** 24 + octets[1] * 2 ** 16 + octets[2] * 2 ** 8 + octets[3];
-  const blockSize = 2 ** (32 - prefixLength);
-  const network = Math.floor(address / blockSize) * blockSize;
-  if (`${ipv4NumberToString(network)}/${prefixLength}` !== value) {
-    return undefined;
-  }
-  return { network, broadcast: network + blockSize - 1, prefixLength };
-}
-
-function ipv4CidrsOverlap(a: ParsedIpv4Cidr, b: ParsedIpv4Cidr): boolean {
-  return a.network <= b.broadcast && b.network <= a.broadcast;
-}
-
-const maintenanceHostRouteSchema = z
-  .string()
-  .refine(
-    (value) => parseCanonicalIpv4Cidr(value, 32)?.prefixLength === 32,
-    "Maintenance address must be a valid canonical IPv4 /32",
-  );
-
-const maintenanceRoleRouteSchema = z
-  .string()
-  .refine(
-    (value) => parseCanonicalIpv4Cidr(value, 24) !== undefined,
-    "Maintenance role route must be a canonical IPv4 CIDR with prefix /24 or narrower",
-  );
 
 export const machineGeoLocationSchema = z.strictObject({
   latitude: z.number().min(-90).max(90),
@@ -422,179 +365,6 @@ export const adminMachineRemoteOpResponseSchema = z.strictObject({
   resultJson: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
-export const productionPilotReadinessStatusSchema = z.enum([
-  "ready",
-  "blocked",
-  "degraded",
-]);
-
-export const productionPilotReadinessCheckStatusSchema = z.enum([
-  "ready",
-  "blocked",
-  "degraded",
-  "missing",
-]);
-
-const productionPilotReadinessCheckBaseSchema = z.strictObject({
-  status: productionPilotReadinessCheckStatusSchema,
-  reasonCode: z.string().min(1).max(96),
-  actionCode: z.string().min(1).max(96),
-});
-
-const machineHeartbeatEvidenceSchema = z.strictObject({
-  machineStatus: machineStatusSchema,
-  heartbeatAgeSeconds: z.int().nonnegative().nullable(),
-  timeoutSeconds: z.int().positive(),
-  latestHeartbeatReportedAt: z.iso.datetime().nullable(),
-  lastSeenAt: z.iso.datetime().nullable(),
-});
-
-const paymentReadinessEvidenceSchema = z.strictObject({
-  productionProviderCount: z.int().nonnegative(),
-});
-
-const scannerRuntimeStatusEvidenceSchema = z.strictObject({
-  scannerStatus: z.string().nullable(),
-  scannerOnline: z.boolean().nullable(),
-});
-
-const naturalContextReadinessEvidenceSchema = z.strictObject({
-  externalNaturalEnvironmentStatus: z.enum([
-    "ready",
-    "stale",
-    "unavailable",
-    "unconfigured",
-  ]),
-});
-
-const productionDispensePathEvidenceSchema = z.strictObject({
-  productionDispensePathStatus: z.string().nullable(),
-});
-
-const wholeMachineMaintenanceLockEvidenceSchema = z.strictObject({
-  active: z.boolean(),
-  lockCode: z.string().nullable(),
-  slotCode: z.string().nullable(),
-  commandNo: z.string().nullable(),
-});
-
-const physicalStockAttestationEvidenceSchema = z.strictObject({
-  attestationStatus: z.string().nullable(),
-  attestationPlanogramVersion: z.string().nullable(),
-  activeAcknowledgedPlanogramVersion: z.string().nullable(),
-  planogramMatches: z.boolean(),
-});
-
-const recoveryDrillEvidenceSchema = z.strictObject({
-  recoveryDrillStatus: z.string().nullable(),
-});
-
-const managedMachineUpdateEvidenceSchema = z.strictObject({
-  managedMachineUpdateStatus: z.string().nullable(),
-});
-
-export const productionPilotReadinessCheckSchema = z.discriminatedUnion(
-  "kind",
-  [
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("machine_heartbeat"),
-      reasonCode: z.enum(["online", "stale", "missing"]),
-      actionCode: z.enum(["continue_daily_inspection", "restore_connectivity"]),
-      evidence: machineHeartbeatEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("payment_readiness"),
-      reasonCode: z.enum(["ready", "no_production_provider"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "enable_production_payment_provider",
-      ]),
-      evidence: paymentReadinessEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("scanner_runtime_status"),
-      reasonCode: z.enum(["ready", "missing"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "inspect_scanner_runtime",
-      ]),
-      evidence: scannerRuntimeStatusEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("natural_context_readiness"),
-      reasonCode: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "configure_machine_geo_location",
-        "inspect_external_natural_environment",
-      ]),
-      evidence: naturalContextReadinessEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("production_dispense_path"),
-      reasonCode: z.enum(["ready", "blocked"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "restore_real_lower_controller_path",
-      ]),
-      evidence: productionDispensePathEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("whole_machine_maintenance_lock"),
-      reasonCode: z.enum(["clear", "active"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "clear_maintenance_lock_after_recovery",
-      ]),
-      evidence: wholeMachineMaintenanceLockEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("physical_stock_attestation"),
-      reasonCode: z.enum([
-        "ready",
-        "missing",
-        "stale",
-        "inconsistent",
-        "planogram_mismatch",
-      ]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "record_physical_stock_attestation",
-        "record_active_planogram_stock_attestation",
-        "resolve_stock_state_inconsistencies",
-        "apply_planogram_then_attest_stock",
-      ]),
-      evidence: physicalStockAttestationEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("recovery_drill"),
-      reasonCode: z.enum(["ready", "missing"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "complete_recovery_drills",
-      ]),
-      evidence: recoveryDrillEvidenceSchema,
-    }),
-    productionPilotReadinessCheckBaseSchema.extend({
-      kind: z.literal("managed_machine_update"),
-      reasonCode: z.enum(["ready", "missing"]),
-      actionCode: z.enum([
-        "continue_daily_inspection",
-        "verify_managed_update_and_rollback",
-      ]),
-      evidence: managedMachineUpdateEvidenceSchema,
-    }),
-  ],
-);
-
-export const productionPilotReadinessDiagnosticContractSchema = z.strictObject({
-  status: productionPilotReadinessStatusSchema,
-  checkedAt: z.iso.datetime(),
-  blockers: z.array(productionPilotReadinessCheckSchema),
-  degraded: z.array(productionPilotReadinessCheckSchema),
-  checks: z.array(productionPilotReadinessCheckSchema),
-});
-
 export const adminMachineResponseSchema = z.strictObject({
   id: z.uuid(),
   code: z.string().min(1).max(64),
@@ -617,9 +387,6 @@ export const adminMachineResponseSchema = z.strictObject({
     .nullable()
     .optional(),
   latestEnvironmentCommand: adminMachineCommandResponseSchema
-    .nullable()
-    .optional(),
-  productionPilotReadiness: productionPilotReadinessDiagnosticContractSchema
     .nullable()
     .optional(),
 });
@@ -656,12 +423,6 @@ export type AdminMachinePageResponse = z.infer<
 >;
 export type AdminMachineCommandResponse = z.infer<
   typeof adminMachineCommandResponseSchema
->;
-export type ProductionPilotReadinessCheck = z.infer<
-  typeof productionPilotReadinessCheckSchema
->;
-export type ProductionPilotReadinessDiagnosticContract = z.infer<
-  typeof productionPilotReadinessDiagnosticContractSchema
 >;
 export type AdminMachineRemoteOpResponse = z.infer<
   typeof adminMachineRemoteOpResponseSchema
@@ -905,71 +666,6 @@ export const machineClaimRequestSchema = z.strictObject({
     .pipe(z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)),
 });
 
-export const machineProvisioningMaintenanceIdentitySchema = z
-  .strictObject({
-    publicKey: maintenanceWireGuardPublicKeySchema,
-    tunnelAddress: z.ipv4(),
-    address: maintenanceHostRouteSchema,
-    endpoint: maintenanceWireGuardEndpointSchema,
-    relay: z.strictObject({
-      publicKey: maintenanceWireGuardPublicKeySchema,
-      tunnelAddress: z.ipv4(),
-      address: maintenanceHostRouteSchema,
-    }),
-    roleRoutes: z.strictObject({
-      relay: maintenanceHostRouteSchema,
-      runner: maintenanceRoleRouteSchema,
-      maintainer: maintenanceRoleRouteSchema,
-    }),
-    reclaimExpiresAt: z.iso.datetime().optional(),
-  })
-  .superRefine((identity, ctx) => {
-    if (identity.address !== `${identity.tunnelAddress}/32`) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["address"],
-        message: "Maintenance address must match tunnelAddress as /32",
-      });
-    }
-    if (identity.relay.address !== `${identity.relay.tunnelAddress}/32`) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["relay", "address"],
-        message: "Maintenance relay address must match tunnelAddress as /32",
-      });
-    }
-    if (identity.roleRoutes.relay !== identity.relay.address) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["roleRoutes", "relay"],
-        message: "Maintenance relay route must match the relay /32 address",
-      });
-    }
-
-    const machine = parseCanonicalIpv4Cidr(identity.address, 32);
-    const relay = parseCanonicalIpv4Cidr(identity.relay.address, 32);
-    const runner = parseCanonicalIpv4Cidr(identity.roleRoutes.runner, 24);
-    const maintainer = parseCanonicalIpv4Cidr(
-      identity.roleRoutes.maintainer,
-      24,
-    );
-    if (!machine || !relay || !runner || !maintainer) return;
-    if (
-      ipv4CidrsOverlap(runner, maintainer) ||
-      ipv4CidrsOverlap(runner, machine) ||
-      ipv4CidrsOverlap(maintainer, machine) ||
-      ipv4CidrsOverlap(runner, relay) ||
-      ipv4CidrsOverlap(maintainer, relay)
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["roleRoutes"],
-        message:
-          "Maintenance role routes must not overlap each other or peer addresses",
-      });
-    }
-  });
-
 export const productionMachineHardwareProfileSchema = z.strictObject({
   profile: z.literal("production"),
   controller: z.strictObject({
@@ -1053,9 +749,6 @@ export type RotateMachineCredentialsResponse = z.infer<
   typeof rotateMachineCredentialsResponseSchema
 >;
 export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
-export type MachineProvisioningMaintenanceIdentity = z.infer<
-  typeof machineProvisioningMaintenanceIdentitySchema
->;
 export type ProductionMachineHardwareProfile = z.infer<
   typeof productionMachineHardwareProfileSchema
 >;

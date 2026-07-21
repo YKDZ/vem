@@ -39,35 +39,12 @@ const PROTECTED_SCANNER_INPUT = "test-scanner-secret";
 const FAKE_ADAPTER = new URL("./fake-vm-host-adapter.mjs", import.meta.url)
   .pathname;
 const CLIENT = new URL("./run-vm-host-adapter.mjs", import.meta.url).pathname;
-const CONFORMANCE = new URL(
-  "./vm-host-adapter-conformance.mjs",
-  import.meta.url,
-).pathname;
 const SERIAL_CONFORMANCE = new URL(
   "./vm-host-adapter-serial-conformance.mjs",
   import.meta.url,
 ).pathname;
 
 process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
-
-function testbedRunnerDirectContext(lifecycleReference) {
-  return {
-    maintenanceRelaySession: {
-      sessionId: "550e8400-e29b-41d4-a716-446655440000",
-      relayPeer: {
-        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-        tunnelAddress: "10.91.0.1",
-      },
-      sourceTunnelAddress: "10.91.2.10",
-      endpointTunnelAddress: "10.91.16.10",
-    },
-    maintenanceEndpointPolicy: {
-      transport: "testbed-runner-direct",
-      runnerSourceAllowlist: ["192.0.2.10/32"],
-      lifecycleReference,
-    },
-  };
-}
 
 function blockedSaleOutput(overrides = {}) {
   const flow = {
@@ -356,7 +333,12 @@ function serialDeviceMappings(connectionState) {
     {
       role: "lower-controller",
       guestDeviceIdentity: "guest-device://lower-controller-001",
-      guestUsbTopology: { alias: "serial-lower-controller", targetPort: 0, usbBus: 0, usbPort: "1" },
+      guestUsbTopology: {
+        alias: "serial-lower-controller",
+        targetPort: 0,
+        usbBus: 0,
+        usbPort: "1",
+      },
       simulatorProcessIdentity: "simulator-process://lower-controller-001",
       simulatorSocketIdentity: "simulator-socket://lower-controller-001",
       connectionState,
@@ -364,7 +346,12 @@ function serialDeviceMappings(connectionState) {
     {
       role: "scanner",
       guestDeviceIdentity: "guest-device://scanner-001",
-      guestUsbTopology: { alias: "serial-scanner", targetPort: 1, usbBus: 0, usbPort: "2" },
+      guestUsbTopology: {
+        alias: "serial-scanner",
+        targetPort: 1,
+        usbBus: 0,
+        usbPort: "2",
+      },
       simulatorProcessIdentity: "simulator-process://scanner-001",
       simulatorSocketIdentity: "simulator-socket://scanner-001",
       connectionState,
@@ -553,8 +540,6 @@ function reportFor(request, overrides = {}) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
-      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
-      maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result: "succeeded",
@@ -577,27 +562,6 @@ function reportFor(request, overrides = {}) {
     },
     consumedAssets: request.assets,
     guest: {
-      maintenanceEndpointIdentity: "guest-maintenance://runtime-testbed-001",
-      maintenanceEndpoint: {
-        transport: "wireguard",
-        protocol: "ssh",
-        host:
-          request.maintenanceRelaySession?.endpointTunnelAddress ??
-          "10.91.2.10",
-        port: 22,
-        reachability: "discovered",
-        ...(request.maintenanceRelaySession
-          ? {
-              relayProof: {
-                ...request.maintenanceRelaySession,
-                relayPeer: { ...request.maintenanceRelaySession.relayPeer },
-                endpointAllowedIp: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
-                endpointRoute: `${request.maintenanceRelaySession.endpointTunnelAddress}/32`,
-                handshakeUnixSeconds: 1_784_160_000,
-              },
-            }
-          : {}),
-      },
       deviceMappings:
         request.requestedCapabilities.includes("serial:lower-controller") ||
         (isV2 && request.serialSession !== null)
@@ -1442,127 +1406,6 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("accepts an idempotent approved-base capture with cleanup-completed unavailable endpoint", () => {
-    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
-    const request = createVmHostAdapterRequest(
-      requestFor("capture-approved-base", {
-        factoryMedia: {
-          assemblyMode: "windows-serviced-iso",
-          targetFirmware: "bios",
-          manifestIdentity: `sha256:${"e".repeat(64)}`,
-          provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
-          provenanceDigest: `sha256:${"f".repeat(64)}`,
-          outputIdentity: factoryIso,
-          outputDigest: `sha256:${"d".repeat(64)}`,
-        },
-        assets: [
-          {
-            role: "factory-iso",
-            identity: factoryIso,
-            digest: `sha256:${"d".repeat(64)}`,
-          },
-        ],
-      }),
-    );
-    const report = reportFor(request, {
-      guest: {
-        maintenanceEndpointIdentity:
-          "guest-maintenance://unreachable-runtime-testbed-001",
-        maintenanceEndpoint: {
-          transport: "wireguard",
-          protocol: "ssh",
-          host: "guest-unreachable.invalid",
-          port: 22,
-          reachability: "unavailable",
-        },
-        deviceMappings: [],
-        defaultAudioIdentity: "guest-audio://runtime-testbed-001",
-      },
-      cleanup: {
-        status: "completed",
-        overlayDisposition: "removed",
-        observed: {
-          overlay: "removed",
-          runDirectory: "removed",
-          personalizationMedia: "removed",
-        },
-      },
-    });
-
-    assert.deepEqual(
-      validateVmHostAdapterReport(report, request).cleanup,
-      report.cleanup,
-    );
-  });
-
-  it("rejects unavailable approved-base capture endpoints unless cleanup proves removal", () => {
-    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
-    const request = createVmHostAdapterRequest(
-      requestFor("capture-approved-base", {
-        factoryMedia: {
-          assemblyMode: "windows-serviced-iso",
-          targetFirmware: "bios",
-          manifestIdentity: `sha256:${"e".repeat(64)}`,
-          provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
-          provenanceDigest: `sha256:${"f".repeat(64)}`,
-          outputIdentity: factoryIso,
-          outputDigest: `sha256:${"d".repeat(64)}`,
-        },
-        assets: [
-          {
-            role: "factory-iso",
-            identity: factoryIso,
-            digest: `sha256:${"d".repeat(64)}`,
-          },
-        ],
-      }),
-    );
-    const unavailableGuest = {
-      maintenanceEndpointIdentity:
-        "guest-maintenance://unreachable-runtime-testbed-001",
-      maintenanceEndpoint: {
-        protocol: "ssh",
-        host: "guest-unreachable.invalid",
-        port: 22,
-        reachability: "unavailable",
-      },
-      deviceMappings: [],
-      defaultAudioIdentity: "guest-audio://runtime-testbed-001",
-    };
-
-    assert.throws(() =>
-      validateVmHostAdapterReport(
-        reportFor(request, { guest: unavailableGuest }),
-        request,
-      ),
-    );
-
-    for (const [key, value] of [
-      ["overlay", "present"],
-      ["runDirectory", "present"],
-      ["personalizationMedia", "not-mounted"],
-    ]) {
-      assert.throws(() =>
-        validateVmHostAdapterReport(
-          reportFor(request, {
-            guest: unavailableGuest,
-            cleanup: {
-              status: "completed",
-              overlayDisposition: "removed",
-              observed: {
-                overlay: "removed",
-                runDirectory: "removed",
-                personalizationMedia: "removed",
-                [key]: value,
-              },
-            },
-          }),
-          request,
-        ),
-      );
-    }
-  });
-
   it("requires a distinct canonical operation reference when cancelling", () => {
     const valid = createVmHostAdapterRequest(requestFor("cancel"));
     assert.equal(
@@ -1615,228 +1458,6 @@ describe("VM Host Adapter contract", () => {
         }),
         request,
       ),
-    );
-  });
-
-  it("accepts a host-discovered endpoint and rejects an unavailable one", () => {
-    const request = createVmHostAdapterRequest(requestFor());
-    const report = reportFor(request);
-    assert.equal(
-      validateVmHostAdapterReport(report, request).guest.maintenanceEndpoint
-        .host,
-      "10.91.2.10",
-    );
-    assert.throws(() =>
-      validateVmHostAdapterReport(
-        reportFor(request, {
-          guest: {
-            ...report.guest,
-            maintenanceEndpoint: {
-              protocol: "ssh",
-              host: "10.91.2.10",
-              port: 22,
-              reachability: "unavailable",
-            },
-          },
-        }),
-        request,
-      ),
-    );
-  });
-
-  it("requires the discovered maintenance endpoint to be a concrete SSH address", () => {
-    const request = createVmHostAdapterRequest(requestFor());
-    const report = reportFor(request);
-
-    for (const host of [
-      "guest.testbed.internal",
-      "0.0.0.0",
-      "127.0.0.1",
-      "::",
-    ]) {
-      const invalid = structuredClone(report);
-      invalid.guest.maintenanceEndpoint.host = host;
-      assert.throws(
-        () => validateVmHostAdapterReport(invalid, request),
-        /maintenanceEndpoint\.host must be a concrete IP address/,
-      );
-    }
-
-    const wrongPort = structuredClone(report);
-    wrongPort.guest.maintenanceEndpoint.port = 2222;
-    assert.throws(
-      () => validateVmHostAdapterReport(wrongPort, request),
-      /maintenanceEndpoint\.port must be the SSH port 22/,
-    );
-  });
-
-  it("permits a clean-install testbed runner-direct DHCP SSH endpoint only with explicit sources", () => {
-    const maintenanceRelaySession = {
-      sessionId: "550e8400-e29b-41d4-a716-446655440000",
-      relayPeer: {
-        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-        tunnelAddress: "10.91.0.1",
-      },
-      sourceTunnelAddress: "10.91.2.10",
-      endpointTunnelAddress: "10.91.16.10",
-    };
-    const request = createVmHostAdapterRequest(
-      cleanInstallRequest({
-        maintenanceRelaySession,
-        maintenanceEndpointPolicy: {
-          transport: "testbed-runner-direct",
-          runnerSourceAllowlist: ["192.0.2.10/32"],
-          lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
-        },
-      }),
-    );
-    const report = reportFor(request);
-    report.guest.maintenanceEndpoint = {
-      transport: "testbed-runner-direct",
-      protocol: "ssh",
-      host: "192.0.2.42",
-      port: 22,
-      reachability: "discovered",
-    };
-    assert.equal(
-      validateVmHostAdapterReport(report, request).guest.maintenanceEndpoint
-        .host,
-      "192.0.2.42",
-    );
-
-    const directEndpoint = {
-      transport: "testbed-runner-direct",
-      protocol: "ssh",
-      host: "192.0.2.42",
-      port: 22,
-      reachability: "discovered",
-    };
-    const captureRequest = createVmHostAdapterRequest(
-      requestFor("capture-approved-base", {
-        factoryMedia: request.factoryMedia,
-        assets: [request.assets[0]],
-        maintenanceRelaySession,
-        maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
-      }),
-    );
-    const captureReport = reportFor(captureRequest);
-    captureReport.guest.maintenanceEndpoint = directEndpoint;
-    assert.equal(
-      validateVmHostAdapterReport(captureReport, captureRequest).result,
-      "succeeded",
-    );
-    const overlayRequest = createVmHostAdapterRequest(
-      requestFor("create-disposable-overlay", {
-        maintenanceRelaySession,
-        maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
-      }),
-    );
-    const overlayReport = reportFor(overlayRequest);
-    overlayReport.guest.maintenanceEndpoint = directEndpoint;
-    assert.equal(
-      validateVmHostAdapterReport(overlayReport, overlayRequest).result,
-      "succeeded",
-    );
-    for (const operation of [
-      "start-serial-session",
-      "collect-serial-evidence",
-      "stop-serial-session",
-    ]) {
-      const serialRequest = createVmHostAdapterRequest(
-        serialSessionRequest(operation, {
-          maintenanceRelaySession,
-          maintenanceEndpointPolicy: request.maintenanceEndpointPolicy,
-        }),
-      );
-      const serialReport = reportFor(serialRequest);
-      serialReport.guest.maintenanceEndpoint = directEndpoint;
-      assert.equal(
-        validateVmHostAdapterReport(serialReport, serialRequest).result,
-        "succeeded",
-        `${operation} must retain the lifecycle-bound direct endpoint`,
-      );
-    }
-
-    const missingSources = structuredClone(request);
-    missingSources.maintenanceEndpointPolicy.runnerSourceAllowlist = [];
-    assert.throws(
-      () => validateVmHostAdapterRequest(missingSources),
-      /runnerSourceAllowlist must contain explicit runner host addresses/,
-    );
-
-    const wrongOperation = requestFor("restore-approved-base", {
-      maintenanceRelaySession,
-      maintenanceEndpointPolicy: {
-        transport: "testbed-runner-direct",
-        runnerSourceAllowlist: ["192.0.2.10"],
-        lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
-      },
-    });
-    assert.throws(
-      () => validateVmHostAdapterRequest(wrongOperation),
-      /Factory lifecycle guest-endpoint operations/,
-    );
-  });
-
-  it("rejects a fresh handshake from a non-session Relay peer", () => {
-    const maintenanceRelaySession = {
-      sessionId: "550e8400-e29b-41d4-a716-446655440000",
-      relayPeer: {
-        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-        tunnelAddress: "10.91.0.1",
-      },
-      sourceTunnelAddress: "10.91.2.10",
-      endpointTunnelAddress: "10.91.16.10",
-    };
-    const request = createVmHostAdapterRequest(
-      requestFor("restore-approved-base", { maintenanceRelaySession }),
-    );
-    const report = reportFor(request);
-    report.guest.maintenanceEndpoint.relayProof = {
-      ...maintenanceRelaySession,
-      relayPeer: {
-        ...maintenanceRelaySession.relayPeer,
-        publicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-      },
-      endpointAllowedIp: "10.91.16.10/32",
-      endpointRoute: "10.91.16.10/32",
-      handshakeUnixSeconds: 1_784_160_000,
-    };
-    assert.throws(
-      () => validateVmHostAdapterReport(report, request),
-      /relayProof\.relayPeer does not match maintenance session/,
-    );
-  });
-
-  it("allows cleanup to attest removal after its guest endpoint is gone", () => {
-    const request = createVmHostAdapterRequest(requestFor("cleanup"));
-    const report = reportFor(request, {
-      guest: {
-        maintenanceEndpointIdentity:
-          "guest-maintenance://unreachable-runtime-testbed-001",
-        maintenanceEndpoint: {
-          transport: "wireguard",
-          protocol: "ssh",
-          host: "guest-unreachable.invalid",
-          port: 22,
-          reachability: "unavailable",
-        },
-        deviceMappings: [],
-        defaultAudioIdentity: "guest-audio://runtime-testbed-001",
-      },
-      cleanup: {
-        status: "completed",
-        overlayDisposition: "removed",
-        observed: {
-          overlay: "removed",
-          runDirectory: "removed",
-          personalizationMedia: "removed",
-        },
-      },
-    });
-    assert.equal(
-      validateVmHostAdapterReport(report, request).result,
-      "succeeded",
     );
   });
 
@@ -2689,13 +2310,6 @@ describe("VM Host Adapter contract", () => {
   it("binds the CLI display capture to the supplied CDP target and generated visual challenge", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-cli-"));
     const out = join(root, "display.json");
-    const lifecycleReference = `vm-lifecycle://run-12-contract.${createHash(
-      "sha256",
-    )
-      .update("RUN-12-CONTRACT\nvm-target://runtime-testbed")
-      .digest("hex")
-      .slice(0, 32)}`;
-    const maintenanceContext = testbedRunnerDirectContext(lifecycleReference);
     execFileSync(
       process.execPath,
       [
@@ -2716,10 +2330,6 @@ describe("VM Host Adapter contract", () => {
         "http://tauri.localhost/#/",
         "--cdp-target-id",
         "cdp-target-runtime-001",
-        "--maintenance-relay-session-json",
-        JSON.stringify(maintenanceContext.maintenanceRelaySession),
-        "--maintenance-endpoint-policy-json",
-        JSON.stringify(maintenanceContext.maintenanceEndpointPolicy),
         "--out",
         out,
       ],
@@ -2733,18 +2343,6 @@ describe("VM Host Adapter contract", () => {
       },
     );
     const report = JSON.parse(readFileSync(out, "utf8"));
-    assert.deepEqual(
-      report.request.maintenanceRelaySession,
-      maintenanceContext.maintenanceRelaySession,
-    );
-    assert.deepEqual(
-      report.request.maintenanceEndpointPolicy,
-      maintenanceContext.maintenanceEndpointPolicy,
-    );
-    assert.equal(
-      report.guest.maintenanceEndpoint.transport,
-      "testbed-runner-direct",
-    );
     assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
     assert.equal(report.displayCapture.cdpTargetId, "cdp-target-runtime-001");
     assert.match(report.displayCapture.visualChallenge.token, /^[a-f0-9]{64}$/);
@@ -2753,432 +2351,192 @@ describe("VM Host Adapter contract", () => {
       report.displayCapture.visualChallenge.region.width *
         report.displayCapture.visualChallenge.region.height,
     );
-    const wireGuardOnlyContext = spawnSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
-        "restore-approved-base",
-        "--run-id",
-        "RUN-12-CONTRACT",
-        "--target-identity",
-        "vm-target://runtime-testbed",
-        "--runtime-base",
-        `runtime-base://sha256/${HASH}`,
-        "--maintenance-relay-session-json",
-        JSON.stringify(maintenanceContext.maintenanceRelaySession),
-        "--out",
-        join(root, "wireguard-context.json"),
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+
+    it("carries production CLI daemon calibration response into default-output PCM evidence", () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-audio-cli-"));
+      const out = join(root, "audio.json");
+      const responseOut = join(root, "daemon-audio-response.json");
+      execFileSync(
+        process.execPath,
+        [
+          CLIENT,
+          "--operation",
+          "capture-default-audio",
+          "--run-id",
+          "RUN-12-CONTRACT",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--runtime-base",
+          `runtime-base://sha256/${HASH}`,
+          "--active-kiosk-session-user",
+          "VEMKiosk",
+          "--active-kiosk-session-id",
+          "3",
+          "--daemon-calibration-response-out",
+          responseOut,
+          "--out",
+          out,
+        ],
+        {
+          env: {
+            ...process.env,
+            RUNNER_TEMP: root,
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
+          },
         },
-      },
-    );
-    assert.equal(wireGuardOnlyContext.status, 0, wireGuardOnlyContext.stderr);
-    const wireGuardReport = JSON.parse(
-      readFileSync(join(root, "wireguard-context.json"), "utf8"),
-    );
-    assert.deepEqual(
-      wireGuardReport.request.maintenanceRelaySession,
-      maintenanceContext.maintenanceRelaySession,
-    );
-    assert.equal(wireGuardReport.request.maintenanceEndpointPolicy, null);
-    assert.equal(
-      wireGuardReport.guest.maintenanceEndpoint.transport,
-      "wireguard",
-    );
-    const policyWithoutSession = spawnSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
-        "restore-approved-base",
-        "--run-id",
-        "RUN-12-CONTRACT",
-        "--target-identity",
-        "vm-target://runtime-testbed",
-        "--runtime-base",
-        `runtime-base://sha256/${HASH}`,
-        "--maintenance-endpoint-policy-json",
-        JSON.stringify(maintenanceContext.maintenanceEndpointPolicy),
-        "--out",
-        join(root, "policy-without-session.json"),
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(policyWithoutSession.status, 1);
-    assert.match(
-      policyWithoutSession.stderr,
-      /maintenance-endpoint-policy-json requires --maintenance-relay-session-json/,
-    );
-  });
+      );
+      const report = JSON.parse(readFileSync(out, "utf8"));
+      const response = JSON.parse(readFileSync(responseOut, "utf8"));
+      assert.equal(report.defaultAudioCapture.defaultOutput.status, "active");
+      assert.equal("endpointId" in response, false);
+      assert.equal(
+        response.challenge,
+        report.defaultAudioCapture.daemonCalibration.challenge,
+      );
+      assert.match(response.testEvidenceToken, /^[0-9a-f-]{36}$/);
+      assert.equal(report.evidence.length, 2);
+    });
 
-  it("carries production CLI daemon calibration response into default-output PCM evidence", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-audio-cli-"));
-    const out = join(root, "audio.json");
-    const responseOut = join(root, "daemon-audio-response.json");
-    execFileSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
-        "capture-default-audio",
-        "--run-id",
-        "RUN-12-CONTRACT",
-        "--target-identity",
-        "vm-target://runtime-testbed",
-        "--runtime-base",
-        `runtime-base://sha256/${HASH}`,
-        "--active-kiosk-session-user",
-        "VEMKiosk",
-        "--active-kiosk-session-id",
-        "3",
-        "--daemon-calibration-response-out",
-        responseOut,
-        "--out",
-        out,
-      ],
-      {
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence"),
-        },
-      },
-    );
-    const report = JSON.parse(readFileSync(out, "utf8"));
-    const response = JSON.parse(readFileSync(responseOut, "utf8"));
-    assert.equal(report.defaultAudioCapture.defaultOutput.status, "active");
-    assert.equal("endpointId" in response, false);
-    assert.equal(
-      response.challenge,
-      report.defaultAudioCapture.daemonCalibration.challenge,
-    );
-    assert.match(response.testEvidenceToken, /^[0-9a-f-]{36}$/);
-    assert.equal(report.evidence.length, 2);
-  });
+    it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-failure-"));
+      const cleanupFile = join(root, "cleanup.txt");
+      await assert.rejects(
+        () =>
+          runVmHostAdapter({
+            request: createVmHostAdapterRequest(requestFor()),
+            workDirectory: root,
+            environment: {
+              VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+              VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+              VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+            },
+          }),
+        (error) =>
+          error instanceof VmHostAdapterExecutionError &&
+          error.diagnostic.cleanup.status === "completed" &&
+          error.diagnostic.cleanup.observed.overlay === "removed",
+      );
+      assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+    });
 
-  it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-failure-"));
-    const cleanupFile = join(root, "cleanup.txt");
-    await assert.rejects(
-      () =>
-        runVmHostAdapter({
-          request: createVmHostAdapterRequest(requestFor()),
-          workDirectory: root,
-          environment: {
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
-            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
-          },
-        }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.cleanup.status === "completed" &&
-        error.diagnostic.cleanup.observed.overlay === "removed",
-    );
-    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
-  });
+    it("runs validated recovery cleanup after a clean-install adapter failure", async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-failure-"));
+      const cleanupFile = join(root, "cleanup.txt");
+      await assert.rejects(
+        () =>
+          runVmHostAdapter({
+            request: createVmHostAdapterRequest(cleanInstallRequest()),
+            workDirectory: root,
+            environment: {
+              VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+              VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+              VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+            },
+          }),
+        (error) =>
+          error instanceof VmHostAdapterExecutionError &&
+          error.diagnostic.result === "failed" &&
+          error.diagnostic.cleanup.status === "completed",
+      );
+      assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+    });
 
-  it("runs validated recovery cleanup after a clean-install adapter failure", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-failure-"));
-    const cleanupFile = join(root, "cleanup.txt");
-    await assert.rejects(
-      () =>
-        runVmHostAdapter({
-          request: createVmHostAdapterRequest(cleanInstallRequest()),
-          workDirectory: root,
-          environment: {
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
-            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
-          },
-        }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.result === "failed" &&
-        error.diagnostic.cleanup.status === "completed",
-    );
-    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
-  });
-
-  it("clears direct maintenance context before recovering a failed Factory request", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-direct-failure-"));
-    const request = createVmHostAdapterRequest(
-      cleanInstallRequest(
-        testbedRunnerDirectContext(
-          "vm-lifecycle://run-12-contract.runtime-testbed",
-        ),
-      ),
-    );
-    await assert.rejects(
-      () =>
-        runVmHostAdapter({
-          request,
-          workDirectory: root,
-          environment: {
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
-          },
-        }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.cleanup.status === "completed",
-    );
-  });
-
-  it("cancels and cleans up a timed-out clean-install adapter", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-timeout-"));
-    const signalFile = join(root, "adapter.signal");
-    const cancelFile = join(root, "adapter.cancel");
-    const cleanupFile = join(root, "cleanup.txt");
-    const operationLog = join(root, "operations.log");
-    const pidFile = join(root, "adapter.pid");
-    const request = createVmHostAdapterRequest(cleanInstallRequest());
-    await assert.rejects(
-      () =>
-        runVmHostAdapter({
-          request,
-          workDirectory: root,
-          timeoutMs: 80,
-          environment: {
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
-            VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
-            VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
-            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
-            VEM_VM_HOST_ADAPTER_OPERATION_LOG: operationLog,
-            VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
-          },
-        }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.result === "timed_out" &&
-        error.diagnostic.cleanup.status === "completed",
-    );
-    assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
-    assert.equal(
-      readFileSync(cancelFile, "utf8"),
-      `${request.operationReference}\n`,
-    );
-    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
-    assert.deepEqual(readFileSync(operationLog, "utf8").trim().split("\n"), [
-      "clean-install",
-      "cancel",
-      "cleanup",
-    ]);
-  });
-
-  it("clears direct maintenance context before cancelling and recovering a timed-out Factory request", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-direct-timeout-"));
-    const request = createVmHostAdapterRequest(
-      cleanInstallRequest(
-        testbedRunnerDirectContext(
-          "vm-lifecycle://run-12-contract.runtime-testbed",
-        ),
-      ),
-    );
-    await assert.rejects(
-      () =>
-        runVmHostAdapter({
-          request,
-          workDirectory: root,
-          timeoutMs: 80,
-          environment: {
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
-          },
-        }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.result === "timed_out" &&
-        error.diagnostic.cleanup.status === "completed",
-    );
-  });
-
-  it("rejects retired clean-install CLI compatibility instead of invoking Factory admission", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-install-"));
-    const out = join(root, "report.json");
-    const result = spawnSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
+    it("cancels and cleans up a timed-out clean-install adapter", async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-timeout-"));
+      const signalFile = join(root, "adapter.signal");
+      const cancelFile = join(root, "adapter.cancel");
+      const cleanupFile = join(root, "cleanup.txt");
+      const operationLog = join(root, "operations.log");
+      const pidFile = join(root, "adapter.pid");
+      const request = createVmHostAdapterRequest(cleanInstallRequest());
+      await assert.rejects(
+        () =>
+          runVmHostAdapter({
+            request,
+            workDirectory: root,
+            timeoutMs: 80,
+            environment: {
+              VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+              VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
+              VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
+              VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
+              VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+              VEM_VM_HOST_ADAPTER_OPERATION_LOG: operationLog,
+              VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
+            },
+          }),
+        (error) =>
+          error instanceof VmHostAdapterExecutionError &&
+          error.diagnostic.result === "timed_out" &&
+          error.diagnostic.cleanup.status === "completed",
+      );
+      assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
+      assert.equal(
+        readFileSync(cancelFile, "utf8"),
+        `${request.operationReference}\n`,
+      );
+      assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+      assert.deepEqual(readFileSync(operationLog, "utf8").trim().split("\n"), [
         "clean-install",
-        "--run-id",
-        "RUN-12-CONTRACT",
-        "--target-identity",
-        "vm-target://runtime-testbed",
-        "--factory-iso",
-        `factory-cas://sha256/${"d".repeat(64)}`,
-        "--factory-personalization-media",
-        `factory-cas://sha256/${"e".repeat(64)}`,
-        "--factory-assembly-mode",
-        "windows-serviced-iso",
-        "--factory-target-firmware",
-        "bios",
-        "--factory-manifest",
-        `sha256:${"f".repeat(64)}`,
-        "--factory-provenance",
-        `factory-evidence://sha256/${"c".repeat(64)}`,
-        "--factory-provenance-digest",
-        `sha256:${"c".repeat(64)}`,
-        "--out",
-        out,
-      ],
-      {
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-          VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+        "cancel",
+        "cleanup",
+      ]);
+    });
+
+    it("rejects retired clean-install CLI compatibility instead of invoking Factory admission", () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-install-"));
+      const out = join(root, "report.json");
+      const result = spawnSync(
+        process.execPath,
+        [
+          CLIENT,
+          "--operation",
+          "clean-install",
+          "--run-id",
+          "RUN-12-CONTRACT",
+          "--target-identity",
+          "vm-target://runtime-testbed",
+          "--factory-iso",
+          `factory-cas://sha256/${"d".repeat(64)}`,
+          "--factory-personalization-media",
+          `factory-cas://sha256/${"e".repeat(64)}`,
+          "--factory-assembly-mode",
+          "windows-serviced-iso",
+          "--factory-target-firmware",
+          "bios",
+          "--factory-manifest",
+          `sha256:${"f".repeat(64)}`,
+          "--factory-provenance",
+          `factory-evidence://sha256/${"c".repeat(64)}`,
+          "--factory-provenance-digest",
+          `sha256:${"c".repeat(64)}`,
+          "--out",
+          out,
+        ],
+        {
+          env: {
+            ...process.env,
+            RUNNER_TEMP: root,
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+          },
         },
-      },
-    );
-    assert.equal(result.status, 1);
-    assert.match(result.stderr.toString("utf8"), /clean-install is retired/);
-  });
-
-  it("builds v2 serial-session requests from logical CLI options", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-cli-"));
-    const startOut = join(root, "start.json");
-    const shared = [
-      "--run-id",
-      "RUN-12-CONTRACT",
-      "--target-identity",
-      "vm-target://runtime-testbed",
-      "--runtime-base",
-      `runtime-base://sha256/${HASH}`,
-      "--sale-correlation-id",
-      "sale-correlation://sale-001",
-      "--order-id",
-      "order-001",
-      "--payment-id",
-      "payment-001",
-      "--vending-command-id",
-      "vending-command-001",
-    ];
-    const environment = {
-      ...process.env,
-      RUNNER_TEMP: root,
-      VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-      VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
-    };
-    execFileSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
-        "start-serial-session",
-        ...shared,
-        "--out",
-        startOut,
-      ],
-      { env: environment },
-    );
-    const start = JSON.parse(readFileSync(startOut, "utf8"));
-    assert.equal(start.schemaVersion, "vem-vm-host-adapter-report/v2");
-    const injectOut = join(root, "inject.json");
-    const protectedScannerCodePath = join(root, "scanner-code.txt");
-    writeFileSync(protectedScannerCodePath, PROTECTED_SCANNER_INPUT, {
-      mode: 0o600,
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr.toString("utf8"), /clean-install is retired/);
     });
-    execFileSync(
-      process.execPath,
-      [
-        CLIENT,
-        "--operation",
-        "inject-scanner-code",
-        ...shared,
-        "--serial-session-id",
-        start.serialSession.serialSessionId,
-        "--session-binding-token",
-        start.serialSession.sessionBindingToken,
-        "--start-operation-reference",
-        start.serialSession.startOperationReference,
-        "--device-mapping-digest",
-        start.serialSession.deviceMappingDigest,
-        "--scanner-code-file",
-        protectedScannerCodePath,
-        "--out",
-        injectOut,
-      ],
-      { env: environment },
-    );
-    const inject = JSON.parse(readFileSync(injectOut, "utf8"));
-    assert.equal(existsSync(protectedScannerCodePath), false);
-    assert.deepEqual(inject.serialSession.scannerAcknowledgement, {
-      ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
-      accepted: true,
-    });
-    assert.doesNotMatch(
-      JSON.stringify(inject),
-      new RegExp(PROTECTED_SCANNER_INPUT),
-    );
-  });
 
-  it("drives an external adapter executable through serial conformance without scanner persistence", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-conformance-"));
-    const scannerCodePath = join(root, "protected-scanner-code.txt");
-    const runnerSigningKeyFile = join(root, "runner-ed25519.pem");
-    const out = join(root, "conformance.json");
-    const maintenanceRelaySession = {
-      sessionId: "550e8400-e29b-41d4-a716-446655440000",
-      relayPeer: {
-        publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-        tunnelAddress: "10.91.0.1",
-      },
-      sourceTunnelAddress: "10.91.2.10",
-      endpointTunnelAddress: "10.91.16.10",
-    };
-    const maintenanceEndpointPolicy = {
-      transport: "testbed-runner-direct",
-      runnerSourceAllowlist: ["192.0.2.10/32"],
-      lifecycleReference: "vm-lifecycle://run-12-contract.runtime-testbed",
-    };
-    writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
-    const runnerKey = generateKeyPairSync("ed25519");
-    const expectedRunnerPublicKey = `ed25519-public-key:base64:${runnerKey.publicKey
-      .export({ type: "spki", format: "der" })
-      .toString("base64")}`;
-    writeFileSync(
-      runnerSigningKeyFile,
-      runnerKey.privateKey.export({ type: "pkcs8", format: "pem" }),
-      { mode: 0o600 },
-    );
-    execFileSync(
-      process.execPath,
-      [
-        SERIAL_CONFORMANCE,
-        "--adapter",
-        FAKE_ADAPTER,
-        "--out",
-        out,
-        "--scanner-code-file",
-        scannerCodePath,
-        "--runner-signing-key-file",
-        runnerSigningKeyFile,
-        "--expected-runner-public-key",
-        expectedRunnerPublicKey,
+    it("builds v2 serial-session requests from logical CLI options", () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-cli-"));
+      const startOut = join(root, "start.json");
+      const shared = [
         "--run-id",
         "RUN-12-CONTRACT",
         "--target-identity",
         "vm-target://runtime-testbed",
         "--runtime-base",
         `runtime-base://sha256/${HASH}`,
-        "--lifecycle-reference",
-        "vm-lifecycle://run-12-contract.runtime-testbed",
-        "--maintenance-relay-session-json",
-        JSON.stringify(maintenanceRelaySession),
-        "--maintenance-endpoint-policy-json",
-        JSON.stringify(maintenanceEndpointPolicy),
         "--sale-correlation-id",
         "sale-correlation://sale-001",
         "--order-id",
@@ -3187,446 +2545,83 @@ describe("VM Host Adapter contract", () => {
         "payment-001",
         "--vending-command-id",
         "vending-command-001",
-      ],
-      {
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
-          VEM_SERIAL_RUNNER_SIGNING_KEY_FILE: runnerSigningKeyFile,
-          VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV:
-            "VEM_SERIAL_RUNNER_SIGNING_KEY_FILE",
-        },
-      },
-    );
-    const report = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(existsSync(runnerSigningKeyFile), false);
-    assert.equal(report.runnerEvidence.publicKey, expectedRunnerPublicKey);
-    for (const name of [
-      "start",
-      "inject",
-      "collect",
-      "firstStop",
-      "repeatedStop",
-    ]) {
-      assert.deepEqual(
-        report.requests[name].maintenanceRelaySession,
-        maintenanceRelaySession,
+      ];
+      const environment = {
+        ...process.env,
+        RUNNER_TEMP: root,
+        VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+        VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+      };
+      execFileSync(
+        process.execPath,
+        [
+          CLIENT,
+          "--operation",
+          "start-serial-session",
+          ...shared,
+          "--out",
+          startOut,
+        ],
+        { env: environment },
       );
-      assert.deepEqual(
-        report.requests[name].maintenanceEndpointPolicy,
-        maintenanceEndpointPolicy,
-      );
-      assert.equal(
-        report.reports[name].guest.maintenanceEndpoint.transport,
-        "testbed-runner-direct",
-      );
-    }
-    assert.deepEqual(
-      report.failureMatrix[0].source.fault.request.maintenanceEndpointPolicy,
-      maintenanceEndpointPolicy,
-    );
-    assert.equal(
-      report.reports.repeatedStop.serialSession.simulatorCleanup
-        .idempotencyVerified,
-      true,
-    );
-    assert.equal(report.reports.collect.serialEvidence.records.length, 9);
-    assert.deepEqual(
-      report.failureMatrix.map((entry) => entry.failureMode),
-      [
-        "malformed-frame",
-        "device-disconnected",
-        "scanner-timeout",
-        "dispense-failed",
-        "swapped-roles",
-        "missing-device",
-      ],
-    );
-    assert.equal(
-      report.failureMatrix.find(
-        (entry) => entry.failureMode === "scanner-timeout",
-      ).vendingCommandId,
-      undefined,
-    );
-    assert.equal(
-      report.failureMatrix.find(
-        (entry) => entry.failureMode === "scanner-timeout",
-      ).source.fault.request.serialSession.saleBindings[0].vendingCommandId,
-      null,
-    );
-    const malformedContext = spawnSync(
-      process.execPath,
-      [
-        SERIAL_CONFORMANCE,
-        "--adapter",
-        FAKE_ADAPTER,
-        "--out",
-        join(root, "malformed-context.json"),
-        "--maintenance-relay-session-json",
-        "[]",
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(malformedContext.status, 1);
-    assert.match(
-      malformedContext.stderr,
-      /--maintenance-relay-session-json must be a JSON object/,
-    );
-    for (const failureMode of ["swapped-roles", "missing-device"]) {
-      const mappingFailure = report.failureMatrix.find(
-        (entry) => entry.failureMode === failureMode,
-      );
-      assert.equal(
-        mappingFailure.operation,
-        "prepare-sale-with-faulted-mapping",
-      );
-      assert.deepEqual(mappingFailure.daemonFailClosed.adapterSession, {
-        ...mappingFailure.startSerialSession,
-        faultStartedAt:
-          mappingFailure.daemonFailClosed.adapterSession.faultStartedAt,
+      const start = JSON.parse(readFileSync(startOut, "utf8"));
+      assert.equal(start.schemaVersion, "vem-vm-host-adapter-report/v2");
+      const injectOut = join(root, "inject.json");
+      const protectedScannerCodePath = join(root, "scanner-code.txt");
+      writeFileSync(protectedScannerCodePath, PROTECTED_SCANNER_INPUT, {
+        mode: 0o600,
       });
-      assert.equal(mappingFailure.recovery.runtimeReady, "passed");
-      assert.equal(
-        mappingFailure.source.fault.request.operation,
-        "start-serial-session",
+      execFileSync(
+        process.execPath,
+        [
+          CLIENT,
+          "--operation",
+          "inject-scanner-code",
+          ...shared,
+          "--serial-session-id",
+          start.serialSession.serialSessionId,
+          "--session-binding-token",
+          start.serialSession.sessionBindingToken,
+          "--start-operation-reference",
+          start.serialSession.startOperationReference,
+          "--device-mapping-digest",
+          start.serialSession.deviceMappingDigest,
+          "--scanner-code-file",
+          protectedScannerCodePath,
+          "--out",
+          injectOut,
+        ],
+        { env: environment },
       );
-      assert.deepEqual(
-        mappingFailure.source.fault.request.serialSession.saleBindings,
-        [],
-      );
-      assert.deepEqual(
-        mappingFailure.source.start,
-        mappingFailure.source.fault,
-      );
-    }
-    assert.doesNotMatch(
-      JSON.stringify(report),
-      new RegExp(PROTECTED_SCANNER_INPUT),
-    );
-
-    const rekeyed = structuredClone(report);
-    const attacker = generateKeyPairSync("ed25519");
-    rekeyed.runnerEvidence.publicKey = `ed25519-public-key:base64:${attacker.publicKey
-      .export({ type: "spki", format: "der" })
-      .toString("base64")}`;
-    for (const name of ["start", "inject", "collect"]) {
-      const receipt = rekeyed.runnerEvidence.operations[name];
-      receipt.reportDigest = deriveSerialOperationReportDigest(
-        rekeyed.reports[name],
-      );
-      receipt.signature = `ed25519-signature:base64:${sign(
-        null,
-        Buffer.from(receipt.reportDigest),
-        attacker.privateKey,
-      ).toString("base64")}`;
-    }
-    assert.throws(
-      () =>
-        validateSerialConformanceReport(rekeyed, {
-          expectedRunnerPublicKey: report.runnerEvidence.publicKey,
-          expectedAdapterIdentity: report.reports.start.adapter.identity,
-        }),
-      /expected runner public key/,
-    );
-
-    const forged = structuredClone(report);
-    const collectRequest = forged.requests.collect;
-    const forgedNonce = "op-abcdefabcdefabcdefabcdefabcdefab";
-    const forgedStartReference = `vm-operation://${forgedNonce}`;
-    const forgedBinding = deriveSerialSessionBinding({
-      runId: "RUN-ATTACKER",
-      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
-      targetIdentity: "vm-target://attacker",
-      startOperationReference: forgedStartReference,
-    });
-    const forgedSale = {
-      saleCorrelationId: "sale-correlation://sale-attacker",
-      orderId: "order-attacker",
-      paymentId: "payment-attacker",
-      vendingCommandId: "vending-command-attacker",
-    };
-    const forgedOperationEvidence = {
-      runnerChallenge: `serial-runner-challenge://sha256-${"b".repeat(64)}`,
-      startReportDigest: `sha256:${"c".repeat(64)}`,
-      injectReportDigest: `sha256:${"d".repeat(64)}`,
-    };
-    Object.assign(collectRequest, {
-      runId: "RUN-ATTACKER",
-      operationNonce: forgedNonce,
-      operationReference: forgedStartReference,
-      lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
-      target: { identity: "vm-target://attacker" },
-      maintenanceEndpointPolicy: {
-        ...collectRequest.maintenanceEndpointPolicy,
-        lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
-      },
-      serialSession: {
-        ...collectRequest.serialSession,
-        ...forgedBinding,
-        startOperationReference: forgedStartReference,
-        scannerInjection: {
-          ...collectRequest.serialSession.scannerInjection,
-          operationNonce: "op-fedcba9876543210",
-        },
-        saleCorrelationIds: [forgedSale.saleCorrelationId],
-        saleBindings: [forgedSale],
-        operationEvidence: forgedOperationEvidence,
-      },
-    });
-    const collectReport = forged.reports.collect;
-    Object.assign(collectReport.request, {
-      runId: collectRequest.runId,
-      operationNonce: collectRequest.operationNonce,
-      operationReference: collectRequest.operationReference,
-      lifecycleReference: collectRequest.lifecycleReference,
-      targetIdentity: collectRequest.target.identity,
-      maintenanceEndpointPolicy: collectRequest.maintenanceEndpointPolicy,
-      serialSession: collectRequest.serialSession,
-    });
-    collectReport.observed.targetBinding.targetIdentity =
-      collectRequest.target.identity;
-    Object.assign(collectReport.serialSession, {
-      ...forgedBinding,
-      startOperationReference: forgedStartReference,
-    });
-    const records = collectReport.serialEvidence.records.map((record) => ({
-      ...record,
-      operationNonce:
-        record.role === "scanner"
-          ? collectRequest.serialSession.scannerInjection.operationNonce
-          : collectRequest.operationNonce,
-      sessionBindingToken: forgedBinding.sessionBindingToken,
-      saleCorrelationId:
-        record.saleCorrelationId === null ? null : forgedSale.saleCorrelationId,
-      saleBinding: record.saleBinding === null ? null : forgedSale,
-    }));
-    let previousCaptureBindingDigest = null;
-    for (const record of records) {
-      record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
-        request: collectRequest,
-        record,
-        previousCaptureBindingDigest,
+      const inject = JSON.parse(readFileSync(injectOut, "utf8"));
+      assert.equal(existsSync(protectedScannerCodePath), false);
+      assert.deepEqual(inject.serialSession.scannerAcknowledgement, {
+        ...createScannerCodeDescriptor(PROTECTED_SCANNER_INPUT),
+        accepted: true,
       });
-      previousCaptureBindingDigest = record.captureBindingDigest;
-    }
-    Object.assign(collectReport.serialEvidence, {
-      serialSessionId: forgedBinding.serialSessionId,
-      sessionBindingToken: forgedBinding.sessionBindingToken,
-      operationEvidence: forgedOperationEvidence,
-      records,
-      captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
-        request: collectRequest,
-        records,
-      }),
-    });
-    assert.doesNotThrow(() =>
-      validateVmHostAdapterReport(collectReport, collectRequest),
-    );
-    assert.throws(
-      () =>
-        validateSerialConformanceReport(forged, {
-          expectedRunnerPublicKey: report.runnerEvidence.publicKey,
-          expectedAdapterIdentity: report.reports.start.adapter.identity,
-        }),
-      /runner serial conformance evidence does not bind the report/,
-    );
-  });
-
-  it("requires swapped and missing serial mappings to block a new sale before business IDs exist", () => {
-    const source = readFileSync(SERIAL_CONFORMANCE, "utf8");
-    assert.match(source, /prepare-sale-with-faulted-mapping/);
-    assert.match(source, /healthz\?\.observed !== true/);
-    assert.match(source, /readyz\?\.observed !== true/);
-    assert.match(source, /readinessBlockingCodes\.length === 1/);
-    assert.match(
-      source,
-      /Object\.hasOwn\(mappingFault \?\? \{\}, "adapterDiagnosticCode"\)/,
-    );
-    assert.match(source, /transactionEntry\?\.statusCode !== 400/);
-    assert.match(
-      source,
-      /transactionEntry\?\.responseCode !== "create_order_blocked"/,
-    );
-    assert.match(
-      source,
-      /context\?\.successfulPrepare\?\.status !== "succeeded"/,
-    );
-    assert.match(source, /paymentOption\?\.method === "payment_code"/);
-    assert.match(source, /startSerialSession/);
-    assert.match(source, /failureCommands/);
-    assert.match(source, /did not restore healthy daemon runtime/);
-    assert.match(source, /VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST/);
-    assert.doesNotMatch(source, /hardware-mapping-fault-code/);
-    assert.match(
-      source,
-      /transactionEntry\?\.endpoint !== "\/v1\/intents\/create-order"/,
-    );
-    assert.match(source, /transactionEntry\?\.rejected !== true/);
-    assert.match(source, /transactionEntry\?\.orderId !== null/);
-    assert.match(source, /transactionEntry\?\.paymentId !== null/);
-    assert.match(source, /transactionEntry\?\.vendingCommandId !== null/);
-  });
-
-  it("rejects mapping fault reports with extra blockers or fabricated sale context", () => {
-    const evidence = assertBlockedSaleEvidence({
-      commandExitStatus: 1,
-      output: blockedSaleOutput(),
-      failureMode: "swapped-roles",
-      runId: "RUN-12-CONTRACT",
-    });
-    assert.equal(evidence.scannerOnline, true);
-    assert.deepEqual(evidence.readinessBlockingCodes, [
-      "LOWER_CONTROLLER_UNAVAILABLE",
-    ]);
-
-    for (const [description, responseBlockingCodes] of [
-      [
-        "a response with multiple blockers after a single-blocker readyz snapshot",
-        ["LOWER_CONTROLLER_UNAVAILABLE", "NO_PAYMENT_OPTIONS"],
-      ],
-      [
-        "a response with a different blocker after a single-blocker readyz snapshot",
-        ["NO_PAYMENT_OPTIONS"],
-      ],
-      [
-        "an unparseable response message after a single-blocker readyz snapshot",
-        [],
-      ],
-    ]) {
-      const staleReadyzSnapshot = blockedSaleOutput();
-      staleReadyzSnapshot.simulatedHardwareSaleFlow.transactionEntry.responseBlockingCodes =
-        responseBlockingCodes;
-      assert.throws(
-        () =>
-          assertBlockedSaleEvidence({
-            commandExitStatus: 1,
-            output: staleReadyzSnapshot,
-            failureMode: "swapped-roles",
-            runId: "RUN-12-CONTRACT",
-          }),
-        /did not fail closed/,
-        description,
+      assert.doesNotMatch(
+        JSON.stringify(inject),
+        new RegExp(PROTECTED_SCANNER_INPUT),
       );
-    }
-
-    const multiBlocker = blockedSaleOutput();
-    multiBlocker.simulatedHardwareSaleFlow.daemonIpc.readyz.blockingCodes.push(
-      "NO_PAYMENT_OPTIONS",
-    );
-    multiBlocker.simulatedHardwareSaleFlow.hardwareMappingFault.readinessBlockingCodes.push(
-      "NO_PAYMENT_OPTIONS",
-    );
-    multiBlocker.simulatedHardwareSaleFlow.transactionEntry.readinessBlockingCodes.push(
-      "NO_PAYMENT_OPTIONS",
-    );
-    assert.throws(
-      () =>
-        assertBlockedSaleEvidence({
-          commandExitStatus: 1,
-          output: multiBlocker,
-          failureMode: "swapped-roles",
-          runId: "RUN-12-CONTRACT",
-        }),
-      /did not fail closed/,
-    );
-
-    const unavailablePayment = blockedSaleOutput();
-    unavailablePayment.simulatedHardwareSaleFlow.transactionEntry.context.paymentOption.ready = false;
-    assert.throws(
-      () =>
-        assertBlockedSaleEvidence({
-          commandExitStatus: 1,
-          output: unavailablePayment,
-          failureMode: "missing-device",
-          runId: "RUN-12-CONTRACT",
-        }),
-      /did not fail closed/,
-    );
-
-    const missingContext = blockedSaleOutput();
-    missingContext.simulatedHardwareSaleFlow.transactionEntry.context = null;
-    assert.throws(
-      () =>
-        assertBlockedSaleEvidence({
-          commandExitStatus: 1,
-          output: missingContext,
-          failureMode: "missing-device",
-          runId: "RUN-12-CONTRACT",
-        }),
-      /did not fail closed/,
-    );
-
-    const fabricatedContext = blockedSaleOutput();
-    fabricatedContext.simulatedHardwareSaleFlow.transactionEntry.request.slotId =
-      "invented-slot";
-    assert.throws(
-      () =>
-        assertBlockedSaleEvidence({
-          commandExitStatus: 1,
-          output: fabricatedContext,
-          failureMode: "missing-device",
-          runId: "RUN-12-CONTRACT",
-        }),
-      /did not fail closed/,
-    );
-  });
-
-  it("binds mapping fault evidence to the actual adapter start report", () => {
-    const startReport = {
-      result: "succeeded",
-      diagnostics: [{ code: "serial_swapped_roles" }],
-      serialSession: {
-        serialSessionId: "serial-session-001",
-        startOperationReference: "vm-operation://start-001",
-        deviceMappingDigest: `sha256:${"b".repeat(64)}`,
-      },
-      timestamps: { startedAt: "2026-07-11T00:00:00.000Z" },
-    };
-    const failureCase = observedMappingFailureCase({
-      failureMode: "swapped-roles",
-      startReport,
-      expectedDiagnosticCode: "serial_swapped_roles",
-      daemonFailClosed: {
-        saleBindingCreated: false,
-        adapterSession:
-          blockedSaleOutput().simulatedHardwareSaleFlow.hardwareMappingFault
-            .adapterSession,
-      },
-      recovery: {
-        runtimeReady: "passed",
-        hardwareOnline: true,
-        scannerOnline: true,
-        ready: true,
-      },
     });
-    assert.equal(failureCase.diagnosticCode, "serial_swapped_roles");
-    assert.deepEqual(failureCase.startSerialSession, startReport.serialSession);
 
-    assert.throws(
-      () =>
-        observedMappingFailureCase({
-          failureMode: "swapped-roles",
-          startReport: { ...startReport, serialSession: null },
-          expectedDiagnosticCode: "serial_swapped_roles",
-          daemonFailClosed: { saleBindingCreated: false },
-          recovery: {
-            runtimeReady: "passed",
-            hardwareOnline: true,
-            scannerOnline: true,
-            ready: true,
-          },
-        }),
-      /did not bind its fail-closed evidence/,
-    );
-  });
-
-  it("stops the serial session from finally when evidence collection fails", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-finally-"));
-    const scannerCodePath = join(root, "protected-scanner-code.txt");
-    const out = join(root, "conformance.json");
-    writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
-    assert.throws(() =>
+    it("drives an external adapter executable through serial conformance without scanner persistence", () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-vm-host-serial-conformance-"),
+      );
+      const scannerCodePath = join(root, "protected-scanner-code.txt");
+      const runnerSigningKeyFile = join(root, "runner-ed25519.pem");
+      const out = join(root, "conformance.json");
+      writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
+      const runnerKey = generateKeyPairSync("ed25519");
+      const expectedRunnerPublicKey = `ed25519-public-key:base64:${runnerKey.publicKey
+        .export({ type: "spki", format: "der" })
+        .toString("base64")}`;
+      writeFileSync(
+        runnerSigningKeyFile,
+        runnerKey.privateKey.export({ type: "pkcs8", format: "pem" }),
+        { mode: 0o600 },
+      );
       execFileSync(
         process.execPath,
         [
@@ -3637,6 +2632,10 @@ describe("VM Host Adapter contract", () => {
           out,
           "--scanner-code-file",
           scannerCodePath,
+          "--runner-signing-key-file",
+          runnerSigningKeyFile,
+          "--expected-runner-public-key",
+          expectedRunnerPublicKey,
           "--run-id",
           "RUN-12-CONTRACT",
           "--target-identity",
@@ -3659,141 +2658,561 @@ describe("VM Host Adapter contract", () => {
             ...process.env,
             RUNNER_TEMP: root,
             VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
-            VEM_VM_HOST_ADAPTER_FAIL_OPERATION: "collect-serial-evidence",
+            VEM_SERIAL_RUNNER_SIGNING_KEY_FILE: runnerSigningKeyFile,
+            VEM_VM_HOST_ADAPTER_EXPECT_ABSENT_ENV:
+              "VEM_SERIAL_RUNNER_SIGNING_KEY_FILE",
           },
         },
-      ),
-    );
-    const report = JSON.parse(readFileSync(out, "utf8"));
-    assert.match(
-      report.runnerEvidence?.publicKey ?? "",
-      /^ed25519-public-key:base64:/,
-    );
-    assert.deepEqual(
-      Object.keys(report.runnerEvidence?.operations ?? {}).sort(),
-      ["inject", "start"],
-    );
-    assert.equal(report.reports.recoveryStop.serialSession.state, "stopped");
-    assert.equal(
-      report.reports.recoveryStop.serialSession.simulatorCleanup
-        .survivingProcessCount,
-      0,
-    );
-    assert.equal(
-      report.reports.recoveryStop.serialSession.simulatorCleanup
-        .survivingSocketCount,
-      0,
-    );
-  });
-
-  it("does not let an adapter claim conformance while clean install is blocked by Issue15", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-conformance-"));
-    const out = join(root, "conformance.json");
-    assert.throws(() =>
-      execFileSync(process.execPath, [CONFORMANCE, "--out", out], {
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-          VEM_VM_HOST_TARGET_ID: "vm-target://runtime-testbed",
-          VEM_VM_HOST_APPROVED_BASE_ID: `factory-cas://sha256/${HASH}`,
-          VEM_VM_HOST_FACTORY_ISO_ID: `factory-cas://sha256/${"d".repeat(64)}`,
-          VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"e".repeat(64)}`,
-          VEM_VM_HOST_EVIDENCE_EXPORT_DIR: join(root, "evidence-export"),
-          VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
-          VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
-        },
-      }),
-    );
-    const evidence = JSON.parse(readFileSync(out, "utf8"));
-    assert.deepEqual(evidence.evidence.cleanInstall, {
-      status: "blocked-issue15",
-    });
-  });
-
-  it("cancels the CLI subprocess, waits for its hanging adapter, persists a diagnostic, and coordinates recovery cleanup", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-cli-cancel-"));
-    const out = join(root, "diagnostic.json");
-    const pidFile = join(root, "adapter.pid");
-    const cleanupFile = join(root, "cleanup.txt");
-    const cancelFile = join(root, "cancel.txt");
-    const signalFile = join(root, "signal.txt");
-    let client;
-    let adapterPid;
-    try {
-      client = spawn(
+      );
+      const report = JSON.parse(readFileSync(out, "utf8"));
+      assert.equal(existsSync(runnerSigningKeyFile), false);
+      assert.equal(report.runnerEvidence.publicKey, expectedRunnerPublicKey);
+      for (const name of [
+        "start",
+        "inject",
+        "collect",
+        "firstStop",
+        "repeatedStop",
+      ]) {
+      }
+      assert.equal(
+        report.reports.repeatedStop.serialSession.simulatorCleanup
+          .idempotencyVerified,
+        true,
+      );
+      assert.equal(report.reports.collect.serialEvidence.records.length, 9);
+      assert.deepEqual(
+        report.failureMatrix.map((entry) => entry.failureMode),
+        [
+          "malformed-frame",
+          "device-disconnected",
+          "scanner-timeout",
+          "dispense-failed",
+          "swapped-roles",
+          "missing-device",
+        ],
+      );
+      assert.equal(
+        report.failureMatrix.find(
+          (entry) => entry.failureMode === "scanner-timeout",
+        ).vendingCommandId,
+        undefined,
+      );
+      assert.equal(
+        report.failureMatrix.find(
+          (entry) => entry.failureMode === "scanner-timeout",
+        ).source.fault.request.serialSession.saleBindings[0].vendingCommandId,
+        null,
+      );
+      const malformedContext = spawnSync(
         process.execPath,
         [
-          CLIENT,
-          "--operation",
-          "restore-approved-base",
-          "--run-id",
-          "RUN-12-CONTRACT",
-          "--target-identity",
-          "vm-target://runtime-testbed",
-          "--runtime-base",
-          `runtime-base://sha256/${HASH}`,
+          SERIAL_CONFORMANCE,
+          "--adapter",
+          FAKE_ADAPTER,
           "--out",
-          out,
+          join(root, "malformed-context.json"),
         ],
-        {
-          env: {
-            ...process.env,
-            RUNNER_TEMP: root,
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
-            VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
-            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
-            VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
-            VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
-          },
-          stdio: "ignore",
-        },
+        { encoding: "utf8" },
       );
-      await waitFor(() => existsSync(pidFile), "adapter did not start");
-      adapterPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
-      assert.ok(Number.isInteger(adapterPid));
+      assert.equal(malformedContext.status, 1);
+      for (const failureMode of ["swapped-roles", "missing-device"]) {
+        const mappingFailure = report.failureMatrix.find(
+          (entry) => entry.failureMode === failureMode,
+        );
+        assert.equal(
+          mappingFailure.operation,
+          "prepare-sale-with-faulted-mapping",
+        );
+        assert.deepEqual(mappingFailure.daemonFailClosed.adapterSession, {
+          ...mappingFailure.startSerialSession,
+          faultStartedAt:
+            mappingFailure.daemonFailClosed.adapterSession.faultStartedAt,
+        });
+        assert.equal(mappingFailure.recovery.runtimeReady, "passed");
+        assert.equal(
+          mappingFailure.source.fault.request.operation,
+          "start-serial-session",
+        );
+        assert.deepEqual(
+          mappingFailure.source.fault.request.serialSession.saleBindings,
+          [],
+        );
+        assert.deepEqual(
+          mappingFailure.source.start,
+          mappingFailure.source.fault,
+        );
+      }
+      assert.doesNotMatch(
+        JSON.stringify(report),
+        new RegExp(PROTECTED_SCANNER_INPUT),
+      );
 
-      client.kill("SIGTERM");
-      const [exitCode] = await once(client, "close");
-      assert.notEqual(exitCode, 0);
-      await waitFor(() => {
-        try {
-          process.kill(adapterPid, 0);
-          return false;
-        } catch (error) {
-          return error?.code === "ESRCH";
-        }
-      }, "adapter process remained after CLI cancellation");
+      const rekeyed = structuredClone(report);
+      const attacker = generateKeyPairSync("ed25519");
+      rekeyed.runnerEvidence.publicKey = `ed25519-public-key:base64:${attacker.publicKey
+        .export({ type: "spki", format: "der" })
+        .toString("base64")}`;
+      for (const name of ["start", "inject", "collect"]) {
+        const receipt = rekeyed.runnerEvidence.operations[name];
+        receipt.reportDigest = deriveSerialOperationReportDigest(
+          rekeyed.reports[name],
+        );
+        receipt.signature = `ed25519-signature:base64:${sign(
+          null,
+          Buffer.from(receipt.reportDigest),
+          attacker.privateKey,
+        ).toString("base64")}`;
+      }
+      assert.throws(
+        () =>
+          validateSerialConformanceReport(rekeyed, {
+            expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+            expectedAdapterIdentity: report.reports.start.adapter.identity,
+          }),
+        /expected runner public key/,
+      );
 
-      const diagnostic = JSON.parse(readFileSync(out, "utf8"));
-      assert.equal(diagnostic.result, "cancelled");
-      assert.deepEqual(diagnostic.cleanup, {
-        attempted: true,
-        status: "completed",
-        observed: {
-          overlay: "removed",
-          runDirectory: "removed",
-          personalizationMedia: "removed",
+      const forged = structuredClone(report);
+      const collectRequest = forged.requests.collect;
+      const forgedNonce = "op-abcdefabcdefabcdefabcdefabcdefab";
+      const forgedStartReference = `vm-operation://${forgedNonce}`;
+      const forgedBinding = deriveSerialSessionBinding({
+        runId: "RUN-ATTACKER",
+        lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+        targetIdentity: "vm-target://attacker",
+        startOperationReference: forgedStartReference,
+      });
+      const forgedSale = {
+        saleCorrelationId: "sale-correlation://sale-attacker",
+        orderId: "order-attacker",
+        paymentId: "payment-attacker",
+        vendingCommandId: "vending-command-attacker",
+      };
+      const forgedOperationEvidence = {
+        runnerChallenge: `serial-runner-challenge://sha256-${"b".repeat(64)}`,
+        startReportDigest: `sha256:${"c".repeat(64)}`,
+        injectReportDigest: `sha256:${"d".repeat(64)}`,
+      };
+      Object.assign(collectRequest, {
+        runId: "RUN-ATTACKER",
+        operationNonce: forgedNonce,
+        operationReference: forgedStartReference,
+        lifecycleReference: "vm-lifecycle://run-attacker.runtime-testbed",
+        target: { identity: "vm-target://attacker" },
+        serialSession: {
+          ...collectRequest.serialSession,
+          ...forgedBinding,
+          startOperationReference: forgedStartReference,
+          scannerInjection: {
+            ...collectRequest.serialSession.scannerInjection,
+            operationNonce: "op-fedcba9876543210",
+          },
+          saleCorrelationIds: [forgedSale.saleCorrelationId],
+          saleBindings: [forgedSale],
+          operationEvidence: forgedOperationEvidence,
         },
       });
-      assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
-      assert.equal(
-        readFileSync(cancelFile, "utf8").trim(),
-        diagnostic.request.operationReference,
-      );
-      assert.equal(
-        readFileSync(signalFile, "utf8").trim(),
-        "SIGTERM",
-        "the operation-reference-bound cancel request must signal the in-flight adapter",
-      );
-    } finally {
-      client?.kill("SIGKILL");
-      if (Number.isInteger(adapterPid)) {
-        try {
-          process.kill(adapterPid, "SIGKILL");
-        } catch {}
+      const collectReport = forged.reports.collect;
+      Object.assign(collectReport.request, {
+        runId: collectRequest.runId,
+        operationNonce: collectRequest.operationNonce,
+        operationReference: collectRequest.operationReference,
+        lifecycleReference: collectRequest.lifecycleReference,
+        targetIdentity: collectRequest.target.identity,
+        serialSession: collectRequest.serialSession,
+      });
+      collectReport.observed.targetBinding.targetIdentity =
+        collectRequest.target.identity;
+      Object.assign(collectReport.serialSession, {
+        ...forgedBinding,
+        startOperationReference: forgedStartReference,
+      });
+      const records = collectReport.serialEvidence.records.map((record) => ({
+        ...record,
+        operationNonce:
+          record.role === "scanner"
+            ? collectRequest.serialSession.scannerInjection.operationNonce
+            : collectRequest.operationNonce,
+        sessionBindingToken: forgedBinding.sessionBindingToken,
+        saleCorrelationId:
+          record.saleCorrelationId === null
+            ? null
+            : forgedSale.saleCorrelationId,
+        saleBinding: record.saleBinding === null ? null : forgedSale,
+      }));
+      let previousCaptureBindingDigest = null;
+      for (const record of records) {
+        record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
+          request: collectRequest,
+          record,
+          previousCaptureBindingDigest,
+        });
+        previousCaptureBindingDigest = record.captureBindingDigest;
       }
-    }
+      Object.assign(collectReport.serialEvidence, {
+        serialSessionId: forgedBinding.serialSessionId,
+        sessionBindingToken: forgedBinding.sessionBindingToken,
+        operationEvidence: forgedOperationEvidence,
+        records,
+        captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
+          request: collectRequest,
+          records,
+        }),
+      });
+      assert.doesNotThrow(() =>
+        validateVmHostAdapterReport(collectReport, collectRequest),
+      );
+      assert.throws(
+        () =>
+          validateSerialConformanceReport(forged, {
+            expectedRunnerPublicKey: report.runnerEvidence.publicKey,
+            expectedAdapterIdentity: report.reports.start.adapter.identity,
+          }),
+        /runner serial conformance evidence does not bind the report/,
+      );
+    });
+
+    it("requires swapped and missing serial mappings to block a new sale before business IDs exist", () => {
+      const source = readFileSync(SERIAL_CONFORMANCE, "utf8");
+      assert.match(source, /prepare-sale-with-faulted-mapping/);
+      assert.match(source, /healthz\?\.observed !== true/);
+      assert.match(source, /readyz\?\.observed !== true/);
+      assert.match(source, /readinessBlockingCodes\.length === 1/);
+      assert.match(
+        source,
+        /Object\.hasOwn\(mappingFault \?\? \{\}, "adapterDiagnosticCode"\)/,
+      );
+      assert.match(source, /transactionEntry\?\.statusCode !== 400/);
+      assert.match(
+        source,
+        /transactionEntry\?\.responseCode !== "create_order_blocked"/,
+      );
+      assert.match(
+        source,
+        /context\?\.successfulPrepare\?\.status !== "succeeded"/,
+      );
+      assert.match(source, /paymentOption\?\.method === "payment_code"/);
+      assert.match(source, /startSerialSession/);
+      assert.match(source, /failureCommands/);
+      assert.match(source, /did not restore healthy daemon runtime/);
+      assert.match(source, /VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST/);
+      assert.doesNotMatch(source, /hardware-mapping-fault-code/);
+      assert.match(
+        source,
+        /transactionEntry\?\.endpoint !== "\/v1\/intents\/create-order"/,
+      );
+      assert.match(source, /transactionEntry\?\.rejected !== true/);
+      assert.match(source, /transactionEntry\?\.orderId !== null/);
+      assert.match(source, /transactionEntry\?\.paymentId !== null/);
+      assert.match(source, /transactionEntry\?\.vendingCommandId !== null/);
+    });
+
+    it("rejects mapping fault reports with extra blockers or fabricated sale context", () => {
+      const evidence = assertBlockedSaleEvidence({
+        commandExitStatus: 1,
+        output: blockedSaleOutput(),
+        failureMode: "swapped-roles",
+        runId: "RUN-12-CONTRACT",
+      });
+      assert.equal(evidence.scannerOnline, true);
+      assert.deepEqual(evidence.readinessBlockingCodes, [
+        "LOWER_CONTROLLER_UNAVAILABLE",
+      ]);
+
+      for (const [description, responseBlockingCodes] of [
+        [
+          "a response with multiple blockers after a single-blocker readyz snapshot",
+          ["LOWER_CONTROLLER_UNAVAILABLE", "NO_PAYMENT_OPTIONS"],
+        ],
+        [
+          "a response with a different blocker after a single-blocker readyz snapshot",
+          ["NO_PAYMENT_OPTIONS"],
+        ],
+        [
+          "an unparseable response message after a single-blocker readyz snapshot",
+          [],
+        ],
+      ]) {
+        const staleReadyzSnapshot = blockedSaleOutput();
+        staleReadyzSnapshot.simulatedHardwareSaleFlow.transactionEntry.responseBlockingCodes =
+          responseBlockingCodes;
+        assert.throws(
+          () =>
+            assertBlockedSaleEvidence({
+              commandExitStatus: 1,
+              output: staleReadyzSnapshot,
+              failureMode: "swapped-roles",
+              runId: "RUN-12-CONTRACT",
+            }),
+          /did not fail closed/,
+          description,
+        );
+      }
+
+      const multiBlocker = blockedSaleOutput();
+      multiBlocker.simulatedHardwareSaleFlow.daemonIpc.readyz.blockingCodes.push(
+        "NO_PAYMENT_OPTIONS",
+      );
+      multiBlocker.simulatedHardwareSaleFlow.hardwareMappingFault.readinessBlockingCodes.push(
+        "NO_PAYMENT_OPTIONS",
+      );
+      multiBlocker.simulatedHardwareSaleFlow.transactionEntry.readinessBlockingCodes.push(
+        "NO_PAYMENT_OPTIONS",
+      );
+      assert.throws(
+        () =>
+          assertBlockedSaleEvidence({
+            commandExitStatus: 1,
+            output: multiBlocker,
+            failureMode: "swapped-roles",
+            runId: "RUN-12-CONTRACT",
+          }),
+        /did not fail closed/,
+      );
+
+      const unavailablePayment = blockedSaleOutput();
+      unavailablePayment.simulatedHardwareSaleFlow.transactionEntry.context.paymentOption.ready = false;
+      assert.throws(
+        () =>
+          assertBlockedSaleEvidence({
+            commandExitStatus: 1,
+            output: unavailablePayment,
+            failureMode: "missing-device",
+            runId: "RUN-12-CONTRACT",
+          }),
+        /did not fail closed/,
+      );
+
+      const missingContext = blockedSaleOutput();
+      missingContext.simulatedHardwareSaleFlow.transactionEntry.context = null;
+      assert.throws(
+        () =>
+          assertBlockedSaleEvidence({
+            commandExitStatus: 1,
+            output: missingContext,
+            failureMode: "missing-device",
+            runId: "RUN-12-CONTRACT",
+          }),
+        /did not fail closed/,
+      );
+
+      const fabricatedContext = blockedSaleOutput();
+      fabricatedContext.simulatedHardwareSaleFlow.transactionEntry.request.slotId =
+        "invented-slot";
+      assert.throws(
+        () =>
+          assertBlockedSaleEvidence({
+            commandExitStatus: 1,
+            output: fabricatedContext,
+            failureMode: "missing-device",
+            runId: "RUN-12-CONTRACT",
+          }),
+        /did not fail closed/,
+      );
+    });
+
+    it("binds mapping fault evidence to the actual adapter start report", () => {
+      const startReport = {
+        result: "succeeded",
+        diagnostics: [{ code: "serial_swapped_roles" }],
+        serialSession: {
+          serialSessionId: "serial-session-001",
+          startOperationReference: "vm-operation://start-001",
+          deviceMappingDigest: `sha256:${"b".repeat(64)}`,
+        },
+        timestamps: { startedAt: "2026-07-11T00:00:00.000Z" },
+      };
+      const failureCase = observedMappingFailureCase({
+        failureMode: "swapped-roles",
+        startReport,
+        expectedDiagnosticCode: "serial_swapped_roles",
+        daemonFailClosed: {
+          saleBindingCreated: false,
+          adapterSession:
+            blockedSaleOutput().simulatedHardwareSaleFlow.hardwareMappingFault
+              .adapterSession,
+        },
+        recovery: {
+          runtimeReady: "passed",
+          hardwareOnline: true,
+          scannerOnline: true,
+          ready: true,
+        },
+      });
+      assert.equal(failureCase.diagnosticCode, "serial_swapped_roles");
+      assert.deepEqual(
+        failureCase.startSerialSession,
+        startReport.serialSession,
+      );
+
+      assert.throws(
+        () =>
+          observedMappingFailureCase({
+            failureMode: "swapped-roles",
+            startReport: { ...startReport, serialSession: null },
+            expectedDiagnosticCode: "serial_swapped_roles",
+            daemonFailClosed: { saleBindingCreated: false },
+            recovery: {
+              runtimeReady: "passed",
+              hardwareOnline: true,
+              scannerOnline: true,
+              ready: true,
+            },
+          }),
+        /did not bind its fail-closed evidence/,
+      );
+    });
+
+    it("stops the serial session from finally when evidence collection fails", () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-serial-finally-"));
+      const scannerCodePath = join(root, "protected-scanner-code.txt");
+      const out = join(root, "conformance.json");
+      writeFileSync(scannerCodePath, PROTECTED_SCANNER_INPUT, { mode: 0o600 });
+      assert.throws(() =>
+        execFileSync(
+          process.execPath,
+          [
+            SERIAL_CONFORMANCE,
+            "--adapter",
+            FAKE_ADAPTER,
+            "--out",
+            out,
+            "--scanner-code-file",
+            scannerCodePath,
+            "--run-id",
+            "RUN-12-CONTRACT",
+            "--target-identity",
+            "vm-target://runtime-testbed",
+            "--runtime-base",
+            `runtime-base://sha256/${HASH}`,
+            "--lifecycle-reference",
+            "vm-lifecycle://run-12-contract.runtime-testbed",
+            "--sale-correlation-id",
+            "sale-correlation://sale-001",
+            "--order-id",
+            "order-001",
+            "--payment-id",
+            "payment-001",
+            "--vending-command-id",
+            "vending-command-001",
+          ],
+          {
+            env: {
+              ...process.env,
+              RUNNER_TEMP: root,
+              VEM_VM_HOST_ADAPTER_STATE_FILE: join(root, "adapter-state.json"),
+              VEM_VM_HOST_ADAPTER_FAIL_OPERATION: "collect-serial-evidence",
+            },
+          },
+        ),
+      );
+      const report = JSON.parse(readFileSync(out, "utf8"));
+      assert.match(
+        report.runnerEvidence?.publicKey ?? "",
+        /^ed25519-public-key:base64:/,
+      );
+      assert.deepEqual(
+        Object.keys(report.runnerEvidence?.operations ?? {}).sort(),
+        ["inject", "start"],
+      );
+      assert.equal(report.reports.recoveryStop.serialSession.state, "stopped");
+      assert.equal(
+        report.reports.recoveryStop.serialSession.simulatorCleanup
+          .survivingProcessCount,
+        0,
+      );
+      assert.equal(
+        report.reports.recoveryStop.serialSession.simulatorCleanup
+          .survivingSocketCount,
+        0,
+      );
+    });
+
+    it("cancels the CLI subprocess, waits for its hanging adapter, persists a diagnostic, and coordinates recovery cleanup", async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-cli-cancel-"));
+      const out = join(root, "diagnostic.json");
+      const pidFile = join(root, "adapter.pid");
+      const cleanupFile = join(root, "cleanup.txt");
+      const cancelFile = join(root, "cancel.txt");
+      const signalFile = join(root, "signal.txt");
+      let client;
+      let adapterPid;
+      try {
+        client = spawn(
+          process.execPath,
+          [
+            CLIENT,
+            "--operation",
+            "restore-approved-base",
+            "--run-id",
+            "RUN-12-CONTRACT",
+            "--target-identity",
+            "vm-target://runtime-testbed",
+            "--runtime-base",
+            `runtime-base://sha256/${HASH}`,
+            "--out",
+            out,
+          ],
+          {
+            env: {
+              ...process.env,
+              RUNNER_TEMP: root,
+              VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+              VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
+              VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
+              VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+              VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
+              VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
+            },
+            stdio: "ignore",
+          },
+        );
+        await waitFor(() => existsSync(pidFile), "adapter did not start");
+        adapterPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+        assert.ok(Number.isInteger(adapterPid));
+
+        client.kill("SIGTERM");
+        const [exitCode] = await once(client, "close");
+        assert.notEqual(exitCode, 0);
+        await waitFor(() => {
+          try {
+            process.kill(adapterPid, 0);
+            return false;
+          } catch (error) {
+            return error?.code === "ESRCH";
+          }
+        }, "adapter process remained after CLI cancellation");
+
+        const diagnostic = JSON.parse(readFileSync(out, "utf8"));
+        assert.equal(diagnostic.result, "cancelled");
+        assert.deepEqual(diagnostic.cleanup, {
+          attempted: true,
+          status: "completed",
+          observed: {
+            overlay: "removed",
+            runDirectory: "removed",
+            personalizationMedia: "removed",
+          },
+        });
+        assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+        assert.equal(
+          readFileSync(cancelFile, "utf8").trim(),
+          diagnostic.request.operationReference,
+        );
+        assert.equal(
+          readFileSync(signalFile, "utf8").trim(),
+          "SIGTERM",
+          "the operation-reference-bound cancel request must signal the in-flight adapter",
+        );
+      } finally {
+        client?.kill("SIGKILL");
+        if (Number.isInteger(adapterPid)) {
+          try {
+            process.kill(adapterPid, "SIGKILL");
+          } catch {}
+        }
+      }
+    });
   });
 });

@@ -38,8 +38,10 @@ export function mapCustomerJourneyAudioPresentation(
       return presentation(`${VOICE_BASE_PATH}/privacy/crowd_detected.mp3`, 80);
     case "presence.departed":
       return presentation(departureSource(context), 60);
-    case "product.selected":
+    case "category.entered":
       return presentation(productSource(transition.productCategory), 35);
+    case "product.selected":
+      return null;
     case "payment.prompt":
       return presentation(`${VOICE_BASE_PATH}/payment/prompt.mp3`, 35);
     case "payment.succeeded":

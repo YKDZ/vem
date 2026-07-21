@@ -966,8 +966,6 @@ function reportFor(request, state, rawFrames = []) {
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
-      maintenanceRelaySession: request.maintenanceRelaySession ?? null,
-      maintenanceEndpointPolicy: request.maintenanceEndpointPolicy ?? null,
       serialSession: request.serialSession,
     },
     result: "succeeded",
@@ -986,14 +984,6 @@ function reportFor(request, state, rawFrames = []) {
     },
     consumedAssets: request.assets,
     guest: {
-      maintenanceEndpointIdentity: `guest-maintenance://${request.target.identity.slice("vm-target://".length)}`,
-      maintenanceEndpoint: {
-        transport: "wireguard",
-        protocol: "ssh",
-        host: "10.91.2.10",
-        port: 22,
-        reachability: "discovered",
-      },
       deviceMappings: serialSession.deviceMappings.map(
         ({ role, guestDeviceIdentity, guestUsbTopology }) => ({
           role,

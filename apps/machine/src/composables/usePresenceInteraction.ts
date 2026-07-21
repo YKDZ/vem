@@ -13,6 +13,7 @@ import { useVisionStore } from "@/stores/vision";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
+const DEFAULT_VISION_DEPARTURE_HYSTERESIS_MS = 3_000;
 
 export type PresenceInteractionSource =
   | "vision"
@@ -23,6 +24,7 @@ export type PresenceInteractionSource =
 export type PresenceInteractionState = {
   eventId: string | null;
   personPresent: boolean;
+  occupancyState: "none" | "single" | "multiple" | "unknown";
   lastSeenAt: string | null;
   departedAt: string | null;
   lastInteractionAt: string | null;
@@ -32,6 +34,7 @@ export type PresenceInteractionState = {
 export type PresenceInteractionOptions = {
   presenceStaleMs?: number;
   inactivityDepartureMs?: number;
+  visionDepartureHysteresisMs?: number;
 };
 
 type CustomerPresenceSession = {
@@ -45,6 +48,7 @@ type MutableSessionState = Ref<PresenceInteractionState>;
 const state = ref<PresenceInteractionState>({
   eventId: null,
   personPresent: false,
+  occupancyState: "none",
   lastSeenAt: null,
   departedAt: null,
   lastInteractionAt: null,
@@ -58,6 +62,7 @@ const presenceClass = computed(() =>
 let started = false;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;
 let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+let visionDepartureTimer: ReturnType<typeof setTimeout> | null = null;
 let stopVisionWatch: WatchStopHandle | null = null;
 let activeOptions: Required<PresenceInteractionOptions> | null = null;
 
@@ -68,6 +73,9 @@ function optionsWithDefaults(
     presenceStaleMs: options.presenceStaleMs ?? DEFAULT_PRESENCE_STALE_MS,
     inactivityDepartureMs:
       options.inactivityDepartureMs ?? DEFAULT_INACTIVITY_DEPARTURE_MS,
+    visionDepartureHysteresisMs:
+      options.visionDepartureHysteresisMs ??
+      DEFAULT_VISION_DEPARTURE_HYSTERESIS_MS,
   };
 }
 
@@ -82,6 +90,10 @@ function clearStaleTimer(): void {
 
 function clearInactivityTimer(): void {
   inactivityTimer = clearTimer(inactivityTimer);
+}
+
+function clearVisionDepartureTimer(): void {
+  visionDepartureTimer = clearTimer(visionDepartureTimer);
 }
 
 function nowIso(): string {
@@ -120,11 +132,14 @@ function restartDepartureTimers(): void {
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
+  occupancyState?: PresenceInteractionState["occupancyState"];
   eventId?: string | null;
 }): void {
+  clearVisionDepartureTimer();
   state.value = {
     eventId: input.eventId ?? state.value.eventId,
     personPresent: true,
+    occupancyState: input.occupancyState ?? state.value.occupancyState,
     lastSeenAt: input.seenAt,
     departedAt: null,
     lastInteractionAt: state.value.lastInteractionAt,
@@ -140,9 +155,11 @@ function markDeparted(input: {
   keepLastSeenAt?: boolean;
   eventId?: string | null;
 }): void {
+  clearVisionDepartureTimer();
   state.value = {
     eventId: input.eventId ?? state.value.eventId,
     personPresent: false,
+    occupancyState: "none",
     lastSeenAt: input.keepLastSeenAt
       ? state.value.lastSeenAt
       : (input.lastSeenAt ?? state.value.lastSeenAt),
@@ -152,6 +169,30 @@ function markDeparted(input: {
   };
   clearStaleTimer();
   clearInactivityTimer();
+}
+
+function scheduleVisionDeparture(input: {
+  departedAt: string | null;
+  lastSeenAt?: string | null;
+  keepLastSeenAt?: boolean;
+  eventId?: string | null;
+}): void {
+  if (
+    visionDepartureTimer !== null ||
+    !state.value.personPresent ||
+    !activeOptions
+  ) {
+    return;
+  }
+  visionDepartureTimer = setTimeout(() => {
+    markDeparted({
+      source: "vision",
+      departedAt: input.departedAt,
+      lastSeenAt: input.lastSeenAt,
+      keepLastSeenAt: input.keepLastSeenAt,
+      eventId: input.eventId,
+    });
+  }, activeOptions.visionDepartureHysteresisMs);
 }
 
 function registerInteraction(): void {
@@ -164,6 +205,7 @@ function registerInteraction(): void {
     markPresent({
       source: "local_interaction",
       seenAt,
+      occupancyState: "unknown",
       eventId: state.value.eventId,
     });
     return;
@@ -220,8 +262,7 @@ function startCustomerPresenceSession(
         return;
       }
       if (!presence.personPresent) {
-        markDeparted({
-          source: "vision",
+        scheduleVisionDeparture({
           departedAt: presence.departedAt ?? presence.lastChangedAt,
           lastSeenAt: presence.lastSeenAt,
           keepLastSeenAt: presence.source !== "person_departed",
@@ -234,8 +275,7 @@ function startCustomerPresenceSession(
         presence.source === "profile_result" &&
         presence.profileNotUsableReason === "low_confidence"
       ) {
-        markDeparted({
-          source: "vision",
+        scheduleVisionDeparture({
           departedAt: presence.lastChangedAt,
           keepLastSeenAt: true,
           eventId: presence.eventId,
@@ -248,10 +288,11 @@ function startCustomerPresenceSession(
       markPresent({
         source: "vision",
         seenAt: observedAt,
+        occupancyState: presence.occupancyState,
         eventId: presence.eventId,
       });
     },
-    { immediate: true },
+    { immediate: true, flush: "sync" },
   );
 }
 
@@ -260,12 +301,14 @@ export function resetCustomerPresenceSessionForTests(): void {
   stopVisionWatch = null;
   clearStaleTimer();
   clearInactivityTimer();
+  clearVisionDepartureTimer();
   removeInteractionListeners();
   started = false;
   activeOptions = null;
   state.value = {
     eventId: null,
     personPresent: false,
+    occupancyState: "none",
     lastSeenAt: null,
     departedAt: null,
     lastInteractionAt: null,
@@ -301,8 +344,10 @@ export function usePresenceInteraction(
   return useCustomerPresenceSession(options);
 }
 
-export function installPresenceDepartureNavigation(): void {
-  const session = useCustomerPresenceSession();
+export function installPresenceDepartureNavigation(
+  options: PresenceInteractionOptions = {},
+): void {
+  const session = useCustomerPresenceSession(options);
 
   watch(
     () => ({
@@ -312,12 +357,11 @@ export function installPresenceDepartureNavigation(): void {
     }),
     (current, previous) => {
       if (current.personPresent) return;
-      const presenceEnded = previous?.personPresent ?? false;
       const explicitVisionDeparture =
         current.source === "vision" &&
         current.eventId !== null &&
         current.eventId !== previous?.eventId;
-      if (!presenceEnded && !explicitVisionDeparture) return;
+      if (!explicitVisionDeparture) return;
       void submitMachineNavigationIntent({
         type: "presence.departed",
         eventId: current.eventId,

@@ -33,6 +33,7 @@ secrets/
 CONTEXT*
 
 .tmp
+.vem-backend/
 
 AGENTS.md
 

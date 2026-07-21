@@ -90,16 +90,6 @@ export const routes: RouteRecordRaw[] = [
         component: async () => import("@/views/audit-logs/AuditLogsView.vue"),
         meta: { title: "系统审计", requiredPermissions: ["audit.read"] },
       },
-      {
-        path: "maintenance-access",
-        name: "maintenance-access",
-        component: async () =>
-          import("@/views/maintenance-access/MaintenanceAccessView.vue"),
-        meta: {
-          title: "维护访问",
-          requiredPermissions: ["maintenanceAccess.read"],
-        },
-      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/dashboard" },

@@ -3,6 +3,7 @@ export type CustomerJourneyTransitionKind =
   | "presence.welcome"
   | "privacy.crowd_detected"
   | "presence.departed"
+  | "category.entered"
   | "product.selected"
   | "payment.prompt"
   | "payment.succeeded"
@@ -42,6 +43,12 @@ export type CustomerJourneyFacts = {
     lastSeenAt: string | null;
     departedAt: string | null;
     lastChangedAt: string | null;
+    restored?: boolean;
+  } | null;
+  categoryEntry?: {
+    entryId: string;
+    category: string;
+    enteredAt: string | null;
     restored?: boolean;
   } | null;
   selectedProduct?: {
@@ -164,6 +171,22 @@ function projectCandidates(
         kind: "presence.departed",
         category: "presence",
         occurredAt: vision?.departedAt ?? null,
+      }),
+    );
+  }
+
+  const categoryEntry = facts.categoryEntry;
+  const categoryEntryChanged = semanticEdges.observeCategory(
+    categoryEntry?.entryId ?? null,
+  );
+  if (categoryEntry && categoryEntryChanged) {
+    candidates.push(
+      transition({
+        transitionId: `category:${categoryEntry.entryId}`,
+        kind: "category.entered",
+        category: "transaction",
+        occurredAt: categoryEntry.enteredAt,
+        productCategory: categoryEntry.category,
       }),
     );
   }
@@ -383,6 +406,7 @@ type SemanticEdgeMemory = {
   nextTouchscreenTransitionId(): string;
   observeVision(profile: VisionProfile, departureObserved: boolean): VisionEdge;
   nextVisionTransitionId(edge: Exclude<VisionEdge, null>): string;
+  observeCategory(entryId: string | null): boolean;
   observeProduct(selectionId: string | null): boolean;
 };
 
@@ -392,6 +416,7 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
   let visionProfile: VisionProfile = "absent";
   let departureObserved = false;
   let visionEpoch = 0;
+  let categoryEntryId: string | null = null;
   let selectedProductId: string | null = null;
 
   return {
@@ -430,6 +455,11 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
     },
     nextVisionTransitionId(edge) {
       return `vision:presence-${visionEpoch}:${edge}`;
+    },
+    observeCategory(entryId) {
+      const entered = entryId !== null && entryId !== categoryEntryId;
+      categoryEntryId = entryId;
+      return entered;
     },
     observeProduct(selectionId) {
       const selected =
@@ -516,6 +546,9 @@ function candidateRestored(
   }
   if (transition.transitionId.startsWith("vision:")) {
     return facts.vision?.restored === true;
+  }
+  if (transition.transitionId.startsWith("category:")) {
+    return facts.categoryEntry?.restored === true;
   }
   if (transition.transitionId.startsWith("product:")) {
     return facts.selectedProduct?.restored === true;

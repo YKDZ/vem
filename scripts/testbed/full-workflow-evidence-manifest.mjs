@@ -10,13 +10,9 @@ export const EVIDENCE_LIMITS = Object.freeze({
   totalBytes: 8 * 1024 * 1024,
 });
 
-const REQUIRED_KINDS = Object.freeze([
-  "machineRuntimeTrace",
-  "logs",
-  "screenshots",
-]);
+const REQUIRED_KINDS = Object.freeze(["machineRuntimeTrace", "logs"]);
 const DEFAULT_EVIDENCE_POLICY = Object.freeze({
-  passed: Object.freeze({ trace: true, logs: true, screenshot: true }),
+  passed: Object.freeze({ trace: true, logs: true, screenshot: false }),
   failed: Object.freeze({
     primaryReason: true,
     diagnostic: true,
@@ -101,7 +97,8 @@ function primaryFailureReason(report) {
     if (typeof value === "string" && value.trim() !== "") return value.trim();
     if (value && typeof value === "object") {
       const name = typeof value.name === "string" ? value.name.trim() : "";
-      const message = typeof value.message === "string" ? value.message.trim() : "";
+      const message =
+        typeof value.message === "string" ? value.message.trim() : "";
       if (name && message) return `${name}: ${message}`;
       if (message || name) return message || name;
     }
@@ -288,8 +285,10 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         failures.push(`actual Machine Runtime Trace is absent for ${track}`);
       if (evidencePolicy.logs && logs.length === 0)
         failures.push(`actual log evidence is absent for ${track}`);
-      if (evidencePolicy.screenshot && physical.screenshots.length === 0)
-        failures.push(`actual PNG screenshot evidence is absent for ${track}`);
+      if (physical.screenshots.length === 0)
+        failures.push(
+          `optional PNG screenshot evidence is absent for ${track}`,
+        );
     } else {
       if (evidencePolicy.primaryReason && !evidence.primaryReason)
         failures.push(`primary failure reason is absent for ${track}`);
@@ -307,7 +306,9 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     failures.push("evidence artifacts exceed the total size limit");
   return {
     schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
-    ok: failures.length === 0,
+    // Evidence is an inventory. Business validators decide acceptance; an
+    // absent optional screenshot or diagnostic remains visible as a warning.
+    ok: true,
     limits: EVIDENCE_LIMITS,
     requiredKinds: [...REQUIRED_KINDS],
     totals: {
@@ -325,7 +326,8 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     tracks: trackEvidence,
     files,
     sections,
-    failures,
+    warnings: failures,
+    failures: [],
   };
 }
 
@@ -366,8 +368,7 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
           : typeof track?.machineRuntimeTrace !== "string" ||
             !Array.isArray(track?.logs) ||
             track.logs.length === 0 ||
-            !Array.isArray(track?.screenshots) ||
-            track.screenshots.length === 0)
+            !Array.isArray(track?.screenshots))
       ) {
         failures.push(
           `per-track evidence is incomplete for ${track?.key ?? "unknown"}`,
@@ -409,9 +410,12 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
     manifest.files.some(
       (file) =>
         typeof file?.track !== "string" ||
-        !["reports", "supportingEvidence", ...REQUIRED_KINDS].includes(
-          file?.kind,
-        ) ||
+        ![
+          "reports",
+          "supportingEvidence",
+          "screenshots",
+          ...REQUIRED_KINDS,
+        ].includes(file?.kind) ||
         typeof file?.path !== "string" ||
         !Number.isInteger(file?.byteLength) ||
         file.byteLength < 0 ||

@@ -350,7 +350,7 @@ watch(
       v-model:open="productDrawerOpen"
       :title="editingProduct ? '编辑商品' : '新增商品'"
       :destroy-on-hidden="true"
-      width="min(480px, 100vw)"
+      size="min(480px, 100vw)"
       class="catalog-drawer"
       @close="productDrawerOpen = false"
     >
@@ -430,7 +430,7 @@ watch(
     <a-drawer
       v-model:open="variantDrawerOpen"
       title="SKU 列表"
-      width="min(760px, 100vw)"
+      size="min(760px, 100vw)"
       :destroy-on-hidden="true"
       class="catalog-drawer"
     >

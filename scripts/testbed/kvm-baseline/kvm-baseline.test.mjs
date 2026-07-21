@@ -4252,12 +4252,7 @@ await writeFile(markerPath, "created");
       ".github/workflows/build-win10-kvm-baseline.yml",
       "utf8",
     );
-    const acceptanceWorkflow = readFileSync(
-      ".github/workflows/vm-runtime-acceptance.yml",
-      "utf8",
-    );
     assert.match(baselineWorkflow, /group: vem-windows-runtime-testbed/);
-    assert.match(acceptanceWorkflow, /group: vem-windows-runtime-testbed/);
     assert.match(baselineWorkflow, /VEM_VM_HOST_LOCK_PATH/);
     assert.match(baselineWorkflow, /flock -n/);
     assert.doesNotMatch(baselineWorkflow, /mkdir "\$VEM_VM_HOST_LOCK_PATH"/);

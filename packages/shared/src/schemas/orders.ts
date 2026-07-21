@@ -142,9 +142,6 @@ export const adminOrderListItemResponseSchema = z.strictObject({
   paymentState: orderPaymentStateSchema.optional(),
   fulfillmentState: orderFulfillmentStateSchema.optional(),
   totalAmountCents: z.int().nonnegative(),
-  isDrill: z.boolean().optional(),
-  isTest: z.boolean().optional(),
-  scenario: z.string().nullable().optional(),
   paidAt: z.iso.datetime().nullable(),
   dispensedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
@@ -408,40 +405,6 @@ export const legacyOrderRecoveryActionSchema = z.object({
 });
 
 export type OrderRecoveryAction = z.infer<typeof orderRecoveryActionSchema>;
-
-export const protectedFulfillmentDrillScenarioSchema = z.enum([
-  "dispense_failed",
-  "unknown_dispense_result",
-  "pickup_timeout",
-  "maintenance_lock_required",
-]);
-
-export type ProtectedFulfillmentDrillScenario = z.infer<
-  typeof protectedFulfillmentDrillScenarioSchema
->;
-
-export const createProtectedFulfillmentDrillSchema = z.strictObject({
-  machineId: z.uuid(),
-  scenario: protectedFulfillmentDrillScenarioSchema,
-  reason: z.string().trim().min(1).max(500),
-});
-
-export const protectedFulfillmentDrillRecoveryActionSchema = z.strictObject({
-  action: z.enum([
-    "confirm_dispensed",
-    "confirm_not_dispensed",
-    "request_refund",
-    "compensation_dispense",
-  ]),
-  reason: z.string().trim().min(1).max(500),
-});
-
-export type CreateProtectedFulfillmentDrillInput = z.infer<
-  typeof createProtectedFulfillmentDrillSchema
->;
-export type ProtectedFulfillmentDrillRecoveryAction = z.infer<
-  typeof protectedFulfillmentDrillRecoveryActionSchema
->;
 
 export const machineOrderItemSchema = z.object({
   inventoryId: z.uuid(),

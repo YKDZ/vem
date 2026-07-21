@@ -88,14 +88,6 @@ impl InternalCheckoutFlowAction {
             _ => None,
         }
     }
-
-    pub fn normalize_recovered(action: &str) -> Option<Self> {
-        match action {
-            "submit_payment" => Some(Self::WaitPayment),
-            "collect_goods" => Some(Self::Dispensing),
-            current => Self::from_current_contract(current),
-        }
-    }
 }
 
 /// Internal persisted transaction summary used for recovery and health projection.

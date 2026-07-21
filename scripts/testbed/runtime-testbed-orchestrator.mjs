@@ -51,6 +51,16 @@ function option(args, name, optional = false) {
   return value;
 }
 
+function repeatableOption(args, name) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== `--${name}`) continue;
+    values.push(required(args[index + 1], `--${name}`));
+    index += 1;
+  }
+  return values;
+}
+
 export function parseOrchestratorOptions(args) {
   const command = args[0];
   if (!new Set(["run", "status", "execute"]).has(command)) {
@@ -72,10 +82,15 @@ export function parseOrchestratorOptions(args) {
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
+  const focus = repeatableOption(args, "focus");
+  if (mode === "full" && focus.length > 0) {
+    throw new Error("--focus is only valid with --mode fast");
+  }
   return {
     ...common,
     mode,
     commit,
+    focus,
     runId: option(args, "run-id", command === "run"),
   };
 }
@@ -363,10 +378,13 @@ async function stageAndRunGuest({
   workspace,
   commit,
   mode,
+  focus = [],
   pass,
   runRoot,
 }) {
   const guest = contract.testbed.guest;
+  const remote = `${guest.user}@${guest.host}`;
+  const ssh = sshArguments(guest);
   const archive = join(runRoot, `source-pass-${pass}.tar`);
   await runProcess("git", [
     `--git-dir=${config.mirrorPath}`,
@@ -375,8 +393,6 @@ async function stageAndRunGuest({
     `--output=${archive}`,
     commit,
   ]);
-  const remote = `${guest.user}@${guest.host}`;
-  const ssh = sshArguments(guest);
   const remoteArchive = `${config.guestSourcePath}.tar`;
   const createArchiveParent = [
     `$archive = '${remoteArchive.replaceAll("'", "''")}'`,
@@ -424,7 +440,10 @@ async function stageAndRunGuest({
     encodedPowerShell(preparePowerShell),
   ]);
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}'`;
+  const focusArguments = focus
+    .map((name) => ` -Focus '${name.replaceAll("'", "''")}'`)
+    .join("");
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}'${focusArguments}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
@@ -515,37 +534,76 @@ async function executeRun(options, config) {
     await assertMirrorCommit(config, options.commit);
     const workspace = await materializeWorkspace(config, options.commit);
     const environment = executionEnvironment(config);
-    await runProcess("pnpm", ["install", "--frozen-lockfile"], {
-      cwd: workspace,
-      env: environment,
-    });
+    const lockHash = (
+      await capture("git", ["hash-object", "pnpm-lock.yaml"], {
+        cwd: workspace,
+        env: environment,
+      })
+    ).stdout.trim();
+    const pnpmCacheRoot = join(config.stateRoot, "pnpm", lockHash);
+    const pnpmStore = join(pnpmCacheRoot, "store");
+    const materializedMarker = join(
+      workspace,
+      "node_modules",
+      ".vem-lock-hash",
+    );
+    const cachedLockMarker = join(pnpmCacheRoot, ".fetch-complete");
+    await mkdir(pnpmCacheRoot, { recursive: true });
+    if (!(await readJson(cachedLockMarker, null))) {
+      await runProcess(
+        "pnpm",
+        ["fetch", "--frozen-lockfile", "--store-dir", pnpmStore],
+        {
+          cwd: workspace,
+          env: environment,
+        },
+      );
+      await writeJson(cachedLockMarker, { lockHash });
+    }
+    const workspaceMarker = await readJson(materializedMarker, null);
+    if (workspaceMarker?.lockHash !== lockHash) {
+      await runProcess(
+        "pnpm",
+        ["install", "--offline", "--frozen-lockfile", "--store-dir", pnpmStore],
+        { cwd: workspace, env: environment },
+      );
+      await writeJson(materializedMarker, { lockHash });
+    }
     const contract = JSON.parse(readFileSync(config.baselineContract, "utf8"));
     const passes = options.mode === "full" ? 2 : 1;
     for (let pass = 1; pass <= passes; pass += 1) {
-      await update({ phase: `reconstruct-pass-${pass}`, pass });
-      const reconstructionOut = join(root, `reconstruction-pass-${pass}.json`);
-      await runProcess(
-        process.execPath,
-        [
-          "scripts/testbed/local-testbed.mjs",
-          "reconstruct",
-          "--mode",
-          options.mode,
-          "--run-id",
-          `${options.runId}-PASS-${pass}`,
-          "--workspace",
-          workspace,
-          "--state-root",
-          config.stateRoot,
-          "--baseline-contract",
-          config.baselineContract,
-          "--host-private-address",
-          config.hostPrivateAddress,
-          "--out",
-          reconstructionOut,
-        ],
-        { cwd: workspace, env: { ...environment, GITHUB_SHA: options.commit } },
-      );
+      if (options.mode === "full") {
+        await update({ phase: `reconstruct-pass-${pass}`, pass });
+        const reconstructionOut = join(
+          root,
+          `reconstruction-pass-${pass}.json`,
+        );
+        await runProcess(
+          process.execPath,
+          [
+            "scripts/testbed/local-testbed.mjs",
+            "reconstruct",
+            "--mode",
+            options.mode,
+            "--run-id",
+            `${options.runId}-PASS-${pass}`,
+            "--workspace",
+            workspace,
+            "--state-root",
+            config.stateRoot,
+            "--baseline-contract",
+            config.baselineContract,
+            "--host-private-address",
+            config.hostPrivateAddress,
+            "--out",
+            reconstructionOut,
+          ],
+          {
+            cwd: workspace,
+            env: { ...environment, GITHUB_SHA: options.commit },
+          },
+        );
+      }
       await update({ phase: `guest-pass-${pass}` });
       await stageAndRunGuest({
         config,
@@ -553,6 +611,7 @@ async function executeRun(options, config) {
         workspace,
         commit: options.commit,
         mode: options.mode,
+        focus: options.focus,
         pass,
         runRoot: root,
       });
@@ -612,7 +671,12 @@ async function startRun(options, config) {
     const active = await readJson(activePath);
     const runId = createRunId(options.commit, options.mode);
     if (active && processExists(active.processGroupId)) {
-      if (active.commit === options.commit && active.mode === options.mode) {
+      if (
+        active.commit === options.commit &&
+        active.mode === options.mode &&
+        JSON.stringify(active.focus ?? []) ===
+          JSON.stringify(options.focus ?? [])
+      ) {
         return { existing: true, runId: active.runId };
       }
       if (options.mode === "clear_cache") {
@@ -646,6 +710,7 @@ async function startRun(options, config) {
       runId,
       commit: options.commit,
       mode: options.mode,
+      focus: options.focus,
       status: "queued",
       phase: "queued",
       createdAt: new Date().toISOString(),
@@ -665,6 +730,7 @@ async function startRun(options, config) {
           "execute",
           "--mode",
           options.mode,
+          ...options.focus.flatMap((name) => ["--focus", name]),
           "--commit",
           options.commit,
           "--run-id",

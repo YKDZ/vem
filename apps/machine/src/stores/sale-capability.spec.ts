@@ -266,16 +266,18 @@ describe("useSaleCapabilityStore", () => {
       capability("daemon-a", 5, false),
     );
 
-    store.invalidate({
-      type: "sale_start_capability_changed",
-      eventId: "event-4",
-      updatedAt: "2026-07-17T00:00:04Z",
-      generation: "daemon-a",
-      revision: 4,
-    });
+    expect(
+      store.invalidate({
+        type: "sale_start_capability_changed",
+        eventId: "event-4",
+        updatedAt: "2026-07-17T00:00:04Z",
+        generation: "daemon-a",
+        revision: 4,
+      }),
+    ).toBeNull();
     expect(getSaleStartCapabilityMock).not.toHaveBeenCalled();
 
-    store.invalidate({
+    await store.invalidate({
       type: "sale_start_capability_changed",
       eventId: "event-5",
       updatedAt: "2026-07-17T00:00:05Z",

@@ -222,6 +222,7 @@ impl MqttSyncRuntime {
                             &command,
                             result.error_code.as_deref(),
                             Some(result.message.as_str()),
+                            result.lower_controller_fault,
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -305,6 +306,7 @@ impl MqttSyncRuntime {
                     local_timeout.as_secs()
                 ),
                 reported_at: crate::state::store::now_iso(),
+                lower_controller_fault: None,
             },
         };
         drop(progress_sender);
@@ -341,6 +343,7 @@ impl MqttSyncRuntime {
                     &command,
                     result.error_code.as_deref(),
                     Some(result.message.as_str()),
+                    result.lower_controller_fault,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -442,6 +445,7 @@ impl MqttSyncRuntime {
                 error_code: Some("UNKNOWN".to_string()),
                 message: "dispense result unknown after daemon restart".to_string(),
                 reported_at: crate::state::store::now_iso(),
+                lower_controller_fault: None,
             };
             let mut result_event =
                 crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
@@ -1481,6 +1485,7 @@ mod tests {
                 resolution_source: Some("test".to_string()),
                 bound_usb_identity: None,
                 candidates: vec![],
+                lower_controller_fault: None,
             }
         }
 
@@ -1521,6 +1526,7 @@ mod tests {
                 error_code: None,
                 message: "ok".to_string(),
                 reported_at: crate::state::store::now_iso(),
+                lower_controller_fault: None,
             }
         }
     }

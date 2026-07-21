@@ -179,6 +179,7 @@ impl HardwareAdapter for UnavailableHardwareAdapter {
             resolution_source: Some("stable_device_binding".to_string()),
             bound_usb_identity: None,
             candidates: vec![],
+            lower_controller_fault: None,
         }
     }
 
@@ -192,6 +193,7 @@ impl HardwareAdapter for UnavailableHardwareAdapter {
             error_code: Some("LOWER_CONTROLLER_BINDING_UNAVAILABLE".to_string()),
             message: self.message.clone(),
             reported_at: crate::state::store::now_iso(),
+            lower_controller_fault: None,
         }
     }
 }

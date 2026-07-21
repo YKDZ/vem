@@ -5,7 +5,6 @@ import {
   inventoryReservationStatuses,
   machineCommandStatuses,
   machineClaimCodeStates,
-  maintenancePeerRoles,
   machineClaimCodePurposes,
   machineSlotStatuses,
   machineStatuses,
@@ -32,8 +31,6 @@ import {
   roleStatuses,
   variantStatuses,
   vendingCommandStatuses,
-  type MaintenanceRelayDesiredState,
-  type MaintenanceRelayObservedState,
 } from "@vem/shared";
 import { sql } from "drizzle-orm";
 import * as t from "drizzle-orm/pg-core";
@@ -91,10 +88,6 @@ export const machineClaimCodeState = t.pgEnum(
 export const machineClaimCodePurpose = t.pgEnum(
   "machine_claim_code_purpose",
   asPgEnumValues(machineClaimCodePurposes),
-);
-export const maintenancePeerRole = t.pgEnum(
-  "maintenance_peer_role",
-  asPgEnumValues(maintenancePeerRoles),
 );
 export const inventoryReservationStatus = t.pgEnum(
   "inventory_reservation_status",
@@ -470,370 +463,6 @@ export const machines = t.pgTable(
   ],
 );
 
-export const maintenancePeers = t.pgTable(
-  "maintenance_peers",
-  {
-    id: id(),
-    role: maintenancePeerRole("role").notNull(),
-    publicKey: t.text("public_key").notNull(),
-    tunnelAddress: t.varchar("tunnel_address", { length: 15 }).notNull(),
-    machineId: t.uuid("machine_id").references(() => machines.id),
-    status: t.varchar("status", { length: 16 }).default("active").notNull(),
-    reclaimExpiresAt: t.timestamp("reclaim_expires_at", { withTimezone: true }),
-    handshakeVerifiedAt: t.timestamp("handshake_verified_at", {
-      withTimezone: true,
-    }),
-    reclaimFailedAt: t.timestamp("reclaim_failed_at", { withTimezone: true }),
-    reclaimFailureReason: t.varchar("reclaim_failure_reason", { length: 128 }),
-    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (table) => [
-    t.uniqueIndex("maintenance_peers_public_key_unique").on(table.publicKey),
-    t
-      .uniqueIndex("maintenance_peers_tunnel_address_unique")
-      .on(table.tunnelAddress),
-    t.index("maintenance_peers_role_status_idx").on(table.role, table.status),
-    t.index("maintenance_peers_machine_id_idx").on(table.machineId),
-    t
-      .uniqueIndex("maintenance_peers_active_machine_unique")
-      .on(table.machineId)
-      .where(
-        sql`${table.role} = 'machine' AND ${table.status} = 'active' AND ${table.revokedAt} IS NULL`,
-      ),
-    t.check(
-      "maintenance_peers_role_machine_binding_check",
-      sql`(${table.role} = 'machine') = (${table.machineId} IS NOT NULL)`,
-    ),
-    t.check(
-      "maintenance_peers_status_check",
-      sql`${table.status} IN ('active', 'pending_reclaim', 'reclaim_failed', 'revoked')`,
-    ),
-    t.check(
-      "maintenance_peers_lifecycle_consistency_check",
-      sql`(
-        (${table.status} = 'active'
-          AND ${table.revokedAt} IS NULL
-          AND ${table.reclaimExpiresAt} IS NULL
-          AND ${table.reclaimFailedAt} IS NULL
-          AND ${table.reclaimFailureReason} IS NULL)
-        OR (${table.status} = 'pending_reclaim'
-          AND ${table.revokedAt} IS NULL
-          AND ${table.reclaimExpiresAt} IS NOT NULL
-          AND ${table.handshakeVerifiedAt} IS NULL
-          AND ${table.reclaimFailedAt} IS NULL
-          AND ${table.reclaimFailureReason} IS NULL)
-        OR (${table.status} = 'reclaim_failed'
-          AND ${table.revokedAt} IS NULL
-          AND ${table.reclaimExpiresAt} IS NOT NULL
-          AND ${table.handshakeVerifiedAt} IS NULL
-          AND ${table.reclaimFailedAt} IS NOT NULL
-          AND ${table.reclaimFailureReason} IS NOT NULL)
-        OR (${table.status} = 'revoked'
-          AND ${table.revokedAt} IS NOT NULL
-          AND ${table.reclaimExpiresAt} IS NULL
-          AND ${table.reclaimFailedAt} IS NULL
-          AND ${table.reclaimFailureReason} IS NULL)
-      )`,
-    ),
-    t
-      .uniqueIndex("maintenance_peers_pending_machine_unique")
-      .on(table.machineId)
-      .where(
-        sql`${table.role} = 'machine' AND ${table.status} = 'pending_reclaim' AND ${table.revokedAt} IS NULL`,
-      ),
-  ],
-);
-
-export const maintenanceSessions = t.pgTable(
-  "maintenance_sessions",
-  {
-    id: id(),
-    kind: t.varchar("session_kind", { length: 16 }).notNull(),
-    sourcePeerId: t
-      .uuid("source_peer_id")
-      .notNull()
-      .references(() => maintenancePeers.id),
-    targetPeerId: t
-      .uuid("target_peer_id")
-      .notNull()
-      .references(() => maintenancePeers.id),
-    targetMachineId: t
-      .uuid("target_machine_id")
-      .notNull()
-      .references(() => machines.id),
-    issuedByAdminUserId: t
-      .uuid("issued_by_admin_user_id")
-      .references(() => adminUsers.id),
-    automationActorId: t.varchar("automation_actor_id", { length: 128 }),
-    protocol: t.varchar("protocol", { length: 8 }).default("tcp").notNull(),
-    port: t.integer("port").default(22).notNull(),
-    reason: t.varchar("reason", { length: 500 }).notNull(),
-    issuedAt: t
-      .timestamp("issued_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
-    activatedAt: t.timestamp("activated_at", { withTimezone: true }),
-    expiredAt: t.timestamp("expired_at", { withTimezone: true }),
-    failedAt: t.timestamp("failed_at", { withTimezone: true }),
-    failureReasonCode: t.varchar("failure_reason_code", { length: 64 }),
-    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
-    desiredStateVersion: t
-      .bigint("desired_state_version", { mode: "number" })
-      .notNull()
-      .references(() => maintenanceRelayDesiredStateRevisions.revision),
-  },
-  (table) => [
-    t.index("maintenance_sessions_source_peer_id_idx").on(table.sourcePeerId),
-    t.index("maintenance_sessions_target_peer_id_idx").on(table.targetPeerId),
-    t
-      .index("maintenance_sessions_target_machine_id_idx")
-      .on(table.targetMachineId),
-    t
-      .index("maintenance_sessions_active_expiry_idx")
-      .on(table.expiresAt, table.issuedAt)
-      .where(
-        sql`${table.revokedAt} IS NULL AND ${table.expiredAt} IS NULL AND ${table.failedAt} IS NULL`,
-      ),
-    t
-      .index("maintenance_sessions_revoked_status_idx")
-      .on(table.revokedAt, table.issuedAt)
-      .where(sql`${table.revokedAt} IS NOT NULL`),
-    t
-      .index("maintenance_sessions_expired_status_idx")
-      .on(table.expiredAt, table.issuedAt)
-      .where(sql`${table.expiredAt} IS NOT NULL`),
-    t
-      .index("maintenance_sessions_failed_status_idx")
-      .on(table.failedAt, table.issuedAt)
-      .where(sql`${table.failedAt} IS NOT NULL`),
-    t
-      .index("maintenance_sessions_kind_issued_idx")
-      .on(table.kind, table.issuedAt),
-    t
-      .index("maintenance_sessions_admin_actor_idx")
-      .on(table.issuedByAdminUserId)
-      .where(sql`${table.issuedByAdminUserId} IS NOT NULL`),
-    t
-      .index("maintenance_sessions_automation_actor_idx")
-      .on(table.automationActorId)
-      .where(sql`${table.automationActorId} IS NOT NULL`),
-    t
-      .index("maintenance_sessions_desired_revision_idx")
-      .on(table.desiredStateVersion),
-    t.check(
-      "maintenance_sessions_kind_check",
-      sql`${table.kind} IN ('human', 'ci')`,
-    ),
-    t.check(
-      "maintenance_sessions_actor_consistency_check",
-      sql`(${table.kind} = 'human' AND ${table.issuedByAdminUserId} IS NOT NULL AND ${table.automationActorId} IS NULL) OR (${table.kind} = 'ci' AND ${table.issuedByAdminUserId} IS NULL AND ${table.automationActorId} IS NOT NULL)`,
-    ),
-    t.check(
-      "maintenance_sessions_protocol_port_check",
-      sql`${table.protocol} = 'tcp' AND ${table.port} = 22`,
-    ),
-    t.check(
-      "maintenance_sessions_expiry_after_issue_check",
-      sql`${table.expiresAt} > ${table.issuedAt}`,
-    ),
-    t.check(
-      "maintenance_sessions_failure_consistency_check",
-      sql`(${table.failedAt} IS NULL) = (${table.failureReasonCode} IS NULL)`,
-    ),
-    t.check(
-      "maintenance_sessions_failure_reason_code_check",
-      sql`${table.failureReasonCode} IS NULL OR ${table.failureReasonCode} IN ('desired_state_rejected', 'wireguard_apply_failed', 'firewall_apply_failed', 'journal_persist_failed', 'peer_observation_failed', 'relay_internal_error')`,
-    ),
-    t.check(
-      "maintenance_sessions_terminal_exclusivity_check",
-      sql`num_nonnulls(${table.revokedAt}, ${table.expiredAt}, ${table.failedAt}) <= 1`,
-    ),
-    t.check(
-      "maintenance_sessions_lifecycle_time_check",
-      sql`(${table.activatedAt} IS NULL OR (${table.activatedAt} >= ${table.issuedAt} AND ${table.activatedAt} < ${table.expiresAt})) AND (${table.revokedAt} IS NULL OR (${table.revokedAt} >= ${table.issuedAt} AND ${table.revokedAt} < ${table.expiresAt})) AND (${table.failedAt} IS NULL OR (${table.failedAt} >= ${table.issuedAt} AND ${table.failedAt} < ${table.expiresAt})) AND (${table.expiredAt} IS NULL OR ${table.expiredAt} = ${table.expiresAt})`,
-    ),
-  ],
-);
-
-export const maintenanceSshCertificates = t.pgTable(
-  "maintenance_ssh_certificates",
-  {
-    id: id(),
-    sessionId: t
-      .uuid("session_id")
-      .notNull()
-      .references(() => maintenanceSessions.id),
-    requestId: t.uuid("request_id").notNull(),
-    publicKeyFingerprint: t
-      .varchar("public_key_fingerprint", { length: 64 })
-      .notNull(),
-    certificate: t.text("certificate").notNull(),
-    certificateFingerprint: t
-      .varchar("certificate_fingerprint", { length: 64 })
-      .notNull(),
-    serial: t.bigint("serial", { mode: "number" }).notNull(),
-    keyId: t.varchar("key_id", { length: 256 }).notNull(),
-    principal: t.varchar("principal", { length: 64 }).notNull(),
-    sourceAddress: t.varchar("source_address", { length: 15 }).notNull(),
-    validAfter: t.timestamp("valid_after", { withTimezone: true }).notNull(),
-    validBefore: t.timestamp("valid_before", { withTimezone: true }).notNull(),
-    caFingerprint: t.varchar("ca_fingerprint", { length: 100 }).notNull(),
-    createdAt: createdAt(),
-  },
-  (table) => [
-    t
-      .uniqueIndex("maintenance_ssh_certificates_session_request_unique")
-      .on(table.sessionId, table.requestId),
-    t
-      .uniqueIndex("maintenance_ssh_certificates_serial_unique")
-      .on(table.serial),
-    t.index("maintenance_ssh_certificates_session_idx").on(table.sessionId),
-    t.check(
-      "maintenance_ssh_certificates_serial_positive_check",
-      sql`${table.serial} > 0`,
-    ),
-    t.check(
-      "maintenance_ssh_certificates_validity_check",
-      sql`${table.validBefore} > ${table.validAfter}`,
-    ),
-    t.check(
-      "maintenance_ssh_certificates_public_key_fingerprint_check",
-      sql`${table.publicKeyFingerprint} ~ '^[0-9a-f]{64}$'`,
-    ),
-    t.check(
-      "maintenance_ssh_certificates_certificate_fingerprint_check",
-      sql`${table.certificateFingerprint} ~ '^[0-9a-f]{64}$'`,
-    ),
-  ],
-);
-
-export const maintenanceAutomationExchanges = t.pgTable(
-  "maintenance_automation_exchanges",
-  {
-    id: id(),
-    oidcIssuer: t.varchar("oidc_issuer", { length: 255 }).notNull(),
-    oidcTokenId: t.varchar("oidc_token_id", { length: 512 }).notNull(),
-    githubRepositoryId: t
-      .varchar("github_repository_id", { length: 20 })
-      .notNull(),
-    githubClaimModel: t.varchar("github_claim_model", { length: 16 }).notNull(),
-    githubWorkflowRef: t
-      .varchar("github_workflow_ref", { length: 1024 })
-      .notNull(),
-    githubWorkflowSha: t
-      .varchar("github_workflow_sha", { length: 40 })
-      .notNull(),
-    githubRef: t.varchar("github_ref", { length: 512 }).notNull(),
-    automationTokenDigest: t
-      .varchar("automation_token_digest", { length: 64 })
-      .notNull(),
-    githubRunId: t.varchar("github_run_id", { length: 20 }).notNull(),
-    githubRunAttempt: t.varchar("github_run_attempt", { length: 10 }).notNull(),
-    githubSha: t.varchar("github_sha", { length: 40 }).notNull(),
-    sourcePeerId: t
-      .uuid("source_peer_id")
-      .notNull()
-      .references(() => maintenancePeers.id),
-    targetMachineId: t
-      .uuid("target_machine_id")
-      .notNull()
-      .references(() => machines.id),
-    reason: t.varchar("reason", { length: 500 }).notNull(),
-    sessionId: t.uuid("session_id").references(() => maintenanceSessions.id),
-    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
-    createdAt: createdAt(),
-  },
-  (table) => [
-    t
-      .uniqueIndex("maintenance_automation_exchanges_oidc_jti_unique")
-      .on(table.oidcIssuer, table.oidcTokenId),
-    t
-      .uniqueIndex("maintenance_automation_exchanges_run_attempt_unique")
-      .on(
-        table.oidcIssuer,
-        table.githubRepositoryId,
-        table.githubRunId,
-        table.githubRunAttempt,
-      ),
-    t
-      .uniqueIndex("maintenance_automation_exchanges_token_digest_unique")
-      .on(table.automationTokenDigest),
-    t
-      .uniqueIndex("maintenance_automation_exchanges_session_unique")
-      .on(table.sessionId)
-      .where(sql`${table.sessionId} IS NOT NULL`),
-    t
-      .index("maintenance_automation_exchanges_run_idx")
-      .on(table.githubRunId, table.githubRunAttempt),
-    t
-      .index("maintenance_automation_exchanges_active_idx")
-      .on(table.expiresAt, table.revokedAt),
-    t.check(
-      "maintenance_automation_exchanges_digest_check",
-      sql`${table.automationTokenDigest} ~ '^[0-9a-f]{64}$'`,
-    ),
-    t.check(
-      "maintenance_automation_exchanges_sha_check",
-      sql`${table.githubSha} ~ '^[0-9a-f]{40}$' AND ${table.githubWorkflowSha} ~ '^[0-9a-f]{40}$'`,
-    ),
-    t.check(
-      "maintenance_automation_exchanges_claim_model_check",
-      sql`${table.githubClaimModel} IN ('direct', 'reusable')`,
-    ),
-    t.check(
-      "maintenance_automation_exchanges_expiry_check",
-      sql`${table.expiresAt} > ${table.createdAt}`,
-    ),
-  ],
-);
-
-export const maintenanceRelayControlState = t.pgTable(
-  "maintenance_relay_control_state",
-  {
-    singletonKey: t.varchar("singleton_key", { length: 32 }).primaryKey(),
-    desiredStateVersion: t
-      .bigint("desired_state_version", { mode: "number" })
-      .default(0)
-      .notNull(),
-    observedState: t
-      .jsonb("observed_state")
-      .$type<MaintenanceRelayObservedState>(),
-    updatedAt: updatedAt(),
-  },
-  (table) => [
-    t.check(
-      "maintenance_relay_control_state_singleton_check",
-      sql`${table.singletonKey} = 'default'`,
-    ),
-    t.check(
-      "maintenance_relay_control_state_version_check",
-      sql`${table.desiredStateVersion} >= 0`,
-    ),
-  ],
-);
-
-export const maintenanceRelayDesiredStateRevisions = t.pgTable(
-  "maintenance_relay_desired_state_revisions",
-  {
-    revision: t.bigint("revision", { mode: "number" }).primaryKey(),
-    desiredState: t
-      .jsonb("desired_state")
-      .$type<MaintenanceRelayDesiredState>()
-      .notNull(),
-    createdAt: createdAt(),
-  },
-  (table) => [
-    t.check(
-      "maintenance_relay_desired_state_revision_nonnegative_check",
-      sql`${table.revision} >= 0`,
-    ),
-  ],
-);
-
 export const machineSlots = t.pgTable(
   "machine_slots",
   {
@@ -1094,8 +723,6 @@ export const orders = t.pgTable(
     paymentId: t
       .uuid("payment_id")
       .references((): t.AnyPgColumn => payments.id),
-    isDrill: t.boolean("is_drill").default(false).notNull(),
-    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     profileSnapshot: t.jsonb("profile_snapshot").$type<JsonObject>(),
     createdFrom: orderSource("created_from").default("machine_ui").notNull(),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
@@ -1108,7 +735,6 @@ export const orders = t.pgTable(
     t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
     t.index("orders_machine_id_idx").on(table.machineId),
     t.index("orders_status_idx").on(table.status),
-    t.index("orders_is_drill_idx").on(table.isDrill),
     t.index("orders_payment_state_idx").on(table.paymentState),
     t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
@@ -1323,8 +949,6 @@ export const payments = t.pgTable(
     status: paymentStatus("status").default("created").notNull(),
     amountCents: t.integer("amount_cents").notNull(),
     providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
-    isDrill: t.boolean("is_drill").default(false).notNull(),
-    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     paymentUrl: t.text("payment_url"),
     intentCreationLeaseExpiresAt: t.timestamp(
       "intent_creation_lease_expires_at",
@@ -1352,7 +976,6 @@ export const payments = t.pgTable(
     t.index("payments_order_id_idx").on(table.orderId),
     t.index("payments_provider_id_idx").on(table.providerId),
     t.index("payments_status_idx").on(table.status),
-    t.index("payments_is_drill_idx").on(table.isDrill),
     t.index("payments_created_at_idx").on(table.createdAt),
     t.check(
       "payments_amount_cents_non_negative",
@@ -1543,8 +1166,6 @@ export const refunds = t.pgTable(
     amountCents: t.integer("amount_cents").notNull(),
     status: refundStatus("status").default("created").notNull(),
     providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
-    isDrill: t.boolean("is_drill").default(false).notNull(),
-    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     reason: t.text("reason").notNull(),
     requestedByAdminUserId: t
       .uuid("requested_by_admin_user_id")
@@ -1557,7 +1178,6 @@ export const refunds = t.pgTable(
     t.uniqueIndex("refunds_refund_no_unique").on(table.refundNo),
     t.index("refunds_payment_id_idx").on(table.paymentId),
     t.index("refunds_order_id_idx").on(table.orderId),
-    t.index("refunds_is_drill_idx").on(table.isDrill),
     t
       .uniqueIndex("refunds_order_reason_active_unique")
       .on(table.orderId, table.reason)

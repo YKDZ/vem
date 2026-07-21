@@ -13,6 +13,16 @@ function option(args, name) {
   return value;
 }
 
+function repeatableOption(args, name) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== `--${name}`) continue;
+    values.push(option(args.slice(index), name));
+    index += 1;
+  }
+  return values;
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
@@ -47,7 +57,11 @@ export function parseTriggerOptions(args) {
   if (!isAbsolute(config) || !isAbsolute(out)) {
     throw new Error("--config and --out must be absolute paths");
   }
-  return { mode, commit, config: resolve(config), out: resolve(out) };
+  const focus = repeatableOption(args, "focus");
+  if (mode === "full" && focus.length > 0) {
+    throw new Error("--focus is only valid with --mode fast");
+  }
+  return { mode, focus, commit, config: resolve(config), out: resolve(out) };
 }
 
 async function main() {
@@ -73,6 +87,7 @@ async function main() {
       "run",
       "--mode",
       options.mode,
+      ...options.focus.flatMap((name) => ["--focus", name]),
       "--commit",
       options.commit,
       "--config",

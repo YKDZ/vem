@@ -173,7 +173,7 @@ async function saveConfig(): Promise<void> {
   <a-drawer
     :open="open"
     :title="drawerTitle"
-    width="760"
+    size="760"
     destroy-on-close
     @close="closeDrawer"
   >

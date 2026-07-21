@@ -248,21 +248,6 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/maintenance-identity")
-  async getOwnMaintenanceIdentity(
-    @CurrentMachine() machine: AuthenticatedMachine,
-    @Param("code") code: string,
-  ) {
-    if (code !== machine.code) {
-      throw new ForbiddenException(
-        "Machine can only read its own maintenance identity",
-      );
-    }
-    return await this.machinesService.getOwnMaintenanceIdentity(machine.id);
-  }
-
-  @Public()
-  @UseGuards(MachineAuthGuard)
   @Get("by-code/:code/external-natural-environment")
   async getOwnExternalNaturalEnvironment(
     @CurrentMachine() machine: AuthenticatedMachine,

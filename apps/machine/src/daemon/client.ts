@@ -42,7 +42,6 @@ import {
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
-  maintenanceEnrollmentStatusSchema,
   provisioningClaimResponseSchema,
   scannerStatusSchema,
   syncStatusSchema,
@@ -59,7 +58,6 @@ import {
   type SaleStartCapabilitySnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
-  type MaintenanceEnrollmentStatus,
   type NetworkSettingsResponse,
   type ProvisioningClaimResponse,
   type ReadySnapshot,
@@ -421,12 +419,6 @@ export class DaemonApiClient {
         method: "POST",
         body: { claimCode: claimCode.trim().toUpperCase() },
       }),
-    );
-  }
-
-  async getMaintenanceStatus(): Promise<MaintenanceEnrollmentStatus> {
-    return maintenanceEnrollmentStatusSchema.parse(
-      await this.request("/v1/maintenance/status"),
     );
   }
 

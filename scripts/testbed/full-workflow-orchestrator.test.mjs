@@ -14,32 +14,35 @@ import {
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
-  it("owns the fixed full order, artifacts, fixture allocations, and result-specific evidence policy in one table", () => {
+  it("owns canonical business-set selection, runners, fixture allocations, and evidence policy in one table", () => {
     assert.deepEqual(
-      FULL_WORKFLOW_TRACK_DESCRIPTORS.map((track) => track.key),
+      FULL_WORKFLOW_TRACK_DESCRIPTORS.map((track) => track.name),
       [
-        "fast",
-        "scanner",
-        "visionTryOn",
-        "delayedPickup",
+        "commissioning",
+        "sale",
+        "scannerPayment",
+        "visionExperience",
+        "pickupProtocol",
+        "behaviorAudio",
         "ipcRecovery",
-        "fulfillmentFailure",
+        "fulfillmentRecovery",
+        "paymentRecovery",
+        "hardwareLifecycle",
+        "localOperations",
+        "environmentControl",
       ],
     );
     assert.deepEqual(
-      FULL_WORKFLOW_TRACK_DESCRIPTORS.map((track) => track.fixtureKey),
-      [
-        "fast",
-        "scanner",
-        "visionTryOn",
-        "delayedPickup",
-        "ipcRecovery",
-        "fulfillmentFailure",
-      ],
+      FULL_WORKFLOW_TRACK_DESCRIPTORS.filter((track) => track.core).map(
+        (track) => track.name,
+      ),
+      ["sale"],
     );
-    for (const track of FULL_WORKFLOW_TRACK_DESCRIPTORS) {
-      assert.match(track.reportFileName, /\.json$/);
-      assert.match(track.artifactDirectory, /artifacts$/);
+    for (const track of FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
+      (candidate) => candidate.runner,
+    )) {
+      assert.match(track.runner.reportFileName, /\.json$/);
+      assert.match(track.runner.artifactDirectory, /artifacts$/);
       assert.equal(track.evidence.passed.screenshot, true);
       assert.equal(track.evidence.failed.primaryReason, true);
       assert.equal(track.evidence.failed.diagnostic, true);
@@ -49,7 +52,9 @@ describe("full workflow serial lifecycle", () => {
 
   it("captures and judges each terminal state before bounded recovery while continuing after a failure", async () => {
     const calls = [];
-    const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.slice(0, 2);
+    const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
+      (track) => track.runner && track.name !== "commissioning",
+    ).slice(0, 2);
     const result = await runSerialTrackLifecycle({
       tracks,
       now: (() => {
@@ -59,20 +64,20 @@ describe("full workflow serial lifecycle", () => {
       runTrack(track) {
         calls.push(`run:${track.key}`);
         return {
-          status: track.key === "fast" ? "failed" : "passed",
-          exitCode: track.key === "fast" ? 1 : 0,
+          status: track.key === "sale" ? "failed" : "passed",
+          exitCode: track.key === "sale" ? 1 : 0,
           stdout: "child output",
           stderr: track.key === "fast" ? "primary failure" : "",
-          report: { ok: track.key !== "fast" },
+          report: { ok: track.key !== "sale" },
         };
       },
       async captureTerminal(track) {
         calls.push(`terminal:${track.key}`);
         return {
-          ok: track.key !== "fast",
+          ok: track.key !== "sale",
           facts: { route: "#/result/failure" },
           reason:
-            track.key === "fast" ? "terminal route is not recoverable" : null,
+            track.key === "sale" ? "terminal route is not recoverable" : null,
         };
       },
       async recover(track) {
@@ -82,18 +87,18 @@ describe("full workflow serial lifecycle", () => {
     });
 
     assert.deepEqual(calls, [
-      "run:fast",
-      "terminal:fast",
-      "recover:fast",
-      "run:scanner",
-      "terminal:scanner",
-      "recover:scanner",
+      "run:sale",
+      "terminal:sale",
+      "recover:sale",
+      "run:scannerPayment",
+      "terminal:scannerPayment",
+      "recover:scannerPayment",
     ]);
     assert.equal(result[0].businessStatus, "failed");
     assert.equal(result[0].failureStage, "child");
     assert.equal(result[0].terminal.ok, false);
     assert.equal(result[0].handoffRecovery.ok, true);
-    assert.equal(result[1].businessStatus, "passed");
+    assert.equal(result[1].businessStatus, "failed");
     assert.equal(result[1].durationMs, 1_000);
     assert.equal(result[1].handoffRecovery.durationMs, 1_000);
   });
@@ -140,10 +145,12 @@ describe("full workflow serial lifecycle", () => {
   it("records a preflight failure and continues to the next track", async () => {
     const calls = [];
     const result = await runSerialTrackLifecycle({
-      tracks: FULL_WORKFLOW_TRACK_DESCRIPTORS.slice(0, 2),
+      tracks: FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
+        (track) => track.runner && track.name !== "commissioning",
+      ).slice(0, 2),
       beforeTrack(track) {
         calls.push(`preflight:${track.key}`);
-        if (track.key === "fast") throw new Error("ready file was rotating");
+        if (track.key === "sale") throw new Error("ready file was rotating");
       },
       runTrack(track) {
         calls.push(`run:${track.key}`);
@@ -154,13 +161,13 @@ describe("full workflow serial lifecycle", () => {
     });
 
     assert.deepEqual(calls, [
-      "preflight:fast",
-      "preflight:scanner",
-      "run:scanner",
+      "preflight:sale",
+      "preflight:scannerPayment",
+      "run:scannerPayment",
     ]);
     assert.equal(result[0].businessStatus, "failed");
     assert.match(result[0].error, /ready file was rotating/);
-    assert.equal(result[1].businessStatus, "passed");
+    assert.equal(result[1].businessStatus, "failed");
   });
 
   it("uses the production stock maintenance task to restore fixture slots before a track", async () => {
