@@ -941,6 +941,24 @@ describe("Windows D cache contract", () => {
     );
   });
 
+  it("adapts stable QEMU USB ports to production device identities without fixed COM numbers", () => {
+    const guestScript = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(guestScript, /function Write-TestbedSerialDiscoveryAdapter/);
+    assert.match(guestScript, /DEVPKEY_Device_Parent/);
+    assert.match(guestScript, /VID_1A86&PID_7523/);
+    assert.match(guestScript, /VID_1A86&PID_55D3/);
+    assert.match(guestScript, /VEM_TESTBED_SERIAL_DISCOVERY_FILE/);
+    assert.doesNotMatch(
+      guestScript.match(
+        /function Write-TestbedSerialDiscoveryAdapter[\s\S]*?\n}/,
+      )?.[0] ?? "",
+      /COM(?:3|4|10)/,
+    );
+  });
+
   it("changes the host simulator cache key when its local runtime sources change", async () => {
     const root = mkdtempSync(
       join(tmpdir(), "vem-local-testbed-simulator-key-"),

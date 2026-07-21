@@ -251,6 +251,15 @@ impl SerialDevicePlatform for WindowsSerialDevicePlatform {
         if !cfg!(windows) {
             return Err("Windows serial discovery is available only on Windows".to_string());
         }
+        if let Some(path) = std::env::var_os("VEM_TESTBED_SERIAL_DISCOVERY_FILE") {
+            let payload = tokio::fs::read(&path).await.map_err(|error| {
+                format!(
+                    "read testbed serial discovery file {} failed: {error}",
+                    std::path::Path::new(&path).display()
+                )
+            })?;
+            return parse_windows_serial_discovery(&payload);
+        }
         let output = tokio::process::Command::new("powershell.exe")
             .args([
                 "-NoLogo",

@@ -291,6 +291,35 @@ function Initialize-TestbedHardwareBindings {
   }
 }
 
+function Write-TestbedSerialDiscoveryAdapter {
+  $devices = @(Get-PnpDevice -Class Ports -PresentOnly | ForEach-Object {
+    $portInstanceId = [string]$_.InstanceId
+    $parent = [string](Get-PnpDeviceProperty -InstanceId $portInstanceId -KeyName "DEVPKEY_Device_Parent" -ErrorAction Stop).Data
+    $usbPortMatch = [regex]::Match($parent, '-([12])$')
+    $comPortMatch = [regex]::Match([string]$_.FriendlyName, '\((COM[0-9]+)\)\s*$')
+    if (-not $usbPortMatch.Success -or -not $comPortMatch.Success) { return }
+    $usbPort = [int]$usbPortMatch.Groups[1].Value
+    $currentPort = [string]$comPortMatch.Groups[1].Value
+    $role = if ($usbPort -eq 1) { "lower-controller" } else { "scanner" }
+    $hardwareId = if ($usbPort -eq 1) { "USB\VID_1A86&PID_7523" } else { "USB\VID_1A86&PID_55D3" }
+    $serialNumber = if ($usbPort -eq 1) { "VEMVMLOWER" } else { "VEMVMSCANNER" }
+    [pscustomobject]@{
+      currentPort = $currentPort
+      instanceId = "$hardwareId\$serialNumber"
+      containerId = [string](Get-PnpDeviceProperty -InstanceId $parent -KeyName "DEVPKEY_Device_ContainerId" -ErrorAction Stop).Data
+      hardwareIds = @($hardwareId)
+      serialNumber = $serialNumber
+      friendlyName = "VEM VM $role serial boundary"
+    }
+  })
+  if ($devices.Count -ne 2 -or @($devices.currentPort | Select-Object -Unique).Count -ne 2) {
+    throw "testbed serial discovery adapter requires exactly two distinct QEMU USB serial ports"
+  }
+  $path = Join-Path $handoffRoot "serial-device-observations.json"
+  ConvertTo-Json -InputObject $devices -Depth 4 | Set-Content -LiteralPath $path -Encoding utf8
+  $env:VEM_TESTBED_SERIAL_DISCOVERY_FILE = $path
+}
+
 function Wait-InstalledTauriTarget {
   $deadline = [DateTime]::UtcNow.AddMinutes(1)
   do {
@@ -538,6 +567,7 @@ if (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) {
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
+Write-TestbedSerialDiscoveryAdapter
 if ($Mode -eq "full") {
   $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
 }
