@@ -1489,7 +1489,7 @@ describe("Windows D cache contract", () => {
     assert.ok(machineBuild < deploy && deploy < acceptance);
     assert.match(
       guest,
-      /Write-TestbedPhase "clean-local-runtime-artifacts"\s+cargo clean --release -p machine -p vending-daemon\s+if \(\$LASTEXITCODE -ne 0\)/,
+      /function Get-LocalRustSourceDigest[\s\S]*\.vem-local-rust-source\.sha256[\s\S]*if \(\$cachedLocalRustSourceDigest -ne \$localRustSourceDigest\) \{\s+Write-TestbedPhase "clean-local-runtime-artifacts"\s+cargo clean --release -p machine -p vending-daemon -p vending-core -p daemon-ipc-contracts[\s\S]*Set-Content -LiteralPath \$localRustSourceMarker -Value \$localRustSourceDigest/,
     );
     assert.match(
       guest,

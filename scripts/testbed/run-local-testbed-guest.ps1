@@ -48,6 +48,37 @@ function Write-TestbedPhase([string]$Name) {
   Write-Output "::vem-testbed-phase::$Name"
 }
 
+function Get-LocalRustSourceDigest {
+  $paths = @(
+    "Cargo.toml",
+    "Cargo.lock",
+    "apps\machine\src-tauri",
+    "apps\vending-daemon",
+    "crates\vending-core",
+    "crates\daemon-ipc-contracts"
+  ) | ForEach-Object { Join-Path $repoRoot $_ }
+  $files = @($paths | ForEach-Object {
+    if (Test-Path -LiteralPath $_ -PathType Leaf) { Get-Item -LiteralPath $_ }
+    else {
+      Get-ChildItem -LiteralPath $_ -Recurse -File | Where-Object {
+        $_.Extension -in @(".rs", ".toml", ".json")
+      }
+    }
+  } | Sort-Object FullName -Unique)
+  $entries = @($files | ForEach-Object {
+    $relative = [IO.Path]::GetRelativePath($repoRoot, $_.FullName)
+    $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    "$relative`0$digest"
+  })
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($entries -join "`n")
+    return [Convert]::ToHexString($hasher.ComputeHash($bytes)).ToLowerInvariant()
+  } finally {
+    $hasher.Dispose()
+  }
+}
+
 function Get-TestbedSccache {
   $version = "0.16.0"
   $toolRoot = Join-Path $cacheRoot "sccache\bin\$version"
@@ -539,15 +570,24 @@ if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
 }
 & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
-Write-TestbedPhase "clean-local-runtime-artifacts"
-cargo clean --release -p machine -p vending-daemon
-if ($LASTEXITCODE -ne 0) { throw "local runtime artifact cleanup failed" }
+$localRustSourceDigest = Get-LocalRustSourceDigest
+$localRustSourceMarker = Join-Path $env:CARGO_TARGET_DIR ".vem-local-rust-source.sha256"
+$cachedLocalRustSourceDigest = if (Test-Path -LiteralPath $localRustSourceMarker -PathType Leaf) {
+  (Get-Content -Raw -LiteralPath $localRustSourceMarker).Trim()
+} else { "" }
+if ($cachedLocalRustSourceDigest -ne $localRustSourceDigest) {
+  Write-TestbedPhase "clean-local-runtime-artifacts"
+  cargo clean --release -p machine -p vending-daemon -p vending-core -p daemon-ipc-contracts
+  if ($LASTEXITCODE -ne 0) { throw "local runtime artifact cleanup failed" }
+  Remove-Item -LiteralPath $localRustSourceMarker -Force -ErrorAction SilentlyContinue
+}
 Write-TestbedPhase "machine-build"
 & $pnpm --filter machine exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
 if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
 Write-TestbedPhase "daemon-build"
 cargo build -p vending-daemon --release
 if ($LASTEXITCODE -ne 0) { throw "vending daemon build failed" }
+Set-Content -LiteralPath $localRustSourceMarker -Value $localRustSourceDigest -Encoding ascii
 & $sccache --show-stats
 if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
 
