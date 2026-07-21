@@ -266,6 +266,13 @@ function provisioningProfileFactRevision(facts: unknown): number {
   return revision === 0 ? 1 : revision;
 }
 
+function provisioningProfileMachineStatus(
+  status: MachineProvisioningProfile["machine"]["status"],
+): MachineProvisioningProfile["machine"]["status"] {
+  // online/offline is heartbeat telemetry, not adopted runtime configuration.
+  return status === "offline" ? "online" : status;
+}
+
 function resolveMachineClaimCodeState(
   claimCode: MachineClaimCodeRecord,
   now: Date,
@@ -2475,7 +2482,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         id: input.machine.machineId,
         code: input.machine.machineCode,
         name: input.machine.machineName,
-        status: input.machine.machineStatus,
+        status: provisioningProfileMachineStatus(input.machine.machineStatus),
         locationLabel: input.machine.machineLocationLabel,
       },
       apiBaseUrl: this.config.machineApiBaseUrl,

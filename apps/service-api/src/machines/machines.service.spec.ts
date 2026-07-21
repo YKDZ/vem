@@ -2918,7 +2918,11 @@ describe("MachinesService claim code lifecycle", () => {
 
   it("keeps heartbeat-only refreshes on the same provisioning profile revision", async () => {
     const profile = replayProfile();
-    const queueSnapshot = (machineUpdatedAt: Date, machineName = "Lobby") => {
+    const queueSnapshot = (
+      machineUpdatedAt: Date,
+      machineName = "Lobby",
+      machineStatus: "online" | "offline" = profile.machine.status,
+    ) => {
       mockDb.select.mockReturnValueOnce({
         from: () => ({
           innerJoin: () => ({
@@ -2931,7 +2935,7 @@ describe("MachinesService claim code lifecycle", () => {
                     machineId: profile.machine.id,
                     machineCode: profile.machine.code,
                     machineName,
-                    machineStatus: profile.machine.status,
+                    machineStatus,
                     machineLocationLabel: profile.machine.locationLabel,
                     machineMqttClientId: "vem-machine-M001",
                     machineUpdatedAt,
@@ -2950,16 +2954,17 @@ describe("MachinesService claim code lifecycle", () => {
       ],
     });
 
-    queueSnapshot(new Date("2026-06-08T16:36:00.000Z"));
+    queueSnapshot(new Date("2026-06-08T16:36:00.000Z"), "Lobby", "offline");
     const beforeHeartbeat = await service.getOwnProvisioningProfile(
       profile.machine.id,
     );
-    queueSnapshot(new Date("2026-06-08T16:37:00.000Z"));
+    queueSnapshot(new Date("2026-06-08T16:37:00.000Z"), "Lobby", "online");
     const afterHeartbeat = await service.getOwnProvisioningProfile(
       profile.machine.id,
     );
 
     expect(afterHeartbeat).toEqual(beforeHeartbeat);
+    expect(afterHeartbeat.machine.status).toBe("online");
 
     listMachinePaymentOptionsForMachine.mockResolvedValue({
       options: [{ method: "payment_code", disabled: false }],
