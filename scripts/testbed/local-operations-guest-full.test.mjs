@@ -62,6 +62,7 @@ describe("local operations guest full", () => {
       boundaries: { daemon: true, hardwareSelfCheck: true, serial: true },
       planogram: { canonical: true, planogramVersion: "P-8", slotCode: "R7C1" },
       manualDispense: { slotCode: "R7C1", outcome: "completed" },
+      systemTouchKeyboard: { ok: true },
     };
     assert.equal(validateLocalOperationsEvidence(report).canonical, true);
     assert.throws(

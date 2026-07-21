@@ -10,6 +10,16 @@ pub struct SystemTouchKeyboardState {
 }
 
 #[cfg(windows)]
+fn input_pane_state(input_pane: &InputPane) -> Result<SystemTouchKeyboardState, String> {
+    let occluded = input_pane
+        .OccludedRect()
+        .map_err(|error| format!("读取 Windows 输入面板状态失败: {error}"))?;
+    Ok(SystemTouchKeyboardState {
+        visible: occluded.Width > 0.0 && occluded.Height > 0.0,
+    })
+}
+
+#[cfg(windows)]
 fn input_pane_for_window(window: &tauri::WebviewWindow) -> Result<InputPane, String> {
     let hwnd = window
         .hwnd()
@@ -56,6 +66,23 @@ pub fn hide_system_touch_keyboard(
                 .map_err(|error| format!("收起 Windows 输入面板失败: {error}"))
         })?;
         Ok(SystemTouchKeyboardState { visible: false })
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Ok(SystemTouchKeyboardState { visible: false })
+    }
+}
+
+#[tauri::command]
+pub fn query_system_touch_keyboard_state(
+    window: tauri::WebviewWindow,
+) -> Result<SystemTouchKeyboardState, String> {
+    #[cfg(windows)]
+    {
+        let input_pane = input_pane_for_window(&window)?;
+        input_pane_state(&input_pane)
     }
 
     #[cfg(not(windows))]

@@ -4,6 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { runInstalledSystemTouchKeyboardAcceptance } from "./installed-system-touch-keyboard.mjs";
+
 const SCHEMA_VERSION = "vem-local-operations-guest-full/v1";
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -117,7 +119,8 @@ export function validateLocalOperationsEvidence(report) {
     report.boundaries?.daemon !== true ||
     report.boundaries?.hardwareSelfCheck !== true ||
     report.boundaries?.serial !== true ||
-    report.planogram?.canonical !== true
+    report.planogram?.canonical !== true ||
+    report.systemTouchKeyboard?.ok !== true
   )
     throw new Error("local operations boundary evidence is incomplete");
   if (
@@ -149,6 +152,7 @@ export async function runLocalOperationsGuest(options) {
     planogram: { canonical: false },
     manualDispense: null,
     hardware: null,
+    systemTouchKeyboard: null,
   };
   let session = null;
   try {
@@ -221,6 +225,17 @@ export async function runLocalOperationsGuest(options) {
       throw new Error(
         `manual dispense did not complete the lower-controller protocol: ${JSON.stringify({ outcome: diagnostic.outcome, frames: operationFrames.map((frame) => frame?.parsedOpcode) })}`,
       );
+    const keyboardOutPath = options.outPath.replace(
+      /[^\\]+$/,
+      "system-touch-keyboard.json",
+    );
+    report.systemTouchKeyboard =
+      await runInstalledSystemTouchKeyboardAcceptance({
+        mode: options.mode,
+        guestInputPath: options.guestInputPath,
+        handoffPath: options.handoffPath,
+        outPath: keyboardOutPath,
+      });
     report.ok = true;
     validateLocalOperationsEvidence(report);
     writeJson(options.outPath, report);

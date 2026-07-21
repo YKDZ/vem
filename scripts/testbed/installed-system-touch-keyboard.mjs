@@ -80,25 +80,6 @@ export function parseInstalledSystemTouchKeyboardArgs(args) {
   };
 }
 
-export function buildSystemTouchKeyboardPowerShellScript() {
-  return String.raw`
-$signature = @'
-using System;
-using System.Runtime.InteropServices;
-public static class VemInputPane {
-  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr FindWindow(string className, string windowName);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-}
-'@
-Add-Type -TypeDefinition $signature -ErrorAction Stop
-$window = [VemInputPane]::FindWindow('IPTip_Main_Window', $null)
-$processId = [uint32]0
-if ($window -ne [IntPtr]::Zero) { [void][VemInputPane]::GetWindowThreadProcessId($window, [ref]$processId) }
-[pscustomobject]@{ exists=($window -ne [IntPtr]::Zero); visible=(($window -ne [IntPtr]::Zero) -and [VemInputPane]::IsWindowVisible($window)); processId=$processId } | ConvertTo-Json -Compress
-`;
-}
-
 function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
@@ -112,32 +93,6 @@ async function waitFor(predicate, label, timeoutMs = WINDOW_QUERY_TIMEOUT_MS) {
     await sleep(150);
   } while (Date.now() < deadline);
   throw new Error(`${label} timed out after ${timeoutMs}ms`);
-}
-
-async function defaultWindowQuery() {
-  if (process.platform !== "win32") {
-    throw new Error(
-      "installed system touch keyboard acceptance requires Windows",
-    );
-  }
-  const { spawnSync } = await import("node:child_process");
-  const result = spawnSync(
-    "powershell.exe",
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      buildSystemTouchKeyboardPowerShellScript(),
-    ],
-    { encoding: "utf8", timeout: WINDOW_QUERY_TIMEOUT_MS, windowsHide: true },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0)
-    throw new Error(
-      `input pane query failed: ${(result.stderr || result.stdout || "").trim()}`,
-    );
-  return JSON.parse(result.stdout);
 }
 
 async function setRoute(client, route) {
@@ -187,7 +142,6 @@ export async function runInstalledSystemTouchKeyboardAcceptance(
   options,
   dependencies = {},
 ) {
-  const queryWindow = dependencies.queryWindow ?? defaultWindowQuery;
   const handoff = readJson(options.handoffPath, "installed runtime handoff");
   const guestInput = readJson(options.guestInputPath, "guest input");
   const report = {
@@ -213,6 +167,14 @@ export async function runInstalledSystemTouchKeyboardAcceptance(
     );
     await client.connect();
     await enablePageRuntime(client);
+    const queryWindow =
+      dependencies.queryWindow ??
+      (() =>
+        evaluateExpression(
+          client,
+          `window.__TAURI_INTERNALS__.invoke("query_system_touch_keyboard_state")`,
+          { timeoutMs: WINDOW_QUERY_TIMEOUT_MS },
+        ));
     await setRoute(client, "#/maintenance?source=operator");
     await activateVisibleSelector(
       client,
