@@ -5,20 +5,21 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
-  abortSerialSessionAndInvalidateHandoff,
   buildWorkflowTrackCommands,
   clearWholeMachineLockIfPresent,
   ensureFixtureStockReady,
   fixtureAllocationForTrack,
+  replaceSerialSessionAndUpdateHandoff,
   refreshCatalogPageFromClient,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   refreshDaemonReadyHandoff,
   runSerialTrackLifecycle,
+  waitForBusinessHardwareReady,
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
-  it("invalidates an aborted commissioning serial session for the next business set", async () => {
+  it("replaces an aborted serial session for the next business set", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-session-"));
     const handoffPath = join(root, "handoff.json");
     const handoff = {
@@ -26,19 +27,49 @@ describe("full workflow serial lifecycle", () => {
     };
     writeFileSync(handoffPath, JSON.stringify(handoff));
     const calls = [];
-    await abortSerialSessionAndInvalidateHandoff({
-      guestInput: { hostControlPlane: {} },
+    await replaceSerialSessionAndUpdateHandoff({
+      guestInput: {
+        runId: "RUN-1",
+        machineCode: "VEM-1",
+        hostControlPlane: {
+          targetIdentity: "vm-target://1",
+          runtimeBaseIdentity: "runtime-base://1",
+        },
+      },
       handoff,
       handoffPath,
       sessionId: "serial-1",
-      control: async (_input, path) => calls.push(path),
+      control: async (_input, path) => {
+        calls.push(path);
+        return path.endsWith("/start") ? { sessionId: "serial-2" } : {};
+      },
     });
-    assert.deepEqual(calls, ["/v1/serial-sessions/serial-1/abort"]);
-    assert.equal(handoff.commissioningSerialSession, null);
+    assert.deepEqual(calls, [
+      "/v1/serial-sessions/serial-1/abort",
+      "/v1/serial-sessions/start",
+    ]);
+    assert.equal(handoff.commissioningSerialSession.sessionId, "serial-2");
     assert.equal(
-      JSON.parse(readFileSync(handoffPath, "utf8")).commissioningSerialSession,
-      null,
+      JSON.parse(readFileSync(handoffPath, "utf8")).commissioningSerialSession
+        .sessionId,
+      "serial-2",
     );
+  });
+
+  it("waits for the lower controller and sale capability before the next set", async () => {
+    let reads = 0;
+    const result = await waitForBusinessHardwareReady({
+      daemonGet: async (path) => {
+        const ready = reads++ >= 2;
+        return path === "/v1/hardware-bindings"
+          ? { roles: [{ role: "lower_controller", ready }] }
+          : { canStartSale: ready };
+      },
+      timeoutMs: 100,
+      pollMs: 1,
+    });
+    assert.equal(result.lower.ready, true);
+    assert.equal(result.capability.canStartSale, true);
   });
 
   it("uses the production self-check and clear endpoints for a persisted whole-machine lock", async () => {

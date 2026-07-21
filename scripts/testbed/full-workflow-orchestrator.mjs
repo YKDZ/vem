@@ -37,6 +37,7 @@ const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
 const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 const STOCK_READY_TIMEOUT_MS = 30_000;
+const HARDWARE_READY_TIMEOUT_MS = 30_000;
 
 // This is the one canonical registry for business acceptance.
 export const FULL_WORKFLOW_TRACK_DESCRIPTORS = BUSINESS_CHECK_REGISTRY;
@@ -574,22 +575,58 @@ export async function clearWholeMachineLockIfPresent({
   return { cleared: true, result };
 }
 
-export async function abortSerialSessionAndInvalidateHandoff({
+export async function replaceSerialSessionAndUpdateHandoff({
   guestInput,
   handoff,
   handoffPath,
   sessionId,
   control = controlPlaneRequest,
 }) {
-  const result = await control(
+  const aborted = await control(
     guestInput,
     `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
   );
-  if (handoff?.commissioningSerialSession?.sessionId === sessionId) {
-    handoff.commissioningSerialSession = null;
-    writeJson(handoffPath, handoff);
+  const replacement = await control(guestInput, "/v1/serial-sessions/start", {
+    runId: required(guestInput.runId, "runId"),
+    machineCode: required(guestInput.machineCode, "machineCode"),
+    saleCorrelationId: `sale-correlation://${required(guestInput.runId, "runId").toLowerCase()}.handoff-${Date.now()}`,
+    targetIdentity: required(
+      guestInput.hostControlPlane?.targetIdentity,
+      "hostControlPlane.targetIdentity",
+    ),
+    runtimeBase: required(
+      guestInput.hostControlPlane?.runtimeBaseIdentity,
+      "hostControlPlane.runtimeBaseIdentity",
+    ),
+  });
+  required(replacement.sessionId, "replacement serial session id");
+  handoff.commissioningSerialSession = replacement;
+  writeJson(handoffPath, handoff);
+  return { aborted, replacement };
+}
+
+export async function waitForBusinessHardwareReady({
+  daemonGet: get,
+  timeoutMs = HARDWARE_READY_TIMEOUT_MS,
+  pollMs = 250,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const [bindings, capability] = await Promise.all([
+      get("/v1/hardware-bindings").catch(() => null),
+      get("/v1/sale-start-capability").catch(() => null),
+    ]);
+    const lower = bindings?.roles?.find(
+      (role) => role?.role === "lower_controller",
+    );
+    last = { lower, capability };
+    if (lower?.ready === true && capability?.canStartSale === true) return last;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
-  return result;
+  throw new Error(
+    `business hardware did not become ready: ${JSON.stringify(last)}`,
+  );
 }
 
 export async function returnToCatalogFromClient({
@@ -774,6 +811,9 @@ function terminalOperations(guestInput, handoff, handoffPath) {
   };
   return {
     prepareTrack: async () => {
+      await waitForBusinessHardwareReady({
+        daemonGet: (path) => daemonGet(handoff, path),
+      });
       await clearWholeMachineLockIfPresent({
         daemonGet: (path) => daemonGet(handoff, path),
         daemonPost: (path, body) => daemonPost(handoff, path, body),
@@ -809,7 +849,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
         disableFaultInjection: () =>
           controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open"),
         restoreSerialSession: (sessionId) =>
-          abortSerialSessionAndInvalidateHandoff({
+          replaceSerialSessionAndUpdateHandoff({
             guestInput,
             handoff,
             handoffPath,
