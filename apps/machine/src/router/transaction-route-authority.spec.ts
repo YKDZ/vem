@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -294,6 +294,40 @@ describe("transaction route authority", () => {
       decision: "rejected",
       reasonCode: "route_not_offline",
     });
+    authority.dispose();
+  });
+
+  it("recovers when startup enters offline after sale capability is already ready", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/boot", name: "boot", component: {} },
+        { path: "/offline", name: "offline", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useSaleCapabilityStore(pinia).acceptSnapshot(saleCapabilitySnapshot());
+    await router.push("/boot");
+
+    await authority.submit({
+      type: "startup.navigate",
+      target: { name: "offline" },
+    });
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe("catalog");
+    });
+    expect(authority.trace.snapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intentType: "readiness.recovered",
+          decision: "accepted",
+          reasonCode: "sale_capability_recovered",
+        }),
+      ]),
+    );
     authority.dispose();
   });
 

@@ -311,6 +311,18 @@ export function createMachineNavigationAuthority(
     },
     { deep: true },
   );
+  const stopOfflineRecovery: WatchStopHandle = watch(
+    [
+      () => routeName(router),
+      () => saleCapabilityStore.canStartSale,
+      () => saleCapabilityStore.stale,
+    ],
+    ([currentRouteName, canStartSale, stale]) => {
+      if (currentRouteName !== "offline" || !canStartSale || stale) return;
+      void submit({ type: "readiness.recovered" });
+    },
+    { flush: "post" },
+  );
   const removeRouteGuard = router.beforeEach((to, from) => {
     const transactionTarget = routeTargetForTransaction(checkoutStore);
     const intent: MachineNavigationIntent = {
@@ -359,6 +371,7 @@ export function createMachineNavigationAuthority(
     dispose() {
       clearInactivityTimer();
       stopTransactionProjection();
+      stopOfflineRecovery();
       removeRouteGuard();
       if (typeof window !== "undefined") {
         window.removeEventListener("pointerdown", onDirectPointerInteraction);

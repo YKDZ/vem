@@ -98,21 +98,7 @@ function dispatchDaemonEvent(
     return;
   }
   if (event.type === "sale_start_capability_changed") {
-    const wasUnableToStartSale =
-      saleCapabilityStore.hasAcceptedCapability &&
-      !saleCapabilityStore.canStartSale;
-    const refresh = saleCapabilityStore.invalidate(event);
-    if (refresh) {
-      void refresh.then((outcome) => {
-        if (
-          wasUnableToStartSale &&
-          outcome.status === "refreshed" &&
-          saleCapabilityStore.canStartSale
-        ) {
-          void submitMachineNavigationIntent({ type: "readiness.recovered" });
-        }
-      });
-    }
+    void saleCapabilityStore.invalidate(event);
     return;
   }
   if (event.type === "scanner_health_changed") {
