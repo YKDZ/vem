@@ -654,13 +654,37 @@ export async function runSerialFulfillmentErrorGuest(options) {
       `document.querySelector(".failure-return-button") !== null`,
     );
     if (canReturnToCatalog) {
-      await activateVisibleSelector(client, ".failure-return-button", {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
+      report.evidence.failureReturnAttempts = [];
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const activation = await activateVisibleSelector(
+          client,
+          ".failure-return-button",
+          {
+            kind: "touch",
+            timeoutMs: 10_000,
+          },
+        );
+        let route = null;
+        try {
+          route = (
+            await waitForRoute(client, "#/catalog", {
+              timeoutMs: 2_000,
+              pollMs: 100,
+            })
+          ).route;
+        } catch {
+          route = await evaluateExpression(client, "location.hash");
+        }
+        report.evidence.failureReturnAttempts.push({
+          attempt,
+          activation,
+          route,
+        });
+        if (route === "#/catalog") break;
+      }
       await waitForRoute(client, "#/catalog", {
-        timeoutMs: 30_000,
-        pollMs: 250,
+        timeoutMs: 10_000,
+        pollMs: 100,
       });
     }
     stage = "wait-authoritative-recovery";
