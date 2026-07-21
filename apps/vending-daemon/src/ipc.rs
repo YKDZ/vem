@@ -400,6 +400,19 @@ impl SaleBindingOperationGate {
     ) -> Result<SaleBindingOperationLease, u8> {
         self.acquire(GATE_MANUAL_DISPENSE)
     }
+    pub(crate) async fn acquire_manual_dispense(
+        self: &Arc<Self>,
+        timeout: Duration,
+    ) -> Result<SaleBindingOperationLease, u8> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.try_acquire_manual_dispense() {
+                Ok(lease) => return Ok(lease),
+                Err(active) if Instant::now() >= deadline => return Err(active),
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+    }
     fn acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
         self.state
             .compare_exchange(
@@ -2027,7 +2040,11 @@ async fn manual_dispense_diagnostic(
             );
         }
     };
-    let _lease = match ctx.sale_binding_gate.try_acquire_manual_dispense() {
+    let _lease = match ctx
+        .sale_binding_gate
+        .acquire_manual_dispense(Duration::from_secs(2))
+        .await
+    {
         Ok(value) => value,
         Err(_) => {
             return error_response(
@@ -3196,6 +3213,25 @@ mod tests {
             .await
             .expect("sale lease after binding refresh");
         drop(sale);
+        release.await.expect("binding release task");
+    }
+
+    #[tokio::test]
+    async fn manual_dispense_waits_for_an_in_flight_binding_refresh() {
+        let gate = Arc::new(SaleBindingOperationGate::default());
+        let binding = gate
+            .try_acquire_reconfigure()
+            .expect("binding refresh lease");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(binding);
+        });
+
+        let manual_dispense = gate
+            .acquire_manual_dispense(Duration::from_secs(1))
+            .await
+            .expect("manual dispense lease after binding refresh");
+        drop(manual_dispense);
         release.await.expect("binding release task");
     }
 
