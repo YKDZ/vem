@@ -1489,11 +1489,19 @@ describe("Windows D cache contract", () => {
     assert.ok(machineBuild < deploy && deploy < acceptance);
     assert.match(
       guest,
-      /reuse-pass-1-runtime-artifacts[\s\S]*runtime artifact digest mismatch/,
+      /reuse-pass-1-runtime-artifacts[\s\S]*reuse-commit-runtime-artifacts/,
+    );
+    assert.match(
+      guest,
+      /requirePass1RuntimeArtifacts[\s\S]*runtime artifact digest mismatch/,
     );
     assert.match(
       guest,
       /foreach \(\$artifactName in @\("daemon", "machine", "webViewLoader"\)\)[\s\S]*runtime artifact manifest is missing: \$artifactName/,
+    );
+    assert.match(
+      guest,
+      /reusedFromCommitCache = \$runtimeArtifactReuseSource -eq "commit_cache"/,
     );
     assert.match(
       guest,

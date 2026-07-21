@@ -537,7 +537,6 @@ $sccache = Get-TestbedSccache
 Write-TestbedPhase "sccache-ready"
 $env:RUSTC_WRAPPER = $sccache
 $runtimeArtifactManifestPath = Join-Path $env:CARGO_TARGET_DIR ".vem-runtime-artifacts-$Commit.json"
-$reuseRuntimeArtifacts = $Mode -eq "full" -and $Pass -eq 2
 $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
 Write-TestbedPhase "cache-cleanup"
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
@@ -578,31 +577,45 @@ if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
 $daemonSource = Join-Path $env:CARGO_TARGET_DIR "release\vending-daemon.exe"
 $machineSource = Join-Path $env:CARGO_TARGET_DIR "release\machine.exe"
 $webViewLoaderSource = Join-Path $env:CARGO_TARGET_DIR "release\vem-WebView2Loader.dll"
+$expectedRuntimeArtifactPaths = [ordered]@{
+  daemon = $daemonSource
+  machine = $machineSource
+  webViewLoader = $webViewLoaderSource
+}
+$requirePass1RuntimeArtifacts = $Mode -eq "full" -and $Pass -eq 2
+$reuseRuntimeArtifacts = $false
+$runtimeArtifactReuseSource = $null
+if (Test-Path -LiteralPath $runtimeArtifactManifestPath -PathType Leaf) {
+  try {
+    $candidateManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
+    if ($candidateManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
+      [string]$candidateManifest.commit -ne $Commit) {
+      throw "runtime artifact manifest does not match the requested commit"
+    }
+    foreach ($artifactName in $expectedRuntimeArtifactPaths.Keys) {
+      $artifact = $candidateManifest.artifacts.$artifactName
+      $expectedPath = [string]$expectedRuntimeArtifactPaths[$artifactName]
+      if ($null -eq $artifact -or [string]$artifact.path -ine $expectedPath) {
+        throw "runtime artifact path mismatch: $artifactName"
+      }
+      Require-Path $expectedPath
+      $actualDigest = (Get-FileHash -LiteralPath $expectedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($actualDigest -ne [string]$artifact.sha256) {
+        throw "runtime artifact digest mismatch: $artifactName"
+      }
+    }
+    $runtimeArtifactManifest = $candidateManifest
+    $reuseRuntimeArtifacts = $true
+    $runtimeArtifactReuseSource = if ($requirePass1RuntimeArtifacts) { "pass_1" } else { "commit_cache" }
+  } catch {
+    if ($requirePass1RuntimeArtifacts) { throw }
+  }
+} elseif ($requirePass1RuntimeArtifacts) {
+  throw "pass-1 runtime artifact manifest is missing"
+}
+
 if ($reuseRuntimeArtifacts) {
-  Write-TestbedPhase "reuse-pass-1-runtime-artifacts"
-  Require-Path $runtimeArtifactManifestPath
-  $runtimeArtifactManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
-  if ($runtimeArtifactManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
-    [string]$runtimeArtifactManifest.commit -ne $Commit) {
-    throw "pass-1 runtime artifact manifest does not match the requested commit"
-  }
-  $expectedRuntimeArtifactPaths = [ordered]@{
-    daemon = $daemonSource
-    machine = $machineSource
-    webViewLoader = $webViewLoaderSource
-  }
-  foreach ($artifactName in $expectedRuntimeArtifactPaths.Keys) {
-    $artifact = $runtimeArtifactManifest.artifacts.$artifactName
-    $expectedPath = [string]$expectedRuntimeArtifactPaths[$artifactName]
-    if ($null -eq $artifact -or [string]$artifact.path -ine $expectedPath) {
-      throw "pass-1 runtime artifact path mismatch: $artifactName"
-    }
-    Require-Path $expectedPath
-    $actualDigest = (Get-FileHash -LiteralPath $expectedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualDigest -ne [string]$artifact.sha256) {
-      throw "pass-1 runtime artifact digest mismatch: $artifactName"
-    }
-  }
+  Write-TestbedPhase $(if ($runtimeArtifactReuseSource -eq "pass_1") { "reuse-pass-1-runtime-artifacts" } else { "reuse-commit-runtime-artifacts" })
 } else {
   & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
@@ -644,16 +657,15 @@ if ($reuseRuntimeArtifacts) {
       webViewLoader = [ordered]@{ path = $webViewLoaderSource; sha256 = (Get-FileHash -LiteralPath $webViewLoaderSource -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
   }
-  if ($Mode -eq "full") {
-    $runtimeArtifactManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $runtimeArtifactManifestPath -Encoding utf8
-  }
+  $runtimeArtifactManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $runtimeArtifactManifestPath -Encoding utf8
 }
 Require-Path $daemonSource
 Require-Path $machineSource
 Require-Path $webViewLoaderSource
 $runtimeArtifactEvidence = [ordered]@{
   commit = $Commit
-  reusedFromPass1 = $reuseRuntimeArtifacts
+  reusedFromPass1 = $runtimeArtifactReuseSource -eq "pass_1"
+  reusedFromCommitCache = $runtimeArtifactReuseSource -eq "commit_cache"
   artifacts = [ordered]@{}
 }
 foreach ($artifactName in @("daemon", "machine", "webViewLoader")) {
