@@ -128,7 +128,6 @@ describe("usePresenceInteraction", () => {
       absenceDurationMs: 1200,
     });
     await nextTick();
-    await vi.advanceTimersByTimeAsync(3_000);
 
     expect(presence.state?.value).toEqual({
       eventId: "VISION-DEPARTURE-EVENT-001",

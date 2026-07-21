@@ -81,9 +81,6 @@ describe("customer presence navigation", () => {
     });
     await nextTick();
 
-    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(3_000);
-
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
       type: "presence.departed",
       eventId: "VISION-DEPARTURE-001",

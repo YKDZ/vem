@@ -262,10 +262,19 @@ function startCustomerPresenceSession(
         return;
       }
       if (!presence.personPresent) {
+        if (presence.source === "person_departed") {
+          markDeparted({
+            source: "vision",
+            departedAt: presence.departedAt ?? presence.lastChangedAt,
+            lastSeenAt: presence.lastSeenAt,
+            eventId: presence.eventId,
+          });
+          return;
+        }
         scheduleVisionDeparture({
           departedAt: presence.departedAt ?? presence.lastChangedAt,
           lastSeenAt: presence.lastSeenAt,
-          keepLastSeenAt: presence.source !== "person_departed",
+          keepLastSeenAt: true,
           eventId: presence.eventId,
         });
         return;
