@@ -34,6 +34,11 @@ export function imageNames(registry, commit) {
   );
 }
 
+export function registryBuildArgs(environment = process.env) {
+  const registry = environment.NPM_CONFIG_REGISTRY?.trim();
+  return registry ? ["--build-arg", `NPM_CONFIG_REGISTRY=${registry}`] : [];
+}
+
 export function publish(args = process.argv.slice(2)) {
   const head = run("git", ["rev-parse", "HEAD"]);
   const commit = validateCommit(option(args, "--commit"));
@@ -60,6 +65,7 @@ export function publish(args = process.argv.slice(2)) {
     process.env.IMAGE_REGISTRY ?? "ghcr.io/ykdz",
   );
   const images = imageNames(registry, commit);
+  const buildArgs = registryBuildArgs();
 
   for (const [index, app] of ["service-api", "admin-ui"].entries()) {
     const image = images[index];
@@ -69,6 +75,7 @@ export function publish(args = process.argv.slice(2)) {
         "buildx",
         "build",
         "--push",
+        ...buildArgs,
         "--tag",
         image,
         "--file",

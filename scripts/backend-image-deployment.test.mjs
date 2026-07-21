@@ -7,6 +7,7 @@ import {
 } from "./deploy-backend-stack.mjs";
 import {
   imageNames,
+  registryBuildArgs,
   validateCommit as validatePublishCommit,
 } from "./publish-backend-images.mjs";
 
@@ -27,6 +28,14 @@ describe("backend image publishing", () => {
       () => validatePublishCommit(commit.toUpperCase()),
       /40-character/,
     );
+  });
+
+  it("passes an explicitly configured package registry to BuildKit", () => {
+    assert.deepEqual(
+      registryBuildArgs({ NPM_CONFIG_REGISTRY: "https://registry.test/" }),
+      ["--build-arg", "NPM_CONFIG_REGISTRY=https://registry.test/"],
+    );
+    assert.deepEqual(registryBuildArgs({}), []);
   });
 });
 

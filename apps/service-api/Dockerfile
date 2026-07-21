@@ -1,16 +1,19 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-slim AS base
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 WORKDIR /app
 
 FROM base AS pruner
+ARG TURBO_VERSION=2.10.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 RUN corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate
 COPY . .
-RUN pnpm exec turbo prune service-api --docker
+RUN --mount=type=cache,id=vem-pnpm,target=/pnpm/store pnpm dlx turbo@$TURBO_VERSION prune service-api --docker
 
 FROM base AS builder
 COPY --from=pruner /app/out/json/ ./
