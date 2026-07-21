@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  buildWorkflowTrackCommands,
   clearWholeMachineLockIfPresent,
   ensureFixtureStockReady,
   fixtureAllocationForTrack,
@@ -88,6 +89,27 @@ describe("full workflow serial lifecycle", () => {
       assert.equal(track.evidence.failed.primaryReason, true);
       assert.equal(track.evidence.failed.diagnostic, true);
       assert.equal(track.evidence.failed.screenshot, false);
+    }
+  });
+
+  it("keeps warm VM selection separate from full business-check semantics", () => {
+    const plan = buildWorkflowTrackCommands({
+      mode: "fast",
+      focus: ["visionExperience", "behaviorAudio", "environmentControl"],
+      guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      handoffPath:
+        "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
+      outPath: "C:\\ProgramData\\VEM\\testbed\\full-workflow-tracks.json",
+    });
+    const vision = plan.tracks.find(
+      (track) => track.key === "visionExperience",
+    );
+    assert.equal(vision.fixtureKey, "visionTryOn");
+    for (const track of plan.tracks.filter(
+      (entry) => entry.runner.kind === "node",
+    )) {
+      const modeIndex = track.command.indexOf("--mode");
+      assert.equal(track.command[modeIndex + 1], "full");
     }
   });
 

@@ -63,7 +63,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/scanner-payment-code-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "scanner-payment.json",
       artifactDirectory: "scanner-payment-artifacts",
     },
@@ -71,6 +71,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "visionExperience",
+    fixtureKey: "visionTryOn",
     runner: {
       kind: "powershell",
       script: "scripts/testbed/run-full-vision-try-on-track.ps1",
@@ -85,7 +86,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "pickup-protocol.json",
       artifactDirectory: "pickup-protocol-artifacts",
     },
@@ -97,7 +98,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "behavior-audio.json",
       artifactDirectory: "behavior-audio-artifacts",
     },
@@ -108,7 +109,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/installed-ipc-recovery-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "ipc-recovery.json",
       artifactDirectory: "ipc-recovery-artifacts",
     },
@@ -119,7 +120,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "fulfillment-recovery.json",
       artifactDirectory: "fulfillment-recovery-artifacts",
     },
@@ -131,7 +132,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/payment-recovery-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "payment-recovery.json",
       artifactDirectory: "payment-recovery-artifacts",
     },
@@ -142,7 +143,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/hardware-lifecycle-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "hardware-lifecycle.json",
       artifactDirectory: "hardware-lifecycle-artifacts",
     },
@@ -154,7 +155,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/local-operations-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "local-operations.json",
       artifactDirectory: "local-operations-artifacts",
     },
@@ -165,7 +166,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     runner: {
       kind: "node",
       script: "scripts/testbed/environment-control-guest-full.mjs",
-      args: [],
+      args: ["--mode", "full"],
       reportFileName: "environment-control.json",
       artifactDirectory: "environment-control-artifacts",
     },
