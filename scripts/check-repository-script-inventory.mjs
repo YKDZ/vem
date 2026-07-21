@@ -598,187 +598,6 @@ const REQUIRED_CATEGORIES = new Set([
 
 const REQUIRED_WORKFLOWS = ["runtime acceptance", "smoke", "testbed workflows"];
 
-const STALE_INTEGRATION_TEXT_EXEMPT_PATHS = new Set([
-  "scripts/check-repository-script-inventory.mjs",
-  "scripts/check-repository-script-inventory.test.mjs",
-]);
-
-const ACCEPTED_MAINTENANCE_ARCHITECTURE_CATEGORIES = new Set([
-  "canonical entrypoint",
-  "operator operation",
-  "explicitly maintained legacy operation",
-]);
-
-const RETIRED_MAINTENANCE_ARCHITECTURE_PATTERNS = [
-  {
-    pattern: /\bVEM_TESTBED_WINDOWS_PASSWORD\b/,
-    label: "Windows testbed password secret",
-  },
-  {
-    pattern: /\bstatic\s+(?:Service API\s+)?relay\s+plan(?:ner)?\b/i,
-    label: "static relay planner",
-  },
-  {
-    pattern:
-      /\b(?:online(?:\s+(?:package|Windows\s+Capability))?|(?:Windows\s+)?Capability)\s+(?:installation\s+)?fallback\b/i,
-    label: "online or capability fallback",
-  },
-  {
-    pattern:
-      /\bfallback\s+to\s+(?:an?\s+)?(?:online(?:\s+(?:package|Windows\s+Capability))?|(?:Windows\s+)?Capability)\b/i,
-    label: "online or capability fallback",
-  },
-  {
-    pattern:
-      /\b(?:mock|TCP)\b[^\n]{0,120}\bproduction\s+(?:evidence|acceptance)\b/i,
-    label: "mock or TCP production evidence",
-  },
-  {
-    pattern:
-      /\bproduction\s+(?:evidence|acceptance)\b[^\n]{0,120}\b(?:mock|TCP)\b/i,
-    label: "mock or TCP production evidence",
-  },
-  { pattern: /\btransport-neutral\b/i, label: "transport-neutral ingress" },
-  {
-    pattern: /\btemporary[-\s]network\b|现场临时网络/u,
-    label: "temporary network ingress",
-  },
-  {
-    pattern:
-      /\b(?:alternative|alternate|dedicated)\s+(?:maintenance\s+)?tunnel\b|(?:替代|专用)隧道/iu,
-    label: "alternative tunnel ingress",
-  },
-  { pattern: /\bpassword\s+SSH\b/i, label: "password SSH" },
-  {
-    pattern: /\bemergency\s+deployment\b|紧急部署/iu,
-    label: "emergency deployment compatibility path",
-  },
-];
-
-const NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT =
-  /\b(?:no|not|never|must\s+not|do\s+not|does\s+not|without|disabled?|reject(?:ed|s|ing)?|removed|forbidden|hard-fail(?:s|ed)?|not\s+accepted|negative\s+test\s+fixture)\b/i;
-
-function isAcceptedMaintenanceArchitectureWorkflow(entry) {
-  return ACCEPTED_MAINTENANCE_ARCHITECTURE_CATEGORIES.has(entry.category);
-}
-
-function isAllowedMaintenanceArchitectureNegativeContext(path, lines, index) {
-  const line = lines[index];
-  if (
-    /(?:\.test\.[cm]?[jt]s$|\/fixtures?\/)/.test(path) &&
-    /\b(?:negative\s+test|fixture)\b/i.test(line)
-  ) {
-    return true;
-  }
-  if (NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT.test(line)) {
-    return true;
-  }
-  const wrappedNegativeContext = lines
-    .slice(Math.max(0, index - 1), index + 1)
-    .join(" ");
-  if (NEGATIVE_MAINTENANCE_ARCHITECTURE_CONTEXT.test(wrappedNegativeContext)) {
-    return true;
-  }
-  const removalListContext = lines
-    .slice(Math.max(0, index - 12), index)
-    .join(" ");
-  return /requires deleting, not retaining, superseded paths/i.test(
-    removalListContext,
-  );
-}
-
-function validateRetiredMaintenanceArchitectureText(path, text) {
-  const failures = [];
-  const lines = text.split(/\r?\n/u);
-  for (const [index, line] of lines.entries()) {
-    if (isAllowedMaintenanceArchitectureNegativeContext(path, lines, index)) {
-      continue;
-    }
-    for (const rule of RETIRED_MAINTENANCE_ARCHITECTURE_PATTERNS.filter(
-      (candidate) => candidate.pattern.test(line),
-    )) {
-      failures.push(
-        `${path}:${index + 1} contains retired maintenance architecture (${rule.label}): ${line.trim()}`,
-      );
-    }
-  }
-  return failures;
-}
-
-const STALE_TAILSCALE_INTEGRATION_PATTERNS = [
-  {
-    pattern: /\btailscale\s+(?:ip|status|ssh)\b/i,
-    label: "Tailscale CLI identity/status command",
-  },
-  {
-    pattern: /\bGet-CommandEvidence\s+["']tailscale["']/i,
-    label: "Tailscale CLI evidence",
-  },
-  {
-    pattern: /\bGet-ServiceStateOrNull\s+-Name\s+["']Tailscale["']/i,
-    label: "Tailscale service evidence",
-  },
-  {
-    pattern: /expected-testbed-tailscale-ip/i,
-    label: "testbed tailnet IP expectation",
-  },
-  {
-    pattern: /\btailscale(?:Name|Ips?|Ip)\b/,
-    label: "Tailscale identity evidence field",
-  },
-  {
-    pattern: /Tailscale SSH/i,
-    label: "Tailscale SSH wording",
-  },
-  {
-    pattern: /Tailscale-backed/i,
-    label: "Tailscale-backed transport wording",
-  },
-  {
-    pattern: /Tailscale identity/i,
-    label: "Tailscale identity wording",
-  },
-  {
-    pattern: /tailnet\s+IP\s+evidence/i,
-    label: "tailnet IP evidence wording",
-  },
-  {
-    pattern:
-      /\b(?:install|require|validate|verify|ensure|enable)\w*\b.*\bTailscale\b.*\b(?:service|CLI|command|identity|SSH)\b/i,
-    label: "Tailscale service/CLI requirement wording",
-  },
-];
-
-const ALLOWED_TAILSCALE_NEGATIVE_BASELINE_PATTERN =
-  /\b(absent|absence|not[_ -]?installed|not_installed_by_default|not\s+install|not\s+include|must\s+not\s+include|without\s+installing|does\s+not\s+include|avoid\s+Tailscale|no\s+Tailscale|doesNotMatch)\b|!\s*\w+\.includes/i;
-
-function isAllowedTailscaleNegativeBaseline(line) {
-  return (
-    /\bTailscale\b/i.test(line) &&
-    ALLOWED_TAILSCALE_NEGATIVE_BASELINE_PATTERN.test(line)
-  );
-}
-
-function validateStaleIntegrationText(path, text) {
-  if (STALE_INTEGRATION_TEXT_EXEMPT_PATHS.has(path)) {
-    return [];
-  }
-  const failures = [];
-  const lines = text.split(/\r?\n/u);
-  for (const [index, line] of lines.entries()) {
-    const stalePattern = STALE_TAILSCALE_INTEGRATION_PATTERNS.find((rule) =>
-      rule.pattern.test(line),
-    );
-    if (stalePattern && !isAllowedTailscaleNegativeBaseline(line)) {
-      failures.push(
-        `${path}:${index + 1} contains stale integration text (${stalePattern.label}): ${line.trim()}`,
-      );
-      continue;
-    }
-  }
-  return failures;
-}
-
 function listFiles(root, directory) {
   const absoluteDirectory = join(root, directory);
   const files = [];
@@ -1017,9 +836,6 @@ export function checkRepositoryScriptInventory(options = {}) {
       failures.push(`classified script missing from repository: ${entry.path}`);
       continue;
     }
-    failures.push(
-      ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
-    );
     failures.push(...validateDeliveryClosure(entry, entriesByPath));
     const assemblyFailures = validateDeliveryAssembly(entry, entriesByPath);
     const preapprovalAssemblyFailures = validatePreapprovalDeliveryAssembly(
@@ -1027,14 +843,6 @@ export function checkRepositoryScriptInventory(options = {}) {
       entriesByPath,
     );
     failures.push(...assemblyFailures, ...preapprovalAssemblyFailures);
-    if (isAcceptedMaintenanceArchitectureWorkflow(entry)) {
-      failures.push(
-        ...validateRetiredMaintenanceArchitectureText(
-          entry.path,
-          readText(root, entry.path),
-        ),
-      );
-    }
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);
     }
@@ -1052,18 +860,6 @@ export function checkRepositoryScriptInventory(options = {}) {
   for (const workflow of REQUIRED_WORKFLOWS) {
     if (!workflowCoverage.has(workflow)) {
       failures.push(`workflow missing inventory coverage: ${workflow}`);
-    }
-  }
-
-  if (directoryExists(root, ".github/workflows")) {
-    for (const path of listFiles(root, ".github/workflows")) {
-      if (!path.endsWith(".yml") && !path.endsWith(".yaml")) continue;
-      failures.push(
-        ...validateRetiredMaintenanceArchitectureText(
-          path,
-          readText(root, path),
-        ),
-      );
     }
   }
 

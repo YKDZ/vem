@@ -459,7 +459,7 @@ describe("machine-ui-cdp-driver", () => {
         remote: "YKDZ@win10.test",
         expectedMachinePath: ATTESTATION.machine.executablePath,
         sshKnownHostsPath: "/tmp/vem-known-hosts",
-        sshHostKeyAlias: "vem-factory-run-180",
+        sshHostKeyAlias: "vem-runtime-run-180",
       },
       {
         commandRunner: async (input) => {
@@ -472,7 +472,7 @@ describe("machine-ui-cdp-driver", () => {
       inspectionInvocation.sshKnownHostsPath,
       "/tmp/vem-known-hosts",
     );
-    assert.equal(inspectionInvocation.sshHostKeyAlias, "vem-factory-run-180");
+    assert.equal(inspectionInvocation.sshHostKeyAlias, "vem-runtime-run-180");
 
     const child = new FakeChildProcess();
     let args;
@@ -484,7 +484,7 @@ describe("machine-ui-cdp-driver", () => {
       {
         remote: "YKDZ@win10.test",
         sshKnownHostsPath: "/tmp/vem-known-hosts",
-        sshHostKeyAlias: "vem-factory-run-180",
+        sshHostKeyAlias: "vem-runtime-run-180",
         script: inspectionScript,
       },
       {
@@ -507,7 +507,7 @@ describe("machine-ui-cdp-driver", () => {
       "-o",
       "UserKnownHostsFile=/tmp/vem-known-hosts",
       "-o",
-      "HostKeyAlias=vem-factory-run-180",
+      "HostKeyAlias=vem-runtime-run-180",
     ]);
     assert.equal(args.at(-2), "-EncodedCommand");
     assert.equal(
@@ -680,7 +680,7 @@ describe("machine-ui-cdp-driver", () => {
       remote: "user@example.test",
       localPort: 49222,
       sshKnownHostsPath: "/tmp/vem-known-hosts",
-      sshHostKeyAlias: "vem-factory-run-180",
+      sshHostKeyAlias: "vem-runtime-run-180",
       processAdapter: {
         spawn(command, args, options) {
           child.command = command;
@@ -707,7 +707,7 @@ describe("machine-ui-cdp-driver", () => {
       "-o",
       "UserKnownHostsFile=/tmp/vem-known-hosts",
       "-o",
-      "HostKeyAlias=vem-factory-run-180",
+      "HostKeyAlias=vem-runtime-run-180",
       "user@example.test",
     ]);
     const closing = sidecar.close();
@@ -1600,7 +1600,7 @@ describe("machine-ui-cdp-driver", () => {
             tunnelOptions: {
               remote: "test@win10.test",
               sshKnownHostsPath: "/tmp/vem-known-hosts",
-              sshHostKeyAlias: "vem-factory-run-180",
+              sshHostKeyAlias: "vem-runtime-run-180",
             },
             expectedRuntimeAttestation: ATTESTATION,
             expectedInitialRoute: "#/sale",
@@ -1640,7 +1640,7 @@ describe("machine-ui-cdp-driver", () => {
         assert.deepEqual(sidecarOptions, {
           remote: "test@win10.test",
           sshKnownHostsPath: "/tmp/vem-known-hosts",
-          sshHostKeyAlias: "vem-factory-run-180",
+          sshHostKeyAlias: "vem-runtime-run-180",
           remoteCdpHost: "127.0.0.1",
           remoteCdpPort: 9222,
         });
@@ -1648,7 +1648,7 @@ describe("machine-ui-cdp-driver", () => {
           inspectionOptions.sshKnownHostsPath,
           "/tmp/vem-known-hosts",
         );
-        assert.equal(inspectionOptions.sshHostKeyAlias, "vem-factory-run-180");
+        assert.equal(inspectionOptions.sshHostKeyAlias, "vem-runtime-run-180");
       },
     );
   });

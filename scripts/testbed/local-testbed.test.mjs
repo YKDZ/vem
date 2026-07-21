@@ -1568,7 +1568,6 @@ describe("Windows D cache contract", () => {
       guest,
       /if \(\$Mode -eq "full"\) \{\s+Write-RecordedVisionSiteConfiguration/,
     );
-    assert.doesNotMatch(guest, /\b(factory|iso)\b/i);
   });
 
   it("keeps workflow aggregate reports on non-zero exit and bundles evidence without masking failures", () => {

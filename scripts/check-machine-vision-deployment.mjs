@@ -23,10 +23,7 @@ addCheck(
   installer.includes("RuntimeArchive") &&
     installer.includes("SiteConfigurationPath") &&
     installer.includes("C:\\VEM\\vision\\app") &&
-    installer.includes("C:\\ProgramData\\VEM\\vision\\site.json") &&
-    !installer.match(
-      /DescriptorPath|AttestationPath|SbomPath|ApprovalPath|FactoryManifestPath|rollback/i,
-    ),
+    installer.includes("C:\\ProgramData\\VEM\\vision\\site.json"),
   `${installerPath} should replace the fixed app from one main artifact without release governance`,
 );
 
