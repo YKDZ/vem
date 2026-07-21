@@ -279,11 +279,10 @@ async function waitForTransactionAudioSettled(
   orderNo,
   timeoutMs = 45_000,
 ) {
-  const requiredSuffixes = [
-    "pickup-waiting",
+  const requiredPlaybackSuffixes = [
+    "pickup-outlet-opened",
     "pickup-warning-1",
     "pickup-warning-2",
-    "pickup-completed",
     "dispense-succeeded",
   ];
   const deadline = Date.now() + timeoutMs;
@@ -296,7 +295,7 @@ async function waitForTransactionAudioSettled(
         const trace = (window.__VEM_MACHINE_RUNTIME_TRACE__ || []).filter(
           (entry) => typeof entry?.transitionId === "string" && entry.transitionId.startsWith(prefix),
         );
-        return ${JSON.stringify(requiredSuffixes)}.map((suffix) => {
+        const playback = ${JSON.stringify(requiredPlaybackSuffixes)}.map((suffix) => {
           const entries = trace.filter((entry) => entry.transitionId === prefix + suffix);
           return {
             suffix,
@@ -305,11 +304,32 @@ async function waitForTransactionAudioSettled(
             terminal: entries.some((entry) => entry.type === "audio_terminal"),
           };
         });
+        const pickupCompleted = trace.filter(
+          (entry) => entry.transitionId === prefix + "pickup-completed",
+        );
+        const pickupWaiting = trace.filter(
+          (entry) => entry.transitionId === prefix + "pickup-waiting",
+        );
+        return {
+          playback,
+          pickupCompleted: {
+            queued: pickupCompleted.some((entry) => entry.type === "audio_queued"),
+            terminal: pickupCompleted.some((entry) => entry.type === "audio_terminal"),
+          },
+          pickupWaitingQueued: pickupWaiting.some(
+            (entry) => entry.type === "audio_queued",
+          ),
+        };
       })()`,
     );
     if (
-      Array.isArray(last) &&
-      last.every((entry) => entry.queued && entry.started && entry.terminal)
+      Array.isArray(last?.playback) &&
+      last.playback.every(
+        (entry) => entry.queued && entry.started && entry.terminal,
+      ) &&
+      last.pickupCompleted?.queued === true &&
+      last.pickupCompleted?.terminal === true &&
+      last.pickupWaitingQueued === false
     ) {
       return last;
     }

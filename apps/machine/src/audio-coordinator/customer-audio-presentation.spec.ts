@@ -48,7 +48,6 @@ describe("customer journey audio presentation", () => {
     ["payment.failed", "payment/failed.mp3", 90],
     ["dispensing.started", "dispensing/started.mp3", 40],
     ["pickup.outlet_opened", "dispensing/succeeded.mp3", 40],
-    ["pickup.waiting", "dispensing/started.mp3", 40],
     ["pickup.warning", "pickup/reminder_10s.mp3", 45],
     ["pickup.urgent", "pickup/reminder_25s.mp3", 70],
     ["pickup.resetting", "dispensing/started.mp3", 40],
@@ -175,6 +174,15 @@ describe("customer journey audio presentation", () => {
     expect(
       mapCustomerJourneyAudioPresentation(
         transition("product.selected", { productCategory: "袜子" }),
+        defaultContext,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not replay the pickup prompt when AC only updates hardware progress", () => {
+    expect(
+      mapCustomerJourneyAudioPresentation(
+        transition("pickup.waiting"),
         defaultContext,
       ),
     ).toBeNull();

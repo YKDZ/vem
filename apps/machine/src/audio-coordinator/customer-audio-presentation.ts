@@ -53,6 +53,7 @@ export function mapCustomerJourneyAudioPresentation(
     case "pickup.outlet_opened":
       return presentation(`${VOICE_BASE_PATH}/dispensing/succeeded.mp3`, 40);
     case "pickup.waiting":
+      return null;
     case "pickup.resetting":
       return presentation(`${VOICE_BASE_PATH}/dispensing/started.mp3`, 40);
     case "pickup.warning":
