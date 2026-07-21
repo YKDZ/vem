@@ -711,7 +711,6 @@ async function runDelayedPickupGuestFull(options) {
     let baselinePlatform = null;
     delayedTrack = await startDelayedPickupLiveProductionTrack(
       {
-        closeClient: false,
         outputRoot: delayedRoot,
         runId: guestInput.runId,
         lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,

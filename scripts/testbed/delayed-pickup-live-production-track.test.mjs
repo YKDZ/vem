@@ -83,22 +83,6 @@ describe("delayed pickup live production track", () => {
     assert.ok(waitForCommand > paymentInject);
   });
 
-  it("can leave a shared Machine UI CDP client open during track cleanup", async () => {
-    const source = readFileSync(
-      new URL("./delayed-pickup-live-production-track.mjs", import.meta.url),
-      "utf8",
-    );
-    assert.match(source, /closeClient = true/);
-    assert.match(source, /closeClient: options\.closeClient !== false/);
-    assert.match(
-      readFileSync(
-        new URL("./delayed-pickup-native-audio-guest-full.mjs", import.meta.url),
-        "utf8",
-      ),
-      /closeClient: false/,
-    );
-  });
-
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
     const root = makeTempDir("vem-delayed-live");
     const operations = [];
