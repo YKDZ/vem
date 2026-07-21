@@ -5,10 +5,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const output = execFileSync(command, args, {
     encoding: "utf8",
     stdio: options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
-  }).trim();
+  });
+  return typeof output === "string" ? output.trim() : "";
 }
 
 function option(args, name, fallback) {
