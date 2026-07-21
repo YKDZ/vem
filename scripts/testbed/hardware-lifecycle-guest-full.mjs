@@ -244,13 +244,6 @@ export async function runHardwareLifecycleGuest(options) {
 
     for (const role of ["scanner", "lower_controller"]) {
       const initial = ready.daemon.roles.find((entry) => entry.role === role);
-      const hostRole =
-        role === "lower_controller" ? "lower-controller" : "scanner";
-      const disconnectedHost = await control(
-        guestInput,
-        `/v1/serial-sessions/${session.sessionId}/device-lifecycle`,
-        { role: hostRole, operation: "disconnect" },
-      );
       writeJson(
         discoveryPath,
         serialObservationsForLifecycle(originalObservations, role, false),
@@ -260,11 +253,6 @@ export async function runHardwareLifecycleGuest(options) {
         handoff,
         role,
         false,
-      );
-      const reconnectedHost = await control(
-        guestInput,
-        `/v1/serial-sessions/${session.sessionId}/device-lifecycle`,
-        { role: hostRole, operation: "reconnect" },
       );
       writeJson(discoveryPath, originalObservations);
       const reconnected = await waitForRoleState(handoff, role, true);
@@ -278,7 +266,11 @@ export async function runHardwareLifecycleGuest(options) {
         initialBindingRevision: initial?.bindingRevision ?? null,
         identityKey: initial?.binding?.identity?.identityKey ?? null,
         disconnect: {
-          host: disconnectedHost.lifecycle,
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "disconnect",
+            identityKey: initial?.binding?.identity?.identityKey ?? null,
+          },
           daemon: {
             ready: disconnected.ready,
             currentPort: disconnected.currentPort,
@@ -288,7 +280,11 @@ export async function runHardwareLifecycleGuest(options) {
           saleStartCapability: disconnectedCapability,
         },
         reconnect: {
-          host: reconnectedHost.lifecycle,
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "reconnect",
+            identityKey: initial?.binding?.identity?.identityKey ?? null,
+          },
           daemon: {
             ready: reconnected.ready,
             currentPort: reconnected.currentPort,

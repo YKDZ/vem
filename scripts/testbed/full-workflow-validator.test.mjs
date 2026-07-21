@@ -54,12 +54,20 @@ function hardwareLifecycleReport() {
         role: "lower_controller",
         identityKey: "container:lower",
         disconnect: {
-          host: { operation: "disconnect" },
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "disconnect",
+            identityKey: "container:lower",
+          },
           daemon: { ready: false, currentPort: null },
           saleStartCapability: { canStartSale: false },
         },
         reconnect: {
-          host: { operation: "reconnect" },
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "reconnect",
+            identityKey: "container:lower",
+          },
           daemon: {
             ready: true,
             currentPort: "COM4",
@@ -72,7 +80,11 @@ function hardwareLifecycleReport() {
         role: "scanner",
         identityKey: "container:scanner",
         disconnect: {
-          host: { operation: "disconnect" },
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "disconnect",
+            identityKey: "container:scanner",
+          },
           daemon: { ready: false, currentPort: null },
           saleStartCapability: {
             canStartSale: true,
@@ -82,7 +94,11 @@ function hardwareLifecycleReport() {
           },
         },
         reconnect: {
-          host: { operation: "reconnect" },
+          boundary: {
+            adapter: "file_backed_windows_pnp",
+            operation: "reconnect",
+            identityKey: "container:scanner",
+          },
           daemon: {
             ready: true,
             currentPort: "COM3",

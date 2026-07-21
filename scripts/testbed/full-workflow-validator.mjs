@@ -409,10 +409,14 @@ function validateHardwareLifecycleTrack(report, reportPath) {
     readiness.after.revision >= readiness.before.revision;
   const validLifecycle = [lower, scanner].every(
     (entry) =>
-      entry?.disconnect?.host?.operation === "disconnect" &&
+      entry?.disconnect?.boundary?.adapter === "file_backed_windows_pnp" &&
+      entry.disconnect.boundary.operation === "disconnect" &&
+      entry.disconnect.boundary.identityKey === entry.identityKey &&
       entry.disconnect?.daemon?.ready === false &&
       entry.disconnect?.daemon?.currentPort == null &&
-      entry?.reconnect?.host?.operation === "reconnect" &&
+      entry?.reconnect?.boundary?.adapter === "file_backed_windows_pnp" &&
+      entry.reconnect.boundary.operation === "reconnect" &&
+      entry.reconnect.boundary.identityKey === entry.identityKey &&
       entry.reconnect?.daemon?.ready === true &&
       typeof entry.reconnect?.daemon?.currentPort === "string" &&
       entry.reconnect.daemon.identityKey === entry.identityKey,
