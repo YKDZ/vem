@@ -37,7 +37,6 @@ const ROUTE_ICON_MAP: Record<string, Component> = {
 type MenuItem = {
   key: string;
   label: string;
-  path: string;
   icon: Component;
   requiredPermissions: PermissionCode[];
 };
@@ -60,7 +59,6 @@ const menuItems = computed<MenuItem[]>(() => {
     .map((item) => ({
       key: String(item.name),
       label: String(item.meta?.title ?? item.name),
-      path: `/${String(item.path)}`,
       icon: ROUTE_ICON_MAP[String(item.name)] ?? DashboardOutlined,
       requiredPermissions: isPermissionArray(item.meta?.requiredPermissions)
         ? item.meta.requiredPermissions
@@ -73,7 +71,7 @@ const selectedKeys = computed(() => [String(route.name ?? "dashboard")]);
 
 async function handleMenuClick(info: { key: string }): Promise<void> {
   const target = menuItems.value.find((item) => item.key === info.key);
-  if (target) await router.push(target.path);
+  if (target) await router.push({ name: target.key });
 }
 
 function logout(): void {
