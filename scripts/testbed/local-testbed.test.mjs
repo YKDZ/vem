@@ -922,6 +922,21 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
+  it("starts a fresh simulated serial session for warm and reconstructed runs", () => {
+    const guestScript = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      guestScript,
+      /Write-TestbedPhase "start-simulated-hardware"\s+\$commissioningSerialSession = Start-TestbedCommissioningSerialSession \$guestInput/,
+    );
+    assert.doesNotMatch(
+      guestScript,
+      /if \(\$Mode -eq "full"\) \{\s+Write-TestbedPhase "start-simulated-hardware"/,
+    );
+  });
+
   it("changes the host simulator cache key when its local runtime sources change", async () => {
     const root = mkdtempSync(
       join(tmpdir(), "vem-local-testbed-simulator-key-"),

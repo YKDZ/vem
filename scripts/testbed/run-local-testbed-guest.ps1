@@ -550,15 +550,11 @@ if ($Mode -eq "full") {
   Write-TestbedPhase "restart-warm-runtime"
 }
 $runtimeReady = Wait-RuntimeReady
-if ($Mode -eq "full") {
-  Write-TestbedPhase "start-simulated-hardware"
-  $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
-}
+Write-TestbedPhase "start-simulated-hardware"
+$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedPhase "bind-simulated-hardware"
 Initialize-TestbedHardwareBindings
-if ($Mode -eq "full") {
-  Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
-}
+Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
 Write-TestbedPhase "wait-bound-runtime-ready"
 $runtimeReady = Wait-RuntimeReady
 $daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
