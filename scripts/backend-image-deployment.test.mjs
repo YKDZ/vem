@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -61,5 +62,20 @@ describe("backend deployment record", () => {
       serviceApi: "registry/vem-service-api@sha256:a",
       adminUi: "registry/vem-admin-ui@sha256:b",
     });
+  });
+
+  it("passes every required production endpoint and key into Service API", () => {
+    const compose = readFileSync(
+      new URL("../apps/service-api/docker-compose.yml", import.meta.url),
+      "utf8",
+    );
+    for (const variable of [
+      "MACHINE_MQTT_URL",
+      "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
+      "PAYMENT_WEBHOOK_BASE_URL",
+      "PAYMENT_CONFIG_ENCRYPTION_KEY",
+    ]) {
+      assert.match(compose, new RegExp(`^\\s+${variable}:`, "m"));
+    }
   });
 });
