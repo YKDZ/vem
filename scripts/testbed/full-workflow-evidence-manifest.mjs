@@ -113,9 +113,9 @@ function isPng(path) {
 
 function reportTrace(track, reportPath, report, artifactFiles) {
   const direct = {
-    fast: ["runtimeTrace", report?.runtimeTrace],
-    scanner: ["runtimeTrace", report?.runtimeTrace],
-    visionTryOn: ["runtimeTrace", report?.runtimeTrace],
+    sale: ["runtimeTrace", report?.runtimeTrace],
+    scannerPayment: ["runtimeTrace", report?.runtimeTrace],
+    visionExperience: ["runtimeTrace", report?.runtimeTrace],
     ipcRecovery: [
       "ipcRecovery.provenance.ui",
       [
@@ -123,7 +123,7 @@ function reportTrace(track, reportPath, report, artifactFiles) {
         ...(report?.ipcRecovery?.provenance?.ui?.after?.runtimeTrace ?? []),
       ],
     ],
-    fulfillmentFailure: ["evidence.ui.trace", report?.evidence?.ui?.trace],
+    fulfillmentRecovery: ["evidence.ui.trace", report?.evidence?.ui?.trace],
   }[track];
   if (direct && nonEmptyArray(direct[1])) {
     return virtualRecord(
@@ -134,7 +134,7 @@ function reportTrace(track, reportPath, report, artifactFiles) {
       direct[1],
     );
   }
-  if (track === "delayedPickup") {
+  if (track === "pickupProtocol" || track === "behaviorAudio") {
     const path = artifactFiles.find(
       (candidate) => basename(candidate) === "machine-production-evidence.json",
     );
@@ -162,9 +162,12 @@ function reportTrace(track, reportPath, report, artifactFiles) {
 
 function reportLog(track, reportPath, report) {
   const source = {
-    scanner: ["serial.rawFrames", report?.serial?.rawFrames],
+    scannerPayment: ["serial.rawFrames", report?.serial?.rawFrames],
     ipcRecovery: ["serial.rawFrames", report?.serial?.rawFrames],
-    fulfillmentFailure: ["evidence.platformLog", report?.evidence?.platformLog],
+    fulfillmentRecovery: [
+      "evidence.platformLog",
+      report?.evidence?.platformLog,
+    ],
   }[track];
   if (!source || !meaningfulLog(source[1])) return null;
   return virtualRecord(reportPath, source[0], "logs", track, source[1]);

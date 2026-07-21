@@ -39,10 +39,10 @@ describe("full workflow evidence manifest", () => {
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]),
     );
     const manifest = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
     });
     assert.equal(manifest.ok, true);
-    assert.equal(manifest.tracks[0].key, "fast");
+    assert.equal(manifest.tracks[0].key, "sale");
     assert.match(manifest.tracks[0].machineRuntimeTrace, /#runtimeTrace$/);
     assert.equal(manifest.tracks[0].logs.length, 1);
     assert.equal(manifest.tracks[0].screenshots.length, 1);
@@ -60,10 +60,10 @@ describe("full workflow evidence manifest", () => {
     const temp = root();
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
     const definitions = [
-      ["fast", { runtimeTrace: [{ id: "fast-trace" }] }, true],
-      ["delayedPickup", { ok: true }, true],
+      ["sale", { runtimeTrace: [{ id: "sale-trace" }] }, true],
+      ["pickupProtocol", { ok: true }, true],
       [
-        "scanner",
+        "scannerPayment",
         {
           runtimeTrace: [{ id: "scanner-trace" }],
           serial: { rawFrames: [{ bytesHex: "55f0" }] },
@@ -86,7 +86,7 @@ describe("full workflow evidence manifest", () => {
         false,
       ],
       [
-        "fulfillmentFailure",
+        "fulfillmentRecovery",
         {
           evidence: {
             ui: { trace: [{ id: "e6-trace" }] },
@@ -95,7 +95,7 @@ describe("full workflow evidence manifest", () => {
         },
         false,
       ],
-      ["visionTryOn", { runtimeTrace: [{ id: "vision-trace" }] }, true],
+      ["visionExperience", { runtimeTrace: [{ id: "vision-trace" }] }, true],
     ];
     const tracks = definitions.map(([key, reportValue, needsPhysicalLog]) => {
       const artifactRoot = join(temp, `${key}-artifacts`);
@@ -103,7 +103,7 @@ describe("full workflow evidence manifest", () => {
       writeFileSync(join(artifactRoot, `${key}.png`), png);
       if (needsPhysicalLog)
         writeFileSync(join(artifactRoot, `${key}.log`), `${key} log\n`);
-      if (key === "delayedPickup") {
+      if (key === "pickupProtocol") {
         writeFileSync(
           join(artifactRoot, "machine-production-evidence.json"),
           `${JSON.stringify({
@@ -138,7 +138,7 @@ describe("full workflow evidence manifest", () => {
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     );
     const manifest = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
     });
     assert.equal(manifest.ok, true);
     assert.ok(
@@ -157,7 +157,7 @@ describe("full workflow evidence manifest", () => {
     writeFileSync(join(artifacts, "runtime.log"), "ok\n");
     writeFileSync(join(artifacts, "capture.wav"), "audio");
     const manifest = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "fast", reportPath: report, artifactRoot: artifacts }],
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
     });
     assert.equal(manifest.ok, true);
     assert.ok(
@@ -187,7 +187,7 @@ describe("full workflow evidence manifest", () => {
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [
         {
-          key: "scanner",
+          key: "scannerPayment",
           reportPath: report,
           artifactRoot: artifacts,
           evidence: {
@@ -226,7 +226,7 @@ describe("full workflow evidence manifest", () => {
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [
         {
-          key: "visionTryOn",
+          key: "visionExperience",
           reportPath: report,
           artifactRoot: artifacts,
           result: { businessStatus: "failed" },

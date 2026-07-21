@@ -112,7 +112,7 @@ describe("vision try-on acceptance script", () => {
         "--out",
         "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
         "--fixture-key",
-        "visionTryOn",
+        "visionExperience",
       ]),
       {
         mode: "full",
@@ -120,7 +120,7 @@ describe("vision try-on acceptance script", () => {
         handoffPath:
           "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
         outPath: "C:\\ProgramData\\VEM\\testbed\\vision-try-on-acceptance.json",
-        fixtureKey: "visionTryOn",
+        fixtureKey: "visionExperience",
       },
     );
     assert.throws(

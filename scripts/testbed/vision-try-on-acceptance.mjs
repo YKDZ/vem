@@ -2250,7 +2250,7 @@ async function runVisionTryOnAcceptance(options) {
     throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
   }
   if (
-    options.fixtureKey !== "visionTryOn" ||
+    options.fixtureKey !== "visionExperience" ||
     allocatedFixture.slotCode !== "A3"
   ) {
     throw new Error(

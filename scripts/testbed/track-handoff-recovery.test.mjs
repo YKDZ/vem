@@ -142,10 +142,10 @@ describe("Track Handoff Recovery", () => {
   it("only uses bounded controls after capture and never applies recovery to Vision protocol failure", async () => {
     const calls = [];
     const result = await recoverTrackHandoff({
-      track: { key: "visionTryOn", transactionProducing: false },
+      track: { key: "visionExperience", transactionProducing: false },
       terminal: { facts: { route: "#/catalog" } },
       fixtureAllocation: {
-        visionTryOn: { slotCode: "A3", inventoryId: "vision" },
+        visionExperience: { slotCode: "A3", inventoryId: "vision" },
       },
       returnToCatalog: async () => calls.push("catalog"),
       disableFaultInjection: async () => calls.push("fault"),

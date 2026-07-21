@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  abortSerialSessionAndInvalidateHandoff,
   buildWorkflowTrackCommands,
   clearWholeMachineLockIfPresent,
   ensureFixtureStockReady,
@@ -17,6 +18,29 @@ import {
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
+  it("invalidates an aborted commissioning serial session for the next business set", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-session-"));
+    const handoffPath = join(root, "handoff.json");
+    const handoff = {
+      commissioningSerialSession: { sessionId: "serial-1" },
+    };
+    writeFileSync(handoffPath, JSON.stringify(handoff));
+    const calls = [];
+    await abortSerialSessionAndInvalidateHandoff({
+      guestInput: { hostControlPlane: {} },
+      handoff,
+      handoffPath,
+      sessionId: "serial-1",
+      control: async (_input, path) => calls.push(path),
+    });
+    assert.deepEqual(calls, ["/v1/serial-sessions/serial-1/abort"]);
+    assert.equal(handoff.commissioningSerialSession, null);
+    assert.equal(
+      JSON.parse(readFileSync(handoffPath, "utf8")).commissioningSerialSession,
+      null,
+    );
+  });
+
   it("uses the production self-check and clear endpoints for a persisted whole-machine lock", async () => {
     const posts = [];
     let capabilityRead = 0;
@@ -104,7 +128,7 @@ describe("full workflow serial lifecycle", () => {
     const vision = plan.tracks.find(
       (track) => track.key === "visionExperience",
     );
-    assert.equal(vision.fixtureKey, "visionTryOn");
+    assert.equal(vision.fixtureKey, "visionExperience");
     for (const track of plan.tracks.filter(
       (entry) => entry.runner.kind === "node",
     )) {

@@ -574,6 +574,24 @@ export async function clearWholeMachineLockIfPresent({
   return { cleared: true, result };
 }
 
+export async function abortSerialSessionAndInvalidateHandoff({
+  guestInput,
+  handoff,
+  handoffPath,
+  sessionId,
+  control = controlPlaneRequest,
+}) {
+  const result = await control(
+    guestInput,
+    `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
+  );
+  if (handoff?.commissioningSerialSession?.sessionId === sessionId) {
+    handoff.commissioningSerialSession = null;
+    writeJson(handoffPath, handoff);
+  }
+  return result;
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -722,7 +740,7 @@ export async function refreshCatalogPageFromClient({
   });
 }
 
-function terminalOperations(guestInput, handoff) {
+function terminalOperations(guestInput, handoff, handoffPath) {
   const withClient = async (operation) => {
     const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
     const target = await discoverMachineUiTarget({
@@ -778,10 +796,12 @@ function terminalOperations(guestInput, handoff) {
         disableFaultInjection: () =>
           controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open"),
         restoreSerialSession: (sessionId) =>
-          controlPlaneRequest(
+          abortSerialSessionAndInvalidateHandoff({
             guestInput,
-            `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
-          ),
+            handoff,
+            handoffPath,
+            sessionId,
+          }),
         cancelActiveTransaction: (transaction) =>
           daemonPost(handoff, "/v1/intents/cancel-order", {
             orderNo: required(
@@ -825,7 +845,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     !guestInput ||
     !handoff
       ? null
-      : terminalOperations(guestInput, handoff);
+      : terminalOperations(guestInput, handoff, options.handoffPath);
   const executedTracks = await runSerialTrackLifecycle({
     tracks: plan.tracks,
     runTrack:

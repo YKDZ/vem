@@ -71,7 +71,6 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "visionExperience",
-    fixtureKey: "visionTryOn",
     runner: {
       kind: "powershell",
       script: "scripts/testbed/run-full-vision-try-on-track.ps1",
