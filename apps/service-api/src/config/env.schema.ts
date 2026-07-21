@@ -34,7 +34,7 @@ const baseEnvSchema = z.object({
     .int()
     .min(1)
     .max(300)
-    .default(5),
+    .default(15),
   MACHINE_HEARTBEAT_TIMEOUT_SECONDS: z.coerce
     .number()
     .int()
