@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { serialObservationsForLifecycle } from "./hardware-lifecycle-guest-full.mjs";
 import {
   buildMqttTopic,
   buildSerialOperationCommand,
@@ -367,6 +368,25 @@ describe("host serial control plane", () => {
           "scanner",
         ),
       /target port 1/,
+    );
+  });
+
+  it("projects QEMU detach into the file-backed Windows discovery boundary", () => {
+    const observations = [
+      { currentPort: "COM4", hardwareIds: ["USB\\VID_1A86&PID_7523"] },
+      { currentPort: "COM3", hardwareIds: ["USB\\VID_1A86&PID_55D3"] },
+    ];
+    assert.deepEqual(
+      serialObservationsForLifecycle(observations, "scanner", false),
+      [observations[0]],
+    );
+    assert.deepEqual(
+      serialObservationsForLifecycle(observations, "lower_controller", false),
+      [observations[1]],
+    );
+    assert.equal(
+      serialObservationsForLifecycle(observations, "scanner", true),
+      observations,
     );
   });
 

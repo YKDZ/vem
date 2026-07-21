@@ -155,11 +155,27 @@ function roleSummary(snapshot) {
   }));
 }
 
+export function serialObservationsForLifecycle(observations, role, connected) {
+  if (connected) return observations;
+  const expectedPid = role === "scanner" ? "PID_55D3" : "PID_7523";
+  return observations.filter(
+    (observation) =>
+      !JSON.stringify(observation.hardwareIds ?? [])
+        .toUpperCase()
+        .includes(expectedPid),
+  );
+}
+
 export async function runHardwareLifecycleGuest(options) {
   const guestInput = readJson(options.guestInputPath);
   const handoff = readJson(options.handoffPath);
   const runId = required(guestInput.runId, "runId");
   const machineCode = required(guestInput.machineCode, "machineCode");
+  const discoveryPath = resolve(
+    dirname(options.handoffPath),
+    "serial-device-observations.json",
+  );
+  const originalObservations = readJson(discoveryPath);
   let session = null;
   const report = {
     schemaVersion: SCHEMA_VERSION,
@@ -208,12 +224,17 @@ export async function runHardwareLifecycleGuest(options) {
         `/v1/serial-sessions/${session.sessionId}/device-lifecycle`,
         { role: hostRole, operation: "disconnect" },
       );
+      writeJson(
+        discoveryPath,
+        serialObservationsForLifecycle(originalObservations, role, false),
+      );
       const disconnected = await waitForRoleState(handoff, role, false);
       const reconnectedHost = await control(
         guestInput,
         `/v1/serial-sessions/${session.sessionId}/device-lifecycle`,
         { role: hostRole, operation: "reconnect" },
       );
+      writeJson(discoveryPath, originalObservations);
       const reconnected = await waitForRoleState(handoff, role, true);
       report.lifecycle.push({
         role,
@@ -255,6 +276,7 @@ export async function runHardwareLifecycleGuest(options) {
     writeJson(options.outPath, report);
     throw error;
   } finally {
+    writeJson(discoveryPath, originalObservations);
     if (session?.sessionId) {
       await control(
         guestInput,
