@@ -444,13 +444,15 @@ fn role_requires_reconfiguration(
     binding: Option<&LocalSerialRoleBinding>,
     observed: &[device_binding::ObservedSerialDevice],
     current_port: Option<&str>,
+    runtime_ready: bool,
 ) -> bool {
     let Some(binding) = binding else {
         return true;
     };
     match device_binding::resolve_runtime_port(role, binding, observed) {
         Ok(observed_port) => {
-            current_port.is_none_or(|current| !current.eq_ignore_ascii_case(&observed_port))
+            !runtime_ready
+                || current_port.is_none_or(|current| !current.eq_ignore_ascii_case(&observed_port))
         }
         Err(_) => true,
     }
@@ -461,17 +463,21 @@ fn device_bindings_require_reconfiguration(
     observed: &[device_binding::ObservedSerialDevice],
     lower_controller_port: Option<&str>,
     scanner_port: Option<&str>,
+    lower_controller_ready: bool,
+    scanner_ready: bool,
 ) -> bool {
     role_requires_reconfiguration(
         LocalDeviceRole::LowerController,
         settings.lower_controller_binding.as_ref(),
         observed,
         lower_controller_port,
+        lower_controller_ready,
     ) || role_requires_reconfiguration(
         LocalDeviceRole::Scanner,
         settings.scanner_binding.as_ref(),
         observed,
         scanner_port,
+        scanner_ready,
     )
 }
 
@@ -557,6 +563,8 @@ async fn run_device_binding_watch(
             &observed,
             previous_hardware.port_path.as_deref(),
             previous_scanner.port.as_deref(),
+            previous_hardware.online,
+            previous_scanner.online,
         ) {
             continue;
         }
@@ -1407,12 +1415,24 @@ mod tests {
             &observed,
             Some("com4"),
             Some("COM7"),
+            true,
+            true,
         ));
         assert!(device_bindings_require_reconfiguration(
             &settings,
             &observed,
             Some("COM9"),
             Some("COM7"),
+            true,
+            true,
+        ));
+        assert!(device_bindings_require_reconfiguration(
+            &settings,
+            &observed,
+            Some("COM4"),
+            Some("COM7"),
+            true,
+            false,
         ));
     }
 

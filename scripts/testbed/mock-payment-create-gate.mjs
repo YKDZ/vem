@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 function required(value, label) {
@@ -24,6 +30,9 @@ export function writePaymentMockCreateGateState(stateRoot, value) {
   const gate = paymentMockCreateGatePaths(stateRoot);
   mkdirSync(dirname(gate.statePath), { recursive: true });
   writeFileSync(gate.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  if (value?.state === "open" || value?.state === "hold") {
+    rmSync(gate.pendingPath, { force: true });
+  }
   return gate;
 }
 

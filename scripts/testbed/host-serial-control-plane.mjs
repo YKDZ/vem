@@ -983,6 +983,8 @@ function serialDeviceLifecycle(server, input) {
       ...(session.detachedDeviceXml ?? {}),
       [role]: xml,
     };
+  } else {
+    delete session.detachedDeviceXml[role];
   }
   const afterXml = dumpDomainXml(server);
   const after = parseLibvirtUsbSerialMappings(afterXml, {

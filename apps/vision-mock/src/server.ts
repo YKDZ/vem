@@ -333,6 +333,10 @@ async function pushScenarioEvents(
     return;
   }
 
+  if (options.scenario === "controlled") {
+    return;
+  }
+
   if (presenceStatusEnabled) {
     const presence = createPresenceMessage("approach");
     sendServerMessage(socket, presence);
@@ -353,10 +357,6 @@ async function pushScenarioEvents(
   if (options.scenario === "presence_only") {
     return;
   }
-  if (options.scenario === "controlled") {
-    return;
-  }
-
   sendServerMessage(socket, createResultMessage());
 }
 

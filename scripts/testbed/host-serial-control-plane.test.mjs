@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -248,6 +249,17 @@ describe("host serial control plane", () => {
         authorization: "Bearer control-plane-token",
         "content-type": "application/json",
       };
+      const gate = mockPaymentCreateGatePaths(root);
+      mkdirSync(join(root, "fast-route"), { recursive: true });
+      writeFileSync(
+        gate.pendingPath,
+        JSON.stringify({
+          state: "pending",
+          paymentNo: "STALE-PAYMENT",
+          observedAt: new Date().toISOString(),
+        }),
+        { flag: "w" },
+      );
 
       const arm = await fetch(`${baseUrl}/v1/mock-payment-create-gate/arm`, {
         method: "POST",
@@ -257,9 +269,9 @@ describe("host serial control plane", () => {
       assert.equal(arm.ok, true);
       assert.equal(arm.state, "hold");
 
-      const gate = mockPaymentCreateGatePaths(root);
       const armedState = JSON.parse(readFileSync(gate.statePath, "utf8"));
       assert.deepEqual(armedState, { state: "hold" });
+      assert.equal(existsSync(gate.pendingPath), false);
 
       const status = await fetch(
         `${baseUrl}/v1/mock-payment-create-gate/status`,
@@ -286,6 +298,14 @@ describe("host serial control plane", () => {
         state: "release",
         paymentNo: "PAY-1",
       });
+      writeFileSync(
+        gate.pendingPath,
+        JSON.stringify({
+          state: "pending",
+          paymentNo: "PAY-1",
+          observedAt: new Date().toISOString(),
+        }),
+      );
 
       const open = await fetch(`${baseUrl}/v1/mock-payment-create-gate/open`, {
         method: "POST",
@@ -297,6 +317,7 @@ describe("host serial control plane", () => {
       assert.deepEqual(JSON.parse(readFileSync(gate.statePath, "utf8")), {
         state: "open",
       });
+      assert.equal(existsSync(gate.pendingPath), false);
     } finally {
       await new Promise((resolve, reject) => {
         server.close((error) => {
