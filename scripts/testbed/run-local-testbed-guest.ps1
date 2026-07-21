@@ -173,8 +173,12 @@ function Update-WorkflowIdentityCacheObservation(
   if ($null -eq $guestInput.workflowIdentity) {
     throw "workflow identity is missing from local testbed guest input"
   }
-  $guestInput.workflowIdentity.observedRetainedCaches = @($ObservedRetainedCaches)
-  $guestInput.workflowIdentity.removedUndeclaredCaches = @($RemovedUndeclaredCaches)
+  $guestInput.workflowIdentity.observedRetainedCaches = @(
+    $ObservedRetainedCaches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+  )
+  $guestInput.workflowIdentity.removedUndeclaredCaches = @(
+    $RemovedUndeclaredCaches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+  )
   $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding utf8
 }
 

@@ -56,6 +56,11 @@ function sameStringArray(actual, expected) {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+function sameStringSet(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
+  return sameStringArray([...actual].sort(), [...expected].sort());
+}
+
 export function buildStabilityGateReport({
   commit,
   passAPath,
@@ -108,10 +113,7 @@ export function buildStabilityGateReport({
       gateFailures.push(`${label} retained-cache contract drifted`);
     }
     if (
-      !sameStringArray(
-        identity?.observedRetainedCaches,
-        RETAINED_CACHE_CONTRACT,
-      )
+      !sameStringSet(identity?.observedRetainedCaches, RETAINED_CACHE_CONTRACT)
     ) {
       gateFailures.push(`${label} observed retained caches drifted`);
     }

@@ -392,4 +392,47 @@ describe("full workflow stability gate", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("accepts observed retained caches regardless of filesystem enumeration order", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
+    try {
+      const report = (reconstruction) => {
+        const workflowIdentity = identity(reconstruction);
+        workflowIdentity.observedRetainedCaches = [
+          ...workflowIdentity.observedRetainedCaches,
+        ].sort();
+        return {
+          schemaVersion: "vem-local-testbed-full-workflow/v4",
+          mode: "full",
+          ok: true,
+          businessSets: Object.fromEntries(
+            BUSINESS_CHECK_REGISTRY.map((descriptor) => [
+              descriptor.name,
+              { status: "passed" },
+            ]),
+          ),
+          execution: {
+            selectedBusinessSets: BUSINESS_CHECK_REGISTRY.map(
+              (descriptor) => descriptor.name,
+            ),
+          },
+          identity: workflowIdentity,
+        };
+      };
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      writeFileSync(passA, `${JSON.stringify(report("a"))}\n`);
+      writeFileSync(passB, `${JSON.stringify(report("b"))}\n`);
+      assert.equal(
+        buildStabilityGateReport({
+          commit: "c".repeat(40),
+          passAPath: passA,
+          passBPath: passB,
+        }).ok,
+        true,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
