@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   mqttEvidenceMatchesPayment,
   refreshAdminAccessToken,
+  waitForMachineOnline,
   parsePaymentRecoveryGuestArgs,
   selectCanonicalSlot,
   validatePaymentRecoveryEvidence,
@@ -28,7 +29,9 @@ describe("payment recovery guest full", () => {
   it("refreshes the admin token through the existing login path", async () => {
     const calls = [];
     const token = await refreshAdminAccessToken(
-      { serviceApi: { adminUsername: "seeded-admin", adminPassword: "secret" } },
+      {
+        serviceApi: { adminUsername: "seeded-admin", adminPassword: "secret" },
+      },
       async (_input, path, options) => {
         calls.push({ path, options });
         return { accessToken: "fresh-token" };
@@ -58,6 +61,50 @@ describe("payment recovery guest full", () => {
         inventoryId: "inv-1",
         planogramVersion: "P-7",
       },
+    );
+  });
+  it("waits for the matching Service API machine to become online", async () => {
+    const statuses = ["starting", "online"];
+    const calls = [];
+    const machine = await waitForMachineOnline(
+      { runtimeBootstrap: { provisioningApiBaseUrl: "http://api" } },
+      "MACHINE-17",
+      "admin-token",
+      {
+        query: async (_input, path, options) => {
+          calls.push({ path, options });
+          return { items: [{ code: "MACHINE-17", status: statuses.shift() }] };
+        },
+        wait: async () => {},
+        now: (() => {
+          let value = 0;
+          return () => value++;
+        })(),
+      },
+    );
+    assert.equal(machine.status, "online");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].options.token, "admin-token");
+  });
+  it("fails after a finite wait when the machine never becomes online", async () => {
+    await assert.rejects(
+      waitForMachineOnline(
+        { runtimeBootstrap: { provisioningApiBaseUrl: "http://api" } },
+        "MACHINE-17",
+        "admin-token",
+        {
+          timeoutMs: 1,
+          query: async () => ({
+            items: [{ code: "MACHINE-17", status: "offline" }],
+          }),
+          wait: async () => {},
+          now: (() => {
+            let value = 0;
+            return () => value++;
+          })(),
+        },
+      ),
+      /did not become online/,
     );
   });
   it("requires MQTT evidence correlated to the recovered payment", () => {

@@ -122,6 +122,39 @@ export async function refreshAdminAccessToken(input, login = api) {
   });
   return required(result?.accessToken, "auth.login.accessToken");
 }
+export async function waitForMachineOnline(
+  input,
+  machineCode,
+  token,
+  {
+    timeoutMs = 15_000,
+    pollIntervalMs = 250,
+    now = () => Date.now(),
+    wait = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    query = api,
+  } = {},
+) {
+  const code = required(machineCode, "machineCode");
+  const deadline = now() + timeoutMs;
+  let lastStatus = null;
+  do {
+    const page = await query(input, "/machines?page=1&pageSize=100", {
+      method: "GET",
+      token: required(token, "admin access token"),
+    });
+    const machine = (page?.items ?? []).find((entry) => entry?.code === code);
+    if (!machine) throw new Error(`Service API machine ${code} was not found`);
+    lastStatus = machine.status;
+    if (lastStatus === "online") return machine;
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await wait(Math.min(pollIntervalMs, remaining));
+  } while (now() < deadline);
+  throw new Error(
+    `Service API machine ${code} did not become online (last status: ${lastStatus ?? "unknown"})`,
+  );
+}
 export function selectCanonicalSlot(saleView, fixture) {
   const slotCode = required(fixture?.slotCode, "fixture.slotCode");
   const item = (saleView?.items ?? []).find(
@@ -197,6 +230,7 @@ export async function runPaymentRecoveryGuest(options) {
   };
   let session = null;
   let order = null;
+  let adminAccessToken = null;
   try {
     session = await control(input, "/v1/serial-sessions/start", {
       runId,
@@ -226,6 +260,8 @@ export async function runPaymentRecoveryGuest(options) {
       paymentProviderCode: "mock",
       idempotencyKey: `${runId}-payment-recovery`,
     };
+    adminAccessToken = await refreshAdminAccessToken(input);
+    await waitForMachineOnline(input, input.machineCode, adminAccessToken);
     order = await daemon(handoff, "/v1/intents/create-order", orderRequest);
     const replayedOrder = await daemon(
       handoff,
@@ -242,7 +278,7 @@ export async function runPaymentRecoveryGuest(options) {
       `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
       {
         method: "POST",
-        token: await refreshAdminAccessToken(input),
+        token: adminAccessToken,
         body: {
           action: "query_payment",
           reason: `runtime acceptance ${runId}: reconcile provider outcome`,
