@@ -23,7 +23,7 @@ export const SALE_AUDIO_REPORT_SCHEMA_VERSION =
   "vm-sale-audio-capture-report/v1";
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
-const EVIDENCE_ID = /^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/;
+const EVIDENCE_ID = /^runtime-evidence:\/\/sha256\/[a-f0-9]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -310,7 +310,7 @@ function validateEvidence(entry, role, extension) {
     entry?.role !== role ||
     !EVIDENCE_ID.test(entry.identity ?? "") ||
     !SHA256.test(entry.digest ?? "") ||
-    entry.identity !== `factory-evidence://sha256/${entry.digest.slice(7)}` ||
+    entry.identity !== `runtime-evidence://sha256/${entry.digest.slice(7)}` ||
     entry.fileName !== `${entry.digest.slice(7)}.${extension}`
   )
     throw new Error(`${role} evidence binding is invalid`);
@@ -345,7 +345,7 @@ function evidenceEntry(directory, role, bytes, extension) {
   const fileName = `${digest}.${extension}`;
   const entry = {
     role,
-    identity: `factory-evidence://sha256/${digest}`,
+    identity: `runtime-evidence://sha256/${digest}`,
     digest: `sha256:${digest}`,
     fileName,
   };

@@ -48,10 +48,10 @@ function fixture() {
       },
       guest: { defaultAudioIdentity: "guest-audio://runtime" },
       evidence: [
-        { identity: `factory-evidence://sha256/${hash}` },
+        { identity: `runtime-evidence://sha256/${hash}` },
         {
           role: "daemon-audio-calibration-response",
-          identity: `factory-evidence://sha256/${responseHash}`,
+          identity: `runtime-evidence://sha256/${responseHash}`,
           digest: `sha256:${responseHash}`,
           fileName: `${responseHash}.json`,
         },
@@ -68,14 +68,14 @@ function fixture() {
           source: "vending_daemon_ipc",
           command: "audio_output_calibration",
           challenge: "b".repeat(64),
-          responseArtifact: `factory-evidence://sha256/${responseHash}`,
+          responseArtifact: `runtime-evidence://sha256/${responseHash}`,
           responseDigest: `sha256:${responseHash}`,
           responseFileName: `${responseHash}.json`,
           startedAt: "2026-07-13T00:00:00.500Z",
           completedAt: "2026-07-13T00:00:01.500Z",
         },
         capture: {
-          artifact: `factory-evidence://sha256/${hash}`,
+          artifact: `runtime-evidence://sha256/${hash}`,
           threshold: {
             minimumPeakAbsoluteSample: 512,
             minimumNonSilentFrames: 24_000,

@@ -103,7 +103,7 @@ function assetFromIdentity(role, identity) {
   const pattern =
     role === "approved-runtime-base"
       ? /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/
-      : /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/;
+      : /^runtime-asset:\/\/sha256\/([a-f0-9]{64})$/;
   const match = String(identity).match(pattern);
   if (!match) throw new Error(`${role} must be a SHA-256 asset identity`);
   return { role, identity, digest: `sha256:${match[1]}` };
@@ -112,35 +112,16 @@ function assetFromIdentity(role, identity) {
 function assetsForOperation(operation) {
   if (operation === "clean-install") {
     return [
-      assetFromIdentity("factory-iso", readOption("--factory-iso")),
-      assetFromIdentity(
-        "factory-personalization-media",
-        readOption("--factory-personalization-media"),
-      ),
+      assetFromIdentity("runtime-image", readOption("--runtime-image")),
+      assetFromIdentity("runtime-bootstrap", readOption("--runtime-bootstrap")),
     ];
   }
   if (operation === "capture-approved-base") {
-    return [assetFromIdentity("factory-iso", readOption("--factory-iso"))];
+    return [assetFromIdentity("runtime-image", readOption("--runtime-image"))];
   }
   return [
     assetFromIdentity("approved-runtime-base", readOption("--runtime-base")),
   ];
-}
-
-function factoryMediaForOperation(operation) {
-  if (!["clean-install", "capture-approved-base"].includes(operation))
-    return null;
-  const outputIdentity = readOption("--factory-iso");
-  const outputDigest = `sha256:${outputIdentity.match(/^factory-cas:\/\/sha256\/([a-f0-9]{64})$/)?.[1] ?? ""}`;
-  return {
-    assemblyMode: readOption("--factory-assembly-mode"),
-    targetFirmware: readOption("--factory-target-firmware"),
-    manifestIdentity: readOption("--factory-manifest"),
-    provenanceIdentity: readOption("--factory-provenance"),
-    provenanceDigest: readOption("--factory-provenance-digest"),
-    outputIdentity,
-    outputDigest,
-  };
 }
 
 function audioCaptureForOperation(operation) {
@@ -354,7 +335,6 @@ async function main() {
     .update(`${runId}\n${targetIdentity}`)
     .digest("hex")
     .slice(0, 32);
-  const factoryMedia = factoryMediaForOperation(operation);
   const displayCapture = displayCaptureForOperation(operation);
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
@@ -377,7 +357,6 @@ async function main() {
         ? readOption("--cancel-operation-reference")
         : null,
     target: { identity: targetIdentity },
-    factoryMedia,
     displayCapture,
     audioCapture,
     assets: assetsForOperation(operation),

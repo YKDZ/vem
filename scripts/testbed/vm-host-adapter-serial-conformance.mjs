@@ -334,7 +334,6 @@ export function validateSerialConformanceReport(
     targetBinding: report.observed.targetBinding,
     baseIdentity: report.observed.baseIdentity,
     overlayIdentity: report.observed.overlayIdentity,
-    factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
   });
   assertConformance(
     start.adapter.identity === expectedAdapterIdentity &&
@@ -707,7 +706,6 @@ function validateFailureSource(source, label, expectedLifecycleIdentity) {
     targetBinding: report.observed.targetBinding,
     baseIdentity: report.observed.baseIdentity,
     overlayIdentity: report.observed.overlayIdentity,
-    factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
   };
   assertConformance(
     sameJson(lifecycleIdentity, expectedLifecycleIdentity),
@@ -828,7 +826,6 @@ function requestFor({
     lifecycleReference,
     cancelOperationReference: null,
     target: { identity: targetIdentity },
-    factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
     assets: [asset(approvedRuntimeBase)],

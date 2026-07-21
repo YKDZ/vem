@@ -605,7 +605,7 @@ function inspectDisturbance(
 
 /**
  * Classifies only browser UI mock contract evidence. It does not assert a
- * platform transaction, Windows runtime, Factory image, or physical sale.
+ * platform transaction, Windows runtime, or physical sale.
  */
 export function classifyBrowserInstalledKioskSaleContract(
   input: BrowserInstalledKioskSaleContractFacts,

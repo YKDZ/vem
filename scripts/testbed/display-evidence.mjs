@@ -170,7 +170,7 @@ export function inspectExportedDisplayCapture({
   const bytes = readFileSync(join(directory, evidence.fileName));
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (
-    evidence.identity !== `factory-evidence://sha256/${digest}` ||
+    evidence.identity !== `runtime-evidence://sha256/${digest}` ||
     evidence.digest !== `sha256:${digest}`
   )
     throw new Error(

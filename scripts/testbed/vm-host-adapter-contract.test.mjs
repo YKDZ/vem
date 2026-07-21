@@ -216,7 +216,6 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     cancelOperationReference:
       operation === "cancel" ? "vm-operation://op-fedcba9876543210" : null,
     target: { identity: "vm-target://runtime-testbed" },
-    factoryMedia: null,
     displayCapture:
       operation === "capture-display"
         ? {
@@ -444,24 +443,15 @@ function cleanInstallRequest(overrides = {}) {
   const personalizationHash = "e".repeat(64);
   const provenanceHash = "c".repeat(64);
   return requestFor("clean-install", {
-    factoryMedia: {
-      assemblyMode: "windows-serviced-iso",
-      targetFirmware: "bios",
-      manifestIdentity: `sha256:${"f".repeat(64)}`,
-      provenanceIdentity: `factory-evidence://sha256/${provenanceHash}`,
-      provenanceDigest: `sha256:${provenanceHash}`,
-      outputIdentity: `factory-cas://sha256/${isoHash}`,
-      outputDigest: `sha256:${isoHash}`,
-    },
     assets: [
       {
-        role: "factory-iso",
-        identity: `factory-cas://sha256/${isoHash}`,
+        role: "runtime-image",
+        identity: `runtime-asset://sha256/${isoHash}`,
         digest: `sha256:${isoHash}`,
       },
       {
-        role: "factory-personalization-media",
-        identity: `factory-cas://sha256/${personalizationHash}`,
+        role: "runtime-bootstrap",
+        identity: `runtime-asset://sha256/${personalizationHash}`,
         digest: `sha256:${personalizationHash}`,
       },
     ],
@@ -476,7 +466,7 @@ function reportFor(request, overrides = {}) {
       ? [
           {
             role: "display-capture",
-            identity: `factory-evidence://sha256/${"b".repeat(64)}`,
+            identity: `runtime-evidence://sha256/${"b".repeat(64)}`,
             digest: `sha256:${"b".repeat(64)}`,
             fileName: `${"b".repeat(64)}.png`,
           },
@@ -485,13 +475,13 @@ function reportFor(request, overrides = {}) {
         ? [
             {
               role: "default-audio-capture",
-              identity: `factory-evidence://sha256/${"c".repeat(64)}`,
+              identity: `runtime-evidence://sha256/${"c".repeat(64)}`,
               digest: `sha256:${"c".repeat(64)}`,
               fileName: `${"c".repeat(64)}.wav`,
             },
             {
               role: "daemon-audio-calibration-response",
-              identity: `factory-evidence://sha256/${"d".repeat(64)}`,
+              identity: `runtime-evidence://sha256/${"d".repeat(64)}`,
               digest: `sha256:${"d".repeat(64)}`,
               fileName: `${"d".repeat(64)}.json`,
             },
@@ -536,7 +526,6 @@ function reportFor(request, overrides = {}) {
       lifecycleReference: request.lifecycleReference,
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
-      factoryMedia: request.factoryMedia,
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
@@ -553,12 +542,7 @@ function reportFor(request, overrides = {}) {
       },
       baseIdentity: request.assets[0].identity,
       overlayIdentity: "vm-overlay://run-12-contract",
-      factoryProvenanceDigest:
-        request.operation === "clean-install" ||
-        request.operation === "capture-approved-base"
-          ? request.factoryMedia.provenanceDigest
-          : null,
-      firmwareMode: request.factoryMedia?.targetFirmware ?? "bios",
+      firmwareMode: "bios",
     },
     consumedAssets: request.assets,
     guest: {
@@ -674,7 +658,7 @@ function reportFor(request, overrides = {}) {
             observed: {
               overlay: "removed",
               runDirectory: "removed",
-              personalizationMedia: "removed",
+              bootstrapMedia: "removed",
             },
           }
         : {
@@ -683,7 +667,7 @@ function reportFor(request, overrides = {}) {
             observed: {
               overlay: "present",
               runDirectory: "present",
-              personalizationMedia: "not-mounted",
+              bootstrapMedia: "not-mounted",
             },
           },
     diagnostics: [{ code: "adapter_completed" }],
@@ -766,7 +750,7 @@ describe("VM Host Adapter contract", () => {
       assets: [
         {
           role: "approved-runtime-base",
-          identity: `factory-cas://sha256/${HASH}`,
+          identity: `runtime-asset://sha256/${HASH}`,
           digest: `sha256:${HASH}`,
         },
       ],
@@ -777,19 +761,19 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("permits lifecycle cleanup to recover a failed clean install from its Factory ISO", () => {
+  it("permits lifecycle cleanup to recover a failed clean install from its runtime image", () => {
     const request = createVmHostAdapterRequest(
       requestFor("cleanup", {
         assets: [
           {
-            role: "factory-iso",
-            identity: `factory-cas://sha256/${HASH}`,
+            role: "runtime-image",
+            identity: `runtime-asset://sha256/${HASH}`,
             digest: `sha256:${HASH}`,
           },
         ],
       }),
     );
-    assert.equal(request.assets[0].role, "factory-iso");
+    assert.equal(request.assets[0].role, "runtime-image");
     assert.equal(
       validateVmHostAdapterReport(reportFor(request), request).observed
         .baseIdentity,
@@ -1252,7 +1236,7 @@ describe("VM Host Adapter contract", () => {
           observed: {
             overlay: "removed",
             runDirectory: "removed",
-            personalizationMedia: "removed",
+            bootstrapMedia: "removed",
           },
         },
         diagnostics: [{ code: "adapter_failed" }],
@@ -1270,140 +1254,6 @@ describe("VM Host Adapter contract", () => {
     assert.deepEqual(diagnostic, {
       message: "adapter rejected [redacted-scanner-code]",
     });
-  });
-
-  it("requires Factory Personalization Media for a logical clean install", () => {
-    const request = requestFor("clean-install", {
-      requestedCapabilities: ["clean-install", "cancellation", "cleanup"],
-    });
-    assert.throws(
-      () => createVmHostAdapterRequest(request),
-      /factory-personalization-media/,
-    );
-  });
-
-  it("requires an exact Factory firmware target and matching host observation", () => {
-    const request = cleanInstallRequest();
-    const missingFirmware = structuredClone(request);
-    delete missingFirmware.factoryMedia.targetFirmware;
-    assert.throws(
-      () => createVmHostAdapterRequest(missingFirmware),
-      /targetFirmware/,
-    );
-
-    const unknownFirmware = structuredClone(request);
-    unknownFirmware.factoryMedia.targetFirmware = "auto";
-    assert.throws(
-      () => createVmHostAdapterRequest(unknownFirmware),
-      /targetFirmware/,
-    );
-
-    assert.throws(
-      () =>
-        validateVmHostAdapterReport(
-          reportFor(request, {
-            observed: {
-              ...reportFor(request).observed,
-              firmwareMode: "uefi",
-            },
-          }),
-          request,
-        ),
-      /firmwareMode/,
-    );
-  });
-
-  it("binds a clean-install observation to its requested Factory ISO, never an approved base fallback", () => {
-    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
-    const personalization = `factory-cas://sha256/${"e".repeat(64)}`;
-    const request = createVmHostAdapterRequest(
-      cleanInstallRequest({
-        assets: [
-          {
-            role: "factory-iso",
-            identity: factoryIso,
-            digest: `sha256:${"d".repeat(64)}`,
-          },
-          {
-            role: "factory-personalization-media",
-            identity: personalization,
-            digest: `sha256:${"e".repeat(64)}`,
-          },
-        ],
-        factoryMedia: {
-          assemblyMode: "windows-serviced-iso",
-          targetFirmware: "bios",
-          manifestIdentity: `sha256:${"f".repeat(64)}`,
-          provenanceIdentity: `factory-evidence://sha256/${"c".repeat(64)}`,
-          provenanceDigest: `sha256:${"c".repeat(64)}`,
-          outputIdentity: factoryIso,
-          outputDigest: `sha256:${"d".repeat(64)}`,
-        },
-        requestedCapabilities: [
-          "clean-install",
-          "disposable-overlay",
-          "serial:lower-controller",
-          "serial:scanner",
-          "cancellation",
-          "cleanup",
-        ],
-      }),
-    );
-    assert.equal(
-      validateVmHostAdapterReport(reportFor(request), request).observed
-        .baseIdentity,
-      factoryIso,
-    );
-    assert.throws(() =>
-      validateVmHostAdapterReport(
-        reportFor(request, {
-          observed: {
-            ...reportFor(request).observed,
-            baseIdentity: `factory-cas://sha256/${HASH}`,
-          },
-        }),
-        request,
-      ),
-    );
-    assert.throws(() =>
-      validateVmHostAdapterReport(
-        reportFor(request, {
-          observed: {
-            ...reportFor(request).observed,
-            factoryProvenanceDigest: `sha256:${"0".repeat(64)}`,
-          },
-        }),
-        request,
-      ),
-    );
-  });
-
-  it("captures a distinct approved base from the clean Factory ISO lifecycle", () => {
-    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
-    const request = requestFor("capture-approved-base", {
-      factoryMedia: {
-        assemblyMode: "windows-serviced-iso",
-        targetFirmware: "bios",
-        manifestIdentity: `sha256:${"e".repeat(64)}`,
-        provenanceIdentity: `factory-evidence://sha256/${"f".repeat(64)}`,
-        provenanceDigest: `sha256:${"f".repeat(64)}`,
-        outputIdentity: factoryIso,
-        outputDigest: `sha256:${"d".repeat(64)}`,
-      },
-      assets: [
-        {
-          role: "factory-iso",
-          identity: factoryIso,
-          digest: `sha256:${"d".repeat(64)}`,
-        },
-      ],
-    });
-    const report = reportFor(request);
-    report.observed.baseIdentity = `factory-cas://sha256/${"1".repeat(64)}`;
-    assert.equal(
-      validateVmHostAdapterReport(report, request).observed.baseIdentity,
-      `factory-cas://sha256/${"1".repeat(64)}`,
-    );
   });
 
   it("requires a distinct canonical operation reference when cancelling", () => {
@@ -1461,7 +1311,7 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
-  it("binds Factory ISO cancellation evidence to its lifecycle source", () => {
+  it("binds runtime image cancellation evidence to its lifecycle source", () => {
     const cleanInstall = cleanInstallRequest();
     const request = createVmHostAdapterRequest(
       requestFor("cancel", {
@@ -1469,7 +1319,7 @@ describe("VM Host Adapter contract", () => {
       }),
     );
     const report = reportFor(request);
-    report.observed.baseIdentity = `factory-cas://sha256/${"b".repeat(64)}`;
+    report.observed.baseIdentity = `runtime-asset://sha256/${"b".repeat(64)}`;
     assert.throws(() => validateVmHostAdapterReport(report, request));
   });
 
@@ -1511,7 +1361,7 @@ describe("VM Host Adapter contract", () => {
             observed: {
               overlay: "removed",
               runDirectory: "removed",
-              personalizationMedia: "removed",
+              bootstrapMedia: "removed",
             },
           },
         }),
@@ -1999,7 +1849,7 @@ describe("VM Host Adapter contract", () => {
       observed: {
         overlay: "present",
         runDirectory: "present",
-        personalizationMedia: "not-mounted",
+        bootstrapMedia: "not-mounted",
       },
     });
     const state = JSON.parse(readFileSync(statePath, "utf8"));
@@ -2156,7 +2006,7 @@ describe("VM Host Adapter contract", () => {
           observed: {
             overlay: "removed",
             runDirectory: "removed",
-            personalizationMedia: "removed",
+            bootstrapMedia: "removed",
           },
         });
         assert.doesNotMatch(
@@ -2482,49 +2332,6 @@ describe("VM Host Adapter contract", () => {
         "cancel",
         "cleanup",
       ]);
-    });
-
-    it("rejects retired clean-install CLI compatibility instead of invoking Factory admission", () => {
-      const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-install-"));
-      const out = join(root, "report.json");
-      const result = spawnSync(
-        process.execPath,
-        [
-          CLIENT,
-          "--operation",
-          "clean-install",
-          "--run-id",
-          "RUN-12-CONTRACT",
-          "--target-identity",
-          "vm-target://runtime-testbed",
-          "--factory-iso",
-          `factory-cas://sha256/${"d".repeat(64)}`,
-          "--factory-personalization-media",
-          `factory-cas://sha256/${"e".repeat(64)}`,
-          "--factory-assembly-mode",
-          "windows-serviced-iso",
-          "--factory-target-firmware",
-          "bios",
-          "--factory-manifest",
-          `sha256:${"f".repeat(64)}`,
-          "--factory-provenance",
-          `factory-evidence://sha256/${"c".repeat(64)}`,
-          "--factory-provenance-digest",
-          `sha256:${"c".repeat(64)}`,
-          "--out",
-          out,
-        ],
-        {
-          env: {
-            ...process.env,
-            RUNNER_TEMP: root,
-            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
-            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
-          },
-        },
-      );
-      assert.equal(result.status, 1);
-      assert.match(result.stderr.toString("utf8"), /clean-install is retired/);
     });
 
     it("builds v2 serial-session requests from logical CLI options", () => {
@@ -3192,7 +2999,7 @@ describe("VM Host Adapter contract", () => {
           observed: {
             overlay: "removed",
             runDirectory: "removed",
-            personalizationMedia: "removed",
+            bootstrapMedia: "removed",
           },
         });
         assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");

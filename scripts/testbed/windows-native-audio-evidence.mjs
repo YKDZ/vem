@@ -115,7 +115,7 @@ export function verifyWindowsNativeAudioEvidence({
   if (
     responseDigest !== calibrationEvidence?.digest ||
     calibrationEvidence?.identity !==
-      `factory-evidence://${responseDigest?.replace(":", "/")}`
+      `runtime-evidence://${responseDigest?.replace(":", "/")}`
   )
     diagnostics.push(diagnostic("daemon_audio_calibration_digest_mismatch"));
   const capture = audio?.capture;

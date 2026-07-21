@@ -355,13 +355,13 @@ function fixture(root) {
   });
   const audioEvidence = {
     role: "sale-default-audio-capture",
-    identity: `factory-evidence://sha256/${wavHash}`,
+    identity: `runtime-evidence://sha256/${wavHash}`,
     digest: `sha256:${wavHash}`,
     fileName: `${wavHash}.wav`,
   };
   const serialEvidence = {
     role: "sale-serial-frame-capture",
-    identity: `factory-evidence://sha256/${serialHash}`,
+    identity: `runtime-evidence://sha256/${serialHash}`,
     digest: `sha256:${serialHash}`,
     fileName: `${serialHash}.json`,
   };
@@ -582,7 +582,7 @@ describe("delayed pickup native audio production track", () => {
       writeFileSync(join(root, `${serialHash}.json`), serialBytes);
       artifacts.audioStop.value.evidence[1] = {
         role: "sale-serial-frame-capture",
-        identity: `factory-evidence://sha256/${serialHash}`,
+        identity: `runtime-evidence://sha256/${serialHash}`,
         digest: `sha256:${serialHash}`,
         fileName: `${serialHash}.json`,
       };

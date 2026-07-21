@@ -42,7 +42,6 @@ const PROFILE_NAMES = new Set([
   "vm-scanner-payment-code",
   "vm-route-competition",
   "vm-ipc-recovery",
-  "factory-route-competition",
   "vm-delayed-pickup-native-audio",
 ]);
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
@@ -117,7 +116,7 @@ function parseArgs(argv) {
   if (options.profile == null) options.profile = "vm-normal";
   if (!PROFILE_NAMES.has(options.profile)) {
     throw new Error(
-      "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, vm-ipc-recovery, factory-route-competition, or vm-delayed-pickup-native-audio",
+      "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, vm-ipc-recovery, or vm-delayed-pickup-native-audio",
     );
   }
   if (options.ssh_port != null) {
@@ -194,7 +193,7 @@ function resolveRemoteOptions(options) {
     !options.expected_testbed_user
   ) {
     throw new Error(
-      "factory guest endpoint requires protocol, host, port, and --expected-testbed-user",
+      "runtime guest endpoint requires protocol, host, port, and --expected-testbed-user",
     );
   }
   return {
@@ -257,23 +256,16 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
       selector: '[data-test="checkout-submit"]',
       routeBefore: "#/checkout",
       routeAfter:
-        profile === "vm-route-competition" ||
-        profile === "factory-route-competition"
-          ? "#/checkout"
-          : /^#\/payment/,
+        profile === "vm-route-competition" ? "#/checkout" : /^#\/payment/,
       timeoutMs: 30_000,
       activatesRouteBarrier: true,
-      ...(profile === "vm-route-competition" ||
-      profile === "factory-route-competition"
+      ...(profile === "vm-route-competition"
         ? { completesRouteBarrier: false }
         : {}),
       screenshot: true,
     },
   ];
-  if (
-    profile === "vm-route-competition" ||
-    profile === "factory-route-competition"
-  ) {
+  if (profile === "vm-route-competition") {
     steps.push({
       type: "customer-activation",
       name: "payment submit repeat",

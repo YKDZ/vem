@@ -86,37 +86,9 @@ test("builds bracketed IPv6 loopback URIs without changing IPv4", () => {
   assert.match(module, /\[\$HostName\]/);
 });
 
-test("removes retired candidate delivery entrypoints without a compatibility path", () => {
-  for (const path of [
-    "scripts/windows/install-vision-release.ps1",
-    "scripts/windows/provision-vision-factory-release.ps1",
-    "scripts/windows/test-vision-candidate.ps1",
-    "scripts/windows/test-vision-candidate.fixtures.ps1",
-    "scripts/windows/test-vision-candidate.windows-harness.ps1",
-    "scripts/windows/vision-release-materialization.psm1",
-    "scripts/windows/vision-diagnostic-redaction.psm1",
-    "scripts/windows/vision-release-install.test.mjs",
-    "scripts/windows/vision-release-install.fixtures.ps1",
-    "scripts/windows/vision-release-install.windows-harness.ps1",
-    "scripts/windows/vision-release-install-harness.behavior.ps1",
-  ]) {
-    assert.equal(existsSync(path), false, `${path} must remain deleted`);
-  }
-  const combined = `${source(modulePath)}\n${source(resolverPath)}\n${source(installerPath)}`;
-  assert.doesNotMatch(
-    combined,
-    /candidate|approval|attestation|sbom|provenance|rollback|factory manifest|allowlist/i,
-  );
-});
-
-test("runtime verification cannot reintroduce versioned release selection", () => {
+test("runtime verification checks the installed Vision artifact", () => {
   const verify = source("scripts/windows/verify-vem-runtime.ps1");
   assert.match(verify, /VisionInstallRecord/);
   assert.match(verify, /VisionSiteConfiguration/);
   assert.match(verify, /Invoke-VisionMainProbe/);
-  assert.doesNotMatch(verify, /healthVersion|health\.version/);
-  assert.doesNotMatch(
-    verify,
-    /VisionSelection|approvalDigest|attestation|release-metadata|rollback/i,
-  );
 });

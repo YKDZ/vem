@@ -57,7 +57,7 @@ describe("display evidence PNG inspection", () => {
     const directory = mkdtempSync(join(tmpdir(), "vem-display-evidence-"));
     const digest = createHash("sha256").update(bytes).digest("hex");
     const evidence = {
-      identity: `factory-evidence://sha256/${digest}`,
+      identity: `runtime-evidence://sha256/${digest}`,
       digest: `sha256:${digest}`,
       fileName: `${digest}.png`,
     };

@@ -976,7 +976,6 @@ describe("fast route stress sale tracer", () => {
     assert.doesNotMatch(implementation, /fastSale\.createOrderGate\.statePath/);
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
-    assert.doesNotMatch(implementation, /factory-route-competition/);
     assert.doesNotMatch(implementation, /scannerCode/);
   });
 

@@ -163,7 +163,7 @@ describe("browser Installed Kiosk Sale UI contract", () => {
     });
   });
 
-  it.each(["windows_vm_runtime", "factory_iso_overlay"])(
+  it.each(["windows_vm_runtime"])(
     "rejects %s as a browser debug evidence source",
     (source) => {
       expect(

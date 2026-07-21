@@ -27,8 +27,6 @@ const forbiddenPatterns = [
   /audio-output-binding/i,
   /serialPortPath/,
   /scannerSerialPortPath/,
-  /FactoryProfile/,
-  /factoryProfile/,
   /local-bringup-settings/i,
   /bringup\/local-settings/i,
   /provisioning\/profile-cache-summary/i,

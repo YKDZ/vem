@@ -18,9 +18,9 @@ const CONTRACT_VERSION = "vem-vm-host-adapter-contract/v2";
 const REQUEST_SCHEMA_VERSION = "vem-vm-host-adapter-request/v2";
 const REPORT_SCHEMA_VERSION = "vem-vm-host-adapter-report/v2";
 const DIAGNOSTIC_SCHEMA_VERSION = "vem-vm-host-adapter-diagnostic/v2";
-const ASSET_IDENTITY = /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/;
+const ASSET_IDENTITY = /^runtime-asset:\/\/sha256\/([a-f0-9]{64})$/;
 const RUNTIME_BASE_IDENTITY = /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/;
-const EVIDENCE_IDENTITY = /^factory-evidence:\/\/sha256\/([a-f0-9]{64})$/;
+const EVIDENCE_IDENTITY = /^runtime-evidence:\/\/sha256\/([a-f0-9]{64})$/;
 const TARGET_IDENTITY = /^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/;
 const OPERATION_NONCE = /^op-[a-f0-9]{16,64}$/;
 const OPERATION_REFERENCE = /^vm-operation:\/\/op-[a-f0-9]{16,64}$/;
@@ -94,8 +94,8 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
 };
 
 const REQUIRED_ASSET_ROLES_BY_OPERATION = {
-  "clean-install": ["factory-iso", "factory-personalization-media"],
-  "capture-approved-base": ["factory-iso"],
+  "clean-install": ["runtime-image", "runtime-bootstrap"],
+  "capture-approved-base": ["runtime-image"],
   "restore-approved-base": ["approved-runtime-base"],
   "create-disposable-overlay": ["approved-runtime-base"],
   "capture-display": ["approved-runtime-base"],
@@ -104,8 +104,8 @@ const REQUIRED_ASSET_ROLES_BY_OPERATION = {
   "inject-scanner-code": ["approved-runtime-base"],
   "collect-serial-evidence": ["approved-runtime-base"],
   "stop-serial-session": ["approved-runtime-base"],
-  cleanup: ["approved-runtime-base", "factory-iso"],
-  cancel: ["approved-runtime-base", "factory-iso"],
+  cleanup: ["approved-runtime-base", "runtime-image"],
+  cancel: ["approved-runtime-base", "runtime-image"],
 };
 
 const REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION = {
@@ -265,7 +265,7 @@ function assertAsset(asset, index, issues, pathPrefix = "assets") {
       `${path}.identity`,
       asset.role === "approved-runtime-base"
         ? "must be a runtime-base SHA-256 identity"
-        : "must be a factory-cas SHA-256 identity",
+        : "must be a runtime-asset SHA-256 identity",
     );
   if (
     typeof asset.digest !== "string" ||
@@ -1804,7 +1804,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
       !EVIDENCE_IDENTITY.test(value.daemonCalibration.responseArtifact ?? "") ||
       !SHA256_DIGEST.test(value.daemonCalibration.responseDigest ?? "") ||
       value.daemonCalibration.responseArtifact !==
-        `factory-evidence://${value.daemonCalibration.responseDigest?.replace(":", "/")}`
+        `runtime-evidence://${value.daemonCalibration.responseDigest?.replace(":", "/")}`
     )
       issue(
         issues,
@@ -2233,7 +2233,7 @@ function assertCleanupObservation(observed, path, issues) {
   if (
     !assertExactKeys(
       observed,
-      ["overlay", "runDirectory", "personalizationMedia"],
+      ["overlay", "runDirectory", "bootstrapMedia"],
       path,
       issues,
     )
@@ -2245,12 +2245,12 @@ function assertCleanupObservation(observed, path, issues) {
   }
   if (
     !new Set(["not-mounted", "mounted", "removed", "unknown"]).has(
-      observed.personalizationMedia,
+      observed.bootstrapMedia,
     )
   )
     issue(
       issues,
-      `${path}.personalizationMedia`,
+      `${path}.bootstrapMedia`,
       "must be a supported observed state",
     );
 }
@@ -2264,7 +2264,7 @@ function isPostCleanupIdempotentCapture(request, report) {
     report.cleanup?.overlayDisposition === "removed" &&
     observed?.overlay === "removed" &&
     observed?.runDirectory === "removed" &&
-    observed?.personalizationMedia === "removed"
+    observed?.bootstrapMedia === "removed"
   );
 }
 
@@ -2294,7 +2294,6 @@ function requestEcho(request) {
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
     targetIdentity: request.target.identity,
-    factoryMedia: request.factoryMedia,
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [...request.requestedCapabilities],
@@ -2314,7 +2313,6 @@ function reconstructRequest(request) {
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
     target: { identity: request.target?.identity },
-    factoryMedia: request.factoryMedia,
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     assets: request.assets?.map((asset) => ({
@@ -2332,10 +2330,10 @@ function lifecycleSourceAsset(request) {
     request.operation === "clean-install" ||
     request.operation === "capture-approved-base"
   )
-    return request.assets.find((asset) => asset.role === "factory-iso");
+    return request.assets.find((asset) => asset.role === "runtime-image");
   if (["cleanup", "cancel"].includes(request.operation))
     return (
-      request.assets.find((asset) => asset.role === "factory-iso") ??
+      request.assets.find((asset) => asset.role === "runtime-image") ??
       request.assets.find((asset) => asset.role === "approved-runtime-base")
     );
   return request.assets.find((asset) => asset.role === "approved-runtime-base");
@@ -2357,7 +2355,6 @@ export function validateVmHostAdapterRequest(input) {
       "lifecycleReference",
       "cancelOperationReference",
       "target",
-      "factoryMedia",
       "displayCapture",
       "audioCapture",
       "assets",
@@ -2450,103 +2447,6 @@ export function validateVmHostAdapterRequest(input) {
         issues,
       );
   }
-  if (
-    request.operation === "clean-install" ||
-    request.operation === "capture-approved-base"
-  ) {
-    if (
-      !assertExactKeys(
-        request.factoryMedia,
-        [
-          "assemblyMode",
-          "targetFirmware",
-          "manifestIdentity",
-          "provenanceIdentity",
-          "provenanceDigest",
-          "outputIdentity",
-          "outputDigest",
-        ],
-        "request.factoryMedia",
-        issues,
-      )
-    ) {
-      // Exact-key diagnostics are sufficient when this object is malformed.
-    } else {
-      if (request.factoryMedia.assemblyMode !== "windows-serviced-iso")
-        issue(
-          issues,
-          "request.factoryMedia.assemblyMode",
-          "must be windows-serviced-iso",
-        );
-      if (!new Set(["bios", "uefi"]).has(request.factoryMedia.targetFirmware))
-        issue(
-          issues,
-          "request.factoryMedia.targetFirmware",
-          "must be bios or uefi",
-        );
-      if (
-        !/^sha256:[a-f0-9]{64}$/.test(
-          request.factoryMedia.manifestIdentity ?? "",
-        )
-      )
-        issue(
-          issues,
-          "request.factoryMedia.manifestIdentity",
-          "must be a Factory Manifest SHA-256 identity",
-        );
-      if (
-        !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(
-          request.factoryMedia.provenanceIdentity ?? "",
-        )
-      )
-        issue(
-          issues,
-          "request.factoryMedia.provenanceIdentity",
-          "must be a Factory provenance identity",
-        );
-      assertLogicalIdentity(
-        request.factoryMedia.outputIdentity,
-        "request.factoryMedia.outputIdentity",
-        issues,
-      );
-      for (const key of ["provenanceDigest", "outputDigest"]) {
-        if (!/^sha256:[a-f0-9]{64}$/.test(request.factoryMedia[key] ?? ""))
-          issue(
-            issues,
-            `request.factoryMedia.${key}`,
-            "must be a lowercase SHA-256 digest",
-          );
-      }
-      const source = request.assets?.find(
-        (asset) => asset.role === "factory-iso",
-      );
-      if (
-        source &&
-        (request.factoryMedia.outputIdentity !== source.identity ||
-          request.factoryMedia.outputDigest !== source.digest)
-      )
-        issue(
-          issues,
-          "request.factoryMedia",
-          "must bind the requested factory-iso identity and digest",
-        );
-      if (
-        request.factoryMedia.provenanceIdentity !==
-        `factory-evidence://${request.factoryMedia.provenanceDigest?.replace(":", "/")}`
-      )
-        issue(
-          issues,
-          "request.factoryMedia.provenanceIdentity",
-          "must bind provenanceDigest",
-        );
-    }
-  } else if (request.factoryMedia !== null) {
-    issue(
-      issues,
-      "request.factoryMedia",
-      "must be null outside Factory ISO operations",
-    );
-  }
   if (request.operation === "capture-default-audio") {
     assertAudioCaptureRequest(
       request.audioCapture,
@@ -2582,11 +2482,14 @@ export function validateVmHostAdapterRequest(input) {
       const base = request.assets.find(
         (asset) => asset.role === "approved-runtime-base",
       );
-      const iso = request.assets.find((asset) => asset.role === "factory-iso");
+      const runtimeImage = request.assets.find(
+        (asset) => asset.role === "runtime-image",
+      );
       if (
         base &&
-        iso &&
-        (base.identity !== iso.identity || base.digest !== iso.digest)
+        runtimeImage &&
+        (base.identity !== runtimeImage.identity ||
+          base.digest !== runtimeImage.digest)
       )
         issue(
           issues,
@@ -2741,7 +2644,6 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "lifecycleReference",
         "cancelOperationReference",
         "targetIdentity",
-        "factoryMedia",
         "displayCapture",
         "audioCapture",
         "requestedCapabilities",
@@ -2825,7 +2727,6 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "targetBinding",
         "baseIdentity",
         "overlayIdentity",
-        "factoryProvenanceDigest",
         "firmwareMode",
       ],
       "report.observed",
@@ -2881,28 +2782,8 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "report.observed.baseIdentity",
         "does not match the requested operation source asset",
       );
-    const expectedProvenance =
-      request.operation === "clean-install" ||
-      request.operation === "capture-approved-base"
-        ? request.factoryMedia.provenanceDigest
-        : null;
-    if (report.observed.factoryProvenanceDigest !== expectedProvenance)
-      issue(
-        issues,
-        "report.observed.factoryProvenanceDigest",
-        "must bind the requested Factory provenance digest for clean install and be null otherwise",
-      );
     if (!new Set(["bios", "uefi"]).has(report.observed.firmwareMode))
       issue(issues, "report.observed.firmwareMode", "must attest bios or uefi");
-    if (
-      request.factoryMedia &&
-      report.observed.firmwareMode !== request.factoryMedia.targetFirmware
-    )
-      issue(
-        issues,
-        "report.observed.firmwareMode",
-        "must match the requested Factory target firmware",
-      );
   }
   if (!Array.isArray(report.consumedAssets))
     issue(issues, "report.consumedAssets", "must be an array");
@@ -3113,12 +2994,12 @@ export function validateVmHostAdapterReport(input, requestInput) {
     const cleaned =
       report.cleanup.observed?.overlay === "removed" &&
       report.cleanup.observed?.runDirectory === "removed" &&
-      report.cleanup.observed?.personalizationMedia === "removed";
+      report.cleanup.observed?.bootstrapMedia === "removed";
     const active =
       report.cleanup.observed?.overlay === "present" &&
       report.cleanup.observed?.runDirectory === "present" &&
       ["not-mounted", "mounted"].includes(
-        report.cleanup.observed?.personalizationMedia,
+        report.cleanup.observed?.bootstrapMedia,
       );
     const completedCaptureAfterCleanup = isPostCleanupIdempotentCapture(
       request,
@@ -3181,7 +3062,6 @@ export function validateVmHostAdapterReport(input, requestInput) {
       },
       baseIdentity: report.observed.baseIdentity,
       overlayIdentity: report.observed.overlayIdentity,
-      factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
       firmwareMode: report.observed.firmwareMode,
     },
     consumedAssets: report.consumedAssets.map((asset) => ({
@@ -3221,7 +3101,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       observed: {
         overlay: report.cleanup.observed.overlay,
         runDirectory: report.cleanup.observed.runDirectory,
-        personalizationMedia: report.cleanup.observed.personalizationMedia,
+        bootstrapMedia: report.cleanup.observed.bootstrapMedia,
       },
     },
     diagnostics: report.diagnostics.map((diagnostic) => ({
@@ -3382,7 +3262,7 @@ export function createVmHostAdapterDiagnostic({
   const observedRemoval =
     cleanup?.observed?.overlay === "removed" &&
     cleanup?.observed?.runDirectory === "removed" &&
-    cleanup?.observed?.personalizationMedia === "removed";
+    cleanup?.observed?.bootstrapMedia === "removed";
   if (
     (cleanup?.status === "completed" &&
       (!cleanup?.attempted || !observedRemoval)) ||
@@ -3487,7 +3367,7 @@ function inspectExportedDaemonCalibrationResponse({
   const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   if (
     digest !== evidence.digest ||
-    evidence.identity !== `factory-evidence://${digest.replace(":", "/")}` ||
+    evidence.identity !== `runtime-evidence://${digest.replace(":", "/")}` ||
     calibration.responseArtifact !== evidence.identity ||
     calibration.responseDigest !== evidence.digest ||
     calibration.responseFileName !== evidence.fileName
@@ -3797,7 +3677,6 @@ function cleanupRequestFor(request) {
     operationNonce: nonce,
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: null,
-    factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cleanup", "cancellation"],
@@ -3817,7 +3696,6 @@ function cancelRequestFor(request) {
     operationNonce: nonce,
     operationReference: `vm-operation://${nonce}`,
     cancelOperationReference: request.operationReference,
-    factoryMedia: null,
     displayCapture: null,
     audioCapture: null,
     requestedCapabilities: ["cancellation", "cleanup"],
@@ -3977,7 +3855,7 @@ export async function runVmHostAdapter({
     observed: {
       overlay: "unknown",
       runDirectory: "unknown",
-      personalizationMedia: "unknown",
+      bootstrapMedia: "unknown",
     },
   };
   const requiresCancellation =
@@ -4018,7 +3896,7 @@ export async function runVmHostAdapter({
     observed: recovery.report?.cleanup.observed ?? {
       overlay: "unknown",
       runDirectory: "unknown",
-      personalizationMedia: "unknown",
+      bootstrapMedia: "unknown",
     },
   };
   const diagnostic = createVmHostAdapterDiagnostic({

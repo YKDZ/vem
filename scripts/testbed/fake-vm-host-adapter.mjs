@@ -26,7 +26,7 @@ function readOption(name) {
 function evidence(role, hash) {
   return {
     role,
-    identity: `factory-evidence://sha256/${hash}`,
+    identity: `runtime-evidence://sha256/${hash}`,
     digest: `sha256:${hash}`,
   };
 }
@@ -481,7 +481,6 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       lifecycleReference: request.lifecycleReference,
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
-      factoryMedia: request.factoryMedia,
       displayCapture: request.displayCapture,
       audioCapture: request.audioCapture,
       requestedCapabilities: request.requestedCapabilities,
@@ -498,15 +497,10 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       },
       baseIdentity:
         request.operation === "capture-approved-base"
-          ? `factory-cas://sha256/${"f".repeat(64)}`
+          ? `runtime-asset://sha256/${"f".repeat(64)}`
           : request.assets[0].identity,
       overlayIdentity: "vm-overlay://fake-run-001",
-      factoryProvenanceDigest:
-        request.operation === "clean-install" ||
-        request.operation === "capture-approved-base"
-          ? request.factoryMedia.provenanceDigest
-          : null,
-      firmwareMode: request.factoryMedia?.targetFirmware ?? "bios",
+      firmwareMode: "bios",
     },
     consumedAssets: request.assets,
     guest: {
@@ -536,7 +530,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
             observed: {
               overlay: "removed",
               runDirectory: "removed",
-              personalizationMedia: "removed",
+              bootstrapMedia: "removed",
             },
           }
         : {
@@ -545,7 +539,7 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
             observed: {
               overlay: "present",
               runDirectory: "present",
-              personalizationMedia: "not-mounted",
+              bootstrapMedia: "not-mounted",
             },
           },
     diagnostics: [

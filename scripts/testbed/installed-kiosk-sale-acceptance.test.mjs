@@ -313,7 +313,7 @@ describe("installed kiosk sale preflight", () => {
             certificate: join(root, "id-cert.pub"),
             adapter: "runner-service-adapter",
             target_identity: "vm-target://runtime-testbed",
-            approved_runtime_base: "factory-cas://sha256/abc",
+            approved_runtime_base: "runtime-asset://sha256/abc",
             profile: "vm-normal",
             out: output,
           },
@@ -585,7 +585,7 @@ describe("installed kiosk sale authoritative platform snapshots", () => {
       certificate: "/tmp/id-cert.pub",
       adapter: "runner-service-adapter",
       target_identity: "vm-target://runtime-testbed",
-      approved_runtime_base: "factory-cas://sha256/abc",
+      approved_runtime_base: "runtime-asset://sha256/abc",
       profile: "vm-normal",
       out: "/tmp/installed-kiosk-sale-report.json",
     });
@@ -609,7 +609,7 @@ describe("installed kiosk sale authoritative platform snapshots", () => {
       certificate: "/tmp/id-cert.pub",
       adapter: "runner-service-adapter",
       target_identity: "vm-target://runtime-testbed",
-      approved_runtime_base: "factory-cas://sha256/abc",
+      approved_runtime_base: "runtime-asset://sha256/abc",
       profile: "vm-scanner-payment-code",
       out: "/tmp/installed-kiosk-sale-scanner-report.json",
     });

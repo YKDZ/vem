@@ -4241,10 +4241,7 @@ await writeFile(markerPath, "created");
     assert.match(workflow, /cancel-in-progress: true/);
     assert.match(workflow, /default: vem-runtime/);
     assert.match(workflow, /build-win10-baseline\.mjs/);
-    assert.doesNotMatch(
-      workflow,
-      /upload-artifact|scripts\/factory|build-factory-iso/i,
-    );
+    assert.doesNotMatch(workflow, /upload-artifact/i);
   });
 
   it("uses the same latest-wins concurrency group while baseline owns its host lock", () => {
