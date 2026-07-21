@@ -597,6 +597,8 @@ async function executeRun(options, config) {
             workspace,
             "--state-root",
             config.stateRoot,
+            "--run-id",
+            options.runId,
             "--baseline-contract",
             config.baselineContract,
             "--host-private-address",

@@ -32,6 +32,7 @@ import {
   lowerControllerSimSourceFingerprint,
   parseOptions,
   paymentMockCreateGatePaths,
+  refreshGuestInputForRun,
   seedThroughSupportedApis,
   validateRefreshGuestInput,
   validateBaselineContract,
@@ -314,6 +315,8 @@ describe("local testbed orchestration", () => {
           root,
           "--state-root",
           join(root, "state"),
+          "--run-id",
+          "RUN-CURRENT-FAST",
           "--baseline-contract",
           join(root, "baseline.json"),
           "--host-private-address",
@@ -324,6 +327,7 @@ describe("local testbed orchestration", () => {
         { observeNetworkInterfaces: observedNetworkInterfaces },
       );
       assert.equal(parsedOptions.command, "refresh-host-runtime");
+      assert.equal(parsedOptions.runId, "RUN-CURRENT-FAST");
       assert.equal("mode" in parsedOptions, false);
       const rendered = buildRefreshHostRuntimePlan(parsedOptions)
         .map((step) => `${step.command} ${step.args.join(" ")}`)
@@ -337,6 +341,20 @@ describe("local testbed orchestration", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("refreshes only the per-run guest identity", () => {
+    const previous = {
+      runId: "RUN-PREVIOUS-FULL",
+      machineCode: "VEM-TESTBED-LOCAL",
+      claimCode: "ABCD-EFGH",
+      fixtureAllocation: { sale: { slotCode: "A1" } },
+      hostControlPlane: { token: "retained-token" },
+    };
+    assert.deepEqual(refreshGuestInputForRun(previous, "RUN-CURRENT-FAST"), {
+      ...previous,
+      runId: "RUN-CURRENT-FAST",
+    });
   });
 
   it("requires refresh to retain the existing guest identity and control-plane token", () => {

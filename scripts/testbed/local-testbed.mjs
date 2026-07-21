@@ -233,7 +233,12 @@ export function parseOptions(
     out: absolute(option(args, "out"), "--out"),
     dryRun: args.includes("--dry-run"),
   };
-  if (command === "refresh-host-runtime") return common;
+  if (command === "refresh-host-runtime") {
+    return {
+      ...common,
+      runId: required(option(args, "run-id"), "--run-id"),
+    };
+  }
   const mode = option(args, "mode");
   if (!MODES.has(mode))
     throw new Error("--mode must be fast, full, or clear_cache");
@@ -1376,6 +1381,13 @@ export function validateRefreshGuestInput(input, options) {
   return input;
 }
 
+export function refreshGuestInputForRun(input, runId) {
+  return {
+    ...input,
+    runId: required(runId, "--run-id"),
+  };
+}
+
 async function stageExistingGuestInput(options, contract) {
   const guest = contract.testbed.guest;
   const ssh = [
@@ -1401,11 +1413,12 @@ export async function refreshHostRuntime(options) {
     .then(JSON.parse)
     .then(validateBaselineContract);
   const guestInputPath = join(options.stateRoot, "guest-input.json");
-  const guestInputRaw = await readFile(guestInputPath, "utf8");
-  const guestInput = validateRefreshGuestInput(
-    JSON.parse(guestInputRaw),
-    options,
+  const existingGuestInputRaw = await readFile(guestInputPath, "utf8");
+  const guestInput = refreshGuestInputForRun(
+    validateRefreshGuestInput(JSON.parse(existingGuestInputRaw), options),
+    options.runId,
   );
+  const guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;
   const plan = buildRefreshHostRuntimePlan(options);
   const startedAt = new Date().toISOString();
   if (options.dryRun) {
@@ -1431,6 +1444,7 @@ export async function refreshHostRuntime(options) {
     options,
     pruneCaches: false,
   });
+  await writeFile(guestInputPath, guestInputRaw, "utf8");
   const buildFinishedAt = new Date().toISOString();
   await stopServiceApiUnit(options);
   await stopHostControlPlaneUnit(options, contract);
