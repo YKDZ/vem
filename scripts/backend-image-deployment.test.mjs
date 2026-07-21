@@ -38,6 +38,17 @@ describe("backend image publishing", () => {
     );
     assert.deepEqual(registryBuildArgs({}), []);
   });
+
+  it("keeps the production dependency deployment offline after fetch", () => {
+    const dockerfile = readFileSync(
+      new URL("../apps/service-api/Dockerfile", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      dockerfile,
+      /pnpm --filter service-api deploy --legacy --offline --prod/,
+    );
+  });
 });
 
 describe("backend deployment record", () => {

@@ -25,7 +25,7 @@ RUN --mount=type=cache,id=vem-pnpm,target=/pnpm/store pnpm install --offline --f
   && pnpm --filter @vem/shared build \
   && pnpm --filter @vem/db build \
   && pnpm --filter service-api build \
-  && pnpm --filter service-api deploy --legacy --prod /prod/service-api
+  && pnpm --filter service-api deploy --legacy --offline --prod /prod/service-api
 
 FROM node:24-slim AS runner
 ENV NODE_ENV=production
