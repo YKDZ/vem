@@ -89,4 +89,13 @@ describe("backend deployment record", () => {
       assert.match(compose, new RegExp(`^\\s+${variable}:`, "m"));
     }
   });
+
+  it("checks the wrapped health response used by the production API", () => {
+    const compose = readFileSync(
+      new URL("../apps/service-api/docker-compose.yml", import.meta.url),
+      "utf8",
+    );
+    assert.match(compose, /b\.data\?\.database !== 'ok'/);
+    assert.match(compose, /b\.data\?\.mqtt !== 'connected'/);
+  });
 });
