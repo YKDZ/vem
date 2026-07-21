@@ -120,6 +120,23 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
+  it("allows lifecycle observation while one serial role is detached", () => {
+    const scannerDetached = domainXml()
+      .split("\n")
+      .filter((line) => !line.includes('target type="usb-serial" port="1"'))
+      .join("\n");
+    assert.throws(
+      () => parseLibvirtUsbSerialMappings(scannerDetached),
+      /exactly one scanner/,
+    );
+    assert.deepEqual(
+      parseLibvirtUsbSerialMappings(scannerDetached, {
+        requireAll: false,
+      }).map(({ role }) => role),
+      ["lower-controller"],
+    );
+  });
+
   it("publishes the live libvirt USB topology for both serial roles", () => {
     const mappings = parseLibvirtUsbSerialMappings(domainXml());
     assert.deepEqual(

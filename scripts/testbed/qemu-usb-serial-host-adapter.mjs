@@ -179,7 +179,7 @@ function xmlAttribute(source, name) {
   );
 }
 
-export function parseLibvirtUsbSerialMappings(xml) {
+export function parseLibvirtUsbSerialMappings(xml, { requireAll = true } = {}) {
   const mappings = [];
   for (const match of String(xml).matchAll(
     /<serial\b[^>]*\btype=(?:"pty"|'pty')[^>]*>[\s\S]*?<\/serial>/g,
@@ -228,21 +228,22 @@ export function parseLibvirtUsbSerialMappings(xml) {
       },
     });
   }
-  for (const role of REQUIRED_ROLES) {
+  for (const role of requireAll ? REQUIRED_ROLES : []) {
     if (mappings.filter((mapping) => mapping.role === role).length !== 1) {
       throw new Error(
         `running libvirt domain must expose exactly one ${role} QEMU USB serial PTY`,
       );
     }
   }
-  if (mappings.length !== REQUIRED_ROLES.length) {
+  if (requireAll && mappings.length !== REQUIRED_ROLES.length) {
     throw new Error(
       "running libvirt domain exposes unexpected QEMU USB serial roles",
     );
   }
-  return REQUIRED_ROLES.map((role) =>
-    mappings.find((mapping) => mapping.role === role),
-  );
+  return REQUIRED_ROLES.flatMap((role) => {
+    const mapping = mappings.find((entry) => entry.role === role);
+    return mapping ? [mapping] : [];
+  });
 }
 
 function verifyImmutableEntry(environment = process.env) {

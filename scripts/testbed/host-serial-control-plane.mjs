@@ -974,9 +974,9 @@ function serialDeviceLifecycle(server, input) {
     operation === "reconnect" && session.detachedDeviceXml?.[role]
       ? session.detachedDeviceXml[role]
       : serialDeviceXmlForRole(domainXml, role);
-  const before = parseLibvirtUsbSerialMappings(domainXml).filter(
-    (mapping) => mapping.role === role,
-  );
+  const before = parseLibvirtUsbSerialMappings(domainXml, {
+    requireAll: false,
+  }).filter((mapping) => mapping.role === role);
   const virsh = runVirshDeviceLifecycle(server, { role, operation, xml });
   if (operation === "disconnect") {
     session.detachedDeviceXml = {
@@ -985,9 +985,9 @@ function serialDeviceLifecycle(server, input) {
     };
   }
   const afterXml = dumpDomainXml(server);
-  const after = parseLibvirtUsbSerialMappings(afterXml).filter(
-    (mapping) => mapping.role === role,
-  );
+  const after = parseLibvirtUsbSerialMappings(afterXml, {
+    requireAll: false,
+  }).filter((mapping) => mapping.role === role);
   const lifecycle = {
     role,
     operation,
