@@ -61,6 +61,20 @@ function sameStringSet(actual, expected) {
   return sameStringArray([...actual].sort(), [...expected].sort());
 }
 
+function runtimeArtifactDigests(identity) {
+  const runtimeArtifacts = identity?.runtimeArtifacts;
+  if (runtimeArtifacts?.commit !== identity?.githubSha) return null;
+  const digests = Object.fromEntries(
+    ["daemon", "machine", "webViewLoader"].map((name) => [
+      name,
+      runtimeArtifacts?.artifacts?.[name]?.sha256,
+    ]),
+  );
+  return Object.values(digests).every((digest) => /^[a-f0-9]{64}$/.test(digest))
+    ? digests
+    : null;
+}
+
 export function buildStabilityGateReport({
   commit,
   passAPath,
@@ -122,6 +136,9 @@ export function buildStabilityGateReport({
         `${label} undeclared cache cleanup evidence is missing`,
       );
     }
+    if (!runtimeArtifactDigests(identity)) {
+      gateFailures.push(`${label} runtime artifact evidence is invalid`);
+    }
     if (
       JSON.stringify(passA.execution?.selectedBusinessSets) !==
         JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
@@ -165,6 +182,12 @@ export function buildStabilityGateReport({
     )
   ) {
     gateFailures.push("observed retained caches differ between passes");
+  }
+  if (
+    JSON.stringify(runtimeArtifactDigests(passA.identity)) !==
+    JSON.stringify(runtimeArtifactDigests(passB.identity))
+  ) {
+    gateFailures.push("runtime artifact digests differ between passes");
   }
   return {
     schemaVersion: "vem-local-testbed-stability-gate/v2",

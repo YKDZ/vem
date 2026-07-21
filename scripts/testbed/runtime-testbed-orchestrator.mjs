@@ -449,7 +449,7 @@ async function stageAndRunGuest({
   ]);
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}'${focusArgument}`;
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,

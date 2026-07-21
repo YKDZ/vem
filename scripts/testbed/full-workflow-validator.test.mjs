@@ -201,6 +201,15 @@ function identity(reconstruction) {
     retainedCaches: caches,
     observedRetainedCaches: caches,
     removedUndeclaredCaches: [],
+    runtimeArtifacts: {
+      commit: "c".repeat(40),
+      reusedFromPass1: reconstruction === "b",
+      artifacts: {
+        daemon: { sha256: "d".repeat(64) },
+        machine: { sha256: "e".repeat(64) },
+        webViewLoader: { sha256: "f".repeat(64) },
+      },
+    },
   };
 }
 

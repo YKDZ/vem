@@ -93,6 +93,14 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("tells the guest which reconstructed pass owns the runtime build", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /-Pass \$\{pass\}/);
+  });
+
   it("rejects abbreviated revisions and dirty snapshot modes", () => {
     assert.throws(
       () =>

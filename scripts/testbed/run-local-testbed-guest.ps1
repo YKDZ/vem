@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][ValidateSet("fast", "full", "clear_cache")][string]$Mode,
   [string]$Commit,
+  [ValidateRange(1, 2)][int]$Pass = 1,
   [string[]]$Focus = @(),
   [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json"
 )
@@ -535,6 +536,8 @@ $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
 $sccache = Get-TestbedSccache
 Write-TestbedPhase "sccache-ready"
 $env:RUSTC_WRAPPER = $sccache
+$runtimeArtifactManifestPath = Join-Path $env:CARGO_TARGET_DIR ".vem-runtime-artifacts-$Commit.json"
+$reuseRuntimeArtifacts = $Mode -eq "full" -and $Pass -eq 2
 $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
 Write-TestbedPhase "cache-cleanup"
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
@@ -572,39 +575,92 @@ if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
   Set-Content -LiteralPath $pnpmWorkspaceMarker -Value $pnpmLockDigest -Encoding ascii
 }
-& $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
-$localRustSourceDigest = Get-LocalRustSourceDigest
-$localRustSourceMarker = Join-Path $env:CARGO_TARGET_DIR ".vem-local-rust-source.sha256"
-$cachedLocalRustSourceDigest = if (Test-Path -LiteralPath $localRustSourceMarker -PathType Leaf) {
-  (Get-Content -Raw -LiteralPath $localRustSourceMarker).Trim()
-} else { "" }
-if ($cachedLocalRustSourceDigest -ne $localRustSourceDigest) {
-  Write-TestbedPhase "clean-local-runtime-artifacts"
-  cargo clean --release -p machine -p vending-daemon -p vending-core -p daemon-ipc-contracts
-  if ($LASTEXITCODE -ne 0) { throw "local runtime artifact cleanup failed" }
-  Remove-Item -LiteralPath $localRustSourceMarker -Force -ErrorAction SilentlyContinue
-}
-Write-TestbedPhase "machine-build"
-& $pnpm --filter machine exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
-if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
-Write-TestbedPhase "daemon-build"
-cargo build -p vending-daemon --release
-if ($LASTEXITCODE -ne 0) { throw "vending daemon build failed" }
-Set-Content -LiteralPath $localRustSourceMarker -Value $localRustSourceDigest -Encoding ascii
-& $sccache --show-stats
-if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
-
 $daemonSource = Join-Path $env:CARGO_TARGET_DIR "release\vending-daemon.exe"
 $machineSource = Join-Path $env:CARGO_TARGET_DIR "release\machine.exe"
-$cargoMetadata = (& cargo metadata --format-version 1 --locked --offline | ConvertFrom-Json)
-if ($LASTEXITCODE -ne 0) { throw "Cargo metadata was unavailable after the Windows build" }
-$webViewPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "webview2-com-sys" })
-if ($webViewPackages.Count -ne 1) { throw "expected exactly one resolved webview2-com-sys package" }
-$webViewLoaderSource = Join-Path (Split-Path -Parent ([string]$webViewPackages[0].manifest_path)) "x64\WebView2Loader.dll"
+$webViewLoaderSource = Join-Path $env:CARGO_TARGET_DIR "release\vem-WebView2Loader.dll"
+if ($reuseRuntimeArtifacts) {
+  Write-TestbedPhase "reuse-pass-1-runtime-artifacts"
+  Require-Path $runtimeArtifactManifestPath
+  $runtimeArtifactManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
+  if ($runtimeArtifactManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
+    [string]$runtimeArtifactManifest.commit -ne $Commit) {
+    throw "pass-1 runtime artifact manifest does not match the requested commit"
+  }
+  $expectedRuntimeArtifactPaths = [ordered]@{
+    daemon = $daemonSource
+    machine = $machineSource
+    webViewLoader = $webViewLoaderSource
+  }
+  foreach ($artifactName in $expectedRuntimeArtifactPaths.Keys) {
+    $artifact = $runtimeArtifactManifest.artifacts.$artifactName
+    $expectedPath = [string]$expectedRuntimeArtifactPaths[$artifactName]
+    if ($null -eq $artifact -or [string]$artifact.path -ine $expectedPath) {
+      throw "pass-1 runtime artifact path mismatch: $artifactName"
+    }
+    Require-Path $expectedPath
+    $actualDigest = (Get-FileHash -LiteralPath $expectedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualDigest -ne [string]$artifact.sha256) {
+      throw "pass-1 runtime artifact digest mismatch: $artifactName"
+    }
+  }
+} else {
+  & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
+  $localRustSourceDigest = Get-LocalRustSourceDigest
+  $localRustSourceMarker = Join-Path $env:CARGO_TARGET_DIR ".vem-local-rust-source.sha256"
+  $cachedLocalRustSourceDigest = if (Test-Path -LiteralPath $localRustSourceMarker -PathType Leaf) {
+    (Get-Content -Raw -LiteralPath $localRustSourceMarker).Trim()
+  } else { "" }
+  if ($cachedLocalRustSourceDigest -ne $localRustSourceDigest) {
+    Write-TestbedPhase "clean-local-runtime-artifacts"
+    cargo clean --release -p machine -p vending-daemon -p vending-core -p daemon-ipc-contracts
+    if ($LASTEXITCODE -ne 0) { throw "local runtime artifact cleanup failed" }
+    Remove-Item -LiteralPath $localRustSourceMarker -Force -ErrorAction SilentlyContinue
+  }
+  Write-TestbedPhase "machine-build"
+  & $pnpm --filter machine exec tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
+  if ($LASTEXITCODE -ne 0) { throw "Machine Runtime Console build failed" }
+  Write-TestbedPhase "daemon-build"
+  cargo build -p vending-daemon --release
+  if ($LASTEXITCODE -ne 0) { throw "vending daemon build failed" }
+  Set-Content -LiteralPath $localRustSourceMarker -Value $localRustSourceDigest -Encoding ascii
+  & $sccache --show-stats
+  if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
+  $cargoMetadata = (& cargo metadata --format-version 1 --locked --offline | ConvertFrom-Json)
+  if ($LASTEXITCODE -ne 0) { throw "Cargo metadata was unavailable after the Windows build" }
+  $webViewPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "webview2-com-sys" })
+  if ($webViewPackages.Count -ne 1) { throw "expected exactly one resolved webview2-com-sys package" }
+  $resolvedWebViewLoader = Join-Path (Split-Path -Parent ([string]$webViewPackages[0].manifest_path)) "x64\WebView2Loader.dll"
+  Require-Path $resolvedWebViewLoader
+  Copy-Item -LiteralPath $resolvedWebViewLoader -Destination $webViewLoaderSource -Force
+  Require-Path $daemonSource
+  Require-Path $machineSource
+  $runtimeArtifactManifest = [ordered]@{
+    schemaVersion = "vem-runtime-artifacts/v1"
+    commit = $Commit
+    artifacts = [ordered]@{
+      daemon = [ordered]@{ path = $daemonSource; sha256 = (Get-FileHash -LiteralPath $daemonSource -Algorithm SHA256).Hash.ToLowerInvariant() }
+      machine = [ordered]@{ path = $machineSource; sha256 = (Get-FileHash -LiteralPath $machineSource -Algorithm SHA256).Hash.ToLowerInvariant() }
+      webViewLoader = [ordered]@{ path = $webViewLoaderSource; sha256 = (Get-FileHash -LiteralPath $webViewLoaderSource -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+  }
+  if ($Mode -eq "full") {
+    $runtimeArtifactManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $runtimeArtifactManifestPath -Encoding utf8
+  }
+}
 Require-Path $daemonSource
 Require-Path $machineSource
 Require-Path $webViewLoaderSource
+$runtimeArtifactEvidence = [ordered]@{
+  commit = $Commit
+  reusedFromPass1 = $reuseRuntimeArtifacts
+  artifacts = [ordered]@{}
+}
+foreach ($artifact in @($runtimeArtifactManifest.artifacts.PSObject.Properties)) {
+  $runtimeArtifactEvidence.artifacts[$artifact.Name] = [ordered]@{ sha256 = [string]$artifact.Value.sha256 }
+}
+$guestInput.workflowIdentity | Add-Member -NotePropertyName runtimeArtifacts -NotePropertyValue $runtimeArtifactEvidence -Force
+$guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPath -Encoding utf8
 Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
 $machinePath = Join-Path $deploymentRoot "machine.exe"
