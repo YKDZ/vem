@@ -1088,11 +1088,7 @@ export async function runPaymentProviderGuest(options) {
     const readiness = await waitForProviderReadiness(handoff, timeoutMs);
     report.environment = sanitizeProviderEvidence(readiness.environment);
     client = await connectMachineUi(handoff);
-    await evaluateExpression(client, "location.hash = '#/catalog'");
-    await waitForRoute(client, "#/catalog", {
-      timeoutMs,
-      pollMs: POLL_INTERVAL_MS,
-    });
+    await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);
     stage = "creation";
     report.authoritative.attempts.push(
       await qrAttempt({
