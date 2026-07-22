@@ -141,6 +141,18 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "paymentRecovery",
   }),
   descriptor({
+    name: "paymentProvider",
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/payment-provider-guest-full.mjs",
+      args: ["--mode", "full"],
+      reportFileName: "payment-provider.json",
+      artifactDirectory: "payment-provider-artifacts",
+    },
+    validator: "paymentProvider",
+  }),
+  descriptor({
     name: "hardwareLifecycle",
     runner: {
       kind: "node",

@@ -96,6 +96,29 @@ describe("repository script inventory guard", () => {
     );
   });
 
+  it("classifies the unattended payment-provider runner and its guard", () => {
+    for (const [path, category] of [
+      [
+        "scripts/testbed/payment-provider-guest-full.mjs",
+        "test support operation",
+      ],
+      [
+        "scripts/testbed/payment-provider-guest-full.test.mjs",
+        "verifier-test guard",
+      ],
+    ]) {
+      assert.deepEqual(
+        DEFAULT_INVENTORY.find((entry) => entry.path === path),
+        {
+          path,
+          owner: "field-operations",
+          category,
+          workflows: ["runtime acceptance", "testbed workflows"],
+        },
+      );
+    }
+  });
+
   it("classifies delivery metadata without executing assembly logic", () => {
     const fixture = deliveryAssemblyFixture({
       producerSource: 'throw new Error("must remain dormant");',

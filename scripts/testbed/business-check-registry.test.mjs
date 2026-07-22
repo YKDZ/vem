@@ -20,6 +20,7 @@ describe("runtime business-check registry", () => {
         "ipcRecovery",
         "fulfillmentRecovery",
         "paymentRecovery",
+        "paymentProvider",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",
@@ -58,6 +59,15 @@ describe("runtime business-check registry", () => {
       )?.allowActiveTransactionHandoff,
       true,
     );
+    const paymentProvider = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "paymentProvider",
+    );
+    assert.equal(
+      paymentProvider?.runner?.script,
+      "scripts/testbed/payment-provider-guest-full.mjs",
+    );
+    assert.equal(paymentProvider?.core, false);
+    assert.equal(paymentProvider?.fullRequired, true);
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
         (descriptor) => descriptor.name === "localOperations",
@@ -93,6 +103,21 @@ describe("runtime business-check registry", () => {
     assert.throws(
       () => selectBusinessChecks({ mode: "full", focus: ["sale"] }),
       /--focus is only valid with --mode fast/,
+    );
+  });
+
+  it("keeps the real payment-provider boundary out of warm fast runs while allowing focus", () => {
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast" }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["sale"],
+    );
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast", focus: ["paymentProvider"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["paymentProvider"],
     );
   });
 });

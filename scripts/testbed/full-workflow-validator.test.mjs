@@ -165,6 +165,66 @@ function paymentRecoveryReport() {
   };
 }
 
+function paymentProviderReport() {
+  return {
+    schemaVersion: "vem-payment-provider-guest-full/v1",
+    ok: true,
+    environment: { environment: "sandbox", readiness: "ready" },
+    authoritative: {
+      ok: true,
+      attempts: [
+        {
+          channel: "qr_code:alipay",
+          order: {
+            orderId: "order-qr-1",
+            paymentId: "payment-qr-1",
+            orderNo: "PAYMENT-PROVIDER-QR-1",
+            providerCode: "alipay",
+          },
+          credential: { present: true },
+          query: {
+            status: "pending",
+            reconciliationState: "provider_trade_not_exist",
+          },
+          closure: {
+            action: "close_or_reverse_uncertain_payment",
+            status: "canceled",
+            handled: true,
+          },
+          terminal: {
+            paymentStatus: "canceled",
+            orderStatus: "canceled",
+            paymentState: "canceled",
+            reservedInventory: false,
+          },
+        },
+        {
+          channel: "payment_code:alipay",
+          order: {
+            orderId: "order-code-1",
+            paymentId: "payment-code-1",
+            orderNo: "PAYMENT-PROVIDER-CODE-1",
+            providerCode: "alipay",
+          },
+          submission: {
+            status: "failed",
+            providerCode: "alipay",
+            attemptId: "attempt-1",
+            failureCode: "ACQ.INVALID_AUTH_CODE",
+          },
+          terminal: {
+            paymentStatus: "failed",
+            orderStatus: "payment_failed",
+            paymentState: "payment_failed",
+            reservedInventory: false,
+          },
+        },
+      ],
+    },
+    diagnostics: [],
+  };
+}
+
 function localOperationsReport() {
   return {
     schemaVersion: "vem-local-operations-guest-full/v1",
@@ -584,6 +644,27 @@ describe("full workflow aggregate validator", () => {
       "sale",
       "ipcRecovery",
     ]);
+  });
+
+  it("accepts only an unpaid, cleaned Alipay provider boundary", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        paymentProviderReport(),
+        "/reports/payment-provider.json",
+      ).status,
+      "passed",
+    );
+    const paid = paymentProviderReport();
+    paid.authoritative.attempts[0].terminal.paymentStatus = "succeeded";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        paid,
+        "/reports/payment-provider.json",
+      ).status,
+      "failed",
+    );
   });
 
   it("fails a full aggregate when a required registered set has incomplete evidence", () => {

@@ -141,6 +141,7 @@ describe("full workflow serial lifecycle", () => {
         "ipcRecovery",
         "fulfillmentRecovery",
         "paymentRecovery",
+        "paymentProvider",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",

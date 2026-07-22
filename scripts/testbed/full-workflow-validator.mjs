@@ -360,6 +360,77 @@ function validatePaymentRecoveryTrack(report, reportPath) {
   });
 }
 
+function validatePaymentProviderTrack(report, reportPath) {
+  if (
+    report?.schemaVersion !== "vem-payment-provider-guest-full/v1" ||
+    report?.ok !== true ||
+    report?.environment?.environment !== "sandbox" ||
+    report?.environment?.readiness !== "ready" ||
+    report?.authoritative?.ok !== true
+  ) {
+    return failedTrack(
+      "paymentProvider",
+      "payment provider",
+      reportPath,
+      "payment provider boundary did not finish successfully",
+      report ?? null,
+    );
+  }
+  const attempts = report.authoritative.attempts;
+  const qr = attempts?.find((attempt) => attempt?.channel === "qr_code:alipay");
+  const code = attempts?.find(
+    (attempt) => attempt?.channel === "payment_code:alipay",
+  );
+  const terminalClean = (attempt) =>
+    attempt?.terminal?.reservedInventory === false &&
+    !["succeeded", "paid", "fulfilled"].includes(
+      attempt?.terminal?.paymentStatus,
+    ) &&
+    !["paid", "fulfilled"].includes(attempt?.terminal?.paymentState);
+  const qrValid =
+    qr?.order?.providerCode === "alipay" &&
+    qr?.credential?.present === true &&
+    qr?.query?.status === "pending" &&
+    qr?.query?.reconciliationState === "provider_trade_not_exist" &&
+    qr?.closure?.action === "close_or_reverse_uncertain_payment" &&
+    qr?.closure?.handled === true &&
+    ["canceled", "expired"].includes(qr?.terminal?.paymentStatus) &&
+    terminalClean(qr);
+  const codeValid =
+    code?.order?.providerCode === "alipay" &&
+    code?.submission?.providerCode === "alipay" &&
+    typeof code?.submission?.attemptId === "string" &&
+    code.submission.attemptId.length > 0 &&
+    code?.submission?.status === "failed" &&
+    terminalClean(code);
+  const uniqueOrders = new Set(
+    attempts.map((attempt) => attempt?.order?.orderId).filter(Boolean),
+  );
+  const diagnostics = Array.isArray(report.diagnostics)
+    ? report.diagnostics
+    : [];
+  if (
+    attempts?.length !== 2 ||
+    uniqueOrders.size !== 2 ||
+    !qrValid ||
+    !codeValid ||
+    diagnostics.length > 2
+  ) {
+    return failedTrack(
+      "paymentProvider",
+      "payment provider",
+      reportPath,
+      "payment provider evidence must prove only cleaned, non-paid Alipay attempts",
+      { attempts: attempts ?? null, diagnostics },
+    );
+  }
+  return passedTrack("paymentProvider", "payment provider", reportPath, {
+    qrOrderId: qr.order.orderId,
+    paymentCodeOrderId: code.order.orderId,
+    diagnosticAttempts: diagnostics.length,
+  });
+}
+
 function validateLocalOperationsTrack(report, reportPath) {
   if (
     report?.schemaVersion !== "vem-local-operations-guest-full/v1" ||
@@ -652,6 +723,7 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
     ipcRecovery: validateIpcRecoveryTrack,
     fulfillmentRecovery: validateFulfillmentFailureTrack,
     paymentRecovery: validatePaymentRecoveryTrack,
+    paymentProvider: validatePaymentProviderTrack,
     hardwareLifecycle: validateHardwareLifecycleTrack,
     localOperations: validateLocalOperationsTrack,
     environmentControl: validateEnvironmentControlTrack,
