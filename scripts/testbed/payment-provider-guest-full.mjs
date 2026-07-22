@@ -563,10 +563,8 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       ["canceled", "failed", "expired"].includes(current?.paymentStatus),
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
-  if (
-    visible &&
-    (await evaluateExpression(client, "location.hash")) === "#/payment"
-  ) {
+  const route = await evaluateExpression(client, "location.hash");
+  if (!["#/catalog", "#/products"].includes(route)) {
     await evaluateExpression(client, "location.hash = '#/catalog'");
     await waitForRoute(client, "#/catalog", {
       timeoutMs,
