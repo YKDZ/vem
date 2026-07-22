@@ -618,7 +618,10 @@ describe("Linux KVM Windows baseline", () => {
       cdromPaths: ["/srv/media/windows.iso", "/srv/media/config.iso"],
     });
     assert.match(xml, /<memory unit="MiB">16384<\/memory>/);
-    assert.match(xml, /<clock offset="localtime"\/>/);
+    assert.match(
+      xml,
+      /<clock offset="timezone" timezone="Asia\/Shanghai"\/>/,
+    );
     assert.match(
       xml,
       /<graphics type="vnc" autoport="yes" listen="127\.0\.0\.1"><listen type="address" address="127\.0\.0\.1"\/><\/graphics>/,

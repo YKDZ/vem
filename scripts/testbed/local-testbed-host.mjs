@@ -369,10 +369,13 @@ export function renderReconstructedDomainXml({
     throw new Error("published domain XML must contain at most one clock");
   }
   rendered = clocks.length
-    ? rendered.replace(clocks[0][0], '<clock offset="localtime"/>')
+    ? rendered.replace(
+        clocks[0][0],
+        '<clock offset="timezone" timezone="Asia/Shanghai"/>',
+      )
     : rendered.replace(
         /(<os>[\s\S]*?<\/os>)/,
-        '$1\n  <clock offset="localtime"/>',
+        '$1\n  <clock offset="timezone" timezone="Asia/Shanghai"/>',
       );
   rendered = rendered.replace(
     baselineSource,

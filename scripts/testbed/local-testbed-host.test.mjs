@@ -58,15 +58,18 @@ function baselineXml() {
 }
 
 describe("tracked local testbed host lifecycle", () => {
-  it("keeps the reconstructed Windows RTC aligned with local civil time", () => {
+  it("keeps the reconstructed Windows RTC independent of the host timezone", () => {
     const rendered = renderReconstructedDomainXml({
       templateXml: baselineXml(),
       config: config(),
       baselineSystem: PATHS.baselineSystem,
       cacheDisk: PATHS.cacheDisk,
     });
-    assert.match(rendered, /<clock offset="localtime"\/>/);
-    assert.doesNotMatch(rendered, /<clock offset="utc"\/>/);
+    assert.match(
+      rendered,
+      /<clock offset="timezone" timezone="Asia\/Shanghai"\/>/,
+    );
+    assert.doesNotMatch(rendered, /<clock offset="(?:utc|localtime)"\/>/);
   });
 
   it("replaces only the exact C overlay and domain while preserving baseline C and D cache", () => {
