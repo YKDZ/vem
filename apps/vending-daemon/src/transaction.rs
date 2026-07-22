@@ -8,6 +8,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::backend::BackendClient;
 use crate::events::DaemonEvent;
+use crate::ipc::SaleBindingOperationGate;
 use crate::state::{LocalStateStore, OrderSessionUpsert, StoreError};
 
 #[cfg(test)]
@@ -196,6 +197,9 @@ pub struct TransactionStateMachine {
     /// session is durable, but two IPC requests can both observe it as empty
     /// before either has received the platform's order response.
     checkout_creation_lock: Arc<Mutex<()>>,
+    /// Shares the hardware-reconfiguration exclusion boundary with planogram
+    /// and device-binding mutations. Recovery can create a checkout too.
+    sale_binding_gate: Arc<SaleBindingOperationGate>,
 }
 
 impl TransactionStateMachine {
@@ -213,6 +217,7 @@ impl TransactionStateMachine {
             payment_code_submit_guard: None,
             payment_code_scan_armer: PaymentCodeScanArmer::default(),
             checkout_creation_lock: Arc::new(Mutex::new(())),
+            sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
         }
     }
 
@@ -226,7 +231,19 @@ impl TransactionStateMachine {
         self
     }
 
+    pub(crate) fn with_sale_binding_gate(mut self, gate: Arc<SaleBindingOperationGate>) -> Self {
+        self.sale_binding_gate = gate;
+        self
+    }
+
     pub async fn restore_current(
+        &self,
+    ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
+        let _sale = self.acquire_checkout_sale_lease().await?;
+        self.restore_current_under_sale_lease().await
+    }
+
+    async fn restore_current_under_sale_lease(
         &self,
     ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
         let current = if let Some(current) = self.refresh_current_from_backend().await? {
@@ -246,7 +263,7 @@ impl TransactionStateMachine {
             // of truth across a daemon restart. Replaying it either returns the
             // already-created order or creates the order exactly once.
             Some(
-                self.create_order_with_idempotency(
+                self.create_order_with_idempotency_under_sale_lease(
                     &recovery.payment_method,
                     recovery.payment_provider_code,
                     recovery.items,
@@ -385,6 +402,25 @@ impl TransactionStateMachine {
         profile_snapshot: Option<serde_json::Value>,
         idempotency_key: Option<&str>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        let _sale = self.acquire_checkout_sale_lease().await?;
+        self.create_order_with_idempotency_under_sale_lease(
+            payment_method,
+            payment_provider_code,
+            items,
+            profile_snapshot,
+            idempotency_key,
+        )
+        .await
+    }
+
+    async fn create_order_with_idempotency_under_sale_lease(
+        &self,
+        payment_method: &str,
+        payment_provider_code: Option<String>,
+        items: serde_json::Value,
+        profile_snapshot: Option<serde_json::Value>,
+        idempotency_key: Option<&str>,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         // Keep the existing-session check, platform creation, and local
         // durable session write as one critical section.  A second caller,
         // whether it used the same idempotency key or a different one, joins
@@ -513,6 +549,15 @@ impl TransactionStateMachine {
         self.sync_payment_code_scan_arm(Some(&current)).await;
         self.emit_transaction_changed(&order_no, &current);
         Ok(current)
+    }
+
+    async fn acquire_checkout_sale_lease(
+        &self,
+    ) -> Result<crate::ipc::SaleBindingOperationLease, String> {
+        self.sale_binding_gate
+            .acquire_sale_start(Duration::from_secs(10))
+            .await
+            .map_err(|_| "SALE_BINDING_RECONFIGURING".to_string())
     }
 
     pub async fn cancel_order(
@@ -1518,6 +1563,88 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&create_request.body).expect("create body");
         assert_eq!(body["idempotencyKey"], "checkout:restart-durable");
+    }
+
+    #[tokio::test]
+    async fn pending_checkout_recovery_holds_the_sale_gate_until_the_replay_is_durable() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .put_metadata(
+                CHECKOUT_CREATION_RECOVERY_KEY,
+                &CheckoutCreationRecovery {
+                    payment_method: "mock".to_string(),
+                    payment_provider_code: Some("mock".to_string()),
+                    items: json!([{ "slotId": "A1", "quantity": 1 }]),
+                    profile_snapshot: None,
+                    idempotency_key: "checkout:recovery-gate".to_string(),
+                },
+            )
+            .await
+            .expect("persist recovery marker");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(json!({
+                        "orderId": "550e8400-e29b-41d4-a716-446655440210",
+                        "orderNo": "ORDER-RECOVERY-GATE",
+                        "paymentId": "550e8400-e29b-41d4-a716-446655440211",
+                        "paymentNo": "PAY-RECOVERY-GATE",
+                        "paymentUrl": null,
+                        "expiresAt": "2026-06-10T00:05:00.000Z",
+                        "totalAmountCents": 300,
+                        "paymentProviderCode": "mock"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let gate = Arc::new(crate::ipc::SaleBindingOperationGate::default());
+        let (events_tx, _) = broadcast::channel(8);
+        let machine =
+            TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx)
+                .with_sale_binding_gate(gate.clone());
+
+        let recovery = tokio::spawn(async move { machine.restore_current().await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let received = server.received_requests().await.expect("requests");
+                if received
+                    .iter()
+                    .any(|request| request.url.path() == "/machine-orders")
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("recovery create-order request");
+
+        assert!(
+            gate.try_acquire_reconfigure().is_err(),
+            "stock sync must not acquire its planogram lease during checkout recovery"
+        );
+        recovery
+            .await
+            .expect("recovery task")
+            .expect("recovery result");
+        assert!(gate.try_acquire_reconfigure().is_ok());
     }
 
     #[tokio::test]

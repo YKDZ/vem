@@ -1507,20 +1507,6 @@ async fn create_order(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    let _sale = match ctx
-        .sale_binding_gate
-        .acquire_sale_start(Duration::from_secs(10))
-        .await
-    {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "create_order_hardware_reconfiguring",
-                "local hardware binding is changing",
-            );
-        }
-    };
     let profile = match ctx.runtime_sources.require_profile().await {
         Ok(value) => value,
         Err(error) => return error_response(StatusCode::CONFLICT, "machine_not_claimed", error),
@@ -1640,6 +1626,11 @@ async fn create_order(
         .await
     {
         Ok(value) => transaction_response(value),
+        Err(error) if error == "SALE_BINDING_RECONFIGURING" => error_response(
+            StatusCode::CONFLICT,
+            "create_order_hardware_reconfiguring",
+            "local hardware binding is changing",
+        ),
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "create_order_failed", error),
     }
 }
@@ -1668,6 +1659,11 @@ async fn current_transaction(
     match ctx.ui.transaction.restore_current().await {
         Ok(Some(value)) => transaction_response(value),
         Ok(None) => transaction_response(empty_transaction()),
+        Err(error) if error == "SALE_BINDING_RECONFIGURING" => error_response(
+            StatusCode::CONFLICT,
+            "transaction_hardware_reconfiguring",
+            "local hardware binding is changing",
+        ),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "transaction_read_failed",

@@ -194,6 +194,7 @@ async fn run_console_cycle(
     }
 
     let status_cache = ipc::RuntimeStatusCache::new(profile.as_ref(), state.clone()).await;
+    let sale_binding_gate = Arc::new(ipc::SaleBindingOperationGate::default());
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
@@ -203,6 +204,7 @@ async fn run_console_cycle(
         events_tx.clone(),
     )
     .with_payment_code_scan_armer(payment_code_scan_armer)
+    .with_sale_binding_gate(sale_binding_gate.clone())
     .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
         status_cache.clone(),
         state.clone(),
@@ -229,7 +231,7 @@ async fn run_console_cycle(
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
-        sale_binding_gate: Arc::new(ipc::SaleBindingOperationGate::default()),
+        sale_binding_gate,
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
@@ -1002,31 +1004,22 @@ async fn sync_platform_planogram_and_stock(
         )
         .map_err(|error| error.to_string())?;
 
-        let _lease = match sale_binding_gate.try_acquire_reconfigure() {
-            Ok(lease) => lease,
-            Err(_) => return Ok(()),
-        };
-        if state
-            .current_transaction_snapshot()
-            .await
-            .map_err(|error| error.to_string())?
-            .as_ref()
-            .is_some_and(is_active_transaction)
-        {
-            return Ok(());
-        }
-        state
-            .apply_planogram(MachinePlanogramInput {
+        if apply_platform_planogram_if_reconfigure_safe(
+            state,
+            sale_binding_gate,
+            MachinePlanogramInput {
                 planogram_version: planogram_version.clone(),
                 source: "platform_stock_sync".to_string(),
                 applied_by: None,
                 slots,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        backend
-            .acknowledge_planogram(machine_code, &planogram_version)
-            .await?;
+            },
+        )
+        .await?
+        {
+            backend
+                .acknowledge_planogram(machine_code, &planogram_version)
+                .await?;
+        }
     }
     let stock = backend.get_stock_snapshot(machine_code).await?;
     state
@@ -1034,6 +1027,31 @@ async fn sync_platform_planogram_and_stock(
         .await
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+async fn apply_platform_planogram_if_reconfigure_safe(
+    state: &LocalStateStore,
+    sale_binding_gate: &Arc<SaleBindingOperationGate>,
+    input: MachinePlanogramInput,
+) -> Result<bool, String> {
+    let _lease = match sale_binding_gate.try_acquire_reconfigure() {
+        Ok(lease) => lease,
+        Err(_) => return Ok(false),
+    };
+    if state
+        .current_transaction_snapshot()
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .is_some_and(is_active_transaction)
+    {
+        return Ok(false);
+    }
+    state
+        .apply_planogram(input)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 async fn run_vision_watch(
@@ -1334,8 +1352,9 @@ mod tests {
     };
 
     use super::{
-        cache_daemon_events, device_bindings_require_reconfiguration,
-        refresh_provisioning_profile_once, run_vision_watch, sale_start_capability_input_changed,
+        apply_platform_planogram_if_reconfigure_safe, cache_daemon_events,
+        device_bindings_require_reconfiguration, refresh_provisioning_profile_once,
+        run_vision_watch, sale_start_capability_input_changed,
         scanner_runtime_requires_reconfiguration,
     };
 
@@ -1387,9 +1406,17 @@ mod tests {
             .expect("watcher result");
         server.await.expect("server task");
     }
+    use crate::ipc::SaleBindingOperationGate;
     use crate::{
-        backend::BackendClient, events::DaemonEvent, ipc::RuntimeStatusCache,
-        runtime_configuration::RuntimeSources, secret::InMemorySecretStore, state::LocalStateStore,
+        backend::BackendClient,
+        events::DaemonEvent,
+        ipc::RuntimeStatusCache,
+        runtime_configuration::RuntimeSources,
+        secret::InMemorySecretStore,
+        state::{
+            store::{MachinePlanogramInput, MachinePlanogramSlotInput},
+            LocalStateStore,
+        },
     };
 
     #[test]
@@ -1420,24 +1447,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn platform_stock_sync_acquires_the_reconfigure_lease_before_observing_or_switching_planogram()
-    {
-        let source = include_str!("shutdown.rs");
-        let sync = &source[source
-            .find("async fn sync_platform_planogram_and_stock")
-            .expect("platform stock sync")
-            ..source
-                .find("async fn run_vision_watch")
-                .expect("platform stock sync end")];
+    #[tokio::test]
+    async fn pending_checkout_recovery_prevents_stock_sync_from_switching_planogram() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let gate = Arc::new(SaleBindingOperationGate::default());
+        let pending_checkout = gate.try_acquire_sale_start().expect("sale lease");
+        let input = MachinePlanogramInput {
+            planogram_version: "PLAN-BLOCKED".to_string(),
+            source: "platform_stock_sync".to_string(),
+            applied_by: None,
+            slots: vec![MachinePlanogramSlotInput {
+                slot_id: "slot-1".to_string(),
+                row_no: 1,
+                cell_no: 1,
+                capacity: 8,
+                par_level: 8,
+                inventory_id: "inventory-1".to_string(),
+                variant_id: "variant-1".to_string(),
+                product_id: "product-1".to_string(),
+                product_name: "Product".to_string(),
+                product_description: None,
+                cover_image_url: None,
+                try_on_silhouette_url: None,
+                category_id: None,
+                category_name: None,
+                sku: "SKU-1".to_string(),
+                size: None,
+                color: None,
+                price_cents: 100,
+                product_sort_order: 1,
+                target_gender: None,
+            }],
+        };
 
         assert!(
-            sync.find("try_acquire_reconfigure") < sync.find("current_transaction_snapshot()"),
-            "the stock-sync lease must precede its active-sale observation"
+            !apply_platform_planogram_if_reconfigure_safe(&state, &gate, input.clone())
+                .await
+                .expect("blocked stock sync")
         );
+        assert!(state
+            .sale_view(None)
+            .await
+            .expect("sale view")
+            .planogram_version
+            .is_none());
+
+        drop(pending_checkout);
         assert!(
-            sync.find("current_transaction_snapshot()") < sync.find(".apply_planogram("),
-            "the stock-sync active-sale observation must precede the planogram switch"
+            apply_platform_planogram_if_reconfigure_safe(&state, &gate, input)
+                .await
+                .expect("released stock sync")
+        );
+        assert_eq!(
+            state
+                .sale_view(None)
+                .await
+                .expect("sale view")
+                .planogram_version
+                .as_deref(),
+            Some("PLAN-BLOCKED")
         );
     }
 
