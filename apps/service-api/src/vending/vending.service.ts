@@ -66,15 +66,6 @@ type FailedLineRefundDecision =
       metadata: Record<string, unknown>;
     };
 
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    Reflect.get(error, "code") === "23505"
-  );
-}
-
 @Injectable()
 export class VendingService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(VendingService.name);
