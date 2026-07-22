@@ -38,6 +38,14 @@ function visionExperienceReport() {
     schemaVersion: "vem-vision-try-on-acceptance/v1",
     ok: true,
     health: { vision: { protocolSummary: { protocol: "vem.vision.v1" } } },
+    visionInstall: {
+      runtimeExpectation: {
+        recommendationVariants: [
+          { productId: "product-t", variantId: "variant-m", size: "M" },
+          { productId: "product-t", variantId: "variant-l", size: "L" },
+        ],
+      },
+    },
     degradations: {
       visionDown: {
         experienceCapabilityDegraded: true,
@@ -669,8 +677,13 @@ function localOperationsReport() {
       canonical: true,
       planogramVersion: "PLAN-OPS",
       slotDisplayLabel: "R7C1",
+      slotId: "slot-ops",
     },
-    manualDispense: { slotDisplayLabel: "R7C1", outcome: "completed" },
+    manualDispense: {
+      slotId: "slot-ops",
+      slotDisplayLabel: "R7C1",
+      outcome: "completed",
+    },
   };
 }
 
@@ -1047,6 +1060,18 @@ describe("full workflow aggregate validator", () => {
     );
     assert.equal(rejected.status, "failed");
     assert.match(rejected.reason, /vision degradation evidence is incomplete/);
+
+    const forgedIdentity = visionExperienceReport();
+    forgedIdentity.visionInstall.runtimeExpectation.recommendationVariants[0].variantId =
+      "variant-forged";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        forgedIdentity,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
   });
 
   it("lets the owning sale validator decide its business claim", () => {
@@ -1237,7 +1262,11 @@ describe("full workflow aggregate validator", () => {
         descriptor("localOperations"),
         {
           ...localOperationsReport(),
-          manualDispense: { slotDisplayLabel: "R8C2", outcome: "completed" },
+          manualDispense: {
+            slotId: "slot-other",
+            slotDisplayLabel: "R7C1",
+            outcome: "completed",
+          },
         },
         "/reports/local-operations.json",
       ).status,

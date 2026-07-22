@@ -89,8 +89,13 @@ describe("local operations guest full", () => {
         canonical: true,
         planogramVersion: "P-8",
         slotDisplayLabel: "R7C1",
+        slotId: "slot-7",
       },
-      manualDispense: { slotDisplayLabel: "R7C1", outcome: "completed" },
+      manualDispense: {
+        slotId: "slot-7",
+        slotDisplayLabel: "R7C1",
+        outcome: "completed",
+      },
       systemTouchKeyboard: {
         ok: false,
         blocking: false,
@@ -98,6 +103,14 @@ describe("local operations guest full", () => {
       },
     };
     assert.equal(validateLocalOperationsEvidence(report).canonical, true);
+    assert.throws(
+      () =>
+        validateLocalOperationsEvidence({
+          ...report,
+          manualDispense: { ...report.manualDispense, slotId: "slot-other" },
+        }),
+      /slotId/,
+    );
     assert.throws(
       () =>
         validateLocalOperationsEvidence({

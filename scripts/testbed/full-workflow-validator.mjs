@@ -505,12 +505,12 @@ function validateLocalOperationsTrack(report, reportPath) {
     report.boundaries?.serial !== true ||
     report.planogram?.canonical !== true ||
     !report.planogram?.planogramVersion ||
+    !report.planogram?.slotId ||
     !report.planogram?.slotDisplayLabel ||
     !["completed", "failed", "result_unknown"].includes(
       report.manualDispense?.outcome,
     ) ||
-    report.manualDispense?.slotDisplayLabel !==
-      report.planogram.slotDisplayLabel
+    report.manualDispense?.slotId !== report.planogram.slotId
   ) {
     return failedTrack(
       "localOperations",
@@ -525,6 +525,7 @@ function validateLocalOperationsTrack(report, reportPath) {
     );
   }
   return passedTrack("localOperations", "local operations", reportPath, {
+    slotId: report.planogram.slotId,
     slotDisplayLabel: report.planogram.slotDisplayLabel,
     planogramVersion: report.planogram.planogramVersion,
     manualOutcome: report.manualDispense.outcome,
@@ -785,13 +786,24 @@ function validateVisionTrack(report, reportPath) {
   const protocol = report.health?.vision?.protocolSummary ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
   const recommendation = report.ui?.recommendationPresentation ?? {};
+  const recommendationVariants =
+    report.visionInstall?.runtimeExpectation?.recommendationVariants ?? [];
+  const recommendationBySize = new Map(
+    recommendationVariants.map((variant) => [variant?.size, variant]),
+  );
+  const matched = recommendationBySize.get("M");
+  const alternate = recommendationBySize.get("L");
   const recommendationComplete =
-    typeof recommendation.automatic?.recommendedSize === "string" &&
+    recommendationVariants.length === 2 &&
+    matched?.productId === alternate?.productId &&
+    recommendation.automatic?.variantId === matched?.variantId &&
+    recommendation.automatic?.recommendedSize === "M" &&
+    recommendation.manual?.variantId === alternate?.variantId &&
     recommendation.manual?.recommendedSize === null &&
+    recommendation.onlineUnmatched?.variantId === matched?.variantId &&
     recommendation.onlineUnmatched?.recommendedSize === null &&
+    recommendation.visionUnavailable?.variantId === matched?.variantId &&
     recommendation.visionUnavailable?.recommendedSize === null &&
-    typeof recommendation.automatic?.variantId === "string" &&
-    typeof recommendation.manual?.variantId === "string" &&
     recommendation.manual.variantId !== recommendation.automatic.variantId;
   const vision =
     protocol &&

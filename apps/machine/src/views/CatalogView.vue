@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
+import { storeToRefs } from "pinia";
+
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
 import type { MachineCatalogItem } from "@/types/catalog";
 
@@ -24,19 +26,22 @@ import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { useCustomerInteractionSession } from "@/composables/customer-interaction-session";
 import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
-import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 import { formatCents } from "@/utils/format";
 
 const catalogStore = useCatalogStore();
 const customerJourneyStore = useCustomerJourneyStore();
 const machineStore = useMachineStore();
-const { currentProfile } = useVisionRecommendations();
+const {
+  recommendationProfile: currentProfile,
+  lastRecommendationResult,
+} = storeToRefs(useVisionStore());
 const interactionSession = useCustomerInteractionSession();
 const stableVisionSession = getStableVisionPresenceSession();
 const presenceClass = computed(() =>
@@ -367,6 +372,7 @@ onUnmounted(() => {
       :class="presenceClass"
       data-test="catalog-page"
       :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
+      :data-vision-profile-event-id="lastRecommendationResult?.eventId ?? ''"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -578,6 +584,7 @@ onUnmounted(() => {
       data-test="catalog-page"
       :data-category-key="selectedTopCategoryKey"
       :data-vision-recommendation-active="currentProfile ? 'true' : 'false'"
+      :data-vision-profile-event-id="lastRecommendationResult?.eventId ?? ''"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>

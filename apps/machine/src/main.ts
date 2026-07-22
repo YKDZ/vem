@@ -5,6 +5,7 @@ import App from "./App.vue";
 import { installKioskBrowserGuards } from "./kiosk-browser-guards";
 import { router } from "./router";
 import { installTransactionRouteAuthority } from "./router/transaction-route-authority";
+import { installVisionRecommendationCoordinator } from "./runtime/vision-recommendation-coordinator";
 import "./style.css";
 
 async function installDevTools(): Promise<void> {
@@ -23,6 +24,7 @@ async function bootstrap(): Promise<void> {
   const pinia = createPinia();
 
   app.use(pinia);
+  installVisionRecommendationCoordinator(pinia);
   installTransactionRouteAuthority(router, pinia);
   app.use(router);
 

@@ -99,6 +99,7 @@ import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useVisionStore } from "@/stores/vision";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
+import { installVisionRecommendationCoordinator } from "@/runtime/vision-recommendation-coordinator";
 
 import BootView from "./BootView.vue";
 import CatalogView from "./CatalogView.vue";
@@ -176,6 +177,7 @@ beforeEach(() => {
   );
   getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
   createOrderMock.mockResolvedValue(transactionSnapshot());
+  installVisionRecommendationCoordinator(pinia);
 });
 
 afterEach(() => {
@@ -2149,7 +2151,7 @@ describe("sale-start capability UI flow", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
-  it("does not subscribe to vision profiles or require them for virtual try-on", async () => {
+  it("does not create a view-local vision subscription or require profiles for virtual try-on", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -2177,7 +2179,7 @@ describe("sale-start capability UI flow", () => {
     await vi.waitFor(() => {
       expect(openVisionTryOnSessionMock).toHaveBeenCalled();
     });
-    expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
+    expect(subscribeVisionProfilesMock).toHaveBeenCalledOnce();
     expect(
       host.querySelector<HTMLImageElement>('[data-test="try-on-preview"]'),
     ).toBeTruthy();

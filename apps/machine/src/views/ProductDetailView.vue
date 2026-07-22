@@ -2,6 +2,8 @@
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
+import { storeToRefs } from "pinia";
+
 import type { MachineCatalogVariantCandidate } from "@/types/catalog";
 
 import iconSocksImage from "@/assets/home/icon-socks.png";
@@ -11,7 +13,6 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
-import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
@@ -34,7 +35,10 @@ const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
 const visionStore = useVisionStore();
 const saleCapabilityStore = useSaleCapabilityStore();
-const { currentProfile, lastVisionResult } = useVisionRecommendations();
+const {
+  recommendationProfile: currentProfile,
+  lastRecommendationResult: lastVisionResult,
+} = storeToRefs(visionStore);
 
 const selectedVariantId = ref<string | null>(null);
 const userSelectedVariant = ref(false);
@@ -299,6 +303,7 @@ async function enterTryOn(): Promise<void> {
       :data-vision-recommendation-active="
         isVisionRecommendationActive ? 'true' : 'false'
       "
+      :data-vision-profile-event-id="lastVisionResult?.eventId ?? ''"
     >
       <div class="detail-mist detail-mist-left"></div>
       <div class="detail-mist detail-mist-right"></div>

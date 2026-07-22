@@ -461,7 +461,6 @@ function Invoke-FullVisionTryOnAcceptance(
 
 function Clear-TestbedVisionProcesses([object]$GuestInput) {
   Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-  Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
   $visionPorts = @(7892, [int]$GuestInput.hostControlPlane.visionMockControlPort) | Select-Object -Unique
   $visionOwnerIds = @(
     Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
@@ -469,7 +468,10 @@ function Clear-TestbedVisionProcesses([object]$GuestInput) {
       Select-Object -ExpandProperty OwningProcess -Unique
   )
   foreach ($ownerId in $visionOwnerIds) {
-    Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+    $process = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
+    if ($null -ne $process -and [string]$process.Path -ieq "C:\VEM\vision\app\vending-vision.exe") {
+      Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+    }
   }
   $visionPortDeadline = (Get-Date).AddSeconds(10)
   while (

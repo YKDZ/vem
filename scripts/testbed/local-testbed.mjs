@@ -102,6 +102,8 @@ const VISION_RECOMMENDATION_VARIANTS = Object.freeze([
   { size: "M", rowNo: 2, cellNo: 3 },
   { size: "L", rowNo: 2, cellNo: 4 },
 ]);
+const VISION_RECOMMENDATION_BASE_SOURCE_ROW = 32;
+const VISION_RECOMMENDATION_UNMATCHED_SOURCE_ROW = 2;
 const HOST_SIMULATOR_CACHE_DIRECTORY = "host-lower-controller-sim";
 const INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV =
   "VEM_LOCAL_TESTBED_ALIPAY_SANDBOX_FIXTURE";
@@ -1328,11 +1330,20 @@ export async function seedThroughSupportedApis({
     seededSlots.push({ slot, product, machineSlot, inventory });
   }
   const recommendationBase = seededSlots.find(
-    (entry) => entry.slot.slotDisplayLabel === "A3",
+    (entry) => entry.slot.sourceRow === VISION_RECOMMENDATION_BASE_SOURCE_ROW,
   );
   if (!recommendationBase || recommendationBase.product.category !== "T恤") {
     throw new Error(
-      "Vision recommendation fixture requires the seeded A3 T-shirt",
+      "Vision recommendation fixture requires the configured T-shirt source row",
+    );
+  }
+  const unmatchedRecommendation = seededSlots.find(
+    (entry) =>
+      entry.slot.sourceRow === VISION_RECOMMENDATION_UNMATCHED_SOURCE_ROW,
+  );
+  if (!unmatchedRecommendation) {
+    throw new Error(
+      "Vision recommendation fixture requires the configured unmatched source row",
     );
   }
   const recommendationVariants = [];
@@ -1463,6 +1474,14 @@ export async function seedThroughSupportedApis({
       selectedCatalogKey: `product:${recommendationBase.product.product.id}`,
       selectedVariantId: recommendationVariants[0].variantId,
       recommendationVariants,
+      unmatchedRecommendationVariant: {
+        productId: unmatchedRecommendation.product.product.id,
+        variantId: unmatchedRecommendation.product.variant.id,
+        sku: unmatchedRecommendation.product.variant.sku,
+        size: unmatchedRecommendation.product.size,
+        slotId: unmatchedRecommendation.machineSlot.id,
+        inventoryId: unmatchedRecommendation.inventory.id,
+      },
       seededTryOnVariants,
     },
     slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({

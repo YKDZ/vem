@@ -31,15 +31,16 @@ test("run-full resolves commit via D:\\runtime-cache\\v1\\vision-main index firs
   );
 });
 
-test("run-full always tears down its Vision task and verifies port 7892 is reusable", () => {
+test("run-full only stops the task-owned Vision executable and verifies port 7892 is reusable", () => {
   const contents = source();
   assert.match(
     contents,
-    /function Stop-ManagedVision\(\) \{[\s\S]*Stop-ScheduledTask[\s\S]*Get-Process -Name "vending-vision"/s,
+    /function Stop-ManagedVision\(\[int\[\]\]\$OwnedProcessIds\) \{[\s\S]*Stop-ScheduledTask[\s\S]*Stop-Process -Id \$processId/s,
   );
+  assert.doesNotMatch(contents, /Get-Process -Name "vending-vision"/);
   assert.match(
     contents,
-    /try \{[\s\S]*Install-VisionMainArtifact[\s\S]*vision-try-on-acceptance\.mjs[\s\S]*\} finally \{[\s\S]*Stop-ManagedVision[\s\S]*Wait-ForVisionPortRebind/s,
+    /try \{[\s\S]*Get-VisionMainArtifactCache[\s\S]*Write-RecordedVisionSiteConfiguration[\s\S]*Install-VisionMainArtifact[\s\S]*vision-try-on-acceptance\.mjs[\s\S]*\} finally \{[\s\S]*Stop-ManagedVision[\s\S]*Wait-ForVisionPortRebind/s,
   );
   assert.match(
     contents,
@@ -47,11 +48,11 @@ test("run-full always tears down its Vision task and verifies port 7892 is reusa
   );
 });
 
-test("run-full keeps the business failure when Vision cleanup also fails", () => {
+test("run-full keeps the business failure and still probes 7892 when Vision stop fails", () => {
   const contents = source();
   assert.match(
     contents,
-    /catch \{[\s\S]*\$primaryFailure = \$_[\s\S]*throw[\s\S]*finally \{[\s\S]*catch \{[\s\S]*if \(\$null -ne \$primaryFailure\) \{[\s\S]*Write-Warning/s,
+    /catch \{[\s\S]*\$primaryFailure = \$_[\s\S]*throw[\s\S]*finally \{[\s\S]*Stop-ManagedVision[\s\S]*catch \{[\s\S]*\$cleanupFailures \+= \$_[\s\S]*Wait-ForVisionPortRebind[\s\S]*catch \{[\s\S]*\$cleanupFailures \+= \$_[\s\S]*if \(\$null -ne \$primaryFailure\) \{[\s\S]*Write-Warning/s,
   );
 });
 

@@ -124,14 +124,12 @@ describe("vision try-on acceptance script", () => {
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
       "utf8",
     );
-    assert.match(source, /startVisionMockScenario\("success"\)/);
+    assert.doesNotMatch(source, /startVisionMockScenario\("success"\)/);
+    assert.doesNotMatch(source, /recommendation_unmatched/);
+    assert.match(source, /recorded-video-profile/);
     assert.match(
       source,
-      /startVisionMockScenario\(\s*"recommendation_unmatched"/,
-    );
-    assert.match(
-      source,
-      /"online_unmatched"[\s\S]*recommendationFixture\.matched\.variantId/,
+      /"online_unmatched"[\s\S]*recommendationFixture\.unmatched\.variantId/,
     );
     assert.match(
       source,
@@ -501,6 +499,7 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
         recommendationVariants: [],
+        unmatchedRecommendationVariant: null,
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -522,6 +521,7 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
         recommendationVariants: [],
+        unmatchedRecommendationVariant: null,
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -560,6 +560,14 @@ describe("vision try-on acceptance script", () => {
             onHandQty: 3,
           },
         ],
+        unmatchedRecommendationVariant: {
+          productId: "product-unmatched",
+          variantId: "variant-unmatched",
+          sku: "TSC-LOCAL-002",
+          size: "常规码",
+          slotId: "slot-unmatched",
+          inventoryId: "inventory-unmatched",
+        },
       }),
       {
         matched: {
@@ -579,6 +587,14 @@ describe("vision try-on acceptance script", () => {
           slotId: "slot-l",
           inventoryId: "inventory-l",
           onHandQty: 3,
+        },
+        unmatched: {
+          productId: "product-unmatched",
+          variantId: "variant-unmatched",
+          sku: "TSC-LOCAL-002",
+          size: "常规码",
+          slotId: "slot-unmatched",
+          inventoryId: "inventory-unmatched",
         },
       },
     );

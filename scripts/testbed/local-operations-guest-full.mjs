@@ -766,6 +766,11 @@ export function validateLocalOperationsEvidence(report) {
   )
     throw new Error("local operations boundary evidence is incomplete");
   if (
+    report.planogram?.slotId == null ||
+    report.manualDispense?.slotId !== report.planogram.slotId
+  )
+    throw new Error("manual dispense slotId must match the planogram slotId");
+  if (
     report.manualDispense?.slotDisplayLabel == null ||
     !["completed", "failed", "result_unknown"].includes(
       report.manualDispense.outcome,
@@ -773,6 +778,7 @@ export function validateLocalOperationsEvidence(report) {
   )
     throw new Error("manual dispense diagnostic outcome is missing");
   return {
+    slotId: report.planogram.slotId,
     slotDisplayLabel: report.manualDispense.slotDisplayLabel,
     outcome: report.manualDispense.outcome,
     canonical: true,
@@ -870,6 +876,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     const diagnostic = await diagnosticPromise;
     report.manualDispense = {
       ...diagnostic,
+      slotId: slot.slotId,
       slotDisplayLabel: slot.slotDisplayLabel,
       canonicalSlot: slot,
     };

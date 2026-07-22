@@ -1217,7 +1217,7 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
-  it("clears Vision processes and mock ports before both full and fast runs", () => {
+  it("clears only the managed Vision executable before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -1232,8 +1232,9 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /Get-Process vending-vision[\s\S]*Get-NetTCPConnection -State Listen/,
+      /Get-NetTCPConnection -State Listen[\s\S]*\$process\.Path -ieq[\s\S]*Stop-Process -Id \$ownerId/,
     );
+    assert.doesNotMatch(guestScript, /Get-Process vending-vision/);
     assert.match(
       guestScript,
       /if \(\$Mode -in @\("fast", "full"\)\) \{\s+Clear-TestbedVisionProcesses \$guestInput\s+\}/,
