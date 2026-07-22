@@ -239,7 +239,6 @@ impl TransactionStateMachine {
     pub async fn restore_current(
         &self,
     ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
-        let _sale = self.acquire_checkout_sale_lease().await?;
         self.restore_current_under_sale_lease().await
     }
 
@@ -402,7 +401,6 @@ impl TransactionStateMachine {
         profile_snapshot: Option<serde_json::Value>,
         idempotency_key: Option<&str>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
-        let _sale = self.acquire_checkout_sale_lease().await?;
         self.create_order_with_idempotency_under_sale_lease(
             payment_method,
             payment_provider_code,
@@ -421,20 +419,16 @@ impl TransactionStateMachine {
         profile_snapshot: Option<serde_json::Value>,
         idempotency_key: Option<&str>,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
-        // Keep the existing-session check, platform creation, and local
-        // durable session write as one critical section.  A second caller,
-        // whether it used the same idempotency key or a different one, joins
-        // the active checkout by receiving the persisted current session.
-        let _checkout_creation = self.checkout_creation_lock.lock().await;
+        // Backend calls may take the full payment reconciliation window. The
+        // sale lease only protects local admission and commit; the durable
+        // recovery marker is what keeps planogram reconfiguration out while
+        // that network work is in flight.
         if let Some(current) = self.refresh_current_from_backend().await? {
             if is_active_transaction(&current) {
                 self.sync_payment_code_scan_arm(Some(&current)).await;
                 return Ok(current);
             }
         }
-        // A new order must never inherit a scanner frame or arm from a
-        // terminal/replaced transaction.
-        self.clear_payment_code_scan_arm().await;
 
         let machine_code = self
             .machine_code
@@ -445,30 +439,54 @@ impl TransactionStateMachine {
             .map(ToString::to_string)
             .unwrap_or_else(|| format!("checkout:{}", Uuid::new_v4()));
 
-        if let Some(recovery) = self
-            .state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            if recovery.idempotency_key != idempotency_key {
-                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
-            }
-        } else {
-            self.state
-                .put_metadata(
-                    CHECKOUT_CREATION_RECOVERY_KEY,
-                    &CheckoutCreationRecovery {
-                        payment_method: payment_method.to_string(),
-                        payment_provider_code: payment_provider_code.clone(),
-                        items: items.clone(),
-                        profile_snapshot: profile_snapshot.clone(),
-                        idempotency_key: idempotency_key.clone(),
-                    },
-                )
+        let joining_existing_checkout = {
+            let _checkout_creation = self.checkout_creation_lock.lock().await;
+            let _sale = self.acquire_checkout_sale_lease().await?;
+            if let Some(current) = self
+                .state
+                .current_transaction_snapshot()
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+            {
+                if is_active_transaction(&current) {
+                    self.sync_payment_code_scan_arm(Some(&current)).await;
+                    return Ok(current);
+                }
+            }
+            if let Some(recovery) = self
+                .state
+                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                if recovery.idempotency_key != idempotency_key {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                self.state
+                    .put_metadata(
+                        CHECKOUT_CREATION_RECOVERY_KEY,
+                        &CheckoutCreationRecovery {
+                            payment_method: payment_method.to_string(),
+                            payment_provider_code: payment_provider_code.clone(),
+                            items: items.clone(),
+                            profile_snapshot: profile_snapshot.clone(),
+                            idempotency_key: idempotency_key.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                false
+            }
+        };
+        if joining_existing_checkout {
+            return self.wait_for_joined_checkout().await;
         }
+        // A new order must never inherit a scanner frame or arm from a
+        // terminal/replaced transaction.
+        self.clear_payment_code_scan_arm().await;
 
         let response = match self
             .backend
@@ -487,6 +505,8 @@ impl TransactionStateMachine {
                 self.refresh_platform_stock_after_order_refusal(&machine_code)
                     .await;
                 if is_deterministic_checkout_creation_error(&error) {
+                    let _checkout_creation = self.checkout_creation_lock.lock().await;
+                    let _sale = self.acquire_checkout_sale_lease().await?;
                     self.state
                         .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
                         .await
@@ -495,6 +515,27 @@ impl TransactionStateMachine {
                 return Err(error);
             }
         };
+
+        self.commit_created_order_under_sale_lease(
+            payment_method,
+            payment_provider_code,
+            items,
+            idempotency_key,
+            machine_code,
+            response,
+        )
+        .await
+    }
+
+    async fn commit_created_order_under_sale_lease(
+        &self,
+        payment_method: &str,
+        payment_provider_code: Option<String>,
+        items: serde_json::Value,
+        idempotency_key: String,
+        machine_code: String,
+        response: serde_json::Value,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let order_no = response
             .get("orderNo")
             .and_then(|value| value.as_str())
@@ -517,6 +558,8 @@ impl TransactionStateMachine {
             .unwrap_or("pending_payment")
             .to_string();
 
+        let _checkout_creation = self.checkout_creation_lock.lock().await;
+        let _sale = self.acquire_checkout_sale_lease().await?;
         let current = {
             let _mutation = self.state.lock_transaction_mutation().await;
             self.state
@@ -535,10 +578,18 @@ impl TransactionStateMachine {
                 .await
                 .map_err(|error| error.to_string())?;
 
-            self.state
-                .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
+            if self
+                .state
+                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .is_some_and(|recovery| recovery.idempotency_key == idempotency_key)
+            {
+                self.state
+                    .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
 
             self.state
                 .current_transaction_snapshot()
@@ -549,6 +600,42 @@ impl TransactionStateMachine {
         self.sync_payment_code_scan_arm(Some(&current)).await;
         self.emit_transaction_changed(&order_no, &current);
         Ok(current)
+    }
+
+    async fn wait_for_joined_checkout(
+        &self,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(current) = self
+                .state
+                .current_transaction_snapshot()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                if is_active_transaction(&current) {
+                    self.sync_payment_code_scan_arm(Some(&current)).await;
+                    return Ok(current);
+                }
+            }
+            if !Self::checkout_creation_in_flight(&self.state).await? {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
+            if Instant::now() >= deadline {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    pub(crate) async fn checkout_creation_in_flight(
+        state: &LocalStateStore,
+    ) -> Result<bool, String> {
+        state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map(|recovery| recovery.is_some())
+            .map_err(|error| error.to_string())
     }
 
     async fn acquire_checkout_sale_lease(
@@ -1566,7 +1653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_checkout_recovery_holds_the_sale_gate_until_the_replay_is_durable() {
+    async fn pending_checkout_recovery_releases_the_sale_gate_while_network_replay_is_in_flight() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1636,10 +1723,10 @@ mod tests {
         .await
         .expect("recovery create-order request");
 
-        assert!(
-            gate.try_acquire_reconfigure().is_err(),
-            "stock sync must not acquire its planogram lease during checkout recovery"
-        );
+        let reconfigure = gate
+            .try_acquire_reconfigure()
+            .expect("network replay must not hold the local sale lease");
+        drop(reconfigure);
         recovery
             .await
             .expect("recovery task")

@@ -1038,6 +1038,9 @@ async fn apply_platform_planogram_if_reconfigure_safe(
         Ok(lease) => lease,
         Err(_) => return Ok(false),
     };
+    if TransactionStateMachine::checkout_creation_in_flight(state).await? {
+        return Ok(false);
+    }
     if state
         .current_transaction_snapshot()
         .await
