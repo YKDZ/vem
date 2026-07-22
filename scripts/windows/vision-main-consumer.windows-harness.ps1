@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = "Stop"
 $modulePath = Join-Path $PSScriptRoot "vision-main-artifacts.psm1"
 Import-Module $modulePath -Force
+$visionArtifactModule = Get-Module -Name "vision-main-artifacts"
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
@@ -104,6 +105,7 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
 }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-" + [guid]::NewGuid().ToString("N"))
+$testbedCreatedCDrive = $false
 try {
   $commit = "0123456789abcdef0123456789abcdef01234567"
   $unrelatedCommit = "fedcba9876543210fedcba9876543210fedcba98"
@@ -305,6 +307,12 @@ try {
   $guestScript = Get-Content -LiteralPath $guestScriptPath -Raw
   $cleanupFunctions = [regex]::Match($guestScript, '(?s)function Stop-TestbedCanonicalVision\(.*?\r?\n\}\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)').Value
   Assert-True (-not [string]::IsNullOrWhiteSpace($cleanupFunctions)) "could not extract testbed Vision cleanup functions"
+  $testbedGuestScriptRoot = Split-Path -Parent $guestScriptPath
+  $cleanupFunctions = $cleanupFunctions.Replace('$PSScriptRoot', '$testbedGuestScriptRoot')
+  if ($null -eq (Get-PSDrive -Name C -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name C -PSProvider FileSystem -Root $root | Out-Null
+    $testbedCreatedCDrive = $true
+  }
   Invoke-Expression ($cleanupFunctions -replace '\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)$', '')
 
   function Get-NetTCPConnection {
@@ -316,7 +324,9 @@ try {
   function Get-CimInstance {
     [CmdletBinding()]
     param([string]$ClassName, [string]$Filter)
-    if ($ClassName -ne "Win32_Process" -or $Filter -notmatch 'ProcessId = (\d+)') { return $null }
+    if ($ClassName -ne "Win32_Process") { return $null }
+    if ([string]::IsNullOrWhiteSpace($Filter)) { return @($global:TestbedVisionProcesses.Values) }
+    if ($Filter -notmatch 'ProcessId = (\d+)') { return $null }
     return $global:TestbedVisionProcesses[[int]$Matches[1]]
   }
 
@@ -325,6 +335,10 @@ try {
     param([int]$Id, [switch]$Force)
     $global:TestbedVisionStoppedProcessIds += $Id
     $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne $Id })
+    [void]$global:TestbedVisionProcesses.Remove($Id)
+    if ($global:TestbedVisionExitRaceProcessIds -contains $Id) {
+      Microsoft.PowerShell.Management\Stop-Process -Id 2147483647 -ErrorAction Stop
+    }
   }
 
   function Start-Sleep {
@@ -336,9 +350,19 @@ try {
     function Stop-VisionMainTask {
       param([string]$AppDirectory, [string]$ConfigurationPath)
       $global:TestbedCanonicalVisionStops += [pscustomobject]@{ appDirectory = $AppDirectory; configurationPath = $ConfigurationPath }
-      $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne 4101 })
-      if ($global:TestbedCanonicalExitRace) {
-        Microsoft.PowerShell.Management\Stop-Process -Id 2147483647 -ErrorAction Stop
+      $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
+      $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath).ToLowerInvariant()
+      foreach ($processId in @($global:TestbedVisionProcesses.Keys)) {
+        $process = $global:TestbedVisionProcesses[$processId]
+        $normalizedCommandLine = ([string]$process.CommandLine).Replace([string][char]34, '').ToLowerInvariant()
+        if (
+          [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ieq $canonicalExecutablePath -and
+          $normalizedCommandLine.Contains("--config") -and
+          $normalizedCommandLine.Contains($canonicalConfigurationPath)
+        ) {
+          $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne [int]$processId })
+          [void]$global:TestbedVisionProcesses.Remove([int]$processId)
+        }
       }
     }
   }
@@ -346,6 +370,7 @@ try {
   function Import-Module {
     [CmdletBinding()]
     param([string]$Name, [switch]$Force, [switch]$PassThru)
+    if ($global:TestbedUseRealVisionModule) { return $visionArtifactModule }
     return $global:TestbedVisionModule
   }
 
@@ -354,25 +379,52 @@ try {
     $global:TestbedVisionProcesses = $Processes
     $global:TestbedVisionStoppedProcessIds = @()
     $global:TestbedCanonicalVisionStops = @()
-    $global:TestbedCanonicalExitRace = $false
+    $global:TestbedVisionExitRaceProcessIds = @()
+    $global:TestbedUseRealVisionModule = $false
   }
 
   $testbedGuestInput = [pscustomobject]@{ hostControlPlane = [pscustomobject]@{ visionMockControlPort = 7893 } }
+  $canonicalAppDirectory = "C:\VEM\vision\app"
+  $canonicalConfigPath = "C:\ProgramData\VEM\vision\site.json"
+  $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $canonicalAppDirectory "vending-vision.exe"))
+  $canonicalConfigurationPath = [IO.Path]::GetFullPath($canonicalConfigPath)
   $canonicalProcess = [pscustomobject]@{
     ProcessId = 4101
-    ExecutablePath = "C:\VEM\vision\app\vending-vision.exe"
-    CommandLine = '"C:\VEM\vision\app\vending-vision.exe" --config "C:\ProgramData\VEM\vision\site.json"'
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath`""
   }
   Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess }
   Clear-TestbedVisionProcesses $testbedGuestInput
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical listener was not stopped"
   Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical listener remained bound"
 
-  Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess }
-  $global:TestbedCanonicalExitRace = $true
+  Set-TestbedVisionCleanupFixture @() @{ 4101 = $canonicalProcess }
   Clear-TestbedVisionProcesses $testbedGuestInput
-  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical exit race was not exercised"
-  Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical exit race was not tolerated"
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical non-listener was not stopped"
+  Assert-True ($global:TestbedVisionProcesses.Count -eq 0) "canonical non-listener remained running"
+
+  $wrongConfigCanonicalProcess = [pscustomobject]@{
+    ProcessId = 4104
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --config `"$([IO.Path]::GetFullPath("C:\ProgramData\VEM\vision\wrong-site.json"))`""
+  }
+  Set-TestbedVisionCleanupFixture @() @{ 4104 = $wrongConfigCanonicalProcess }
+  $wrongConfigRejected = $false
+  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $wrongConfigRejected = $_.Exception.Message -match "unknown canonical executable processes" }
+  Assert-True $wrongConfigRejected "wrong-config canonical process did not fail closed"
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0 -and $global:TestbedVisionStoppedProcessIds.Count -eq 0) "wrong-config canonical process was stopped"
+
+  $canonicalSecondProcess = [pscustomobject]@{
+    ProcessId = 4105
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath`""
+  }
+  Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess; 4105 = $canonicalSecondProcess }
+  $global:TestbedVisionExitRaceProcessIds = @(4101)
+  $global:TestbedUseRealVisionModule = $true
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4105) "canonical exit race was not exercised"
+  Assert-True ($global:TestbedVisionListeners.Count -eq 0 -and $global:TestbedVisionProcesses.Count -eq 0) "canonical exit race was not tolerated"
 
   $mockProcess = [pscustomobject]@{
     ProcessId = 4102
@@ -398,5 +450,6 @@ try {
   $remainingJobs = @(Get-Job -ErrorAction SilentlyContinue)
   $remainingJobs | Stop-Job -ErrorAction SilentlyContinue
   $remainingJobs | Remove-Job -Force -ErrorAction SilentlyContinue
+  if ($testbedCreatedCDrive) { Remove-PSDrive -Name C -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

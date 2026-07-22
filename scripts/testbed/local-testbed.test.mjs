@@ -1217,7 +1217,7 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
-  it("cleans only attested canonical Vision and the acceptance-owned Node mock before both full and fast runs", () => {
+  it("cleans only the uniquely managed canonical Vision and acceptance-owned Node mock before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -1232,15 +1232,19 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /canonicalVisionAppDirectory = "C:\\VEM\\vision\\app"[\s\S]*canonicalVisionConfigPath = "C:\\ProgramData\\VEM\\vision\\site\.json"[\s\S]*\[IO\.Path\]::GetFullPath[\s\S]*Win32_Process/,
+      /canonicalVisionAppDirectory = "C:\\VEM\\vision\\app"[\s\S]*canonicalVisionConfigPath = "C:\\ProgramData\\VEM\\vision\\site\.json"/,
     );
     assert.match(
       guestScript,
-      /canonicalVisionOwnerIds[\s\S]*LocalPort -eq 7892[\s\S]*ExecutablePath[\s\S]*CommandLine[\s\S]*--config[\s\S]*canonicalVisionConfigurationPath/,
+      /function Get-TestbedCanonicalVisionProcesses[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*canonicalVisionExecutablePath[\s\S]*--config[\s\S]*canonicalVisionConfigurationPath/,
     );
     assert.match(
       guestScript,
-      /function Stop-TestbedCanonicalVision[\s\S]*Import-Module[\s\S]*-PassThru[\s\S]*Stop-VisionMainTask -AppDirectory \$CanonicalAppDirectory -ConfigurationPath \$CanonicalConfigurationPath[\s\S]*if \(\$canonicalVisionOwnerIds\.Count -gt 0\)[\s\S]*Stop-TestbedCanonicalVision \$canonicalVisionAppDirectory \$canonicalVisionConfigPath/,
+      /unknownCanonicalVisionProcesses[\s\S]*throw "Vision bootstrap found unknown canonical executable processes/,
+    );
+    assert.match(
+      guestScript,
+      /function Stop-TestbedCanonicalVision[\s\S]*Import-Module[\s\S]*-PassThru[\s\S]*Stop-VisionMainTask -AppDirectory \$CanonicalAppDirectory -ConfigurationPath \$CanonicalConfigurationPath[\s\S]*managedCanonicalVisionProcesses\.Count -gt 0[\s\S]*Stop-TestbedCanonicalVision \$canonicalVisionAppDirectory \$canonicalVisionConfigPath[\s\S]*remainingCanonicalVisionProcesses[\s\S]*canonical Vision process cleanup did not complete/,
     );
     assert.match(
       guestScript,
@@ -1261,6 +1265,8 @@ describe("Windows D cache contract", () => {
       "utf8",
     );
     assert.match(windowsHarness, /canonical listener was not stopped/);
+    assert.match(windowsHarness, /canonical non-listener was not stopped/);
+    assert.match(windowsHarness, /wrong-config canonical process did not fail closed/);
     assert.match(windowsHarness, /canonical exit race was not tolerated/);
     assert.match(windowsHarness, /mock listener was not stopped/);
     assert.match(windowsHarness, /unknown listener owner did not fail closed/);
