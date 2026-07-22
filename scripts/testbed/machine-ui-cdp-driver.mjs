@@ -37,6 +37,7 @@ const PAYMENT_BARRIER_COMPLETED_ALLOWED_ROUTES = [
   ...PAYMENT_BARRIER_ALLOWED_ROUTES,
   "/catalog",
 ];
+const MAX_CDP_RUNTIME_RECOVERY_ATTEMPTS = 2;
 const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "remote",
   "sshPort",
@@ -953,6 +954,25 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
   return value;
 }
 
+async function readRuntimeGeneration(client, options = {}) {
+  const value = await evaluateExpression(
+    client,
+    "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.runtimeGenerationId ?? null",
+    options,
+  );
+  // Older focused driver tests do not expose the optional trace snapshot. A
+  // real value must still be a generation id; an absent snapshot cannot fake one.
+  if (value == null || typeof value === "object") return null;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error("Machine Runtime generation is invalid");
+  }
+  return boundedRequiredString(
+    value,
+    "Machine Runtime generation",
+    MAX_LABEL_LENGTH,
+  );
+}
+
 export async function captureScreenshot(client, options = {}) {
   const format = options.format ?? "png";
   if (format !== "png" && format !== "jpeg") {
@@ -1423,7 +1443,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   let target;
   let runtimeEvidence;
   let capture;
+  const captureSegments = [];
+  let nextContinuousOrdinal = 1_000_000;
   let unsubscribeCdpRoutes;
+  let runtimeGeneration = null;
+  let runtimeGenerationMayHaveChanged = false;
+  let recoveryAttempts = 0;
   let scenarioError;
   let scenarioResult;
   const evidence = [];
@@ -1478,8 +1503,43 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     }
   };
   const assertHealthy = () => {
-    capture?.throwIfFailed();
+    for (const segment of captureSegments) segment.capture.throwIfFailed();
     if (fatalError) throw fatalError;
+  };
+  const stopActiveCapture = async () => {
+    if (!capture) return;
+    const segment = captureSegments.at(-1);
+    capture = null;
+    if (!segment || segment.stopped) return;
+    segment.stopped = true;
+    try {
+      await segment.capture.stop();
+    } finally {
+      const lastOrdinal = segment.capture.checkpoints.at(-1)?.ordinal;
+      if (Number.isSafeInteger(lastOrdinal)) {
+        nextContinuousOrdinal = Math.max(
+          nextContinuousOrdinal,
+          lastOrdinal + 1,
+        );
+      }
+    }
+  };
+  const stopAllCaptures = async () => {
+    const checkpoints = [];
+    let captureError = null;
+    for (const segment of captureSegments) {
+      try {
+        if (!segment.stopped) {
+          segment.stopped = true;
+          await segment.capture.stop();
+        }
+      } catch (error) {
+        captureError ??= error;
+      }
+      checkpoints.push(...segment.capture.checkpoints);
+    }
+    if (captureError) throw captureError;
+    return checkpoints;
   };
   const connectTarget = async ({ nextTarget, nextRuntime, expected }) => {
     target = nextTarget;
@@ -1491,7 +1551,10 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     });
     record({ type: "runtime-attestation", attestation: runtimeEvidence });
     client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, sidecar.endpoint),
+      rewriteWebSocketDebuggerUrl(
+        target.webSocketDebuggerUrl,
+        sidecar.endpoint,
+      ),
       {
         webSocketFactory: dependencies.webSocketFactory,
         defaultTimeoutMs: timeoutMs,
@@ -1504,6 +1567,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     );
     const offFrameNavigated = client.on("Page.frameNavigated", (params) => {
       if (params.frame?.parentId == null) {
+        runtimeGenerationMayHaveChanged = true;
         classifyRouteEvent({ url: params.frame?.url }, "cdp");
       }
     });
@@ -1512,6 +1576,8 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       offFrameNavigated();
     };
     await enablePageRuntime(client);
+    runtimeGeneration = await readRuntimeGeneration(client, { timeoutMs });
+    runtimeGenerationMayHaveChanged = false;
     capture = continuousCapture
       ? startContinuousIdentityCapture(client, {
           intervalMs: continuousCaptureIntervalMs,
@@ -1520,17 +1586,30 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           routePolicy: currentRoutePolicy,
           timeoutMs,
           clock,
-          startOrdinal: 1_000_000 + ordinal,
+          startOrdinal: nextContinuousOrdinal,
           maxCheckpoints: MAX_CONTINUOUS_CHECKPOINTS,
         })
       : null;
+    if (capture) {
+      captureSegments.push({
+        capture,
+        runtimeGeneration,
+        targetId: target.id,
+        stopped: false,
+      });
+    }
   };
-  const reconnectIfClosed = async () => {
-    if (!client?.closed) return;
+  const reattestRuntime = async (reason) => {
+    if (recoveryAttempts >= MAX_CDP_RUNTIME_RECOVERY_ATTEMPTS) {
+      throw new Error(
+        `CDP runtime recovery exceeded ${MAX_CDP_RUNTIME_RECOVERY_ATTEMPTS} attempts while ${reason}`,
+      );
+    }
+    recoveryAttempts += 1;
     await Promise.resolve().then(() => unsubscribeCdpRoutes?.());
     unsubscribeCdpRoutes = undefined;
-    await capture?.stop().catch(() => {});
-    capture = null;
+    await stopActiveCapture().catch(() => {});
+    await client?.close().catch(() => {});
     const observed = await dependencies.inspectRuntime({
       remote: tunnelTransport.remote,
       sshPort: tunnelTransport.sshPort,
@@ -1551,10 +1630,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       fetchImpl: dependencies.fetchImpl,
       timeoutMs,
     });
-    activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
-    activeAllowedRoutes = null;
-    paymentBarrierTerminalObserved = false;
-    routePolicyEpoch += 1;
+    assertAllowedRoute(
+      nextTarget.route,
+      activeForbiddenRoutes,
+      activeAllowedRoutes,
+    );
     await connectTarget({
       nextTarget,
       nextRuntime,
@@ -1566,6 +1646,44 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         },
       },
     });
+    assertHealthy();
+  };
+  const ensureRuntimeBoundary = async () => {
+    if (client?.closed) {
+      await reattestRuntime("the CDP WebSocket closed");
+      return;
+    }
+    const observedGeneration = await readRuntimeGeneration(client, {
+      timeoutMs,
+    });
+    if (
+      (runtimeGeneration !== null &&
+        observedGeneration !== null &&
+        observedGeneration !== runtimeGeneration) ||
+      (runtimeGenerationMayHaveChanged && observedGeneration === null)
+    ) {
+      await reattestRuntime("the Machine Runtime generation changed");
+      return;
+    }
+    runtimeGeneration = observedGeneration;
+    runtimeGenerationMayHaveChanged = false;
+  };
+  const withCdpRecovery = async (operation, { retry = true } = {}) => {
+    let recovered = false;
+    while (true) {
+      try {
+        await ensureRuntimeBoundary();
+        return await operation();
+      } catch (error) {
+        if (!retry || recovered || !isCdpTransportFailure(error, client)) {
+          throw error;
+        }
+        recovered = true;
+        await reattestRuntime(
+          `a CDP operation failed: ${boundedString(error?.message, 256)}`,
+        );
+      }
+    }
   };
 
   try {
@@ -1592,12 +1710,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     });
     assertHealthy();
 
-    const initial = await captureCheckpoint(client, "initial", {
-      timeoutMs,
-      screenshot: screenshotCheckpoints,
-      screenshotSink: adapter.screenshotSink,
-      clock,
-    });
+    const initial = await withCdpRecovery(() =>
+      captureCheckpoint(client, "initial", {
+        timeoutMs,
+        screenshot: screenshotCheckpoints,
+        screenshotSink: adapter.screenshotSink,
+        clock,
+      }),
+    );
     assertAllowedRoute(
       initial.identity.route,
       activeForbiddenRoutes,
@@ -1607,16 +1727,17 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     record(initial);
 
     for (const step of sequence) {
-      await reconnectIfClosed();
       assertHealthy();
       if (step.type === "customer-activation") {
-        const before = await waitForRoute(client, step.routeBefore, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-          pollMs: routePollMs,
-          forbiddenRoutes: activeForbiddenRoutes,
-          allowedRoutes: activeAllowedRoutes,
-          assertHealthy,
-        });
+        const before = await withCdpRecovery(() =>
+          waitForRoute(client, step.routeBefore, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+            pollMs: routePollMs,
+            forbiddenRoutes: activeForbiddenRoutes,
+            allowedRoutes: activeAllowedRoutes,
+            assertHealthy,
+          }),
+        );
         assertRouteIdentity(before, step.routeBefore, `${step.name} before`);
         record({
           type: "checkpoint",
@@ -1654,15 +1775,23 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
                 input: null,
               };
             })()
-          : await activateVisibleSelector(client, step.selector, {
-              kind: step.inputKind ?? inputKind,
-              timeoutMs: step.timeoutMs ?? timeoutMs,
-            });
+          : await withCdpRecovery(
+              () =>
+                activateVisibleSelector(client, step.selector, {
+                  kind: step.inputKind ?? inputKind,
+                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                }),
+              { retry: false },
+            );
         const dispatchedInput = repeatedActivation
-          ? await dispatchPhysicalInput(client, activation.center, {
-              kind: step.inputKind ?? inputKind,
-              timeoutMs: step.timeoutMs ?? timeoutMs,
-            })
+          ? await withCdpRecovery(
+              () =>
+                dispatchPhysicalInput(client, activation.center, {
+                  kind: step.inputKind ?? inputKind,
+                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                }),
+              { retry: false },
+            )
           : activation.input;
         if (!dispatchedInput.method.startsWith("Input.")) {
           throw new Error(`${step.name} emitted no physical Input evidence`);
@@ -1683,13 +1812,15 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         assertHealthy();
         let after;
         try {
-          after = await waitForRoute(client, step.routeAfter, {
-            timeoutMs: step.timeoutMs ?? timeoutMs,
-            pollMs: routePollMs,
-            forbiddenRoutes: activeForbiddenRoutes,
-            allowedRoutes: activeAllowedRoutes,
-            assertHealthy,
-          });
+          after = await withCdpRecovery(() =>
+            waitForRoute(client, step.routeAfter, {
+              timeoutMs: step.timeoutMs ?? timeoutMs,
+              pollMs: routePollMs,
+              forbiddenRoutes: activeForbiddenRoutes,
+              allowedRoutes: activeAllowedRoutes,
+              assertHealthy,
+            }),
+          );
         } catch (error) {
           const probe = await probeSelectorBounds(client, step.selector, {
             timeoutMs: step.timeoutMs ?? timeoutMs,
@@ -1717,12 +1848,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           identity: after,
         });
       } else if (step.type === "observation") {
-        const observation = await captureCheckpoint(client, step.name, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-          screenshot: screenshotCheckpoints || step.screenshot,
-          screenshotSink: adapter.screenshotSink,
-          clock,
-        });
+        const observation = await withCdpRecovery(() =>
+          captureCheckpoint(client, step.name, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+            screenshot: screenshotCheckpoints || step.screenshot,
+            screenshotSink: adapter.screenshotSink,
+            clock,
+          }),
+        );
         assertAllowedRoute(
           observation.identity.route,
           activeForbiddenRoutes,
@@ -1737,9 +1870,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         executedExecution.observations += 1;
         continue;
       } else if (step.type === "external-operation") {
-        const before = await captureDomIdentity(client, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-        });
+        const before = await withCdpRecovery(() =>
+          captureDomIdentity(client, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+          }),
+        );
         assertAllowedRoute(
           before.route,
           activeForbiddenRoutes,
@@ -1751,9 +1886,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             "external operation requires adapter.executeExternalOperation",
           );
         }
-        const uiBefore = await captureRuntimeOperationObservation(client, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-        });
+        const uiBefore = await withCdpRecovery(() =>
+          captureRuntimeOperationObservation(client, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+          }),
+        );
         let rawProvenance;
         let recoveryOverlay = null;
         if (
@@ -1769,11 +1906,10 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           });
           const overlayDeadline = Date.now() + (step.timeoutMs ?? timeoutMs);
           do {
-            const observation = await captureRuntimeOperationObservation(
-              client,
-              {
+            const observation = await withCdpRecovery(() =>
+              captureRuntimeOperationObservation(client, {
                 timeoutMs: step.timeoutMs ?? timeoutMs,
-              },
+              }),
             );
             if (observation.recoveryOverlay?.length > 0) {
               recoveryOverlay = {
@@ -1808,9 +1944,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             uiBefore,
           });
         }
-        const uiAfter = await captureRuntimeOperationObservation(client, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-        });
+        const uiAfter = await withCdpRecovery(() =>
+          captureRuntimeOperationObservation(client, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+          }),
+        );
         const provenance = boundExternalOperation(
           {
             ...rawProvenance,
@@ -1818,13 +1956,15 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           },
           step.operation,
         );
-        const after = await waitForRoute(client, step.routeAfter, {
-          timeoutMs: step.timeoutMs ?? timeoutMs,
-          pollMs: routePollMs,
-          forbiddenRoutes: activeForbiddenRoutes,
-          allowedRoutes: activeAllowedRoutes,
-          assertHealthy,
-        });
+        const after = await withCdpRecovery(() =>
+          waitForRoute(client, step.routeAfter, {
+            timeoutMs: step.timeoutMs ?? timeoutMs,
+            pollMs: routePollMs,
+            forbiddenRoutes: activeForbiddenRoutes,
+            allowedRoutes: activeAllowedRoutes,
+            assertHealthy,
+          }),
+        );
         assertRouteIdentity(after, step.routeAfter, `${step.name} after`);
         record({
           type: "external-operation",
@@ -1836,15 +1976,13 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
         executedExecution.externalOperations += 1;
         if (step.screenshot) {
-          const checkpoint = await captureCheckpoint(
-            client,
-            `${step.name}:after`,
-            {
+          const checkpoint = await withCdpRecovery(() =>
+            captureCheckpoint(client, `${step.name}:after`, {
               timeoutMs: step.timeoutMs ?? timeoutMs,
               screenshot: true,
               screenshotSink: adapter.screenshotSink,
               clock,
-            },
+            }),
           );
           assertAllowedRoute(
             checkpoint.identity.route,
@@ -1855,12 +1993,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         }
         continue;
       }
-      const checkpoint = await captureCheckpoint(client, step.name, {
-        timeoutMs: step.timeoutMs ?? timeoutMs,
-        screenshot: screenshotCheckpoints || step.screenshot === true,
-        screenshotSink: adapter.screenshotSink,
-        clock,
-      });
+      const checkpoint = await withCdpRecovery(() =>
+        captureCheckpoint(client, step.name, {
+          timeoutMs: step.timeoutMs ?? timeoutMs,
+          screenshot: screenshotCheckpoints || step.screenshot === true,
+          screenshotSink: adapter.screenshotSink,
+          clock,
+        }),
+      );
       assertAllowedRoute(
         checkpoint.identity.route,
         activeForbiddenRoutes,
@@ -1870,15 +2010,20 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     }
 
     if (typeof onPaymentWindow === "function") {
-      await reconnectIfClosed();
-      const continuousStart = capture ? await capture.captureNow() : null;
+      const continuousStart = capture
+        ? await withCdpRecovery(() => capture.captureNow())
+        : null;
       const paymentWindow = await onPaymentWindow();
-      const continuousEnd = capture ? await capture.captureNow() : null;
-      const continuousDuring = capture?.checkpoints.find(
-        (checkpoint) =>
-          checkpoint.ordinal > continuousStart?.ordinal &&
-          checkpoint.ordinal < continuousEnd?.ordinal,
-      );
+      const continuousEnd = capture
+        ? await withCdpRecovery(() => capture.captureNow())
+        : null;
+      const continuousDuring = captureSegments
+        .flatMap((segment) => segment.capture.checkpoints)
+        .find(
+          (checkpoint) =>
+            checkpoint.ordinal > continuousStart?.ordinal &&
+            checkpoint.ordinal < continuousEnd?.ordinal,
+        );
       if (
         paymentWindow?.serialCompleted !== true ||
         paymentWindow?.postSaleStable !== true ||
@@ -1903,13 +2048,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       assertHealthy();
     }
 
-    await reconnectIfClosed();
-    const final = await captureCheckpoint(client, "final", {
-      timeoutMs,
-      screenshot: screenshotCheckpoints,
-      screenshotSink: adapter.screenshotSink,
-      clock,
-    });
+    const final = await withCdpRecovery(() =>
+      captureCheckpoint(client, "final", {
+        timeoutMs,
+        screenshot: screenshotCheckpoints,
+        screenshotSink: adapter.screenshotSink,
+        clock,
+      }),
+    );
     assertAllowedRoute(
       final.identity.route,
       activeForbiddenRoutes,
@@ -1917,7 +2063,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     );
     record(final);
     assertHealthy();
-    const continuous = capture ? await capture.stop() : [];
+    const continuous = await stopAllCaptures();
     capture = null;
     if (evidence.length + continuous.length > MAX_EVIDENCE_ENTRIES) {
       throw new Error("machine UI CDP evidence exceeded maximum entries");
@@ -1943,7 +2089,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   } finally {
     const cleanup = await Promise.allSettled([
       Promise.resolve().then(() => unsubscribeCdpRoutes?.()),
-      capture?.stop() ?? Promise.resolve(),
+      stopAllCaptures(),
       client?.close() ?? Promise.resolve(),
       sidecar.close(),
     ]);
@@ -2243,6 +2389,14 @@ function assertAllowedRoute(
   ) {
     throw new Error(`forbidden customer route observed: ${normalized}`);
   }
+}
+
+function isCdpTransportFailure(error, client) {
+  if (client?.closed) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /CDP (?:client is closed|connection closed|WebSocket|.*send failed)|CDP connection closed|CDP client closed/.test(
+    message,
+  );
 }
 
 function routeMatchesRoutePath(path, candidate) {

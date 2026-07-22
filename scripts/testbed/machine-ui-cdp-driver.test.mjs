@@ -290,6 +290,125 @@ async function runInstalledRouteCompetitionScenario({
   );
 }
 
+async function runGenerationRecoveryScenario({
+  initialRoute = "#/catalog",
+  nextTargetRoute = "#/checkout",
+  restart = "process",
+  activatesRouteBarrier = false,
+  oldGenerationRoute = null,
+} = {}) {
+  const targets = [target("machine-target", initialRoute)];
+  return withFakeHttpTargets(targets, async (endpoint) => {
+    let route = initialRoute;
+    let generation = "runtime-generation-1";
+    let restarted = false;
+    let activated = false;
+    let activeSocket;
+    let inspections = 0;
+    const observedAfterRestart = {
+      ...OBSERVED_RUNTIME,
+      machine: { ...OBSERVED_RUNTIME.machine, processId: 4243 },
+      cdpListener: {
+        ...OBSERVED_RUNTIME.cdpListener,
+        machineAncestorProcessId: 4243,
+      },
+    };
+    const { factory, sockets } = createFakeWebSocketFactory(
+      (message, socket) => {
+        activeSocket = socket;
+        if (message.method === "Runtime.evaluate") {
+          const expression = message.params.expression;
+          if (expression.includes("runtimeGenerationId")) {
+            if (!restarted && activated && route === "#/checkout") {
+              restarted = true;
+              generation = "runtime-generation-2";
+              targets[0] = target(
+                restart === "process"
+                  ? "machine-target-restarted"
+                  : "machine-target",
+                nextTargetRoute,
+              );
+              if (oldGenerationRoute) route = oldGenerationRoute;
+              if (restart === "process") {
+                socket.finishClose();
+                return null;
+              }
+              socket.emitMessage({
+                method: "Page.frameNavigated",
+                params: { frame: { url: `http://tauri.localhost/${route}` } },
+              });
+            }
+            return cdpValue(generation, message.id);
+          }
+          if (expression.includes("getBoundingClientRect")) {
+            return cdpValue(
+              {
+                selector: "#continue",
+                actionable: true,
+                inViewport: true,
+                pointerEvents: "auto",
+                hitTarget: true,
+                bounds: { x: 0, y: 0, width: 10, height: 10 },
+                center: { x: 5, y: 5 },
+              },
+              message.id,
+            );
+          }
+          return cdpValue(identity(route), message.id);
+        }
+        if (
+          message.method === "Input.dispatchTouchEvent" &&
+          message.params.type === "touchStart"
+        ) {
+          activated = true;
+          route = "#/checkout";
+          socket.emitMessage({
+            method: "Page.navigatedWithinDocument",
+            params: { url: `http://tauri.localhost/${route}` },
+          });
+        }
+        return { id: message.id, result: {} };
+      },
+    );
+    const steps = [
+      {
+        type: "customer-activation",
+        name: "continue",
+        selector: "#continue",
+        routeBefore: initialRoute,
+        routeAfter: "#/checkout",
+        ...(activatesRouteBarrier
+          ? { activatesRouteBarrier: true, completesRouteBarrier: false }
+          : {}),
+      },
+      { type: "observation", name: "after restart", route: "#/checkout" },
+    ];
+    const result = await runVisibleMachineSaleScenarioForTest(
+      {
+        endpoint,
+        tunnelOptions: { remote: "test@win10.test" },
+        expectedRuntimeAttestation: ATTESTATION,
+        expectedInitialRoute: initialRoute,
+        sequenceName: "runtime-generation-recovery",
+        steps,
+        continuousCapture: true,
+        continuousCaptureIntervalMs: 1,
+        routePollMs: 1,
+      },
+      {
+        webSocketFactory: factory,
+        remoteCommandRunner: async () => {
+          inspections += 1;
+          return restart === "process" && inspections > 1
+            ? observedAfterRestart
+            : OBSERVED_RUNTIME;
+        },
+      },
+    );
+    return { result, sockets, inspections, activeSocket };
+  });
+}
+
 describe("machine-ui-cdp-driver", () => {
   it("retries a transient CDP discovery connection failure", async () => {
     let attempts = 0;
@@ -1065,6 +1184,49 @@ describe("machine-ui-cdp-driver", () => {
         entry.label === "payment submit repeat",
     );
     assert.equal(paymentActivation.routeBefore, "#/checkout");
+  });
+
+  it("re-attests a restarted process and retries the interrupted CDP read once", async () => {
+    const { result, sockets, inspections } =
+      await runGenerationRecoveryScenario();
+    assert.equal(inspections, 2);
+    assert.equal(sockets.length, 2);
+    assert.equal(
+      result.evidence.filter((entry) => entry.type === "runtime-attestation")
+        .length,
+      2,
+    );
+    assert.equal(result.target.id, "machine-target-restarted");
+  });
+
+  it("rebinds the same canonical target after its runtime generation reloads", async () => {
+    const { result, sockets, inspections } =
+      await runGenerationRecoveryScenario({
+        restart: "reload",
+      });
+    assert.equal(inspections, 2);
+    assert.equal(sockets.length, 2);
+    assert.equal(result.target.id, "machine-target");
+  });
+
+  it("fails closed when a prior generation continuous capture observed a forbidden route", async () => {
+    await assert.rejects(
+      runGenerationRecoveryScenario({
+        oldGenerationRoute: "#/maintenance",
+      }),
+      /forbidden customer route observed: #\/maintenance/,
+    );
+  });
+
+  it("does not reset an armed payment barrier while reconnecting to a product route", async () => {
+    await assert.rejects(
+      runGenerationRecoveryScenario({
+        initialRoute: "#/checkout",
+        nextTargetRoute: "#/products/test-item",
+        activatesRouteBarrier: true,
+      }),
+      /payment barrier route observed: #\/products\/test-item/,
+    );
   });
 
   it("records a timer checkpoint strictly during injected serial completion", async () => {
