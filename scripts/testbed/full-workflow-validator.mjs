@@ -944,14 +944,23 @@ function buildRegistryWorkflowAggregate({
       const execution = executedTracks.find(
         (entry) => entry.key === descriptor.name,
       );
-      const result =
-        execution?.validator ??
-        failedTrack(
-          descriptor.name,
-          descriptor.name,
-          null,
-          "registered business check was not executed",
-        );
+      const executionFailed =
+        execution?.businessStatus === "failed" ||
+        execution?.status === "failed";
+      const result = executionFailed
+        ? failedTrack(
+            descriptor.name,
+            descriptor.name,
+            execution?.reportPath ?? null,
+            execution?.error ?? "business check execution lifecycle failed",
+          )
+        : (execution?.validator ??
+          failedTrack(
+            descriptor.name,
+            descriptor.name,
+            null,
+            "registered business check was not executed",
+          ));
       if (result.status !== "passed") {
         failures.push({
           set: descriptor.name,

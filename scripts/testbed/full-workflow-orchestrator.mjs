@@ -885,6 +885,8 @@ export async function restoreCatalogHomeFromClient({
   returnToCatalogFn = returnToCatalogFromClient,
   evaluateExpressionFn = evaluateExpression,
   activateVisibleSelectorFn = activateVisibleSelector,
+  waitForRouteFn = waitForRoute,
+  settleRouteTimeoutMs = 10_000,
 }) {
   await returnToCatalogFn({ client });
   const categoryIsOpen = await evaluateExpressionFn(
@@ -896,7 +898,12 @@ export async function restoreCatalogHomeFromClient({
     kind: "touch",
     timeoutMs: 10_000,
   });
-  return "#/catalog";
+  return (
+    await waitForRouteFn(client, "#/catalog", {
+      timeoutMs: settleRouteTimeoutMs,
+      pollMs: 250,
+    })
+  ).route;
 }
 
 function terminalOperations(guestInput, handoff, handoffPath) {

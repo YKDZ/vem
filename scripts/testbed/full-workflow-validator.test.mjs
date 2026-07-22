@@ -1458,6 +1458,33 @@ describe("full workflow aggregate validator", () => {
     assert.equal(aggregate.ok, false);
     assert.match(aggregate.failures[0].reason, /evidence is incomplete/);
   });
+
+  it("uses the execution lifecycle final failure even when its validator passed", () => {
+    const sale = descriptor("sale");
+    const aggregate = buildFullWorkflowAggregate({
+      mode: "fast",
+      selectedDescriptors: [sale],
+      executedTracks: [
+        {
+          key: sale.name,
+          status: "failed",
+          businessStatus: "failed",
+          error: "terminal route is not settled: #/boot",
+          validator: {
+            key: sale.name,
+            label: sale.name,
+            status: "passed",
+            reportPath: "/reports/sale.json",
+          },
+        },
+      ],
+    });
+
+    assert.equal(aggregate.ok, false);
+    assert.equal(aggregate.businessSets.sale.status, "failed");
+    assert.equal(aggregate.businessOutcome.ok, false);
+    assert.match(aggregate.failures[0].reason, /terminal route is not settled/);
+  });
 });
 
 describe("full workflow stability gate", () => {

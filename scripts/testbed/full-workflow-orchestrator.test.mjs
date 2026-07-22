@@ -908,6 +908,10 @@ describe("full workflow serial lifecycle", () => {
       async activateVisibleSelectorFn(_client, selector, options) {
         calls.push({ selector, options });
       },
+      async waitForRouteFn(_client, route, options) {
+        calls.push({ route, options });
+        return { route };
+      },
     });
     assert.equal(result, "#/catalog");
     assert.deepEqual(calls, [
@@ -917,7 +921,30 @@ describe("full workflow serial lifecycle", () => {
         selector: ".catalog-back-button",
         options: { kind: "touch", timeoutMs: 10_000 },
       },
+      {
+        route: "#/catalog",
+        options: { timeoutMs: 10_000, pollMs: 250 },
+      },
     ]);
+  });
+
+  it("does not treat persistent boot, offline, or maintenance routes as catalog", async () => {
+    for (const route of ["#/boot", "#/offline", "#/maintenance"]) {
+      await assert.rejects(
+        () =>
+          returnToCatalogFromClient({
+            client: { id: "client" },
+            evaluateExpressionFn: async () => route,
+            waitForRouteFn: async () => {
+              throw new Error(`${route} did not reach catalog`);
+            },
+            activateVisibleSelectorFn: async () => {
+              throw new Error("no customer return control");
+            },
+          }),
+        /did not reach catalog|no supported customer return control/,
+      );
+    }
   });
 
   it("accepts an automatic return to catalog while activating a stale route control", async () => {
