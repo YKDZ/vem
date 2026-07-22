@@ -15,6 +15,7 @@ import {
   startVisionMockScenario,
   stopVisionChild,
   validateRecommendationProjection,
+  validateRecommendationPresentation,
   validateTryOnPresentation,
   validateVisionInstalledBinding,
   validateVisionProtocolEvidence,
@@ -967,6 +968,101 @@ describe("vision try-on acceptance script", () => {
           },
         }),
       /catalogKey does not match the seeded productId/,
+    );
+  });
+
+  it("requires recommendation styling only for the automatic selected size", () => {
+    const automatic = validateRecommendationPresentation({
+      state: {
+        variantId: "variant-l",
+        recommendationActive: "true",
+        sizeOptions: [
+          {
+            size: "M",
+            active: false,
+            recommended: false,
+            recommendedClass: false,
+            disabled: false,
+          },
+          {
+            size: "L",
+            active: true,
+            recommended: true,
+            recommendedClass: true,
+            disabled: false,
+          },
+        ],
+      },
+      phase: "automatic",
+      expectedVariantId: "variant-l",
+    });
+    assert.equal(automatic.recommendedSize, "L");
+
+    assert.doesNotThrow(() =>
+      validateRecommendationPresentation({
+        state: {
+          variantId: "variant-l",
+          recommendationActive: "false",
+          sizeOptions: [
+            {
+              size: "M",
+              active: false,
+              recommended: false,
+              recommendedClass: false,
+              disabled: false,
+            },
+            {
+              size: "L",
+              active: true,
+              recommended: false,
+              recommendedClass: false,
+              disabled: false,
+            },
+          ],
+        },
+        phase: "manual",
+        expectedVariantId: "variant-l",
+      }),
+    );
+    assert.throws(
+      () =>
+        validateRecommendationPresentation({
+          state: {
+            variantId: "variant-l",
+            recommendationActive: "false",
+            sizeOptions: [
+              {
+                size: "L",
+                active: true,
+                recommended: true,
+                recommendedClass: true,
+                disabled: false,
+              },
+            ],
+          },
+          phase: "vision_unavailable",
+        }),
+      /must not retain recommendation styling/,
+    );
+    assert.throws(
+      () =>
+        validateRecommendationPresentation({
+          state: {
+            variantId: "variant-l",
+            recommendationActive: "false",
+            sizeOptions: [
+              {
+                size: "L",
+                active: true,
+                recommended: false,
+                recommendedClass: true,
+                disabled: false,
+              },
+            ],
+          },
+          phase: "manual",
+        }),
+      /must not retain recommendation styling/,
     );
   });
 

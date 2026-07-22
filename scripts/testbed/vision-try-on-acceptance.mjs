@@ -796,6 +796,64 @@ export function validateRecommendationProjection({
   };
 }
 
+export function validateRecommendationPresentation({
+  state,
+  phase,
+  expectedVariantId = null,
+}) {
+  const detail = requiredObject(state, "product detail recommendation state");
+  if (!new Set(["automatic", "manual", "vision_unavailable"]).has(phase)) {
+    throw new Error("recommendation presentation phase is invalid");
+  }
+  if (
+    expectedVariantId !== null &&
+    required(detail.variantId, "product detail variantId") !== expectedVariantId
+  ) {
+    throw new Error("product detail variant does not match expected variant");
+  }
+  if (!Array.isArray(detail.sizeOptions) || detail.sizeOptions.length === 0) {
+    throw new Error("product detail must expose size option presentation");
+  }
+  const recommended = detail.sizeOptions.filter(
+    (option) => option?.recommended === true,
+  );
+  const styled = detail.sizeOptions.filter(
+    (option) => option?.recommendedClass === true,
+  );
+
+  if (phase === "automatic") {
+    if (detail.recommendationActive !== "true") {
+      throw new Error("automatic recommendation must be marked active");
+    }
+    if (
+      recommended.length !== 1 ||
+      styled.length !== 1 ||
+      recommended[0] !== styled[0] ||
+      recommended[0]?.active !== true
+    ) {
+      throw new Error(
+        "automatic recommendation must style exactly one selected size",
+      );
+    }
+    return {
+      variantId: detail.variantId,
+      recommendedSize: required(
+        recommended[0]?.size,
+        "recommended size option",
+      ),
+    };
+  }
+
+  if (
+    detail.recommendationActive !== "false" ||
+    recommended.length !== 0 ||
+    styled.length !== 0
+  ) {
+    throw new Error(`${phase} must not retain recommendation styling`);
+  }
+  return { variantId: detail.variantId, recommendedSize: null };
+}
+
 export function validateTryOnPresentation({
   selectedProduct,
   tryOnState,
@@ -1659,15 +1717,53 @@ async function readProductDetailState(client) {
       const page = document.querySelector("[data-test='product-detail-page']");
       const tryOn = document.querySelector("[data-test='try-on-entry']");
       const buy = document.querySelector("[data-test='product-buy']");
+      const sizeOptions = Array.from(
+        document.querySelectorAll("[data-test='product-size-option']"),
+      ).map((element) => ({
+        size: element.getAttribute("data-size") ?? "",
+        active: element.classList.contains("option-pill-active"),
+        recommended: element.getAttribute("data-vision-recommended") === "true",
+        recommendedClass: element.classList.contains("option-pill-recommended"),
+        disabled: element.disabled === true,
+      }));
       return page ? {
         route: location.hash,
         catalogKey: page.dataset.catalogKey || null,
         variantId: page.dataset.variantId || null,
+        recommendationActive:
+          page.dataset.visionRecommendationActive || "false",
+        sizeOptions,
         tryOnPresent: !!tryOn,
         tryOnDisabled: tryOn ? tryOn.disabled === true : null,
         buyDisabled: buy ? buy.disabled === true : null,
       } : null;
     })()`,
+  );
+}
+
+async function waitForRecommendationPresentation(
+  client,
+  phase,
+  expectedVariantId = null,
+  timeoutMs = 30_000,
+) {
+  return waitForCondition(
+    `${phase} recommendation presentation`,
+    async () => {
+      const state = await readProductDetailState(client);
+      try {
+        const presentation = validateRecommendationPresentation({
+          state,
+          phase,
+          expectedVariantId,
+        });
+        return { ok: true, value: { state, presentation } };
+      } catch (error) {
+        return { ok: false, value: { state, error: String(error) } };
+      }
+    },
+    timeoutMs,
+    500,
   );
 }
 
@@ -2421,6 +2517,39 @@ async function runVisionTryOnAcceptance(options) {
     assert.equal(productDetail?.tryOnDisabled, false);
     assert.equal(productDetail?.buyDisabled, false);
 
+    stage = "validate-automatic-recommendation-presentation";
+    const automaticRecommendationPresentation =
+      await waitForRecommendationPresentation(
+        client,
+        "automatic",
+        recommendationSummary.selectedVariantId,
+      );
+    checkpoints.push(
+      await captureCheckpoint(client, "automatic-recommendation-detail", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+
+    stage = "validate-manual-recommendation-override";
+    await activateVisibleSelector(
+      client,
+      `[data-test="product-size-option"][data-size="${automaticRecommendationPresentation.presentation.recommendedSize}"]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    const manualRecommendationPresentation =
+      await waitForRecommendationPresentation(
+        client,
+        "manual",
+        recommendationSummary.selectedVariantId,
+      );
+    checkpoints.push(
+      await captureCheckpoint(client, "manual-size-detail", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+
     const tryOnAttempts = [];
     let tryOnSurface = null;
     for (let attempt = 1; attempt <= 2 && !tryOnSurface; attempt += 1) {
@@ -2521,6 +2650,9 @@ async function runVisionTryOnAcceptance(options) {
       30_000,
     );
     assert.equal(degradedProductDetail?.buyDisabled, false);
+    stage = "validate-vision-unavailable-recommendation-presentation";
+    const unavailableRecommendationPresentation =
+      await waitForRecommendationPresentation(client, "vision_unavailable");
     checkpoints.push(
       await captureCheckpoint(client, "vision-degraded-product", {
         screenshot: true,
@@ -2582,6 +2714,11 @@ async function runVisionTryOnAcceptance(options) {
         catalogRecommendation,
         recommendationSummary,
         productDetail,
+        recommendationPresentation: {
+          automatic: automaticRecommendationPresentation.presentation,
+          manual: manualRecommendationPresentation.presentation,
+          visionUnavailable: unavailableRecommendationPresentation.presentation,
+        },
         tryOnSurface,
         tryOnAttempts,
         silhouetteEvidence,

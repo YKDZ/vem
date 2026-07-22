@@ -11,7 +11,9 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
+import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -32,8 +34,10 @@ const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
 const visionStore = useVisionStore();
 const saleCapabilityStore = useSaleCapabilityStore();
+const { currentProfile, lastVisionResult } = useVisionRecommendations();
 
 const selectedVariantId = ref<string | null>(null);
+const userSelectedVariant = ref(false);
 
 const catalogKey = computed(() => String(route.params.catalogKey ?? ""));
 const item = computed(() => {
@@ -108,6 +112,19 @@ const routedVariantId = computed(() => {
   const value = route.query.variantId;
   return typeof value === "string" ? value : null;
 });
+const automaticRecommendation = computed(() => {
+  if (userSelectedVariant.value) return null;
+  const recommendation = recommendVariant(
+    variantCandidates.value,
+    currentProfile.value,
+  );
+  return recommendation.score > 0 ? recommendation.variant : null;
+});
+const isVisionRecommendationActive = computed(
+  () =>
+    automaticRecommendation.value?.variantId ===
+    selectedVariant.value?.variantId,
+);
 const sizeOptions = computed(() =>
   uniqueVariantOptions(
     variantCandidates.value,
@@ -153,6 +170,7 @@ const featureCards = [
 watch(
   [variantCandidates, routedVariantId],
   () => {
+    userSelectedVariant.value = false;
     selectedVariantId.value =
       variantCandidates.value.find(
         (variant) => variant.variantId === routedVariantId.value,
@@ -163,6 +181,15 @@ watch(
   },
   { immediate: true },
 );
+
+watch([currentProfile, lastVisionResult], () => {
+  if (userSelectedVariant.value) return;
+  selectedVariantId.value =
+    automaticRecommendation.value?.variantId ??
+    variantCandidates.value.find(variantIsSaleable)?.variantId ??
+    variantCandidates.value[0]?.variantId ??
+    null;
+});
 
 function variantIsSaleable(variant: MachineCatalogVariantCandidate): boolean {
   return variant.slotSalesState === "sale_ready" && variant.saleableStock > 0;
@@ -199,6 +226,7 @@ function pickVariant(candidates: MachineCatalogVariantCandidate[]): void {
 }
 
 function selectSize(size: string | null): void {
+  userSelectedVariant.value = true;
   const currentColor = selectedVariant.value?.color ?? null;
   const candidates = variantCandidates.value.filter(
     (variant) => variant.size === size,
@@ -210,6 +238,7 @@ function selectSize(size: string | null): void {
 }
 
 function selectColor(color: string | null): void {
+  userSelectedVariant.value = true;
   const currentSize = selectedVariant.value?.size ?? null;
   pickVariant(
     variantCandidates.value.filter(
@@ -253,6 +282,9 @@ async function enterTryOn(): Promise<void> {
       :data-catalog-key="item.catalogKey"
       :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
       :data-variant-id="selectedVariant?.variantId ?? item.variantId"
+      :data-vision-recommendation-active="
+        isVisionRecommendationActive ? 'true' : 'false'
+      "
     >
       <div class="detail-mist detail-mist-left"></div>
       <div class="detail-mist detail-mist-right"></div>
@@ -390,8 +422,19 @@ async function enterTryOn(): Promise<void> {
                 class="option-pill kiosk-touch-target"
                 :class="{
                   'option-pill-active': selectedVariant?.size === option.value,
+                  'option-pill-recommended':
+                    isVisionRecommendationActive &&
+                    selectedVariant?.size === option.value,
                 }"
                 type="button"
+                data-test="product-size-option"
+                :data-size="option.value ?? ''"
+                :data-vision-recommended="
+                  isVisionRecommendationActive &&
+                  selectedVariant?.size === option.value
+                    ? 'true'
+                    : 'false'
+                "
                 :disabled="option.saleableStock <= 0"
                 @click="selectSize(option.value)"
               >
@@ -802,6 +845,14 @@ async function enterTryOn(): Promise<void> {
   border-color: transparent;
   background: linear-gradient(180deg, #758868, #627655);
   color: #fffdf7;
+}
+
+.option-pill-recommended {
+  border-color: #c9b989;
+  background: linear-gradient(180deg, #8a9b76, #627655);
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 253, 247, 0.72),
+    0 0 0 2px rgba(201, 185, 137, 0.7);
 }
 
 .option-pill:disabled {

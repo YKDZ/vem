@@ -1222,6 +1222,141 @@ describe("sale-start capability UI flow", () => {
     expectRecognitionDetailsHidden(host);
   });
 
+  it("presents only a matched automatic size recommendation until the customer chooses manually", async () => {
+    const mediumItem = makeCatalogItem();
+    const largeItem: MachineCatalogItem = {
+      ...mediumItem,
+      slotId: "550e8400-e29b-41d4-a716-446655440021",
+      slotDisplayLabel: "A2",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-BLUE",
+      size: "L",
+      color: "蓝色",
+      slotCandidates: [
+        {
+          ...mediumItem.slotCandidates[0]!,
+          slotId: "550e8400-e29b-41d4-a716-446655440021",
+          slotDisplayLabel: "A2",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+          variantId: "550e8400-e29b-41d4-a716-446655440023",
+          sku: "TEE-BASIC-L-BLUE",
+          size: "L",
+          color: "蓝色",
+        },
+      ],
+      variantCandidates: [],
+    };
+    useCatalogStore().applySnapshot({
+      items: [mediumItem, largeItem],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = mediumItem.catalogKey;
+    routeQuery.variantId = largeItem.variantId;
+
+    const host = await mountView(ProductDetailView);
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-recommendation-low-confidence-detail",
+        detectedAt: "2026-07-18T09:59:59.000Z",
+        occupancy: { state: "single", confidence: 0.3 },
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.3,
+        },
+        quality: { overall: "poor", warnings: [], profileUsable: false },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    const page = requireElement<HTMLElement>(
+      host,
+      '[data-test="product-detail-page"]',
+    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
+    expect(page.getAttribute("data-variant-id")).toBe(mediumItem.variantId);
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-recommendation-detail",
+        detectedAt: "2026-07-18T10:00:00.000Z",
+        occupancy: { state: "single", confidence: 0.94 },
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.94,
+        },
+        quality: { overall: "good", warnings: [], profileUsable: true },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    const recommendedSize = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-size-option"][data-size="L"]',
+    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
+    expect(page.getAttribute("data-variant-id")).toBe(largeItem.variantId);
+    expect(recommendedSize.classList).toContain("option-pill-recommended");
+
+    requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-size-option"][data-size="M"]',
+    ).click();
+    await nextTick();
+
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
+    expect(
+      requireElement<HTMLButtonElement>(
+        host,
+        '[data-test="product-size-option"][data-size="M"]',
+      ).classList,
+    ).toContain("option-pill-active");
+    expect(recommendedSize.classList).not.toContain("option-pill-recommended");
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-recommendation-low-confidence-detail",
+        detectedAt: "2026-07-18T10:00:01.000Z",
+        occupancy: { state: "single", confidence: 0.3 },
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.3,
+        },
+        quality: { overall: "poor", warnings: [], profileUsable: false },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
+    expect(recommendedSize.classList).not.toContain("option-pill-recommended");
+  });
+
   it("records a selected product when a sale-ready product is explicitly selected", async () => {
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
