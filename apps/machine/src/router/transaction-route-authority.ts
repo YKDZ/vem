@@ -9,6 +9,7 @@ import {
   type MachineRuntimeNavigationTraceRecord,
   type MachineRuntimeTrace as SharedMachineRuntimeTrace,
   type MachineRuntimeTraceEntry,
+  type MachineRuntimeTraceSnapshot,
 } from "@/runtime/machine-runtime-trace";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
@@ -387,6 +388,10 @@ export function machineRuntimeTrace(): readonly MachineRuntimeTraceEntry[] {
   return installedAuthority?.trace.entries() ?? [];
 }
 
+export function machineRuntimeTraceSnapshot(): MachineRuntimeTraceSnapshot | null {
+  return installedAuthority?.trace.runtimeTrace.snapshot() ?? null;
+}
+
 export function installedMachineRuntimeTrace(): SharedMachineRuntimeTrace | null {
   return installedAuthority?.trace.runtimeTrace ?? null;
 }
@@ -403,6 +408,10 @@ export function installTransactionRouteAuthority(
       configurable: true,
       get: machineRuntimeTrace,
     });
+    Object.defineProperty(window, "__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__", {
+      configurable: true,
+      get: machineRuntimeTraceSnapshot,
+    });
   }
   return () => {
     installedAuthority?.dispose();
@@ -411,6 +420,11 @@ export function installTransactionRouteAuthority(
     if (typeof window !== "undefined") {
       delete (window as Window & { __VEM_MACHINE_RUNTIME_TRACE__?: unknown })
         .__VEM_MACHINE_RUNTIME_TRACE__;
+      delete (
+        window as Window & {
+          __VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?: unknown;
+        }
+      ).__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__;
     }
   };
 }

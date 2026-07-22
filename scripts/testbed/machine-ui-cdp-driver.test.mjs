@@ -324,7 +324,7 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
-  it("discovers the canonical target without caller identity and derives the connection session", async () => {
+  it("discovers the canonical target without caller identity", async () => {
     await withFakeHttpTargets(
       [target("observed-target", "#/catalog")],
       async (endpoint) => {
@@ -332,20 +332,6 @@ describe("machine-ui-cdp-driver", () => {
         assert.equal(selected.id, "observed-target");
       },
     );
-    const { factory } = createFakeWebSocketFactory((message) => ({
-      id: message.id,
-      result: { targetInfo: { targetId: "observed-target" } },
-    }));
-    const client = new CdpClient(
-      "ws://127.0.0.1/devtools/page/observed-target",
-      { webSocketFactory: factory },
-    );
-    await client.connect();
-    const identity = await client.observeIdentity();
-    assert.equal(identity.targetId, "observed-target");
-    assert.match(identity.sessionId, /^cdp-connection:[0-9a-f-]{36}$/);
-    assert.match(identity.connectedAt, /\.\d{3}Z$/);
-    await client.close();
   });
 
   it("rejects a debugger websocket pathname that does not exactly bind its target id", async () => {

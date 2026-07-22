@@ -97,6 +97,30 @@ describe("Machine Runtime Trace", () => {
     ]);
   });
 
+  it("publishes one atomic snapshot with a runtime-owned generation", () => {
+    const trace = createMachineRuntimeTrace();
+    trace.recordNavigation({
+      intentType: "customer.touch",
+      decision: "accepted",
+      reasonCode: "touchscreen_session_renewed",
+      fromRoute: "#/catalog",
+      requestedRoute: null,
+      decidedRoute: null,
+      finalRoute: null,
+      targetRoute: null,
+      sourceEventId: null,
+      transactionOrderNo: null,
+      transactionStage: "none",
+      readinessRevision: null,
+      touchscreenSessionActive: true,
+    });
+
+    const snapshot = trace.snapshot();
+    expect(snapshot.runtimeGenerationId).toMatch(/^runtime:/);
+    expect(snapshot.entries).toHaveLength(1);
+    expect(snapshot.entries[0]?.id).toBe(1);
+  });
+
   it("records correlated transaction result surfaces alongside navigation and audio entries", () => {
     const trace = createMachineRuntimeTrace();
     trace.record({

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -666,7 +666,6 @@ export class CdpClient {
     this.eventHandlers = new Map();
     this.closed = false;
     this.socket = null;
-    this.connectionIdentity = null;
   }
 
   async connect({ timeoutMs = this.defaultTimeoutMs } = {}) {
@@ -688,7 +687,6 @@ export class CdpClient {
     socket.addEventListener("close", () => this.#handleClose());
     socket.addEventListener("error", (event) => this.#handleError(event));
     if (socket.readyState === 1) {
-      this.#markConnected();
       return this;
     }
     try {
@@ -700,29 +698,7 @@ export class CdpClient {
       await this.close({ timeoutMs }).catch(() => {});
       throw error;
     }
-    this.#markConnected();
     return this;
-  }
-
-  #markConnected() {
-    if (this.connectionIdentity) return;
-    const targetId = decodeURIComponent(
-      new URL(this.webSocketUrl).pathname.replace(/^\/devtools\/page\//, ""),
-    );
-    this.connectionIdentity = Object.freeze({
-      targetId,
-      sessionId: `cdp-connection:${randomUUID()}`,
-      connectedAt: new Date().toISOString(),
-    });
-  }
-
-  async observeIdentity({ timeoutMs = this.defaultTimeoutMs } = {}) {
-    if (!this.connectionIdentity)
-      throw new Error("CDP client is not connected");
-    const observed = await this.send("Target.getTargetInfo", {}, { timeoutMs });
-    if (observed?.targetInfo?.targetId !== this.connectionIdentity.targetId)
-      throw new Error("CDP client target identity changed during capture");
-    return { ...this.connectionIdentity };
   }
 
   async send(method, params = {}, { timeoutMs = this.defaultTimeoutMs } = {}) {
@@ -935,7 +911,7 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
   const value = await evaluateExpression(
     client,
     `(() => {
-      const trace = window.__VEM_MACHINE_RUNTIME_TRACE__;
+      const traceSnapshot = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__;
       const transactionSurface = document.querySelector([
         '[data-installed-kiosk-sale-payment-surface]',
         '[data-installed-kiosk-sale-fulfillment-surface]',
@@ -954,7 +930,13 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
         .filter((name) => /\\/v1\\/catalog(?:[?#]|$)/.test(name))
         .slice(-32);
       return {
-        runtimeTrace: Array.isArray(trace) ? structuredClone(trace).slice(-256) : [],
+        runtimeTraceSnapshot:
+          traceSnapshot && typeof traceSnapshot === 'object'
+            ? structuredClone(traceSnapshot)
+            : null,
+        runtimeTrace: Array.isArray(traceSnapshot?.entries)
+          ? structuredClone(traceSnapshot.entries).slice(-256)
+          : [],
         catalogRequests,
         catalogRevision: document.documentElement?.dataset.catalogRevision || document.querySelector('[data-catalog-revision]')?.dataset.catalogRevision || null,
         catalogInvalidationId: document.documentElement?.dataset.catalogInvalidationId || document.querySelector('[data-catalog-invalidation-id]')?.dataset.catalogInvalidationId || null,

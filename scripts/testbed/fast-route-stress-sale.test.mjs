@@ -125,10 +125,7 @@ describe("pending create-order cleanup", () => {
 });
 
 function validEvidence() {
-  const runtimeIdentity = {
-    targetId: "machine-runtime-target-1",
-    sessionId: "cdp-connection:runtime-1",
-  };
+  const runtimeGenerationId = "runtime-generation-1";
   const inventory = {
     id: "inventory-1",
     slotId: "slot-1",
@@ -357,7 +354,7 @@ function validEvidence() {
         source: "installed_machine_runtime_trace_cdp",
         lastEntryId: 1,
         capturedAt: "2026-07-18T04:00:00.000Z",
-        runtimeIdentity,
+        runtimeGenerationId,
       },
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
@@ -366,7 +363,7 @@ function validEvidence() {
       source: "installed_machine_runtime_trace_cdp",
       lastEntryId: 0,
       capturedAt: "2026-07-18T03:59:59.700Z",
-      runtimeIdentity,
+      runtimeGenerationId,
     },
     repeatedPaymentTouch: {
       traceEntryId: 3,
@@ -376,7 +373,7 @@ function validEvidence() {
         source: "installed_machine_runtime_trace_cdp",
         lastEntryId: 2,
         capturedAt: "2026-07-18T04:00:00.110Z",
-        runtimeIdentity,
+        runtimeGenerationId,
       },
     },
     continuousCdpLocationHash: {
@@ -416,7 +413,7 @@ function validEvidence() {
     machineRuntimeTrace: {
       source: "installed_machine_runtime_trace_cdp",
       capturedAt: "2026-07-18T04:00:04.100Z",
-      runtimeIdentity,
+      runtimeGenerationId,
       entries: [
         {
           type: "navigation",
@@ -514,13 +511,10 @@ describe("fast route stress sale tracer", () => {
       source: "installed_machine_runtime_trace_cdp",
       lastEntryId: 256,
       capturedAt: "2026-07-18T04:00:00.000Z",
-      runtimeIdentity: {
-        targetId: "machine-runtime-target-1",
-        sessionId: "cdp-connection:runtime-1",
-      },
+      runtimeGenerationId: "runtime-generation-1",
     };
     const result = await waitForGuardedVisionDepartureTrace(
-      { observeIdentity: async () => traceBoundary.runtimeIdentity },
+      null,
       traceBoundary,
       {
         timeoutMs: 100,
@@ -536,20 +530,24 @@ describe("fast route stress sale tracer", () => {
             reasonCode: "active_transaction_route",
             finalRoute: "#/checkout",
           }));
-          return reads < 2
-            ? fullTraceWindow
-            : [
-                ...fullTraceWindow.slice(1),
-                {
-                  id: 257,
-                  type: "navigation",
-                  intentType: "presence.departed",
-                  sourceEventId: "presence-8:departure",
-                  decision: "rejected",
-                  reasonCode: "active_transaction_route",
-                  finalRoute: "#/payment",
-                },
-              ];
+          return {
+            runtimeGenerationId: "runtime-generation-1",
+            entries:
+              reads < 2
+                ? fullTraceWindow
+                : [
+                    ...fullTraceWindow.slice(1),
+                    {
+                      id: 257,
+                      type: "navigation",
+                      intentType: "presence.departed",
+                      sourceEventId: "presence-8:departure",
+                      decision: "rejected",
+                      reasonCode: "active_transaction_route",
+                      finalRoute: "#/payment",
+                    },
+                  ],
+          };
         },
       },
     );
@@ -563,38 +561,34 @@ describe("fast route stress sale tracer", () => {
       source: "installed_machine_runtime_trace_cdp",
       lastEntryId: 256,
       capturedAt: "2026-07-18T04:00:00.000Z",
-      runtimeIdentity: {
-        targetId: "machine-runtime-target-old",
-        sessionId: "cdp-connection:old",
-      },
-    };
-    const restartedIdentity = {
-      targetId: "machine-runtime-target-new",
-      sessionId: "cdp-connection:new",
+      runtimeGenerationId: "runtime-generation-old",
     };
     const result = await waitForGuardedVisionDepartureTrace(
-      { observeIdentity: async () => restartedIdentity },
+      null,
       traceBoundary,
       {
         timeoutMs: 100,
         sleepFn: async () => {},
         readTrace: async () => {
           reads += 1;
-          return [
-            {
-              id: 1,
-              at:
-                reads === 1
-                  ? "2026-07-18T04:00:00.000Z"
-                  : "2026-07-18T04:00:00.001Z",
-              type: "navigation",
-              intentType: "presence.departed",
-              sourceEventId: "presence-9:departure",
-              decision: "rejected",
-              reasonCode: "active_transaction_route",
-              finalRoute: "#/payment",
-            },
-          ];
+          return {
+            runtimeGenerationId: "runtime-generation-new",
+            entries: [
+              {
+                id: 1,
+                at:
+                  reads === 1
+                    ? "2026-07-18T04:00:00.000Z"
+                    : "2026-07-18T04:00:00.001Z",
+                type: "navigation",
+                intentType: "presence.departed",
+                sourceEventId: "presence-9:departure",
+                decision: "rejected",
+                reasonCode: "active_transaction_route",
+                finalRoute: "#/payment",
+              },
+            ],
+          };
         },
       },
     );
@@ -1120,7 +1114,7 @@ describe("fast route stress sale tracer", () => {
       "utf8",
     );
     assert.match(implementation, /Input\.dispatchTouchEvent/);
-    assert.match(implementation, /__VEM_MACHINE_RUNTIME_TRACE__/);
+    assert.match(implementation, /__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__/);
     assert.match(implementation, /mock:mock/);
     assert.match(
       implementation,

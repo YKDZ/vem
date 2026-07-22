@@ -245,20 +245,28 @@ function compactRuntimeTrace(trace, maxEntries = 64) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
 
-function runtimeTraceIdentity(identity, label) {
+function runtimeTraceSnapshot(snapshot, label) {
   if (
-    !identity ||
-    typeof identity.targetId !== "string" ||
-    identity.targetId.trim() === "" ||
-    typeof identity.sessionId !== "string" ||
-    identity.sessionId.trim() === ""
+    !snapshot ||
+    typeof snapshot.runtimeGenerationId !== "string" ||
+    snapshot.runtimeGenerationId.trim() === "" ||
+    !Array.isArray(snapshot.entries)
   ) {
-    throw new Error(`${label} requires the bound runtime generation identity`);
+    throw new Error(
+      `${label} requires an atomic Machine Runtime trace snapshot`,
+    );
   }
-  return { targetId: identity.targetId, sessionId: identity.sessionId };
+  return {
+    runtimeGenerationId: snapshot.runtimeGenerationId,
+    entries: snapshot.entries,
+  };
 }
 
-function traceBoundary(entries, label, runtimeIdentity) {
+function traceBoundary(snapshot, label) {
+  const { entries, runtimeGenerationId } = runtimeTraceSnapshot(
+    snapshot,
+    label,
+  );
   if (!Array.isArray(entries)) {
     throw new Error(
       `${label} requires an installed Machine Runtime Trace array`,
@@ -279,11 +287,11 @@ function traceBoundary(entries, label, runtimeIdentity) {
     source: "installed_machine_runtime_trace_cdp",
     lastEntryId,
     capturedAt: new Date().toISOString(),
-    runtimeIdentity: runtimeTraceIdentity(runtimeIdentity, label),
+    runtimeGenerationId,
   };
 }
 
-function traceEntriesAfterBoundary(entries, boundary, label, runtimeIdentity) {
+function traceEntriesAfterBoundary(snapshot, boundary, label) {
   if (
     boundary?.source !== "installed_machine_runtime_trace_cdp" ||
     !Number.isInteger(boundary?.lastEntryId) ||
@@ -294,14 +302,17 @@ function traceEntriesAfterBoundary(entries, boundary, label, runtimeIdentity) {
       `${label} must retain an installed-CDP trace id boundary and capture timestamp`,
     );
   }
-  const boundaryIdentity = runtimeTraceIdentity(
-    boundary.runtimeIdentity,
-    `${label} boundary`,
+  if (
+    typeof boundary.runtimeGenerationId !== "string" ||
+    boundary.runtimeGenerationId.trim() === ""
+  ) {
+    throw new Error(`${label} boundary requires a Machine Runtime generation`);
+  }
+  const { entries, runtimeGenerationId } = runtimeTraceSnapshot(
+    snapshot,
+    label,
   );
-  const currentIdentity = runtimeTraceIdentity(runtimeIdentity, label);
-  const sameRuntime =
-    boundaryIdentity.targetId === currentIdentity.targetId &&
-    boundaryIdentity.sessionId === currentIdentity.sessionId;
+  const sameRuntime = boundary.runtimeGenerationId === runtimeGenerationId;
   return entries.filter((entry) => {
     if (!Number.isInteger(entry?.id) || entry.id < 1) return false;
     if (sameRuntime) return entry.id > boundary.lastEntryId;
@@ -911,25 +922,28 @@ export function validateFastRouteStressSaleEvidence(input) {
   if (
     machineRuntimeTrace.source !== "installed_machine_runtime_trace_cdp" ||
     !Number.isFinite(Date.parse(machineRuntimeTrace.capturedAt)) ||
-    !Array.isArray(machineRuntimeTrace.entries)
+    !Array.isArray(machineRuntimeTrace.entries) ||
+    typeof machineRuntimeTrace.runtimeGenerationId !== "string" ||
+    machineRuntimeTrace.runtimeGenerationId.trim() === ""
   ) {
     throw new Error(
       "Machine Runtime Trace must retain direct installed-CDP provenance and capture timestamp",
     );
   }
-  const runtimeTrace = machineRuntimeTrace.entries;
-  const runtimeIdentity = machineRuntimeTrace.runtimeIdentity;
+  const runtimeSnapshot = {
+    runtimeGenerationId: machineRuntimeTrace.runtimeGenerationId,
+    entries: machineRuntimeTrace.entries,
+  };
+  const runtimeTrace = runtimeSnapshot.entries;
   const noCatalogTrace = traceEntriesAfterBoundary(
-    runtimeTrace,
+    runtimeSnapshot,
     input.noCatalogTraceBoundary,
     "no-Catalog trace boundary",
-    runtimeIdentity,
   );
   const repeatedTouchTrace = traceEntriesAfterBoundary(
-    runtimeTrace,
+    runtimeSnapshot,
     repeatedPaymentTouch.preDispatchTraceBoundary,
     "repeated payment touch pre-dispatch trace boundary",
-    runtimeIdentity,
   );
   const repeatedTouch = repeatedTouchTrace.find(
     (entry) =>
@@ -945,10 +959,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const guardedDepartureTrace = traceEntriesAfterBoundary(
-    runtimeTrace,
+    runtimeSnapshot,
     vision.traceBoundary,
     "Vision departure control-request trace boundary",
-    runtimeIdentity,
   );
   const guardedDeparture = guardedDepartureTrace.find(
     (entry) =>
@@ -1288,10 +1301,13 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
-async function readRuntimeTrace(client) {
-  return evaluateExpression(
-    client,
-    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+async function readRuntimeTraceSnapshot(client) {
+  return runtimeTraceSnapshot(
+    await evaluateExpression(
+      client,
+      "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
+    ),
+    "Machine Runtime Trace",
   );
 }
 
@@ -1406,19 +1422,8 @@ export async function startContinuousCdpLocationHashObservation(
   };
 }
 
-async function observeRuntimeTraceIdentity(client, label) {
-  if (!client || typeof client.observeIdentity !== "function") {
-    throw new Error(`${label} requires an installed CDP runtime identity`);
-  }
-  return runtimeTraceIdentity(await client.observeIdentity(), label);
-}
-
 async function captureRuntimeTraceBoundary(client, label) {
-  const [entries, runtimeIdentity] = await Promise.all([
-    readRuntimeTrace(client),
-    observeRuntimeTraceIdentity(client, label),
-  ]);
-  return traceBoundary(entries, label, runtimeIdentity);
+  return traceBoundary(await readRuntimeTraceSnapshot(client), label);
 }
 
 async function waitForRepeatedCustomerTouchTrace(
@@ -1429,15 +1434,12 @@ async function waitForRepeatedCustomerTouchTrace(
   const deadline = Date.now() + timeoutMs;
   let lastTrace = [];
   do {
-    lastTrace = await readRuntimeTrace(client);
+    const snapshot = await readRuntimeTraceSnapshot(client);
+    lastTrace = snapshot.entries;
     const touch = traceEntriesAfterBoundary(
-      lastTrace,
+      snapshot,
       preDispatchTraceBoundary,
       "repeated payment touch pre-dispatch trace boundary",
-      await observeRuntimeTraceIdentity(
-        client,
-        "repeated payment touch runtime trace",
-      ),
     ).find(
       (entry) =>
         entry?.type === "navigation" &&
@@ -1458,7 +1460,7 @@ export async function waitForGuardedVisionDepartureTrace(
   traceBoundary,
   {
     timeoutMs = 15_000,
-    readTrace = readRuntimeTrace,
+    readTrace = readRuntimeTraceSnapshot,
     sleepFn = sleep,
     now = () => Date.now(),
   } = {},
@@ -1466,15 +1468,12 @@ export async function waitForGuardedVisionDepartureTrace(
   const deadline = now() + timeoutMs;
   let lastTrace = [];
   do {
-    lastTrace = await readTrace(client);
+    const snapshot = await readTrace(client);
+    lastTrace = snapshot.entries;
     const departure = traceEntriesAfterBoundary(
-      lastTrace,
+      snapshot,
       traceBoundary,
       "Vision departure control-request trace boundary",
-      await observeRuntimeTraceIdentity(
-        client,
-        "Vision departure runtime trace",
-      ),
     ).find(
       (entry) =>
         entry?.type === "navigation" &&
@@ -2378,7 +2377,7 @@ async function runFastRouteStressSale(options) {
       },
     );
     const afterF2Ui = resultSurface;
-    const runtimeTrace = await readRuntimeTrace(client);
+    const runtimeTrace = await readRuntimeTraceSnapshot(client);
     const platformLog = await collectPlatformLog(
       guestInput,
       sessionStart.sessionId,
@@ -2391,11 +2390,8 @@ async function runFastRouteStressSale(options) {
       machineRuntimeTrace: {
         source: "installed_machine_runtime_trace_cdp",
         capturedAt: new Date().toISOString(),
-        runtimeIdentity: await observeRuntimeTraceIdentity(
-          client,
-          "Machine Runtime Trace evidence",
-        ),
-        entries: runtimeTrace,
+        runtimeGenerationId: runtimeTrace.runtimeGenerationId,
+        entries: runtimeTrace.entries,
       },
       createOrderGate: {
         controlPlane: createOrderGate.controlPlane,
@@ -2482,7 +2478,7 @@ async function runFastRouteStressSale(options) {
         stop,
         stopRepeat,
       },
-      runtimeTrace: compactRuntimeTrace(runtimeTrace),
+      runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
       checkpoints,
       logs: {
         daemonProcess: processLiveness(handoff?.daemon?.processId),
@@ -2525,8 +2521,11 @@ async function runFastRouteStressSale(options) {
       if (failure) failureCheckpoints.push(failure);
     }
     const runtimeTrace = clientReady
-      ? await readRuntimeTrace(client).catch(() => [])
-      : [];
+      ? await readRuntimeTraceSnapshot(client).catch(() => ({
+          runtimeGenerationId: null,
+          entries: [],
+        }))
+      : { runtimeGenerationId: null, entries: [] };
     continuousCdpLocationHash =
       continuousCdpLocationHash ??
       continuousCdpLocationHashObserver?.snapshot() ??
@@ -2563,7 +2562,7 @@ async function runFastRouteStressSale(options) {
       error: primaryError,
       controlPlaneSessionId: sessionStart?.sessionId ?? null,
       liveSale,
-      runtimeTrace,
+      runtimeTrace: runtimeTrace.entries,
       continuousCdpLocationHash,
       snapshots: {
         platform: {

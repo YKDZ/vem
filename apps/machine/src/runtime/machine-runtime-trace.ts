@@ -82,6 +82,11 @@ export type MachineRuntimeTraceEntry =
   | MachineRuntimeTransactionSurfaceTraceEntry
   | MachineRuntimeCustomerErrorTraceEntry;
 
+export type MachineRuntimeTraceSnapshot = {
+  runtimeGenerationId: string;
+  entries: readonly MachineRuntimeTraceEntry[];
+};
+
 type MachineRuntimeRecordedEntry =
   | MachineRuntimeAudioTraceEntry
   | MachineRuntimeTransactionSurfaceTraceEntry
@@ -107,6 +112,7 @@ export type MachineRuntimeTrace = {
   ): void;
   entries(): readonly MachineRuntimeTraceEntry[];
   navigationEntries(): readonly MachineRuntimeNavigationTraceRecord[];
+  snapshot(): MachineRuntimeTraceSnapshot;
 };
 
 const DEFAULT_TRACE_LIMIT = 256;
@@ -115,6 +121,7 @@ export function createMachineRuntimeTrace(
   limit = DEFAULT_TRACE_LIMIT,
 ): MachineRuntimeTrace {
   const entries: MachineRuntimeTraceEntry[] = [];
+  const runtimeGenerationId = createRuntimeGenerationId();
   let nextId = 1;
 
   function append(entry: MachineRuntimeTraceEntry): void {
@@ -153,5 +160,18 @@ export function createMachineRuntimeTrace(
           )
           .map((entry) => Object.freeze({ ...entry })),
       ),
+    snapshot: () =>
+      Object.freeze({
+        runtimeGenerationId,
+        entries: Object.freeze(
+          entries.map((entry) => Object.freeze({ ...entry })),
+        ),
+      }),
   };
+}
+
+function createRuntimeGenerationId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `runtime:${random}`;
+  return `runtime:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
