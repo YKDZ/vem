@@ -22,7 +22,6 @@ const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
-const MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS = 3;
 const PAYMENT_CODE_CLEANUP_TIMEOUT_MS = 180_000;
 export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
@@ -118,12 +117,10 @@ export function sanitizeProviderEvidence(value, depth = 0) {
   );
 }
 
-export function isRetryableAlipaySandboxError(error) {
-  const message = errorMessage(error);
-  return ["aop.ACQ.SYSTEM_ERROR", "PAYMENT_CODE_QUERY_UNKNOWN"].some((code) =>
-    message.includes(code),
-  );
-}
+const ALIPAY_SANDBOX_UNCERTAIN_CODES = new Set([
+  "aop.ACQ.SYSTEM_ERROR",
+  "PAYMENT_CODE_QUERY_UNKNOWN",
+]);
 
 export function parsePaymentProviderGuestArgs(args) {
   if (option(args, "mode") !== "full") throw new Error("--mode must be full");
@@ -602,15 +599,6 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
           entry?.paymentNo === order.paymentNo &&
           entry?.providerCode === "alipay",
       );
-      if (
-        attempt?.status === "querying" &&
-        typeof attempt?.failureCode === "string" &&
-        attempt.failureCode.length > 0
-      ) {
-        throw new Error(
-          `Alipay payment-code provider call remained uncertain: ${attempt.failureCode}`,
-        );
-      }
       return attempt;
     },
     (attempt) => {
@@ -623,10 +611,13 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
         attempt?.providerStatus === "WAIT_BUYER_PAY" &&
         typeof attempt?.providerTradeNo === "string" &&
         attempt.providerTradeNo.length > 0;
+      const uncertain =
+        attempt?.status === "querying" &&
+        ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt?.failureCode);
       return (
         typeof attempt?.id === "string" &&
         attempt.id.length > 0 &&
-        (rejected || awaitingBuyer)
+        (rejected || awaitingBuyer || uncertain)
       );
     },
     {
@@ -947,7 +938,9 @@ export function validateUnattendedProviderAttempt(attempt) {
       attempt.machine?.surface?.paymentId !== order.paymentId ||
       attempt.machine?.surface?.orderNo !== order.orderNo ||
       !String(attempt.machine?.scannerPrompt ?? "").includes("请出示付款码") ||
-      !["failed", "user_confirming"].includes(attempt.submission?.status) ||
+      !["failed", "querying", "user_confirming"].includes(
+        attempt.submission?.status,
+      ) ||
       attempt.submission?.providerCode !== "alipay" ||
       !attempt.submission?.attemptId ||
       !attempt.submission?.providerStatus ||
@@ -955,6 +948,8 @@ export function validateUnattendedProviderAttempt(attempt) {
         !attempt.submission?.failureCode) ||
       (attempt.submission?.status === "user_confirming" &&
         attempt.submission?.providerStatus !== "WAIT_BUYER_PAY") ||
+      (attempt.submission?.status === "querying" &&
+        !ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt.submission?.failureCode)) ||
       attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
       attempt.cleanup?.closure?.handled !== true ||
       !attempt.cleanup?.providerConfigId ||
@@ -1115,42 +1110,20 @@ export async function runPaymentProviderGuest(options) {
       }),
     );
     stage = "creation";
-    for (
-      let attemptNo = 1;
-      attemptNo <= MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS;
-      attemptNo += 1
-    ) {
-      try {
-        report.authoritative.attempts.push(
-          await paymentCodeAttempt({
-            input,
-            handoff: readJson(options.handoffPath),
-            handoffPath: options.handoffPath,
-            client,
-            token,
-            timeoutMs,
-            provider,
-            setStage: (next) => {
-              stage = next;
-            },
-          }),
-        );
-        break;
-      } catch (error) {
-        if (
-          attemptNo === MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS ||
-          !isRetryableAlipaySandboxError(error)
-        ) {
-          throw error;
-        }
-        await cleanAuthoritativeOrderBeforeDiagnostics(
-          client,
-          readJson(options.handoffPath),
-          PAYMENT_CODE_CLEANUP_TIMEOUT_MS,
-        );
-        stage = "creation";
-      }
-    }
+    report.authoritative.attempts.push(
+      await paymentCodeAttempt({
+        input,
+        handoff,
+        handoffPath: options.handoffPath,
+        client,
+        token,
+        timeoutMs: PAYMENT_CODE_CLEANUP_TIMEOUT_MS,
+        provider,
+        setStage: (next) => {
+          stage = next;
+        },
+      }),
+    );
     report.authoritative.ok = true;
     report.ok = true;
     writeJson(options.outPath, report);
