@@ -771,6 +771,7 @@ export function installUiDebugDaemon(): void {
         submittedQuantity: null,
         submittedAddition: null,
         previewQuantity: null,
+        movementId: null,
         syncStatus: "not_submitted",
         salesState: item.slotSalesState,
         reconciliationReason: null,

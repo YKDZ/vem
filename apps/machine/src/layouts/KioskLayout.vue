@@ -11,7 +11,11 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
     class="kiosk-shell flex min-h-0 flex-col px-[var(--machine-page-inline)] pt-[var(--machine-page-header-top)] pb-5"
   >
     <header class="flex items-center justify-between gap-3">
-      <div class="flex items-center gap-3" @click="handleMaintenanceTap">
+      <div
+        class="flex items-center gap-3"
+        data-test="maintenance-entry-header"
+        @click="handleMaintenanceTap"
+      >
         <img :src="logoImage" alt="唐诗村" />
         <img
           :src="mascotTopImage"

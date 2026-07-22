@@ -16,12 +16,15 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const SCHEMA_VERSION = "vem-stock-maintenance-guest-full/v1";
 const TIMEOUT_MS = 45_000;
 const POLL_MS = 250;
 const STOCK_TASK_SELECTOR = "[data-test='maintenance-task-stock']";
 const STOCK_PANEL_SELECTOR = "[data-test='stock-maintenance']";
+const MAINTENANCE_ENTRY_SELECTOR = "[data-test='maintenance-entry-header']";
+const MAINTENANCE_RETURN_SELECTOR = "[data-test='maintenance-return-catalog']";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -67,24 +70,69 @@ function writeJson(path, value) {
   writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function unwrap(payload) {
-  return payload?.code === 0 && Object.hasOwn(payload, "data")
-    ? payload.data
-    : payload;
+export function parseDaemonPayload(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    Object.hasOwn(payload, "code") ||
+    Object.hasOwn(payload, "data")
+  ) {
+    throw new Error("daemon response must be bare JSON");
+  }
+  return payload;
 }
 
-async function request(url, options = {}) {
+export function parseServiceApiEnvelope(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    payload.code !== 0 ||
+    !Object.hasOwn(payload, "data")
+  ) {
+    throw new Error("Service API response must be a success envelope");
+  }
+  return payload.data;
+}
+
+async function request(url, { parse, ...options } = {}) {
   const response = await fetch(url, {
     ...options,
     signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.code !== 0) {
+  if (!response.ok) {
     throw new Error(
       `${options.method ?? "GET"} ${url} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
   }
-  return unwrap(payload);
+  return parse(payload);
+}
+
+async function hostControlRequest(input, path, body = {}) {
+  const controlPlane = input?.hostControlPlane;
+  const endpoint = required(
+    controlPlane?.endpoint,
+    "hostControlPlane endpoint",
+  );
+  const token = required(controlPlane?.token, "hostControlPlane token");
+  const response = await fetch(`${endpoint}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(
+      `host control ${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+    );
+  }
+  return payload;
 }
 
 function daemonBase(handoff) {
@@ -100,6 +148,7 @@ function daemonBase(handoff) {
 
 function daemon(handoff, path, body) {
   return request(`${daemonBase(handoff)}${path}`, {
+    parse: parseDaemonPayload,
     method: body === undefined ? "GET" : "POST",
     headers: {
       authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
@@ -115,6 +164,7 @@ async function adminToken(input) {
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
   const login = await request(`${base}/auth/login`, {
+    parse: parseServiceApiEnvelope,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -138,7 +188,29 @@ async function inventoryMovements(input, token, inventoryId) {
   ).replace(/\/+$/, "");
   return await request(
     `${base}/inventory-movements?page=1&pageSize=100&inventoryId=${encodeURIComponent(inventoryId)}`,
-    { headers: { authorization: `Bearer ${token}` } },
+    {
+      parse: parseServiceApiEnvelope,
+      headers: { authorization: `Bearer ${token}` },
+    },
+  );
+}
+
+function movementCursor(page, inventoryId) {
+  const baselineItemIds = (page?.items ?? []).map((item) => item?.id);
+  if (
+    baselineItemIds.some((id) => typeof id !== "string" || id === "") ||
+    new Set(baselineItemIds).size !== baselineItemIds.length
+  ) {
+    throw new Error(
+      "Service API inventory movement cursor is not identity-complete",
+    );
+  }
+  return { inventoryId, capturedAt: new Date().toISOString(), baselineItemIds };
+}
+
+function movementDelta(page, cursor) {
+  return (page?.items ?? []).filter(
+    (item) => !cursor.baselineItemIds.includes(item?.id),
   );
 }
 
@@ -148,6 +220,7 @@ async function inventory(input, token, inventoryId) {
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
   const page = await request(`${base}/inventories?page=1&pageSize=100`, {
+    parse: parseServiceApiEnvelope,
     headers: { authorization: `Bearer ${token}` },
   });
   const entry = (page?.items ?? []).find((item) => item?.id === inventoryId);
@@ -227,10 +300,26 @@ async function connectUi(handoff) {
 }
 
 async function openStockMaintenance(client) {
-  await evaluateExpression(
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  const visibleBeforeEntry = await evaluateExpression(
     client,
-    "location.hash = '#/maintenance?source=operator'",
+    `Boolean(document.querySelector(${JSON.stringify(STOCK_PANEL_SELECTOR)})?.getClientRects().length)`,
   );
+  if (visibleBeforeEntry) {
+    throw new Error(
+      "stock maintenance must be unavailable on Catalog before entry",
+    );
+  }
+  for (let count = 0; count < 7; count += 1) {
+    await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
+      kind: "touch",
+      timeoutMs: TIMEOUT_MS,
+      pollMs: POLL_MS,
+    });
+  }
   await waitForRoute(client, "#/maintenance?source=operator", {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
@@ -250,6 +339,30 @@ async function openStockMaintenance(client) {
       ),
     (visible) => visible === true,
   );
+}
+
+async function returnToCatalogFromMaintenance(client) {
+  await activateVisibleSelector(client, MAINTENANCE_RETURN_SELECTOR, {
+    kind: "touch",
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+}
+
+async function captureStockScreenshot(client, sink, label, route, identity) {
+  return {
+    ...(await captureScreenshot(client, {
+      label,
+      screenshotSink: sink,
+      validatePng: true,
+    })),
+    route,
+    slotCode: identity.slotCode,
+  };
 }
 
 async function enterRoutineRefill(client, identity) {
@@ -345,27 +458,137 @@ function runSale(options, outPath) {
   });
 }
 
+async function replaceSaleHandoff(input, handoff, options) {
+  const previousControlPlaneSessionId = required(
+    handoff?.commissioningSerialSession?.sessionId,
+    "handoff commissioning serial session id",
+  );
+  const replacement = await replaceSerialSessionAndUpdateHandoff({
+    guestInput: input,
+    handoff,
+    handoffPath: options.handoffPath,
+    sessionId: previousControlPlaneSessionId,
+    control: hostControlRequest,
+  });
+  return {
+    previousControlPlaneSessionId,
+    replacementControlPlaneSessionId: required(
+      replacement?.replacement?.sessionId,
+      "replacement serial session id",
+    ),
+  };
+}
+
+function saleEvidence(sale, runId, handoff) {
+  const summary = sale?.summary ?? {};
+  const cleanup = Array.isArray(sale?.cleanup) ? sale.cleanup : [];
+  const paymentGateOpen = cleanup.some(
+    (step) => step?.label === "reopen payment create gate" && step?.ok === true,
+  );
+  const serialSessionInactive = cleanup.some(
+    (step) => step?.label === "abort serial session" && step?.ok === true,
+  );
+  const controlPlaneSessionId = required(
+    sale?.controlPlaneSessionId,
+    "sale control-plane session id",
+  );
+  if (
+    sale?.schemaVersion !== "vem-fast-route-stress-sale/v2" ||
+    sale?.ok !== true ||
+    sale?.runId !== runId ||
+    controlPlaneSessionId !== handoff.replacementControlPlaneSessionId ||
+    !paymentGateOpen ||
+    !serialSessionInactive
+  ) {
+    throw new Error(
+      "installed sale report is missing independent session cleanup evidence",
+    );
+  }
+  return {
+    runId,
+    orderId: required(summary.orderId, "sale order id"),
+    paymentId: required(summary.paymentId, "sale payment id"),
+    paymentNo: required(summary.paymentNo, "sale payment number"),
+    commandId: required(summary.vendingCommandId, "sale command id"),
+    commandNo: required(summary.commandNo, "sale command number"),
+    fulfillmentMovementId: required(
+      summary.movementId,
+      "sale fulfillment movement id",
+    ),
+    controlPlaneSessionId,
+    serialSessionId: required(
+      summary.serialSessionId,
+      "sale serial session id",
+    ),
+    resultRoute: required(sale?.resultRoute, "sale result route"),
+    handoff,
+    gateCleanup: { paymentGateOpen, serialSessionInactive },
+  };
+}
+
 export function validateStockMaintenanceReport(report) {
+  const runId = report?.runId;
   const firstOrderId = report?.firstSale?.orderId;
   const secondOrderId = report?.secondSale?.orderId;
   const movements = report?.terminal?.movements;
+  const projection = report?.maintenance?.projection;
+  const platformMovement = report?.maintenance?.platformMovement;
   const stock = (value, quantity) =>
     value?.physicalStock === quantity && value?.saleableStock === quantity;
+  const validSale = (sale) =>
+    sale?.runId === runId &&
+    [
+      "orderId",
+      "paymentId",
+      "paymentNo",
+      "commandId",
+      "commandNo",
+      "fulfillmentMovementId",
+      "controlPlaneSessionId",
+      "serialSessionId",
+    ].every((key) => typeof sale?.[key] === "string" && sale[key] !== "") &&
+    sale?.resultRoute === "#/result/success" &&
+    sale?.gateCleanup?.paymentGateOpen === true &&
+    sale?.gateCleanup?.serialSessionInactive === true;
   if (
     report?.schemaVersion !== SCHEMA_VERSION ||
     report?.ok !== true ||
+    typeof runId !== "string" ||
     report?.fixture?.initialQuantity !== 1 ||
     typeof report?.fixture?.slotCode !== "string" ||
     typeof report?.fixture?.sku !== "string" ||
+    typeof report?.fixture?.slotId !== "string" ||
     typeof report?.fixture?.inventoryId !== "string" ||
-    typeof firstOrderId !== "string" ||
-    typeof secondOrderId !== "string" ||
+    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
+    !Number.isFinite(Date.parse(report?.movementCursor?.capturedAt)) ||
+    !Array.isArray(report?.movementCursor?.baselineItemIds) ||
+    new Set(report.movementCursor.baselineItemIds).size !==
+      report.movementCursor.baselineItemIds.length ||
+    !validSale(report?.firstSale) ||
+    !validSale(report?.secondSale) ||
     firstOrderId === secondOrderId ||
+    report.firstSale.controlPlaneSessionId ===
+      report.secondSale.controlPlaneSessionId ||
+    report.firstSale.serialSessionId === report.secondSale.serialSessionId ||
+    report.firstSale.paymentId === report.secondSale.paymentId ||
+    report.firstSale.commandId === report.secondSale.commandId ||
+    report.firstSale.fulfillmentMovementId ===
+      report.secondSale.fulfillmentMovementId ||
     !stock(report?.unavailable?.daemon, 0) ||
     report?.unavailable?.platform?.onHandQty !== 0 ||
     report?.maintenance?.addition !== 2 ||
     report?.maintenance?.previewQuantity !== 2 ||
     report?.maintenance?.refillMovementCount !== 1 ||
+    projection?.taskStatus !== "complete" ||
+    projection?.slotSyncStatus !== "accepted" ||
+    projection?.movementId !==
+      `${report.maintenance.taskId}:${report.fixture.slotId}` ||
+    projection?.movementType !== "planned_refill" ||
+    projection?.source !== "local_maintenance" ||
+    platformMovement?.inventoryId !== report.fixture.inventoryId ||
+    platformMovement?.reason !== "hardware_sync" ||
+    platformMovement?.deltaQty !== 2 ||
+    typeof platformMovement?.id !== "string" ||
     !stock(report?.restored?.daemon, 2) ||
     report?.restored?.platform?.onHandQty !== 2 ||
     !stock(report?.terminal?.daemon, 1) ||
@@ -374,13 +597,26 @@ export function validateStockMaintenanceReport(report) {
     new Set(movements.saleDecrementOrderIds).size !== 2 ||
     !movements.saleDecrementOrderIds.includes(firstOrderId) ||
     !movements.saleDecrementOrderIds.includes(secondOrderId) ||
+    !Array.isArray(movements?.salePlatformMovementIds) ||
+    movements.salePlatformMovementIds.length !== 2 ||
+    new Set(movements.salePlatformMovementIds).size !== 2 ||
+    movements.salePlatformMovementIds.some(
+      (movementId) => typeof movementId !== "string" || movementId === "",
+    ) ||
     JSON.stringify(movements.refillDeltas) !== JSON.stringify([2]) ||
+    report?.screenshots?.unavailable?.route !==
+      "#/maintenance?source=operator" ||
+    report?.screenshots?.refillConfirmed?.route !==
+      "#/maintenance?source=operator" ||
+    report?.screenshots?.restoredSaleability?.route !== "#/catalog" ||
     !["unavailable", "refillConfirmed", "restoredSaleability"].every(
-      (key) => typeof report?.screenshots?.[key]?.ref === "string",
+      (key) =>
+        typeof report?.screenshots?.[key]?.ref === "string" &&
+        report.screenshots[key].slotCode === report.fixture.slotCode,
     )
   ) {
     throw new Error(
-      "stock maintenance report is missing the 1-to-0-to-2-to-1 evidence",
+      "stock maintenance report is missing the 1-to-0-to-2-to-1 evidence with an accepted task projection",
     );
   }
   return { slotCode: report.fixture.slotCode, firstOrderId, secondOrderId };
@@ -388,13 +624,14 @@ export function validateStockMaintenanceReport(report) {
 
 export async function runStockMaintenanceGuest(options) {
   const input = readJson(options.guestInputPath);
-  const handoff = readJson(options.handoffPath);
+  let handoff = readJson(options.handoffPath);
   const fixture = input.fixtureAllocation?.[options.fixtureKey];
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     runId: required(input.runId, "runId"),
     fixture: null,
+    movementCursor: null,
     firstSale: null,
     unavailable: null,
     maintenance: null,
@@ -415,17 +652,18 @@ export async function runStockMaintenanceGuest(options) {
     }
     report.fixture = { ...identity, initialQuantity: 1 };
     const token = await adminToken(input);
+    report.movementCursor = movementCursor(
+      await inventoryMovements(input, token, identity.inventoryId),
+      identity.inventoryId,
+    );
+    const firstHandoff = await replaceSaleHandoff(input, handoff, options);
+    handoff = readJson(options.handoffPath);
     const firstReportPath = join(
       dirname(localPath(options.outPath)),
       "stock-maintenance-first-sale.json",
     );
     const first = await runSale(options, firstReportPath);
-    report.firstSale = {
-      orderId: required(
-        first?.renderedSale?.orderId,
-        "first installed sale orderId",
-      ),
-    };
+    report.firstSale = saleEvidence(first, report.runId, firstHandoff);
     const unavailableView = await waitFor(
       "fixture depletion after first installed sale",
       () => daemon(handoff, "/v1/sale-view"),
@@ -445,11 +683,13 @@ export async function runStockMaintenanceGuest(options) {
     client = await connectUi(handoff);
     await openStockMaintenance(client);
     const sink = screenshotSink(options.outPath);
-    report.screenshots.unavailable = await captureScreenshot(client, {
-      label: "unavailable",
-      screenshotSink: sink,
-      validatePng: true,
-    });
+    report.screenshots.unavailable = await captureStockScreenshot(
+      client,
+      sink,
+      "unavailable",
+      "#/maintenance?source=operator",
+      identity,
+    );
     await enterRoutineRefill(client, identity);
     const submittedTask = await waitFor(
       "submitted +2 routine refill",
@@ -460,7 +700,8 @@ export async function runStockMaintenanceGuest(options) {
           (slot) =>
             slot?.slotCode === identity.slotCode &&
             slot?.submittedAddition === 2 &&
-            slot?.previewQuantity === 2,
+            slot?.previewQuantity === 2 &&
+            slot?.movementId === `${task.taskId}:${identity.slotId}`,
         ),
     );
     const submittedSlot = submittedTask.slots.find(
@@ -471,12 +712,16 @@ export async function runStockMaintenanceGuest(options) {
       addition: submittedSlot.submittedAddition,
       previewQuantity: submittedSlot.previewQuantity,
       refillMovementCount: null,
+      projection: null,
+      platformMovement: null,
     };
-    report.screenshots.refillConfirmed = await captureScreenshot(client, {
-      label: "refill-confirmed",
-      screenshotSink: sink,
-      validatePng: true,
-    });
+    report.screenshots.refillConfirmed = await captureStockScreenshot(
+      client,
+      sink,
+      "refill-confirmed",
+      "#/maintenance?source=operator",
+      identity,
+    );
     const restoredView = await waitFor(
       "local refill synchronization",
       () => daemon(handoff, "/v1/sale-view"),
@@ -489,29 +734,65 @@ export async function runStockMaintenanceGuest(options) {
       () => inventory(input, token, identity.inventoryId),
       (value) => value?.onHandQty === 2 && value?.reservedQty === 0,
     );
+    const completedTask = await waitFor(
+      "accepted routine refill task projection",
+      () =>
+        daemon(
+          handoff,
+          `/v1/stock/maintenance-tasks/${encodeURIComponent(submittedTask.taskId)}/projection`,
+        ),
+      (task) =>
+        task?.taskId === submittedTask.taskId &&
+        task?.mode === "routine_refill" &&
+        task?.status === "complete" &&
+        task?.slots?.some(
+          (slot) =>
+            slot?.slotCode === identity.slotCode &&
+            slot?.submittedAddition === 2 &&
+            slot?.previewQuantity === 2 &&
+            slot?.movementId === `${submittedTask.taskId}:${identity.slotId}` &&
+            slot?.movementType === "planned_refill" &&
+            slot?.source === "local_maintenance" &&
+            slot?.syncStatus === "accepted",
+        ),
+    );
+    const completedSlot = completedTask.slots.find(
+      (slot) => slot.slotCode === identity.slotCode,
+    );
+    report.maintenance.projection = {
+      taskStatus: completedTask.status,
+      slotSyncStatus: completedSlot.syncStatus,
+      movementId: completedSlot.movementId,
+      movementType: completedSlot.movementType,
+      source: completedSlot.source,
+    };
     const afterRefillMovements = await waitFor(
       "one correlated platform refill movement",
       () => inventoryMovements(input, token, identity.inventoryId),
       (page) =>
-        (page?.items ?? []).filter(
+        movementDelta(page, report.movementCursor).filter(
           (movement) =>
-            movement?.reason === "refill" && movement?.deltaQty === 2,
+            movement?.reason === "hardware_sync" &&
+            movement?.deltaQty === 2 &&
+            movement?.inventoryId === identity.inventoryId,
         ).length === 1,
     );
-    report.maintenance.refillMovementCount = (
-      afterRefillMovements.items ?? []
+    const refillMovements = movementDelta(
+      afterRefillMovements,
+      report.movementCursor,
     ).filter(
-      (movement) => movement?.reason === "refill" && movement?.deltaQty === 2,
-    ).length;
+      (movement) =>
+        movement?.reason === "hardware_sync" &&
+        movement?.deltaQty === 2 &&
+        movement?.inventoryId === identity.inventoryId,
+    );
+    report.maintenance.refillMovementCount = refillMovements.length;
+    report.maintenance.platformMovement = refillMovements[0];
     report.restored = {
       daemon: stockFact(restoredView, identity),
       platform: restoredPlatform,
     };
-    await evaluateExpression(client, "location.hash = '#/catalog'");
-    await waitForRoute(client, "#/catalog", {
-      timeoutMs: TIMEOUT_MS,
-      pollMs: POLL_MS,
-    });
+    await returnToCatalogFromMaintenance(client);
     await waitFor(
       "visible restored fixture saleability",
       () =>
@@ -521,24 +802,23 @@ export async function runStockMaintenanceGuest(options) {
         ),
       (visible) => visible === true,
     );
-    report.screenshots.restoredSaleability = await captureScreenshot(client, {
-      label: "restored-saleability",
-      screenshotSink: sink,
-      validatePng: true,
-    });
+    report.screenshots.restoredSaleability = await captureStockScreenshot(
+      client,
+      sink,
+      "restored-saleability",
+      "#/catalog",
+      identity,
+    );
     await client.close();
     client = null;
     const secondReportPath = join(
       dirname(localPath(options.outPath)),
       "stock-maintenance-second-sale.json",
     );
+    const secondHandoff = await replaceSaleHandoff(input, handoff, options);
+    handoff = readJson(options.handoffPath);
     const second = await runSale(options, secondReportPath);
-    report.secondSale = {
-      orderId: required(
-        second?.renderedSale?.orderId,
-        "second installed sale orderId",
-      ),
-    };
+    report.secondSale = saleEvidence(second, report.runId, secondHandoff);
     const terminalView = await waitFor(
       "fixture terminal quantity after second installed sale",
       () => daemon(handoff, "/v1/sale-view"),
@@ -555,7 +835,7 @@ export async function runStockMaintenanceGuest(options) {
       "two correlated sale decrements",
       () => inventoryMovements(input, token, identity.inventoryId),
       (page) => {
-        const ids = (page?.items ?? [])
+        const ids = movementDelta(page, report.movementCursor)
           .filter(
             (movement) =>
               movement?.reason === "purchase_confirmed" &&
@@ -575,6 +855,11 @@ export async function runStockMaintenanceGuest(options) {
         saleDecrementOrderIds: (terminalMovements.items ?? [])
           .filter(
             (movement) =>
+              movementDelta({ items: [movement] }, report.movementCursor)
+                .length === 1,
+          )
+          .filter(
+            (movement) =>
               movement?.reason === "purchase_confirmed" &&
               movement?.deltaQty === -1,
           )
@@ -584,8 +869,21 @@ export async function runStockMaintenanceGuest(options) {
               orderId,
             ),
           ),
-        refillDeltas: (terminalMovements.items ?? [])
-          .filter((movement) => movement?.reason === "refill")
+        salePlatformMovementIds: movementDelta(
+          terminalMovements,
+          report.movementCursor,
+        )
+          .filter(
+            (movement) =>
+              movement?.reason === "purchase_confirmed" &&
+              movement?.deltaQty === -1 &&
+              [report.firstSale.orderId, report.secondSale.orderId].includes(
+                movement?.orderId,
+              ),
+          )
+          .map((movement) => movement.id),
+        refillDeltas: movementDelta(terminalMovements, report.movementCursor)
+          .filter((movement) => movement?.reason === "hardware_sync")
           .map((movement) => movement.deltaQty),
       },
     };

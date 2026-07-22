@@ -46,7 +46,9 @@ describe("KioskLayout", () => {
     app.mount(host);
     await nextTick();
 
-    const hiddenMaintenanceTarget = host.querySelector("header > div");
+    const hiddenMaintenanceTarget = host.querySelector(
+      "[data-test='maintenance-entry-header']",
+    );
     expect(hiddenMaintenanceTarget).not.toBeNull();
 
     for (let index = 0; index < 7; index += 1) {

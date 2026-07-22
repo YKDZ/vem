@@ -16,6 +16,7 @@ const slot = {
   submittedQuantity: null,
   submittedAddition: 2,
   previewQuantity: 5,
+  movementId: "stock-task-01:550e8400-e29b-41d4-a716-446655440001",
   syncStatus: "accepted",
   salesState: "sale_ready",
   reconciliationReason: null,
@@ -36,6 +37,7 @@ describe("planogram-driven stock maintenance contract", () => {
       currentQuantity: 3,
       submittedAddition: 2,
       previewQuantity: 5,
+      movementId: "stock-task-01:550e8400-e29b-41d4-a716-446655440001",
       syncStatus: "accepted",
     });
     expect(task).not.toHaveProperty("planogramVersion");

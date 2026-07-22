@@ -1275,6 +1275,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
           </div>
           <button
             class="maintenance-primary-button"
+            data-test="maintenance-return-catalog"
             type="button"
             :disabled="Boolean(returnToCatalogBlockedReason)"
             @click="returnToCatalog"

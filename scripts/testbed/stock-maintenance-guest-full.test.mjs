@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  parseDaemonPayload,
+  parseServiceApiEnvelope,
   parseStockMaintenanceGuestArgs,
   validateStockMaintenanceReport,
 } from "./stock-maintenance-guest-full.mjs";
@@ -10,13 +12,32 @@ function report() {
   return {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
     ok: true,
+    runId: "RUN-STOCK-1",
     fixture: {
       slotCode: "B2",
       sku: "TSC-LOCAL-007",
+      slotId: "slot-stock-1",
       inventoryId: "inventory-stock-1",
       initialQuantity: 1,
     },
-    firstSale: { orderId: "order-stock-1" },
+    movementCursor: {
+      inventoryId: "inventory-stock-1",
+      capturedAt: "2026-07-22T00:00:00.000Z",
+      baselineItemIds: ["movement-before-1"],
+    },
+    firstSale: {
+      runId: "RUN-STOCK-1",
+      orderId: "order-stock-1",
+      paymentId: "payment-stock-1",
+      paymentNo: "PAY-STOCK-1",
+      commandId: "command-stock-1",
+      commandNo: "COMMAND-STOCK-1",
+      fulfillmentMovementId: "sale-movement-1",
+      controlPlaneSessionId: "session-stock-1",
+      serialSessionId: "serial-stock-1",
+      resultRoute: "#/result/success",
+      gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
+    },
     unavailable: {
       daemon: {
         physicalStock: 0,
@@ -30,6 +51,19 @@ function report() {
       addition: 2,
       previewQuantity: 2,
       refillMovementCount: 1,
+      projection: {
+        taskStatus: "complete",
+        slotSyncStatus: "accepted",
+        movementId: "refill-task-1:slot-stock-1",
+        movementType: "planned_refill",
+        source: "local_maintenance",
+      },
+      platformMovement: {
+        id: "refill-movement-1",
+        inventoryId: "inventory-stock-1",
+        reason: "hardware_sync",
+        deltaQty: 2,
+      },
     },
     restored: {
       daemon: {
@@ -39,7 +73,19 @@ function report() {
       },
       platform: { onHandQty: 2, reservedQty: 0 },
     },
-    secondSale: { orderId: "order-stock-2" },
+    secondSale: {
+      runId: "RUN-STOCK-1",
+      orderId: "order-stock-2",
+      paymentId: "payment-stock-2",
+      paymentNo: "PAY-STOCK-2",
+      commandId: "command-stock-2",
+      commandNo: "COMMAND-STOCK-2",
+      fulfillmentMovementId: "sale-movement-2",
+      controlPlaneSessionId: "session-stock-2",
+      serialSessionId: "serial-stock-2",
+      resultRoute: "#/result/success",
+      gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
+    },
     terminal: {
       daemon: {
         physicalStock: 1,
@@ -49,18 +95,57 @@ function report() {
       platform: { onHandQty: 1, reservedQty: 0 },
       movements: {
         saleDecrementOrderIds: ["order-stock-1", "order-stock-2"],
+        salePlatformMovementIds: [
+          "sale-platform-movement-1",
+          "sale-platform-movement-2",
+        ],
         refillDeltas: [2],
       },
     },
     screenshots: {
-      unavailable: { ref: "unavailable.png" },
-      refillConfirmed: { ref: "refill-confirmed.png" },
-      restoredSaleability: { ref: "restored.png" },
+      unavailable: {
+        ref: "unavailable.png",
+        route: "#/maintenance?source=operator",
+        slotCode: "B2",
+      },
+      refillConfirmed: {
+        ref: "refill-confirmed.png",
+        route: "#/maintenance?source=operator",
+        slotCode: "B2",
+      },
+      restoredSaleability: {
+        ref: "restored.png",
+        route: "#/catalog",
+        slotCode: "B2",
+      },
     },
   };
 }
 
 describe("stock maintenance guest full", () => {
+  it("keeps daemon bare JSON separate from the Service API success envelope", () => {
+    const daemonTask = {
+      taskId: "refill-task-1",
+      mode: "routine_refill",
+      status: "complete",
+    };
+    assert.deepEqual(parseDaemonPayload(daemonTask), daemonTask);
+    assert.throws(
+      () => parseDaemonPayload({ code: 0, data: daemonTask }),
+      /bare JSON/,
+    );
+
+    assert.deepEqual(parseServiceApiEnvelope({ code: 0, data: daemonTask }), {
+      taskId: "refill-task-1",
+      mode: "routine_refill",
+      status: "complete",
+    });
+    assert.throws(
+      () => parseServiceApiEnvelope(daemonTask),
+      /success envelope/,
+    );
+  });
+
   it("parses the installed guest runner contract", () => {
     assert.equal(
       parseStockMaintenanceGuestArgs([
@@ -90,6 +175,15 @@ describe("stock maintenance guest full", () => {
     assert.throws(
       () => validateStockMaintenanceReport(missingScreenshot),
       /1-to-0-to-2-to-1 evidence/,
+    );
+  });
+
+  it("rejects a refill report without the accepted task projection identity", () => {
+    const incomplete = report();
+    incomplete.maintenance.projection = null;
+    assert.throws(
+      () => validateStockMaintenanceReport(incomplete),
+      /task projection/,
     );
   });
 });

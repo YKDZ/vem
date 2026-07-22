@@ -533,6 +533,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
             get(stock_maintenance_task).post(submit_stock_maintenance_batch),
         )
         .route(
+            "/v1/stock/maintenance-tasks/:task_id/projection",
+            get(stock_maintenance_task_projection),
+        )
+        .route(
             "/v1/stock/attestation",
             post(record_physical_stock_attestation),
         )
@@ -1727,6 +1731,24 @@ async fn stock_maintenance_task(
         Err(error) => error_response(
             StatusCode::BAD_REQUEST,
             "stock_maintenance_task_unavailable",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn stock_maintenance_task_projection(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    AxumPath(task_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    match ctx.state.stock_maintenance_task_projection(&task_id).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => error_response(
+            StatusCode::NOT_FOUND,
+            "stock_maintenance_task_projection_unavailable",
             error.to_string(),
         ),
     }

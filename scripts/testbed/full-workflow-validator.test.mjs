@@ -36,13 +36,20 @@ function stockMaintenanceReport() {
   return {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
     ok: true,
+    runId: "RUN-STOCK-1",
     fixture: {
       slotCode: "B2",
       sku: "TSC-LOCAL-007",
+      slotId: "slot-stock-1",
       inventoryId: "inventory-stock-1",
       initialQuantity: 1,
     },
-    firstSale: { orderId: "order-stock-1" },
+    movementCursor: {
+      inventoryId: "inventory-stock-1",
+      capturedAt: "2026-07-22T00:00:00.000Z",
+      baselineItemIds: ["movement-before-1"],
+    },
+    firstSale: stockSale("1"),
     unavailable: {
       daemon: {
         physicalStock: 0,
@@ -56,6 +63,19 @@ function stockMaintenanceReport() {
       addition: 2,
       previewQuantity: 2,
       refillMovementCount: 1,
+      projection: {
+        taskStatus: "complete",
+        slotSyncStatus: "accepted",
+        movementId: "refill-task-1:slot-stock-1",
+        movementType: "planned_refill",
+        source: "local_maintenance",
+      },
+      platformMovement: {
+        id: "refill-movement-1",
+        inventoryId: "inventory-stock-1",
+        reason: "hardware_sync",
+        deltaQty: 2,
+      },
     },
     restored: {
       daemon: {
@@ -65,7 +85,7 @@ function stockMaintenanceReport() {
       },
       platform: { onHandQty: 2, reservedQty: 0 },
     },
-    secondSale: { orderId: "order-stock-2" },
+    secondSale: stockSale("2"),
     terminal: {
       daemon: {
         physicalStock: 1,
@@ -75,14 +95,46 @@ function stockMaintenanceReport() {
       platform: { onHandQty: 1, reservedQty: 0 },
       movements: {
         saleDecrementOrderIds: ["order-stock-1", "order-stock-2"],
+        salePlatformMovementIds: [
+          "sale-platform-movement-1",
+          "sale-platform-movement-2",
+        ],
         refillDeltas: [2],
       },
     },
     screenshots: {
-      unavailable: { ref: "unavailable.png" },
-      refillConfirmed: { ref: "refill-confirmed.png" },
-      restoredSaleability: { ref: "restored.png" },
+      unavailable: {
+        ref: "unavailable.png",
+        route: "#/maintenance?source=operator",
+        slotCode: "B2",
+      },
+      refillConfirmed: {
+        ref: "refill-confirmed.png",
+        route: "#/maintenance?source=operator",
+        slotCode: "B2",
+      },
+      restoredSaleability: {
+        ref: "restored.png",
+        route: "#/catalog",
+        slotCode: "B2",
+      },
     },
+  };
+}
+
+function stockSale(index) {
+  return {
+    runId: "RUN-STOCK-1",
+    orderId: `order-stock-${index}`,
+    paymentId: `payment-stock-${index}`,
+    paymentNo: `PAY-STOCK-${index}`,
+    commandId: `command-stock-${index}`,
+    commandNo: `COMMAND-STOCK-${index}`,
+    fulfillmentMovementId: `fulfillment-movement-${index}`,
+    controlPlaneSessionId: `control-session-${index}`,
+    serialSessionId: `serial-session-${index}`,
+    resultRoute: "#/result/success",
+    gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
   };
 }
 
@@ -516,6 +568,17 @@ function behaviorAudioReport() {
           outcome: "completed",
           message: null,
         },
+        {
+          type: "audio_rejected",
+          id: 14,
+          at: "2026-07-22T08:00:11.000Z",
+          recordedAt: "2026-07-22T08:00:11.000Z",
+          transitionId: "vision:presence-4:welcome",
+          requestId: "audio-request-14",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "audio cue preference disabled",
+        },
       ],
       checkpoints: [
         { label: "stable-arrival-settled", traceId: 4 },
@@ -526,6 +589,7 @@ function behaviorAudioReport() {
         { label: "category-socks-entry", traceId: 9 },
         { label: "category-socks-detail", traceId: 13 },
         { label: "category-socks-checkout", traceId: 13 },
+        { label: "disabled-presence-welcome-rejected", traceId: 14 },
       ],
       scenario: {
         welcome: {
@@ -534,6 +598,10 @@ function behaviorAudioReport() {
           rearmedTransitionId: "vision:presence-3:welcome",
         },
         supportedCategoryKeys: ["socks"],
+        preferenceSuppression: {
+          transitionId: "vision:presence-4:welcome",
+          rejectedTraceId: 14,
+        },
         categories: [
           {
             key: "socks",

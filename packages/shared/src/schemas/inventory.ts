@@ -113,6 +113,7 @@ export const stockMaintenanceTaskSlotSchema = z.strictObject({
   submittedQuantity: z.int().nonnegative().nullable(),
   submittedAddition: z.int().positive().nullable(),
   previewQuantity: z.int().nonnegative().nullable(),
+  movementId: z.string().min(1).max(256).nullable().optional(),
   syncStatus: stockMaintenanceSlotSyncStatusSchema,
   salesState: z.string().min(1),
   reconciliationReason: z.string().min(1).nullable(),

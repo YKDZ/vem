@@ -24,11 +24,14 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 import {
   isActiveTransaction,
   captureTrackTerminalFacts,
   recoverTrackHandoff,
 } from "./track-handoff-recovery.mjs";
+
+export { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const PAYMENT_CANCEL_SELECTOR = '[data-test="payment-cancel"]:not(:disabled)';
 const PAYMENT_RETURN_WAIT_MS = 30_000;
@@ -676,36 +679,6 @@ export async function clearWholeMachineLockIfPresent({
   return { cleared: true, result };
 }
 
-export async function replaceSerialSessionAndUpdateHandoff({
-  guestInput,
-  handoff,
-  handoffPath,
-  sessionId,
-  control = controlPlaneRequest,
-}) {
-  const aborted = await control(
-    guestInput,
-    `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
-  );
-  const replacement = await control(guestInput, "/v1/serial-sessions/start", {
-    runId: required(guestInput.runId, "runId"),
-    machineCode: required(guestInput.machineCode, "machineCode"),
-    saleCorrelationId: `sale-correlation://${required(guestInput.runId, "runId").toLowerCase()}.handoff-${Date.now()}`,
-    targetIdentity: required(
-      guestInput.hostControlPlane?.targetIdentity,
-      "hostControlPlane.targetIdentity",
-    ),
-    runtimeBase: required(
-      guestInput.hostControlPlane?.runtimeBaseIdentity,
-      "hostControlPlane.runtimeBaseIdentity",
-    ),
-  });
-  required(replacement.sessionId, "replacement serial session id");
-  handoff.commissioningSerialSession = replacement;
-  writeJson(handoffPath, handoff);
-  return { aborted, replacement };
-}
-
 export async function waitForBusinessHardwareReady({
   daemonGet: get,
   timeoutMs = HARDWARE_READY_TIMEOUT_MS,
@@ -956,6 +929,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
             handoff,
             handoffPath,
             sessionId,
+            control: controlPlaneRequest,
           }),
         cancelActiveTransaction: (transaction) =>
           daemonPost(handoff, "/v1/intents/cancel-order", {

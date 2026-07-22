@@ -1,4 +1,5 @@
 import { validateBehaviorAudioGuestReport } from "./behavior-audio-guest-full.mjs";
+import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.mjs";
 
 function requiredString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -485,60 +486,25 @@ function stockIs(value, quantity, saleable) {
 }
 
 function validateStockMaintenanceTrack(report, reportPath) {
-  const fixture = report?.fixture;
-  const firstOrderId = report?.firstSale?.orderId;
-  const secondOrderId = report?.secondSale?.orderId;
-  const screenshots = report?.screenshots;
-  const saleDecrementOrderIds =
-    report?.terminal?.movements?.saleDecrementOrderIds;
-  const refillDeltas = report?.terminal?.movements?.refillDeltas;
-  const valid =
-    report?.schemaVersion === "vem-stock-maintenance-guest-full/v1" &&
-    report?.ok === true &&
-    typeof fixture?.slotCode === "string" &&
-    typeof fixture?.sku === "string" &&
-    typeof fixture?.inventoryId === "string" &&
-    fixture?.initialQuantity === 1 &&
-    typeof firstOrderId === "string" &&
-    typeof secondOrderId === "string" &&
-    firstOrderId !== secondOrderId &&
-    stockIs(report?.unavailable?.daemon, 0, 0) &&
-    report?.unavailable?.platform?.onHandQty === 0 &&
-    report?.unavailable?.platform?.reservedQty === 0 &&
-    typeof report?.maintenance?.taskId === "string" &&
-    report?.maintenance?.addition === 2 &&
-    report?.maintenance?.previewQuantity === 2 &&
-    report?.maintenance?.refillMovementCount === 1 &&
-    stockIs(report?.restored?.daemon, 2, 2) &&
-    report?.restored?.platform?.onHandQty === 2 &&
-    report?.restored?.platform?.reservedQty === 0 &&
-    stockIs(report?.terminal?.daemon, 1, 1) &&
-    report?.terminal?.platform?.onHandQty === 1 &&
-    report?.terminal?.platform?.reservedQty === 0 &&
-    Array.isArray(saleDecrementOrderIds) &&
-    saleDecrementOrderIds.length === 2 &&
-    new Set(saleDecrementOrderIds).size === 2 &&
-    saleDecrementOrderIds.includes(firstOrderId) &&
-    saleDecrementOrderIds.includes(secondOrderId) &&
-    Array.isArray(refillDeltas) &&
-    refillDeltas.length === 1 &&
-    refillDeltas[0] === 2 &&
-    ["unavailable", "refillConfirmed", "restoredSaleability"].every(
-      (key) => typeof screenshots?.[key]?.ref === "string",
+  try {
+    const summary = validateStockMaintenanceReport(report);
+    return passedTrack(
+      "stockMaintenance",
+      "stock maintenance",
+      reportPath,
+      summary,
     );
-  return valid
-    ? passedTrack("stockMaintenance", "stock maintenance", reportPath, {
-        slotCode: fixture.slotCode,
-        firstOrderId,
-        secondOrderId,
-      })
-    : failedTrack(
-        "stockMaintenance",
-        "stock maintenance",
-        reportPath,
-        "stock maintenance evidence must prove the installed 1-to-0-to-2-to-1 loop",
-        report ?? null,
-      );
+  } catch (error) {
+    return failedTrack(
+      "stockMaintenance",
+      "stock maintenance",
+      reportPath,
+      error instanceof Error
+        ? error.message
+        : "stock maintenance evidence must prove the installed 1-to-0-to-2-to-1 loop",
+      report ?? null,
+    );
+  }
 }
 
 function validateLocalOperationsTrack(report, reportPath) {

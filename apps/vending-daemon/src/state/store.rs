@@ -494,9 +494,31 @@ pub struct StockMaintenanceTaskSlot {
     pub submitted_quantity: Option<i64>,
     pub submitted_addition: Option<i64>,
     pub preview_quantity: Option<i64>,
+    pub movement_id: Option<String>,
     pub sync_status: String,
     pub sales_state: String,
     pub reconciliation_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMaintenanceTaskProjection {
+    pub task_id: String,
+    pub mode: String,
+    pub status: String,
+    pub slots: Vec<StockMaintenanceTaskProjectionSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMaintenanceTaskProjectionSlot {
+    pub slot_code: String,
+    pub submitted_addition: Option<i64>,
+    pub preview_quantity: Option<i64>,
+    pub movement_id: Option<String>,
+    pub movement_type: Option<String>,
+    pub source: Option<String>,
+    pub sync_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2959,22 +2981,35 @@ impl LocalStateStore {
                 submitted_quantity,
                 submitted_addition,
                 preview_quantity,
+                movement_id: if sync_status == "not_submitted" {
+                    None
+                } else {
+                    Some(movement_id)
+                },
                 sync_status,
                 sales_state: row.try_get("sales_state")?,
                 reconciliation_reason,
             });
         }
+        let submitted_slots = slots
+            .iter()
+            .filter(|slot| slot.sync_status != "not_submitted")
+            .collect::<Vec<_>>();
         let status = if slots
             .iter()
             .any(|slot| matches!(slot.sync_status.as_str(), "rejected" | "reconciliation"))
         {
             "reconciliation"
-        } else if slots
+        } else if submitted_slots
             .iter()
             .any(|slot| matches!(slot.sync_status.as_str(), "pending" | "failed"))
         {
             "pending"
-        } else if !slots.is_empty() && slots.iter().all(|slot| slot.sync_status == "accepted") {
+        } else if !submitted_slots.is_empty()
+            && submitted_slots
+                .iter()
+                .all(|slot| slot.sync_status == "accepted")
+        {
             "complete"
         } else {
             "ready"
@@ -2982,6 +3017,112 @@ impl LocalStateStore {
         Ok(StockMaintenanceTask {
             task_id,
             mode,
+            status: status.to_string(),
+            slots,
+        })
+    }
+
+    pub async fn stock_maintenance_task_projection(
+        &self,
+        task_id: &str,
+    ) -> Result<StockMaintenanceTaskProjection, StoreError> {
+        let identity = self
+            .stock_maintenance_task_identity_by_id(task_id)
+            .await?
+            .ok_or_else(|| {
+                StoreError::InvalidStockInput(
+                    "stock maintenance task projection is unavailable".to_string(),
+                )
+            })?;
+        let refill_batch = if identity.mode == "routine_refill" {
+            let stored: Option<(String, String)> = sqlx::query_as(
+                "SELECT payload_json,capacity_snapshot_json FROM stock_maintenance_batches
+                 WHERE task_id=?1",
+            )
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            stored
+                .map(|(payload, capacity)| {
+                    Ok::<_, StoreError>((
+                        serde_json::from_str::<NormalizedStockMaintenanceRefillBatch>(&payload)?,
+                        serde_json::from_str::<Vec<StockMaintenanceRefillCapacitySnapshot>>(
+                            &capacity,
+                        )?,
+                    ))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let mut slots = Vec::with_capacity(identity.slots.len());
+        for slot in &identity.slots {
+            let submitted_addition = refill_batch.as_ref().and_then(|(batch, _)| {
+                batch
+                    .slots
+                    .iter()
+                    .find(|entry| entry.slot_code == slot.slot_code)
+                    .map(|entry| entry.addition)
+            });
+            let preview_quantity = refill_batch.as_ref().and_then(|(_, snapshots)| {
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.slot_id == slot.slot_id)
+                    .map(|snapshot| snapshot.after_quantity)
+            });
+            let movement_id = if submitted_addition.is_some() {
+                Some(format!("{}:{}", identity.task_id, slot.slot_id))
+            } else {
+                None
+            };
+            let sync_status = if let Some(movement_id) = movement_id.as_deref() {
+                sqlx::query_as::<_, (String,)>(
+                    "SELECT status FROM stock_movement_sync WHERE movement_id=?1",
+                )
+                .bind(movement_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|(status,)| status)
+                .unwrap_or_else(|| "not_submitted".to_string())
+            } else {
+                "not_submitted".to_string()
+            };
+            slots.push(StockMaintenanceTaskProjectionSlot {
+                slot_code: slot.slot_code.clone(),
+                submitted_addition,
+                preview_quantity,
+                movement_id,
+                movement_type: submitted_addition.map(|_| "planned_refill".to_string()),
+                source: submitted_addition.map(|_| "local_maintenance".to_string()),
+                sync_status,
+            });
+        }
+        let submitted_slots = slots
+            .iter()
+            .filter(|slot| slot.sync_status != "not_submitted")
+            .collect::<Vec<_>>();
+        let status = if slots
+            .iter()
+            .any(|slot| matches!(slot.sync_status.as_str(), "rejected" | "reconciliation"))
+        {
+            "reconciliation"
+        } else if submitted_slots
+            .iter()
+            .any(|slot| matches!(slot.sync_status.as_str(), "pending" | "failed"))
+        {
+            "pending"
+        } else if !submitted_slots.is_empty()
+            && submitted_slots
+                .iter()
+                .all(|slot| slot.sync_status == "accepted")
+        {
+            "complete"
+        } else {
+            "ready"
+        };
+        Ok(StockMaintenanceTaskProjection {
+            task_id: identity.task_id,
+            mode: identity.mode,
             status: status.to_string(),
             slots,
         })
@@ -8147,7 +8288,7 @@ mod tests {
             .record_stock_movement_upload_response(
                 &event,
                 &crate::backend::StockMovementUploadResponse {
-                    movement_id,
+                    movement_id: movement_id.clone(),
                     status: "accepted".to_string(),
                     accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
                     receipt: Some(json!({"rawMovementId":"raw-refill-a1"})),
@@ -8157,6 +8298,17 @@ mod tests {
             )
             .await
             .expect("accept movement");
+
+        let accepted_task = store
+            .stock_maintenance_task_projection(&task.task_id)
+            .await
+            .expect("accepted task projection");
+        assert_eq!(accepted_task.status, "complete");
+        assert_eq!(accepted_task.slots[0].sync_status, "accepted");
+        assert_eq!(
+            accepted_task.slots[0].movement_id.as_deref(),
+            Some(movement_id.as_str())
+        );
 
         let retry = store
             .submit_stock_maintenance_batch(
