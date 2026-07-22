@@ -10,6 +10,10 @@ const props = defineProps<{
   blocked?: boolean;
   overlayText?: string | null;
   emptyText?: string | null;
+  checkoutAttemptIdempotencyKey?: string | null;
+  orderId?: string | null;
+  paymentId?: string | null;
+  orderNo?: string | null;
 }>();
 
 const dataUrl = ref("");
@@ -34,7 +38,11 @@ watch(
         customerMessage: projection.message,
         technicalMessage: err instanceof Error ? err.message : String(err),
         operation: "payment_qr.render",
-        orderNo: null,
+        checkoutAttemptIdempotencyKey:
+          props.checkoutAttemptIdempotencyKey ?? null,
+        orderId: props.orderId ?? null,
+        paymentId: props.paymentId ?? null,
+        orderNo: props.orderNo ?? null,
       });
     }
   },

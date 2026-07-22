@@ -6,10 +6,12 @@ import { pathToFileURL } from "node:url";
 
 import {
   CdpClient,
+  activateVisibleSelector,
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
+  waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 
 const SCHEMA_VERSION = "vem-payment-recovery-guest-full/v1";
@@ -280,10 +282,36 @@ export function validatePaymentRecoveryEvidence(report) {
         attempt.daemon?.terminal?.paymentId !== null ||
         attempt.daemon?.terminal?.paymentStatus !== null ||
         attempt.daemon?.terminal?.nextAction !== null ||
-        attempt.customer !== null
+        attempt.customer?.source !== "installed_machine_runtime_cdp" ||
+        attempt.customer?.checkoutAttemptIdempotencyKey !==
+          attempt.idempotencyKey ||
+        attempt.customer?.stage !== "payment_creation" ||
+        typeof attempt.customer?.text !== "string" ||
+        !attempt.customer.text.includes(
+          attempt.expectedTerminal.customerCopy,
+        ) ||
+        /(?:provider|HTTP|MQTT|IPC|COM\d|schema|query_failed)/i.test(
+          attempt.customer.text,
+        ) ||
+        attempt.technicalEvidence?.runtimeTrace?.source !==
+          "installed_machine_runtime_trace_cdp" ||
+        attempt.technicalEvidence.runtimeTrace
+          ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
+        !Number.isFinite(attempt.technicalEvidence.runtimeTrace?.entry?.id) ||
+        attempt.technicalEvidence?.localOperations?.source !==
+          "installed_machine_local_operations_cdp_after_refresh" ||
+        attempt.technicalEvidence.localOperations
+          ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
+        attempt.technicalEvidence.localOperations?.orderId !==
+          attempt.order.id ||
+        attempt.technicalEvidence.localOperations?.paymentId !==
+          attempt.payment.id ||
+        !attempt.technicalEvidence.localOperations?.entry?.technicalMessage?.includes(
+          "mock payment create gate timed out before release",
+        )
       ) {
         throw new Error(
-          "payment recovery create failure did not prove provider gate cleanup",
+          "payment recovery create failure did not prove installed customer copy and durable technical evidence",
         );
       }
       continue;
@@ -574,13 +602,135 @@ async function waitForCustomerTerminal(client, order, expected) {
   );
 }
 
+async function prepareCustomerCreateFailure(client, slot) {
+  await evaluateExpression(client, 'location.hash = "#/catalog"');
+  await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
+  await activateVisibleSelector(
+    client,
+    `[data-test="catalog-product"][data-slot-id=${JSON.stringify(slot.slotId)}]`,
+    { kind: "touch", timeoutMs: 30_000 },
+  );
+  await waitFor(
+    "installed customer product detail",
+    () =>
+      evaluateExpression(
+        client,
+        'Boolean(document.querySelector("[data-test=product-buy]"))',
+      ),
+    Boolean,
+    30_000,
+  );
+  await activateVisibleSelector(client, "[data-test=product-buy]", {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  await waitForRoute(client, "#/checkout", { timeoutMs: 30_000 });
+  await activateVisibleSelector(
+    client,
+    '[data-test="payment-option"][data-payment-option-key="mock:mock"]:not(:disabled)',
+    { kind: "touch", timeoutMs: 30_000 },
+  );
+  return await waitFor(
+    "checkout attempt idempotency key before payment create",
+    () =>
+      evaluateExpression(
+        client,
+        'document.querySelector("[data-test=checkout-submit]")?.dataset.checkoutAttemptIdempotencyKey || null',
+      ),
+    (key) => typeof key === "string" && key.startsWith("checkout:"),
+    30_000,
+  );
+}
+
+async function waitForCustomerCreateFailure(client, idempotencyKey, expected) {
+  return await waitFor(
+    `installed customer create failure ${idempotencyKey}`,
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const page = document.querySelector("[data-test=checkout-page]");
+          const entries = Array.isArray(window.__VEM_MACHINE_RUNTIME_TRACE__) ? window.__VEM_MACHINE_RUNTIME_TRACE__ : [];
+          const trace = [...entries].reverse().find((entry) =>
+            entry && entry.type === "customer_error" &&
+            entry.stage === "payment_creation" &&
+            entry.operation === "checkout.create_order" &&
+            entry.checkoutAttemptIdempotencyKey === ${JSON.stringify(idempotencyKey)}
+          );
+          return page ? {
+            route: location.hash,
+            checkoutAttemptIdempotencyKey: page.dataset.checkoutAttemptIdempotencyKey || null,
+            text: (page.textContent || "").replace(/\\s+/g, " ").trim(),
+            trace: trace || null,
+          } : null;
+        })()`,
+      ),
+    (surface) =>
+      surface?.checkoutAttemptIdempotencyKey === idempotencyKey &&
+      typeof surface?.text === "string" &&
+      surface.text.includes(expected.customerCopy) &&
+      !/(?:provider|HTTP|MQTT|IPC|COM\d|schema|query_failed)/i.test(
+        surface.text,
+      ) &&
+      surface?.trace?.checkoutAttemptIdempotencyKey === idempotencyKey,
+    60_000,
+  );
+}
+
+async function readCustomerErrorFromLocalOperations(client, idempotencyKey) {
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitFor(
+    "installed machine reload",
+    () => evaluateExpression(client, "document.readyState"),
+    (state) => state === "complete",
+    30_000,
+  );
+  await evaluateExpression(
+    client,
+    'location.hash = "#/maintenance?source=operator"',
+  );
+  await waitForRoute(client, "#/maintenance?source=operator", {
+    timeoutMs: 30_000,
+    forbiddenRoutes: [],
+  });
+  await activateVisibleSelector(
+    client,
+    "[data-test=maintenance-task-diagnostics]",
+    {
+      kind: "touch",
+      timeoutMs: 30_000,
+    },
+  );
+  return await waitFor(
+    `Local Operations customer error ${idempotencyKey}`,
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const entry = [...document.querySelectorAll("[data-test=customer-error-evidence-entry]")]
+            .find((candidate) => candidate.dataset.checkoutAttemptIdempotencyKey === ${JSON.stringify(idempotencyKey)});
+          return entry ? {
+            checkoutAttemptIdempotencyKey: entry.dataset.checkoutAttemptIdempotencyKey || null,
+            technicalMessage: (entry.textContent || "").replace(/\\s+/g, " ").trim(),
+          } : null;
+        })()`,
+      ),
+    (entry) =>
+      entry?.checkoutAttemptIdempotencyKey === idempotencyKey &&
+      entry.technicalMessage.includes(
+        "mock payment create gate timed out before release",
+      ),
+    30_000,
+  );
+}
+
 const RECOVERY_TERMINALS = Object.freeze({
   create_failure: {
     paymentStatus: "failed",
     orderStatus: "canceled",
     paymentState: "payment_failed",
     resultKind: "payment_failed",
-    customerCopy: "支付失败",
+    customerCopy: "支付订单创建失败，请稍后重试",
   },
   query_failure: {
     paymentStatus: "canceled",
@@ -681,24 +831,22 @@ export async function runPaymentRecoveryGuest(options) {
       let gate = null;
       let activePlatform = null;
       let activeDaemon = null;
+      let customerSurface = null;
+      let idempotencyKey = `${runId}-payment-recovery-${kind}`;
       if (kind === "create_failure") {
+        idempotencyKey = await prepareCustomerCreateFailure(customer, slot);
         await control(input, "/v1/mock-payment-create-gate/arm");
-        const pendingOrder = daemon(
-          handoff,
-          "/v1/intents/create-order",
-          {
-            ...orderRequest,
-            idempotencyKey: `${runId}-payment-recovery-${kind}`,
-          },
-          { timeoutMs: 45_000 },
-        ).then(
-          (value) => ({ value, error: null }),
-          (error) => ({ value: null, error }),
-        );
         let pending = null;
-        let outcome = null;
         let openedAfterFailure = false;
         try {
+          await activateVisibleSelector(
+            customer,
+            "[data-test=checkout-submit]",
+            {
+              kind: "touch",
+              timeoutMs: 30_000,
+            },
+          );
           pending = await waitForCreateGatePending(input);
           activePlatform = await waitFor(
             `platform active reservation for ${pending.pending.paymentNo}`,
@@ -717,23 +865,6 @@ export async function runPaymentRecoveryGuest(options) {
             },
             45_000,
           );
-          outcome = await pendingOrder;
-          if (outcome.value !== null) {
-            throw new Error(
-              "mock payment create gate unexpectedly allowed provider creation",
-            );
-          }
-          const createError =
-            outcome.error instanceof Error
-              ? outcome.error
-              : new Error(String(outcome.error));
-          if (
-            !createError.message.includes(
-              "mock payment create gate timed out before release",
-            )
-          ) {
-            throw createError;
-          }
           const correlated = orderForPaymentNo(
             activePlatform,
             pending.pending.paymentNo,
@@ -750,9 +881,23 @@ export async function runPaymentRecoveryGuest(options) {
             paymentNo: pending.pending.paymentNo,
             released: false,
             openedAfterFailure: false,
-            error: createError.message,
-            httpStatus: createError.httpStatus ?? null,
+            error: "mock payment create gate timed out before release",
+            httpStatus: null,
           };
+          customerSurface = await waitForCustomerCreateFailure(
+            customer,
+            idempotencyKey,
+            RECOVERY_TERMINALS.create_failure,
+          );
+          if (
+            !customerSurface.trace.technicalMessage.includes(
+              "mock payment create gate timed out before release",
+            )
+          ) {
+            throw new Error(
+              "customer create failure did not retain gate error",
+            );
+          }
         } finally {
           const opened = await control(
             input,
@@ -769,7 +914,7 @@ export async function runPaymentRecoveryGuest(options) {
       } else {
         attemptOrder = await daemon(handoff, "/v1/intents/create-order", {
           ...orderRequest,
-          idempotencyKey: `${runId}-payment-recovery-${kind}`,
+          idempotencyKey,
         });
       }
       const order = {
@@ -806,7 +951,16 @@ export async function runPaymentRecoveryGuest(options) {
           paymentId: payment.id,
         });
       }
-      return { baseline, activePlatform, activeDaemon, order, payment, gate };
+      return {
+        baseline,
+        activePlatform,
+        activeDaemon,
+        customerSurface,
+        idempotencyKey,
+        order,
+        payment,
+        gate,
+      };
     };
 
     const terminalizeAttempt = async (kind, created) => {
@@ -933,12 +1087,19 @@ export async function runPaymentRecoveryGuest(options) {
             );
       const customerSurface =
         kind === "create_failure"
-          ? null
+          ? created.customerSurface
           : await waitForCustomerTerminal(
               customer,
               { orderId: created.order.id, paymentId: created.payment.id },
               expectedTerminal,
             );
+      const localOperationsEvidence =
+        kind === "create_failure"
+          ? await readCustomerErrorFromLocalOperations(
+              customer,
+              created.idempotencyKey,
+            )
+          : null;
       const terminal = terminalRows(
         terminalPlatform,
         created.order.id,
@@ -946,6 +1107,9 @@ export async function runPaymentRecoveryGuest(options) {
       );
       return {
         kind,
+        ...(kind === "create_failure"
+          ? { idempotencyKey: created.idempotencyKey }
+          : {}),
         order: { ...created.order },
         payment: { ...created.payment },
         expectedTerminal,
@@ -977,10 +1141,18 @@ export async function runPaymentRecoveryGuest(options) {
             : {
                 source: "installed_machine_runtime_cdp",
                 observedAt: new Date().toISOString(),
-                orderId: customerSurface.orderId,
-                paymentId: customerSurface.paymentId,
-                resultKind: customerSurface.resultKind,
-                displayIntent: customerSurface.displayIntent,
+                ...(kind === "create_failure"
+                  ? {
+                      checkoutAttemptIdempotencyKey:
+                        customerSurface.checkoutAttemptIdempotencyKey,
+                      stage: "payment_creation",
+                    }
+                  : {
+                      orderId: customerSurface.orderId,
+                      paymentId: customerSurface.paymentId,
+                      resultKind: customerSurface.resultKind,
+                      displayIntent: customerSurface.displayIntent,
+                    }),
                 text: customerSurface.text,
                 route: customerSurface.route,
               },
@@ -992,6 +1164,23 @@ export async function runPaymentRecoveryGuest(options) {
                   paymentNo: created.payment.paymentNo,
                   error: created.gate?.error ?? null,
                   httpStatus: created.gate?.httpStatus ?? null,
+                },
+                runtimeTrace: {
+                  source: "installed_machine_runtime_trace_cdp",
+                  checkoutAttemptIdempotencyKey:
+                    customerSurface?.trace?.checkoutAttemptIdempotencyKey ??
+                    null,
+                  entry: customerSurface?.trace ?? null,
+                },
+                localOperations: {
+                  source:
+                    "installed_machine_local_operations_cdp_after_refresh",
+                  checkoutAttemptIdempotencyKey:
+                    localOperationsEvidence?.checkoutAttemptIdempotencyKey ??
+                    null,
+                  orderId: created.order.id,
+                  paymentId: created.payment.id,
+                  entry: localOperationsEvidence,
                 },
               }
             : {

@@ -223,7 +223,7 @@ describe("payment recovery guest full", () => {
     createFailure.createGate.released = true;
     assert.throws(
       () => validatePaymentRecoveryEvidence(report),
-      /provider gate cleanup/,
+      /durable technical evidence/,
     );
   });
 
@@ -268,7 +268,7 @@ function recoveryReport() {
       orderStatus: "canceled",
       paymentState: "payment_failed",
       resultKind: "payment_failed",
-      customerCopy: "支付失败",
+      customerCopy: "支付订单创建失败，请稍后重试",
     },
     query_failure: {
       paymentStatus: "canceled",
@@ -302,6 +302,9 @@ function recoveryReport() {
     },
     attempts: Object.entries(terminalByKind).map(([kind, terminal]) => ({
       kind,
+      ...(kind === "create_failure"
+        ? { idempotencyKey: "checkout:create-failure" }
+        : {}),
       order: { id: `order-${kind}`, paymentId: `pay-${kind}` },
       payment: { id: `pay-${kind}`, paymentNo: `payment-${kind}` },
       expectedTerminal: terminal,
@@ -349,7 +352,12 @@ function recoveryReport() {
       },
       customer:
         kind === "create_failure"
-          ? null
+          ? {
+              source: "installed_machine_runtime_cdp",
+              checkoutAttemptIdempotencyKey: "checkout:create-failure",
+              stage: "payment_creation",
+              text: terminal.customerCopy,
+            }
           : {
               source: "installed_machine_runtime_cdp",
               orderId: `order-${kind}`,
@@ -364,6 +372,21 @@ function recoveryReport() {
                 source: "mock_provider_create_gate",
                 paymentNo: `payment-${kind}`,
                 error: "mock payment create gate timed out before release",
+              },
+              runtimeTrace: {
+                source: "installed_machine_runtime_trace_cdp",
+                checkoutAttemptIdempotencyKey: "checkout:create-failure",
+                entry: { id: 1 },
+              },
+              localOperations: {
+                source: "installed_machine_local_operations_cdp_after_refresh",
+                checkoutAttemptIdempotencyKey: "checkout:create-failure",
+                orderId: `order-${kind}`,
+                paymentId: `pay-${kind}`,
+                entry: {
+                  technicalMessage:
+                    "mock payment create gate timed out before release",
+                },
               },
             }
           : {

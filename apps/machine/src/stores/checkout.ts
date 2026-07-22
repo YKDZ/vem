@@ -360,6 +360,9 @@ export const useCheckoutStore = defineStore("checkout", {
         customerMessage: projection.message,
         technicalMessage: technicalErrorMessage(error),
         operation,
+        checkoutAttemptIdempotencyKey: this.checkoutAttemptIdempotencyKey,
+        orderId: this.transaction?.orderId ?? null,
+        paymentId: this.transaction?.paymentId ?? null,
         orderNo: this.transaction?.orderNo ?? null,
       });
     },

@@ -114,6 +114,9 @@ async function submitOrder(): Promise<void> {
       data-test="checkout-page"
       :data-catalog-key="item.catalogKey"
       :data-slot-id="item.slotId"
+      :data-checkout-attempt-idempotency-key="
+        checkoutStore.checkoutAttemptIdempotencyKey ?? ''
+      "
     >
       <KioskHeader class="checkout-header" />
 
@@ -285,6 +288,9 @@ async function submitOrder(): Promise<void> {
         :data-payment-method="checkoutStore.selectedPaymentOption?.method ?? ''"
         :data-payment-provider="
           checkoutStore.selectedPaymentOption?.providerCode ?? ''
+        "
+        :data-checkout-attempt-idempotency-key="
+          checkoutStore.checkoutAttemptIdempotencyKey ?? ''
         "
         @click="submitOrder"
       >

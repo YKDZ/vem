@@ -70,6 +70,9 @@ export type MachineRuntimeCustomerErrorTraceEntry = {
   customerMessage: string;
   technicalMessage: string;
   operation: string;
+  checkoutAttemptIdempotencyKey: string | null;
+  orderId: string | null;
+  paymentId: string | null;
   orderNo: string | null;
 };
 

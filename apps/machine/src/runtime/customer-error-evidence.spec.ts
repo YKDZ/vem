@@ -20,6 +20,9 @@ describe("customer error evidence", () => {
       customerMessage: "支付订单创建失败，请稍后重试",
       technicalMessage: "HTTP 502 provider MQTT IPC serial COM3 schema failed",
       operation: "checkout.create_order",
+      checkoutAttemptIdempotencyKey: "checkout:attempt-error-001",
+      orderId: "order-error-001",
+      paymentId: "payment-error-001",
       orderNo: "ORD-ERROR-001",
     });
 
@@ -31,6 +34,9 @@ describe("customer error evidence", () => {
         technicalMessage:
           "HTTP 502 provider MQTT IPC serial COM3 schema failed",
         operation: "checkout.create_order",
+        checkoutAttemptIdempotencyKey: "checkout:attempt-error-001",
+        orderId: "order-error-001",
+        paymentId: "payment-error-001",
         orderNo: "ORD-ERROR-001",
       }),
     );

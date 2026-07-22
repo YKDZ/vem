@@ -14,6 +14,7 @@ import VisionCameraMaintenancePanel from "@/components/VisionCameraMaintenancePa
 import { recoverPersistedClaim } from "@/daemon/claim-recovery";
 import { daemonClient, isDaemonTransportFailure } from "@/daemon/client";
 import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
+import { listCustomerErrorEvidence } from "@/local/command-log";
 import { installMaintenanceSystemTouchKeyboard } from "@/native/system-touch-keyboard";
 import {
   openVisionTryOnSession,
@@ -189,6 +190,7 @@ const saleCriticalBlockers = computed(() =>
 const catalogOperatorDiagnostics = computed(
   () => catalogStore.operatorDiagnostics,
 );
+const customerErrorEvidence = computed(() => listCustomerErrorEvidence());
 const latestVisionDiagnosticPayloadText = computed(() => {
   if (visionStore.latestDiagnosticPayload === null) {
     return "尚未返回诊断载荷。";
@@ -1922,6 +1924,26 @@ async function submitStockMaintenanceTask(): Promise<void> {
               >
                 {{ diagnostic.message }} ·
                 {{ diagnostic.reference ?? "无引用" }}
+              </li>
+            </ul>
+          </details>
+          <details data-test="customer-error-evidence">
+            <summary>客户错误技术记录</summary>
+            <p v-if="customerErrorEvidence.length === 0">尚未记录客户错误。</p>
+            <ul v-else>
+              <li
+                v-for="evidence in customerErrorEvidence"
+                :key="evidence.evidenceId"
+                data-test="customer-error-evidence-entry"
+                :data-checkout-attempt-idempotency-key="
+                  evidence.checkoutAttemptIdempotencyKey ?? ''
+                "
+                :data-order-id="evidence.orderId ?? ''"
+                :data-payment-id="evidence.paymentId ?? ''"
+                :data-order-no="evidence.orderNo ?? ''"
+              >
+                {{ evidence.operation }} · {{ evidence.stage }} ·
+                {{ evidence.technicalMessage }}
               </li>
             </ul>
           </details>

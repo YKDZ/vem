@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   getCommandLogEntry,
   isCommandInActiveWindow,
+  listCustomerErrorEvidence,
   markCommandResult,
   markCommandStatus,
+  recordCustomerErrorEvidence,
   COMMAND_LOG_MAX_ENTRIES,
   COMMAND_LOG_TTL_MS,
   type StorageLike,
@@ -117,5 +119,31 @@ describe("command log", () => {
       JSON.parse(storage.getItem("vem.machine.commandLog.v1") ?? "{}"),
     );
     expect(remaining.length).toBeLessThanOrEqual(COMMAND_LOG_MAX_ENTRIES);
+  });
+
+  it("persists customer-error technical evidence for Local Operations", () => {
+    const storage = memoryStorage();
+    recordCustomerErrorEvidence(
+      {
+        stage: "payment_creation",
+        customerMessage: "支付订单创建失败，请稍后重试",
+        technicalMessage: "HTTP 502 provider create timed out",
+        operation: "checkout.create_order",
+        checkoutAttemptIdempotencyKey: "checkout:attempt-7",
+        orderId: "order-7",
+        paymentId: "payment-7",
+        orderNo: "ORD-7",
+      },
+      storage,
+    );
+
+    expect(listCustomerErrorEvidence(storage)).toEqual([
+      expect.objectContaining({
+        checkoutAttemptIdempotencyKey: "checkout:attempt-7",
+        technicalMessage: "HTTP 502 provider create timed out",
+        orderId: "order-7",
+        paymentId: "payment-7",
+      }),
+    ]);
   });
 });

@@ -4,6 +4,7 @@ import type {
 } from "@vem/shared";
 
 const COMMAND_LOG_KEY = "vem.machine.commandLog.v1";
+const CUSTOMER_ERROR_EVIDENCE_KEY = `${COMMAND_LOG_KEY}.customer-errors`;
 
 export const COMMAND_LOG_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 export const COMMAND_LOG_MAX_ENTRIES = 2_000;
@@ -25,6 +26,27 @@ export type CommandLogEntry = {
 };
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+export type CustomerErrorEvidence = {
+  evidenceId: string;
+  stage: string;
+  customerMessage: string;
+  technicalMessage: string;
+  operation: string;
+  checkoutAttemptIdempotencyKey: string | null;
+  orderId: string | null;
+  paymentId: string | null;
+  orderNo: string | null;
+  recordedAtMs: number;
+};
+
+function browserStorage(): StorageLike | null {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 function isCommandLogRecord(v: unknown): v is Record<string, CommandLogEntry> {
   return typeof v === "object" && v !== null;
@@ -126,4 +148,74 @@ export function isCommandInActiveWindow(
     entry.status === "dispensing" &&
     nowMs - entry.updatedAtMs <= (entry.command.timeoutSeconds + 5) * 1_000
   );
+}
+
+function readCustomerErrorEvidence(
+  storage: StorageLike,
+  nowMs = Date.now(),
+): CustomerErrorEvidence[] {
+  const raw = storage.getItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    storage.removeItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    storage.removeItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+    return [];
+  }
+  const fresh = parsed
+    .filter(
+      (entry): entry is CustomerErrorEvidence =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as CustomerErrorEvidence).evidenceId === "string" &&
+        typeof (entry as CustomerErrorEvidence).technicalMessage === "string" &&
+        Number.isFinite((entry as CustomerErrorEvidence).recordedAtMs) &&
+        nowMs - (entry as CustomerErrorEvidence).recordedAtMs <=
+          COMMAND_LOG_TTL_MS,
+    )
+    .sort((a, b) => b.recordedAtMs - a.recordedAtMs)
+    .slice(0, COMMAND_LOG_MAX_ENTRIES);
+  if (fresh.length !== parsed.length) {
+    storage.setItem(CUSTOMER_ERROR_EVIDENCE_KEY, JSON.stringify(fresh));
+  }
+  return fresh;
+}
+
+export function recordCustomerErrorEvidence(
+  input: Omit<CustomerErrorEvidence, "evidenceId" | "recordedAtMs">,
+  storage: StorageLike | null = browserStorage(),
+): CustomerErrorEvidence {
+  const recordedAtMs = Date.now();
+  const correlation =
+    input.checkoutAttemptIdempotencyKey ??
+    input.paymentId ??
+    input.orderId ??
+    input.orderNo ??
+    recordedAtMs.toString();
+  const entry: CustomerErrorEvidence = {
+    ...input,
+    evidenceId: `customer-error:${correlation}:${recordedAtMs}`,
+    recordedAtMs,
+  };
+  if (!storage) return entry;
+  const existing = readCustomerErrorEvidence(storage, recordedAtMs).filter(
+    (candidate) => candidate.evidenceId !== entry.evidenceId,
+  );
+  storage.setItem(
+    CUSTOMER_ERROR_EVIDENCE_KEY,
+    JSON.stringify([entry, ...existing].slice(0, COMMAND_LOG_MAX_ENTRIES)),
+  );
+  return entry;
+}
+
+export function listCustomerErrorEvidence(
+  storage: StorageLike | null = browserStorage(),
+): CustomerErrorEvidence[] {
+  if (!storage) return [];
+  return readCustomerErrorEvidence(storage);
 }

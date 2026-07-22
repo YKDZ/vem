@@ -174,6 +174,12 @@ onUnmounted(() => {
             :blocked="qrBlocked"
             :overlay-text="qrOverlayText"
             :empty-text="qrEmptyText"
+            :checkout-attempt-idempotency-key="
+              checkoutStore.checkoutAttemptIdempotencyKey
+            "
+            :order-id="checkoutStore.transaction?.orderId ?? null"
+            :payment-id="checkoutStore.transaction?.paymentId ?? null"
+            :order-no="checkoutStore.transaction?.orderNo ?? null"
           />
           <div v-else class="payment-code-panel">
             <span class="payment-code-icon" aria-hidden="true">

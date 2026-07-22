@@ -246,6 +246,9 @@ describe("customer acceptance hooks", () => {
     );
     expect(submit?.getAttribute("data-payment-method")).toBe("qr_code");
     expect(submit?.getAttribute("data-payment-provider")).toBe("alipay");
+    expect(
+      submit?.getAttribute("data-checkout-attempt-idempotency-key"),
+    ).toMatch(/^checkout:/);
   });
 
   it("renders projected payment creation copy instead of a raw daemon failure", async () => {
