@@ -28,7 +28,6 @@ import {
   createInventorySchema,
   inventoryQuerySchema,
   pageQuerySchema,
-  refillInventorySchema,
   type HardwareErrorCode,
 } from "@vem/shared";
 import { z } from "zod";
@@ -41,14 +40,12 @@ import {
   mapAdjustInventoryDtoToMovementInsert,
   mapCreateInventoryDtoToInsert,
   mapCreateInventoryDtoToMovementInsert,
-  mapRefillInventoryDtoToMovementInsert,
   toAdminInventoryMovementResponse,
   toAdminInventoryResponse,
 } from "./inventory.contract-mappers";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
-type RefillInventoryInput = z.infer<typeof refillInventorySchema>;
 type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
 type CreateInventoryInput = z.infer<typeof createInventorySchema>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -112,28 +109,6 @@ export class InventoryService {
       query,
       Number(totalRow.total),
     );
-  }
-
-  async refill(adminUserId: string, input: RefillInventoryInput) {
-    return await this.db.transaction(async (tx) => {
-      const [updated] = await tx
-        .update(inventories)
-        .set({
-          onHandQty: sql`${inventories.onHandQty} + ${input.quantity}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(inventories.id, input.inventoryId))
-        .returning();
-      if (!updated) {
-        throw new NotFoundException("Inventory not found");
-      }
-
-      await tx
-        .insert(inventoryMovements)
-        .values(mapRefillInventoryDtoToMovementInsert(adminUserId, input));
-
-      return toAdminInventoryResponse(updated);
-    });
   }
 
   async adjust(adminUserId: string, input: AdjustInventoryInput) {

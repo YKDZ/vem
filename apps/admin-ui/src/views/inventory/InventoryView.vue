@@ -9,7 +9,6 @@ import {
   createInventory,
   listInventories,
   listInventoryMovements,
-  refillInventory,
   type Inventory,
   type InventoryMovement,
   type PageResult,
@@ -21,7 +20,6 @@ import { formatDateTime } from "@/utils/format";
 const authStore = useAuthStore();
 const { message } = App.useApp();
 const canAdjust = authStore.hasPermission("inventory.adjust");
-const canRefill = authStore.hasPermission("inventory.refill");
 const orderDetailDrawer = ref<InstanceType<typeof OrderDetailDrawer> | null>(
   null,
 );
@@ -91,39 +89,6 @@ async function saveBind(): Promise<void> {
     await loadMovements();
   } finally {
     bindSaving.value = false;
-  }
-}
-
-// Refill
-const refillFormOpen = ref(false);
-const refillForm = ref({ inventoryId: "", quantity: 1, note: "" });
-const refillSaving = ref(false);
-
-function openRefill(inv: Inventory): void {
-  refillForm.value = { inventoryId: inv.id, quantity: 1, note: "" };
-  refillFormOpen.value = true;
-}
-
-async function saveRefill(): Promise<void> {
-  if (
-    !Number.isFinite(refillForm.value.quantity) ||
-    refillForm.value.quantity < 1
-  ) {
-    void message.error("补货数量必须大于 0");
-    return;
-  }
-  refillSaving.value = true;
-  try {
-    await refillInventory({
-      inventoryId: refillForm.value.inventoryId,
-      quantity: refillForm.value.quantity,
-      note: refillForm.value.note || undefined,
-    });
-    refillFormOpen.value = false;
-    await loadInventories();
-    await loadMovements();
-  } finally {
-    refillSaving.value = false;
   }
 }
 
@@ -260,12 +225,6 @@ onMounted(() => {
           <template v-else-if="column.key === 'actions'">
             <a-space>
               <a-button
-                v-if="canRefill"
-                size="small"
-                @click="openRefill(record)"
-                >补货</a-button
-              >
-              <a-button
                 v-if="canAdjust"
                 size="small"
                 @click="openAdjust(record)"
@@ -342,27 +301,6 @@ onMounted(() => {
         </a-form-item>
         <a-form-item label="备注"
           ><a-input v-model:value="bindForm.note"
-        /></a-form-item>
-      </a-form>
-    </a-modal>
-
-    <!-- Refill form -->
-    <a-modal
-      v-model:open="refillFormOpen"
-      title="补货"
-      :confirm-loading="refillSaving"
-      @ok="saveRefill"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="补货数量">
-          <a-input-number
-            v-model:value="refillForm.quantity"
-            :min="1"
-            class="w-full"
-          />
-        </a-form-item>
-        <a-form-item label="备注"
-          ><a-input v-model:value="refillForm.note"
         /></a-form-item>
       </a-form>
     </a-modal>

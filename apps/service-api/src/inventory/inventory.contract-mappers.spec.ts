@@ -4,7 +4,6 @@ import {
   mapAdjustInventoryDtoToMovementInsert,
   mapCreateInventoryDtoToInsert,
   mapCreateInventoryDtoToMovementInsert,
-  mapRefillInventoryDtoToMovementInsert,
   toAdminInventoryMovementResponse,
   toAdminInventoryResponse,
 } from "./inventory.contract-mappers";
@@ -52,16 +51,6 @@ describe("inventory contract mappers", () => {
       reason: "adjust",
       operatorAdminUserId: "admin-1",
       note: "initial inventory binding",
-    });
-    expect(
-      mapRefillInventoryDtoToMovementInsert("admin-1", {
-        inventoryId: "550e8400-e29b-41d4-a716-446655440003",
-        quantity: 5,
-      }),
-    ).toMatchObject({
-      deltaQty: 5,
-      reason: "refill",
-      note: null,
     });
     expect(
       mapAdjustInventoryDtoToMovementInsert("admin-1", {

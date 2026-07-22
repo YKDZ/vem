@@ -132,6 +132,10 @@ class ControllerMovementRepository {
     return true;
   }
 
+  async restoreSlotAfterAcceptedLocalMaintenance() {
+    return undefined;
+  }
+
   acceptedRow(machineId: string, movementId: string) {
     return this.rows.get(`${machineId}:${movementId}`) ?? null;
   }
@@ -158,7 +162,7 @@ describe("MachineStockMovementsController", () => {
       inventoryId: "550e8400-e29b-41d4-a716-446655440201",
       variantId: "550e8400-e29b-41d4-a716-446655440301",
     },
-    source: "field_service",
+    source: "local_maintenance",
     attributedTo: "operator-1",
     occurredAt: "2026-06-04T00:00:00.000Z",
   } as const;

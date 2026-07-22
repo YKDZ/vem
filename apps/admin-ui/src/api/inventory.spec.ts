@@ -8,7 +8,6 @@ import {
   listInventories,
   listInventoryMovements,
   listStockReconciliationCases,
-  refillInventory,
   resolveStockReconciliationCase,
 } from "./inventory";
 
@@ -36,7 +35,6 @@ describe("inventory api", () => {
       onHandQty: 10,
       note: "initial binding",
     });
-    await refillInventory({ inventoryId, quantity: 5 });
     await adjustInventory({
       inventoryId,
       deltaQty: -1,
@@ -57,12 +55,6 @@ describe("inventory api", () => {
       expect.any(Object),
       expect.any(Object),
       expect.objectContaining({ onHandQty: 10 }),
-    );
-    expect(postContract).toHaveBeenCalledWith(
-      "/inventories/refill",
-      expect.any(Object),
-      expect.any(Object),
-      { inventoryId, quantity: 5 },
     );
     expect(postContract).toHaveBeenCalledWith(
       "/inventories/adjust",

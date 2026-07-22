@@ -17,7 +17,6 @@ const apiMocks = vi.hoisted(() => ({
   listMachineSlots: vi.fn(),
   commandEnvironment: vi.fn(),
   listInventories: vi.fn(),
-  refillInventory: vi.fn(),
   adjustInventory: vi.fn(),
   listStockReconciliationCases: vi.fn(),
   getStockReconciliationCase: vi.fn(),
@@ -51,7 +50,6 @@ vi.mock("@/api/machines", async () => {
 
 vi.mock("@/api/inventory", () => ({
   listInventories: apiMocks.listInventories,
-  refillInventory: apiMocks.refillInventory,
   adjustInventory: apiMocks.adjustInventory,
   listStockReconciliationCases: apiMocks.listStockReconciliationCases,
   getStockReconciliationCase: apiMocks.getStockReconciliationCase,
@@ -271,7 +269,6 @@ async function mountView(
   permissions: PermissionCode[] = [
     "machines.read",
     "machines.command",
-    "inventory.refill",
     "inventory.adjust",
     "machineOps.write",
   ],
@@ -443,14 +440,14 @@ describe("MachineDetailView", () => {
       status: "sent",
     });
     apiMocks.updateMachine.mockResolvedValue({});
-    apiMocks.refillInventory.mockResolvedValue({});
+    apiMocks.adjustInventory.mockResolvedValue({});
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
-  it("loads single machine status, controls environment, and refills a slot inventory", async () => {
+  it("loads single machine status, controls environment, and keeps only inventory adjustment", async () => {
     const { root } = await mountView();
 
     expect(apiMocks.getMachine).toHaveBeenCalledWith(
@@ -478,6 +475,7 @@ describe("MachineDetailView", () => {
     expect(root.textContent).not.toContain("节气");
     expect(root.textContent).toContain("测试衬衫");
     expect(root.textContent).toContain("库存预警");
+    expect(root.textContent).not.toContain("补货");
 
     Array.from(root.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("开启"))
@@ -490,24 +488,24 @@ describe("MachineDetailView", () => {
     );
 
     Array.from(root.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("补货"))
+      .find((button) => button.textContent?.includes("调整"))
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await nextTick();
-    const refillInput = root.querySelector<HTMLInputElement>(
+    const adjustInput = root.querySelector<HTMLInputElement>(
       '[role="dialog"] input[type="number"]',
     );
-    expect(refillInput).not.toBeNull();
-    refillInput!.value = "6";
-    refillInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(adjustInput).not.toBeNull();
+    adjustInput!.value = "6";
+    adjustInput!.dispatchEvent(new Event("input", { bubbles: true }));
     Array.from(root.querySelectorAll('[role="dialog"] button'))
       .find((button) => button.textContent?.includes("确定"))
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
 
-    expect(apiMocks.refillInventory).toHaveBeenCalledWith({
+    expect(apiMocks.adjustInventory).toHaveBeenCalledWith({
       inventoryId: "33333333-3333-4333-8333-333333333333",
-      quantity: 6,
-      note: undefined,
+      deltaQty: 6,
+      note: "single machine inventory adjustment",
     });
   });
 

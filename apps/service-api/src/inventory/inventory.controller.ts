@@ -5,7 +5,6 @@ import {
   createInventorySchema,
   inventoryQuerySchema,
   pageQuerySchema,
-  refillInventorySchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -18,7 +17,6 @@ import { InventoryService } from "./inventory.service";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
-type RefillInventoryInput = z.infer<typeof refillInventorySchema>;
 type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
 type CreateInventoryInput = z.infer<typeof createInventorySchema>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -49,16 +47,6 @@ export class InventoryController {
     body: CreateInventoryInput,
   ) {
     return await this.inventoryService.createInventory(admin.id, body);
-  }
-
-  @RequirePermissions("inventory.refill")
-  @Post("inventories/refill")
-  async refill(
-    @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(refillInventorySchema))
-    body: RefillInventoryInput,
-  ) {
-    return await this.inventoryService.refill(admin.id, body);
   }
 
   @RequirePermissions("inventory.adjust")

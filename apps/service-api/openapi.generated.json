@@ -153,15 +153,6 @@
         "tags": ["inventory"]
       }
     },
-    "/api/inventories/refill": {
-      "post": {
-        "operationId": "InventoryController_refill",
-        "parameters": [],
-        "responses": { "201": { "description": "" } },
-        "security": [{ "bearer": [] }],
-        "tags": ["inventory"]
-      }
-    },
     "/api/inventories/adjust": {
       "post": {
         "operationId": "InventoryController_adjust",

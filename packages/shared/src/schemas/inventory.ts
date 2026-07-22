@@ -21,12 +21,6 @@ export const adminInventoryListQuerySchema = pageQuerySchema.extend(
 
 export const adminInventoryMovementListQuerySchema = pageQuerySchema;
 
-export const refillInventorySchema = z.strictObject({
-  inventoryId: z.uuid(),
-  quantity: z.int().positive(),
-  note: z.string().max(500).optional(),
-});
-
 export const adjustInventorySchema = z.strictObject({
   inventoryId: z.uuid(),
   deltaQty: z.int(),
@@ -303,7 +297,6 @@ export type AdminInventoryMovementListQuery = z.infer<
   typeof adminInventoryMovementListQuerySchema
 >;
 export type AdminCreateInventoryRequest = z.infer<typeof createInventorySchema>;
-export type AdminRefillInventoryRequest = z.infer<typeof refillInventorySchema>;
 export type AdminAdjustInventoryRequest = z.infer<typeof adjustInventorySchema>;
 export type AdminInventoryResponse = z.infer<
   typeof adminInventoryResponseSchema

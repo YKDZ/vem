@@ -13,7 +13,6 @@ import {
   adminStockReconciliationResolveRequestSchema,
   adjustInventorySchema,
   createInventorySchema,
-  refillInventorySchema,
   type AdminInventoryMovementResponse,
   type AdminInventoryResponse,
   type AdminStockReconciliationCaseDetailResponse,
@@ -53,17 +52,6 @@ export async function createInventory(
   return await postContract(
     "/inventories",
     createInventorySchema,
-    adminInventoryResponseSchema,
-    body,
-  );
-}
-
-export async function refillInventory(
-  body: z.input<typeof refillInventorySchema>,
-): Promise<Inventory> {
-  return await postContract(
-    "/inventories/refill",
-    refillInventorySchema,
     adminInventoryResponseSchema,
     body,
   );

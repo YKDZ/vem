@@ -405,7 +405,7 @@ describe("MachineStockMovementsService", () => {
       inventoryId: "550e8400-e29b-41d4-a716-446655440201",
       variantId: "550e8400-e29b-41d4-a716-446655440301",
     },
-    source: "field_service",
+    source: "local_maintenance",
     attributedTo: "operator-1",
     occurredAt: "2026-06-04T00:00:00.000Z",
   };
@@ -459,6 +459,24 @@ describe("MachineStockMovementsService", () => {
       },
     ]);
   });
+
+  it.each(["field_service", "platform_planned_refill"] as const)(
+    "reconciles retired %s planned refill without increasing platform inventory",
+    async (source) => {
+      const repo = new InMemoryMovementRepository();
+      const service = new MachineStockMovementsService(repo as never);
+
+      const result = await service.receiveRawMovement(machine, {
+        ...movement,
+        movementId: `MOVE-RETIRED-${source}`,
+        source,
+      });
+
+      expect(result.status).toBe("reconciliation");
+      expect(result.reconciliation?.reason).toBe("weak_attribution");
+      expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+    },
+  );
 
   it.each([
     [

@@ -15,7 +15,6 @@ import {
   getStockReconciliationCase,
   listInventories,
   listStockReconciliationCases,
-  refillInventory,
   resolveStockReconciliationCase,
   type Inventory,
   type StockReconciliationCaseDetail,
@@ -69,7 +68,6 @@ const authStore = useAuthStore();
 
 const canWrite = authStore.hasPermission("machines.write");
 const canCommand = authStore.hasPermission("machines.command");
-const canRefill = authStore.hasPermission("inventory.refill");
 const canAdjust = authStore.hasPermission("inventory.adjust");
 const canReviewStockReconciliation =
   authStore.hasPermission("inventory.adjust");
@@ -176,11 +174,6 @@ function clearEnvironmentControlActionStatus(): void {
   };
 }
 const exportingLogs = ref(false);
-
-const refillModalOpen = ref(false);
-const refillSaving = ref(false);
-const refillInventoryRow = ref<Inventory | null>(null);
-const refillForm = ref({ quantity: 1, note: "" });
 
 const adjustModalOpen = ref(false);
 const adjustSaving = ref(false);
@@ -529,28 +522,6 @@ async function submitEnvironmentCommand(
     if (environmentCommandPoller.value === null) {
       environmentSubmittingAction.value = null;
     }
-  }
-}
-
-function openRefill(row: Inventory): void {
-  refillInventoryRow.value = row;
-  refillForm.value = { quantity: 1, note: "" };
-  refillModalOpen.value = true;
-}
-
-async function saveRefill(): Promise<void> {
-  if (!refillInventoryRow.value) return;
-  refillSaving.value = true;
-  try {
-    await refillInventory({
-      inventoryId: refillInventoryRow.value.id,
-      quantity: refillForm.value.quantity,
-      note: refillForm.value.note || undefined,
-    });
-    refillModalOpen.value = false;
-    await loadInventoryData();
-  } finally {
-    refillSaving.value = false;
   }
 }
 
@@ -1088,13 +1059,6 @@ onBeforeUnmount(() => {
           <template v-else-if="column.key === 'actions'">
             <a-space v-if="record.inventory">
               <a-button
-                v-if="canRefill"
-                size="small"
-                @click="openRefill(record.inventory)"
-              >
-                补货
-              </a-button>
-              <a-button
                 v-if="canAdjust"
                 size="small"
                 @click="openAdjust(record.inventory)"
@@ -1189,32 +1153,6 @@ onBeforeUnmount(() => {
         </template>
       </a-table>
     </a-card>
-
-    <a-modal
-      v-model:open="refillModalOpen"
-      title="单机补货"
-      :confirm-loading="refillSaving"
-      @ok="saveRefill"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="商品">
-          {{ refillInventoryRow?.productName ?? refillInventoryRow?.sku }}
-        </a-form-item>
-        <a-form-item label="货道">
-          {{ inventorySlotCoordinateLabel(refillInventoryRow) }}
-        </a-form-item>
-        <a-form-item label="补货数量">
-          <a-input-number
-            v-model:value="refillForm.quantity"
-            :min="1"
-            class="w-full"
-          />
-        </a-form-item>
-        <a-form-item label="备注">
-          <a-input v-model:value="refillForm.note" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
 
     <a-modal
       v-model:open="reconciliationModalOpen"

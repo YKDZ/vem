@@ -105,7 +105,6 @@ import {
   roleListQuerySchema,
   roleStatuses,
   rotateMachineCredentialsResponseSchema,
-  refillInventorySchema,
   refundAdminPageResponseSchema,
   adjustInventorySchema,
   upsertNotificationTargetSchema,
@@ -716,13 +715,6 @@ describe("shared API contract", () => {
         }),
       ).toThrow();
       expect(() =>
-        refillInventorySchema.parse({
-          inventoryId,
-          quantity: 5,
-          reason: "manual",
-        }),
-      ).toThrow();
-      expect(() =>
         adjustInventorySchema.parse({
           inventoryId,
           deltaQty: -1,
@@ -748,9 +740,6 @@ describe("shared API contract", () => {
         reservedQty: 0,
         lowStockThreshold: 1,
       });
-      expect(refillInventorySchema.parse({ inventoryId, quantity: 2 })).toEqual(
-        { inventoryId, quantity: 2 },
-      );
       expect(
         adjustInventorySchema.parse({
           inventoryId,

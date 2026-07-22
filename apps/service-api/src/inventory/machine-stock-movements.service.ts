@@ -522,8 +522,6 @@ async function reconciliationForFieldStockMovement(
   }
   if (
     input.movementType === "planned_refill" &&
-    input.source !== "field_service" &&
-    input.source !== "platform_planned_refill" &&
     input.source !== "local_maintenance"
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");

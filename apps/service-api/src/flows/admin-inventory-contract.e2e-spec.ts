@@ -68,7 +68,7 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
     await cleanupBusinessTables(db);
   });
 
-  it("creates, refills, and adjusts inventory through the real Admin API contract", async () => {
+  it("keeps inventory adjustment while removing the direct Admin refill contract", async () => {
     const unique = Date.now().toString(36);
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
@@ -182,15 +182,11 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
     expect(inventory.onHandQty).toBe(10);
     expect(inventory.reservedQty).toBe(0);
 
-    const refillResponse = await api
+    const removedRefillResponse = await api
       .post("/api/inventories/refill")
       .set(auth)
       .send({ inventoryId: inventory.id, quantity: 5 });
-    expect(refillResponse.status).toBe(201);
-    const refilled = adminInventoryResponseSchema.parse(
-      (refillResponse.body as ApiResponse<unknown>).data,
-    );
-    expect(refilled.onHandQty).toBe(15);
+    expect(removedRefillResponse.status).toBe(404);
 
     const adjustResponse = await api
       .post("/api/inventories/adjust")
@@ -204,6 +200,6 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
     const adjusted = adminInventoryResponseSchema.parse(
       (adjustResponse.body as ApiResponse<unknown>).data,
     );
-    expect(adjusted.onHandQty).toBe(12);
+    expect(adjusted.onHandQty).toBe(7);
   }, 60_000);
 });

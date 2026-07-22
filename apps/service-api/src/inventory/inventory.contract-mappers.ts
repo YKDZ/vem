@@ -6,7 +6,6 @@ import {
   type AdminCreateInventoryRequest,
   type AdminInventoryMovementResponse,
   type AdminInventoryResponse,
-  type AdminRefillInventoryRequest,
 } from "@vem/shared";
 
 type InventoryInsert = typeof inventories.$inferInsert;
@@ -96,26 +95,6 @@ export function mapCreateInventoryDtoToMovementInsert(
     reason: "adjust",
     operatorAdminUserId: adminUserId,
     note: dto.note ?? "initial inventory binding",
-  } satisfies InventoryMovementInsert;
-  return insert;
-}
-
-export function mapRefillInventoryDtoToMovementInsert(
-  adminUserId: string,
-  input: AdminRefillInventoryRequest,
-): InventoryMovementInsert {
-  const dto = {
-    inventoryId: input.inventoryId,
-    quantity: input.quantity,
-    note: input.note,
-  } satisfies ContractFieldCoverage<AdminRefillInventoryRequest>;
-
-  const insert = {
-    inventoryId: dto.inventoryId,
-    deltaQty: dto.quantity,
-    reason: "refill",
-    operatorAdminUserId: adminUserId,
-    note: dto.note ?? null,
   } satisfies InventoryMovementInsert;
   return insert;
 }

@@ -3860,6 +3860,11 @@ impl LocalStateStore {
                 input.movement_type
             )));
         }
+        if input.movement_type == "planned_refill" && input.source != "local_maintenance" {
+            return Err(StoreError::InvalidStockInput(
+                "planned refill source must be local_maintenance".to_string(),
+            ));
+        }
 
         let mut tx = self.pool.begin().await?;
         let existing: Option<(String, String, String, i64, String, Option<String>)> =
@@ -11429,7 +11434,7 @@ mod tests {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     movement_type: "planned_refill".to_string(),
                     quantity: 3,
-                    source: "field_service".to_string(),
+                    source: "local_maintenance".to_string(),
                     attributed_to: Some("operator-1".to_string()),
                 },
                 Some("MACHINE-1"),
@@ -11482,6 +11487,43 @@ mod tests {
         assert_eq!(outbox.payload_json["afterQuantity"], 3);
         assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotCode"], "A1");
         assert_eq!(outbox.payload_json["slotMappingSnapshot"]["capacity"], 8);
+    }
+
+    #[tokio::test]
+    async fn planned_refill_rejects_non_local_maintenance_source_before_recording_stock() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let error = store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-RETIRED-REFILL-SOURCE".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 2,
+                    source: "field_service".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
+                },
+                Some("M001"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect_err("retired refill source must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("planned refill source must be local_maintenance"));
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM stock_movements WHERE movement_id = 'MOVE-RETIRED-REFILL-SOURCE'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("movement count");
+        assert_eq!(count.0, 0);
     }
 
     #[tokio::test]
@@ -11606,8 +11648,8 @@ mod tests {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     movement_type: "planned_refill".to_string(),
                     quantity: 3,
-                    source: "field_service".to_string(),
-                    attributed_to: None,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
                 },
                 Some("MACHINE-1"),
                 Some("https://platform.example/api"),
@@ -11877,7 +11919,7 @@ mod tests {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 movement_type: "planned_refill".to_string(),
                 quantity: 2,
-                source: "field_service".to_string(),
+                source: "local_maintenance".to_string(),
                 attributed_to: Some("operator-2".to_string()),
             })
             .await
