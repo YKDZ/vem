@@ -251,9 +251,20 @@ function traceBoundary(entries, label) {
       `${label} requires an installed Machine Runtime Trace array`,
     );
   }
+  const lastEntryId = entries.at(-1)?.id ?? 0;
+  if (
+    !Number.isInteger(lastEntryId) ||
+    lastEntryId < 0 ||
+    !entries.every(
+      (entry, index) =>
+        Number.isInteger(entry?.id) && entry.id > (entries[index - 1]?.id ?? 0),
+    )
+  ) {
+    throw new Error(`${label} requires monotonically increasing trace ids`);
+  }
   return {
     source: "installed_machine_runtime_trace_cdp",
-    entryCount: entries.length,
+    lastEntryId,
     capturedAt: new Date().toISOString(),
   };
 }
@@ -261,16 +272,15 @@ function traceBoundary(entries, label) {
 function traceEntriesAfterBoundary(entries, boundary, label) {
   if (
     boundary?.source !== "installed_machine_runtime_trace_cdp" ||
-    !Number.isInteger(boundary?.entryCount) ||
-    boundary.entryCount < 0 ||
-    boundary.entryCount > entries.length ||
+    !Number.isInteger(boundary?.lastEntryId) ||
+    boundary.lastEntryId < 0 ||
     !Number.isFinite(Date.parse(boundary?.capturedAt))
   ) {
     throw new Error(
-      `${label} must retain an installed-CDP trace entry boundary and capture timestamp`,
+      `${label} must retain an installed-CDP trace id boundary and capture timestamp`,
     );
   }
-  return entries.slice(boundary.entryCount);
+  return entries.filter((entry) => entry?.id > boundary.lastEntryId);
 }
 
 function isCatalogRoute(route) {

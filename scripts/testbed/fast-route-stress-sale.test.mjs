@@ -351,7 +351,7 @@ function validEvidence() {
       completedAt: "2026-07-18T04:00:00.050Z",
       traceBoundary: {
         source: "installed_machine_runtime_trace_cdp",
-        entryCount: 1,
+        lastEntryId: 1,
         capturedAt: "2026-07-18T04:00:00.000Z",
       },
       connectedRuntimeClients: 1,
@@ -359,7 +359,7 @@ function validEvidence() {
     },
     noCatalogTraceBoundary: {
       source: "installed_machine_runtime_trace_cdp",
-      entryCount: 0,
+      lastEntryId: 0,
       capturedAt: "2026-07-18T03:59:59.700Z",
     },
     repeatedPaymentTouch: {
@@ -368,7 +368,7 @@ function validEvidence() {
       releaseRequestedAt: "2026-07-18T04:00:00.200Z",
       preDispatchTraceBoundary: {
         source: "installed_machine_runtime_trace_cdp",
-        entryCount: 2,
+        lastEntryId: 2,
         capturedAt: "2026-07-18T04:00:00.110Z",
       },
     },
@@ -504,7 +504,7 @@ describe("fast route stress sale tracer", () => {
     let reads = 0;
     const traceBoundary = {
       source: "installed_machine_runtime_trace_cdp",
-      entryCount: 1,
+      lastEntryId: 256,
       capturedAt: "2026-07-18T04:00:00.000Z",
     };
     const result = await waitForGuardedVisionDepartureTrace(
@@ -515,19 +515,21 @@ describe("fast route stress sale tracer", () => {
         sleepFn: async () => {},
         readTrace: async () => {
           reads += 1;
-          const priorDeparture = {
+          const fullTraceWindow = Array.from({ length: 256 }, (_, index) => ({
+            id: index + 1,
             type: "navigation",
             intentType: "presence.departed",
-            sourceEventId: "presence-7:departure",
+            sourceEventId: `presence-${index + 1}:departure`,
             decision: "rejected",
             reasonCode: "active_transaction_route",
             finalRoute: "#/checkout",
-          };
+          }));
           return reads < 2
-            ? [priorDeparture]
+            ? fullTraceWindow
             : [
-                priorDeparture,
+                ...fullTraceWindow.slice(1),
                 {
+                  id: 257,
                   type: "navigation",
                   intentType: "presence.departed",
                   sourceEventId: "presence-8:departure",
@@ -851,7 +853,7 @@ describe("fast route stress sale tracer", () => {
   it("fails closed on transient Catalog or root CDP location.hash even when the runtime trace reset hides it", () => {
     for (const forbiddenHash of ["#/catalog", "", "#/"]) {
       const evidence = validEvidence();
-      evidence.noCatalogTraceBoundary.entryCount = 99;
+      evidence.noCatalogTraceBoundary.lastEntryId = 99;
       evidence.continuousCdpLocationHash.entries.splice(2, 0, {
         sequence: 99,
         method: "Page.navigatedWithinDocument",
