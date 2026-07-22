@@ -426,12 +426,10 @@ async function connectMachineUi(handoff) {
   return client;
 }
 
-async function visiblePaymentSurface(client, method, timeoutMs) {
-  return await waitForCondition(
-    () =>
-      evaluateExpression(
-        client,
-        `(() => {
+async function readVisiblePaymentSurface(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
           const el = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
           return el && el.getClientRects().length ? {
             orderId: el.dataset.orderId || null,
@@ -447,7 +445,12 @@ async function visiblePaymentSurface(client, method, timeoutMs) {
               : null
           } : null;
         })()`,
-      ),
+  );
+}
+
+async function visiblePaymentSurface(client, method, timeoutMs) {
+  return await waitForCondition(
+    () => readVisiblePaymentSurface(client),
     (surface) =>
       surface?.paymentMethod === method &&
       surface?.providerCode === "alipay" &&
@@ -455,6 +458,39 @@ async function visiblePaymentSurface(client, method, timeoutMs) {
       typeof surface?.paymentId === "string",
     { timeoutMs, label: `visible ${method} Alipay payment surface` },
   );
+}
+
+async function submitUntilPaymentSurface(client, method, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let submitCount = 0;
+  while (Date.now() < deadline) {
+    const surface = await readVisiblePaymentSurface(client);
+    if (
+      surface?.paymentMethod === method &&
+      surface?.providerCode === "alipay" &&
+      typeof surface?.orderId === "string" &&
+      typeof surface?.paymentId === "string"
+    ) {
+      return surface;
+    }
+    const submitReady = await evaluateExpression(
+      client,
+      `(() => {
+        const el = document.querySelector('[data-test="checkout-submit"]');
+        return Boolean(el && !el.disabled && el.getClientRects().length);
+      })()`,
+    );
+    if (submitReady && submitCount < 3) {
+      await activateVisibleSelector(
+        client,
+        '[data-test="checkout-submit"]:not(:disabled)',
+        { kind: "touch", timeoutMs: 5_000, pollMs: POLL_INTERVAL_MS },
+      );
+      submitCount += 1;
+    }
+    await sleep(Math.min(POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+  }
+  return await visiblePaymentSurface(client, method, 1);
 }
 
 async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
@@ -468,7 +504,6 @@ async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
     catalogProductSelectorForFixture(fixture, "sale"),
     '[data-test="product-buy"]:not(:disabled)',
     `[data-test="payment-option"][data-payment-option-key="${method}:alipay"]:not(:disabled)`,
-    '[data-test="checkout-submit"]:not(:disabled)',
   ];
   for (const selector of steps) {
     await activateVisibleSelector(client, selector, {
@@ -477,7 +512,7 @@ async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
       pollMs: POLL_INTERVAL_MS,
     });
   }
-  return await visiblePaymentSurface(client, method, timeoutMs);
+  return await submitUntilPaymentSurface(client, method, timeoutMs);
 }
 
 async function cancelVisibleMachineOrder(client, timeoutMs) {
