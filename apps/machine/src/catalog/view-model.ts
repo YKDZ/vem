@@ -1,14 +1,13 @@
 import type { MachineCatalogItem } from "@/types/catalog";
+import {
+  catalogTopCategories,
+  topCategoryForCatalogItem,
+  type CatalogTopCategory,
+  type CatalogTopCategoryKey,
+} from "@vem/shared/catalog-top-category";
 
-export type CatalogTopCategoryKey = "socks" | "underwear" | "tshirts";
-
-export type CatalogTopCategory = {
-  key: CatalogTopCategoryKey;
-  label: string;
-  description: string;
-  categoryKeywords: readonly string[];
-  productKeywords: readonly string[];
-};
+export { catalogTopCategories };
+export type { CatalogTopCategory, CatalogTopCategoryKey };
 
 export type CatalogTopCategoryGroup = CatalogTopCategory & {
   items: MachineCatalogItem[];
@@ -21,30 +20,6 @@ export type CatalogSubcategoryGroup = {
   items: MachineCatalogItem[];
 };
 
-export const catalogTopCategories: readonly CatalogTopCategory[] = [
-  {
-    key: "socks",
-    label: "袜子",
-    description: "中筒袜、船袜、运动袜",
-    categoryKeywords: ["袜"],
-    productKeywords: ["袜"],
-  },
-  {
-    key: "underwear",
-    label: "内裤",
-    description: "平角裤、无痕内裤、贴身基础款",
-    categoryKeywords: ["内衣", "内裤"],
-    productKeywords: ["内裤", "平角裤", "文胸", "打底", "内衣"],
-  },
-  {
-    key: "tshirts",
-    label: "T恤",
-    description: "短袖、背心、轻量上装",
-    categoryKeywords: ["t恤", "上装", "运动服", "短袖"],
-    productKeywords: ["t恤", "t 恤", "短袖", "背心"],
-  },
-];
-
 const FALLBACK_SUBCATEGORY_KEY = "uncategorized";
 
 function sortCatalogItems(items: MachineCatalogItem[]): MachineCatalogItem[] {
@@ -55,26 +30,10 @@ function sortCatalogItems(items: MachineCatalogItem[]): MachineCatalogItem[] {
   );
 }
 
-function normalizeText(value: string | null | undefined): string {
-  return (value ?? "").toLocaleLowerCase().replace(/\s+/g, "");
-}
-
-function includesAny(value: string, keywords: readonly string[]): boolean {
-  return keywords.some((keyword) => value.includes(normalizeText(keyword)));
-}
-
 function matchingTopCategory(
   item: Pick<MachineCatalogItem, "categoryName" | "productName">,
 ): CatalogTopCategory | null {
-  const categoryName = normalizeText(item.categoryName);
-  const productName = normalizeText(item.productName);
-  return (
-    catalogTopCategories.find(
-      (category) =>
-        includesAny(categoryName, category.categoryKeywords) ||
-        includesAny(productName, category.productKeywords),
-    ) ?? null
-  );
+  return topCategoryForCatalogItem(item);
 }
 
 export function usesFallbackTopCategory(

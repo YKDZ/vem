@@ -45,6 +45,11 @@
       "import": "./dist/fixtures/*.js",
       "require": "./dist/fixtures/*.cjs",
       "default": "./dist/fixtures/*.js"
+    },
+    "./catalog-top-category": {
+      "types": "./src/catalog-top-category.d.ts",
+      "import": "./src/catalog-top-category.mjs",
+      "default": "./src/catalog-top-category.mjs"
     }
   },
   "scripts": {

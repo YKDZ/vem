@@ -16,6 +16,8 @@ import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
+
 import { allocateFullWorkflowFixtures } from "./full-workflow-fixtures.mjs";
 import {
   paymentMockCreateGatePaths,
@@ -82,6 +84,15 @@ const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "SERVICE_HOST",
   "SERVICE_PORT",
 ]);
+
+export function categoryKeyForFixtureProduct(product) {
+  return (
+    topCategoryKeyForCatalogItem({
+      categoryName: product?.category ?? null,
+      productName: product?.name ?? null,
+    }) ?? "other"
+  );
+}
 const COMMAND_ENV_PASSTHROUGH = Object.freeze([
   "CI",
   "COREPACK_HOME",
@@ -1489,14 +1500,7 @@ export async function seedThroughSupportedApis({
       rowNo: slot.rowNo,
       cellNo: slot.cellNo,
       slotDisplayLabel: slot.slotDisplayLabel,
-      categoryKey:
-        product.category === "袜子"
-          ? "socks"
-          : product.category === "内裤"
-            ? "underwear"
-            : product.category === "T恤"
-              ? "tshirts"
-              : "other",
+      categoryKey: categoryKeyForFixtureProduct(product),
       inventoryId: inventory.id,
       onHandQty: slot.onHandQty,
       sku: product.variant.sku,

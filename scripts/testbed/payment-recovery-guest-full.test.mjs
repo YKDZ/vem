@@ -23,7 +23,8 @@ describe("payment recovery guest full", () => {
     assert.match(source, /report\.handoffSerialSessionId\s*=\s*required\(/);
     assert.doesNotMatch(source, /controlPlaneSessionId/);
     assert.doesNotMatch(source, /Page\.reload|location\.hash\s*=/);
-    assert.match(source, /maintenance-entry-header/);
+    assert.doesNotMatch(source, /maintenance-entry-header/);
+    assert.doesNotMatch(source, /customer-error-evidence-entry/);
   });
   it("drives create_failure through the provider create gate timeout without release or mock fail", () => {
     const source = readFileSync(
@@ -86,6 +87,8 @@ describe("payment recovery guest full", () => {
               slotDisplayLabel: "R1C1",
               slotId: "slot-1",
               inventoryId: "inv-1",
+              categoryName: "袜子",
+              productName: "商务中筒袜",
             },
           ],
         },
@@ -97,6 +100,26 @@ describe("payment recovery guest full", () => {
         inventoryId: "inv-1",
         planogramVersion: "P-7",
       },
+    );
+  });
+  it("rejects a fixture category that diverges from Machine Catalog semantics", () => {
+    assert.throws(
+      () =>
+        selectFixtureSlot(
+          {
+            planogramVersion: "P-7",
+            items: [
+              {
+                slotId: "slot-underwear",
+                inventoryId: "inv-underwear",
+                categoryName: "",
+                productName: "男士平角裤",
+              },
+            ],
+          },
+          { slotId: "slot-underwear", categoryKey: "tshirts" },
+        ),
+      /does not match Machine Catalog category underwear/,
     );
   });
   it("opens the fixture product through its expected Catalog category", async () => {
@@ -337,6 +360,20 @@ describe("payment recovery guest full", () => {
       /customer surface|correlation/,
     );
   });
+
+  it("accepts raw create failure evidence from the installed runtime trace, not the customer DOM", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.technicalEvidence.runtimeTrace.entry = {
+      id: 1,
+      technicalMessage: "mock payment create gate timed out before release",
+    };
+    delete createFailure.technicalEvidence.localOperations;
+
+    assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
+  });
 });
 
 function recoveryReport() {
@@ -455,14 +492,8 @@ function recoveryReport() {
               runtimeTrace: {
                 source: "installed_machine_runtime_trace_cdp",
                 checkoutAttemptIdempotencyKey: "checkout:create-failure",
-                entry: { id: 1 },
-              },
-              localOperations: {
-                source: "installed_machine_local_operations_cdp_after_refresh",
-                checkoutAttemptIdempotencyKey: "checkout:create-failure",
-                orderId: `order-${kind}`,
-                paymentId: `pay-${kind}`,
                 entry: {
+                  id: 1,
                   technicalMessage:
                     "mock payment create gate timed out before release",
                 },

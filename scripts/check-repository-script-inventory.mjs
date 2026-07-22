@@ -40,6 +40,7 @@ export const DEFAULT_INVENTORY = [
   ...[
     "ensure-testbed-pwsh.test.mjs",
     "business-check-registry.test.mjs",
+    "catalog-fixture-category.test.mjs",
     "commissioning-acceptance.test.mjs",
     "daemon-ready-refresh.test.mjs",
     "environment-control-guest-full.test.mjs",

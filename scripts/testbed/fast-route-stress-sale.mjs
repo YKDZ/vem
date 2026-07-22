@@ -1756,6 +1756,7 @@ export function buildFastRouteStressSaleFailureReport(input) {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
     ok: false,
+    handoffSerialSessionId: input.handoffSerialSessionId ?? null,
     mode: input.mode,
     stage: input.stage,
     error:
@@ -2455,6 +2456,7 @@ async function runFastRouteStressSale(options) {
     successReport = {
       schemaVersion: "vem-fast-route-stress-sale/v2",
       ok: true,
+      handoffSerialSessionId: sessionStart.sessionId,
       mode: options.mode,
       runId,
       machineCode,
@@ -2560,6 +2562,7 @@ async function runFastRouteStressSale(options) {
       mode: options.mode,
       stage,
       error: primaryError,
+      handoffSerialSessionId: sessionStart?.sessionId ?? null,
       controlPlaneSessionId: sessionStart?.sessionId ?? null,
       liveSale,
       runtimeTrace: runtimeTrace.entries,
@@ -2735,6 +2738,7 @@ async function runFastRouteStressSale(options) {
         mode: options.mode,
         stage: "cleanup",
         error: finalError,
+        handoffSerialSessionId: sessionStart?.sessionId ?? null,
         controlPlaneSessionId: sessionStart?.sessionId ?? null,
         liveSale,
         runtimeTrace: [],

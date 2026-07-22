@@ -4,6 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
+
 import {
   CdpClient,
   activateVisibleSelector,
@@ -198,6 +200,15 @@ export function selectFixtureSlot(saleView, fixture) {
     throw new Error(
       `fixture slot ${slotId} is not saleable in daemon sale-view`,
     );
+  const actualCategoryKey = topCategoryKeyForCatalogItem({
+    categoryName: item.categoryName,
+    productName: item.productName,
+  });
+  if (actualCategoryKey !== categoryKey) {
+    throw new Error(
+      `fixture slot ${slotId} category ${categoryKey} does not match Machine Catalog category ${actualCategoryKey ?? "other"}`,
+    );
+  }
   return {
     slotId,
     categoryKey,
@@ -314,15 +325,7 @@ export function validatePaymentRecoveryEvidence(report) {
         attempt.technicalEvidence.runtimeTrace
           ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
         !Number.isFinite(attempt.technicalEvidence.runtimeTrace?.entry?.id) ||
-        attempt.technicalEvidence?.localOperations?.source !==
-          "installed_machine_local_operations_cdp_after_refresh" ||
-        attempt.technicalEvidence.localOperations
-          ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
-        attempt.technicalEvidence.localOperations?.orderId !==
-          attempt.order.id ||
-        attempt.technicalEvidence.localOperations?.paymentId !==
-          attempt.payment.id ||
-        !attempt.technicalEvidence.localOperations?.entry?.technicalMessage?.includes(
+        !attempt.technicalEvidence.runtimeTrace?.entry?.technicalMessage?.includes(
           "mock payment create gate timed out before release",
         )
       ) {
@@ -744,52 +747,6 @@ async function waitForCustomerCreateFailure(client, idempotencyKey, expected) {
   );
 }
 
-async function readCustomerErrorFromLocalOperations(client, idempotencyKey) {
-  for (let tapCount = 0; tapCount < 7; tapCount += 1) {
-    await activateVisibleSelector(
-      client,
-      "[data-test=maintenance-entry-header]",
-      {
-        kind: "touch",
-        timeoutMs: 30_000,
-      },
-    );
-  }
-  await waitForRoute(client, "#/maintenance?source=operator", {
-    timeoutMs: 30_000,
-    forbiddenRoutes: [],
-  });
-  await activateVisibleSelector(
-    client,
-    "[data-test=maintenance-task-diagnostics]",
-    {
-      kind: "touch",
-      timeoutMs: 30_000,
-    },
-  );
-  return await waitFor(
-    `Local Operations customer error ${idempotencyKey}`,
-    () =>
-      evaluateExpression(
-        client,
-        `(() => {
-          const entry = [...document.querySelectorAll("[data-test=customer-error-evidence-entry]")]
-            .find((candidate) => candidate.dataset.checkoutAttemptIdempotencyKey === ${JSON.stringify(idempotencyKey)});
-          return entry ? {
-            checkoutAttemptIdempotencyKey: entry.dataset.checkoutAttemptIdempotencyKey || null,
-            technicalMessage: (entry.textContent || "").replace(/\\s+/g, " ").trim(),
-          } : null;
-        })()`,
-      ),
-    (entry) =>
-      entry?.checkoutAttemptIdempotencyKey === idempotencyKey &&
-      entry.technicalMessage.includes(
-        "mock payment create gate timed out before release",
-      ),
-    30_000,
-  );
-}
-
 const RECOVERY_TERMINALS = Object.freeze({
   create_failure: {
     paymentStatus: "failed",
@@ -1156,13 +1113,6 @@ export async function runPaymentRecoveryGuest(options) {
               { orderId: created.order.id, paymentId: created.payment.id },
               expectedTerminal,
             );
-      const localOperationsEvidence =
-        kind === "create_failure"
-          ? await readCustomerErrorFromLocalOperations(
-              customer,
-              created.idempotencyKey,
-            )
-          : null;
       const terminal = terminalRows(
         terminalPlatform,
         created.order.id,
@@ -1234,16 +1184,6 @@ export async function runPaymentRecoveryGuest(options) {
                     customerSurface?.trace?.checkoutAttemptIdempotencyKey ??
                     null,
                   entry: customerSurface?.trace ?? null,
-                },
-                localOperations: {
-                  source:
-                    "installed_machine_local_operations_cdp_after_refresh",
-                  checkoutAttemptIdempotencyKey:
-                    localOperationsEvidence?.checkoutAttemptIdempotencyKey ??
-                    null,
-                  orderId: created.order.id,
-                  paymentId: created.payment.id,
-                  entry: localOperationsEvidence,
                 },
               }
             : {

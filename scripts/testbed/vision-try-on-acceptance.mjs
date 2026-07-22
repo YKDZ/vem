@@ -3165,6 +3165,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: true,
+      handoffSerialSessionId: hardwareSession?.sessionId ?? null,
       mode: options.mode,
       machineCode: guestInput.machineCode,
       visionInstall: {
@@ -3253,6 +3254,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: false,
+      handoffSerialSessionId: hardwareSession?.sessionId ?? null,
       mode: options.mode,
       stage,
       error: serializeError(pendingError),
@@ -3348,6 +3350,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       ...(report ?? {
         schemaVersion: "vem-vision-try-on-acceptance/v1",
+        handoffSerialSessionId: hardwareSession?.sessionId ?? null,
         mode: options.mode,
         checkpoints,
         logs: {

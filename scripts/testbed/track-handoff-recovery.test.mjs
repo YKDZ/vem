@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -163,6 +164,64 @@ describe("Track Handoff Recovery", () => {
     assert.equal(terminal.facts.handoffSerialSessionId, null);
     assert.deepEqual(restored, []);
     assert.deepEqual(recovery.actions, ["disableFaultInjection"]);
+  });
+
+  it("recovers the actual root handoff session published by the fast-sale and Vision runners", async () => {
+    const runnerReports = [
+      {
+        track: "sale",
+        source: "./fast-route-stress-sale.mjs",
+        report: {
+          schemaVersion: "vem-fast-route-stress-sale/v2",
+          ok: false,
+          handoffSerialSessionId: "fast-sale-control-plane-session",
+          controlPlaneSessionId: "legacy-fast-sale-session",
+          serial: { start: { sessionId: "nested-fast-sale-session" } },
+        },
+      },
+      {
+        track: "visionExperience",
+        source: "./vision-try-on-acceptance.mjs",
+        report: {
+          schemaVersion: "vem-vision-try-on-acceptance/v1",
+          ok: false,
+          handoffSerialSessionId: "vision-control-plane-session",
+          vision: { sessionId: "vision-evidence-session" },
+          tryOn: { sessionId: "try-on-evidence-session" },
+        },
+      },
+    ];
+    const restored = [];
+    for (const runner of runnerReports) {
+      const terminal = await captureTrackTerminalFacts({
+        track: { key: runner.track },
+        context: { report: runner.report },
+        readRoute: async () => "#/catalog",
+        daemonGet: async (path) =>
+          path === "/v1/transactions/current" ? null : {},
+        platformQuery: async () => ({ inventories: [] }),
+      });
+      const recovery = await recoverTrackHandoff({
+        track: { key: runner.track },
+        terminal,
+        fixtureAllocation: {},
+        disableFaultInjection: async () => undefined,
+        restoreSerialSession: async (sessionId) => restored.push(sessionId),
+      });
+      assert.equal(recovery.ok, true);
+      assert.equal(
+        terminal.facts.handoffSerialSessionId,
+        runner.report.handoffSerialSessionId,
+      );
+      assert.match(
+        readFileSync(new URL(runner.source, import.meta.url), "utf8"),
+        /handoffSerialSessionId/,
+      );
+    }
+    assert.deepEqual(restored, [
+      "fast-sale-control-plane-session",
+      "vision-control-plane-session",
+    ]);
   });
 
   it("records hardware binding degradation without reclassifying a completed child track", async () => {
