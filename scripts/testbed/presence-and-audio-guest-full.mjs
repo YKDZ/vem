@@ -397,12 +397,17 @@ function automaticVentEvidence({
   }
   const [arrivalFrame, adminFrame, departureFrame] = frames;
   const arrivalAt = Date.parse(arrivalFrame?.capturedAt);
+  const adminAt = Date.parse(adminFrame?.capturedAt);
   const departureAt = Date.parse(departureFrame?.capturedAt);
-  if (!Number.isFinite(arrivalAt) || !Number.isFinite(departureAt)) {
+  if (
+    !Number.isFinite(arrivalAt) ||
+    !Number.isFinite(adminAt) ||
+    !Number.isFinite(departureAt)
+  ) {
     throw new Error("automatic B3 evidence requires capturedAt timestamps");
   }
   const guardElapsedMs = departureAt - arrivalAt;
-  if (guardElapsedMs < 5_000) {
+  if (adminAt - arrivalAt < 5_000 || departureAt - adminAt < 5_000) {
     throw new Error(
       `automatic B3 guard was shorter than 5 seconds: ${guardElapsedMs}`,
     );

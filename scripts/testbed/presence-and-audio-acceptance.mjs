@@ -217,6 +217,13 @@ function assertAutomaticVentEvidence(
   ) {
     throw new Error("automatic B3 Admin precedence evidence is incomplete");
   }
+  const adminFrameTime = timestamp(precedence.frame.capturedAt);
+  if (
+    adminFrameTime - frameTimes[0] < 5_000 ||
+    frameTimes[1] - adminFrameTime < 5_000
+  ) {
+    throw new Error("automatic B3 guard evidence is incomplete");
+  }
   return speeds;
 }
 
@@ -465,12 +472,20 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     rearmedTransitionId,
     ...categories.map((entry) => entry.transitionId),
   ];
-  for (const transitionId of requiredCueTransitions) {
-    if (!cueWindows.some((entry) => entry?.transitionId === transitionId)) {
-      throw new Error(
-        `presence and audio cue window is missing ${transitionId}`,
-      );
-    }
+  if (
+    cueWindows.length !== requiredCueTransitions.length ||
+    requiredCueTransitions.some(
+      (transitionId) =>
+        cueWindows.filter((entry) => entry?.transitionId === transitionId)
+          .length !== 1,
+    ) ||
+    cueWindows.some(
+      (entry) => !requiredCueTransitions.includes(entry?.transitionId),
+    )
+  ) {
+    throw new Error(
+      "presence and audio requires exactly one cue window per required transition",
+    );
   }
   const automaticVentSpeeds = assertAutomaticVentEvidence(
     acceptance?.automaticVent,

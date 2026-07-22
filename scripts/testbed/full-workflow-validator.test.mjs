@@ -766,11 +766,11 @@ function presenceAndAudioReport() {
           {
             parsedOpcode: "B3",
             rawFrameHex: "55b300",
-            capturedAt: "2026-07-22T08:00:05.000Z",
+            capturedAt: "2026-07-22T08:00:10.000Z",
           },
         ],
         speeds: [2, 0],
-        guardElapsedMs: 5_000,
+        guardElapsedMs: 10_000,
         edgeCorrelation: [
           {
             edgeId: "presence-1:arrival",
@@ -789,7 +789,7 @@ function presenceAndAudioReport() {
             frame: {
               parsedOpcode: "B3",
               rawFrameHex: "55b300",
-              capturedAt: "2026-07-22T08:00:05.000Z",
+              capturedAt: "2026-07-22T08:00:10.000Z",
             },
           },
         ],
@@ -800,7 +800,7 @@ function presenceAndAudioReport() {
           frame: {
             parsedOpcode: "B3",
             rawFrameHex: "55b303",
-            capturedAt: "2026-07-22T08:00:01.000Z",
+            capturedAt: "2026-07-22T08:00:05.000Z",
           },
           duplicateSameEdge: {
             edgeId: "presence-1:arrival",

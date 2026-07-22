@@ -595,27 +595,32 @@ impl MqttSyncRuntime {
                 command_no: command.command_no,
             });
         };
-        let hardware =
-            match tokio::time::timeout(remaining, self.hardware.acquire_environment_hardware())
-                .await
-            {
-                Ok(hardware) => hardware,
-                Err(_) => {
-                    self.enqueue_environment_control_result(
-                        &command,
-                        false,
-                        Some("COMMAND_EXPIRED".to_string()),
-                        Some("environment control command deadline elapsed".to_string()),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                    return Ok(CommandHandlingResult::Processed {
-                        command_no: command.command_no,
-                    });
-                }
-            };
+        let hardware = if command.vent_speed.is_none() {
+            Some(
+                match tokio::time::timeout(remaining, self.hardware.acquire_environment_hardware())
+                    .await
+                {
+                    Ok(hardware) => hardware,
+                    Err(_) => {
+                        self.enqueue_environment_control_result(
+                            &command,
+                            false,
+                            Some("COMMAND_EXPIRED".to_string()),
+                            Some("environment control command deadline elapsed".to_string()),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await?;
+                        return Ok(CommandHandlingResult::Processed {
+                            command_no: command.command_no,
+                        });
+                    }
+                },
+            )
+        } else {
+            None
+        };
 
         let mut confirmed_target = None;
         let mut confirmed_switch = None;
@@ -624,7 +629,14 @@ impl MqttSyncRuntime {
 
         if let Some(target) = command.target_temperature_celsius {
             if let Some(remaining) = command_deadline_remaining(&deadline) {
-                match tokio::time::timeout(remaining, hardware.set_target_temperature(target)).await
+                match tokio::time::timeout(
+                    remaining,
+                    hardware
+                        .as_ref()
+                        .expect("non-B3 command has hardware ownership")
+                        .set_target_temperature(target),
+                )
+                .await
                 {
                     Err(_) => {
                         failure = Some((
@@ -650,7 +662,10 @@ impl MqttSyncRuntime {
                 if let Some(remaining) = command_deadline_remaining(&deadline) {
                     match tokio::time::timeout(
                         remaining,
-                        hardware.set_air_conditioner_enabled(enabled),
+                        hardware
+                            .as_ref()
+                            .expect("non-B3 command has hardware ownership")
+                            .set_air_conditioner_enabled(enabled),
                     )
                     .await
                     {
@@ -677,7 +692,15 @@ impl MqttSyncRuntime {
         if failure.is_none() {
             if let Some(speed) = command.vent_speed {
                 if let Some(remaining) = command_deadline_remaining(&deadline) {
-                    match tokio::time::timeout(remaining, hardware.set_vent_speed(speed)).await {
+                    let set_vent_speed = async {
+                        if let Some(context) = self.readiness_context.as_ref() {
+                            context.automatic_vent.execute_admin_one_shot(speed).await
+                        } else {
+                            let hardware = self.hardware.acquire_environment_hardware().await;
+                            hardware.set_vent_speed(speed).await
+                        }
+                    };
+                    match tokio::time::timeout(remaining, set_vent_speed).await {
                         Err(_) => {
                             failure = Some((
                                 "COMMAND_EXPIRED".to_string(),

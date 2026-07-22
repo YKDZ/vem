@@ -190,11 +190,11 @@ function passingAcceptance() {
         {
           parsedOpcode: "B3",
           rawFrameHex: "55b300",
-          capturedAt: "2026-07-22T08:00:05.000Z",
+          capturedAt: "2026-07-22T08:00:10.000Z",
         },
       ],
       speeds: [2, 0],
-      guardElapsedMs: 5_000,
+      guardElapsedMs: 10_000,
       edgeCorrelation: [
         {
           edgeId: "presence-1:arrival",
@@ -213,7 +213,7 @@ function passingAcceptance() {
           frame: {
             parsedOpcode: "B3",
             rawFrameHex: "55b300",
-            capturedAt: "2026-07-22T08:00:05.000Z",
+            capturedAt: "2026-07-22T08:00:10.000Z",
           },
         },
       ],
@@ -224,7 +224,7 @@ function passingAcceptance() {
         frame: {
           parsedOpcode: "B3",
           rawFrameHex: "55b303",
-          capturedAt: "2026-07-22T08:00:01.000Z",
+          capturedAt: "2026-07-22T08:00:05.000Z",
         },
         duplicateSameEdge: {
           edgeId: "presence-1:arrival",
@@ -314,6 +314,30 @@ describe("presence and audio acceptance", () => {
     assert.throws(
       () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
       /supported product categories were not independently covered/,
+    );
+  });
+
+  it("rejects duplicate and extra audio cue windows", () => {
+    for (const cueWindow of [
+      detectedCueWindow("vision:presence-1:welcome", 20),
+      detectedCueWindow("unexpected:transition", 20),
+    ]) {
+      const acceptance = passingAcceptance();
+      acceptance.audio.cueWindows.push(cueWindow);
+      assert.throws(
+        () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
+        /exactly one cue window per required transition/,
+      );
+    }
+  });
+
+  it("rejects an Admin B3 frame that bypasses the shared guard", () => {
+    const acceptance = passingAcceptance();
+    acceptance.automaticVent.adminPrecedence.frame.capturedAt =
+      "2026-07-22T08:00:01.000Z";
+    assert.throws(
+      () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
+      /automatic B3 guard evidence is incomplete/,
     );
   });
 
