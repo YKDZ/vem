@@ -2,7 +2,6 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   machineEnvironmentControlRequestSchema,
-  machineSlotCoordinateCode,
   updateMachineSchema,
   type AdminCreateMachineRequest,
   type AdminUpdateMachineRequest,
@@ -36,7 +35,7 @@ export type EnvironmentControlAction =
   | "ventSpeed";
 
 export type SlotForm = {
-  layerNo: number;
+  rowNo: number;
   cellNo: number;
   capacity: number;
   status: MachineSlotStatus;
@@ -59,7 +58,7 @@ const environmentControlFormSchema = z.strictObject({
 });
 
 const slotFormSchema = z.strictObject({
-  layerNo: z.number(),
+  rowNo: z.number(),
   cellNo: z.number(),
   capacity: z.number(),
   status: z.enum(["enabled", "disabled", "faulted"]),
@@ -151,9 +150,8 @@ export function mapSlotFormToContract(
 ): AdminCreateMachineSlotRequest {
   const parsed = slotFormSchema.parse(form);
   const contract = {
-    layerNo: parsed.layerNo,
+    rowNo: parsed.rowNo,
     cellNo: parsed.cellNo,
-    slotCode: machineSlotCoordinateCode(parsed),
     capacity: parsed.capacity,
     status: parsed.status,
   } satisfies z.input<typeof createMachineSlotSchema>;

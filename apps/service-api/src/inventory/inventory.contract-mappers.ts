@@ -25,7 +25,7 @@ type InventoryResponseRow = Pick<
   | "updatedAt"
 > & {
   machineCode?: string;
-  slotCode?: string;
+  slotDisplayLabel?: string;
   productId?: string;
   sku?: string;
   productName?: string;
@@ -127,7 +127,9 @@ export function toAdminInventoryResponse(
     machineId: row.machineId,
     ...(row.machineCode === undefined ? {} : { machineCode: row.machineCode }),
     slotId: row.slotId,
-    ...(row.slotCode === undefined ? {} : { slotCode: row.slotCode }),
+    ...(row.slotDisplayLabel === undefined
+      ? {}
+      : { slotDisplayLabel: row.slotDisplayLabel }),
     variantId: row.variantId,
     ...(row.productId === undefined ? {} : { productId: row.productId }),
     ...(row.sku === undefined ? {} : { sku: row.sku }),

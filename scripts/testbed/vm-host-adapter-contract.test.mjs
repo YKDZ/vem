@@ -91,7 +91,7 @@ function blockedSaleOutput(overrides = {}) {
         selectedItem: {
           inventoryId: "inventory-001",
           slotId: "slot-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
         },
         planogramVersion: "planogram-001",
         paymentOption: {
@@ -106,7 +106,7 @@ function blockedSaleOutput(overrides = {}) {
         quantity: 1,
         planogramVersion: "planogram-001",
         slotId: "slot-001",
-        slotCode: "A1",
+        slotDisplayLabel: "A1",
         paymentMethod: "qr_code",
         paymentProviderCode: "alipay",
       },

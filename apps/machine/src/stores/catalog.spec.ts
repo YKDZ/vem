@@ -21,8 +21,8 @@ function saleViewItem(
   return {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "550e8400-e29b-41d4-a716-446655440002",
     variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -64,7 +64,7 @@ describe("catalog store sale view", () => {
         saleViewItem(),
         saleViewItem({
           slotId: "550e8400-e29b-41d4-a716-446655440011",
-          slotCode: "A2",
+          slotDisplayLabel: "A2",
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
           productName: "苏打水",
           sku: "SODA-001",
@@ -121,8 +121,8 @@ describe("catalog store sale view", () => {
         saleViewItem({ saleableStock: 2, physicalStock: 2 }),
         saleViewItem({
           slotId: "550e8400-e29b-41d4-a716-446655440011",
-          slotCode: "B1",
-          layerNo: 2,
+          slotDisplayLabel: "B1",
+          rowNo: 2,
           cellNo: 1,
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
           saleableStock: 5,
@@ -145,7 +145,9 @@ describe("catalog store sale view", () => {
       aggregatedSlotCount: 2,
     });
     expect(
-      store.availableItems[0].slotCandidates.map((slot) => slot.slotCode),
+      store.availableItems[0].slotCandidates.map(
+        (slot) => slot.slotDisplayLabel,
+      ),
     ).toEqual(["A1", "B1"]);
   });
 
@@ -161,8 +163,8 @@ describe("catalog store sale view", () => {
         }),
         saleViewItem({
           slotId: "550e8400-e29b-41d4-a716-446655440011",
-          slotCode: "B1",
-          layerNo: 2,
+          slotDisplayLabel: "B1",
+          rowNo: 2,
           cellNo: 1,
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
           variantId: "550e8400-e29b-41d4-a716-446655440013",
@@ -213,8 +215,8 @@ describe("catalog store sale view", () => {
         }),
         saleViewItem({
           slotId: "550e8400-e29b-41d4-a716-446655440011",
-          slotCode: "B1",
-          layerNo: 2,
+          slotDisplayLabel: "B1",
+          rowNo: 2,
           cellNo: 1,
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
           variantId: "550e8400-e29b-41d4-a716-446655440013",

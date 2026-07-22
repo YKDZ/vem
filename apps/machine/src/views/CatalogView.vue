@@ -688,7 +688,6 @@ onUnmounted(() => {
                 data-test="catalog-product"
                 :data-catalog-key="product.item.catalogKey"
                 :data-slot-id="product.item.slotId"
-                :data-slot-code="product.item.slotCode"
                 :data-variant-id="product.item.variantId"
                 :data-preferred-variant-id="product.preferredVariantId ?? ''"
                 :data-recommendation-score="product.recommendationScore"

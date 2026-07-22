@@ -69,7 +69,7 @@ export type MovementApplicationContext = {
 };
 
 export type ActiveAcknowledgedPlanogramSlot = {
-  slotCode: string;
+  slotDisplayLabel?: string;
   capacity: number;
   inventoryId: string;
   variantId: string;
@@ -335,7 +335,6 @@ export class MachineStockMovementsRepository {
   ): Promise<ActiveAcknowledgedPlanogramSlot | null> {
     const [row] = await this.db
       .select({
-        slotCode: machinePlanogramSlots.slotCode,
         capacity: machinePlanogramSlots.capacity,
         inventoryId: machinePlanogramSlots.inventoryId,
         variantId: machinePlanogramSlots.variantId,
@@ -413,7 +412,7 @@ export class MachineStockMovementsRepository {
           sql`${orderItems.productSnapshot}->>'inventoryId' = ${orderContext.inventoryId}`,
           sql`${orderItems.productSnapshot}->>'variantId' = ${orderItems.variantId}::text`,
           sql`${orderItems.productSnapshot}->>'productId' IS NOT NULL`,
-          sql`${orderItems.productSnapshot}->>'slotCode' = ${vendingCommands.payloadJson}->'slot'->>'slotCode'`,
+          sql`${orderItems.productSnapshot}->>'slotDisplayLabel' = ${vendingCommands.payloadJson}->'slot'->>'slotDisplayLabel'`,
           sql`(${orderItems.productSnapshot}->>'vendingCommandQuantity')::int = ${input.quantity}`,
         ),
       )

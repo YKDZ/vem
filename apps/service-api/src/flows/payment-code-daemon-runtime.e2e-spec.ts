@@ -98,8 +98,7 @@ postgresDescribe("payment-code daemon runtime", { concurrent: false }, () => {
       machineCode: `M-PTY-RUNTIME-${suffix}`,
       onHandQty: 6,
       lowStockThreshold: 1,
-      slotCode: "PTY1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const api = request(app.getHttpServer());

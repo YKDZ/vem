@@ -181,8 +181,7 @@ postgresDescribe(
         machineCode: `M-PC-RESTART-${Date.now().toString(36)}`,
         onHandQty: 3,
         lowStockThreshold: 1,
-        slotCode: "R1",
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
       });
       const firstApi = request(first.baseUrl);

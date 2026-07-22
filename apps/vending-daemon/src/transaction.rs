@@ -1042,7 +1042,7 @@ mod tests {
                 order_no: "ORDER-DISPENSED",
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
                 status: "dispensing",
                 next_action: "dispensing",
                 payment_attempt_json: Some(json!({
@@ -1185,7 +1185,7 @@ mod tests {
                 order_no: "ORDER-ACTIVE",
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
                 status: "waiting_payment",
                 next_action: "wait_payment",
                 payment_attempt_json: None,
@@ -1251,7 +1251,7 @@ mod tests {
             .create_order(
                 "payment_code",
                 Some("alipay".to_string()),
-                json!([{ "slotCode": "A2", "quantity": 1 }]),
+                json!([{ "slotId": "A2", "quantity": 1 }]),
                 None,
             )
             .await
@@ -1311,7 +1311,7 @@ mod tests {
             .create_order_with_idempotency(
                 "mock",
                 Some("mock".to_string()),
-                json!([{ "slotCode": "A1", "quantity": 1 }]),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
                 None,
                 Some("checkout:stable-daemon-retry"),
             )
@@ -1400,14 +1400,14 @@ mod tests {
             first_machine.create_order_with_idempotency(
                 "mock",
                 Some("mock".to_string()),
-                json!([{ "slotCode": "A1", "quantity": 1 }]),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
                 None,
                 Some("checkout:first"),
             ),
             second_machine.create_order_with_idempotency(
                 "mock",
                 Some("mock".to_string()),
-                json!([{ "slotCode": "B1", "quantity": 1 }]),
+                json!([{ "slotId": "B1", "quantity": 1 }]),
                 None,
                 Some("checkout:different-key"),
             ),
@@ -1439,7 +1439,7 @@ mod tests {
                 &CheckoutCreationRecovery {
                     payment_method: "mock".to_string(),
                     payment_provider_code: Some("mock".to_string()),
-                    items: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                    items: json!([{ "slotId": "A1", "quantity": 1 }]),
                     profile_snapshot: None,
                     idempotency_key: "checkout:restart-durable".to_string(),
                 },
@@ -1658,7 +1658,7 @@ mod tests {
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
                 items_json: serde_json::json!({
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "waiting_payment",
@@ -1816,7 +1816,7 @@ mod tests {
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
                 items_json: serde_json::json!({
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "waiting_payment",

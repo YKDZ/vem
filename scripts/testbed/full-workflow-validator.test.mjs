@@ -39,7 +39,7 @@ function stockMaintenanceReport() {
     ok: true,
     runId: "RUN-STOCK-1",
     fixture: {
-      slotCode: "B2",
+      slotDisplayLabel: "B2",
       sku: "TSC-LOCAL-007",
       slotId: "slot-stock-1",
       inventoryId: "inventory-stock-1",
@@ -115,17 +115,17 @@ function stockMaintenanceReport() {
       unavailable: {
         ref: "unavailable.png",
         route: "#/maintenance?source=operator",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
       refillConfirmed: {
         ref: "refill-confirmed.png",
         route: "#/maintenance?source=operator",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
       restoredSaleability: {
         ref: "restored.png",
         route: "#/catalog",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
     },
   };
@@ -393,9 +393,9 @@ function localOperationsReport() {
     planogram: {
       canonical: true,
       planogramVersion: "PLAN-OPS",
-      slotCode: "R7C1",
+      slotDisplayLabel: "R7C1",
     },
-    manualDispense: { slotCode: "R7C1", outcome: "completed" },
+    manualDispense: { slotDisplayLabel: "R7C1", outcome: "completed" },
   };
 }
 
@@ -762,7 +762,7 @@ describe("full workflow aggregate validator", () => {
         descriptor("localOperations"),
         {
           ...localOperationsReport(),
-          manualDispense: { slotCode: "R8C2", outcome: "completed" },
+          manualDispense: { slotDisplayLabel: "R8C2", outcome: "completed" },
         },
         "/reports/local-operations.json",
       ).status,

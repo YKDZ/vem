@@ -18,7 +18,6 @@ function makeCaseRow(): StockReconciliationCaseRow {
     movementId: "MOVE-1",
     planogramVersion: "PLAN-1",
     slotId: "550e8400-e29b-41d4-a716-446655440002",
-    slotCode: "A1",
     movementType: "stock_count_correction",
     quantity: 4,
     beforeQuantity: 6,

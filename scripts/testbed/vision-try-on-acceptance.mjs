@@ -2256,12 +2256,12 @@ async function runVisionTryOnAcceptance(options) {
     guestInput.visionAcceptance,
   );
   const allocatedFixture = guestInput.fixtureAllocation?.[options.fixtureKey];
-  if (!allocatedFixture?.slotCode || !allocatedFixture?.inventoryId) {
+  if (!allocatedFixture?.slotDisplayLabel || !allocatedFixture?.inventoryId) {
     throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
   }
   if (
     options.fixtureKey !== "visionExperience" ||
-    allocatedFixture.slotCode !== "A3"
+    allocatedFixture.slotDisplayLabel !== "A3"
   ) {
     throw new Error(
       "Vision/try-on must use the dedicated A3 fixture allocation",

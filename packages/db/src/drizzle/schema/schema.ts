@@ -471,9 +471,8 @@ export const machineSlots = t.pgTable(
       .uuid("machine_id")
       .notNull()
       .references(() => machines.id),
-    layerNo: t.integer("layer_no").notNull(),
+    rowNo: t.integer("row_no").notNull(),
     cellNo: t.integer("cell_no").notNull(),
-    slotCode: t.varchar("slot_code", { length: 32 }).notNull(),
     capacity: t.integer("capacity").notNull(),
     status: machineSlotStatus("status").default("enabled").notNull(),
     createdAt: createdAt(),
@@ -483,10 +482,10 @@ export const machineSlots = t.pgTable(
   (table) => [
     t
       .uniqueIndex("machine_slots_position_unique")
-      .on(table.machineId, table.layerNo, table.cellNo),
+      .on(table.machineId, table.rowNo, table.cellNo),
     t.index("machine_slots_machine_id_idx").on(table.machineId),
     t.index("machine_slots_status_idx").on(table.status),
-    t.check("machine_slots_layer_no_positive", sql`${table.layerNo} > 0`),
+    t.check("machine_slots_row_no_positive", sql`${table.rowNo} > 0`),
     t.check("machine_slots_cell_no_positive", sql`${table.cellNo} > 0`),
     t.check("machine_slots_capacity_non_negative", sql`${table.capacity} >= 0`),
   ],
@@ -602,8 +601,7 @@ export const machinePlanogramSlots = t.pgTable(
       .uuid("slot_id")
       .notNull()
       .references(() => machineSlots.id),
-    slotCode: t.varchar("slot_code", { length: 32 }).notNull(),
-    layerNo: t.integer("layer_no").notNull(),
+    rowNo: t.integer("row_no").notNull(),
     cellNo: t.integer("cell_no").notNull(),
     capacity: t.integer("capacity").notNull(),
     parLevel: t.integer("par_level").notNull(),

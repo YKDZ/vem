@@ -59,17 +59,15 @@ describe("Machine Operations admin contract mappers", () => {
   it("maps parsed slot DTOs into explicit slot insert values", () => {
     expect(
       mapCreateMachineSlotDtoToInsert("550e8400-e29b-41d4-a716-446655440001", {
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 2,
-        slotCode: "A2",
         capacity: 10,
         status: "enabled",
       }),
     ).toEqual({
       machineId: "550e8400-e29b-41d4-a716-446655440001",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 2,
-      slotCode: "A2",
       capacity: 10,
       status: "enabled",
     });
@@ -143,9 +141,8 @@ describe("Machine Operations admin contract mappers", () => {
     const slot = toAdminMachineSlotResponse({
       id: "550e8400-e29b-41d4-a716-446655440003",
       machineId: "550e8400-e29b-41d4-a716-446655440001",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 2,
-      slotCode: "A2",
       capacity: 10,
       status: "enabled",
       createdAt: new Date("2026-07-05T00:00:00.000Z"),

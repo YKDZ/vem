@@ -26,7 +26,6 @@ function makeOpenCase() {
     movementId: "MOVE-1",
     planogramVersion: "PLAN-1",
     slotId: SLOT_ID,
-    slotCode: "A1",
     movementType: "stock_count_correction",
     quantity: 4,
     beforeQuantity: 6,
@@ -104,7 +103,7 @@ describe("StockReconciliationService", () => {
           movementId: "MOVE-1",
           slot: {
             id: SLOT_ID,
-            code: "A1",
+            code: null,
             status: "enabled",
             saleEligibility: {
               eligible: false,

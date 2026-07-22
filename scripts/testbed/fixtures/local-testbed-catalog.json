@@ -270,9 +270,9 @@
   ],
   "slots": [
     {
-      "slotCode": "A1",
+      "slotDisplayLabel": "A1",
       "sourceRow": 2,
-      "layerNo": 1,
+      "rowNo": 1,
       "cellNo": 1,
       "capacity": 8,
       "onHandQty": 3,
@@ -280,9 +280,9 @@
       "priceCents": 3900
     },
     {
-      "slotCode": "A2",
+      "slotDisplayLabel": "A2",
       "sourceRow": 3,
-      "layerNo": 1,
+      "rowNo": 1,
       "cellNo": 2,
       "capacity": 8,
       "onHandQty": 3,
@@ -290,9 +290,9 @@
       "priceCents": 4900
     },
     {
-      "slotCode": "A3",
+      "slotDisplayLabel": "A3",
       "sourceRow": 32,
-      "layerNo": 1,
+      "rowNo": 1,
       "cellNo": 3,
       "capacity": 8,
       "onHandQty": 3,
@@ -300,9 +300,9 @@
       "priceCents": 5900
     },
     {
-      "slotCode": "A4",
+      "slotDisplayLabel": "A4",
       "sourceRow": 4,
-      "layerNo": 1,
+      "rowNo": 1,
       "cellNo": 4,
       "capacity": 8,
       "onHandQty": 3,
@@ -310,9 +310,9 @@
       "priceCents": 4900
     },
     {
-      "slotCode": "A5",
+      "slotDisplayLabel": "A5",
       "sourceRow": 5,
-      "layerNo": 1,
+      "rowNo": 1,
       "cellNo": 5,
       "capacity": 8,
       "onHandQty": 3,
@@ -320,9 +320,9 @@
       "priceCents": 4900
     },
     {
-      "slotCode": "B1",
+      "slotDisplayLabel": "B1",
       "sourceRow": 6,
-      "layerNo": 2,
+      "rowNo": 2,
       "cellNo": 1,
       "capacity": 8,
       "onHandQty": 3,
@@ -330,9 +330,9 @@
       "priceCents": 4900
     },
     {
-      "slotCode": "B2",
+      "slotDisplayLabel": "B2",
       "sourceRow": 7,
-      "layerNo": 2,
+      "rowNo": 2,
       "cellNo": 2,
       "capacity": 8,
       "onHandQty": 1,

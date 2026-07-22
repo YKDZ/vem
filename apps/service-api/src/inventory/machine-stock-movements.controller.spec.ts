@@ -116,7 +116,6 @@ class ControllerMovementRepository {
 
   async getActiveAcknowledgedPlanogramSlot() {
     return {
-      slotCode: "A1",
       capacity: 8,
       inventoryId: "550e8400-e29b-41d4-a716-446655440201",
       variantId: "550e8400-e29b-41d4-a716-446655440301",
@@ -157,7 +156,6 @@ describe("MachineStockMovementsController", () => {
     beforeQuantity: 2,
     afterQuantity: 5,
     slotMappingSnapshot: {
-      slotCode: "A1",
       capacity: 8,
       inventoryId: "550e8400-e29b-41d4-a716-446655440201",
       variantId: "550e8400-e29b-41d4-a716-446655440301",

@@ -428,7 +428,7 @@ describe("local testbed orchestration", () => {
       runId: "RUN-PREVIOUS-FULL",
       machineCode: "VEM-TESTBED-LOCAL",
       claimCode: "ABCD-EFGH",
-      fixtureAllocation: { sale: { slotCode: "A1" } },
+      fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
       hostControlPlane: { token: "retained-token" },
       paymentProvider: {
         identity: { providerCode: "alipay", providerConfigId: "stale-config" },
@@ -497,7 +497,7 @@ describe("local testbed orchestration", () => {
         schemaVersion: "vem-local-testbed-guest-input/v1",
         machineCode: "VEM-TESTBED-LOCAL",
         claimCode: "ABCD-EFGH",
-        fixtureAllocation: { sale: { slotCode: "A1" } },
+        fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
         hostControlPlane: {
           endpoint: "http://10.0.0.15:26851",
           token: "retained-host-control-plane-token",
@@ -1750,7 +1750,7 @@ describe("local testbed fixture", () => {
     assert.equal(fixture.schemaVersion, "vem-local-testbed-catalog/v1");
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
-      fixture.slots.map((slot) => slot.slotCode),
+      fixture.slots.map((slot) => slot.slotDisplayLabel),
       ["A1", "A2", "A3", "A4", "A5", "B1", "B2"],
     );
     const implementation = readFileSync(

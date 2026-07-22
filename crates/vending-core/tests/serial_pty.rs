@@ -34,9 +34,9 @@ fn command(command_no: &str) -> DispenseCommandPayload {
         command_no: command_no.to_string(),
         order_no: "ORD-PTY".to_string(),
         slot: SlotPayload {
-            layer_no: 2,
+            row_no: 2,
             cell_no: 5,
-            slot_code: "A25".to_string(),
+            slot_id: "A25".to_string(),
         },
         quantity: 1,
         timeout_seconds: 2,

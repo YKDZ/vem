@@ -147,9 +147,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         orderItemId: orderItems.id,
         slotId: orderItems.slotId,
         quantity: orderItems.quantity,
-        layerNo: machineSlots.layerNo,
+        rowNo: machineSlots.rowNo,
         cellNo: machineSlots.cellNo,
-        slotCode: machineSlots.slotCode,
       })
       .from(orderItems)
       .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
@@ -163,9 +162,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         commandNo,
         orderNo: order.orderNo,
         slot: {
-          layerNo: item.layerNo,
+          rowNo: item.rowNo,
           cellNo: item.cellNo,
-          slotCode: item.slotCode,
         },
         quantity: item.quantity,
         timeoutSeconds: 120,
@@ -334,9 +332,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         orderItemId: orderItems.id,
         slotId: orderItems.slotId,
         quantity: orderItems.quantity,
-        layerNo: machineSlots.layerNo,
+        rowNo: machineSlots.rowNo,
         cellNo: machineSlots.cellNo,
-        slotCode: machineSlots.slotCode,
       })
       .from(orderItems)
       .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
@@ -353,9 +350,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             commandNo,
             orderNo: order.orderNo,
             slot: {
-              layerNo: item.layerNo,
+              rowNo: item.rowNo,
               cellNo: item.cellNo,
-              slotCode: item.slotCode,
             },
             quantity: item.quantity,
             timeoutSeconds: 120,
@@ -830,9 +826,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         slotId: orderItems.slotId,
         inventoryId: orderItems.inventoryId,
         quantity: orderItems.quantity,
-        layerNo: machineSlots.layerNo,
+        rowNo: machineSlots.rowNo,
         cellNo: machineSlots.cellNo,
-        slotCode: machineSlots.slotCode,
       })
       .from(orders)
       .innerJoin(machines, eq(machines.id, orders.machineId))
@@ -849,9 +844,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       commandNo,
       orderNo: row.orderNo,
       slot: {
-        layerNo: row.layerNo,
+        rowNo: row.rowNo,
         cellNo: row.cellNo,
-        slotCode: row.slotCode,
       },
       quantity: row.quantity,
       timeoutSeconds: 120,

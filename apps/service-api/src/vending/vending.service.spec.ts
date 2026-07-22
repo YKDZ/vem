@@ -11,7 +11,7 @@ describe("VendingService durable command dispatcher", () => {
       payloadJson: {
         commandNo: "CMD-PENDING-1",
         orderNo: "ORD-1",
-        slot: { layerNo: 1, cellNo: 1, slotCode: "A1" },
+        slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "A1" },
         quantity: 1,
         timeoutSeconds: 120,
       },
@@ -496,17 +496,15 @@ describe("VendingService line-level fulfillment", () => {
         orderItemId: "line-1",
         slotId: "slot1",
         quantity: 1,
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
       },
       {
         orderItemId: "line-2",
         slotId: "slot2",
         quantity: 1,
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 2,
-        slotCode: "A2",
       },
     ];
     const selectResponses = [
@@ -765,17 +763,15 @@ describe("VendingService line-level fulfillment", () => {
         orderItemId: "line-1",
         slotId: "slot1",
         quantity: 1,
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
       },
       {
         orderItemId: "line-2",
         slotId: "slot2",
         quantity: 1,
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 2,
-        slotCode: "A2",
       },
     ];
     const selectResponses = [
@@ -1099,7 +1095,7 @@ describe("VendingService line-level fulfillment", () => {
               payloadJson: {
                 commandNo: "CMD-TIMEOUT",
                 orderNo: "ORD-1",
-                slot: { layerNo: 1, cellNo: 1, slotCode: "A1" },
+                slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "A1" },
                 quantity: 1,
                 timeoutSeconds: 1,
               },

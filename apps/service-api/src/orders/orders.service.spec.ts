@@ -426,7 +426,6 @@ function investigationVendingCommand(overrides: Record<string, unknown> = {}) {
     machineId: "machine-1",
     machineCode: "VEM-001",
     slotId: "slot-1",
-    slotCode: "A1",
     orderItemId: "item-1",
     commandKind: "dispatch",
     recoveryActionId: null,
@@ -705,7 +704,6 @@ describe("OrdersService", () => {
             commandNo: "VC-1",
             status: "failed",
             machineCode: "VEM-001",
-            slotCode: "A1",
           },
         ],
         fulfillmentProjection: {
@@ -1212,7 +1210,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-1",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -1243,7 +1240,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-1",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -1274,7 +1270,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "mock",
@@ -1306,7 +1301,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -1361,9 +1355,8 @@ describe("OrdersService", () => {
                         color: null,
                         unitPriceCents: 300,
                         slotId: "slot-1",
-                        slotCode: "A1",
                         slotStatus: "enabled",
-                        layerNo: 1,
+                        rowNo: 1,
                         cellNo: 1,
                         variantStatus: "active",
                         productStatus: "active",
@@ -1453,7 +1446,6 @@ describe("OrdersService", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-1",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -1511,9 +1503,8 @@ describe("OrdersService", () => {
                         color: null,
                         unitPriceCents: 200,
                         slotId: "slot-2",
-                        slotCode: "B1",
                         slotStatus: "enabled",
-                        layerNo: 1,
+                        rowNo: 1,
                         cellNo: 2,
                         variantStatus: "active",
                         productStatus: "active",
@@ -1591,7 +1582,6 @@ describe("OrdersService", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-2",
-            slotCode: "B1",
           },
         ],
         paymentMethod: "qr_code",
@@ -1620,7 +1610,6 @@ describe("OrdersService", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -1655,7 +1644,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -1699,7 +1687,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -1751,7 +1738,6 @@ describe("OrdersService", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -2247,7 +2233,6 @@ describe("OrdersService", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -2311,7 +2296,6 @@ describe("OrdersService", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -2351,7 +2335,7 @@ type OrdersDbHarness = {
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
-    slotCode: string;
+    slotDisplayLabel?: string;
     inventoryId: string;
   }>;
 };
@@ -2470,9 +2454,8 @@ function makeGenericTx(db: OrdersDbHarness) {
       color: null,
       unitPriceCents: 300,
       slotId: "slot-001",
-      slotCode: "A1",
       slotStatus: "enabled",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
       variantStatus: "active",
       productStatus: "active",
@@ -2620,7 +2603,7 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
-    slotCode: string;
+    slotDisplayLabel?: string;
     inventoryId: string;
   }>;
 }): OrdersDbHarness {
@@ -2636,7 +2619,6 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
       {
         planogramVersion: "PLAN-ACTIVE",
         slotId: "slot-001",
-        slotCode: "A1",
         inventoryId: "inv-001",
       },
     ],
@@ -2760,7 +2742,6 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-other",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -2785,9 +2766,8 @@ describe("OrdersService (transaction boundary)", () => {
             color: null,
             unitPriceCents: 300,
             slotId: "slot-001",
-            slotCode: "A1",
             slotStatus: "faulted",
-            layerNo: 1,
+            rowNo: 1,
             cellNo: 1,
             variantStatus: "active",
             productStatus: "active",
@@ -2808,13 +2788,12 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
           paymentProviderCode: "alipay",
         }),
-      ).rejects.toThrow("Slot A1 is not available");
+      ).rejects.toThrow("Slot is not available");
 
       expect(reserveForOrder).not.toHaveBeenCalled();
     });
@@ -2838,7 +2817,6 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-UNACKED",
               slotId: "slot-001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -2856,7 +2834,6 @@ describe("OrdersService (transaction boundary)", () => {
           {
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
             inventoryId: "inv-001",
           },
         ],
@@ -2874,7 +2851,6 @@ describe("OrdersService (transaction boundary)", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -2898,7 +2874,6 @@ describe("OrdersService (transaction boundary)", () => {
           {
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
             inventoryId: "inv-001",
           },
         ],
@@ -2913,7 +2888,6 @@ describe("OrdersService (transaction boundary)", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -2927,7 +2901,6 @@ describe("OrdersService (transaction boundary)", () => {
           inventoryId: "inv-001",
           planogramVersion: "PLAN-ACTIVE",
           slotId: "slot-001",
-          slotCode: "A1",
           vendingCommandQuantity: 1,
         }),
       );
@@ -2963,7 +2936,6 @@ describe("OrdersService (transaction boundary)", () => {
             quantity: 1,
             planogramVersion: "PLAN-ACTIVE",
             slotId: "slot-001",
-            slotCode: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -3004,7 +2976,6 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -3056,7 +3027,6 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -3118,7 +3088,6 @@ describe("OrdersService (transaction boundary)", () => {
               quantity: 1,
               planogramVersion: "PLAN-ACTIVE",
               slotId: "slot-001",
-              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",

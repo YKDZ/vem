@@ -18,7 +18,6 @@ function makeCase(
     movementId: "MOVE-1",
     planogramVersion: "PLAN-1",
     slotId: "slot-1",
-    slotCode: "A1",
     movementType: "stock_count_correction",
     quantity: 4,
     beforeQuantity: 6,

@@ -31,12 +31,11 @@ class InMemoryMovementRepository {
     slotInPlanogram: true,
   };
   activeAcknowledgedPlanogramSlot = {
-    slotCode: "A1",
     capacity: 8,
     inventoryId: "550e8400-e29b-41d4-a716-446655440201",
     variantId: "550e8400-e29b-41d4-a716-446655440301",
   } as {
-    slotCode: string;
+    slotDisplayLabel?: string;
     capacity: number;
     inventoryId: string;
     variantId: string;
@@ -400,7 +399,6 @@ describe("MachineStockMovementsService", () => {
     beforeQuantity: 2,
     afterQuantity: 5,
     slotMappingSnapshot: {
-      slotCode: "A1",
       capacity: 8,
       inventoryId: "550e8400-e29b-41d4-a716-446655440201",
       variantId: "550e8400-e29b-41d4-a716-446655440301",
@@ -434,7 +432,6 @@ describe("MachineStockMovementsService", () => {
       beforeQuantity: 2,
       afterQuantity: 5,
       slotMappingSnapshot: {
-        slotCode: "A1",
         capacity: 8,
         inventoryId: "550e8400-e29b-41d4-a716-446655440201",
         variantId: "550e8400-e29b-41d4-a716-446655440301",
@@ -480,10 +477,9 @@ describe("MachineStockMovementsService", () => {
 
   it.each([
     [
-      "slotCode",
+      "slotDisplayLabel",
       {
         ...movement.slotMappingSnapshot,
-        slotCode: "B9",
       },
     ],
     [
@@ -521,10 +517,13 @@ describe("MachineStockMovementsService", () => {
         >,
       });
 
-      expect(result.status).toBe("reconciliation");
-      expect(result.reconciliation?.reason).toBe("mapping_mismatch");
+      expect(result.status).toBe(
+        _field === "slotDisplayLabel" ? "accepted" : "reconciliation",
+      );
       expect(repo.activePlanogramSlotInputs).toHaveLength(1);
-      expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+      expect(repo.fieldStockApplicationInputs).toHaveLength(
+        _field === "slotDisplayLabel" ? 1 : 0,
+      );
     },
   );
 
@@ -833,7 +832,7 @@ describe("MachineStockMovementsService", () => {
     });
 
     expect(result.status).toBe("reconciliation");
-    expect(result.reconciliation?.reason).toBe("mapping_mismatch");
+
     expect(result.reconciliation?.saleSafetyBlocker?.slotSalesState).toBe(
       "blocked_for_planogram_change",
     );

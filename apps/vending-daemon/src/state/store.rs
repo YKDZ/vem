@@ -114,7 +114,7 @@ pub struct WholeMachineMaintenanceLock {
     pub source: String,
     pub order_no: String,
     pub command_no: String,
-    pub slot_code: String,
+    pub slot_id: String,
     pub error_code: Option<String>,
     pub created_at: String,
 }
@@ -312,8 +312,7 @@ pub struct MachinePlanogramInput {
 #[serde(rename_all = "camelCase")]
 pub struct MachinePlanogramSlotInput {
     pub slot_id: String,
-    pub slot_code: String,
-    pub layer_no: i64,
+    pub row_no: i64,
     pub cell_no: i64,
     pub capacity: i64,
     pub par_level: i64,
@@ -338,8 +337,7 @@ pub struct MachinePlanogramSlotInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalPlanogramSlot {
     pub slot_id: String,
-    pub slot_code: String,
-    pub layer_no: u32,
+    pub row_no: u32,
     pub cell_no: u32,
 }
 
@@ -368,7 +366,6 @@ pub struct PhysicalStockAttestationInput {
 #[serde(rename_all = "camelCase")]
 pub struct PhysicalStockAttestationSlotInput {
     pub slot_id: String,
-    pub slot_code: String,
     pub sku: String,
     pub quantity: i64,
     pub enabled: bool,
@@ -446,8 +443,7 @@ pub struct SaleViewSnapshot {
 pub struct SaleViewItem {
     pub machine_code: Option<String>,
     pub slot_id: String,
-    pub slot_code: String,
-    pub layer_no: i64,
+    pub row_no: i64,
     pub cell_no: i64,
     pub inventory_id: String,
     pub variant_id: String,
@@ -484,8 +480,8 @@ pub struct StockMaintenanceTask {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StockMaintenanceTaskSlot {
-    pub slot_code: String,
-    pub layer_no: i64,
+    pub slot_id: String,
+    pub row_no: i64,
     pub cell_no: i64,
     pub product_name: String,
     pub sku: String,
@@ -512,7 +508,7 @@ pub struct StockMaintenanceTaskProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StockMaintenanceTaskProjectionSlot {
-    pub slot_code: String,
+    pub slot_id: String,
     pub submitted_addition: Option<i64>,
     pub preview_quantity: Option<i64>,
     pub movement_id: Option<String>,
@@ -534,7 +530,7 @@ pub struct StockMaintenanceBatchInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockMaintenanceBatchSlotInput {
-    pub slot_code: String,
+    pub slot_id: String,
     #[serde(default)]
     pub quantity: Option<i64>,
     #[serde(default)]
@@ -564,7 +560,6 @@ struct StockMaintenanceTaskIdentity {
 #[serde(rename_all = "camelCase")]
 struct StockMaintenanceTaskIdentitySlot {
     slot_id: String,
-    slot_code: String,
     sku: String,
     capacity: i64,
     inventory_id: String,
@@ -574,7 +569,7 @@ struct StockMaintenanceTaskIdentitySlot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StockMaintenanceSlotDifference {
-    slot_code: String,
+    slot_id: String,
     changes: Vec<String>,
     old_slots: Vec<StockMaintenanceTaskIdentitySlot>,
     current_slots: Vec<StockMaintenanceTaskIdentitySlot>,
@@ -592,7 +587,7 @@ struct NormalizedStockMaintenanceRefillBatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NormalizedStockMaintenanceRefillSlot {
-    slot_code: String,
+    slot_id: String,
     addition: i64,
 }
 
@@ -600,7 +595,6 @@ struct NormalizedStockMaintenanceRefillSlot {
 #[serde(rename_all = "camelCase")]
 struct StockMaintenanceRefillCapacitySnapshot {
     slot_id: String,
-    slot_code: String,
     capacity: i64,
     before_quantity: i64,
     after_quantity: i64,
@@ -753,38 +747,33 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
-    pub async fn active_planogram_slot_by_code(
+    pub async fn active_planogram_slot_by_id(
         &self,
-        slot_code: &str,
+        slot_id: &str,
     ) -> Result<Option<CanonicalPlanogramSlot>, StoreError> {
         let row: Option<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT s.slot_id,s.slot_code,s.layer_no,s.cell_no
+            "SELECT s.slot_id,s.slot_id,s.row_no,s.cell_no
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version=s.planogram_version AND v.active=1
-             WHERE s.slot_code=?1
+             WHERE s.slot_id=?1
              LIMIT 1",
         )
-        .bind(slot_code)
+        .bind(slot_id)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((slot_id, slot_code, layer_no, cell_no)) = row else {
+        let Some((slot_id, _slot_display_label, row_no, cell_no)) = row else {
             return Ok(None);
         };
-        let layer_no = u32::try_from(layer_no).map_err(|_| {
-            StoreError::InvalidStockInput(format!(
-                "active slot {slot_code} has invalid layer number"
-            ))
+        let row_no = u32::try_from(row_no).map_err(|_| {
+            StoreError::InvalidStockInput(format!("active slot {slot_id} has invalid row number"))
         })?;
         let cell_no = u32::try_from(cell_no).map_err(|_| {
-            StoreError::InvalidStockInput(format!(
-                "active slot {slot_code} has invalid cell number"
-            ))
+            StoreError::InvalidStockInput(format!("active slot {slot_id} has invalid cell number"))
         })?;
         Ok(Some(CanonicalPlanogramSlot {
             slot_id,
-            slot_code,
-            layer_no,
+            row_no,
             cell_no,
         }))
     }
@@ -1164,11 +1153,11 @@ impl LocalStateStore {
             .ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))?;
         let diagnostic_slot = diagnostic
             .command
-            .get("slotCode")
+            .get("slotId")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
         let evidence: Option<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT s.slot_code,y.status,y.platform_receipt_json
+            "SELECT s.slot_id,y.status,y.platform_receipt_json
              FROM stock_movements m
              JOIN machine_planogram_slots s
                ON s.planogram_version=m.planogram_version AND s.slot_id=m.slot_id
@@ -1365,7 +1354,7 @@ impl LocalStateStore {
                 source: source.to_string(),
                 order_no: String::new(),
                 command_no: String::new(),
-                slot_code: String::new(),
+                slot_id: String::new(),
                 error_code: error_code.map(ToString::to_string),
                 created_at: now_iso(),
             },
@@ -2717,7 +2706,7 @@ impl LocalStateStore {
         for slot in &input.slots {
             sqlx::query(
                 "INSERT INTO machine_planogram_slots(
-                   planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+                   planogram_version,slot_id,slot_display_label,row_no,cell_no,capacity,par_level,
                    inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
                    try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
                    product_sort_order,target_gender
@@ -2725,8 +2714,8 @@ impl LocalStateStore {
             )
             .bind(&input.planogram_version)
             .bind(&slot.slot_id)
-            .bind(&slot.slot_code)
-            .bind(slot.layer_no)
+            .bind(&slot.slot_id)
+            .bind(slot.row_no)
             .bind(slot.cell_no)
             .bind(slot.capacity)
             .bind(slot.par_level)
@@ -2889,7 +2878,7 @@ impl LocalStateStore {
         };
 
         let rows = sqlx::query(
-            "SELECT s.slot_id,s.slot_code,s.layer_no,s.cell_no,s.product_name,s.sku,s.capacity,
+            "SELECT s.slot_id,s.slot_id,s.row_no,s.cell_no,s.product_name,s.sku,s.capacity,
                     COALESCE(c.physical_stock,0) AS current_quantity,
                     COALESCE(c.slot_sales_state,'needs_count') AS sales_state
              FROM machine_planogram_slots s
@@ -2898,7 +2887,7 @@ impl LocalStateStore {
              LEFT JOIN current_stock_projection c
                ON c.planogram_version=s.planogram_version AND c.slot_id=s.slot_id
              WHERE s.planogram_version=?1
-             ORDER BY s.layer_no,s.cell_no",
+             ORDER BY s.row_no,s.cell_no",
         )
         .bind(&planogram_version)
         .fetch_all(&self.pool)
@@ -2927,7 +2916,7 @@ impl LocalStateStore {
         let mut slots = Vec::with_capacity(rows.len());
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
-            let slot_code: String = row.try_get("slot_code")?;
+            let slot_id: String = row.try_get("slot_id")?;
             let submitted_quantity = pending_attestation.as_ref().and_then(|pending| {
                 pending
                     .input
@@ -2963,7 +2952,7 @@ impl LocalStateStore {
                 batch
                     .slots
                     .iter()
-                    .find(|slot| slot.slot_code == slot_code)
+                    .find(|slot| slot.slot_id == slot_id)
                     .map(|slot| slot.addition)
             });
             let preview_quantity = refill_batch.as_ref().and_then(|(_, snapshots)| {
@@ -2973,8 +2962,8 @@ impl LocalStateStore {
                     .map(|snapshot| snapshot.after_quantity)
             });
             slots.push(StockMaintenanceTaskSlot {
-                slot_code,
-                layer_no: row.try_get("layer_no")?,
+                slot_id,
+                row_no: row.try_get("row_no")?,
                 cell_no: row.try_get("cell_no")?,
                 product_name: row.try_get("product_name")?,
                 sku: row.try_get("sku")?,
@@ -3063,7 +3052,7 @@ impl LocalStateStore {
                 batch
                     .slots
                     .iter()
-                    .find(|entry| entry.slot_code == slot.slot_code)
+                    .find(|entry| entry.slot_id == slot.slot_id)
                     .map(|entry| entry.addition)
             });
             let preview_quantity = refill_batch.as_ref().and_then(|(_, snapshots)| {
@@ -3131,7 +3120,7 @@ impl LocalStateStore {
                 (None, None, None, None, None, "not_submitted".to_string())
             };
             slots.push(StockMaintenanceTaskProjectionSlot {
-                slot_code: slot.slot_code.clone(),
+                slot_id: slot.slot_id.clone(),
                 submitted_addition,
                 preview_quantity,
                 movement_id,
@@ -3179,9 +3168,9 @@ impl LocalStateStore {
         mode: &str,
     ) -> Result<(String, Vec<StockMaintenanceTaskIdentitySlot>), StoreError> {
         let rows: Vec<(String, String, String, i64, String, String)> = sqlx::query_as(
-            "SELECT slot_id,slot_code,sku,capacity,inventory_id,variant_id
+            "SELECT slot_id,slot_display_label,sku,capacity,inventory_id,variant_id
              FROM machine_planogram_slots WHERE planogram_version=?1
-             ORDER BY layer_no,cell_no,slot_id",
+             ORDER BY row_no,cell_no,slot_id",
         )
         .bind(planogram_version)
         .fetch_all(&self.pool)
@@ -3189,10 +3178,9 @@ impl LocalStateStore {
         let slots = rows
             .into_iter()
             .map(
-                |(slot_id, slot_code, sku, capacity, inventory_id, variant_id)| {
+                |(slot_id, _slot_display_label, sku, capacity, inventory_id, variant_id)| {
                     StockMaintenanceTaskIdentitySlot {
                         slot_id,
-                        slot_code,
                         sku,
                         capacity,
                         inventory_id,
@@ -3266,9 +3254,9 @@ impl LocalStateStore {
         .await?;
         let active_version = active.map(|(version,)| version);
         let rows: Vec<(String, String, String, i64, String, String)> = sqlx::query_as(
-            "SELECT slot_id,slot_code,sku,capacity,inventory_id,variant_id
+            "SELECT slot_id,slot_display_label,sku,capacity,inventory_id,variant_id
              FROM machine_planogram_slots WHERE planogram_version=?1
-             ORDER BY layer_no,cell_no,slot_id",
+             ORDER BY row_no,cell_no,slot_id",
         )
         .bind(active_version.as_deref().unwrap_or_default())
         .fetch_all(tx.as_mut())
@@ -3276,10 +3264,9 @@ impl LocalStateStore {
         let current_slots = rows
             .into_iter()
             .map(
-                |(slot_id, slot_code, sku, capacity, inventory_id, variant_id)| {
+                |(slot_id, _slot_display_label, sku, capacity, inventory_id, variant_id)| {
                     StockMaintenanceTaskIdentitySlot {
                         slot_id,
-                        slot_code,
                         sku,
                         capacity,
                         inventory_id,
@@ -3289,26 +3276,26 @@ impl LocalStateStore {
             )
             .collect::<Vec<_>>();
 
-        let mut slot_codes = identity
+        let mut slot_ids = identity
             .slots
             .iter()
             .chain(&current_slots)
-            .map(|slot| slot.slot_code.clone())
+            .map(|slot| slot.slot_id.clone())
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        slot_codes.sort();
+        slot_ids.sort();
         let mut differences = Vec::new();
-        for slot_code in slot_codes {
+        for slot_id in slot_ids {
             let old_slots = identity
                 .slots
                 .iter()
-                .filter(|slot| slot.slot_code == slot_code)
+                .filter(|slot| slot.slot_id == slot_id)
                 .cloned()
                 .collect::<Vec<_>>();
             let matching_current_slots = current_slots
                 .iter()
-                .filter(|slot| slot.slot_code == slot_code)
+                .filter(|slot| slot.slot_id == slot_id)
                 .cloned()
                 .collect::<Vec<_>>();
             let mut changes = Vec::new();
@@ -3340,7 +3327,7 @@ impl LocalStateStore {
             }
             if !changes.is_empty() {
                 differences.push(StockMaintenanceSlotDifference {
-                    slot_code,
+                    slot_id,
                     changes,
                     old_slots,
                     current_slots: matching_current_slots,
@@ -3360,7 +3347,7 @@ impl LocalStateStore {
                 || current_revision.as_deref() != Some(identity.planogram_revision.as_str()))
         {
             differences.push(StockMaintenanceSlotDifference {
-                slot_code: "*".to_string(),
+                slot_id: "*".to_string(),
                 changes: vec![if active_version.as_deref()
                     != Some(identity.planogram_version.as_str())
                 {
@@ -3392,7 +3379,7 @@ impl LocalStateStore {
             .bind(format!(
                 "stock maintenance task {} changed at slot {}: {}",
                 identity.task_id,
-                difference.slot_code,
+                difference.slot_id,
                 difference.changes.join(",")
             ))
             .bind(
@@ -3631,8 +3618,8 @@ impl LocalStateStore {
         .await?;
         let planogram_version = active.0;
         let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT slot_id,slot_code,sku,capacity FROM machine_planogram_slots
-             WHERE planogram_version=?1 ORDER BY layer_no,cell_no",
+            "SELECT slot_id,slot_display_label,sku,capacity FROM machine_planogram_slots
+             WHERE planogram_version=?1 ORDER BY row_no,cell_no",
         )
         .bind(&planogram_version)
         .fetch_all(&self.pool)
@@ -3641,12 +3628,10 @@ impl LocalStateStore {
             rows.iter().map(|row| (row.1.as_str(), row)).collect();
         let mut seen = HashSet::new();
         for slot in &input.slots {
-            if !seen.insert(slot.slot_code.as_str())
-                || !by_code.contains_key(slot.slot_code.as_str())
-            {
+            if !seen.insert(slot.slot_id.as_str()) || !by_code.contains_key(slot.slot_id.as_str()) {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock task slot {} is duplicate or not in the active planogram",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
         }
@@ -3670,10 +3655,9 @@ impl LocalStateStore {
                     .slots
                     .iter()
                     .map(|slot| {
-                        let row = by_code[slot.slot_code.as_str()];
+                        let row = by_code[slot.slot_id.as_str()];
                         PhysicalStockAttestationSlotInput {
                             slot_id: row.0.clone(),
-                            slot_code: row.1.clone(),
                             sku: row.2.clone(),
                             quantity: slot.quantity.unwrap_or_default(),
                             enabled: true,
@@ -3767,9 +3751,9 @@ impl LocalStateStore {
         }
 
         let rows: Vec<(String, String, String, i64, String, String)> = sqlx::query_as(
-            "SELECT slot_id,slot_code,sku,capacity,inventory_id,variant_id
+            "SELECT slot_id,slot_display_label,sku,capacity,inventory_id,variant_id
              FROM machine_planogram_slots WHERE planogram_version=?1
-             ORDER BY layer_no,cell_no,slot_id",
+             ORDER BY row_no,cell_no,slot_id",
         )
         .bind(&identity.planogram_version)
         .fetch_all(tx.as_mut())
@@ -3778,10 +3762,10 @@ impl LocalStateStore {
             rows.iter().map(|row| (row.1.as_str(), row)).collect();
         let mut capacity_snapshots = Vec::with_capacity(normalized.slots.len());
         for slot in &normalized.slots {
-            let Some(row) = by_code.get(slot.slot_code.as_str()).copied() else {
+            let Some(row) = by_code.get(slot.slot_id.as_str()).copied() else {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock task slot {} is not in the active planogram",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             };
             let before: Option<(i64,)> = sqlx::query_as(
@@ -3799,12 +3783,11 @@ impl LocalStateStore {
             if after_quantity > row.3 {
                 return Err(StoreError::InvalidStockInput(format!(
                     "refill slot {} exceeds capacity",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
             capacity_snapshots.push(StockMaintenanceRefillCapacitySnapshot {
                 slot_id: row.0.clone(),
-                slot_code: row.1.clone(),
                 capacity: row.3,
                 before_quantity,
                 after_quantity,
@@ -3834,11 +3817,11 @@ impl LocalStateStore {
             api_base_url.trim_end_matches('/')
         );
         for (slot, snapshot) in normalized.slots.iter().zip(&capacity_snapshots) {
-            let row = by_code[slot.slot_code.as_str()];
+            let row = by_code[slot.slot_id.as_str()];
             let movement_id = format!("{}:{}", normalized.task_id, row.0);
             let occurred_at = now_iso();
             let slot_mapping_snapshot = serde_json::json!({
-                "slotCode": row.1,
+                "slotId": row.1,
                 "capacity": snapshot.capacity,
                 "inventoryId": row.4,
                 "variantId": row.5,
@@ -3927,7 +3910,7 @@ impl LocalStateStore {
             return Ok(input.slots.iter().all(|slot| {
                 slot.addition.is_none()
                     && stored.slots.iter().any(|stored_slot| {
-                        stored_slot.slot_code == slot.slot_code
+                        stored_slot.slot_id == slot.slot_id
                             && Some(stored_slot.quantity) == slot.quantity
                     })
             }));
@@ -3970,9 +3953,9 @@ impl LocalStateStore {
             let active: Option<(String, String)> = sqlx::query_as(
                 "SELECT s.planogram_version,s.slot_id FROM machine_planogram_slots s
                  JOIN machine_planogram_versions v ON v.planogram_version=s.planogram_version AND v.active=1
-                 WHERE s.slot_code=?1",
+                 WHERE s.slot_id=?1",
             )
-            .bind(&slot.slot_code)
+            .bind(&slot.slot_id)
             .fetch_optional(tx.as_mut())
             .await?;
             let Some((planogram_version, slot_id)) = active else {
@@ -4082,7 +4065,7 @@ impl LocalStateStore {
             ));
         }
         let slot: Option<(i64, String, String, String)> = sqlx::query_as(
-            "SELECT s.capacity, s.slot_code, s.inventory_id, s.variant_id
+            "SELECT s.capacity, s.slot_id, s.inventory_id, s.variant_id
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
@@ -4092,7 +4075,7 @@ impl LocalStateStore {
         .bind(&input.slot_id)
         .fetch_optional(tx.as_mut())
         .await?;
-        let Some((capacity, slot_code, inventory_id, variant_id)) = slot else {
+        let Some((capacity, slot_id, inventory_id, variant_id)) = slot else {
             return Err(StoreError::InvalidStockInput(
                 "movement slot is not in the active planogram version".to_string(),
             ));
@@ -4156,7 +4139,7 @@ impl LocalStateStore {
             )));
         }
         let slot_mapping_snapshot = serde_json::json!({
-            "slotCode": slot_code,
+            "slotId": slot_id,
             "capacity": capacity,
             "inventoryId": inventory_id,
             "variantId": variant_id,
@@ -4304,10 +4287,10 @@ impl LocalStateStore {
         }
 
         let rows = sqlx::query(
-            "SELECT slot_id, slot_code, sku, capacity, inventory_id, variant_id
+            "SELECT slot_id, slot_display_label, sku, capacity, inventory_id, variant_id
              FROM machine_planogram_slots
              WHERE planogram_version = ?1
-             ORDER BY layer_no ASC, cell_no ASC",
+             ORDER BY row_no ASC, cell_no ASC",
         )
         .bind(&input.planogram_version)
         .fetch_all(tx.as_mut())
@@ -4328,7 +4311,7 @@ impl LocalStateStore {
             if attested_slots.insert(slot.slot_id.as_str(), slot).is_some() {
                 return Err(StoreError::InvalidStockInput(format!(
                     "duplicate attested slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
         }
@@ -4336,7 +4319,7 @@ impl LocalStateStore {
         let attested_at = now_iso();
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
-            let slot_code: String = row.try_get("slot_code")?;
+            let slot_id: String = row.try_get("slot_id")?;
             let sku: String = row.try_get("sku")?;
             let capacity: i64 = row.try_get("capacity")?;
             let inventory_id: String = row.try_get("inventory_id")?;
@@ -4344,19 +4327,19 @@ impl LocalStateStore {
             let Some(slot) = attested_slots.get(slot_id.as_str()) else {
                 return Err(StoreError::InvalidStockInput(format!(
                     "missing attested slot {}",
-                    slot_code
+                    slot_id
                 )));
             };
-            if slot.slot_code != slot_code || slot.sku != sku {
+            if slot.slot_id != slot_id || slot.sku != sku {
                 return Err(StoreError::InvalidStockInput(format!(
                     "attested slot {} does not match active planogram mapping",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
             if slot.quantity > capacity {
                 return Err(StoreError::InvalidStockInput(format!(
                     "attested slot {} exceeds capacity",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
 
@@ -4371,7 +4354,7 @@ impl LocalStateStore {
             .await?;
             let before_quantity = before_quantity.map_or(0, |(quantity,)| quantity);
             let slot_mapping_snapshot = serde_json::json!({
-                "slotCode": slot_code,
+                "slotId": slot_id,
                 "capacity": capacity,
                 "inventoryId": inventory_id,
                 "variantId": variant_id,
@@ -4548,7 +4531,7 @@ impl LocalStateStore {
                 let Some((status, receipt)) = statuses.get(movement_id.as_str()).copied() else {
                     return Err(StoreError::IntegrityCheckFailed(format!(
                         "physical stock attestation slot generation is missing sync state: {}",
-                        previous_slot.slot_code
+                        previous_slot.slot_id
                     )));
                 };
                 if status != "accepted" {
@@ -4557,7 +4540,7 @@ impl LocalStateStore {
                 if receipt.is_none() {
                     return Err(StoreError::IntegrityCheckFailed(format!(
                         "accepted physical stock attestation slot is missing Platform receipt: {}",
-                        previous_slot.slot_code
+                        previous_slot.slot_id
                     )));
                 }
                 if pending.input.planogram_version != input.planogram_version
@@ -4569,7 +4552,7 @@ impl LocalStateStore {
                 {
                     return Err(StoreError::InvalidStockInput(format!(
                         "Platform-accepted attested slot {} cannot be changed; retry only rejected slots",
-                        previous_slot.slot_code
+                        previous_slot.slot_id
                     )));
                 }
                 let generation = if let Some(generation) = pending
@@ -4627,10 +4610,10 @@ impl LocalStateStore {
         }
 
         let rows = sqlx::query(
-            "SELECT slot_id, slot_code, sku, capacity, inventory_id, variant_id
+            "SELECT slot_id, slot_display_label, sku, capacity, inventory_id, variant_id
              FROM machine_planogram_slots
              WHERE planogram_version = ?1
-             ORDER BY layer_no ASC, cell_no ASC",
+             ORDER BY row_no ASC, cell_no ASC",
         )
         .bind(&input.planogram_version)
         .fetch_all(tx.as_mut())
@@ -4651,7 +4634,7 @@ impl LocalStateStore {
             if attested_slots.insert(slot.slot_id.as_str(), slot).is_some() {
                 return Err(StoreError::InvalidStockInput(format!(
                     "duplicate attested slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
         }
@@ -4665,26 +4648,26 @@ impl LocalStateStore {
         let mut slot_generations = Vec::with_capacity(rows.len());
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
-            let slot_code: String = row.try_get("slot_code")?;
+            let slot_id: String = row.try_get("slot_id")?;
             let sku: String = row.try_get("sku")?;
             let capacity: i64 = row.try_get("capacity")?;
             let inventory_id: String = row.try_get("inventory_id")?;
             let variant_id: String = row.try_get("variant_id")?;
             let Some(slot) = attested_slots.get(slot_id.as_str()) else {
                 return Err(StoreError::InvalidStockInput(format!(
-                    "missing attested slot {slot_code}"
+                    "missing attested slot {slot_id}"
                 )));
             };
-            if slot.slot_code != slot_code || slot.sku != sku {
+            if slot.slot_id != slot_id || slot.sku != sku {
                 return Err(StoreError::InvalidStockInput(format!(
                     "attested slot {} does not match active planogram mapping",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
             if slot.quantity > capacity {
                 return Err(StoreError::InvalidStockInput(format!(
                     "attested slot {} exceeds capacity",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
 
@@ -4705,7 +4688,7 @@ impl LocalStateStore {
             }
             let movement_id = format!("{}:{slot_id}", input.attestation_id);
             let slot_mapping_snapshot = serde_json::json!({
-                "slotCode": slot_code,
+                "slotId": slot_id,
                 "capacity": capacity,
                 "inventoryId": inventory_id,
                 "variantId": variant_id,
@@ -4828,7 +4811,7 @@ impl LocalStateStore {
 
         for slot in &pending.input.slots {
             let row: Option<(String, i64, String, String)> = sqlx::query_as(
-                "SELECT slot_code, capacity, inventory_id, variant_id
+                "SELECT slot_id, capacity, inventory_id, variant_id
                  FROM machine_planogram_slots
                  WHERE planogram_version = ?1 AND slot_id = ?2",
             )
@@ -4836,11 +4819,11 @@ impl LocalStateStore {
             .bind(&slot.slot_id)
             .fetch_optional(tx.as_mut())
             .await?;
-            let Some((slot_code, capacity, inventory_id, variant_id)) = row else {
+            let Some((slot_id, capacity, inventory_id, variant_id)) = row else {
                 tx.rollback().await?;
                 return Ok(false);
             };
-            if slot.slot_code != slot_code || slot.quantity > capacity {
+            if slot.slot_id != slot_id || slot.quantity > capacity {
                 tx.rollback().await?;
                 return Ok(false);
             }
@@ -4878,7 +4861,7 @@ impl LocalStateStore {
                     )
                 };
             let slot_mapping_snapshot = serde_json::json!({
-                "slotCode": slot_code,
+                "slotId": slot_id,
                 "capacity": capacity,
                 "inventoryId": inventory_id,
                 "variantId": variant_id,
@@ -5062,12 +5045,12 @@ impl LocalStateStore {
 
         let mut inconsistent_slots = Vec::new();
         let rows = sqlx::query(
-            "SELECT s.slot_id, s.slot_code, s.sku, s.capacity, c.physical_stock, c.slot_sales_state
+            "SELECT s.slot_id, s.slot_id, s.sku, s.capacity, c.physical_stock, c.slot_sales_state
              FROM machine_planogram_slots s
              LEFT JOIN current_stock_projection c
                ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
              WHERE s.planogram_version = ?1
-             ORDER BY s.layer_no ASC, s.cell_no ASC",
+             ORDER BY s.row_no ASC, s.cell_no ASC",
         )
         .bind(&stored.planogram_version)
         .fetch_all(&self.pool)
@@ -5079,7 +5062,7 @@ impl LocalStateStore {
             .collect();
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
-            let slot_code: String = row.try_get("slot_code")?;
+            let slot_id: String = row.try_get("slot_id")?;
             let sku: String = row.try_get("sku")?;
             let capacity: i64 = row.try_get("capacity")?;
             let physical_stock: Option<i64> = row.try_get("physical_stock")?;
@@ -5095,10 +5078,10 @@ impl LocalStateStore {
             .fetch_optional(&self.pool)
             .await?;
             let Some(attested) = attested_slots.get(slot_id.as_str()) else {
-                inconsistent_slots.push(slot_code);
+                inconsistent_slots.push(slot_id);
                 continue;
             };
-            if attested.slot_code != slot_code
+            if attested.slot_id != slot_id
                 || attested.sku != sku
                 || attested.quantity > capacity
                 || physical_stock.is_none()
@@ -5106,7 +5089,7 @@ impl LocalStateStore {
                 || replayed_stock.is_none()
                 || physical_stock != replayed_stock.map(|(quantity,)| quantity)
             {
-                inconsistent_slots.push(slot_code);
+                inconsistent_slots.push(slot_id);
             }
         }
 
@@ -5193,10 +5176,10 @@ impl LocalStateStore {
         }
 
         let local_slots: Vec<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT slot_id, slot_code, inventory_id, capacity
+            "SELECT slot_id, slot_display_label, inventory_id, capacity
              FROM machine_planogram_slots
              WHERE planogram_version = ?1
-             ORDER BY layer_no ASC, cell_no ASC",
+             ORDER BY row_no ASC, cell_no ASC",
         )
         .bind(&snapshot.planogram_version)
         .fetch_all(tx.as_mut())
@@ -5214,7 +5197,7 @@ impl LocalStateStore {
             if !seen_slot_ids.insert(slot.slot_id.clone()) {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot duplicate slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
             if slot.capacity < 0
@@ -5227,16 +5210,16 @@ impl LocalStateStore {
                 ));
             }
 
-            let Some((_, local_slot_code, inventory_id, capacity)) = local_slots
+            let Some((_, local_slot_id, inventory_id, capacity)) = local_slots
                 .iter()
                 .find(|(slot_id, _, _, _)| slot_id == &slot.slot_id)
             else {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot contains unknown slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             };
-            if local_slot_code != &slot.slot_code {
+            if local_slot_id != &slot.slot_id {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot slot code mismatch for slot {}",
                     slot.slot_id
@@ -5245,13 +5228,13 @@ impl LocalStateStore {
             if inventory_id != &slot.inventory_id {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot inventory mismatch for slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
             if *capacity != slot.capacity {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot capacity mismatch for slot {}",
-                    slot.slot_code
+                    slot.slot_id
                 )));
             }
 
@@ -5260,7 +5243,7 @@ impl LocalStateStore {
                 Some(state) if !is_supported_slot_sales_state(state) => {
                     return Err(StoreError::InvalidStockInput(format!(
                         "stock snapshot unsupported slot sales state {} for slot {}",
-                        state, slot.slot_code
+                        state, slot.slot_id
                     )));
                 }
                 Some("sale_ready") if raw_saleable_stock <= 0 => "sold_out",
@@ -5314,7 +5297,7 @@ impl LocalStateStore {
                     source: "dispense_failure".to_string(),
                     order_no: command.order_no.clone(),
                     command_no: command.command_no.clone(),
-                    slot_code: command.slot.slot_code.clone(),
+                    slot_id: command.slot.slot_id.clone(),
                     error_code: error_code.map(ToString::to_string),
                     created_at: now_iso(),
                 },
@@ -5335,17 +5318,17 @@ impl LocalStateStore {
 
         let mut tx = self.pool.begin().await?;
         let row: Option<(String, String, String, i64, String, String, i64)> = sqlx::query_as(
-            "SELECT s.planogram_version, s.slot_id, s.slot_code, s.capacity, s.inventory_id, s.variant_id, c.physical_stock
+            "SELECT s.planogram_version, s.slot_id, s.slot_id, s.capacity, s.inventory_id, s.variant_id, c.physical_stock
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
              JOIN current_stock_projection c
                ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
-             WHERE s.slot_code = ?1 AND s.layer_no = ?2 AND s.cell_no = ?3
+             WHERE s.slot_id = ?1 AND s.row_no = ?2 AND s.cell_no = ?3
              LIMIT 1",
         )
-        .bind(&command.slot.slot_code)
-        .bind(command.slot.layer_no)
+        .bind(&command.slot.slot_id)
+        .bind(command.slot.row_no)
         .bind(command.slot.cell_no)
         .fetch_optional(tx.as_mut())
         .await?;
@@ -5353,7 +5336,7 @@ impl LocalStateStore {
         let Some((
             planogram_version,
             slot_id,
-            slot_code,
+            _slot_display_label,
             capacity,
             inventory_id,
             variant_id,
@@ -5367,7 +5350,7 @@ impl LocalStateStore {
         let after_quantity = physical_stock - dispense_quantity;
         let occurred_at = now_iso();
         let slot_mapping_snapshot = serde_json::json!({
-            "slotCode": slot_code,
+            "slotId": slot_id,
             "capacity": capacity,
             "inventoryId": inventory_id,
             "variantId": variant_id,
@@ -5423,11 +5406,11 @@ impl LocalStateStore {
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
-             WHERE s.slot_code = ?1 AND s.layer_no = ?2 AND s.cell_no = ?3
+             WHERE s.slot_id = ?1 AND s.row_no = ?2 AND s.cell_no = ?3
              LIMIT 1",
         )
-        .bind(&command.slot.slot_code)
-        .bind(command.slot.layer_no)
+        .bind(&command.slot.slot_id)
+        .bind(command.slot.row_no)
         .bind(command.slot.cell_no)
         .fetch_optional(&self.pool)
         .await?;
@@ -5564,7 +5547,7 @@ impl LocalStateStore {
         items.sort_by(|left, right| {
             left.product_sort_order
                 .cmp(&right.product_sort_order)
-                .then_with(|| left.slot_code.cmp(&right.slot_code))
+                .then_with(|| left.slot_id.cmp(&right.slot_id))
         });
         let reservations = self.active_order_reservations().await?;
         apply_active_order_reservations(&mut items, &reservations);
@@ -5664,7 +5647,7 @@ impl LocalStateStore {
         }
         if status == "accepted" && response.receipt.is_some() {
             let counted_slot: Option<(String, i64, i64)> = sqlx::query_as(
-                "SELECT s.slot_code,s.layer_no,s.cell_no
+                "SELECT s.slot_id,s.row_no,s.cell_no
                  FROM stock_movements m
                  JOIN machine_planogram_slots s
                    ON s.planogram_version=m.planogram_version AND s.slot_id=m.slot_id
@@ -5673,17 +5656,17 @@ impl LocalStateStore {
             .bind(movement_id)
             .fetch_optional(tx.as_mut())
             .await?;
-            if let Some((slot_code, layer_no, cell_no)) = counted_slot {
+            if let Some((slot_id, row_no, cell_no)) = counted_slot {
                 manual_diagnostics_reconciled = sqlx::query(
                     "UPDATE manual_dispense_diagnostics
                      SET reconciliation_status='reconciled'
                      WHERE reconciliation_status='open'
-                       AND json_extract(command_json,'$.slotCode')=?1
-                       AND json_extract(command_json,'$.layerNo')=?2
+                       AND json_extract(command_json,'$.slotId')=?1
+                       AND json_extract(command_json,'$.rowNo')=?2
                        AND json_extract(command_json,'$.cellNo')=?3",
                 )
-                .bind(slot_code)
-                .bind(layer_no)
+                .bind(slot_id)
+                .bind(row_no)
                 .bind(cell_no)
                 .execute(tx.as_mut())
                 .await?
@@ -6028,7 +6011,7 @@ async fn planogram_slots_match_in_tx(
 ) -> Result<bool, StoreError> {
     let rows = sqlx::query(
         "SELECT
-           slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+           slot_id,slot_display_label,row_no,cell_no,capacity,par_level,
            inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
            try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
            product_sort_order,target_gender
@@ -6044,8 +6027,7 @@ async fn planogram_slots_match_in_tx(
     for row in rows {
         existing.push(MachinePlanogramSlotInput {
             slot_id: row.try_get("slot_id")?,
-            slot_code: row.try_get("slot_code")?,
-            layer_no: row.try_get("layer_no")?,
+            row_no: row.try_get("row_no")?,
             cell_no: row.try_get("cell_no")?,
             capacity: row.try_get("capacity")?,
             par_level: row.try_get("par_level")?,
@@ -6368,8 +6350,8 @@ async fn upsert_sale_view_projection_in_tx(
     let row = sqlx::query(
         "SELECT
            s.slot_id,
-           s.slot_code,
-           s.layer_no,
+           s.slot_id,
+           s.row_no,
            s.cell_no,
            s.inventory_id,
            s.variant_id,
@@ -6404,8 +6386,7 @@ async fn upsert_sale_view_projection_in_tx(
     let item = SaleViewItem {
         machine_code: None,
         slot_id: row.try_get("slot_id")?,
-        slot_code: row.try_get("slot_code")?,
-        layer_no: row.try_get("layer_no")?,
+        row_no: row.try_get("row_no")?,
         cell_no: row.try_get("cell_no")?,
         inventory_id: row.try_get("inventory_id")?,
         variant_id: row.try_get("variant_id")?,
@@ -6547,7 +6528,6 @@ fn to_health_level_string(level: vending_core::health::HealthLevel) -> &'static 
 struct LocalStockReservation {
     inventory_id: Option<String>,
     slot_id: Option<String>,
-    slot_code: Option<String>,
     quantity: i64,
 }
 
@@ -6646,15 +6626,14 @@ fn collect_local_stock_reservations(
                 .get("slotId")
                 .and_then(|value| value.as_str())
                 .map(ToString::to_string);
-            let slot_code = object
-                .get("slotCode")
+            let slot_id = object
+                .get("slotId")
                 .and_then(|value| value.as_str())
                 .map(ToString::to_string);
-            if inventory_id.is_some() || slot_id.is_some() || slot_code.is_some() {
+            if inventory_id.is_some() || slot_id.is_some() {
                 reservations.push(LocalStockReservation {
                     inventory_id,
                     slot_id,
-                    slot_code,
                     quantity,
                 });
             }
@@ -6709,9 +6688,9 @@ fn local_stock_reservation_matches_item(
         return true;
     }
     reservation
-        .slot_code
+        .slot_id
         .as_deref()
-        .is_some_and(|slot_code| slot_code == item.slot_code.as_str())
+        .is_some_and(|slot_id| slot_id == item.slot_id.as_str())
 }
 
 fn to_order_session_record(row: OrderSessionRecordRow) -> OrderSessionRecord {
@@ -6993,24 +6972,24 @@ async fn apply_dispense_success_to_local_stock_in_tx(
     movement_id: &str,
 ) -> Result<(), StoreError> {
     let row: Option<(String, String, String, i64, String, String, i64)> = sqlx::query_as(
-        "SELECT s.planogram_version,s.slot_id,s.slot_code,s.capacity,s.inventory_id,s.variant_id,c.physical_stock
+        "SELECT s.planogram_version,s.slot_id,s.slot_id,s.capacity,s.inventory_id,s.variant_id,c.physical_stock
          FROM machine_planogram_slots s
          JOIN machine_planogram_versions v
            ON v.planogram_version=s.planogram_version AND v.active=1
          JOIN current_stock_projection c
            ON c.planogram_version=s.planogram_version AND c.slot_id=s.slot_id
-         WHERE s.slot_code=?1 AND s.layer_no=?2 AND s.cell_no=?3
+         WHERE s.slot_id=?1 AND s.row_no=?2 AND s.cell_no=?3
          LIMIT 1",
     )
-    .bind(&command.slot.slot_code)
-    .bind(command.slot.layer_no)
+    .bind(&command.slot.slot_id)
+    .bind(command.slot.row_no)
     .bind(command.slot.cell_no)
     .fetch_optional(tx.as_mut())
     .await?;
     let Some((
         planogram_version,
         slot_id,
-        slot_code,
+        _slot_display_label,
         capacity,
         inventory_id,
         variant_id,
@@ -7019,7 +6998,7 @@ async fn apply_dispense_success_to_local_stock_in_tx(
     else {
         return Err(StoreError::InvalidStockInput(format!(
             "dispense slot {} ({},{}) is missing from the active counted planogram",
-            command.slot.slot_code, command.slot.layer_no, command.slot.cell_no
+            command.slot.slot_id, command.slot.row_no, command.slot.cell_no
         )));
     };
 
@@ -7038,12 +7017,12 @@ async fn apply_dispense_success_to_local_stock_in_tx(
         .ok_or_else(|| {
             StoreError::InvalidStockInput(format!(
                 "dispense quantity exceeds counted stock for slot {}",
-                command.slot.slot_code
+                command.slot.slot_id
             ))
         })?;
     let occurred_at = now_iso();
     let slot_mapping_snapshot = serde_json::json!({
-        "slotCode": slot_code,
+        "slotId": slot_id,
         "capacity": capacity,
         "inventoryId": inventory_id,
         "variantId": variant_id,
@@ -7502,11 +7481,11 @@ fn to_manual_dispense_diagnostic(
     let request_fingerprint = row.13.unwrap_or_else(|| {
         manual_dispense_request_fingerprint(
             command
-                .get("slotCode")
+                .get("slotId")
                 .and_then(|value| value.as_str())
                 .unwrap_or_default(),
             command
-                .get("layerNo")
+                .get("rowNo")
                 .and_then(|value| value.as_u64())
                 .unwrap_or_default(),
             command
@@ -7542,17 +7521,17 @@ fn to_manual_dispense_diagnostic(
 }
 
 pub fn manual_dispense_request_fingerprint(
-    slot_code: &str,
-    layer_no: u64,
+    slot_id: &str,
+    row_no: u64,
     cell_no: u64,
     quantity: u64,
     timeout_seconds: u64,
 ) -> String {
     let canonical = serde_json::json!({
         "cellNo": cell_no,
-        "layerNo": layer_no,
+        "rowNo": row_no,
         "quantity": quantity,
-        "slotCode": slot_code.trim(),
+        "slotId": slot_id.trim(),
         "timeoutSeconds": timeout_seconds,
     })
     .to_string();
@@ -7675,15 +7654,15 @@ fn normalize_refill_batch(
                 ));
             }
             Ok(NormalizedStockMaintenanceRefillSlot {
-                slot_code: slot.slot_code.clone(),
+                slot_id: slot.slot_id.clone(),
                 addition: slot.addition.unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
-    slots.sort_by(|left, right| left.slot_code.cmp(&right.slot_code));
+    slots.sort_by(|left, right| left.slot_id.cmp(&right.slot_id));
     if slots
         .windows(2)
-        .any(|pair| pair[0].slot_code == pair[1].slot_code)
+        .any(|pair| pair[0].slot_id == pair[1].slot_id)
     {
         return Err(StoreError::InvalidStockInput(
             "refill task contains duplicate slots".to_string(),
@@ -7725,8 +7704,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -7760,8 +7738,7 @@ mod tests {
                 slots: vec![
                     MachinePlanogramSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                        slot_code: "A1".to_string(),
-                        layer_no: 1,
+                        row_no: 1,
                         cell_no: 1,
                         capacity: 8,
                         par_level: 6,
@@ -7783,8 +7760,7 @@ mod tests {
                     },
                     MachinePlanogramSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
-                        slot_code: "A2".to_string(),
-                        layer_no: 1,
+                        row_no: 1,
                         cell_no: 2,
                         capacity: 8,
                         par_level: 6,
@@ -7821,14 +7797,12 @@ mod tests {
             slots: vec![
                 PhysicalStockAttestationSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
                     sku: "WATER-001".to_string(),
                     quantity: 3,
                     enabled: true,
                 },
                 PhysicalStockAttestationSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
-                    slot_code: "A2".to_string(),
                     sku: "TEA-001".to_string(),
                     quantity: second_quantity,
                     enabled: true,
@@ -7909,7 +7883,7 @@ mod tests {
 
         let task = store.stock_maintenance_task().await.expect("task");
         assert_eq!(task.mode, "initial_count");
-        assert_eq!(task.slots[0].slot_code, "A1");
+        assert_eq!(task.slots[0].slot_id, "A1");
         assert_eq!(task.slots[0].product_name, "water");
         assert_eq!(task.slots[0].current_quantity, 0);
         assert_eq!(task.slots[0].sync_status, "not_submitted");
@@ -7919,12 +7893,12 @@ mod tests {
             mode: "initial_count".to_string(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A1".to_string(),
+                    slot_id: "A1".to_string(),
                     quantity: Some(3),
                     addition: None,
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A2".to_string(),
+                    slot_id: "A2".to_string(),
                     quantity: Some(4),
                     addition: None,
                 },
@@ -8016,7 +7990,7 @@ mod tests {
         sqlx::query(
             "UPDATE machine_planogram_slots
              SET sku='WATER-REBOUND', capacity=9
-             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_code='A1'",
+             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_id='A1'",
         )
         .execute(store.pool())
         .await
@@ -8029,12 +8003,12 @@ mod tests {
                     mode: task.mode,
                     slots: vec![
                         StockMaintenanceBatchSlotInput {
-                            slot_code: "A1".to_string(),
+                            slot_id: "A1".to_string(),
                             quantity: None,
                             addition: Some(1),
                         },
                         StockMaintenanceBatchSlotInput {
-                            slot_code: "A2".to_string(),
+                            slot_id: "A2".to_string(),
                             quantity: None,
                             addition: Some(1),
                         },
@@ -8061,10 +8035,10 @@ mod tests {
                 .expect("outbox count");
         assert_eq!((movement_count.0, outbox_count.0), (0, 0));
         let sale_view = store.sale_view(None).await.expect("targeted freeze");
-        assert_eq!(sale_view.items[0].slot_code, "A1");
+        assert_eq!(sale_view.items[0].slot_id, "A1");
         assert_eq!(sale_view.items[0].saleable_stock, 0);
         assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
-        assert_eq!(sale_view.items[1].slot_code, "A2");
+        assert_eq!(sale_view.items[1].slot_id, "A2");
         assert_eq!(sale_view.items[1].saleable_stock, 2);
         assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
         let audit: (String,) = sqlx::query_as(
@@ -8094,7 +8068,7 @@ mod tests {
         sqlx::query(
             "UPDATE machine_planogram_slots
              SET sku='WATER-CONCURRENT-REBOUND', capacity=9
-             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_code='A1'",
+             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_id='A1'",
         )
         .execute(switch_tx.as_mut())
         .await
@@ -8110,12 +8084,12 @@ mod tests {
                         mode: "initial_count".to_string(),
                         slots: vec![
                             StockMaintenanceBatchSlotInput {
-                                slot_code: "A1".to_string(),
+                                slot_id: "A1".to_string(),
                                 quantity: Some(3),
                                 addition: None,
                             },
                             StockMaintenanceBatchSlotInput {
-                                slot_code: "A2".to_string(),
+                                slot_id: "A2".to_string(),
                                 quantity: Some(4),
                                 addition: None,
                             },
@@ -8170,12 +8144,12 @@ mod tests {
             mode: task.mode.clone(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A1".to_string(),
+                    slot_id: "A1".to_string(),
                     quantity: None,
                     addition: Some(2),
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A2".to_string(),
+                    slot_id: "A2".to_string(),
                     quantity: None,
                     addition: Some(1),
                 },
@@ -8305,7 +8279,7 @@ mod tests {
             task_id: task.task_id.clone(),
             mode: task.mode,
             slots: vec![StockMaintenanceBatchSlotInput {
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
                 quantity: None,
                 addition: Some(2),
             }],
@@ -8439,7 +8413,7 @@ mod tests {
                     task_id: task.task_id.clone(),
                     mode: task.mode.clone(),
                     slots: vec![StockMaintenanceBatchSlotInput {
-                        slot_code: "A1".to_string(),
+                        slot_id: "A1".to_string(),
                         quantity: None,
                         addition: Some(2),
                     }],
@@ -8457,7 +8431,7 @@ mod tests {
                     task_id: task.task_id.clone(),
                     mode: task.mode,
                     slots: vec![StockMaintenanceBatchSlotInput {
-                        slot_code: "A2".to_string(),
+                        slot_id: "A2".to_string(),
                         quantity: None,
                         addition: Some(1),
                     }],
@@ -8470,7 +8444,7 @@ mod tests {
             .expect_err("same task id cannot define another batch");
         assert!(error.to_string().contains("immutable"));
         let movements: Vec<(String, i64, Option<String>)> = sqlx::query_as(
-            "SELECT json_extract(slot_mapping_snapshot_json,'$.slotCode'),quantity,attributed_to
+            "SELECT json_extract(slot_mapping_snapshot_json,'$.slotId'),quantity,attributed_to
              FROM stock_movements WHERE source='local_maintenance' ORDER BY movement_id",
         )
         .fetch_all(store.pool())
@@ -8510,12 +8484,12 @@ mod tests {
             mode: first.mode.clone(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A1".to_string(),
+                    slot_id: "A1".to_string(),
                     quantity: Some(3),
                     addition: None,
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_code: "A2".to_string(),
+                    slot_id: "A2".to_string(),
                     quantity: Some(4),
                     addition: None,
                 },
@@ -8589,12 +8563,12 @@ mod tests {
                     mode: retry.mode,
                     slots: vec![
                         StockMaintenanceBatchSlotInput {
-                            slot_code: "A1".to_string(),
+                            slot_id: "A1".to_string(),
                             quantity: Some(3),
                             addition: None,
                         },
                         StockMaintenanceBatchSlotInput {
-                            slot_code: "A2".to_string(),
+                            slot_id: "A2".to_string(),
                             quantity: Some(6),
                             addition: None,
                         },
@@ -8639,7 +8613,7 @@ mod tests {
             task_id: "stale-task".to_string(),
             mode: "routine_refill".to_string(),
             slots: vec![StockMaintenanceBatchSlotInput {
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
                 quantity: None,
                 addition: Some(1),
             }],
@@ -8691,7 +8665,6 @@ mod tests {
             operator_id: "operator-1".to_string(),
             slots: vec![PhysicalStockAttestationSlotInput {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 sku: "WATER-001".to_string(),
                 quantity: 3,
                 enabled: true,
@@ -8718,9 +8691,9 @@ mod tests {
             command_no: command_no.to_string(),
             order_no: "ORD-FAILURE".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -8741,8 +8714,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -8827,12 +8799,12 @@ mod tests {
         .expect("refresh valid projection");
         sqlx::query(
             "INSERT INTO machine_planogram_slots(
-               planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+               planogram_version,slot_id,slot_display_label,row_no,cell_no,capacity,par_level,
                inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
                try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
                product_sort_order,target_gender
              ) SELECT
-               planogram_version,?2,'A2',layer_no,2,capacity,par_level,
+               planogram_version,?2,'A2',row_no,2,capacity,par_level,
                inventory_id,variant_id,product_id,'malformed media item',product_description,cover_image_url,
                try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
                product_sort_order + 1,target_gender
@@ -8879,7 +8851,6 @@ mod tests {
             planogram_version: "PLAN-FAILURE".to_string(),
             slots: vec![crate::backend::MachineStockSnapshotSlot {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
                 capacity: 8,
                 on_hand_qty,
@@ -8916,7 +8887,6 @@ mod tests {
             planogram_version: "PLAN-FAILURE".to_string(),
             slots: vec![crate::backend::MachineStockSnapshotSlot {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
                 capacity: 8,
                 on_hand_qty: 10,
@@ -8963,7 +8933,6 @@ mod tests {
             planogram_version: "PLAN-FAILURE".to_string(),
             slots: vec![crate::backend::MachineStockSnapshotSlot {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
                 capacity: 8,
                 on_hand_qty: 5,
@@ -9012,7 +8981,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -9040,7 +9009,7 @@ mod tests {
                     items_json: json!({
                         "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                         "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                        "slotCode": "A1",
+                        "slotId": "A1",
                         "quantity": 1
                     }),
                     status,
@@ -9091,7 +9060,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -9160,7 +9129,6 @@ mod tests {
             planogram_version: "PLAN-FAILURE".to_string(),
             slots: vec![crate::backend::MachineStockSnapshotSlot {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
                 capacity: 8,
                 on_hand_qty: 5,
@@ -9211,7 +9179,6 @@ mod tests {
             planogram_version: "PLAN-FAILURE".to_string(),
             slots: vec![crate::backend::MachineStockSnapshotSlot {
                 slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                slot_code: "A1".to_string(),
                 inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
                 capacity: 10,
                 on_hand_qty: 10,
@@ -9424,7 +9391,7 @@ mod tests {
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-hash".to_string(),
             controller: json!({"adapter":"serial","portPath":"COM5"}),
-            command: json!({"slotCode":"A1","quantity":1}),
+            command: json!({"slotId":"A1","quantity":1}),
             started_at: "2026-07-15T00:00:00.000Z".to_string(),
             completed_at: None,
             raw_result: None,
@@ -9678,7 +9645,7 @@ mod tests {
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-1".to_string(),
             controller: json!({}),
-            command: json!({"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+            command: json!({"slotId":"A1","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
             started_at: now_iso(),
             completed_at: None,
             raw_result: None,
@@ -9727,7 +9694,7 @@ mod tests {
                 operator_id: "operator-1".to_string(),
                 session_correlation_id: "session-1".to_string(),
                 controller: json!({}),
-                command: json!({"slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+                command: json!({"slotId":"A1","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
                 started_at: now_iso(),
                 completed_at: Some(now_iso()),
                 raw_result: None,
@@ -9833,8 +9800,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -9929,15 +9895,15 @@ mod tests {
         seed_single_slot_planogram(&store).await;
 
         let slot = store
-            .active_planogram_slot_by_code("A1")
+            .active_planogram_slot_by_id("550e8400-e29b-41d4-a716-446655440001")
             .await
             .expect("slot lookup")
             .expect("active slot");
-        assert_eq!(slot.slot_code, "A1");
-        assert_eq!(slot.layer_no, 1);
+        assert_eq!(slot.slot_id, "550e8400-e29b-41d4-a716-446655440001");
+        assert_eq!(slot.row_no, 1);
         assert_eq!(slot.cell_no, 1);
         assert!(store
-            .active_planogram_slot_by_code("UNKNOWN")
+            .active_planogram_slot_by_id("UNKNOWN")
             .await
             .expect("unknown lookup")
             .is_none());
@@ -10075,7 +10041,7 @@ mod tests {
                 order_no: &command.order_no,
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
                 status: "dispensing",
                 next_action: "dispensing",
                 payment_attempt_json: None,
@@ -10213,7 +10179,7 @@ mod tests {
                 order_no: &command.order_no,
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotCode": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
                 status: "dispensing",
                 next_action: "dispensing",
                 payment_attempt_json: None,
@@ -10314,8 +10280,7 @@ mod tests {
                 slots: vec![
                     MachinePlanogramSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a1".to_string(),
-                        slot_code: "A1".to_string(),
-                        layer_no: 1,
+                        row_no: 1,
                         cell_no: 1,
                         capacity: 8,
                         par_level: 6,
@@ -10337,8 +10302,7 @@ mod tests {
                     },
                     MachinePlanogramSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a2".to_string(),
-                        slot_code: "A2".to_string(),
-                        layer_no: 1,
+                        row_no: 1,
                         cell_no: 2,
                         capacity: 8,
                         par_level: 6,
@@ -10360,8 +10324,7 @@ mod tests {
                     },
                     MachinePlanogramSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a3".to_string(),
-                        slot_code: "A3".to_string(),
-                        layer_no: 1,
+                        row_no: 1,
                         cell_no: 3,
                         capacity: 8,
                         par_level: 6,
@@ -10394,21 +10357,18 @@ mod tests {
                 slots: vec![
                     PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a1".to_string(),
-                        slot_code: "A1".to_string(),
                         sku: "WATER-001".to_string(),
                         quantity: 5,
                         enabled: true,
                     },
                     PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a2".to_string(),
-                        slot_code: "A2".to_string(),
                         sku: "TEA-001".to_string(),
                         quantity: 0,
                         enabled: true,
                     },
                     PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-4466554400a3".to_string(),
-                        slot_code: "A3".to_string(),
                         sku: "JUICE-001".to_string(),
                         quantity: 4,
                         enabled: false,
@@ -10453,7 +10413,6 @@ mod tests {
                     operator_id: "operator-1".to_string(),
                     slots: vec![PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                        slot_code: "A1".to_string(),
                         sku: "WATER-001".to_string(),
                         quantity: 3,
                         enabled: true,
@@ -10515,7 +10474,6 @@ mod tests {
                     operator_id: "operator-1".to_string(),
                     slots: vec![PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                        slot_code: "A1".to_string(),
                         sku: "WATER-001".to_string(),
                         quantity: 3,
                         enabled: true,
@@ -10878,7 +10836,6 @@ mod tests {
                     operator_id: "operator-1".to_string(),
                     slots: vec![PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                        slot_code: "A1".to_string(),
                         sku: "WATER-001".to_string(),
                         quantity: 3,
                         enabled: true,
@@ -10936,7 +10893,6 @@ mod tests {
                 operator_id: "operator-1".to_string(),
                 slots: vec![PhysicalStockAttestationSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
                     sku: "WATER-001".to_string(),
                     quantity: 3,
                     enabled: true,
@@ -10978,7 +10934,6 @@ mod tests {
                 operator_id: "operator-1".to_string(),
                 slots: vec![PhysicalStockAttestationSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
                     sku: "WATER-001".to_string(),
                     quantity: 3,
                     enabled: true,
@@ -10994,8 +10949,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -11055,7 +11009,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11094,7 +11048,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11140,7 +11094,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "payment_expired",
@@ -11186,7 +11140,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11236,7 +11190,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "waiting_payment",
@@ -11282,7 +11236,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11302,7 +11256,7 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotCode": "A1",
+                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "payment_expired",
@@ -11386,7 +11340,7 @@ mod tests {
             .expect("whole machine lock");
         assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
         assert_eq!(lock.command_no, "CMD-JAMMED");
-        assert_eq!(lock.slot_code, "A1");
+        assert_eq!(lock.slot_id, "A1");
     }
 
     #[test]
@@ -11519,9 +11473,9 @@ mod tests {
             command_no: "CMD-1".to_string(),
             order_no: "ORD-1".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -11641,8 +11595,7 @@ mod tests {
                 applied_by: Some("operator-1".to_string()),
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -11694,7 +11647,7 @@ mod tests {
         assert_eq!(movement_record.1, 3);
         let slot_mapping_snapshot: serde_json::Value =
             serde_json::from_str(&movement_record.2).expect("slot mapping snapshot");
-        assert_eq!(slot_mapping_snapshot["slotCode"], "A1");
+        assert_eq!(slot_mapping_snapshot["slotId"], "A1");
         assert_eq!(slot_mapping_snapshot["capacity"], 8);
         assert_eq!(
             slot_mapping_snapshot["inventoryId"],
@@ -11725,7 +11678,7 @@ mod tests {
         assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
         assert_eq!(outbox.payload_json["beforeQuantity"], 0);
         assert_eq!(outbox.payload_json["afterQuantity"], 3);
-        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotCode"], "A1");
+        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotId"], "A1");
         assert_eq!(outbox.payload_json["slotMappingSnapshot"]["capacity"], 8);
     }
 
@@ -11856,8 +11809,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -12186,7 +12138,7 @@ mod tests {
                 task_id: task.task_id.clone(),
                 mode: task.mode,
                 slots: vec![StockMaintenanceBatchSlotInput {
-                    slot_code: "A1".to_string(),
+                    slot_id: "A1".to_string(),
                     quantity: None,
                     addition: Some(addition),
                 }],
@@ -12309,7 +12261,7 @@ mod tests {
                 .iter()
                 .map(|item| {
                     (
-                        item.slot_code.clone(),
+                        item.slot_id.clone(),
                         item.physical_stock,
                         item.saleable_stock,
                         item.slot_sales_state.clone(),
@@ -12484,7 +12436,7 @@ mod tests {
                 .slots
                 .iter()
                 .map(|slot| StockMaintenanceBatchSlotInput {
-                    slot_code: slot.slot_code.clone(),
+                    slot_id: slot.slot_id.clone(),
                     quantity: Some(slot.current_quantity),
                     addition: None,
                 })
@@ -13826,9 +13778,9 @@ mod tests {
             command_no: "CMD-LATE-RESET".to_string(),
             order_no: "ORDER-LATE-RESET".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14144,9 +14096,9 @@ mod tests {
             command_no: "CMD-SUCCESS-LAST-ERROR".to_string(),
             order_no: "ORDER-SUCCESS-LAST-ERROR".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14234,9 +14186,9 @@ mod tests {
             command_no: "CMD-ROLLBACK-ACK".to_string(),
             order_no: "ORD-ROLLBACK".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14283,9 +14235,9 @@ mod tests {
             command_no: "CMD-ROLLBACK-RESULT".to_string(),
             order_no: "ORD-ROLLBACK-2".to_string(),
             slot: vending_core::hardware::SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,

@@ -524,11 +524,12 @@ function validateLocalOperationsTrack(report, reportPath) {
     report.boundaries?.serial !== true ||
     report.planogram?.canonical !== true ||
     !report.planogram?.planogramVersion ||
-    !report.planogram?.slotCode ||
+    !report.planogram?.slotDisplayLabel ||
     !["completed", "failed", "result_unknown"].includes(
       report.manualDispense?.outcome,
     ) ||
-    report.manualDispense?.slotCode !== report.planogram.slotCode
+    report.manualDispense?.slotDisplayLabel !==
+      report.planogram.slotDisplayLabel
   ) {
     return failedTrack(
       "localOperations",
@@ -543,7 +544,7 @@ function validateLocalOperationsTrack(report, reportPath) {
     );
   }
   return passedTrack("localOperations", "local operations", reportPath, {
-    slotCode: report.planogram.slotCode,
+    slotDisplayLabel: report.planogram.slotDisplayLabel,
     planogramVersion: report.planogram.planogramVersion,
     manualOutcome: report.manualDispense.outcome,
   });

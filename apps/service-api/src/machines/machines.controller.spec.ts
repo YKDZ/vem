@@ -123,9 +123,8 @@ describe("MachinesController slot contract validation", () => {
     const createSlot = vi.fn().mockResolvedValue({
       id: "550e8400-e29b-41d4-a716-446655440111",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
-      slotCode: "A1",
       capacity: 10,
       status: "enabled",
     });
@@ -148,9 +147,8 @@ describe("MachinesController slot contract validation", () => {
     await request(app.getHttpServer())
       .post("/machines/550e8400-e29b-41d4-a716-446655440000/slots")
       .send({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
         capacity: 10,
         status: "enabled",
         inventoryShortcut: true,

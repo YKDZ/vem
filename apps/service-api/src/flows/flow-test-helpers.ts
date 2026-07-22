@@ -58,7 +58,7 @@ export function machineOrderBody(
     quantity: number;
     planogramVersion: string;
     slotId: string;
-    slotCode: string;
+    slotDisplayLabel?: string;
   }>;
   paymentMethod: "mock" | "qr_code" | "payment_code";
 } {
@@ -70,7 +70,6 @@ export function machineOrderBody(
         quantity: 1,
         planogramVersion: seeded.planogramVersion,
         slotId: seeded.slotId,
-        slotCode: seeded.slotCode,
       },
     ],
     paymentMethod,
@@ -296,8 +295,8 @@ export async function seedSingleSlotInventory(
     machineCode: string;
     onHandQty: number;
     lowStockThreshold: number;
-    slotCode: string;
-    layerNo: number;
+    slotDisplayLabel?: string;
+    rowNo: number;
     cellNo: number;
     machineStatus?: "online" | "offline" | "maintenance" | "disabled";
   },
@@ -305,7 +304,7 @@ export async function seedSingleSlotInventory(
   machineId: string;
   machineCode: string;
   slotId: string;
-  slotCode: string;
+  slotDisplayLabel?: string;
   inventoryId: string;
   planogramVersion: string;
   machineSecret: string;
@@ -359,9 +358,8 @@ export async function seedSingleSlotInventory(
     .insert(machineSlots)
     .values({
       machineId: machine.id,
-      layerNo: input.layerNo,
+      rowNo: input.rowNo,
       cellNo: input.cellNo,
-      slotCode: input.slotCode,
       capacity: 20,
       status: "enabled",
     })
@@ -391,8 +389,7 @@ export async function seedSingleSlotInventory(
   await db.client.insert(machinePlanogramSlots).values({
     machinePlanogramVersionId: version.id,
     slotId: slot.id,
-    slotCode: input.slotCode,
-    layerNo: input.layerNo,
+    rowNo: input.rowNo,
     cellNo: input.cellNo,
     capacity: 20,
     parLevel: input.lowStockThreshold,
@@ -415,7 +412,6 @@ export async function seedSingleSlotInventory(
     machineId: machine.id,
     machineCode: machine.code,
     slotId: slot.id,
-    slotCode: input.slotCode,
     inventoryId: inventory.id,
     planogramVersion,
     machineSecret,
@@ -430,8 +426,8 @@ export async function seedMultiSlotInventory(
     slots: Array<{
       onHandQty: number;
       lowStockThreshold: number;
-      slotCode: string;
-      layerNo: number;
+      slotDisplayLabel?: string;
+      rowNo: number;
       cellNo: number;
       priceCents?: number;
     }>;
@@ -445,7 +441,7 @@ export async function seedMultiSlotInventory(
   mqttSigningSecret: string;
   items: Array<{
     slotId: string;
-    slotCode: string;
+    slotDisplayLabel?: string;
     inventoryId: string;
     variantId: string;
     productId: string;
@@ -491,7 +487,7 @@ export async function seedMultiSlotInventory(
 
   const items: Array<{
     slotId: string;
-    slotCode: string;
+    slotDisplayLabel?: string;
     inventoryId: string;
     variantId: string;
     productId: string;
@@ -505,7 +501,7 @@ export async function seedMultiSlotInventory(
       const [product] = await db.client
         .insert(products)
         .values({
-          name: `商品-${input.machineCode}-${slotInput.slotCode}`,
+          name: `商品-${input.machineCode}-R${slotInput.rowNo}C${slotInput.cellNo}`,
           status: "active",
           sortOrder: index,
         })
@@ -514,7 +510,7 @@ export async function seedMultiSlotInventory(
         .insert(productVariants)
         .values({
           productId: product.id,
-          sku: `SKU-${input.machineCode}-${slotInput.slotCode}`,
+          sku: `SKU-${input.machineCode}-R${slotInput.rowNo}C${slotInput.cellNo}`,
           size: "500ml",
           color: "black",
           priceCents,
@@ -525,9 +521,8 @@ export async function seedMultiSlotInventory(
         .insert(machineSlots)
         .values({
           machineId: machine.id,
-          layerNo: slotInput.layerNo,
+          rowNo: slotInput.rowNo,
           cellNo: slotInput.cellNo,
-          slotCode: slotInput.slotCode,
           capacity: 20,
           status: "enabled",
         })
@@ -546,20 +541,19 @@ export async function seedMultiSlotInventory(
       await db.client.insert(machinePlanogramSlots).values({
         machinePlanogramVersionId: version.id,
         slotId: slot.id,
-        slotCode: slotInput.slotCode,
-        layerNo: slotInput.layerNo,
+        rowNo: slotInput.rowNo,
         cellNo: slotInput.cellNo,
         capacity: 20,
         parLevel: slotInput.lowStockThreshold,
         inventoryId: inventory.id,
         variantId: variant.id,
         productId: product.id,
-        productName: `商品-${input.machineCode}-${slotInput.slotCode}`,
+        productName: `商品-${input.machineCode}-${slotInput.slotDisplayLabel}`,
         productDescription: null,
         coverImageUrl: null,
         categoryId: null,
         categoryName: null,
-        sku: `SKU-${input.machineCode}-${slotInput.slotCode}`,
+        sku: `SKU-${input.machineCode}-${slotInput.slotDisplayLabel}`,
         size: "500ml",
         color: "black",
         priceCents,
@@ -568,7 +562,7 @@ export async function seedMultiSlotInventory(
       });
       items.push({
         slotId: slot.id,
-        slotCode: slotInput.slotCode,
+        slotDisplayLabel: slotInput.slotDisplayLabel,
         inventoryId: inventory.id,
         variantId: variant.id,
         productId: product.id,

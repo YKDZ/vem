@@ -232,23 +232,32 @@ async function inventory(input, token, inventoryId) {
 }
 
 function fixtureIdentity(saleView, fixture) {
-  const slotCode = required(fixture?.slotCode, "stock fixture slotCode");
+  const slotDisplayLabel = required(
+    fixture?.slotDisplayLabel,
+    "stock fixture slotDisplayLabel",
+  );
   const sku = required(fixture?.sku, "stock fixture sku");
   const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotCode === slotCode && entry?.sku === sku,
+    (entry) =>
+      entry?.slotDisplayLabel === slotDisplayLabel && entry?.sku === sku,
   );
   if (!item?.slotId || !item?.inventoryId) {
     throw new Error(
-      `fixture ${sku} at ${slotCode} is absent from the daemon sale view`,
+      `fixture ${sku} at ${slotDisplayLabel} is absent from the daemon sale view`,
     );
   }
-  return { slotCode, sku, slotId: item.slotId, inventoryId: item.inventoryId };
+  return {
+    slotDisplayLabel,
+    sku,
+    slotId: item.slotId,
+    inventoryId: item.inventoryId,
+  };
 }
 
 function stockFact(saleView, identity) {
   const item = (saleView?.items ?? []).find(
     (entry) =>
-      entry?.slotCode === identity.slotCode &&
+      entry?.slotDisplayLabel === identity.slotDisplayLabel &&
       entry?.slotId === identity.slotId &&
       entry?.inventoryId === identity.inventoryId &&
       entry?.sku === identity.sku,
@@ -361,13 +370,13 @@ async function captureStockScreenshot(client, sink, label, route, identity) {
       validatePng: true,
     })),
     route,
-    slotCode: identity.slotCode,
+    slotDisplayLabel: identity.slotDisplayLabel,
   };
 }
 
 async function enterRoutineRefill(client, identity) {
-  const slotSelector = `[data-test='stock-maintenance-slot'][data-slot-code='${identity.slotCode}'][data-sku='${identity.sku}']`;
-  const additionSelector = `[data-test='stock-maintenance-addition'][data-slot-code='${identity.slotCode}']`;
+  const slotSelector = `[data-test='stock-maintenance-slot'][data-slot-id='${identity.slotDisplayLabel}'][data-sku='${identity.sku}']`;
+  const additionSelector = `[data-test='stock-maintenance-addition'][data-slot-id='${identity.slotDisplayLabel}']`;
   await waitFor(
     "fixture stock maintenance row",
     () =>
@@ -404,7 +413,7 @@ async function enterRoutineRefill(client, identity) {
       ),
     (value) => value === "2",
   );
-  const previewSelector = `[data-test='stock-maintenance-preview'][data-slot-code='${identity.slotCode}']`;
+  const previewSelector = `[data-test='stock-maintenance-preview'][data-slot-id='${identity.slotDisplayLabel}']`;
   await waitFor(
     "visible refill preview",
     () =>
@@ -556,7 +565,7 @@ export function validateStockMaintenanceReport(report) {
     report?.ok !== true ||
     typeof runId !== "string" ||
     report?.fixture?.initialQuantity !== 1 ||
-    typeof report?.fixture?.slotCode !== "string" ||
+    typeof report?.fixture?.slotDisplayLabel !== "string" ||
     typeof report?.fixture?.sku !== "string" ||
     typeof report?.fixture?.slotId !== "string" ||
     typeof report?.fixture?.inventoryId !== "string" ||
@@ -649,14 +658,19 @@ export function validateStockMaintenanceReport(report) {
     !["unavailable", "refillConfirmed", "restoredSaleability"].every(
       (key) =>
         typeof report?.screenshots?.[key]?.ref === "string" &&
-        report.screenshots[key].slotCode === report.fixture.slotCode,
+        report.screenshots[key].slotDisplayLabel ===
+          report.fixture.slotDisplayLabel,
     )
   ) {
     throw new Error(
       "stock maintenance report is missing the 1-to-0-to-2-to-1 evidence with an accepted task projection",
     );
   }
-  return { slotCode: report.fixture.slotCode, firstOrderId, secondOrderId };
+  return {
+    slotDisplayLabel: report.fixture.slotDisplayLabel,
+    firstOrderId,
+    secondOrderId,
+  };
 }
 
 export async function runStockMaintenanceGuest(options) {
@@ -735,14 +749,14 @@ export async function runStockMaintenanceGuest(options) {
         task?.mode === "routine_refill" &&
         task?.slots?.some(
           (slot) =>
-            slot?.slotCode === identity.slotCode &&
+            slot?.slotDisplayLabel === identity.slotDisplayLabel &&
             slot?.submittedAddition === 2 &&
             slot?.previewQuantity === 2 &&
             slot?.movementId === `${task.taskId}:${identity.slotId}`,
         ),
     );
     const submittedSlot = submittedTask.slots.find(
-      (slot) => slot.slotCode === identity.slotCode,
+      (slot) => slot.slotDisplayLabel === identity.slotDisplayLabel,
     );
     report.maintenance = {
       taskId: submittedTask.taskId,
@@ -784,7 +798,7 @@ export async function runStockMaintenanceGuest(options) {
         task?.status === "complete" &&
         task?.slots?.some(
           (slot) =>
-            slot?.slotCode === identity.slotCode &&
+            slot?.slotDisplayLabel === identity.slotDisplayLabel &&
             slot?.submittedAddition === 2 &&
             slot?.previewQuantity === 2 &&
             slot?.movementId === `${submittedTask.taskId}:${identity.slotId}` &&
@@ -797,7 +811,7 @@ export async function runStockMaintenanceGuest(options) {
         ),
     );
     const completedSlot = completedTask.slots.find(
-      (slot) => slot.slotCode === identity.slotCode,
+      (slot) => slot.slotDisplayLabel === identity.slotDisplayLabel,
     );
     report.maintenance.projection = {
       taskStatus: completedTask.status,
@@ -847,7 +861,7 @@ export async function runStockMaintenanceGuest(options) {
       () =>
         evaluateExpression(
           client,
-          `Boolean(document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-slot-code='${identity.slotCode}']`)})?.getClientRects().length)`,
+          `Boolean(document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-slot-id='${identity.slotDisplayLabel}']`)})?.getClientRects().length)`,
         ),
       (visible) => visible === true,
     );

@@ -116,7 +116,7 @@ export const simulatedHardwareSaleFlowFactsSchema = z.strictObject({
   }),
   sale: z.strictObject({
     saleViewReady: z.boolean(),
-    selectedSlotCode: z.string().min(1),
+    selectedSlotId: z.string().min(1),
     orderId: z.string().min(1).nullable(),
     orderNo: z.string().min(1).nullable(),
     orderStatus: z.string().min(1),

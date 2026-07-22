@@ -130,9 +130,8 @@ async function seedTerminalRacePayment(
   await database.client.insert(machineSlots).values({
     id: slotId,
     machineId,
-    layerNo: 1,
+    rowNo: 1,
     cellNo: 1,
-    slotCode: "A1",
     capacity: 10,
     status: "enabled",
   });

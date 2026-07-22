@@ -172,16 +172,19 @@ export async function waitForMachineOnline(
   );
 }
 export function selectCanonicalSlot(saleView, fixture) {
-  const slotCode = required(fixture?.slotCode, "fixture.slotCode");
+  const slotDisplayLabel = required(
+    fixture?.slotDisplayLabel,
+    "fixture.slotDisplayLabel",
+  );
   const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotCode === slotCode,
+    (entry) => entry?.slotDisplayLabel === slotDisplayLabel,
   );
   if (!item?.slotId || !item.inventoryId || saleView?.planogramVersion == null)
     throw new Error(
-      `canonical slot ${slotCode} is not saleable in daemon sale-view`,
+      `canonical slot ${slotDisplayLabel} is not saleable in daemon sale-view`,
     );
   return {
-    slotCode,
+    slotDisplayLabel,
     slotId: item.slotId,
     inventoryId: item.inventoryId,
     planogramVersion: saleView.planogramVersion,
@@ -267,7 +270,7 @@ export async function runPaymentRecoveryGuest(options) {
       quantity: 1,
       planogramVersion: slot.planogramVersion,
       slotId: slot.slotId,
-      slotCode: slot.slotCode,
+      slotDisplayLabel: slot.slotDisplayLabel,
       paymentMethod: "mock",
       paymentProviderCode: "mock",
       idempotencyKey: `${runId}-payment-recovery`,

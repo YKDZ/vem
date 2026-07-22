@@ -47,8 +47,8 @@ function makeCatalogItem(): MachineCatalogItem {
   return {
     machineCode: "M001",
     slotId: "slot-m-white",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "inv-m-white",
     variantId: "m-white",
@@ -171,7 +171,7 @@ describe("ProductDetailPanel recommendation policy", () => {
         {
           ...baseItem,
           slotId: "slot-l-blue",
-          slotCode: "B1",
+          slotDisplayLabel: "B1",
           inventoryId: "inv-l-blue",
           variantId: "l-blue",
           sku: "TSHIRT-L-BLUE",
@@ -271,7 +271,7 @@ describe("ProductDetailPanel recommendation policy", () => {
         {
           ...baseItem,
           slotId: "slot-l-blue",
-          slotCode: "B1",
+          slotDisplayLabel: "B1",
           inventoryId: "inv-l-blue",
           variantId: "l-blue",
           sku: "TSHIRT-L-BLUE",
@@ -311,7 +311,7 @@ describe("ProductDetailPanel recommendation policy", () => {
         {
           ...baseItem,
           slotId: "slot-l-blue",
-          slotCode: "B1",
+          slotDisplayLabel: "B1",
           inventoryId: "inv-l-blue",
           variantId: "l-blue",
           sku: "TSHIRT-L-BLUE",

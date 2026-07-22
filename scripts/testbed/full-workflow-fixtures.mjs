@@ -8,7 +8,7 @@ const FIXTURE_TRACK_KEYS = Object.freeze([
   "stockMaintenance",
 ]);
 
-const FIXTURE_SLOT_CODES = Object.freeze([
+const FIXTURE_SLOT_DISPLAY_LABELS = Object.freeze([
   "A1",
   "A2",
   "A3",
@@ -25,17 +25,20 @@ function required(value, label) {
   return value.trim();
 }
 
-function fixtureForSlot(slots, slotCode) {
-  const fixture = slots.find((slot) => slot?.slotCode === slotCode);
-  if (!fixture) throw new Error(`requires seeded fixture slot ${slotCode}`);
+function fixtureForSlot(slots, slotDisplayLabel) {
+  const fixture = slots.find(
+    (slot) => slot?.slotDisplayLabel === slotDisplayLabel,
+  );
+  if (!fixture)
+    throw new Error(`requires seeded fixture slot ${slotDisplayLabel}`);
   return {
-    slotCode,
+    slotDisplayLabel,
     inventoryId: required(
       fixture.inventoryId,
-      `fixture ${slotCode} inventoryId`,
+      `fixture ${slotDisplayLabel} inventoryId`,
     ),
     onHandQty: Number.isInteger(fixture.onHandQty) ? fixture.onHandQty : null,
-    sku: required(fixture.sku, `fixture ${slotCode} sku`),
+    sku: required(fixture.sku, `fixture ${slotDisplayLabel} sku`),
   };
 }
 
@@ -45,7 +48,7 @@ export function allocateFullWorkflowFixtures(slots) {
   const allocation = Object.fromEntries(
     FIXTURE_TRACK_KEYS.map((key, index) => [
       key,
-      fixtureForSlot(slots, FIXTURE_SLOT_CODES[index]),
+      fixtureForSlot(slots, FIXTURE_SLOT_DISPLAY_LABELS[index]),
     ]),
   );
   const usedInventoryIds = new Set();
@@ -62,9 +65,12 @@ export function allocateFullWorkflowFixtures(slots) {
 
 export function catalogProductSelectorForFixture(allocation, trackKey) {
   const fixture = allocation?.[trackKey];
-  const slotCode = required(fixture?.slotCode, `${trackKey} fixture slotCode`);
-  if (!/^[A-Za-z0-9_-]+$/.test(slotCode)) {
-    throw new Error(`${trackKey} fixture slotCode is invalid`);
+  const slotDisplayLabel = required(
+    fixture?.slotDisplayLabel,
+    `${trackKey} fixture slotDisplayLabel`,
+  );
+  if (!/^[A-Za-z0-9_-]+$/.test(slotDisplayLabel)) {
+    throw new Error(`${trackKey} fixture slotDisplayLabel is invalid`);
   }
-  return `[data-test="catalog-product"][data-slot-code="${slotCode}"]`;
+  return `[data-test="catalog-product"][data-slot-id="${slotDisplayLabel}"]`;
 }

@@ -66,9 +66,8 @@ describe("machines api", () => {
 
     await commandEnvironment(machineId, { airConditionerOn: true });
     await createMachineSlot(machineId, {
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
-      slotCode: "A1",
       capacity: 10,
     });
     await generateMachineClaimCode(machineId, { purpose: "reclaim" });
@@ -85,7 +84,7 @@ describe("machines api", () => {
       `/machines/${machineId}/slots`,
       expect.any(Object),
       expect.any(Object),
-      expect.objectContaining({ slotCode: "A1" }),
+      expect.objectContaining({ slotDisplayLabel: "A1" }),
     );
     expect(postContract).toHaveBeenCalledWith(
       `/machines/${machineId}/claim-codes`,

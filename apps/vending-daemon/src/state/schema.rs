@@ -105,8 +105,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_machine_planogram_versions_active
 CREATE TABLE IF NOT EXISTS machine_planogram_slots (
   planogram_version TEXT NOT NULL,
   slot_id TEXT NOT NULL,
-  slot_code TEXT NOT NULL,
-  layer_no INTEGER NOT NULL,
+  slot_display_label TEXT NOT NULL,
+  row_no INTEGER NOT NULL,
   cell_no INTEGER NOT NULL,
   capacity INTEGER NOT NULL CHECK (capacity >= 0),
   par_level INTEGER NOT NULL CHECK (par_level >= 0),

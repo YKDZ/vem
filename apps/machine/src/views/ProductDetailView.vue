@@ -252,7 +252,6 @@ async function enterTryOn(): Promise<void> {
       data-test="product-detail-page"
       :data-catalog-key="item.catalogKey"
       :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
-      :data-slot-code="selectedConcreteItem?.slotCode ?? item.slotCode"
       :data-variant-id="selectedVariant?.variantId ?? item.variantId"
     >
       <div class="detail-mist detail-mist-left"></div>
@@ -428,7 +427,6 @@ async function enterTryOn(): Promise<void> {
               data-test="product-buy"
               :data-catalog-key="item.catalogKey"
               :data-slot-id="selectedConcreteItem?.slotId ?? item.slotId"
-              :data-slot-code="selectedConcreteItem?.slotCode ?? item.slotCode"
               :data-variant-id="selectedVariant?.variantId ?? item.variantId"
               @click="purchase"
             >

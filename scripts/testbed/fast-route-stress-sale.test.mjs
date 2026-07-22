@@ -207,8 +207,8 @@ function validEvidence() {
           {
             inventoryId: "inventory-1",
             slotId: "slot-1",
-            slotCode: "R2C5",
-            layerNo: 2,
+            slotDisplayLabel: "R2C5",
+            rowNo: 2,
             cellNo: 5,
             physicalStock: 3,
             saleableStock: 3,
@@ -220,8 +220,8 @@ function validEvidence() {
           {
             inventoryId: "inventory-1",
             slotId: "slot-1",
-            slotCode: "R2C5",
-            layerNo: 2,
+            slotDisplayLabel: "R2C5",
+            rowNo: 2,
             cellNo: 5,
             physicalStock: 3,
             saleableStock: 2,
@@ -233,8 +233,8 @@ function validEvidence() {
           {
             inventoryId: "inventory-1",
             slotId: "slot-1",
-            slotCode: "R2C5",
-            layerNo: 2,
+            slotDisplayLabel: "R2C5",
+            rowNo: 2,
             cellNo: 5,
             physicalStock: 3,
             saleableStock: 2,
@@ -246,8 +246,8 @@ function validEvidence() {
           {
             inventoryId: "inventory-1",
             slotId: "slot-1",
-            slotCode: "R2C5",
-            layerNo: 2,
+            slotDisplayLabel: "R2C5",
+            rowNo: 2,
             cellNo: 5,
             physicalStock: 2,
             saleableStock: 2,
@@ -402,7 +402,7 @@ function validEvidence() {
           payload: {
             commandNo: "CMD-1",
             orderNo: "ORD-1",
-            slot: { slotCode: "R2C5", layerNo: 2, cellNo: 5 },
+            slot: { slotDisplayLabel: "R2C5", rowNo: 2, cellNo: 5 },
             quantity: 1,
           },
         },
@@ -589,7 +589,7 @@ describe("fast route stress sale tracer", () => {
     assert.deepEqual(summary.protocol, ["VEND", "F0", "F1", "F2"]);
     assert.equal(summary.orderNo, "ORD-1");
     assert.equal(summary.commandNo, "CMD-1");
-    assert.equal(summary.slotCode, "R2C5");
+    assert.equal(summary.slotDisplayLabel, "R2C5");
     assert.equal(summary.platformStockDeltaAfterF2, -1);
     assert.equal(summary.daemonStockDeltaAfterF2, -1);
     assert.equal(summary.saleStartCapabilityRevision, 7);

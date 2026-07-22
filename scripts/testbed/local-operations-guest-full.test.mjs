@@ -29,12 +29,18 @@ describe("local operations guest full", () => {
       "full",
     );
   });
-  it("uses canonical slotCode and planogram identity", () => {
+  it("uses canonical slotDisplayLabel and planogram identity", () => {
     assert.deepEqual(
       canonicalPlanogramSlot(
         {
           planogramVersion: "P-8",
-          items: [{ slotCode: "R7C1", slotId: "slot-7", inventoryId: "inv-7" }],
+          items: [
+            {
+              slotDisplayLabel: "R7C1",
+              slotId: "slot-7",
+              inventoryId: "inv-7",
+            },
+          ],
         },
         "R7C1",
       ).planogramVersion,
@@ -65,8 +71,12 @@ describe("local operations guest full", () => {
       schemaVersion: "vem-local-operations-guest-full/v1",
       ok: true,
       boundaries: { daemon: true, hardwareSelfCheck: true, serial: true },
-      planogram: { canonical: true, planogramVersion: "P-8", slotCode: "R7C1" },
-      manualDispense: { slotCode: "R7C1", outcome: "completed" },
+      planogram: {
+        canonical: true,
+        planogramVersion: "P-8",
+        slotDisplayLabel: "R7C1",
+      },
+      manualDispense: { slotDisplayLabel: "R7C1", outcome: "completed" },
       systemTouchKeyboard: {
         ok: false,
         blocking: false,
@@ -254,7 +264,7 @@ describe("local operations guest full", () => {
       runId: "RUN-07",
       machineCode: "VEM-TESTBED-01",
       fixtureAllocation: {
-        localOperations: { slotCode: "R7C1" },
+        localOperations: { slotDisplayLabel: "R7C1" },
       },
       hostControlPlane: {
         endpoint: "http://127.0.0.1:7788",
@@ -319,7 +329,11 @@ describe("local operations guest full", () => {
             return {
               planogramVersion: "P-8",
               items: [
-                { slotCode: "R7C1", slotId: "slot-7", inventoryId: "inv-7" },
+                {
+                  slotDisplayLabel: "R7C1",
+                  slotId: "slot-7",
+                  inventoryId: "inv-7",
+                },
               ],
             };
           }

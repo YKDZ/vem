@@ -6,9 +6,10 @@ import {
 } from "./inventory";
 
 const slot = {
-  slotCode: "A1",
-  layerNo: 1,
+  slotId: "550e8400-e29b-41d4-a716-446655440001",
+  rowNo: 1,
   cellNo: 1,
+  slotDisplayLabel: "R1C1",
   productName: "矿泉水",
   sku: "WATER-01",
   capacity: 8,
@@ -23,7 +24,7 @@ const slot = {
 };
 
 describe("planogram-driven stock maintenance contract", () => {
-  it("projects recognizable slots without internal planogram or slot ids", () => {
+  it("projects one slot identity with a derived display label", () => {
     const task = stockMaintenanceTaskSchema.parse({
       taskId: "stock-task-01",
       mode: "initial_count",
@@ -32,7 +33,8 @@ describe("planogram-driven stock maintenance contract", () => {
     });
 
     expect(task.slots[0]).toMatchObject({
-      slotCode: "A1",
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotDisplayLabel: "R1C1",
       productName: "矿泉水",
       currentQuantity: 3,
       submittedAddition: 2,
@@ -41,7 +43,7 @@ describe("planogram-driven stock maintenance contract", () => {
       syncStatus: "accepted",
     });
     expect(task).not.toHaveProperty("planogramVersion");
-    expect(task.slots[0]).not.toHaveProperty("slotId");
+    expect(task.slots[0]).toHaveProperty("slotId");
   });
 
   it("accepts final counts or refill additions under one daemon task id", () => {
@@ -49,18 +51,22 @@ describe("planogram-driven stock maintenance contract", () => {
       stockMaintenanceBatchRequestSchema.parse({
         taskId: "stock-task-01",
         mode: "initial_count",
-        slots: [{ slotCode: "A1", quantity: 6 }],
+        slots: [
+          { slotId: "550e8400-e29b-41d4-a716-446655440001", quantity: 6 },
+        ],
       }),
     ).toEqual({
       taskId: "stock-task-01",
       mode: "initial_count",
-      slots: [{ slotCode: "A1", quantity: 6 }],
+      slots: [{ slotId: "550e8400-e29b-41d4-a716-446655440001", quantity: 6 }],
     });
     expect(
       stockMaintenanceBatchRequestSchema.parse({
         taskId: "stock-task-02",
         mode: "routine_refill",
-        slots: [{ slotCode: "A1", addition: 2 }],
+        slots: [
+          { slotId: "550e8400-e29b-41d4-a716-446655440001", addition: 2 },
+        ],
       }),
     ).toMatchObject({ mode: "routine_refill" });
     expect(() =>
@@ -68,7 +74,9 @@ describe("planogram-driven stock maintenance contract", () => {
         taskId: "stock-task-02",
         mode: "routine_refill",
         operatorId: "typed-by-ui",
-        slots: [{ slotCode: "A1", addition: 2 }],
+        slots: [
+          { slotId: "550e8400-e29b-41d4-a716-446655440001", addition: 2 },
+        ],
       }),
     ).toThrow();
   });

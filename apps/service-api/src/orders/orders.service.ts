@@ -212,12 +212,12 @@ function shouldExposePaymentUrl(row: MachineOrderStatusRow, now = new Date()) {
 
 function assertMachineOrderLineContextMatchesInventory(
   item: CreateMachineOrderInput["items"][number],
-  row: { slotId: string; slotCode: string },
+  row: { slotId: string },
 ): void {
-  if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+  if (!item.planogramVersion || !item.slotId) {
     throw new ConflictException("Machine order line context is required");
   }
-  if (item.slotId !== row.slotId || item.slotCode !== row.slotCode) {
+  if (item.slotId !== row.slotId) {
     throw new ConflictException(
       "Machine order line does not match active slot inventory mapping",
     );
@@ -571,7 +571,7 @@ export class OrdersService {
     machineId: string,
     item: CreateMachineOrderInput["items"][number],
   ): Promise<void> {
-    if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+    if (!item.planogramVersion || !item.slotId) {
       throw new ConflictException("Machine order line context is required");
     }
 
@@ -592,7 +592,6 @@ export class OrdersService {
           eq(machinePlanogramVersions.status, "active"),
           sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
           eq(machinePlanogramSlots.slotId, item.slotId),
-          eq(machinePlanogramSlots.slotCode, item.slotCode),
           eq(machinePlanogramSlots.inventoryId, item.inventoryId),
         ),
       );
@@ -631,9 +630,8 @@ export class OrdersService {
           color: productVariants.color,
           unitPriceCents: productVariants.priceCents,
           slotId: machineSlots.id,
-          slotCode: machineSlots.slotCode,
           slotStatus: machineSlots.status,
-          layerNo: machineSlots.layerNo,
+          rowNo: machineSlots.rowNo,
           cellNo: machineSlots.cellNo,
           variantStatus: productVariants.status,
           productStatus: products.status,
@@ -662,7 +660,7 @@ export class OrdersService {
           );
         }
         if (row.slotStatus !== "enabled") {
-          throw new ConflictException(`Slot ${row.slotCode} is not available`);
+          throw new ConflictException("Slot is not available");
         }
         if (row.variantStatus !== "active" || row.productStatus !== "active") {
           throw new ConflictException("Product is not available");
@@ -725,8 +723,7 @@ export class OrdersService {
               inventoryId: item.inventoryId,
               planogramVersion: item.planogramVersion,
               slotId: item.slotId,
-              slotCode: item.slotCode,
-              layerNo: item.layerNo,
+              rowNo: item.rowNo,
               cellNo: item.cellNo,
               vendingCommandQuantity: item.quantity,
               sku: item.sku,
@@ -1677,7 +1674,6 @@ export class OrdersService {
         machineId: vendingCommands.machineId,
         machineCode: machines.code,
         slotId: vendingCommands.slotId,
-        slotCode: machineSlots.slotCode,
         orderItemId: vendingCommands.orderItemId,
         commandKind: vendingCommands.commandKind,
         recoveryActionId: vendingCommands.recoveryActionId,

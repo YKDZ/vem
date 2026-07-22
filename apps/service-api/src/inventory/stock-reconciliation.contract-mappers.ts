@@ -56,7 +56,7 @@ function toSlotStatus(
 function projectSlot(row: StockReconciliationCaseRow) {
   return {
     id: row.saleSafetyBlockerSlotId ?? row.slotId,
-    code: row.slotCode,
+    code: row.slotDisplayLabel ?? null,
     status: toSlotStatus(row.slotStatus),
     saleEligibility: {
       eligible: saleEligible(row),

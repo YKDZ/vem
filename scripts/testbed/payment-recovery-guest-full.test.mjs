@@ -66,12 +66,14 @@ describe("payment recovery guest full", () => {
       selectCanonicalSlot(
         {
           planogramVersion: "P-7",
-          items: [{ slotCode: "A1", slotId: "slot-1", inventoryId: "inv-1" }],
+          items: [
+            { slotDisplayLabel: "A1", slotId: "slot-1", inventoryId: "inv-1" },
+          ],
         },
-        { slotCode: "A1" },
+        { slotDisplayLabel: "A1" },
       ),
       {
-        slotCode: "A1",
+        slotDisplayLabel: "A1",
         slotId: "slot-1",
         inventoryId: "inv-1",
         planogramVersion: "P-7",

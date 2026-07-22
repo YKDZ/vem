@@ -142,9 +142,8 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
       .post(`/api/machines/${machine.id}/slots`)
       .set(auth)
       .send({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
         capacity: 10,
       });
     expect(slotResponse.status).toBe(201);

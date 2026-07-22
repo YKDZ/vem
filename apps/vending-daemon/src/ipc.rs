@@ -70,7 +70,6 @@ struct CreateOrder {
     quantity: u32,
     planogram_version: String,
     slot_id: String,
-    slot_code: String,
     payment_method: String,
     payment_provider_code: Option<String>,
     profile_snapshot: Option<serde_json::Value>,
@@ -116,7 +115,7 @@ struct ClearWholeMachineMaintenanceLockRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ManualDispenseDiagnosticRequest {
     idempotency_key: String,
-    slot_code: String,
+    slot_id: String,
     #[serde(default = "default_manual_dispense_quantity")]
     quantity: u32,
     #[serde(default = "default_manual_dispense_timeout")]
@@ -1565,7 +1564,7 @@ async fn create_order(
     let selected = sale_view.items.iter().any(|item| {
         item.inventory_id == input.inventory_id
             && item.slot_id == input.slot_id
-            && item.slot_code == input.slot_code
+            && item.slot_id == input.slot_id
             && item.slot_sales_state == "sale_ready"
             && item.saleable_stock >= 1
     });
@@ -1576,7 +1575,7 @@ async fn create_order(
             "selected slot is not saleable",
         );
     }
-    let item = serde_json::json!({ "inventoryId": input.inventory_id, "quantity": 1, "planogramVersion": input.planogram_version, "slotId": input.slot_id, "slotCode": input.slot_code });
+    let item = serde_json::json!({ "inventoryId": input.inventory_id, "quantity": 1, "planogramVersion": input.planogram_version, "slotId": input.slot_id, "slotId": input.slot_id });
     match ctx
         .ui
         .transaction
@@ -1989,23 +1988,23 @@ async fn manual_dispense_diagnostic(
         || !key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        || request.slot_code.trim().is_empty()
-        || request.slot_code.len() > 32
+        || request.slot_id.trim().is_empty()
+        || request.slot_id.len() > 32
         || request.quantity != 1
         || !(1..=120).contains(&request.timeout_seconds)
     {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_manual_dispense_diagnostic_request",
-            "bounded idempotencyKey, slotCode, quantity=1 and timeoutSeconds 1..120 are required",
+            "bounded idempotencyKey, slotId, quantity=1 and timeoutSeconds 1..120 are required",
         );
     }
     let slot = match ctx
         .state
-        .active_planogram_slot_by_code(request.slot_code.trim())
+        .active_planogram_slot_by_id(request.slot_id.trim())
         .await
     {
-        Ok(Some(slot)) if slot.layer_no <= 255 && slot.cell_no <= 255 => slot,
+        Ok(Some(slot)) if slot.row_no <= 255 && slot.cell_no <= 255 => slot,
         Ok(Some(_)) => {
             return error_response(
                 StatusCode::CONFLICT,
@@ -2123,9 +2122,9 @@ async fn manual_dispense_diagnostic(
         command_no: diagnostic_id.clone(),
         order_no: "MANUAL-DIAGNOSTIC".to_string(),
         slot: vending_core::hardware::SlotPayload {
-            layer_no: slot.layer_no,
+            row_no: slot.row_no,
             cell_no: slot.cell_no,
-            slot_code: slot.slot_code.clone(),
+            slot_id: slot.slot_id.clone(),
         },
         quantity: request.quantity,
         timeout_seconds: request.timeout_seconds,
@@ -2134,8 +2133,8 @@ async fn manual_dispense_diagnostic(
         diagnostic_id: diagnostic_id.clone(),
         idempotency_key: key.to_string(),
         request_fingerprint: crate::state::store::manual_dispense_request_fingerprint(
-            &slot.slot_code,
-            u64::from(slot.layer_no),
+            &slot.slot_id,
+            u64::from(slot.row_no),
             u64::from(slot.cell_no),
             u64::from(request.quantity),
             request.timeout_seconds,
@@ -3747,8 +3746,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![crate::state::store::MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -3841,7 +3839,7 @@ mod tests {
                             "quantity": 1,
                             "planogramVersion": "PLAN-CAPABILITY",
                             "slotId": "550e8400-e29b-41d4-a716-446655440011",
-                            "slotCode": "A1",
+                            "slotId": "A1",
                             "paymentMethod": "qr_code",
                             "paymentProviderCode": "alipay",
                             "profileSnapshot": null,
@@ -3960,7 +3958,7 @@ mod tests {
                             "quantity": 1,
                             "planogramVersion": "PLAN-CAPABILITY",
                             "slotId": "550e8400-e29b-41d4-a716-446655440011",
-                            "slotCode": "A1",
+                            "slotId": "A1",
                             "paymentMethod": "payment_code",
                             "paymentProviderCode": "alipay",
                             "profileSnapshot": null,
@@ -4032,8 +4030,8 @@ mod tests {
             "appliedBy": null,
             "slots": [{
                 "slotId": "550e8400-e29b-41d4-a716-446655440021",
-                "slotCode": "A1",
-                "layerNo": 1,
+                "slotId": "A1",
+                "rowNo": 1,
                 "cellNo": 1,
                 "capacity": 8,
                 "parLevel": 6,
@@ -4092,9 +4090,9 @@ mod tests {
         .expect("task json");
         let mode = task["mode"].as_str().expect("task mode");
         let slot_input = if mode == "refill" {
-            serde_json::json!({ "slotCode": "A1", "addition": 3 })
+            serde_json::json!({ "slotId": "A1", "addition": 3 })
         } else {
-            serde_json::json!({ "slotCode": "A1", "quantity": 3 })
+            serde_json::json!({ "slotId": "A1", "quantity": 3 })
         };
         let submit_response = build_router(ctx.clone())
             .oneshot(
@@ -4151,7 +4149,7 @@ mod tests {
                     .header("authorization", "Bearer test-token")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"idempotencyKey":"manual-ops-1","slotCode":"A1","quantity":1,"timeoutSeconds":5}"#,
+                        r#"{"idempotencyKey":"manual-ops-1","slotId":"A1","quantity":1,"timeoutSeconds":5}"#,
                     ))
                     .expect("manual request"),
             )
@@ -4167,7 +4165,7 @@ mod tests {
                     .header("authorization", "Bearer test-token")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"idempotencyKey":"manual-ops-old","slotCode":"A1","layerNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}"#,
+                        r#"{"idempotencyKey":"manual-ops-old","slotId":"A1","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}"#,
                     ))
                     .expect("retired manual request"),
             )

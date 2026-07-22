@@ -113,7 +113,7 @@ const vendingCommandColumns = [
   { title: "命令号", dataIndex: "commandNo", key: "commandNo" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "机器", dataIndex: "machineCode", key: "machineCode" },
-  { title: "货道", dataIndex: "slotCode", key: "slotCode" },
+  { title: "货道", dataIndex: "slotDisplayLabel", key: "slotDisplayLabel" },
   { title: "错误", dataIndex: "lastError", key: "lastError" },
 ];
 
@@ -508,7 +508,7 @@ defineExpose({ show });
             </template>
             <template v-else-if="column.key === 'slot'">
               {{
-                textFromSnapshot(record.productSnapshot, "slotCode") ??
+                textFromSnapshot(record.productSnapshot, "slotDisplayLabel") ??
                 textFromSnapshot(record.productSnapshot, "slotId") ??
                 "-"
               }}

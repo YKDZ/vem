@@ -91,8 +91,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-CONTEXT-001",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "CTX1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const machineAuthHeader = await getMachineAuthHeader(
@@ -120,16 +119,14 @@ describe("core-flow.e2e", { concurrent: false }, () => {
         {
           onHandQty: 2,
           lowStockThreshold: 1,
-          slotCode: "L1",
-          layerNo: 1,
+          rowNo: 1,
           cellNo: 1,
           priceCents: 599,
         },
         {
           onHandQty: 2,
           lowStockThreshold: 1,
-          slotCode: "L2",
-          layerNo: 1,
+          rowNo: 1,
           cellNo: 2,
           priceCents: 799,
         },
@@ -158,7 +155,6 @@ describe("core-flow.e2e", { concurrent: false }, () => {
           quantity: 1,
           planogramVersion: seeded.planogramVersion,
           slotId: item.slotId,
-          slotCode: item.slotCode,
         })),
         paymentMethod: "mock",
       });
@@ -180,7 +176,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
             payload: {
               commandNo: string;
               quantity: number;
-              slot: { slotCode: string };
+              slot: { slotDisplayLabel: string };
             };
           },
       ),
@@ -188,7 +184,9 @@ describe("core-flow.e2e", { concurrent: false }, () => {
     await expect(commandEnvelopes).resolves.toHaveLength(2);
     const commandPayloads = await commandEnvelopes;
     expect(
-      commandPayloads.map((message) => message.payload.slot.slotCode).sort(),
+      commandPayloads
+        .map((message) => message.payload.slot.slotDisplayLabel)
+        .sort(),
     ).toEqual(["L1", "L2"]);
 
     const orderItemRows = await db.client
@@ -285,8 +283,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-001",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "A1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 
@@ -473,8 +470,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-002",
       onHandQty: 2,
       lowStockThreshold: 1,
-      slotCode: "B1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 
@@ -515,8 +511,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-003",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "C1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 
@@ -576,8 +571,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-004",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "D1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const token = await loginAndGetToken(api, appConfig);
@@ -637,8 +631,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-STATUS-001",
       onHandQty: 2,
       lowStockThreshold: 1,
-      slotCode: "S1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 

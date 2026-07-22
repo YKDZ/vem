@@ -1290,9 +1290,9 @@ export async function seedThroughSupportedApis({
         method: "POST",
         token,
         body: {
-          layerNo: slot.layerNo,
+          rowNo: slot.rowNo,
           cellNo: slot.cellNo,
-          slotCode: slot.slotCode,
+          slotDisplayLabel: slot.slotDisplayLabel,
           capacity: slot.capacity,
           status: "enabled",
         },
@@ -1322,8 +1322,8 @@ export async function seedThroughSupportedApis({
       planogramVersion,
       slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({
         slotId: machineSlot.id,
-        slotCode: slot.slotCode,
-        layerNo: slot.layerNo,
+        slotDisplayLabel: slot.slotDisplayLabel,
+        rowNo: slot.rowNo,
         cellNo: slot.cellNo,
         inventoryId: inventory.id,
         variantId: product.variant.id,
@@ -1372,7 +1372,7 @@ export async function seedThroughSupportedApis({
       seededTryOnVariants,
     },
     slots: seededSlots.map(({ slot, product, inventory }) => ({
-      slotCode: slot.slotCode,
+      slotDisplayLabel: slot.slotDisplayLabel,
       inventoryId: inventory.id,
       onHandQty: slot.onHandQty,
       sku: product.variant.sku,

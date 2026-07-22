@@ -25,14 +25,12 @@ function repositoryFixture(): EphemeralPlatformStackRepository {
         version: "2026-06-adr0026",
         slots: [
           {
-            slotCode: "A1",
-            layerNo: 1,
+            rowNo: 1,
             cellNo: 1,
             capacity: 8,
           },
           {
-            slotCode: "A2",
-            layerNo: 1,
+            rowNo: 1,
             cellNo: 2,
             capacity: 8,
           },
@@ -60,13 +58,11 @@ function repositoryFixture(): EphemeralPlatformStackRepository {
         slotCount: 2,
         inventory: [
           {
-            slotCode: "A1",
             inventoryId: "inventory-1",
             onHandQty: 3,
             lowStockThreshold: 1,
           },
           {
-            slotCode: "A2",
             inventoryId: "inventory-2",
             onHandQty: 3,
             lowStockThreshold: 1,
@@ -129,8 +125,8 @@ describe("prepareEphemeralPlatformStack", () => {
         identity: "vem-prod-24",
         version: "2026-06-adr0026",
         slots: [
-          { slotCode: "A1", layerNo: 1, cellNo: 1, capacity: 8 },
-          { slotCode: "A2", layerNo: 1, cellNo: 2, capacity: 8 },
+          { rowNo: 1, cellNo: 1, capacity: 8 },
+          { rowNo: 1, cellNo: 2, capacity: 8 },
         ],
       },
       seededData: {
@@ -157,13 +153,11 @@ describe("prepareEphemeralPlatformStack", () => {
         },
         stockSetup: [
           {
-            slotCode: "A1",
             inventoryId: "inventory-1",
             onHandQty: 3,
             lowStockThreshold: 1,
           },
           {
-            slotCode: "A2",
             inventoryId: "inventory-2",
             onHandQty: 3,
             lowStockThreshold: 1,

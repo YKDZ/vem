@@ -224,8 +224,8 @@ function makeCatalogItem(): MachineCatalogItem {
   const item = {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "550e8400-e29b-41d4-a716-446655440002",
     variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -257,8 +257,8 @@ function makeCatalogItem(): MachineCatalogItem {
   const slotCandidates: readonly MachineCatalogSlotCandidate[] = [
     {
       slotId: item.slotId,
-      slotCode: item.slotCode,
-      layerNo: item.layerNo,
+      slotDisplayLabel: item.slotDisplayLabel,
+      rowNo: item.rowNo,
       cellNo: item.cellNo,
       inventoryId: item.inventoryId,
       variantId: item.variantId,
@@ -977,7 +977,7 @@ describe("sale-start capability UI flow", () => {
     const largeBase = {
       ...mediumItem,
       slotId: "550e8400-e29b-41d4-a716-446655440031",
-      slotCode: "A2",
+      slotDisplayLabel: "A2",
       inventoryId: "550e8400-e29b-41d4-a716-446655440032",
       variantId: "550e8400-e29b-41d4-a716-446655440033",
       productId: "550e8400-e29b-41d4-a716-446655440034",
@@ -990,7 +990,7 @@ describe("sale-start capability UI flow", () => {
     const largeSlot = {
       ...mediumItem.slotCandidates[0],
       slotId: largeBase.slotId,
-      slotCode: largeBase.slotCode,
+      slotDisplayLabel: largeBase.slotDisplayLabel,
       inventoryId: largeBase.inventoryId,
       variantId: largeBase.variantId,
       sku: largeBase.sku,
@@ -1980,7 +1980,7 @@ describe("sale-start capability UI flow", () => {
       quantity: 1,
       planogramVersion: "PLAN-1",
       slotId: silhouettedVariant.slotId,
-      slotCode: silhouettedVariant.slotCode,
+      slotDisplayLabel: silhouettedVariant.slotDisplayLabel,
       paymentMethod: "qr_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
@@ -2074,7 +2074,7 @@ describe("sale-start capability UI flow", () => {
       quantity: 1,
       planogramVersion: "PLAN-1",
       slotId: silhouettedVariant.slotId,
-      slotCode: silhouettedVariant.slotCode,
+      slotDisplayLabel: silhouettedVariant.slotDisplayLabel,
       paymentMethod: "qr_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,

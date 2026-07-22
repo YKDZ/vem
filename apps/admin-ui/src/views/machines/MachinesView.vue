@@ -9,8 +9,8 @@ import type {
 import {
   formatMachineSlotCoordinate,
   getMachineSlotMaxCellNo,
-  MACHINE_SLOT_MAX_LAYER_NO,
-  MACHINE_SLOT_MIN_LAYER_NO,
+  MACHINE_SLOT_MAX_ROW_NO,
+  MACHINE_SLOT_MIN_ROW_NO,
   machineSlotCoordinateErrorMessage,
 } from "@vem/shared";
 import { Modal } from "antdv-next";
@@ -354,15 +354,15 @@ const slots = ref<MachineSlot[]>([]);
 const slotsLoading = ref(false);
 const slotFormOpen = ref(false);
 const slotForm = ref({
-  layerNo: 1,
+  rowNo: 1,
   cellNo: 1,
-  slotCode: "",
+  slotDisplayLabel: "",
   capacity: 10,
   status: "enabled" as MachineSlotStatus,
 });
 const slotSaving = ref(false);
 const slotMaxCellNo = computed(
-  () => getMachineSlotMaxCellNo(slotForm.value.layerNo) ?? 5,
+  () => getMachineSlotMaxCellNo(slotForm.value.rowNo) ?? 5,
 );
 const slotCoordinateError = computed(() =>
   machineSlotCoordinateErrorMessage(slotForm.value),
@@ -381,9 +381,9 @@ async function openSlots(m: Machine): Promise<void> {
 
 function openCreateSlot(): void {
   slotForm.value = {
-    layerNo: 1,
+    rowNo: 1,
     cellNo: 1,
-    slotCode: "",
+    slotDisplayLabel: "",
     capacity: 10,
     status: "enabled",
   };
@@ -845,9 +845,9 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         />
         <a-form-item label="行号">
           <a-input-number
-            v-model:value="slotForm.layerNo"
-            :min="MACHINE_SLOT_MIN_LAYER_NO"
-            :max="MACHINE_SLOT_MAX_LAYER_NO"
+            v-model:value="slotForm.rowNo"
+            :min="MACHINE_SLOT_MIN_ROW_NO"
+            :max="MACHINE_SLOT_MAX_ROW_NO"
             class="w-full"
           />
         </a-form-item>

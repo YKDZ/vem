@@ -637,23 +637,29 @@ describe("shared API contract", () => {
     expect(getMachineSlotMaxCellNo(8)).toBe(4);
     expect(getMachineSlotMaxCellNo(9)).toBe(3);
     expect(getMachineSlotMaxCellNo(10)).toBeNull();
-    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
-    expect(isValidMachineSlotCoordinate({ layerNo: 9, cellNo: 3 })).toBe(true);
-    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
-    expect(isValidMachineSlotCoordinate({ layerNo: 9, cellNo: 4 })).toBe(false);
-    expect(isValidMachineSlotCoordinate({ layerNo: 10, cellNo: 1 })).toBe(
-      false,
-    );
-    expect(formatMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(
+    expect(isValidMachineSlotCoordinate({ rowNo: 7, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ rowNo: 9, cellNo: 3 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ rowNo: 7, cellNo: 5 })).toBe(false);
+    expect(isValidMachineSlotCoordinate({ rowNo: 9, cellNo: 4 })).toBe(false);
+    expect(isValidMachineSlotCoordinate({ rowNo: 10, cellNo: 1 })).toBe(false);
+    expect(formatMachineSlotCoordinate({ rowNo: 7, cellNo: 4 })).toBe(
       "行 7 / 格 4",
     );
-    expect(machineSlotCoordinateCode({ layerNo: 7, cellNo: 4 })).toBe("R7C4");
+    expect(machineSlotCoordinateCode({ rowNo: 7, cellNo: 4 })).toBe("R7C4");
 
+    expect(
+      createMachineSlotSchema.parse({
+        rowNo: 7,
+        cellNo: 4,
+        capacity: 8,
+        status: "enabled",
+      }),
+    ).toMatchObject({ rowNo: 7, cellNo: 4 });
     expect(() =>
       createMachineSlotSchema.parse({
-        layerNo: 7,
-        cellNo: 5,
-        slotCode: "G5",
+        rowNo: 7,
+        cellNo: 4,
+        slotDisplayLabel: "G4",
         capacity: 8,
         status: "enabled",
       }),
@@ -662,7 +668,7 @@ describe("shared API contract", () => {
       dispenseCommandPayloadSchema.parse({
         commandNo: "CMD-1",
         orderNo: "ORD-1",
-        slot: { layerNo: 12, cellNo: 1, slotCode: "R12C1" },
+        slot: { rowNo: 12, cellNo: 1 },
         quantity: 1,
         timeoutSeconds: 30,
       }),
@@ -757,7 +763,7 @@ describe("shared API contract", () => {
         machineId,
         machineCode: "M001",
         slotId,
-        slotCode: "A1",
+        slotDisplayLabel: "A1",
         variantId,
         productId: "550e8400-e29b-41d4-a716-446655440004",
         sku: "SKU-1",
@@ -1593,9 +1599,9 @@ describe("shared API contract", () => {
       adminMachineSlotResponseSchema.parse({
         id: "550e8400-e29b-41d4-a716-446655440003",
         machineId,
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
+        slotDisplayLabel: "A1",
         capacity: 10,
         status: "enabled",
         inventoryShortcut: true,
@@ -1603,9 +1609,9 @@ describe("shared API contract", () => {
     ).toThrow();
     expect(() =>
       createMachineSlotSchema.parse({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
+        slotDisplayLabel: "A1",
         capacity: 10,
         status: "enabled",
         inventoryShortcut: true,
@@ -1924,16 +1930,16 @@ describe("shared API contract", () => {
           source: "dispense_failure",
           orderNo: "ORD-1",
           commandNo: "CMD-1",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
           errorCode: "JAMMED",
           createdAt: "2026-06-26T07:55:00.000Z",
         },
       },
     });
 
-    expect(result.statusPayload.wholeMachineMaintenanceLock?.slotCode).toBe(
-      "A1",
-    );
+    expect(
+      result.statusPayload.wholeMachineMaintenanceLock?.slotId,
+    ).toBeUndefined();
   });
 
   it("accepts environment control failure when confirmed switch state is unknown", () => {
@@ -2330,14 +2336,14 @@ describe("shared API contract", () => {
         ...profile,
         hardwareSlotTopology: {
           ...profile.hardwareSlotTopology,
-          slots: [{ slotCode: "A1", capacity: 8 }],
+          slots: [{ slotDisplayLabel: "A1", capacity: 8 }],
         },
       }),
     ).toThrow();
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,
-        stockQuantities: [{ slotCode: "A1", quantity: 3 }],
+        stockQuantities: [{ slotDisplayLabel: "A1", quantity: 3 }],
       }),
     ).toThrow();
     expect(() =>
@@ -2346,7 +2352,7 @@ describe("shared API contract", () => {
         catalog: {
           items: [
             {
-              slotCode: "A1",
+              slotDisplayLabel: "A1",
               productName: "矿泉水",
               quantity: 3,
             },
@@ -2422,8 +2428,8 @@ describe("shared API contract", () => {
       slots: [
         {
           slotId: "550e8400-e29b-41d4-a716-446655440001",
-          slotCode: "A1",
-          layerNo: 1,
+          slotDisplayLabel: "A1",
+          rowNo: 1,
           cellNo: 1,
           inventoryId: "550e8400-e29b-41d4-a716-446655440002",
           variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -2459,8 +2465,8 @@ describe("shared API contract", () => {
   it("rejects arbitrary planogram cover image URLs", () => {
     const slot = {
       slotId: "550e8400-e29b-41d4-a716-446655440001",
-      slotCode: "A1",
-      layerNo: 1,
+      slotDisplayLabel: "A1",
+      rowNo: 1,
       cellNo: 1,
       inventoryId: "550e8400-e29b-41d4-a716-446655440002",
       variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -2527,8 +2533,8 @@ describe("shared API contract", () => {
   it("accepts variant try-on silhouettes only as managed media URLs", () => {
     const slot = {
       slotId: "550e8400-e29b-41d4-a716-446655440001",
-      slotCode: "A1",
-      layerNo: 1,
+      slotDisplayLabel: "A1",
+      rowNo: 1,
       cellNo: 1,
       inventoryId: "550e8400-e29b-41d4-a716-446655440002",
       variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -2592,8 +2598,8 @@ describe("shared API contract", () => {
     const base = {
       machineCode: "M001",
       slotId: "550e8400-e29b-41d4-a716-446655440001",
-      slotCode: "A1",
-      layerNo: 1,
+      slotDisplayLabel: "A1",
+      rowNo: 1,
       cellNo: 1,
       inventoryId: "550e8400-e29b-41d4-a716-446655440002",
       variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -2911,7 +2917,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -2930,7 +2936,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "qr_code",
@@ -2950,7 +2956,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "mock",
@@ -2969,7 +2975,7 @@ describe("shared API contract", () => {
               quantity: 1,
               planogramVersion: "PLAN-1",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
+              slotDisplayLabel: "A1",
             },
           ],
           paymentMethod: "mock",
@@ -2988,7 +2994,7 @@ describe("shared API contract", () => {
               quantity: 1,
               planogramVersion: "PLAN-1",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
+              slotDisplayLabel: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -3007,7 +3013,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -3026,7 +3032,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -3045,7 +3051,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -3082,7 +3088,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -3107,7 +3113,7 @@ describe("shared API contract", () => {
             quantity: 1,
             planogramVersion: "PLAN-1",
             slotId: "550e8400-e29b-41d4-a716-446655440001",
-            slotCode: "A1",
+            slotDisplayLabel: "A1",
           },
         ],
         paymentMethod: "payment_code",
@@ -3134,7 +3140,7 @@ describe("shared API contract", () => {
               quantity: 1,
               planogramVersion: "PLAN-1",
               slotId: "550e8400-e29b-41d4-a716-446655440001",
-              slotCode: "A1",
+              slotDisplayLabel: "A1",
             },
           ],
           paymentMethod: "payment_code",

@@ -103,21 +103,21 @@ describe("Machine Operations form contract mappers", () => {
   it("maps slot forms through hardware coordinate validation", () => {
     expect(
       mapSlotFormToContract({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 2,
         capacity: 10,
         status: "enabled",
       }),
     ).toEqual({
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 2,
-      slotCode: "R1C2",
+      slotDisplayLabel: "R1C2",
       capacity: 10,
       status: "enabled",
     });
     expect(() =>
       mapSlotFormToContract({
-        layerNo: 7,
+        rowNo: 7,
         cellNo: 5,
         capacity: 10,
         status: "enabled",

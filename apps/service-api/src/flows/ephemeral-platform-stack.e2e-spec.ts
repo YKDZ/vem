@@ -321,7 +321,7 @@ describe(
         status: string;
         slots: Array<{
           slotId: string;
-          slotCode: string;
+          slotDisplayLabel?: string;
           inventoryId: string;
           sku: string;
         }>;
@@ -330,10 +330,9 @@ describe(
         second.seededData.planogram.planogramVersion,
       );
       expect(published.data.status).toBe("published");
-      expect(published.data.slots.map((slot) => slot.slotCode)).toEqual([
-        "A1",
-        "A2",
-      ]);
+      expect(published.data.slots.map((slot) => slot.slotDisplayLabel)).toEqual(
+        ["A1", "A2"],
+      );
       expect(published.data.slots.map((slot) => slot.sku)).toEqual(
         second.seededData.products.map((product) => product.sku),
       );
@@ -354,7 +353,7 @@ describe(
       const stock = stockResponse.body as ApiResponse<{
         planogramVersion: string;
         slots: Array<{
-          slotCode: string;
+          slotDisplayLabel?: string;
           inventoryId: string;
           onHandQty: number;
           availableQty: number;
@@ -366,20 +365,17 @@ describe(
       );
       expect(
         stock.data.slots.map((slot) => ({
-          slotCode: slot.slotCode,
           onHandQty: slot.onHandQty,
           availableQty: slot.availableQty,
           slotSalesState: slot.slotSalesState,
         })),
       ).toEqual([
         {
-          slotCode: "A1",
           onHandQty: 3,
           availableQty: 3,
           slotSalesState: "sale_ready",
         },
         {
-          slotCode: "A2",
           onHandQty: 3,
           availableQty: 3,
           slotSalesState: "sale_ready",
@@ -422,7 +418,7 @@ describe(
               quantity: 1,
               planogramVersion: published.data.planogramVersion,
               slotId: saleSlot.slotId,
-              slotCode: saleSlot.slotCode,
+              slotDisplayLabel: saleSlot.slotDisplayLabel,
             },
           ],
           paymentMethod: "payment_code",
@@ -481,7 +477,7 @@ describe(
               quantity: 1,
               planogramVersion: published.data.planogramVersion,
               slotId: providerCompletionSaleSlot.slotId,
-              slotCode: providerCompletionSaleSlot.slotCode,
+              slotDisplayLabel: providerCompletionSaleSlot.slotDisplayLabel,
             },
           ],
           paymentMethod: "mock",

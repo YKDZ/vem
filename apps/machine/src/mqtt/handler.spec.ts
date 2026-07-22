@@ -20,7 +20,7 @@ function memoryStorage(): StorageLike {
 const command = {
   commandNo: "CMD1",
   orderNo: "ORD1",
-  slot: { layerNo: 1, cellNo: 1, slotCode: "A1" },
+  slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "A1" },
   quantity: 1,
   timeoutSeconds: 120,
 };

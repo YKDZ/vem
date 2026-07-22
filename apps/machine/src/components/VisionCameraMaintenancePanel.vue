@@ -87,7 +87,8 @@ async function refreshContract(force = false): Promise<void> {
     }
   } catch (error) {
     message.value = "读取视觉摄像头维护状态失败";
-    technicalEvidence.value = error instanceof Error ? error.message : String(error);
+    technicalEvidence.value =
+      error instanceof Error ? error.message : String(error);
   } finally {
     loading.value = false;
   }
@@ -107,7 +108,8 @@ async function loadPreview(candidateId: string): Promise<void> {
     previewUrls[candidateId] = URL.createObjectURL(blob);
   } catch (error) {
     message.value = "读取本地预览失败";
-    technicalEvidence.value = error instanceof Error ? error.message : String(error);
+    technicalEvidence.value =
+      error instanceof Error ? error.message : String(error);
   } finally {
     previewLoading[candidateId] = false;
   }
@@ -127,7 +129,8 @@ async function testRole(
     await refreshContract();
   } catch (error) {
     message.value = "视觉摄像头测试失败";
-    technicalEvidence.value = error instanceof Error ? error.message : String(error);
+    technicalEvidence.value =
+      error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -151,7 +154,8 @@ async function confirmRole(
     await refreshContract();
   } catch (error) {
     message.value = "视觉摄像头确认失败";
-    technicalEvidence.value = error instanceof Error ? error.message : String(error);
+    technicalEvidence.value =
+      error instanceof Error ? error.message : String(error);
   }
 }
 

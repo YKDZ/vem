@@ -14,7 +14,7 @@ function report() {
     ok: true,
     runId: "RUN-STOCK-1",
     fixture: {
-      slotCode: "B2",
+      slotDisplayLabel: "B2",
       sku: "TSC-LOCAL-007",
       slotId: "slot-stock-1",
       inventoryId: "inventory-stock-1",
@@ -114,17 +114,17 @@ function report() {
       unavailable: {
         ref: "unavailable.png",
         route: "#/maintenance?source=operator",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
       refillConfirmed: {
         ref: "refill-confirmed.png",
         route: "#/maintenance?source=operator",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
       restoredSaleability: {
         ref: "restored.png",
         route: "#/catalog",
-        slotCode: "B2",
+        slotDisplayLabel: "B2",
       },
     },
   };
@@ -174,7 +174,7 @@ describe("stock maintenance guest full", () => {
 
   it("requires two identity-correlated sale decrements and one +2 refill", () => {
     assert.deepEqual(validateStockMaintenanceReport(report()), {
-      slotCode: "B2",
+      slotDisplayLabel: "B2",
       firstOrderId: "order-stock-1",
       secondOrderId: "order-stock-2",
     });

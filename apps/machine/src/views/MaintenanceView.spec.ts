@@ -631,8 +631,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -659,7 +659,7 @@ describe("Local Operations", () => {
     await flush();
     expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
-        slotCode: "A1",
+        slotId: "A1",
         quantity: 1,
         timeoutSeconds: 30,
       }),
@@ -704,8 +704,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -763,8 +763,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -779,8 +779,8 @@ describe("Local Operations", () => {
           reconciliationReason: null,
         },
         {
-          slotCode: "B3",
-          layerNo: 2,
+          slotId: "B3",
+          rowNo: 2,
           cellNo: 3,
           productName: "Sparkling Water",
           sku: "WATER-002",
@@ -813,7 +813,7 @@ describe("Local Operations", () => {
 
     expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
-      slotCode: "B3",
+      slotId: "B3",
       quantity: 1,
       timeoutSeconds: 30,
     });
@@ -829,8 +829,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -857,14 +857,14 @@ describe("Local Operations", () => {
     expect(stockPanel).not.toBeNull();
     expect(
       stockPanel?.querySelector(
-        "[data-test='stock-maintenance-slot'][data-slot-code='A1'][data-sku='WATER-001']",
+        "[data-test='stock-maintenance-slot'][data-slot-id='A1'][data-sku='WATER-001']",
       ),
     ).not.toBeNull();
     const stockForm = Array.from(host.querySelectorAll("form")).find((form) =>
       form.textContent?.includes("补货数量"),
     );
     const addition = stockForm?.querySelector<HTMLInputElement>(
-      "[data-test='stock-maintenance-addition'][data-slot-code='A1']",
+      "[data-test='stock-maintenance-addition'][data-slot-id='A1']",
     );
     if (!addition) throw new Error("stock addition input not found");
     addition.value = "2";
@@ -873,7 +873,7 @@ describe("Local Operations", () => {
 
     expect(
       stockPanel?.querySelector(
-        "[data-test='stock-maintenance-preview'][data-slot-code='A1']",
+        "[data-test='stock-maintenance-preview'][data-slot-id='A1']",
       )?.textContent,
     ).toContain("补货后 4/8");
     expect(
@@ -885,7 +885,7 @@ describe("Local Operations", () => {
     expect(client.submitStockMaintenanceBatch).toHaveBeenCalledWith({
       taskId: "stock-task-01",
       mode: "routine_refill",
-      slots: [{ slotCode: "A1", addition: 2 }],
+      slots: [{ slotId: "A1", addition: 2 }],
     });
     expect(host.textContent).toContain("库存批次已提交");
   });
@@ -897,8 +897,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -943,8 +943,8 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotCode: "A1",
-          layerNo: 1,
+          slotId: "A1",
+          rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
           sku: "WATER-001",
@@ -979,7 +979,7 @@ describe("Local Operations", () => {
     expect(client.submitStockMaintenanceBatch).toHaveBeenCalledWith({
       taskId: "stock-count-01",
       mode: "initial_count",
-      slots: [{ slotCode: "A1", quantity: 6 }],
+      slots: [{ slotId: "A1", quantity: 6 }],
     });
   });
 

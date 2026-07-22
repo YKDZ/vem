@@ -19,8 +19,8 @@ function item(
   return {
     machineCode: "M001",
     slotId: `slot-${productSortOrder}`,
-    slotCode: `A${productSortOrder}`,
-    layerNo: 1,
+    slotDisplayLabel: `A${productSortOrder}`,
+    rowNo: 1,
     cellNo: productSortOrder,
     inventoryId: `inventory-${productSortOrder}`,
     variantId: `variant-${productSortOrder}`,

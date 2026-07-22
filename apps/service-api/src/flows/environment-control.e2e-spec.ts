@@ -134,8 +134,7 @@ describe("environment-control.e2e", { concurrent: false }, () => {
       machineCode: "M-ENV-E2E-001",
       onHandQty: 2,
       lowStockThreshold: 1,
-      slotCode: "A1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const token = await loginAndGetToken(api, appConfig);

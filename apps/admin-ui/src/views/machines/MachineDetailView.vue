@@ -58,7 +58,7 @@ import MachineEnvironmentCard from "./MachineEnvironmentCard.vue";
 type WholeMachineMaintenanceLockHeartbeat = {
   code?: string;
   message?: string;
-  slotCode?: string;
+  slotDisplayLabel?: string;
   commandNo?: string;
 };
 
@@ -822,7 +822,9 @@ onBeforeUnmount(() => {
                 {{ wholeMachineMaintenanceLock.message }}
               </div>
               <div class="mt-1 text-xs text-slate-500">
-                货道 {{ wholeMachineMaintenanceLock.slotCode ?? "--" }} · 命令
+                货道
+                {{ wholeMachineMaintenanceLock.slotDisplayLabel ?? "--" }} ·
+                命令
                 {{ wholeMachineMaintenanceLock.commandNo ?? "--" }}
               </div>
             </a-descriptions-item>

@@ -599,8 +599,8 @@ export function validateFastRouteStressSaleEvidence(input) {
     throw new Error("MQTT vend command must correlate order and quantity");
   }
   if (
-    mqttPayload.slot?.slotCode !== daemonBefore.slotCode ||
-    mqttPayload.slot?.layerNo !== daemonBefore.layerNo ||
+    mqttPayload.slot?.slotDisplayLabel !== daemonBefore.slotDisplayLabel ||
+    mqttPayload.slot?.rowNo !== daemonBefore.rowNo ||
     mqttPayload.slot?.cellNo !== daemonBefore.cellNo
   ) {
     throw new Error(
@@ -713,7 +713,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   const vendBytes = protocolFrames[0].bytes;
   if (
-    vendBytes[1] !== daemonBefore.layerNo ||
+    vendBytes[1] !== daemonBefore.rowNo ||
     vendBytes[2] !== daemonBefore.cellNo
   ) {
     throw new Error(
@@ -999,7 +999,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     serialSessionId,
     inventoryId: orderItem.inventoryId,
     slotId: orderItem.slotId,
-    slotCode: daemonBefore.slotCode,
+    slotDisplayLabel: daemonBefore.slotDisplayLabel,
     protocol: protocolFrames.map((frame) => frame.parsedOpcode),
     daemonStockDeltaAfterF2:
       daemonAfter.physicalStock - daemonMiddle.physicalStock,

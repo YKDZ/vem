@@ -532,7 +532,7 @@ export const useCheckoutStore = defineStore("checkout", {
           quantity: 1,
           planogramVersion,
           slotId: selectedItem.slotId,
-          slotCode: selectedItem.slotCode,
+          slotDisplayLabel: selectedItem.slotDisplayLabel,
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,
           profileSnapshot: null,

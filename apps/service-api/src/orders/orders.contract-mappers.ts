@@ -188,7 +188,9 @@ function mapVendingCommand(row: Record<string, unknown>) {
     machineId: row.machineId,
     ...(row.machineCode === undefined ? {} : { machineCode: row.machineCode }),
     slotId: row.slotId,
-    ...(row.slotCode === undefined ? {} : { slotCode: row.slotCode }),
+    ...(row.slotDisplayLabel === undefined
+      ? {}
+      : { slotDisplayLabel: row.slotDisplayLabel }),
     orderItemId: row.orderItemId,
     commandKind: row.commandKind,
     recoveryActionId: row.recoveryActionId,

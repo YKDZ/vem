@@ -156,8 +156,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -209,8 +208,7 @@ mod tests {
                 applied_by: None,
                 slots: vec![MachinePlanogramSlotInput {
                     slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
-                    slot_code: "B1".to_string(),
-                    layer_no: 1,
+                    row_no: 1,
                     cell_no: 1,
                     capacity: 8,
                     par_level: 6,
@@ -241,7 +239,6 @@ mod tests {
                     operator_id: "operator-1".to_string(),
                     slots: vec![PhysicalStockAttestationSlotInput {
                         slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
-                        slot_code: "B1".to_string(),
                         sku: "WATER-001".to_string(),
                         quantity: 3,
                         enabled: true,

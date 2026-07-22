@@ -526,7 +526,7 @@ const hardwareMaintenance = reactive({
 });
 
 const manualDispenseDiagnostic = reactive({
-  slotCode: "",
+  slotId: "",
   loading: false,
   message: null as string | null,
 });
@@ -536,7 +536,7 @@ const MANUAL_DISPENSE_REQUEST_STORAGE_KEY =
 
 const selectedManualDispenseSlot = computed(() =>
   stockMaintenance.task?.slots.find(
-    (slot) => slot.slotCode === manualDispenseDiagnostic.slotCode,
+    (slot) => slot.slotId === manualDispenseDiagnostic.slotId,
   ),
 );
 
@@ -544,9 +544,9 @@ function manualDispenseRequestFingerprint(): string {
   const slot = selectedManualDispenseSlot.value;
   return JSON.stringify({
     cellNo: slot?.cellNo ?? null,
-    layerNo: slot?.layerNo ?? null,
+    rowNo: slot?.rowNo ?? null,
     quantity: 1,
-    slotCode: slot?.slotCode ?? null,
+    slotId: slot?.slotId ?? null,
     timeoutSeconds: 30,
   });
 }
@@ -606,7 +606,7 @@ async function runManualDispenseDiagnostic(): Promise<void> {
   try {
     const result = await daemonClient.runManualDispenseDiagnostic({
       idempotencyKey: currentManualDispenseIdempotencyKey(),
-      slotCode: slot.slotCode,
+      slotId: slot.slotId,
       quantity: 1,
       timeoutSeconds: 30,
     });
@@ -679,7 +679,7 @@ const stockTaskCanSubmit = computed(() => {
   if (task.mode === "routine_refill") {
     const additions = task.slots.map((slot) => ({
       slot,
-      addition: stockMaintenance.values[slot.slotCode] ?? 0,
+      addition: stockMaintenance.values[slot.slotId] ?? 0,
     }));
     return (
       additions.some(
@@ -691,7 +691,7 @@ const stockTaskCanSubmit = computed(() => {
     );
   }
   return task.slots.every((slot) => {
-    const quantity = stockMaintenance.values[slot.slotCode];
+    const quantity = stockMaintenance.values[slot.slotId];
     return isValidStockInteger(quantity) && quantity <= slot.capacity;
   });
 });
@@ -1142,7 +1142,7 @@ async function exportLogs(): Promise<void> {
 function applyStockMaintenanceTask(task: StockMaintenanceTask): void {
   const values = Object.fromEntries(
     task.slots.map((slot) => [
-      slot.slotCode,
+      slot.slotId,
       task.mode === "routine_refill"
         ? (slot.submittedAddition ?? 0)
         : (slot.submittedQuantity ?? slot.currentQuantity),
@@ -1150,11 +1150,11 @@ function applyStockMaintenanceTask(task: StockMaintenanceTask): void {
   );
   stockMaintenance.task = task;
   stockMaintenance.values = values;
-  manualDispenseDiagnostic.slotCode = task.slots.some(
-    (slot) => slot.slotCode === manualDispenseDiagnostic.slotCode,
+  manualDispenseDiagnostic.slotId = task.slots.some(
+    (slot) => slot.slotId === manualDispenseDiagnostic.slotId,
   )
-    ? manualDispenseDiagnostic.slotCode
-    : (task.slots[0]?.slotCode ?? "");
+    ? manualDispenseDiagnostic.slotId
+    : (task.slots[0]?.slotId ?? "");
 }
 
 async function refreshStockMaintenanceView(): Promise<void> {
@@ -1187,7 +1187,7 @@ function stockSyncLabel(status: string): string {
 function resultingStock(
   slot: StockMaintenanceTask["slots"][number],
 ): number | null {
-  const value = stockMaintenance.values[slot.slotCode];
+  const value = stockMaintenance.values[slot.slotId];
   if (!isValidStockInteger(value) || value > slot.capacity) return null;
   if (stockTaskIsRefill.value) {
     if (value === slot.submittedAddition && slot.previewQuantity !== null) {
@@ -1217,8 +1217,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
             mode: "routine_refill",
             slots: task.slots
               .map((slot) => ({
-                slotCode: slot.slotCode,
-                addition: stockMaintenance.values[slot.slotCode] as number,
+                slotId: slot.slotId,
+                addition: stockMaintenance.values[slot.slotId] as number,
               }))
               .filter((slot) => slot.addition > 0),
           })
@@ -1226,8 +1226,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
             taskId: task.taskId,
             mode: task.mode,
             slots: task.slots.map((slot) => ({
-              slotCode: slot.slotCode,
-              quantity: stockMaintenance.values[slot.slotCode] as number,
+              slotId: slot.slotId,
+              quantity: stockMaintenance.values[slot.slotId] as number,
             })),
           });
     applyStockMaintenanceTask(response.task);
@@ -1500,7 +1500,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             <label class="grid gap-1 text-left text-sm text-slate-200">
               货道
               <select
-                v-model="manualDispenseDiagnostic.slotCode"
+                v-model="manualDispenseDiagnostic.slotId"
                 class="rounded-xl bg-slate-950/60 p-3"
                 :disabled="
                   manualDispenseDiagnostic.loading ||
@@ -1511,10 +1511,9 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 <option disabled value="">请选择库存任务货道</option>
                 <option
                   v-for="slot in stockMaintenance.task?.slots ?? []"
-                  :key="slot.slotCode"
-                  :value="slot.slotCode"
+                  :key="slot.slotId"
+                  :value="slot.slotId"
                 >
-                  {{ slot.slotCode }} ·
                   {{ formatMachineSlotCoordinate(slot) }} ·
                   {{ slot.productName }}
                 </option>
@@ -1646,15 +1645,14 @@ async function submitStockMaintenanceTask(): Promise<void> {
               <div class="grid gap-3">
                 <article
                   v-for="slot in stockMaintenance.task?.slots ?? []"
-                  :key="slot.slotCode"
+                  :key="slot.slotId"
                   class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
                   data-test="stock-maintenance-slot"
-                  :data-slot-code="slot.slotCode"
+                  :data-slot-id="slot.slotId"
                   :data-sku="slot.sku"
                 >
                   <div>
                     <p class="font-semibold text-white">
-                      {{ slot.slotCode }} ·
                       {{ formatMachineSlotCoordinate(slot) }}
                     </p>
                     <p class="text-sm text-slate-200">
@@ -1676,9 +1674,9 @@ async function submitStockMaintenanceTask(): Promise<void> {
                       {{ stockTaskIsRefill ? "补货数量" : "实际数量" }}
                     </span>
                     <input
-                      v-model.number="stockMaintenance.values[slot.slotCode]"
+                      v-model.number="stockMaintenance.values[slot.slotId]"
                       data-test="stock-maintenance-addition"
-                      :data-slot-code="slot.slotCode"
+                      :data-slot-id="slot.slotId"
                       class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
                       :max="
                         stockTaskIsRefill
@@ -1696,7 +1694,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                     <span
                       class="text-xs text-emerald-200"
                       data-test="stock-maintenance-preview"
-                      :data-slot-code="slot.slotCode"
+                      :data-slot-id="slot.slotId"
                     >
                       {{ stockTaskIsRefill ? "补货后" : "提交后" }}
                       {{ resultingStock(slot) ?? "输入无效" }}/{{

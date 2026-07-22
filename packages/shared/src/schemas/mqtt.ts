@@ -4,7 +4,7 @@ import { hardwareErrorCodeSchema } from "../enums/hardware";
 import {
   addMachineSlotCoordinateIssue,
   machineSlotCellNoSchema,
-  machineSlotLayerNoSchema,
+  machineSlotRowNoSchema,
 } from "./machine-slot-coordinate";
 
 export const commandAckPayloadSchema = z
@@ -18,9 +18,8 @@ export const dispenseCommandPayloadSchema = z.object({
   orderNo: z.string().min(1).max(64),
   slot: z
     .object({
-      layerNo: machineSlotLayerNoSchema,
+      rowNo: machineSlotRowNoSchema,
       cellNo: machineSlotCellNoSchema,
-      slotCode: z.string().min(1).max(32),
     })
     .superRefine(addMachineSlotCoordinateIssue),
   quantity: z.int().positive(),

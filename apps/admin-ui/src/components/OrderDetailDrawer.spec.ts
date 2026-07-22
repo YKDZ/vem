@@ -228,7 +228,7 @@ describe("OrderDetailDrawer", () => {
           commandNo: "VC-1",
           status: "failed",
           machineCode: "VEM-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
         },
       ],
       inventoryMovements: [
@@ -261,7 +261,7 @@ describe("OrderDetailDrawer", () => {
           commandNo: "VC-UNKNOWN",
           status: "result_unknown",
           machineCode: "VEM-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
           lastError: "dispense result unknown after command timeout",
         },
       ],
@@ -301,7 +301,7 @@ describe("OrderDetailDrawer", () => {
           commandNo: "VC-UNKNOWN",
           status: "result_unknown",
           machineCode: "VEM-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
         },
       ],
       fulfillmentProjection: {
@@ -349,7 +349,7 @@ describe("OrderDetailDrawer", () => {
           commandNo: "VC-UNKNOWN",
           status: "failed",
           machineCode: "VEM-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
         },
       ],
       fulfillmentProjection: {
@@ -382,7 +382,7 @@ describe("OrderDetailDrawer", () => {
           commandNo: "VC-UNKNOWN",
           status: "succeeded",
           machineCode: "VEM-001",
-          slotCode: "A1",
+          slotDisplayLabel: "A1",
         },
       ],
       fulfillmentProjection: {

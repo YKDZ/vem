@@ -16,8 +16,8 @@ function makeCatalogItem(
   const item = {
     machineCode: "test",
     slotId: "slot-1",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "inv-1",
     variantId: "var-1",
@@ -50,8 +50,8 @@ function makeCatalogItem(
     override?.slotCandidates ?? [
       {
         slotId: item.slotId,
-        slotCode: item.slotCode,
-        layerNo: item.layerNo,
+        slotDisplayLabel: item.slotDisplayLabel,
+        rowNo: item.rowNo,
         cellNo: item.cellNo,
         inventoryId: item.inventoryId,
         variantId: item.variantId,

@@ -8,9 +8,9 @@ use crate::serial::{EnvironmentSample, LowerControllerDiscoveryCandidate, Serial
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SlotPayload {
-    pub layer_no: u32,
+    pub row_no: u32,
     pub cell_no: u32,
-    pub slot_code: String,
+    pub slot_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -213,9 +213,9 @@ mod tests {
             command_no: "cmd-1".to_string(),
             order_no: "ord-1".to_string(),
             slot: SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 2,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 30,
@@ -233,9 +233,9 @@ mod tests {
             command_no: "cmd-1".to_string(),
             order_no: "ord-1".to_string(),
             slot: SlotPayload {
-                layer_no: 1,
+                row_no: 1,
                 cell_no: 1,
-                slot_code: "A1".to_string(),
+                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 30,

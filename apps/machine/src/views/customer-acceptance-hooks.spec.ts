@@ -94,8 +94,8 @@ function saleViewItem(
   return {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "550e8400-e29b-41d4-a716-446655440002",
     variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -187,7 +187,6 @@ describe("customer acceptance hooks", () => {
       `product:${item.productId}`,
     );
     expect(product?.getAttribute("data-slot-id")).toBe(item.slotId);
-    expect(product?.getAttribute("data-slot-code")).toBe(item.slotCode);
     expect(product?.getAttribute("data-variant-id")).toBe(item.variantId);
     expect(product?.getAttribute("data-preferred-variant-id")).toBe("");
     expect(product?.getAttribute("data-recommendation-score")).toBe("0");
@@ -209,7 +208,6 @@ describe("customer acceptance hooks", () => {
       `product:${item.productId}`,
     );
     expect(buy?.getAttribute("data-slot-id")).toBe(item.slotId);
-    expect(buy?.getAttribute("data-slot-code")).toBe(item.slotCode);
     expect(buy?.getAttribute("data-variant-id")).toBe(item.variantId);
   });
 

@@ -158,7 +158,6 @@ describe("MachinesService", () => {
                       source: "dispense_failure",
                       orderNo: "ORD-1",
                       commandNo: "CMD-1",
-                      slotCode: "A1",
                       errorCode: "JAMMED",
                       createdAt: "2026-05-05T12:00:01.000Z",
                     },
@@ -197,7 +196,6 @@ describe("MachinesService", () => {
           hardwareStatus: "faulted",
           wholeMachineMaintenanceLock: expect.objectContaining({
             code: "WHOLE_MACHINE_HARDWARE_FAULT",
-            slotCode: "A1",
           }),
         }),
         latestEnvironment: expect.objectContaining({
@@ -297,7 +295,6 @@ describe("MachinesService", () => {
                       source: "dispense_failure",
                       orderNo: "ORD-1",
                       commandNo: "CMD-1",
-                      slotCode: "A1",
                       errorCode: "JAMMED",
                       createdAt: "2026-05-05T12:00:01.000Z",
                     },
@@ -345,7 +342,6 @@ describe("MachinesService", () => {
         hardwareStatus: "faulted",
         wholeMachineMaintenanceLock: expect.objectContaining({
           code: "WHOLE_MACHINE_HARDWARE_FAULT",
-          slotCode: "A1",
         }),
       }),
     );
@@ -1968,8 +1964,7 @@ describe("MachinesService planogram lifecycle", () => {
 
   const slot = {
     slotId: "550e8400-e29b-41d4-a716-446655440001",
-    slotCode: "A1",
-    layerNo: 1,
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "550e8400-e29b-41d4-a716-446655440002",
     variantId: "550e8400-e29b-41d4-a716-446655440003",
@@ -2115,8 +2110,7 @@ describe("MachinesService planogram lifecycle", () => {
     const catalogRow = {
       machineCode: "M001",
       slotId: slot.slotId,
-      slotCode: slot.slotCode,
-      layerNo: slot.layerNo,
+      rowNo: slot.rowNo,
       cellNo: slot.cellNo,
       inventoryId: slot.inventoryId,
       variantId: slot.variantId,
@@ -2158,8 +2152,7 @@ describe("MachinesService planogram lifecycle", () => {
     const catalogRow = {
       machineCode: "M001",
       slotId: slot.slotId,
-      slotCode: slot.slotCode,
-      layerNo: slot.layerNo,
+      rowNo: slot.rowNo,
       cellNo: slot.cellNo,
       inventoryId: slot.inventoryId,
       variantId: slot.variantId,
@@ -2201,8 +2194,7 @@ describe("MachinesService planogram lifecycle", () => {
     const catalogRow = {
       machineCode: "M001",
       slotId: slot.slotId,
-      slotCode: slot.slotCode,
-      layerNo: slot.layerNo,
+      rowNo: slot.rowNo,
       cellNo: slot.cellNo,
       inventoryId: slot.inventoryId,
       variantId: slot.variantId,
@@ -2263,8 +2255,8 @@ describe("MachinesService planogram lifecycle", () => {
     ].map((coverImageUrl, index) => ({
       machineCode: "M001",
       slotId: `550e8400-e29b-41d4-a716-4466554400${10 + index}`,
-      slotCode: `A${index + 1}`,
-      layerNo: 1,
+      slotDisplayLabel: `A${index + 1}`,
+      rowNo: 1,
       cellNo: index + 1,
       inventoryId: `550e8400-e29b-41d4-a716-4466554400${20 + index}`,
       variantId: `550e8400-e29b-41d4-a716-4466554400${30 + index}`,
@@ -2418,7 +2410,7 @@ describe("MachinesService planogram lifecycle", () => {
         machineCode: "M001",
         planogramVersion: "PLAN-1",
         status: "active",
-        slots: [expect.objectContaining({ slotCode: "A1" })],
+        slots: [expect.objectContaining({ rowNo: 1, cellNo: 1 })],
       }),
     );
   });
@@ -2537,7 +2529,6 @@ describe("MachinesService planogram lifecycle", () => {
                       machineCode: "M001",
                       planogramVersion: "PLAN-1",
                       slotId: "slot-1",
-                      slotCode: "A1",
                       inventoryId: "inv-1",
                       capacity: 10,
                       slotStatus: "enabled",
@@ -2549,7 +2540,6 @@ describe("MachinesService planogram lifecycle", () => {
                       machineCode: "M001",
                       planogramVersion: "PLAN-1",
                       slotId: "slot-2",
-                      slotCode: "A2",
                       inventoryId: "inv-2",
                       capacity: 10,
                       slotStatus: "faulted",
@@ -2574,7 +2564,6 @@ describe("MachinesService planogram lifecycle", () => {
       slots: [
         {
           slotId: "slot-1",
-          slotCode: "A1",
           inventoryId: "inv-1",
           onHandQty: 10,
           availableQty: 10,
@@ -2582,7 +2571,6 @@ describe("MachinesService planogram lifecycle", () => {
         },
         {
           slotId: "slot-2",
-          slotCode: "A2",
           inventoryId: "inv-2",
           onHandQty: 5,
           availableQty: 0,
@@ -2606,7 +2594,6 @@ describe("MachinesService planogram lifecycle", () => {
                       machineCode: "M001",
                       planogramVersion: "PLAN-1",
                       slotId: "slot-1",
-                      slotCode: "A1",
                       inventoryId: "inv-1",
                       capacity: 10,
                       slotStatus: "enabled",
@@ -2619,7 +2606,6 @@ describe("MachinesService planogram lifecycle", () => {
                       machineCode: "M001",
                       planogramVersion: "PLAN-1",
                       slotId: "slot-2",
-                      slotCode: "A2",
                       inventoryId: "inv-2",
                       capacity: 10,
                       slotStatus: "enabled",

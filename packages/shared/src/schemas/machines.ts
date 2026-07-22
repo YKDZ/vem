@@ -10,7 +10,7 @@ import {
 import {
   addMachineSlotCoordinateIssue,
   machineSlotCellNoSchema,
-  machineSlotLayerNoSchema,
+  machineSlotRowNoSchema,
 } from "./machine-slot-coordinate";
 
 function isIanaTimeZone(value: string): boolean {
@@ -202,9 +202,8 @@ export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
 export const createMachineSlotSchema = z
   .strictObject({
-    layerNo: machineSlotLayerNoSchema,
+    rowNo: machineSlotRowNoSchema,
     cellNo: machineSlotCellNoSchema,
-    slotCode: z.string().min(1).max(32),
     capacity: z.int().min(0),
     status: machineSlotStatusSchema.default("enabled"),
   })
@@ -212,9 +211,8 @@ export const createMachineSlotSchema = z
 
 export const updateMachineSlotSchema = z
   .strictObject({
-    layerNo: machineSlotLayerNoSchema,
+    rowNo: machineSlotRowNoSchema,
     cellNo: machineSlotCellNoSchema,
-    slotCode: z.string().min(1).max(32),
     capacity: z.int().min(0),
     status: machineSlotStatusSchema.default("enabled"),
   })
@@ -224,9 +222,8 @@ export const updateMachineSlotSchema = z
 export const adminMachineSlotResponseSchema = z.strictObject({
   id: z.uuid(),
   machineId: z.uuid(),
-  layerNo: machineSlotLayerNoSchema,
+  rowNo: machineSlotRowNoSchema,
   cellNo: machineSlotCellNoSchema,
-  slotCode: z.string().min(1).max(32),
   capacity: z.int().min(0),
   status: machineSlotStatusSchema,
   createdAt: z.iso.datetime().optional(),
@@ -270,7 +267,7 @@ export const machineHeartbeatStatusPayloadSchema = z
         source: z.string(),
         orderNo: z.string().optional(),
         commandNo: z.string().optional(),
-        slotCode: z.string().optional(),
+        slotId: z.string().uuid().optional(),
         errorCode: z.string().nullable().optional(),
         createdAt: z.iso.datetime().optional(),
       })
@@ -298,7 +295,7 @@ export const adminMachineHeartbeatStatusPayloadSchema = z.strictObject({
       source: z.string(),
       orderNo: z.string().optional(),
       commandNo: z.string().optional(),
-      slotCode: z.string().optional(),
+      slotId: z.string().uuid().optional(),
       errorCode: z.string().nullable().optional(),
       createdAt: z.iso.datetime().optional(),
     })
@@ -459,7 +456,6 @@ export const rawMachineStockMovementSchema = z.object({
   afterQuantity: z.int().nonnegative().optional(),
   slotMappingSnapshot: z
     .object({
-      slotCode: z.string().min(1).max(32),
       capacity: z.int().nonnegative(),
       inventoryId: z.uuid().optional(),
       variantId: z.uuid().optional(),
@@ -521,8 +517,8 @@ export const managedMediaReferenceSchema = z
 const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
   slotId: z.uuid(),
-  slotCode: z.string().min(1).max(32),
-  layerNo: machineSlotLayerNoSchema,
+  slotDisplayLabel: z.string().min(1).max(32),
+  rowNo: machineSlotRowNoSchema,
   cellNo: machineSlotCellNoSchema,
   inventoryId: z.uuid(),
   variantId: z.uuid(),
@@ -554,7 +550,7 @@ export const machinePlanogramVersionStatusSchema = z.enum([
 ]);
 
 export const machinePlanogramSlotSchema = machineCatalogItemBaseSchema
-  .omit({ machineCode: true, availableQty: true })
+  .omit({ machineCode: true, availableQty: true, slotDisplayLabel: true })
   .extend({
     capacity: z.int().nonnegative(),
     parLevel: z.int().nonnegative(),

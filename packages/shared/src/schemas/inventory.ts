@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import { inventoryMovementReasonSchema } from "../enums/inventory";
 import { machineSlotStatusSchema } from "../enums/machine";
+import {
+  machineSlotCellNoSchema,
+  machineSlotRowNoSchema,
+} from "./machine-slot-coordinate";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
 const nullableUuidSchema = z.uuid().nullable();
@@ -54,7 +58,10 @@ export const adminInventoryResponseSchema = z.strictObject({
   machineId: z.uuid(),
   machineCode: z.string().min(1).max(64).optional(),
   slotId: z.uuid(),
-  slotCode: z.string().min(1).max(32).optional(),
+  rowNo: machineSlotRowNoSchema.optional(),
+  cellNo: machineSlotCellNoSchema.optional(),
+  // Derived from rowNo and cellNo at the response boundary.
+  slotDisplayLabel: z.string().min(1).max(32).optional(),
   variantId: z.uuid(),
   productId: z.uuid().optional(),
   sku: z.string().min(1).max(64).optional(),
@@ -103,9 +110,10 @@ export const stockMaintenanceSlotSyncStatusSchema = z.enum([
 ]);
 
 export const stockMaintenanceTaskSlotSchema = z.strictObject({
-  slotCode: z.string().min(1).max(32),
-  layerNo: z.int().positive(),
-  cellNo: z.int().positive(),
+  slotId: z.uuid(),
+  rowNo: machineSlotRowNoSchema,
+  cellNo: machineSlotCellNoSchema,
+  slotDisplayLabel: z.string().min(1).max(32),
   productName: z.string().min(1).max(128),
   sku: z.string().min(1).max(64),
   capacity: z.int().nonnegative(),
@@ -136,7 +144,7 @@ export const stockMaintenanceBatchRequestSchema = z.discriminatedUnion("mode", [
     slots: z
       .array(
         z.strictObject({
-          slotCode: z.string().min(1).max(32),
+          slotId: z.uuid(),
           quantity: z.int().nonnegative(),
         }),
       )
@@ -147,7 +155,7 @@ export const stockMaintenanceBatchRequestSchema = z.discriminatedUnion("mode", [
     slots: z
       .array(
         z.strictObject({
-          slotCode: z.string().min(1).max(32),
+          slotId: z.uuid(),
           addition: z.int().positive(),
         }),
       )

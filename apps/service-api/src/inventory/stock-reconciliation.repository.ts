@@ -34,7 +34,7 @@ export type StockReconciliationCaseRow = {
   movementId: string;
   planogramVersion: string;
   slotId: string;
-  slotCode: string | null;
+  slotDisplayLabel?: string | null;
   movementType: string;
   quantity: number;
   beforeQuantity: number | null;
@@ -347,7 +347,6 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
         movementId: machineRawStockMovements.movementId,
         planogramVersion: machineRawStockMovements.planogramVersion,
         slotId: machineRawStockMovements.slotId,
-        slotCode: machineSlots.slotCode,
         movementType: machineRawStockMovements.movementType,
         quantity: machineRawStockMovements.quantity,
         beforeQuantity: sql<
@@ -426,7 +425,6 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
         movementId: machineRawStockMovementConflicts.movementId,
         planogramVersion: sql<string>`(${machineRawStockMovementConflicts.payloadJson}->>'planogramVersion')`,
         slotId: sql<string>`(${machineRawStockMovementConflicts.payloadJson}->>'slotId')::uuid`,
-        slotCode: machineSlots.slotCode,
         movementType: sql<string>`(${machineRawStockMovementConflicts.payloadJson}->>'movementType')`,
         quantity: sql<number>`(${machineRawStockMovementConflicts.payloadJson}->>'quantity')::int`,
         beforeQuantity: sql<

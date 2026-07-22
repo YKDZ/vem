@@ -37,8 +37,8 @@ const TESTBED_MACHINE_CODE_PREFIX_PATTERN =
   /^VEM-TESTBED-[A-Z0-9][A-Z0-9-]{0,40}$/;
 
 type TestbedSlotSeed = {
-  slotCode: string;
-  layerNo: number;
+  slotDisplayLabel?: string;
+  rowNo: number;
   cellNo: number;
   capacity: number;
   onHandQty: number;
@@ -52,8 +52,7 @@ type TestbedSlotSeed = {
 
 const TESTBED_SLOTS: TestbedSlotSeed[] = [
   {
-    slotCode: "A1",
-    layerNo: 1,
+    rowNo: 1,
     cellNo: 1,
     capacity: 8,
     onHandQty: 3,
@@ -65,8 +64,7 @@ const TESTBED_SLOTS: TestbedSlotSeed[] = [
     priceCents: 3900,
   },
   {
-    slotCode: "A2",
-    layerNo: 1,
+    rowNo: 1,
     cellNo: 2,
     capacity: 8,
     onHandQty: 3,
@@ -108,8 +106,8 @@ export type PreparedRunData = {
     identity: string;
     version: string;
     slots: Array<{
-      slotCode: string;
-      layerNo: number;
+      slotDisplayLabel?: string;
+      rowNo: number;
       cellNo: number;
       capacity: number;
     }>;
@@ -126,7 +124,7 @@ export type PreparedRunData = {
     status: "published";
     slotCount: number;
     inventory: Array<{
-      slotCode: string;
+      slotDisplayLabel?: string;
       inventoryId: string;
       onHandQty: number;
       lowStockThreshold: number;
@@ -478,8 +476,7 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
             identity: "vem-prod-24",
             version: "2026-06-adr0026",
             slots: TESTBED_SLOTS.map((slot) => ({
-              slotCode: slot.slotCode,
-              layerNo: slot.layerNo,
+              rowNo: slot.rowNo,
               cellNo: slot.cellNo,
               capacity: slot.capacity,
             })),
@@ -724,20 +721,18 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
         .insert(machineSlots)
         .values({
           machineId: input.machineId,
-          layerNo: slotSeed.layerNo,
+          rowNo: slotSeed.rowNo,
           cellNo: slotSeed.cellNo,
-          slotCode: slotSeed.slotCode,
           capacity: slotSeed.capacity,
           status: "enabled",
         })
         .onConflictDoUpdate({
           target: [
             machineSlots.machineId,
-            machineSlots.layerNo,
+            machineSlots.rowNo,
             machineSlots.cellNo,
           ],
           set: {
-            slotCode: slotSeed.slotCode,
             capacity: slotSeed.capacity,
             status: "enabled",
             deletedAt: null,
@@ -771,8 +766,7 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
       await tx.insert(machinePlanogramSlots).values({
         machinePlanogramVersionId: version.id,
         slotId: slot.id,
-        slotCode: slotSeed.slotCode,
-        layerNo: slotSeed.layerNo,
+        rowNo: slotSeed.rowNo,
         cellNo: slotSeed.cellNo,
         capacity: slotSeed.capacity,
         parLevel: slotSeed.lowStockThreshold,
@@ -793,7 +787,6 @@ export class DrizzleEphemeralPlatformStackRepository implements EphemeralPlatfor
       });
 
       inventory.push({
-        slotCode: slotSeed.slotCode,
         inventoryId: inventoryRow.id,
         onHandQty: slotSeed.onHandQty,
         lowStockThreshold: slotSeed.lowStockThreshold,

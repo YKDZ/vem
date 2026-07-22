@@ -211,8 +211,8 @@ function catalogFromSaleView(saleView: SaleViewSnapshot): CatalogSnapshot {
     items: saleView.items.map((item) => ({
       machineCode: item.machineCode,
       slotId: item.slotId,
-      slotCode: item.slotCode,
-      layerNo: item.layerNo,
+      slotDisplayLabel: item.slotDisplayLabel,
+      rowNo: item.rowNo,
       cellNo: item.cellNo,
       inventoryId: item.inventoryId,
       variantId: item.variantId,
@@ -761,8 +761,9 @@ export function installUiDebugDaemon(): void {
       mode: "routine_refill",
       status: "ready",
       slots: saleView.items.map((item) => ({
-        slotCode: item.slotCode,
-        layerNo: item.layerNo,
+        slotId: item.slotId,
+        slotDisplayLabel: item.slotDisplayLabel,
+        rowNo: item.rowNo,
         cellNo: item.cellNo,
         productName: item.productName,
         sku: item.sku,

@@ -110,7 +110,6 @@ pub struct MachineStockSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct MachineStockSnapshotSlot {
     pub slot_id: String,
-    pub slot_code: String,
     pub inventory_id: String,
     pub capacity: i64,
     pub on_hand_qty: i64,
@@ -773,7 +772,7 @@ mod tests {
                 "message": "ok",
                 "data": [
                     {
-                        "slotCode": "A1",
+                        "slotId": "A1",
                         "productName": "Test Product"
                     }
                 ]
@@ -784,7 +783,7 @@ mod tests {
         let client = BackendClient::new(server.uri());
         client.authenticate("M-1", "S-1").await.expect("auth");
         let response = client.get_catalog("M-1").await.expect("catalog");
-        assert_eq!(response[0]["slotCode"], "A1");
+        assert_eq!(response[0]["slotId"], "A1");
     }
 
     #[tokio::test]

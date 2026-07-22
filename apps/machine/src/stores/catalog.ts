@@ -63,8 +63,8 @@ function slotCandidateFor(
 ): MachineCatalogSlotCandidate {
   return {
     slotId: candidate.slotId,
-    slotCode: candidate.slotCode,
-    layerNo: candidate.layerNo,
+    slotDisplayLabel: candidate.slotDisplayLabel,
+    rowNo: candidate.rowNo,
     cellNo: candidate.cellNo,
     inventoryId: candidate.inventoryId,
     variantId: candidate.variantId,
@@ -134,9 +134,9 @@ function concreteSaleableItem(
       (a, b) =>
         a.productSortOrder - b.productSortOrder ||
         a.priceCents - b.priceCents ||
-        a.layerNo - b.layerNo ||
+        a.rowNo - b.rowNo ||
         a.cellNo - b.cellNo ||
-        a.slotCode.localeCompare(b.slotCode),
+        a.slotDisplayLabel.localeCompare(b.slotDisplayLabel),
     );
   return candidates[0] ?? null;
 }
@@ -253,7 +253,7 @@ function aggregateCatalogItems(
     .sort(
       (a, b) =>
         a.productSortOrder - b.productSortOrder ||
-        a.layerNo - b.layerNo ||
+        a.rowNo - b.rowNo ||
         a.cellNo - b.cellNo ||
         a.productName.localeCompare(b.productName),
     );

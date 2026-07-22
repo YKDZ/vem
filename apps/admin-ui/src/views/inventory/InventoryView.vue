@@ -127,7 +127,7 @@ async function saveAdjust(): Promise<void> {
 
 const inventoryColumns = [
   { title: "机器", dataIndex: "machineCode", key: "machine" },
-  { title: "格口", dataIndex: "slotCode", key: "slot" },
+  { title: "格口", dataIndex: "slotDisplayLabel", key: "slot" },
   { title: "商品 / SKU", dataIndex: "sku", key: "sku" },
   { title: "在库", dataIndex: "onHandQty", key: "onHandQty" },
   { title: "预占", dataIndex: "reservedQty", key: "reservedQty" },
@@ -189,7 +189,7 @@ onMounted(() => {
           </template>
           <template v-else-if="column.key === 'slot'">
             <div class="font-medium">
-              {{ record.slotCode ?? record.slotId }}
+              {{ record.slotDisplayLabel ?? record.slotId }}
             </div>
             <div class="text-xs text-slate-500">{{ record.slotId }}</div>
           </template>

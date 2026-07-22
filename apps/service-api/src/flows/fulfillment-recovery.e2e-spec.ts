@@ -139,8 +139,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       machineCode,
       onHandQty: 2,
       lowStockThreshold: 1,
-      slotCode: "A1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const token = await loginAndGetToken(api, appConfig);
@@ -205,16 +204,14 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
         {
           onHandQty: 2,
           lowStockThreshold: 1,
-          slotCode: "L1",
-          layerNo: 1,
+          rowNo: 1,
           cellNo: 1,
           priceCents: 599,
         },
         {
           onHandQty: 2,
           lowStockThreshold: 1,
-          slotCode: "L2",
-          layerNo: 1,
+          rowNo: 1,
           cellNo: 2,
           priceCents: 799,
         },
@@ -241,7 +238,6 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
           quantity: 1,
           planogramVersion: seeded.planogramVersion,
           slotId: item.slotId,
-          slotCode: item.slotCode,
         })),
         paymentMethod: "mock",
       });

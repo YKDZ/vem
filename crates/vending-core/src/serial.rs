@@ -140,9 +140,9 @@ struct SerialProtocolLogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     order_no: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    slot_code: Option<String>,
+    slot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    layer_no: Option<u32>,
+    row_no: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cell_no: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,8 +174,8 @@ impl SerialProtocolLogEntry {
             port_path: Some(port_path),
             command_no: Some(command.command_no.clone()),
             order_no: Some(command.order_no.clone()),
-            slot_code: Some(command.slot.slot_code.clone()),
-            layer_no: Some(command.slot.layer_no),
+            slot_id: Some(command.slot.slot_id.clone()),
+            row_no: Some(command.slot.row_no),
             cell_no: Some(command.slot.cell_no),
             quantity: Some(command.quantity),
             ..Self::new("dispense", "event")
@@ -791,7 +791,7 @@ impl SerialHardwareAdapter {
                 "lower controller protocol v1 supports only single-item dispense commands",
             ));
         }
-        let frame = build_dispense_frame(command.slot.layer_no, command.slot.cell_no)
+        let frame = build_dispense_frame(command.slot.row_no, command.slot.cell_no)
             .map(|frame| frame.to_vec())
             .map_err(DispenseFailure::unknown)?;
         let command_deadline = Instant::now()
@@ -1465,48 +1465,48 @@ pub fn crc8(data: &[u8]) -> u8 {
 
 #[derive(Clone, Copy)]
 struct SlotLayerBand {
-    max_layer_no: u32,
+    max_row_no: u32,
     max_cell_no: u32,
 }
 
-const SLOT_MIN_LAYER_NO: u32 = 1;
+const SLOT_MIN_ROW_NO: u32 = 1;
 const SLOT_LAYER_BANDS: [SlotLayerBand; 3] = [
     SlotLayerBand {
-        max_layer_no: 6,
+        max_row_no: 6,
         max_cell_no: 5,
     },
     SlotLayerBand {
-        max_layer_no: 8,
+        max_row_no: 8,
         max_cell_no: 4,
     },
     SlotLayerBand {
-        max_layer_no: 9,
+        max_row_no: 9,
         max_cell_no: 3,
     },
 ];
-const SLOT_MAX_LAYER_NO: u32 = SLOT_LAYER_BANDS[SLOT_LAYER_BANDS.len() - 1].max_layer_no;
+const SLOT_MAX_ROW_NO: u32 = SLOT_LAYER_BANDS[SLOT_LAYER_BANDS.len() - 1].max_row_no;
 
-pub fn max_cell_no_for_layer(layer_no: u32) -> Option<u32> {
-    if layer_no < SLOT_MIN_LAYER_NO {
+pub fn max_cell_no_for_layer(row_no: u32) -> Option<u32> {
+    if row_no < SLOT_MIN_ROW_NO {
         return None;
     }
     SLOT_LAYER_BANDS
         .iter()
-        .find(|band| layer_no <= band.max_layer_no)
+        .find(|band| row_no <= band.max_row_no)
         .map(|band| band.max_cell_no)
 }
 
 /// 校验货道号是否在硬件允许的范围内。
 /// 行（row）1-9；格（cell）：行 1-6 为 1-5，行 7-8 为 1-4，行 9 为 1-3。
-pub fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
-    let Some(max_cell) = max_cell_no_for_layer(layer_no) else {
+pub fn validate_slot_bounds(row_no: u32, cell_no: u32) -> Result<(), String> {
+    let Some(max_cell) = max_cell_no_for_layer(row_no) else {
         return Err(format!(
-            "layerNo {layer_no} is out of hardware bounds ({SLOT_MIN_LAYER_NO}-{SLOT_MAX_LAYER_NO})"
+            "rowNo {row_no} is out of hardware bounds ({SLOT_MIN_ROW_NO}-{SLOT_MAX_ROW_NO})"
         ));
     };
     if !(1..=max_cell).contains(&cell_no) {
         return Err(format!(
-            "cellNo {cell_no} is out of hardware bounds for row {layer_no} (1-{max_cell})"
+            "cellNo {cell_no} is out of hardware bounds for row {row_no} (1-{max_cell})"
         ));
     }
     Ok(())
@@ -1575,12 +1575,12 @@ pub const fn build_vent_speed_frame(speed: VentSpeed) -> [u8; 3] {
     [FRAME_HEAD, 0xB3, speed.protocol_byte()]
 }
 
-pub fn build_dispense_frame(layer_no: u32, cell_no: u32) -> Result<[u8; 4], String> {
-    let layer = u8::try_from(layer_no)
-        .map_err(|_| format!("layerNo {layer_no} exceeds uint8 protocol range"))?;
+pub fn build_dispense_frame(row_no: u32, cell_no: u32) -> Result<[u8; 4], String> {
+    let layer =
+        u8::try_from(row_no).map_err(|_| format!("rowNo {row_no} exceeds uint8 protocol range"))?;
     let cell = u8::try_from(cell_no)
         .map_err(|_| format!("cellNo {cell_no} exceeds uint8 protocol range"))?;
-    validate_slot_bounds(layer_no, cell_no)?;
+    validate_slot_bounds(row_no, cell_no)?;
     let crc = crc8(&[layer, cell]);
     Ok([FRAME_HEAD, layer, cell, crc])
 }
@@ -2327,8 +2327,8 @@ mod tests {
                 command_no: "CMD-1".to_string(),
                 order_no: "ORD-1".to_string(),
                 slot: crate::hardware::SlotPayload {
-                    slot_code: "A1".to_string(),
-                    layer_no: 1,
+                    slot_id: "A1".to_string(),
+                    row_no: 1,
                     cell_no: 1,
                 },
                 quantity: 1,

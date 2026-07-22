@@ -325,8 +325,7 @@ function planogramSlotValues(
   return {
     machinePlanogramVersionId,
     slotId: slot.slotId,
-    slotCode: slot.slotCode,
-    layerNo: slot.layerNo,
+    rowNo: slot.rowNo,
     cellNo: slot.cellNo,
     capacity: slot.capacity,
     parLevel: slot.parLevel,
@@ -353,8 +352,7 @@ function planogramSlotSnapshot(
 ): MachinePlanogramSlot {
   return {
     slotId: row.slotId,
-    slotCode: row.slotCode,
-    layerNo: row.layerNo,
+    rowNo: row.rowNo,
     cellNo: row.cellNo,
     capacity: row.capacity,
     parLevel: row.parLevel,
@@ -1368,7 +1366,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(machinePlanogramSlots.machinePlanogramVersionId, version.id))
       .orderBy(
         machinePlanogramSlots.productSortOrder,
-        machinePlanogramSlots.layerNo,
+        machinePlanogramSlots.rowNo,
         machinePlanogramSlots.cellNo,
       );
 
@@ -1617,7 +1615,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           isNull(machineSlots.deletedAt),
         ),
       )
-      .orderBy(machineSlots.layerNo, machineSlots.cellNo);
+      .orderBy(machineSlots.rowNo, machineSlots.cellNo);
     return slots.map(toAdminMachineSlotResponse);
   }
 
@@ -1635,8 +1633,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .select({
         machineCode: machines.code,
         slotId: machineSlots.id,
-        slotCode: machineSlots.slotCode,
-        layerNo: machineSlots.layerNo,
+        rowNo: machineSlots.rowNo,
         cellNo: machineSlots.cellNo,
         inventoryId: inventories.id,
         variantId: productVariants.id,
@@ -1708,7 +1705,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           sql`${inventories.onHandQty} - ${inventories.reservedQty} > 0`,
         ),
       )
-      .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
+      .orderBy(products.sortOrder, machineSlots.rowNo, machineSlots.cellNo);
     return rows.map((row) => ({
       ...row,
       coverImageUrl: this.machineManagedMediaReference(
@@ -1726,7 +1723,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         machineCode: machines.code,
         planogramVersion: machinePlanogramVersions.planogramVersion,
         slotId: machinePlanogramSlots.slotId,
-        slotCode: machinePlanogramSlots.slotCode,
         inventoryId: machinePlanogramSlots.inventoryId,
         capacity: machinePlanogramSlots.capacity,
         slotStatus: machineSlots.status,
@@ -1815,7 +1811,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .where(and(eq(machines.code, code), isNull(machines.deletedAt)))
-      .orderBy(machinePlanogramSlots.layerNo, machinePlanogramSlots.cellNo);
+      .orderBy(machinePlanogramSlots.rowNo, machinePlanogramSlots.cellNo);
 
     const first = rows[0];
     if (!first) {
@@ -1827,7 +1823,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       planogramVersion: first.planogramVersion,
       slots: rows.map((row) => ({
         slotId: row.slotId,
-        slotCode: row.slotCode,
         inventoryId: row.inventoryId,
         capacity: row.capacity,
         onHandQty: row.onHandQty,

@@ -548,7 +548,6 @@ function slotMappingSnapshotMatchesPlatformSlot(
   platformSlot: ActiveAcknowledgedPlanogramSlot,
 ): boolean {
   return (
-    snapshot.slotCode === platformSlot.slotCode &&
     snapshot.capacity === platformSlot.capacity &&
     snapshot.inventoryId === platformSlot.inventoryId &&
     snapshot.variantId === platformSlot.variantId

@@ -145,7 +145,7 @@ describe("Track Handoff Recovery", () => {
       track: { key: "visionExperience", transactionProducing: false },
       terminal: { facts: { route: "#/catalog" } },
       fixtureAllocation: {
-        visionExperience: { slotCode: "A3", inventoryId: "vision" },
+        visionExperience: { slotDisplayLabel: "A3", inventoryId: "vision" },
       },
       returnToCatalog: async () => calls.push("catalog"),
       disableFaultInjection: async () => calls.push("fault"),

@@ -91,9 +91,8 @@ describe("admin-machine-contract.e2e", { concurrent: false }, () => {
       .post(`/api/machines/${machine.id}/slots`)
       .set("Authorization", `Bearer ${token}`)
       .send({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
         capacity: 10,
         status: "enabled",
         inventoryShortcut: true,
@@ -104,9 +103,8 @@ describe("admin-machine-contract.e2e", { concurrent: false }, () => {
       .post(`/api/machines/${machine.id}/slots`)
       .set("Authorization", `Bearer ${token}`)
       .send({
-        layerNo: 1,
+        rowNo: 1,
         cellNo: 1,
-        slotCode: "A1",
         capacity: 10,
         status: "enabled",
       });
@@ -116,6 +114,6 @@ describe("admin-machine-contract.e2e", { concurrent: false }, () => {
     expect(slotBody.code).toBe(0);
     const slot = adminMachineSlotResponseSchema.parse(slotBody.data);
     expect(slot.machineId).toBe(machine.id);
-    expect(slot.slotCode).toBe("A1");
+    expect(slot).toMatchObject({ rowNo: 1, cellNo: 1 });
   });
 });

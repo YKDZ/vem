@@ -78,7 +78,6 @@ export class InventoryService {
         machineId: inventories.machineId,
         machineCode: machines.code,
         slotId: inventories.slotId,
-        slotCode: machineSlots.slotCode,
         variantId: inventories.variantId,
         productId: products.id,
         sku: productVariants.sku,

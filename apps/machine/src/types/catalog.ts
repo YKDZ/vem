@@ -3,8 +3,8 @@ import type { MachineSaleViewItem } from "@vem/shared";
 export type MachineCatalogSlotCandidate = Pick<
   MachineSaleViewItem,
   | "slotId"
-  | "slotCode"
-  | "layerNo"
+  | "slotDisplayLabel"
+  | "rowNo"
   | "cellNo"
   | "inventoryId"
   | "variantId"

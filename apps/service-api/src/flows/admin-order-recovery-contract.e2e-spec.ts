@@ -66,8 +66,7 @@ describe("admin-order-recovery-contract.e2e", { concurrent: false }, () => {
       machineCode: `M-ORDER-REC-${unique}`,
       onHandQty: 2,
       lowStockThreshold: 1,
-      slotCode: "A1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
     const machineAuthHeader = await getMachineAuthHeader(

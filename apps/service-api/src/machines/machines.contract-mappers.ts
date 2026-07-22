@@ -172,18 +172,16 @@ export function mapCreateMachineSlotDtoToInsert(
   input: AdminCreateMachineSlotRequest,
 ): MachineSlotInsert {
   const dto = {
-    layerNo: input.layerNo,
+    rowNo: input.rowNo,
     cellNo: input.cellNo,
-    slotCode: input.slotCode,
     capacity: input.capacity,
     status: input.status,
   } satisfies ContractFieldCoverage<AdminCreateMachineSlotRequest>;
 
   const insert = {
     machineId,
-    layerNo: dto.layerNo,
+    rowNo: dto.rowNo,
     cellNo: dto.cellNo,
-    slotCode: dto.slotCode,
     capacity: dto.capacity,
     status: dto.status,
   } satisfies MachineSlotInsert;
@@ -299,9 +297,8 @@ export function toAdminMachineSlotResponse(
   const response = {
     id: row.id,
     machineId: row.machineId,
-    layerNo: row.layerNo,
+    rowNo: row.rowNo,
     cellNo: row.cellNo,
-    slotCode: row.slotCode,
     capacity: row.capacity,
     status: row.status,
     createdAt: toIsoString(row.createdAt),

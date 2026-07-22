@@ -74,21 +74,21 @@ function crc8(bytes) {
   return crc;
 }
 
-function validateVendSlotBounds(layerNo, cellNo) {
-  if (!Number.isInteger(layerNo) || !Number.isInteger(cellNo)) {
+function validateVendSlotBounds(rowNo, cellNo) {
+  if (!Number.isInteger(rowNo) || !Number.isInteger(cellNo)) {
     throw new Error(
       "outbound vend frame must contain integer slot coordinates",
     );
   }
-  if (layerNo < 1 || layerNo > 9) {
+  if (rowNo < 1 || rowNo > 9) {
     throw new Error(
-      `outbound vend frame layer ${layerNo} is out of production bounds`,
+      `outbound vend frame layer ${rowNo} is out of production bounds`,
     );
   }
-  const maxCellNo = layerNo <= 6 ? 5 : layerNo <= 8 ? 4 : 3;
+  const maxCellNo = rowNo <= 6 ? 5 : rowNo <= 8 ? 4 : 3;
   if (cellNo < 1 || cellNo > maxCellNo) {
     throw new Error(
-      `outbound vend frame cell ${cellNo} is out of production bounds for layer ${layerNo}`,
+      `outbound vend frame cell ${cellNo} is out of production bounds for layer ${rowNo}`,
     );
   }
 }

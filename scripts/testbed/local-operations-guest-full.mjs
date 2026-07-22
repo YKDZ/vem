@@ -727,19 +727,19 @@ async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
     serialScenario: "normal",
   });
 }
-export function canonicalPlanogramSlot(saleView, slotCode) {
-  const code = required(slotCode, "slotCode");
+export function canonicalPlanogramSlot(saleView, slotDisplayLabel) {
+  const code = required(slotDisplayLabel, "slotDisplayLabel");
   const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotCode === code,
+    (entry) => entry?.slotDisplayLabel === code,
   );
   if (!item?.slotId || !item.inventoryId || !saleView?.planogramVersion)
     throw new Error(`active canonical planogram slot ${code} is unavailable`);
   return {
-    slotCode: code,
+    slotDisplayLabel: code,
     slotId: item.slotId,
     inventoryId: item.inventoryId,
     planogramVersion: saleView.planogramVersion,
-    layerNo: item.layerNo,
+    rowNo: item.rowNo,
     cellNo: item.cellNo,
   };
 }
@@ -758,14 +758,14 @@ export function validateLocalOperationsEvidence(report) {
   )
     throw new Error("local operations boundary evidence is incomplete");
   if (
-    report.manualDispense?.slotCode == null ||
+    report.manualDispense?.slotDisplayLabel == null ||
     !["completed", "failed", "result_unknown"].includes(
       report.manualDispense.outcome,
     )
   )
     throw new Error("manual dispense diagnostic outcome is missing");
   return {
-    slotCode: report.manualDispense.slotCode,
+    slotDisplayLabel: report.manualDispense.slotDisplayLabel,
     outcome: report.manualDispense.outcome,
     canonical: true,
   };
@@ -817,11 +817,11 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.local-operations`,
     });
     const saleView = await daemonRequest(handoff, "/v1/sale-view");
-    const slot = canonicalPlanogramSlot(saleView, fixture?.slotCode);
+    const slot = canonicalPlanogramSlot(saleView, fixture?.slotDisplayLabel);
     report.planogram = {
       canonical: true,
       planogramVersion: slot.planogramVersion,
-      slotCode: slot.slotCode,
+      slotDisplayLabel: slot.slotDisplayLabel,
       slotId: slot.slotId,
     };
     report.hardware = {
@@ -840,7 +840,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       "/v1/maintenance/manual-dispense-diagnostic",
       {
         idempotencyKey: `${runId}-local-operations`,
-        slotCode: slot.slotCode,
+        slotDisplayLabel: slot.slotDisplayLabel,
         quantity: 1,
         timeoutSeconds: 15,
       },
@@ -860,7 +860,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     const diagnostic = await diagnosticPromise;
     report.manualDispense = {
       ...diagnostic,
-      slotCode: slot.slotCode,
+      slotDisplayLabel: slot.slotDisplayLabel,
       canonicalSlot: slot,
     };
     const evidence = await controlRequest(

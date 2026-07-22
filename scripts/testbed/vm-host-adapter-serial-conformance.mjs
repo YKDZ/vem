@@ -1481,7 +1481,7 @@ export function assertBlockedSaleEvidence({
     Object.hasOwn(context?.successfulPrepare ?? {}, "paymentId") ||
     !isNonEmptyString(selectedItem?.inventoryId) ||
     !isNonEmptyString(selectedItem?.slotId) ||
-    !isNonEmptyString(selectedItem?.slotCode) ||
+    !isNonEmptyString(selectedItem?.slotDisplayLabel) ||
     !isNonEmptyString(context?.planogramVersion) ||
     paymentOption?.method === "payment_code" ||
     !isNonEmptyString(paymentOption?.optionKey) ||
@@ -1490,7 +1490,7 @@ export function assertBlockedSaleEvidence({
     paymentOption?.ready !== true ||
     request?.inventoryId !== selectedItem?.inventoryId ||
     request?.slotId !== selectedItem?.slotId ||
-    request?.slotCode !== selectedItem?.slotCode ||
+    request?.slotDisplayLabel !== selectedItem?.slotDisplayLabel ||
     request?.planogramVersion !== context?.planogramVersion ||
     request?.quantity !== 1 ||
     request?.paymentMethod !== paymentOption?.method ||

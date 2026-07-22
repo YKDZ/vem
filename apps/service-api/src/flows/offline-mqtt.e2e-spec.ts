@@ -80,8 +80,7 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-OFFLINE-001",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "OFF1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 
@@ -145,8 +144,7 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
       machineCode: "M-E2E-TIMEOUT-001",
       onHandQty: 1,
       lowStockThreshold: 1,
-      slotCode: "TO1",
-      layerNo: 1,
+      rowNo: 1,
       cellNo: 1,
     });
 
@@ -181,7 +179,7 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
       payloadJson: {
         commandNo: "CMD-TIMEOUT-E2E",
         orderNo: createdOrder.data.orderNo,
-        slot: { layerNo: 1, cellNo: 1, slotCode: "TO1" },
+        slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "TO1" },
         quantity: 1,
         timeoutSeconds: 1,
       },

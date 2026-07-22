@@ -71,7 +71,6 @@ describe("inventory contract mappers", () => {
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       machineCode: "M001",
       slotId: "550e8400-e29b-41d4-a716-446655440001",
-      slotCode: "A1",
       variantId: "550e8400-e29b-41d4-a716-446655440002",
       productId: "550e8400-e29b-41d4-a716-446655440004",
       sku: "SKU-1",

@@ -257,7 +257,7 @@ const adminVendingCommandResponseSchema = z.strictObject({
   machineId: z.string().min(1).max(128),
   machineCode: z.string().min(1).max(64),
   slotId: z.string().min(1).max(128),
-  slotCode: z.string().min(1).max(64),
+  slotDisplayLabel: z.string().min(1).max(64).optional(),
   orderItemId: z.string().min(1).max(128).nullable(),
   commandKind: z.string().min(1).max(64),
   recoveryActionId: z.string().min(1).max(128).nullable(),
@@ -411,7 +411,6 @@ export const machineOrderItemSchema = z.object({
   quantity: z.int().positive(),
   planogramVersion: z.string().min(1).max(128),
   slotId: z.uuid(),
-  slotCode: z.string().min(1).max(32),
 });
 
 export const machinePaymentProviderCodeSchema = z.enum([

@@ -10,8 +10,8 @@ function item(): MachineCatalogItem {
   return {
     machineCode: "M001",
     slotId: "slot-1",
-    slotCode: "A1",
-    layerNo: 1,
+    slotDisplayLabel: "A1",
+    rowNo: 1,
     cellNo: 1,
     inventoryId: "inventory-1",
     variantId: "variant-1",

@@ -136,7 +136,7 @@ function completeFacts(): SimulatedHardwareSaleFlowFacts {
     },
     sale: {
       saleViewReady: true,
-      selectedSlotCode: "A1",
+      selectedSlotId: "550e8400-e29b-41d4-a716-446655440001",
       orderId: "ORDER-ID-180",
       orderNo: "MO-180",
       orderStatus: "fulfilled",
