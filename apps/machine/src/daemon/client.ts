@@ -442,15 +442,6 @@ export class DaemonApiClient {
     };
   }
 
-  async recordStockMovement(body: unknown): Promise<SaleViewSnapshot> {
-    return machineSaleViewSnapshotSchema.parse(
-      await this.request("/v1/stock/movements", {
-        method: "POST",
-        body,
-      }),
-    );
-  }
-
   async getStockMaintenanceTask(): Promise<StockMaintenanceTask> {
     return stockMaintenanceTaskSchema.parse(
       await this.request("/v1/stock/maintenance-task"),

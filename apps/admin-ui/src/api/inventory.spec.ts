@@ -78,15 +78,14 @@ describe("inventory api", () => {
       },
     );
 
-    const acceptMachineStockWithCorrection = {
+    const retiredMachineStockAcceptance = {
       action: "accept_machine_stock" as const,
       note: "counted by machine",
-      correctedOnHandQty: 4,
     };
     await expect(
       resolveStockReconciliationCase(
         "550e8400-e29b-41d4-a716-446655440004",
-        acceptMachineStockWithCorrection,
+        retiredMachineStockAcceptance as never,
       ),
     ).rejects.toThrow();
     await expect(

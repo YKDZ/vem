@@ -63,27 +63,35 @@ function makeRepository() {
 }
 
 describe("DrizzleStockReconciliationRepository", () => {
-  it("rejects accepting machine stock below reserved quantity before writing", async () => {
+  it("rejects a retired-source planned refill without changing platform inventory", async () => {
     const { repository, tx } = makeRepository();
-    const findCaseById = vi.fn().mockResolvedValueOnce(
-      makeCase({
-        afterQuantity: 4,
-        onHandQty: 6,
-        reservedQty: 5,
-      }),
-    );
+    const openCase = makeCase({
+      movementType: "planned_refill",
+      source: "field_service",
+      afterQuantity: 9,
+      onHandQty: 6,
+    });
+    const findCaseById = vi
+      .fn()
+      .mockResolvedValueOnce(openCase)
+      .mockResolvedValueOnce({
+        ...openCase,
+        status: "rejected",
+        platformReviewStatus: "resolved",
+      });
     Object.assign(repository, { findCaseById });
+    tx.execute.mockResolvedValueOnce({ rowCount: 1 });
 
-    await expect(
-      repository.resolveCase("raw-1", {
-        action: "accept_machine_stock",
-        note: "accept stock",
-        clearBlocker: true,
-        adminUserId: "admin-1",
-      }),
-    ).rejects.toThrow(ConflictException);
+    const result = await repository.resolveCase("raw-1", {
+      action: "reject_machine_stock",
+      note: "retired refill source is not physical-stock evidence",
+      clearBlocker: false,
+      adminUserId: "admin-1",
+    });
 
-    expect(tx.execute).not.toHaveBeenCalled();
+    expect(result?.case.status).toBe("rejected");
+    expect(result?.inventoryMovement).toBeNull();
+    expect(tx.execute).toHaveBeenCalledTimes(1);
     expect(tx.insert).not.toHaveBeenCalled();
   });
 
@@ -119,8 +127,8 @@ describe("DrizzleStockReconciliationRepository", () => {
     tx.execute.mockResolvedValueOnce({ rowCount: 0 });
 
     const result = await repository.resolveCase("raw-1", {
-      action: "accept_machine_stock",
-      note: "duplicate click",
+      action: "reject_machine_stock",
+      note: "duplicate resolution",
       clearBlocker: true,
       adminUserId: "admin-1",
     });
@@ -130,7 +138,7 @@ describe("DrizzleStockReconciliationRepository", () => {
     expect(clearResolvedCaseBlocker).not.toHaveBeenCalled();
   });
 
-  it("returns a fresh post-resolution case while retaining the previous case for audit", async () => {
+  it("records a separate adjustment while retaining the previous case for audit", async () => {
     const { repository, tx } = makeRepository();
     const openCase = makeCase();
     const resolvedCase = makeCase({
@@ -149,8 +157,9 @@ describe("DrizzleStockReconciliationRepository", () => {
       .mockResolvedValueOnce({ rowCount: 1 });
 
     const result = await repository.resolveCase("raw-1", {
-      action: "accept_machine_stock",
-      note: "accept stock",
+      action: "manual_correct",
+      correctedOnHandQty: 4,
+      note: "counted on site",
       clearBlocker: false,
       adminUserId: "admin-1",
     });
@@ -160,7 +169,7 @@ describe("DrizzleStockReconciliationRepository", () => {
     expect(result?.inventoryMovement).toMatchObject({
       inventoryId: "inventory-1",
       deltaQty: -2,
-      reason: "hardware_sync",
+      reason: "adjust",
     });
   });
 });

@@ -69,7 +69,7 @@ export type StockReconciliationPageQuery = {
 };
 
 export type StockReconciliationResolveInput = {
-  action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct";
+  action: "reject_machine_stock" | "manual_correct";
   note: string;
   clearBlocker?: boolean;
   correctedOnHandQty?: number;
@@ -163,15 +163,12 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
       }
 
       const nextOnHandQty =
-        input.action === "accept_machine_stock"
-          ? current.afterQuantity
-          : input.action === "manual_correct"
-            ? input.correctedOnHandQty
-            : undefined;
+        input.action === "manual_correct"
+          ? input.correctedOnHandQty
+          : undefined;
 
       if (
-        (input.action === "accept_machine_stock" ||
-          input.action === "manual_correct") &&
+        input.action === "manual_correct" &&
         (!current.inventoryId ||
           nextOnHandQty === null ||
           nextOnHandQty === undefined)
@@ -240,8 +237,7 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
             "Inventory changed while resolving stock reconciliation case",
           );
         }
-        const reason =
-          input.action === "manual_correct" ? "adjust" : "hardware_sync";
+        const reason = "adjust";
         await tx.insert(inventoryMovements).values({
           inventoryId: current.inventoryId,
           deltaQty,

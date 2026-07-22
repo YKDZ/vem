@@ -834,6 +834,7 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("needs_platform_review");
     expect(root.textContent).toContain("ORD-1");
     expect(root.textContent).toContain("不可售");
+    expect(root.textContent).not.toContain("接受");
 
     Array.from(root.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("复核"))
@@ -853,16 +854,17 @@ describe("MachineDetailView", () => {
     clearCheckbox!.checked = true;
     clearCheckbox!.dispatchEvent(new Event("change", { bubbles: true }));
     Array.from(root.querySelectorAll('[role="dialog"] button'))
-      .find((button) => button.textContent?.includes("接受"))
+      .find((button) => button.textContent?.includes("修正"))
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPromises();
 
     expect(apiMocks.resolveStockReconciliationCase).toHaveBeenCalledWith(
       "raw-1",
       {
-        action: "accept_machine_stock",
+        action: "manual_correct",
         note: "现场复核证据齐全，解除冻结",
         clearBlocker: true,
+        correctedOnHandQty: 6,
       },
     );
   });

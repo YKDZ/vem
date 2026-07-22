@@ -165,7 +165,6 @@ export const stockReconciliationCaseTableSchema = z.enum([
 ]);
 
 export const stockReconciliationResolveActionSchema = z.enum([
-  "accept_machine_stock",
   "reject_machine_stock",
   "manual_correct",
 ]);
@@ -182,11 +181,6 @@ const stockReconciliationResolutionNoteSchema = z
 
 export const adminStockReconciliationResolveRequestSchema =
   z.discriminatedUnion("action", [
-    z.strictObject({
-      action: z.literal("accept_machine_stock"),
-      note: stockReconciliationResolutionNoteSchema,
-      clearBlocker: z.boolean().optional(),
-    }),
     z.strictObject({
       action: z.literal("reject_machine_stock"),
       note: stockReconciliationResolutionNoteSchema,

@@ -153,13 +153,13 @@ describe("StockReconciliationService", () => {
 
     await expect(
       service.resolveCase("admin-1", RAW_CASE_ID, {
-        action: "accept_machine_stock",
+        action: "reject_machine_stock",
         note: " ",
       }),
     ).rejects.toThrow(BadRequestException);
   });
 
-  it("writes inventory movement and admin audit for accepted machine stock", async () => {
+  it("writes a separate adjustment and admin audit for manual correction", async () => {
     const openCase = makeOpenCase();
     const resolvedCase = {
       ...openCase,
@@ -173,8 +173,8 @@ describe("StockReconciliationService", () => {
       inventoryMovement: {
         inventoryId: INVENTORY_ID,
         deltaQty: -2,
-        reason: "hardware_sync",
-        note: "accept stock count",
+        reason: "adjust",
+        note: "counted on site",
       },
       clearedBlocker: true,
     };
@@ -183,28 +183,29 @@ describe("StockReconciliationService", () => {
     });
 
     const result = await service.resolveCase("admin-1", RAW_CASE_ID, {
-      action: "accept_machine_stock",
-      note: "accept stock count",
+      action: "manual_correct",
+      note: "counted on site",
       clearBlocker: true,
+      correctedOnHandQty: 4,
     });
 
     expect(repository.resolveCase).toHaveBeenCalledWith(RAW_CASE_ID, {
-      action: "accept_machine_stock",
-      note: "accept stock count",
+      action: "manual_correct",
+      note: "counted on site",
       clearBlocker: true,
-      correctedOnHandQty: undefined,
+      correctedOnHandQty: 4,
       adminUserId: "admin-1",
     });
     expect(auditService.record).toHaveBeenCalledWith({
       adminUserId: "admin-1",
-      action: "stock_reconciliation.accept_machine_stock",
+      action: "stock_reconciliation.manual_correct",
       resourceType: "machine_raw_stock_movement",
       resourceId: RAW_CASE_ID,
       beforeJson: expect.objectContaining({
         platformReviewStatus: "open",
       }),
       afterJson: expect.objectContaining({
-        action: "accept_machine_stock",
+        action: "manual_correct",
         clearedBlocker: true,
         inventoryMovement: expect.objectContaining({
           deltaQty: -2,
@@ -215,7 +216,7 @@ describe("StockReconciliationService", () => {
       id: RAW_CASE_ID,
       platformReviewStatus: "resolved",
       resolution: {
-        action: "accept_machine_stock",
+        action: "manual_correct",
         clearedBlocker: true,
       },
     });

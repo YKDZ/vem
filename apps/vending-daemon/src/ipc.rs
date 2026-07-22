@@ -45,7 +45,7 @@ use crate::{
     state::{
         store::{
             MachinePlanogramInput, PhysicalStockAttestationInput, StockMaintenanceBatchInput,
-            StockMovementInput, OUTBOX_MAX_EVENTS,
+            OUTBOX_MAX_EVENTS,
         },
         LocalStateStore,
     },
@@ -528,7 +528,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(current_transaction))
         .route("/v1/stock/planogram", post(apply_planogram))
-        .route("/v1/stock/movements", post(record_stock_movement))
         .route(
             "/v1/stock/maintenance-task",
             get(stock_maintenance_task).post(submit_stock_maintenance_batch),
@@ -1795,39 +1794,6 @@ async fn record_physical_stock_attestation(
         Err(error) => error_response(
             StatusCode::BAD_REQUEST,
             "physical_stock_attestation_failed",
-            error.to_string(),
-        ),
-    }
-}
-
-async fn record_stock_movement(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(input): Json<StockMovementInput>,
-) -> impl IntoResponse {
-    if let Err(error) = require_token(&headers, &ctx.token).await {
-        return error.into_response();
-    }
-    let profile = match ctx.runtime_sources.require_profile().await {
-        Ok(value) => value,
-        Err(error) => return error_response(StatusCode::CONFLICT, "machine_not_claimed", error),
-    };
-    match ctx
-        .state
-        .record_stock_movement_with_upload(
-            input,
-            Some(&profile.profile.machine.code.to_string()),
-            Some(&profile.profile.api_base_url),
-        )
-        .await
-    {
-        Ok(value) => {
-            invalidate_sale_start_capability(&ctx).await;
-            Json(value).into_response()
-        }
-        Err(error) => error_response(
-            StatusCode::BAD_REQUEST,
-            "stock_movement_failed",
             error.to_string(),
         ),
     }
@@ -3185,6 +3151,7 @@ fn error_response(
 
 #[cfg(test)]
 mod tests {
+    use crate::state::store::StockMovementInput;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -4069,6 +4036,20 @@ mod tests {
             .apply_planogram(planogram)
             .await
             .expect("planogram");
+
+        let retired_movement_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stock/movements")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("retired movement request"),
+            )
+            .await
+            .expect("retired movement response");
+        assert_eq!(retired_movement_response.status(), StatusCode::NOT_FOUND);
 
         let task_response = build_router(ctx.clone())
             .oneshot(

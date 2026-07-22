@@ -578,7 +578,7 @@ async function openReconciliationCase(
 }
 
 async function saveReconciliation(
-  action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct",
+  action: "reject_machine_stock" | "manual_correct",
 ): Promise<void> {
   if (!reconciliationDetail.value) return;
   reconciliationSaving.value = true;
@@ -1192,12 +1192,6 @@ onBeforeUnmount(() => {
           </a-checkbox>
         </a-form-item>
         <a-space>
-          <a-button
-            :loading="reconciliationSaving"
-            @click="saveReconciliation('accept_machine_stock')"
-          >
-            接受
-          </a-button>
           <a-button
             :loading="reconciliationSaving"
             @click="saveReconciliation('reject_machine_stock')"

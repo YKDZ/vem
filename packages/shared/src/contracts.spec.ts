@@ -833,7 +833,6 @@ describe("shared API contract", () => {
         adminStockReconciliationResolveRequestSchema.parse({
           action: "accept_machine_stock",
           note: "counted by machine",
-          correctedOnHandQty: 4,
         }),
       ).toThrow();
       expect(() =>

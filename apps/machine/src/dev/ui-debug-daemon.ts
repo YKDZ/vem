@@ -754,7 +754,6 @@ export function installUiDebugDaemon(): void {
   client.getCatalog = async () => catalogFromSaleView(currentSaleView());
   client.refreshCatalog = async () => catalogFromSaleView(currentSaleView());
   client.getSaleView = async () => currentSaleView();
-  client.recordStockMovement = async () => currentSaleView();
   const currentStockMaintenanceTask = (): StockMaintenanceTask => {
     const saleView = currentSaleView();
     return {

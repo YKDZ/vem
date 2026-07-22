@@ -66,7 +66,6 @@ describe("StockReconciliationController", () => {
       pipe.transform({
         action: "accept_machine_stock",
         note: "counted by machine",
-        correctedOnHandQty: 3,
       } as never),
     ).toThrow(BadRequestException);
     expect(() =>
