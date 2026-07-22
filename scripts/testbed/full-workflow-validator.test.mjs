@@ -513,10 +513,13 @@ function presenceAndAudioReport() {
       windowsAudioCapture: true,
     },
     artifacts: {
-      audioStartReport:
-        "/reports/presence-and-audio-artifacts/audio-capture-start.json",
-      audioStopReport:
-        "/reports/presence-and-audio-artifacts/audio-capture-stop.json",
+      audioCueCaptures: [
+        {
+          start:
+            "/reports/presence-and-audio-artifacts/audio-capture-01-start.json",
+          stop: "/reports/presence-and-audio-artifacts/audio-capture-01-stop.json",
+        },
+      ],
       runtimeTrace: "/reports/presence-and-audio-artifacts/runtime-trace.json",
     },
     presenceAndAudio: {
@@ -532,9 +535,36 @@ function presenceAndAudioReport() {
         source: "windows_default_output",
         capture: { nonSilentFrameCount: 4_800, peakAbsoluteSample: 2_048 },
         cueWindows: [
-          { transitionId: "vision:presence-1:welcome", kind: "passed" },
-          { transitionId: "vision:presence-3:welcome", kind: "passed" },
-          { transitionId: "category:category-entry-socks-1", kind: "passed" },
+          {
+            transitionId: "vision:presence-1:welcome",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:00.000Z",
+              completedAt: "2026-07-22T08:00:01.000Z",
+            },
+          },
+          {
+            transitionId: "vision:presence-3:welcome",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:06.000Z",
+              completedAt: "2026-07-22T08:00:07.000Z",
+            },
+          },
+          {
+            transitionId: "category:category-entry-socks-1",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:10.000Z",
+              completedAt: "2026-07-22T08:00:11.000Z",
+            },
+          },
         ],
       },
       runtimeTrace: [
@@ -728,10 +758,55 @@ function presenceAndAudioReport() {
       },
       automaticVent: {
         protocolFrames: [
-          { parsedOpcode: "B3", rawFrameHex: "55b302" },
-          { parsedOpcode: "B3", rawFrameHex: "55b300" },
+          {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+            capturedAt: "2026-07-22T08:00:00.000Z",
+          },
+          {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b300",
+            capturedAt: "2026-07-22T08:00:05.000Z",
+          },
         ],
         speeds: [2, 0],
+        guardElapsedMs: 5_000,
+        edgeCorrelation: [
+          {
+            edgeId: "presence-1:arrival",
+            transitionId: "vision:presence-1:welcome",
+            speed: 2,
+            frame: {
+              parsedOpcode: "B3",
+              rawFrameHex: "55b302",
+              capturedAt: "2026-07-22T08:00:00.000Z",
+            },
+          },
+          {
+            edgeId: "presence-2:departure",
+            transitionId: "vision:presence-2:departed",
+            speed: 0,
+            frame: {
+              parsedOpcode: "B3",
+              rawFrameHex: "55b300",
+              capturedAt: "2026-07-22T08:00:05.000Z",
+            },
+          },
+        ],
+        adminPrecedence: {
+          commandNo: "environment-command-1",
+          requestedSpeed: 3,
+          resultStatus: "succeeded",
+          frame: {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b303",
+            capturedAt: "2026-07-22T08:00:01.000Z",
+          },
+          duplicateSameEdge: {
+            edgeId: "presence-1:arrival",
+            outcome: "deduplicated",
+          },
+        },
       },
     },
   };

@@ -51,9 +51,15 @@ vi.mock("@/composables/useCatalogNotifications", () => ({
   }),
 }));
 
-vi.mock("@/composables/usePresenceInteraction", () => ({
-  usePresenceInteraction: () => ({
-    presenceClass: "presence-idle",
+vi.mock("@/composables/customer-interaction-session", () => ({
+  useCustomerInteractionSession: () => ({
+    state: { value: { active: false } },
+  }),
+}));
+
+vi.mock("@/composables/stable-vision-presence-session", () => ({
+  getStableVisionPresenceSession: () => ({
+    state: { value: { present: false } },
   }),
 }));
 

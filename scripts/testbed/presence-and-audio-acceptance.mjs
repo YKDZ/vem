@@ -104,6 +104,122 @@ function assertLifecycleOnce(
   return { queued, started, terminal };
 }
 
+function assertDetectedCueWindow(window) {
+  const transitionId = requiredString(
+    window?.transitionId,
+    "audio.cueWindow.transitionId",
+  );
+  if (window?.kind !== "detected") {
+    throw new Error(`audio cue window ${transitionId} was not detected`);
+  }
+  const capture = window?.capture;
+  if (
+    !Number.isInteger(capture?.nonSilentFrameCount) ||
+    capture.nonSilentFrameCount <= 0 ||
+    !Number.isInteger(capture?.peakAbsoluteSample) ||
+    capture.peakAbsoluteSample <= 0
+  ) {
+    throw new Error(
+      `audio cue window ${transitionId} has no non-silent capture`,
+    );
+  }
+  const startedAt = timestamp(capture.startedAt);
+  const completedAt = timestamp(capture.completedAt);
+  if (startedAt === null || completedAt === null || completedAt < startedAt) {
+    throw new Error(
+      `audio cue window ${transitionId} capture timestamps are invalid`,
+    );
+  }
+  return { transitionId, capture };
+}
+
+function expectedStableEdgeId(transitionId) {
+  const match = /^vision:presence-(\d+):(welcome|departed)$/.exec(
+    requiredString(transitionId, "presence transitionId"),
+  );
+  if (!match)
+    throw new Error(`presence transition id is invalid: ${transitionId}`);
+  return `presence-${match[1]}:${match[2] === "welcome" ? "arrival" : "departure"}`;
+}
+
+function b3Speed(frame) {
+  const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
+  return match ? Number.parseInt(match[1], 16) : null;
+}
+
+function assertAutomaticVentEvidence(
+  automaticVent,
+  initialTransitionId,
+  departureTransitionId,
+) {
+  const protocolFrames = assertArray(
+    automaticVent?.protocolFrames,
+    "automaticVent.protocolFrames",
+  );
+  const speeds = assertArray(automaticVent?.speeds, "automaticVent.speeds");
+  if (
+    protocolFrames.length !== 2 ||
+    speeds.length !== 2 ||
+    speeds[0] !== 2 ||
+    speeds[1] !== 0 ||
+    protocolFrames.some(
+      (frame, index) =>
+        frame?.parsedOpcode !== "B3" || b3Speed(frame) !== speeds[index],
+    )
+  ) {
+    throw new Error(
+      "automatic B3 evidence must contain exactly one 2 then one 0",
+    );
+  }
+  const frameTimes = protocolFrames.map((frame) =>
+    timestamp(frame?.capturedAt),
+  );
+  if (
+    frameTimes.some((value) => value === null) ||
+    frameTimes[1] - frameTimes[0] < 5_000 ||
+    !Number.isFinite(automaticVent?.guardElapsedMs) ||
+    automaticVent.guardElapsedMs < 5_000
+  ) {
+    throw new Error("automatic B3 guard evidence is incomplete");
+  }
+  const edgeCorrelation = assertArray(
+    automaticVent?.edgeCorrelation,
+    "automaticVent.edgeCorrelation",
+  );
+  const expected = [
+    [expectedStableEdgeId(initialTransitionId), initialTransitionId, 2],
+    [expectedStableEdgeId(departureTransitionId), departureTransitionId, 0],
+  ];
+  if (
+    edgeCorrelation.length !== expected.length ||
+    expected.some(
+      ([edgeId, transitionId, speed], index) =>
+        edgeCorrelation[index]?.edgeId !== edgeId ||
+        edgeCorrelation[index]?.transitionId !== transitionId ||
+        edgeCorrelation[index]?.speed !== speed ||
+        edgeCorrelation[index]?.frame?.rawFrameHex !==
+          protocolFrames[index]?.rawFrameHex,
+    )
+  ) {
+    throw new Error("automatic B3 stable-edge correlation is incomplete");
+  }
+  const precedence = automaticVent?.adminPrecedence;
+  if (
+    typeof precedence?.commandNo !== "string" ||
+    precedence.commandNo.trim() === "" ||
+    precedence?.requestedSpeed !== 3 ||
+    precedence?.resultStatus !== "succeeded" ||
+    precedence?.duplicateSameEdge?.edgeId !== expected[0][0] ||
+    precedence?.duplicateSameEdge?.outcome !== "deduplicated" ||
+    precedence?.frame?.parsedOpcode !== "B3" ||
+    b3Speed(precedence.frame) !== 3 ||
+    timestamp(precedence.frame?.capturedAt) === null
+  ) {
+    throw new Error("automatic B3 Admin precedence evidence is incomplete");
+  }
+  return speeds;
+}
+
 function startedEntries(trace) {
   return trace.filter((entry) => entry?.type === "audio_started");
 }
@@ -219,10 +335,9 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   ) {
     throw new Error("presence and audio native capture is incomplete");
   }
-  const cueWindows = assertArray(audio.cueWindows, "audio.cueWindows");
-  if (cueWindows.some((window) => window?.kind !== "passed")) {
-    throw new Error("presence and audio cue windows are incomplete");
-  }
+  const cueWindows = assertArray(audio.cueWindows, "audio.cueWindows").map(
+    assertDetectedCueWindow,
+  );
   const trace = assertArray(acceptance.runtimeTrace, "runtimeTrace");
   ensureMonotonicTrace(trace);
   const checkpoints = checkpointsByLabel(
@@ -357,20 +472,11 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
       );
     }
   }
-  const automaticVentSpeeds = assertArray(
-    acceptance?.automaticVent?.speeds,
-    "automaticVent.speeds",
+  const automaticVentSpeeds = assertAutomaticVentEvidence(
+    acceptance?.automaticVent,
+    initialTransitionId,
+    departureTransitionId,
   );
-  if (
-    !automaticVentSpeeds.includes(2) ||
-    !automaticVentSpeeds.includes(0) ||
-    !assertArray(
-      acceptance?.automaticVent?.protocolFrames,
-      "automaticVent.protocolFrames",
-    ).every((frame) => frame?.parsedOpcode === "B3")
-  ) {
-    throw new Error("automatic B3 evidence is incomplete");
-  }
 
   return {
     welcomeTransitions: [initialTransitionId, rearmedTransitionId],

@@ -29,6 +29,8 @@ const MODE = "full";
 const SHORT_EMPTY_MS = 1_000;
 const SUSTAINED_EMPTY_MS = 10_000;
 const TRACE_TIMEOUT_MS = 30_000;
+const ADMIN_USER = "local-testbed-admin";
+const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -259,42 +261,6 @@ async function waitForAudioLifecycle(
   };
 }
 
-async function waitForAudioStart(
-  readTrace,
-  boundary,
-  transitionPredicate,
-  dependencies,
-  label,
-) {
-  const transition = await waitForTraceEntry(
-    readTrace,
-    boundary,
-    (entry) =>
-      entry?.type === "journey_transition" && transitionPredicate(entry),
-    dependencies,
-    `${label} transition`,
-  );
-  const transitionId = required(
-    transition.entry.transitionId,
-    `${label} transitionId`,
-  );
-  const started = await waitForTraceEntry(
-    readTrace,
-    Number(transition.entry.id),
-    (entry) =>
-      entry?.type === "audio_started" &&
-      entry?.transitionId === transitionId &&
-      entry?.message === "native",
-    dependencies,
-    `${label} native audio start`,
-  );
-  return {
-    transitionId,
-    startedTraceId: Number(started.entry.id),
-    trace: started.trace,
-  };
-}
-
 function categoryKeyFromTransition(transitionId) {
   const match = /^category:category-entry-([a-z0-9_-]+)-\d+$/i.exec(
     transitionId,
@@ -364,20 +330,232 @@ function captureSummary(stopReport) {
   };
 }
 
-function automaticVentEvidence(evidence, beforeFrameCount) {
-  const frames = (evidence?.rawFrames ?? []).slice(beforeFrameCount);
-  const b3Frames = frames.filter((frame) => frame?.parsedOpcode === "B3");
-  const speeds = b3Frames
-    .map((frame) => String(frame?.rawFrameHex ?? "").toLowerCase())
-    .map((frame) => /^55b3(0[0-4])$/.exec(frame)?.[1] ?? null)
-    .filter(Boolean)
-    .map((value) => Number.parseInt(value, 16));
-  if (!speeds.includes(2) || !speeds.includes(0)) {
+function b3Speed(frame) {
+  const value = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""))?.[1];
+  return value ? Number.parseInt(value, 16) : null;
+}
+
+function stableEdgeId(transitionId) {
+  const match = /^vision:presence-(\d+):(welcome|departed)$/.exec(
+    required(transitionId, "presence transition id"),
+  );
+  if (!match)
+    throw new Error(`presence transition id is invalid: ${transitionId}`);
+  return `presence-${match[1]}:${match[2] === "welcome" ? "arrival" : "departure"}`;
+}
+
+function b3FramesSince(evidence, beforeFrameCount) {
+  return (evidence?.rawFrames ?? [])
+    .slice(beforeFrameCount)
+    .filter((frame) => frame?.parsedOpcode === "B3")
+    .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
+}
+
+function serialFrameCount(evidence) {
+  return Array.isArray(evidence?.rawFrames) ? evidence.rawFrames.length : 0;
+}
+
+async function waitForB3Sequence(
+  guestInput,
+  sessionId,
+  beforeFrameCount,
+  expectedSpeeds,
+  dependencies,
+) {
+  const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
+  let evidence = null;
+  do {
+    evidence = await dependencies.controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+    );
+    const frames = b3FramesSince(evidence, beforeFrameCount);
+    if (
+      frames.map((frame) => frame.speed).join(",") === expectedSpeeds.join(",")
+    ) {
+      return { evidence, frames };
+    }
+    await dependencies.sleep(100);
+  } while (dependencies.now() < deadline);
+  throw new Error(
+    `B3 sequence ${expectedSpeeds.join(",")} was not observed: ${JSON.stringify(b3FramesSince(evidence, beforeFrameCount))}`,
+  );
+}
+
+function automaticVentEvidence({
+  frames,
+  initialTransitionId,
+  departureTransitionId,
+  adminOverride,
+  duplicateSameEdge,
+}) {
+  const speeds = frames.map((frame) => frame.speed);
+  if (speeds.join(",") !== "2,3,0") {
     throw new Error(
-      `automatic B3 evidence is incomplete: ${JSON.stringify(b3Frames)}`,
+      `automatic B3 evidence must be exactly 2,3,0: ${JSON.stringify(frames)}`,
     );
   }
-  return { protocolFrames: b3Frames, speeds };
+  const [arrivalFrame, adminFrame, departureFrame] = frames;
+  const arrivalAt = Date.parse(arrivalFrame?.capturedAt);
+  const departureAt = Date.parse(departureFrame?.capturedAt);
+  if (!Number.isFinite(arrivalAt) || !Number.isFinite(departureAt)) {
+    throw new Error("automatic B3 evidence requires capturedAt timestamps");
+  }
+  const guardElapsedMs = departureAt - arrivalAt;
+  if (guardElapsedMs < 5_000) {
+    throw new Error(
+      `automatic B3 guard was shorter than 5 seconds: ${guardElapsedMs}`,
+    );
+  }
+  if (
+    adminOverride?.requestedSpeed !== 3 ||
+    adminOverride?.resultStatus !== "succeeded" ||
+    duplicateSameEdge?.outcome !== "deduplicated"
+  ) {
+    throw new Error("automatic B3 Admin precedence evidence is incomplete");
+  }
+  return {
+    protocolFrames: [arrivalFrame, departureFrame],
+    speeds: [2, 0],
+    guardElapsedMs,
+    edgeCorrelation: [
+      {
+        edgeId: stableEdgeId(initialTransitionId),
+        transitionId: initialTransitionId,
+        speed: 2,
+        frame: arrivalFrame,
+      },
+      {
+        edgeId: stableEdgeId(departureTransitionId),
+        transitionId: departureTransitionId,
+        speed: 0,
+        frame: departureFrame,
+      },
+    ],
+    adminPrecedence: {
+      ...adminOverride,
+      frame: adminFrame,
+      duplicateSameEdge,
+    },
+  };
+}
+
+function aggregateCapture(cueWindows) {
+  const captures = cueWindows.map((window) => window.capture);
+  if (captures.length === 0) throw new Error("audio cue captures are empty");
+  return {
+    nonSilentFrameCount: captures.reduce(
+      (total, capture) => total + capture.nonSilentFrameCount,
+      0,
+    ),
+    peakAbsoluteSample: Math.max(
+      ...captures.map((capture) => capture.peakAbsoluteSample),
+    ),
+    startedAt: captures[0].startedAt,
+    completedAt: captures.at(-1).completedAt,
+  };
+}
+
+function apiBaseUrl(guestInput) {
+  return required(
+    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    "runtimeBootstrap.provisioningApiBaseUrl",
+  ).replace(/\/+$/, "");
+}
+
+function daemonBaseUrl(handoff) {
+  const healthzUrl = required(
+    handoff?.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
+  if (!healthzUrl.endsWith("/healthz")) {
+    throw new Error("daemon healthzUrl must end with /healthz");
+  }
+  return healthzUrl.slice(0, -"/healthz".length);
+}
+
+function unwrapServiceApiEnvelope(payload) {
+  if (payload?.code === 0 && Object.hasOwn(payload, "data"))
+    return payload.data;
+  return payload;
+}
+
+async function issueAdminVentOverride(guestInput, dependencies) {
+  const request = async (path, options = {}) =>
+    unwrapServiceApiEnvelope(
+      await dependencies.fetchJson(`${apiBaseUrl(guestInput)}${path}`, options),
+    );
+  const login = await request("/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: ADMIN_USER, password: ADMIN_PASSWORD }),
+  });
+  const token = required(login?.accessToken, "admin accessToken");
+  const machines = await request("/machines?page=1&pageSize=100", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const machine = machines?.items?.find(
+    (entry) => entry?.code === required(guestInput.machineCode, "machineCode"),
+  );
+  if (!machine?.id) throw new Error("admin testbed machine was not found");
+  const command = await request(
+    `/machines/${machine.id}/commands/environment-control`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ventSpeed: 3 }),
+    },
+  );
+  const commandNo = required(command?.commandNo, "Admin environment commandNo");
+  const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
+  do {
+    const status = await request(`/machines/${machine.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const latest = status?.latestEnvironmentCommand;
+    if (
+      latest?.commandNo === commandNo &&
+      ["succeeded", "failed", "timeout"].includes(latest?.status)
+    ) {
+      if (latest.status !== "succeeded") {
+        throw new Error(
+          `Admin B3 override did not succeed: ${JSON.stringify(latest)}`,
+        );
+      }
+      return { commandNo, resultStatus: latest.status, requestedSpeed: 3 };
+    }
+    await dependencies.sleep(100);
+  } while (dependencies.now() < deadline);
+  throw new Error(
+    `Admin B3 override did not reach a terminal result: ${commandNo}`,
+  );
+}
+
+async function submitDuplicateAutomaticVentIntent(
+  handoff,
+  edgeId,
+  dependencies,
+) {
+  const response = await dependencies.fetchJson(
+    `${daemonBaseUrl(handoff)}/v1/intents/automatic-vent`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ edgeId, ventSpeed: 2 }),
+    },
+  );
+  if (response?.edgeId !== edgeId || response?.outcome !== "deduplicated") {
+    throw new Error(
+      `duplicate automatic vent edge was not deduplicated: ${JSON.stringify(response)}`,
+    );
+  }
+  return response;
 }
 
 function defaultDependencies() {
@@ -404,6 +582,8 @@ function defaultDependencies() {
     sleep,
     now: () => Date.now(),
     randomUUID,
+    issueAdminVentOverride,
+    submitDuplicateAutomaticVentIntent,
     artifactRoot: (outPath) =>
       join(dirname(localPath(outPath)), "presence-and-audio-artifacts"),
     makeDirectory: (path) => mkdirSync(path, { recursive: true }),
@@ -429,8 +609,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
   let handoff = null;
   let client = null;
   let vision = null;
-  let audioCaptureId = null;
-  let audioStopped = false;
+  let activeAudioCaptureId = null;
   let runtimeTrace = [];
   let artifactRoot = null;
 
@@ -476,28 +655,67 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       "commissioning serial session id",
     );
     const operationId = `presence-and-audio-${dependencies.randomUUID()}`;
-    const audioStart = await dependencies.controlPlaneRequest(
-      guestInput,
-      "/v1/audio-captures/start",
-      {
-        sessionId,
-        runId: required(guestInput.runId, "runId"),
-        lifecycleReference: `vm-lifecycle://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
-        transactionId: `transaction://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
-        targetIdentity: required(
-          guestInput.hostControlPlane?.targetIdentity,
-          "hostControlPlane.targetIdentity",
-        ),
-        runtime,
-        operationId,
-      },
-    );
-    audioCaptureId = required(audioStart?.audioCaptureId, "audio capture id");
-    dependencies.writeJson(
-      join(artifactRoot, "audio-capture-start.json"),
-      audioStart.startReport,
-    );
-    report.boundaries.windowsAudioCapture = true;
+    const cueWindows = [];
+    const cueArtifactPaths = [];
+    let cueOrdinal = 0;
+    const startCueCapture = async (label) => {
+      cueOrdinal += 1;
+      const artifactLabel = `${String(cueOrdinal).padStart(2, "0")}-${label}`;
+      const audioStart = await dependencies.controlPlaneRequest(
+        guestInput,
+        "/v1/audio-captures/start",
+        {
+          sessionId,
+          runId: required(guestInput.runId, "runId"),
+          lifecycleReference: `vm-lifecycle://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
+          transactionId: `transaction://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio.${artifactLabel}`,
+          targetIdentity: required(
+            guestInput.hostControlPlane?.targetIdentity,
+            "hostControlPlane.targetIdentity",
+          ),
+          runtime,
+          operationId: `${operationId}-${artifactLabel}`,
+        },
+      );
+      activeAudioCaptureId = required(
+        audioStart?.audioCaptureId,
+        "audio capture id",
+      );
+      const startPath = join(
+        artifactRoot,
+        `audio-capture-${artifactLabel}-start.json`,
+      );
+      dependencies.writeJson(startPath, audioStart.startReport);
+      cueArtifactPaths.push({ start: startPath, stop: null });
+      report.boundaries.windowsAudioCapture = true;
+      return { id: activeAudioCaptureId, artifactLabel };
+    };
+    const stopCueCapture = async (capture, transitionId) => {
+      const audioStop = await dependencies.controlPlaneRequest(
+        guestInput,
+        `/v1/audio-captures/${capture.id}/stop`,
+        { captureKind: "default-audio" },
+      );
+      activeAudioCaptureId = null;
+      const stopPath = join(
+        artifactRoot,
+        `audio-capture-${capture.artifactLabel}-stop.json`,
+      );
+      dependencies.writeJson(stopPath, audioStop.stopReport);
+      cueArtifactPaths.at(-1).stop = stopPath;
+      for (const artifact of audioStop.evidencePayloads ?? []) {
+        writeFileSync(
+          join(artifactRoot, `${capture.artifactLabel}-${artifact.fileName}`),
+          Buffer.from(artifact.bytesBase64, "base64"),
+          { mode: 0o600 },
+        );
+      }
+      cueWindows.push({
+        transitionId,
+        kind: "detected",
+        capture: captureSummary(audioStop.stopReport),
+      });
+    };
 
     const readTrace = async () => {
       runtimeTrace = await dependencies.readTrace(client);
@@ -511,20 +729,46 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       ? ventEvidenceBefore.rawFrames.length
       : 0;
     let boundary = traceId(await readTrace());
+    const initialCapture = await startCueCapture("initial-welcome");
     await injectVisionPresence(guestInput, "approach", dependencies);
-    const initialWelcome = await waitForAudioStart(
+    const initialWelcome = await waitForAudioLifecycle(
       readTrace,
       boundary,
       (entry) => String(entry.transitionId).endsWith(":welcome"),
       dependencies,
       "initial welcome",
     );
+    await stopCueCapture(initialCapture, initialWelcome.transitionId);
+    await waitForB3Sequence(
+      guestInput,
+      sessionId,
+      ventFrameCount,
+      [2],
+      dependencies,
+    );
+    const adminOverride = await dependencies.issueAdminVentOverride(
+      guestInput,
+      dependencies,
+    );
+    const afterAdminB3 = await waitForB3Sequence(
+      guestInput,
+      sessionId,
+      ventFrameCount,
+      [2, 3],
+      dependencies,
+    );
     const checkpoints = [
       {
         label: "stable-arrival-settled",
-        traceId: initialWelcome.startedTraceId,
+        traceId: initialWelcome.terminalTraceId,
       },
     ];
+    const duplicateSameEdge =
+      await dependencies.submitDuplicateAutomaticVentIntent(
+        handoff,
+        stableEdgeId(initialWelcome.transitionId),
+        dependencies,
+      );
     await injectVisionPresence(guestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
@@ -541,6 +785,17 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       label: "initial-duplicate-approach-settled",
       traceId: traceId(runtimeTrace),
     });
+    const duplicateB3 = await dependencies.controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+    );
+    if (
+      serialFrameCount(duplicateB3) !==
+        serialFrameCount(afterAdminB3.evidence) ||
+      b3FramesSince(duplicateB3, ventFrameCount).length !== 2
+    ) {
+      throw new Error("duplicate stable edge emitted an unexpected B3 frame");
+    }
 
     await injectVisionPresence(guestInput, "empty", dependencies);
     await dependencies.sleep(SHORT_EMPTY_MS);
@@ -575,26 +830,35 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       label: "sustained-empty-departed",
       traceId: Number(departure.entry.id),
     });
-    const automaticVent = automaticVentEvidence(
-      await dependencies.controlPlaneRequest(
-        guestInput,
-        `/v1/serial-sessions/${sessionId}/evidence`,
-      ),
+    const completeB3 = await waitForB3Sequence(
+      guestInput,
+      sessionId,
       ventFrameCount,
+      [2, 3, 0],
+      dependencies,
     );
+    const automaticVent = automaticVentEvidence({
+      frames: completeB3.frames,
+      initialTransitionId: initialWelcome.transitionId,
+      departureTransitionId: departure.entry.transitionId,
+      adminOverride,
+      duplicateSameEdge,
+    });
 
     boundary = traceId(departure.trace);
+    const rearmedCapture = await startCueCapture("rearmed-welcome");
     await injectVisionPresence(guestInput, "approach", dependencies);
-    const rearmedWelcome = await waitForAudioStart(
+    const rearmedWelcome = await waitForAudioLifecycle(
       readTrace,
       boundary,
       (entry) => String(entry.transitionId).endsWith(":welcome"),
       dependencies,
       "rearmed welcome",
     );
+    await stopCueCapture(rearmedCapture, rearmedWelcome.transitionId);
     checkpoints.push({
       label: "rearmed-arrival-settled",
-      traceId: rearmedWelcome.startedTraceId,
+      traceId: rearmedWelcome.terminalTraceId,
     });
 
     const supportedCategoryKeys = await readSupportedCategoryKeys(
@@ -604,6 +868,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     const categories = [];
     for (const expectedKey of supportedCategoryKeys) {
       boundary = traceId(await readTrace());
+      const categoryCapture = await startCueCapture(`category-${expectedKey}`);
       await dependencies.activateVisibleSelector(
         client,
         categorySelector(expectedKey),
@@ -619,6 +884,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         dependencies,
         `category ${expectedKey} entry`,
       );
+      await stopCueCapture(categoryCapture, category.transitionId);
       const categoryKey = categoryKeyFromTransition(category.transitionId);
       if (categoryKey !== expectedKey) {
         throw new Error(
@@ -734,31 +1000,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       pollMs: 250,
     });
 
-    const audioStop = await dependencies.controlPlaneRequest(
-      guestInput,
-      `/v1/audio-captures/${audioCaptureId}/stop`,
-      {
-        captureKind: "default-audio",
-      },
-    );
-    audioStopped = true;
-    dependencies.writeJson(
-      join(artifactRoot, "audio-capture-stop.json"),
-      audioStop.stopReport,
-    );
-    for (const artifact of audioStop.evidencePayloads ?? []) {
-      writeFileSync(
-        join(artifactRoot, artifact.fileName),
-        Buffer.from(artifact.bytesBase64, "base64"),
-        { mode: 0o600 },
-      );
-    }
-    const capture = captureSummary(audioStop.stopReport);
-    const requiredCueIds = [
-      initialWelcome.transitionId,
-      rearmedWelcome.transitionId,
-      ...categories.map((category) => category.transitionId),
-    ];
+    const capture = aggregateCapture(cueWindows);
     const acceptance = {
       schemaVersion: "presence-and-audio-production-acceptance/v1",
       result: "passed",
@@ -771,10 +1013,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       audio: {
         source: "windows_default_output",
         capture,
-        cueWindows: requiredCueIds.map((transitionId) => ({
-          transitionId,
-          kind: "passed",
-        })),
+        cueWindows,
       },
       runtimeTrace,
       checkpoints,
@@ -822,8 +1061,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     report.presenceAndAudio = acceptance;
     report.artifacts = {
       directory: artifactRoot,
-      audioStartReport: join(artifactRoot, "audio-capture-start.json"),
-      audioStopReport: join(artifactRoot, "audio-capture-stop.json"),
+      audioCueCaptures: cueArtifactPaths,
       runtimeTrace: join(artifactRoot, "runtime-trace.json"),
       log: logPath,
       screenshot: { path: screenshotPath, ...screenshot },
@@ -841,11 +1079,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       runtimeTrace,
     };
   } finally {
-    if (guestInput && audioCaptureId && !audioStopped) {
+    if (guestInput && activeAudioCaptureId) {
       await dependencies
         .controlPlaneRequest(
           guestInput,
-          `/v1/audio-captures/${audioCaptureId}/cancel`,
+          `/v1/audio-captures/${activeAudioCaptureId}/cancel`,
         )
         .catch((error) => {
           report.cleanupError =
@@ -881,8 +1119,17 @@ export function validatePresenceAndAudioGuestReport(report) {
   ) {
     throw new Error("presence and audio guest boundaries are incomplete");
   }
-  for (const name of ["audioStartReport", "audioStopReport", "runtimeTrace"]) {
+  for (const name of ["runtimeTrace"]) {
     required(report?.artifacts?.[name], `presence and audio artifact ${name}`);
+  }
+  if (
+    !Array.isArray(report.artifacts.audioCueCaptures) ||
+    report.artifacts.audioCueCaptures.length === 0 ||
+    report.artifacts.audioCueCaptures.some(
+      (capture) => !capture?.start || !capture?.stop,
+    )
+  ) {
+    throw new Error("presence and audio cue capture artifacts are incomplete");
   }
   const summary = validatePresenceAndAudioAcceptanceEvidence(
     report.presenceAndAudio,

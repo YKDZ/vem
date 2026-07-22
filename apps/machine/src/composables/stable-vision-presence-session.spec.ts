@@ -36,6 +36,22 @@ function absent(eventId: string): void {
   });
 }
 
+function lowConfidenceProfile(eventId: string): void {
+  useVisionStore().applyLatestProfileResult({
+    source: "front",
+    eventId,
+    detectedAt: "2026-07-22T10:00:02.000Z",
+    occupancy: { state: "single", confidence: 0.2 },
+    quality: {
+      overall: "low_confidence",
+      warnings: [],
+      profileUsable: false,
+      notUsableReason: "low_confidence",
+    },
+    profile: { personPresent: true, confidence: 0.2 },
+  });
+}
+
 describe("stable Vision presence session", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -56,7 +72,7 @@ describe("stable Vision presence session", () => {
     expect(session.state.value).toMatchObject({
       present: true,
       edge: "arrival",
-      edgeId: "vision-presence-1:arrival",
+      edgeId: "presence-1:arrival",
     });
 
     present("PRESENT-2");
@@ -68,11 +84,11 @@ describe("stable Vision presence session", () => {
     expect(session.state.value).toMatchObject({
       present: false,
       edge: "departure",
-      edgeId: "vision-presence-2:departure",
+      edgeId: "presence-2:departure",
     });
 
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(session.state.value.edgeId).toBe("vision-presence-2:departure");
+    expect(session.state.value.edgeId).toBe("presence-2:departure");
   });
 
   it("cancels short absence and freezes an established session while Vision is unavailable", async () => {
@@ -84,7 +100,7 @@ describe("stable Vision presence session", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(session.state.value).toMatchObject({
       present: true,
-      edgeId: "vision-presence-1:arrival",
+      edgeId: "presence-1:arrival",
     });
 
     useVisionStore().applyStatus({
@@ -96,7 +112,36 @@ describe("stable Vision presence session", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(session.state.value).toMatchObject({
       present: true,
-      edgeId: "vision-presence-1:arrival",
+      edgeId: "presence-1:arrival",
+    });
+  });
+
+  it("requires an available, confident observation and freezes active absence when observation becomes unknown", async () => {
+    const session = getStableVisionPresenceSession();
+
+    lowConfidenceProfile("PROFILE-LOW-1");
+    await nextTick();
+    expect(session.state.value).toMatchObject({
+      present: false,
+      edge: null,
+      edgeId: null,
+    });
+
+    present("PRESENT-1");
+    absent("ABSENT-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    useVisionStore().applyStatus({
+      enabled: true,
+      online: false,
+      message: "Vision unavailable",
+      latestDiagnosticPayload: null,
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(session.state.value).toMatchObject({
+      present: true,
+      edge: "arrival",
+      edgeId: "presence-1:arrival",
     });
   });
 });

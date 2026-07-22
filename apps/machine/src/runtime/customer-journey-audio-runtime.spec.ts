@@ -7,8 +7,8 @@ import { nextTick } from "vue";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import { resetCustomerInteractionSessionForTests } from "@/composables/customer-interaction-session";
 import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
-import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 
 const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
   let activeTerminal:
@@ -117,7 +117,7 @@ describe("Customer journey audio runtime", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
-    resetCustomerPresenceSessionForTests();
+    resetCustomerInteractionSessionForTests();
     resetStableVisionPresenceSessionForTests();
     runtime = null;
     vi.clearAllMocks();
@@ -125,7 +125,7 @@ describe("Customer journey audio runtime", () => {
 
   afterEach(async () => {
     await runtime?.dispose();
-    resetCustomerPresenceSessionForTests();
+    resetCustomerInteractionSessionForTests();
     resetStableVisionPresenceSessionForTests();
   });
 
@@ -218,6 +218,7 @@ describe("Customer journey audio runtime", () => {
       close: false,
       closeTrigger: null,
       proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
     });
     await vi.waitFor(() => {
       expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
@@ -237,6 +238,7 @@ describe("Customer journey audio runtime", () => {
       close: false,
       closeTrigger: null,
       proximity: { present: false },
+      occupancy: { state: "none", confidence: 0.91 },
     });
     await nextTick();
     await vi.advanceTimersByTimeAsync(9_999);
@@ -251,6 +253,7 @@ describe("Customer journey audio runtime", () => {
       close: false,
       closeTrigger: null,
       proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
     });
     await nextTick();
     await vi.advanceTimersByTimeAsync(1);
@@ -266,9 +269,10 @@ describe("Customer journey audio runtime", () => {
         ),
     ).toHaveLength(1);
     expect(submitAutomaticVentIntent).toHaveBeenCalledWith({
-      edgeId: "vision-presence-1:arrival",
+      edgeId: "presence-1:arrival",
       ventSpeed: 2,
     });
+    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 

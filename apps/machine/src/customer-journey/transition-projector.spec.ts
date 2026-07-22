@@ -256,6 +256,8 @@ describe("Customer Journey Transition Projector", () => {
           lastSeenAt: "2026-07-18T08:11:00.000Z",
           departedAt: null,
           lastChangedAt: "2026-07-18T08:11:00.000Z",
+          edge: "arrival" as const,
+          edgeId: "presence-1:arrival",
         },
       },
       "presence.welcome",
@@ -269,6 +271,8 @@ describe("Customer Journey Transition Projector", () => {
           lastSeenAt: "2026-07-18T08:12:00.000Z",
           departedAt: null,
           lastChangedAt: "2026-07-18T08:12:00.000Z",
+          edge: "arrival" as const,
+          edgeId: "presence-1:arrival",
         },
       },
       "privacy.crowd_detected",
@@ -282,6 +286,8 @@ describe("Customer Journey Transition Projector", () => {
           lastSeenAt: "2026-07-18T08:13:00.000Z",
           departedAt: "2026-07-18T08:13:01.000Z",
           lastChangedAt: "2026-07-18T08:13:01.000Z",
+          edge: "departure" as const,
+          edgeId: "presence-1:departure",
         },
       },
       "presence.departed",
@@ -295,7 +301,7 @@ describe("Customer Journey Transition Projector", () => {
     expect(repeated).toEqual([]);
   });
 
-  it("consumes Vision presence edges without replaying welcome or departure during a touchscreen session", () => {
+  it("projects stable Vision edges once even while a touchscreen session is active", () => {
     const projector = createCustomerJourneyTransitionProjector();
     const touchscreen = {
       personPresent: true,
@@ -313,9 +319,11 @@ describe("Customer Journey Transition Projector", () => {
           lastSeenAt: "2026-07-18T08:20:01.000Z",
           departedAt: null,
           lastChangedAt: "2026-07-18T08:20:01.000Z",
+          edge: "arrival",
+          edgeId: "presence-1:arrival",
         },
       }),
-    ).toEqual([]);
+    ).toContainEqual(expect.objectContaining({ kind: "presence.welcome" }));
     expect(
       projector.project({
         touchscreen,
@@ -325,9 +333,11 @@ describe("Customer Journey Transition Projector", () => {
           lastSeenAt: "2026-07-18T08:20:01.000Z",
           departedAt: "2026-07-18T08:20:02.000Z",
           lastChangedAt: "2026-07-18T08:20:02.000Z",
+          edge: "departure",
+          edgeId: "presence-2:departure",
         },
       }),
-    ).toEqual([]);
+    ).toContainEqual(expect.objectContaining({ kind: "presence.departed" }));
   });
 
   it("remembers a restored touchscreen fact without replaying it", () => {
@@ -358,6 +368,8 @@ describe("Customer Journey Transition Projector", () => {
         lastSeenAt: "2026-07-18T08:15:00.000Z",
         departedAt: null,
         lastChangedAt: "2026-07-18T08:15:00.000Z",
+        edge: "arrival" as const,
+        edgeId: "presence-restored:arrival",
         restored: true,
       },
     };
@@ -397,6 +409,8 @@ describe("Customer Journey Transition Projector", () => {
         lastSeenAt: "2026-07-18T08:21:00.000Z",
         departedAt: null,
         lastChangedAt: "2026-07-18T08:21:00.000Z",
+        edge: "arrival",
+        edgeId: "presence-1:arrival",
       },
     });
     const repeatedPresence = projector.project({
@@ -406,6 +420,8 @@ describe("Customer Journey Transition Projector", () => {
         lastSeenAt: "2026-07-18T08:21:10.000Z",
         departedAt: null,
         lastChangedAt: "2026-07-18T08:21:10.000Z",
+        edge: "arrival",
+        edgeId: "presence-1:arrival",
       },
     });
     const departure = projector.project({
@@ -415,6 +431,8 @@ describe("Customer Journey Transition Projector", () => {
         lastSeenAt: "2026-07-18T08:21:10.000Z",
         departedAt: "2026-07-18T08:21:20.000Z",
         lastChangedAt: "2026-07-18T08:21:20.000Z",
+        edge: "departure",
+        edgeId: "presence-2:departure",
       },
     });
     const repeatedDeparture = projector.project({
@@ -424,6 +442,8 @@ describe("Customer Journey Transition Projector", () => {
         lastSeenAt: "2026-07-18T08:21:10.000Z",
         departedAt: "2026-07-18T08:21:30.000Z",
         lastChangedAt: "2026-07-18T08:21:30.000Z",
+        edge: "departure",
+        edgeId: "presence-2:departure",
       },
     });
 

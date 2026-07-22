@@ -12,8 +12,8 @@ import {
   mapCustomerJourneyAudioPresentation,
   type CustomerAudioPresentationContext,
 } from "@/audio-coordinator/customer-audio-presentation";
+import { getCustomerInteractionSession } from "@/composables/customer-interaction-session";
 import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
-import { getCustomerPresenceSession } from "@/composables/usePresenceInteraction";
 import {
   createCustomerJourneyTransitionProjector,
   type CustomerJourneyFacts,
@@ -52,8 +52,9 @@ export function createCustomerJourneyAudioRuntime(
   scope.run(() => {
     const checkoutStore = useCheckoutStore(pinia);
     const customerJourneyStore = useCustomerJourneyStore(pinia);
-    const session = getCustomerPresenceSession();
+    const session = getCustomerInteractionSession();
     const stableVisionSession = getStableVisionPresenceSession();
+    let submittedStableVentEdgeId: string | null = null;
 
     watch(
       () =>
@@ -75,6 +76,8 @@ export function createCustomerJourneyAudioRuntime(
       }),
       ({ edge, edgeId }) => {
         if (!edge || !edgeId) return;
+        if (submittedStableVentEdgeId === edgeId) return;
+        submittedStableVentEdgeId = edgeId;
         const ventSpeed = edge === "arrival" ? 2 : 0;
         // Presence experience must remain responsive when the daemon or lower
         // controller cannot accept this optional environmental intent.
@@ -107,7 +110,7 @@ export function createCustomerJourneyAudioRuntime(
 function customerJourneyFacts(input: {
   checkoutStore: ReturnType<typeof useCheckoutStore>;
   customerJourneyStore: ReturnType<typeof useCustomerJourneyStore>;
-  session: ReturnType<typeof getCustomerPresenceSession>;
+  session: ReturnType<typeof getCustomerInteractionSession>;
   stableVisionSession: ReturnType<typeof getStableVisionPresenceSession>;
 }): CustomerJourneyFacts {
   const selectedItem = input.checkoutStore.selectedItem;
@@ -119,20 +122,23 @@ function customerJourneyFacts(input: {
 
   return {
     touchscreen: {
-      personPresent: customerSession.personPresent,
-      source: customerSession.source,
+      personPresent: customerSession.active,
+      source: "local_interaction",
       lastInteractionAt: customerSession.lastInteractionAt,
     },
     vision:
       stableVision.edgeId !== null
         ? {
             personPresent: stableVision.present,
-            occupancyState: stableVision.present ? "single" : "none",
+            occupancyState: stableVision.occupancyState,
             lastSeenAt: stableVision.lastSeenAt,
             departedAt: stableVision.departedAt,
             lastChangedAt: stableVision.present
               ? stableVision.lastSeenAt
               : stableVision.departedAt,
+            edge: stableVision.edge,
+            edgeId: stableVision.edgeId,
+            restored: stableVision.restored,
           }
         : null,
     categoryEntry: categoryEntry

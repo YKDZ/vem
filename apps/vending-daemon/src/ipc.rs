@@ -616,7 +616,11 @@ async fn automatic_vent_intent(
             "automatic vent intent requires a stable presence edge id".to_string(),
         );
     }
-    match ctx.automatic_vent.request(request.vent_speed).await {
+    match ctx
+        .automatic_vent
+        .request(&request.edge_id, request.vent_speed)
+        .await
+    {
         Ok(outcome) => Json(serde_json::json!({
             "edgeId": request.edge_id,
             "outcome": outcome,
@@ -727,6 +731,17 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
             message: scanner.message,
             updated_at: scanner.updated_at,
         });
+    let automatic_vent = ctx.automatic_vent.health_component().await;
+    if matches!(
+        automatic_vent.level,
+        vending_core::health::HealthLevel::Degraded
+    ) {
+        snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+        if snapshot.operator_reason.is_empty() {
+            snapshot.operator_reason = automatic_vent.code.clone();
+        }
+    }
+    snapshot.components.push(automatic_vent);
     if !hardware.online {
         snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
         snapshot.operator_reason = "LOWER_CONTROLLER_UNAVAILABLE".to_string();

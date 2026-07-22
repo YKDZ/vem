@@ -146,6 +146,18 @@ async fn run_console_cycle(
         lower_port,
         Some(data_dir.join("logs").join("serial-protocol.jsonl")),
     )?;
+    let automatic_vent = crate::automatic_vent::AutomaticVentController::new(
+        hardware.clone(),
+        runtime.shutdown_token(),
+    )
+    .with_evidence(
+        state.clone(),
+        data_dir.join("logs").join("machine-events.jsonl"),
+    );
+    // Close the B3 vent before exposing this runtime. Failure is preserved as
+    // environment evidence and does not turn an optional customer experience
+    // capability into a sale-start gate.
+    let _ = automatic_vent.close_for_lifecycle("runtime-startup").await;
 
     let (tx_raw, rx_raw) = mpsc::channel::<ArmedPaymentCode>(16);
     let (events_tx, _) = broadcast::channel(64);
@@ -211,10 +223,7 @@ async fn run_console_cycle(
         runtime_sources: runtime_sources.clone(),
         state: state.clone(),
         hardware: hardware.clone(),
-        automatic_vent: crate::automatic_vent::AutomaticVentController::new(
-            hardware.clone(),
-            runtime.shutdown_token(),
-        ),
+        automatic_vent: automatic_vent.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw,
         scanner_runtime: scanner_runtime.clone(),
@@ -337,7 +346,7 @@ async fn run_console_cycle(
         events_tx,
         state,
         stop_token.clone(),
-        ipc_ctx,
+        ipc_ctx.clone(),
     )? {
         tasks.push(task);
     }
@@ -349,6 +358,11 @@ async fn run_console_cycle(
             if external_shutdown.is_cancelled() { ConsoleCycleExit::Stop } else { ConsoleCycleExit::Reconfigure }
         }
     };
+    // The runtime shutdown token is cancelled by runtime.stop(). Close B3
+    // first so the controller can still claim the shared serial owner and
+    // obey the protocol guard.
+    let _ = automatic_vent.close_for_lifecycle("runtime-shutdown").await;
+    automatic_vent.close().await;
     runtime.stop().await?;
     scanner_runtime.stop().await?;
     ipc_handle.shutdown.cancel();

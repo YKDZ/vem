@@ -17,8 +17,12 @@ function report() {
       windowsAudioCapture: true,
     },
     artifacts: {
-      audioStartReport: "C:\\artifacts\\audio-capture-start.json",
-      audioStopReport: "C:\\artifacts\\audio-capture-stop.json",
+      audioCueCaptures: [
+        {
+          start: "C:\\artifacts\\audio-capture-01-start.json",
+          stop: "C:\\artifacts\\audio-capture-01-stop.json",
+        },
+      ],
       runtimeTrace: "C:\\artifacts\\runtime-trace.json",
     },
     presenceAndAudio: {
@@ -37,9 +41,36 @@ function report() {
           peakAbsoluteSample: 2_048,
         },
         cueWindows: [
-          { transitionId: "vision:presence-1:welcome", kind: "passed" },
-          { transitionId: "vision:presence-3:welcome", kind: "passed" },
-          { transitionId: "category:category-entry-socks-1", kind: "passed" },
+          {
+            transitionId: "vision:presence-1:welcome",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:00.000Z",
+              completedAt: "2026-07-22T08:00:01.000Z",
+            },
+          },
+          {
+            transitionId: "vision:presence-3:welcome",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:06.000Z",
+              completedAt: "2026-07-22T08:00:07.000Z",
+            },
+          },
+          {
+            transitionId: "category:category-entry-socks-1",
+            kind: "detected",
+            capture: {
+              nonSilentFrameCount: 1_200,
+              peakAbsoluteSample: 2_048,
+              startedAt: "2026-07-22T08:00:10.000Z",
+              completedAt: "2026-07-22T08:00:11.000Z",
+            },
+          },
         ],
       },
       runtimeTrace: [
@@ -233,10 +264,55 @@ function report() {
       },
       automaticVent: {
         protocolFrames: [
-          { parsedOpcode: "B3", rawFrameHex: "55b302" },
-          { parsedOpcode: "B3", rawFrameHex: "55b300" },
+          {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+            capturedAt: "2026-07-22T08:00:00.000Z",
+          },
+          {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b300",
+            capturedAt: "2026-07-22T08:00:05.000Z",
+          },
         ],
         speeds: [2, 0],
+        guardElapsedMs: 5_000,
+        edgeCorrelation: [
+          {
+            edgeId: "presence-1:arrival",
+            transitionId: "vision:presence-1:welcome",
+            speed: 2,
+            frame: {
+              parsedOpcode: "B3",
+              rawFrameHex: "55b302",
+              capturedAt: "2026-07-22T08:00:00.000Z",
+            },
+          },
+          {
+            edgeId: "presence-2:departure",
+            transitionId: "vision:presence-2:departed",
+            speed: 0,
+            frame: {
+              parsedOpcode: "B3",
+              rawFrameHex: "55b300",
+              capturedAt: "2026-07-22T08:00:05.000Z",
+            },
+          },
+        ],
+        adminPrecedence: {
+          commandNo: "environment-command-1",
+          requestedSpeed: 3,
+          resultStatus: "succeeded",
+          frame: {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b303",
+            capturedAt: "2026-07-22T08:00:01.000Z",
+          },
+          duplicateSameEdge: {
+            edgeId: "presence-1:arrival",
+            outcome: "deduplicated",
+          },
+        },
       },
     },
   };
@@ -328,6 +404,7 @@ describe("presence and audio guest full", () => {
     };
     let approachCount = 0;
     let serialEvidenceReads = 0;
+    let audioCaptureOrdinal = 0;
     let now = 0;
     let audioStopBody = null;
     const report = await runPresenceAndAudioGuestFull(
@@ -466,11 +543,13 @@ describe("presence and audio guest full", () => {
         randomUUID: () => "operation-1",
         controlPlaneRequest: async (_input, path, body) => {
           calls.push(path);
-          if (path === "/v1/audio-captures/start")
+          if (path === "/v1/audio-captures/start") {
+            audioCaptureOrdinal += 1;
             return {
-              audioCaptureId: "audio-1",
+              audioCaptureId: `audio-${audioCaptureOrdinal}`,
               startReport: { started: true },
             };
+          }
           if (path.endsWith("/stop")) {
             audioStopBody = body;
             return {
@@ -494,14 +573,57 @@ describe("presence and audio guest full", () => {
               rawFrames:
                 serialEvidenceReads === 1
                   ? []
-                  : [
-                      { parsedOpcode: "B3", rawFrameHex: "55b302" },
-                      { parsedOpcode: "B3", rawFrameHex: "55b300" },
-                    ],
+                  : serialEvidenceReads === 2
+                    ? [
+                        {
+                          parsedOpcode: "B3",
+                          rawFrameHex: "55b302",
+                          capturedAt: "2026-07-22T08:00:00.000Z",
+                        },
+                      ]
+                    : serialEvidenceReads < 5
+                      ? [
+                          {
+                            parsedOpcode: "B3",
+                            rawFrameHex: "55b302",
+                            capturedAt: "2026-07-22T08:00:00.000Z",
+                          },
+                          {
+                            parsedOpcode: "B3",
+                            rawFrameHex: "55b303",
+                            capturedAt: "2026-07-22T08:00:01.000Z",
+                          },
+                        ]
+                      : [
+                          {
+                            parsedOpcode: "B3",
+                            rawFrameHex: "55b302",
+                            capturedAt: "2026-07-22T08:00:00.000Z",
+                          },
+                          {
+                            parsedOpcode: "B3",
+                            rawFrameHex: "55b303",
+                            capturedAt: "2026-07-22T08:00:01.000Z",
+                          },
+                          {
+                            parsedOpcode: "B3",
+                            rawFrameHex: "55b300",
+                            capturedAt: "2026-07-22T08:00:05.000Z",
+                          },
+                        ],
             };
           }
           throw new Error(`unexpected control-plane call ${path}`);
         },
+        issueAdminVentOverride: async () => ({
+          commandNo: "environment-command-1",
+          requestedSpeed: 3,
+          resultStatus: "succeeded",
+        }),
+        submitDuplicateAutomaticVentIntent: async (_handoff, edgeId) => ({
+          edgeId,
+          outcome: "deduplicated",
+        }),
       },
     );
     assert.equal(report.ok, true, JSON.stringify(report.error));
@@ -548,8 +670,18 @@ describe("presence and audio guest full", () => {
       false,
     );
     assert.deepEqual(audioStopBody, { captureKind: "default-audio" });
-    assert.ok(calls.includes("/v1/audio-captures/start"));
-    assert.ok(calls.includes("/v1/audio-captures/audio-1/stop"));
+    assert.equal(
+      calls.filter((value) => value === "/v1/audio-captures/start").length,
+      4,
+    );
+    assert.equal(calls.filter((value) => value.endsWith("/stop")).length, 4);
+    assert.equal(report.presenceAndAudio.audio.cueWindows.length, 4);
+    assert.ok(
+      report.presenceAndAudio.audio.cueWindows.every(
+        (window) =>
+          window.kind === "detected" && window.capture.nonSilentFrameCount > 0,
+      ),
+    );
     assert.ok(report.presenceAndAudio.runtimeTrace.length > 0);
     assert.equal(writes.get("C:\\out.json").ok, true);
   });

@@ -90,7 +90,8 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
-import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
+import { resetCustomerInteractionSessionForTests } from "@/composables/customer-interaction-session";
+import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -113,7 +114,8 @@ let propertyRestorers: Array<() => void> = [];
 let capabilityRevision = 0;
 
 beforeEach(() => {
-  resetCustomerPresenceSessionForTests();
+  resetCustomerInteractionSessionForTests();
+  resetStableVisionPresenceSessionForTests();
   pinia = createPinia();
   setActivePinia(pinia);
   window.localStorage.clear();
@@ -177,7 +179,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCustomerPresenceSessionForTests();
+  resetCustomerInteractionSessionForTests();
+  resetStableVisionPresenceSessionForTests();
   unmountMountedView();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -1129,6 +1132,7 @@ describe("sale-start capability UI flow", () => {
         source: "front",
         eventId: "presence-before-refresh",
         detectedAt: "2026-07-14T00:00:00.000Z",
+        occupancy: { state: "single", confidence: 0.9 },
         profile: {
           personPresent: true,
           heightCm: 170,
@@ -1173,6 +1177,7 @@ describe("sale-start capability UI flow", () => {
         source: "front",
         eventId: "vision-event-001",
         detectedAt: "2026-06-12T10:20:30.000Z",
+        occupancy: { state: "single", confidence: 0.91 },
         profile: {
           personPresent: true,
           heightCm: 172,

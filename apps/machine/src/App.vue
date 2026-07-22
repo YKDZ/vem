@@ -5,7 +5,7 @@ import { RouterView, useRoute } from "vue-router";
 
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
 import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
-import { installPresenceDepartureNavigation } from "@/composables/usePresenceInteraction";
+import { installStableVisionPresenceDepartureNavigation } from "@/composables/stable-vision-presence-session";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { router } from "@/router";
@@ -20,7 +20,7 @@ const pinia = getActivePinia();
 if (!pinia)
   throw new Error("Machine runtime requires an active Pinia instance");
 const cleanupActiveTransactionSync = installActiveTransactionSync();
-installPresenceDepartureNavigation();
+installStableVisionPresenceDepartureNavigation();
 installActiveUiDebugRuntimeScenario();
 installInstalledKioskSaleRouteObserver(router);
 

@@ -53,6 +53,22 @@ function traceLifecycle(transitionId, startId, at) {
   ];
 }
 
+function detectedCueWindow(transitionId, offsetSeconds) {
+  const startedAt = new Date(
+    Date.parse("2026-07-22T08:00:00.000Z") + offsetSeconds * 1_000,
+  ).toISOString();
+  return {
+    transitionId,
+    kind: "detected",
+    capture: {
+      nonSilentFrameCount: 2_400,
+      peakAbsoluteSample: 2_048,
+      startedAt,
+      completedAt: new Date(Date.parse(startedAt) + 1_000).toISOString(),
+    },
+  };
+}
+
 function passingAcceptance() {
   const initialWelcome = "vision:presence-1:welcome";
   const departed = "vision:presence-2:departed";
@@ -75,10 +91,10 @@ function passingAcceptance() {
         peakAbsoluteSample: 3_072,
       },
       cueWindows: [
-        { transitionId: initialWelcome, kind: "passed" },
-        { transitionId: rearmedWelcome, kind: "passed" },
-        { transitionId: socks, kind: "passed" },
-        { transitionId: underwear, kind: "passed" },
+        detectedCueWindow(initialWelcome, 0),
+        detectedCueWindow(rearmedWelcome, 6),
+        detectedCueWindow(socks, 10),
+        detectedCueWindow(underwear, 15),
       ],
     },
     runtimeTrace: [
@@ -166,10 +182,55 @@ function passingAcceptance() {
     },
     automaticVent: {
       protocolFrames: [
-        { parsedOpcode: "B3", rawFrameHex: "55b302" },
-        { parsedOpcode: "B3", rawFrameHex: "55b300" },
+        {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+          capturedAt: "2026-07-22T08:00:00.000Z",
+        },
+        {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b300",
+          capturedAt: "2026-07-22T08:00:05.000Z",
+        },
       ],
       speeds: [2, 0],
+      guardElapsedMs: 5_000,
+      edgeCorrelation: [
+        {
+          edgeId: "presence-1:arrival",
+          transitionId: initialWelcome,
+          speed: 2,
+          frame: {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+            capturedAt: "2026-07-22T08:00:00.000Z",
+          },
+        },
+        {
+          edgeId: "presence-2:departure",
+          transitionId: departed,
+          speed: 0,
+          frame: {
+            parsedOpcode: "B3",
+            rawFrameHex: "55b300",
+            capturedAt: "2026-07-22T08:00:05.000Z",
+          },
+        },
+      ],
+      adminPrecedence: {
+        commandNo: "environment-command-1",
+        requestedSpeed: 3,
+        resultStatus: "succeeded",
+        frame: {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b303",
+          capturedAt: "2026-07-22T08:00:01.000Z",
+        },
+        duplicateSameEdge: {
+          edgeId: "presence-1:arrival",
+          outcome: "deduplicated",
+        },
+      },
     },
   };
 }

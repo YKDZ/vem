@@ -33,7 +33,7 @@ export type CustomerJourneyTransition = {
 export type CustomerJourneyFacts = {
   touchscreen?: {
     personPresent: boolean;
-    source: "local_interaction" | "vision" | "inactivity" | "unavailable";
+    source: "local_interaction";
     lastInteractionAt: string | null;
     restored?: boolean;
   } | null;
@@ -43,6 +43,8 @@ export type CustomerJourneyFacts = {
     lastSeenAt: string | null;
     departedAt: string | null;
     lastChangedAt: string | null;
+    edge: "arrival" | "departure" | null;
+    edgeId: string | null;
     restored?: boolean;
   } | null;
   categoryEntry?: {
@@ -141,33 +143,33 @@ function projectCandidates(
   }
 
   const vision = facts.vision;
-  const visionProfile = profileForVision(vision);
   const visionEdge = semanticEdges.observeVision(
-    visionProfile,
-    vision?.departedAt !== null && vision?.departedAt !== undefined,
+    vision?.edgeId ?? null,
+    vision?.edge ?? null,
+    vision?.occupancyState ?? "none",
   );
   if (visionEdge === "crowd") {
     candidates.push(
       transition({
-        transitionId: semanticEdges.nextVisionTransitionId("crowd"),
+        transitionId: visionTransitionId(vision?.edgeId, "crowd"),
         kind: "privacy.crowd_detected",
         category: "presence",
         occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
       }),
     );
-  } else if (visionEdge === "welcome" && !touchscreenActive) {
+  } else if (visionEdge === "welcome") {
     candidates.push(
       transition({
-        transitionId: semanticEdges.nextVisionTransitionId("welcome"),
+        transitionId: visionTransitionId(vision?.edgeId, "welcome"),
         kind: "presence.welcome",
         category: "presence",
         occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
       }),
     );
-  } else if (visionEdge === "departed" && !touchscreenActive) {
+  } else if (visionEdge === "departed") {
     candidates.push(
       transition({
-        transitionId: semanticEdges.nextVisionTransitionId("departed"),
+        transitionId: visionTransitionId(vision?.edgeId, "departed"),
         kind: "presence.departed",
         category: "presence",
         occurredAt: vision?.departedAt ?? null,
@@ -398,14 +400,16 @@ function projectCandidates(
   return candidates;
 }
 
-type VisionProfile = "absent" | "welcome" | "crowd";
-type VisionEdge = Exclude<VisionProfile, "absent"> | "departed" | null;
+type VisionEdge = "crowd" | "welcome" | "departed" | null;
 
 type SemanticEdgeMemory = {
   observeTouchscreen(active: boolean): boolean;
   nextTouchscreenTransitionId(): string;
-  observeVision(profile: VisionProfile, departureObserved: boolean): VisionEdge;
-  nextVisionTransitionId(edge: Exclude<VisionEdge, null>): string;
+  observeVision(
+    edgeId: string | null,
+    edge: "arrival" | "departure" | null,
+    occupancyState: "none" | "single" | "multiple" | "unknown",
+  ): VisionEdge;
   observeCategory(entryId: string | null): boolean;
   observeProduct(selectionId: string | null): boolean;
 };
@@ -413,9 +417,7 @@ type SemanticEdgeMemory = {
 function createSemanticEdgeMemory(): SemanticEdgeMemory {
   let touchscreenActive = false;
   let touchscreenEpoch = 0;
-  let visionProfile: VisionProfile = "absent";
-  let departureObserved = false;
-  let visionEpoch = 0;
+  const claimedVisionEdges = new Set<string>();
   let categoryEntryId: string | null = null;
   let selectedProductId: string | null = null;
 
@@ -429,32 +431,15 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
     nextTouchscreenTransitionId() {
       return `touchscreen:session-${touchscreenEpoch}:awakened`;
     },
-    observeVision(nextProfile, nextDepartureObserved) {
-      const priorProfile = visionProfile;
-      const priorDepartureObserved = departureObserved;
-      visionProfile = nextProfile;
-      departureObserved = nextDepartureObserved;
-
-      if (nextProfile === "crowd" && priorProfile !== "crowd") {
-        visionEpoch += 1;
-        return "crowd";
+    observeVision(edgeId, edge, occupancyState) {
+      if (!edgeId || !edge || claimedVisionEdges.has(edgeId)) return null;
+      claimedVisionEdges.add(edgeId);
+      if (claimedVisionEdges.size > TRANSACTION_ORDER_MEMORY_LIMIT) {
+        const oldest = claimedVisionEdges.values().next().value;
+        if (oldest) claimedVisionEdges.delete(oldest);
       }
-      if (nextProfile === "welcome" && priorProfile !== "welcome") {
-        visionEpoch += 1;
-        return "welcome";
-      }
-      if (
-        nextProfile === "absent" &&
-        nextDepartureObserved &&
-        (!priorDepartureObserved || priorProfile !== "absent")
-      ) {
-        visionEpoch += 1;
-        return "departed";
-      }
-      return null;
-    },
-    nextVisionTransitionId(edge) {
-      return `vision:presence-${visionEpoch}:${edge}`;
+      if (edge === "departure") return "departed";
+      return occupancyState === "multiple" ? "crowd" : "welcome";
     },
     observeCategory(entryId) {
       const entered = entryId !== null && entryId !== categoryEntryId;
@@ -530,11 +515,14 @@ function createTransactionEdgeMemory(): TransactionEdgeMemory {
   };
 }
 
-function profileForVision(
-  vision: CustomerJourneyFacts["vision"],
-): VisionProfile {
-  if (!vision?.personPresent) return "absent";
-  return vision.occupancyState === "multiple" ? "crowd" : "welcome";
+function visionTransitionId(
+  edgeId: string | null | undefined,
+  kind: Exclude<VisionEdge, null>,
+): string {
+  const stableSessionId = edgeId
+    ? edgeId.replace(/:(arrival|departure)$/, "")
+    : "presence-unknown";
+  return `vision:${stableSessionId}:${kind}`;
 }
 
 function candidateRestored(

@@ -5,9 +5,9 @@ import { createApp, defineComponent, nextTick } from "vue";
 import { createMemoryHistory, createRouter } from "vue-router";
 
 import {
-  installPresenceDepartureNavigation,
-  resetCustomerPresenceSessionForTests,
-} from "@/composables/usePresenceInteraction";
+  installStableVisionPresenceDepartureNavigation,
+  resetStableVisionPresenceSessionForTests,
+} from "@/composables/stable-vision-presence-session";
 import {
   installTransactionRouteAuthority,
   machineRuntimeTrace,
@@ -177,7 +177,7 @@ afterEach(async () => {
   presenceRuntime = null;
   presenceHost?.remove();
   presenceHost = null;
-  resetCustomerPresenceSessionForTests();
+  resetStableVisionPresenceSessionForTests();
   disposeRouteAuthority?.();
   disposeRouteAuthority = null;
   await stopMachineRuntime(pinia);
@@ -281,6 +281,7 @@ describe("Machine runtime coordinator", () => {
   });
 
   it("refreshes the active order projection after a live Vision departure", async () => {
+    vi.useFakeTimers();
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -297,9 +298,7 @@ describe("Machine runtime coordinator", () => {
     presenceRuntime = createApp(
       defineComponent({
         setup() {
-          installPresenceDepartureNavigation({
-            visionDepartureHysteresisMs: 0,
-          });
+          installStableVisionPresenceDepartureNavigation();
           return () => null;
         },
       }),
@@ -333,6 +332,7 @@ describe("Machine runtime coordinator", () => {
           close: false,
           closeTrigger: null,
           proximity: { present: true },
+          occupancy: { state: "single", confidence: 0.91 },
         },
       },
     });
@@ -357,6 +357,8 @@ describe("Machine runtime coordinator", () => {
       },
     });
 
+    await vi.advanceTimersByTimeAsync(10_000);
+
     await vi.waitFor(() => {
       expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
       expect(machineRuntimeTrace()).toEqual(
@@ -364,7 +366,7 @@ describe("Machine runtime coordinator", () => {
           expect.objectContaining({
             type: "navigation",
             intentType: "presence.departed",
-            sourceEventId: "VISION-DEPARTURE-001",
+            sourceEventId: "presence-2:departure",
             decision: "rejected",
             reasonCode: "active_transaction_route",
             transactionOrderNo: "ORD-RUNTIME-VISION-001",

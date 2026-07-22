@@ -22,7 +22,8 @@ import {
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
-import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
+import { useCustomerInteractionSession } from "@/composables/customer-interaction-session";
+import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { recommendVariant } from "@/recommendation/engine";
@@ -36,7 +37,13 @@ const catalogStore = useCatalogStore();
 const customerJourneyStore = useCustomerJourneyStore();
 const machineStore = useMachineStore();
 const { currentProfile } = useVisionRecommendations();
-const { presenceClass } = usePresenceInteraction();
+const interactionSession = useCustomerInteractionSession();
+const stableVisionSession = getStableVisionPresenceSession();
+const presenceClass = computed(() =>
+  interactionSession.state.value.active || stableVisionSession.state.value.present
+    ? "presence-present"
+    : "presence-idle",
+);
 const { primaryNotification } = useCatalogNotifications();
 const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
 const CAROUSEL_SWIPE_THRESHOLD_PX = 60;
