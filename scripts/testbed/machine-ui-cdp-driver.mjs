@@ -134,6 +134,30 @@ export function normalizeMachineRoute(value) {
   return route;
 }
 
+export function findContinuousPaymentCheckpoint({
+  startSegment,
+  endSegment,
+  startCheckpoint,
+  endCheckpoint,
+}) {
+  if (
+    startSegment == null ||
+    startSegment !== endSegment ||
+    startSegment.stopped ||
+    startCheckpoint == null ||
+    endCheckpoint == null
+  ) {
+    return null;
+  }
+  return (
+    startSegment.capture.checkpoints.find(
+      (checkpoint) =>
+        checkpoint.ordinal > startCheckpoint.ordinal &&
+        checkpoint.ordinal < endCheckpoint.ordinal,
+    ) ?? null
+  );
+}
+
 export function validateExpectedRuntimeAttestation(attestation) {
   if (!attestation || typeof attestation !== "object") {
     throw new Error("expectedRuntimeAttestation is required");
@@ -2010,23 +2034,27 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     }
 
     if (typeof onPaymentWindow === "function") {
+      const paymentCaptureSegment = captureSegments.at(-1) ?? null;
       const continuousStart = capture
         ? await withCdpRecovery(() => capture.captureNow())
         : null;
       const paymentWindow = await onPaymentWindow();
+      const endingCaptureSegment = captureSegments.at(-1) ?? null;
       const continuousEnd = capture
         ? await withCdpRecovery(() => capture.captureNow())
         : null;
-      const continuousDuring = captureSegments
-        .flatMap((segment) => segment.capture.checkpoints)
-        .find(
-          (checkpoint) =>
-            checkpoint.ordinal > continuousStart?.ordinal &&
-            checkpoint.ordinal < continuousEnd?.ordinal,
-        );
+      const continuousDuring = findContinuousPaymentCheckpoint({
+        startSegment: paymentCaptureSegment,
+        endSegment: endingCaptureSegment,
+        startCheckpoint: continuousStart,
+        endCheckpoint: continuousEnd,
+      });
       if (
         paymentWindow?.serialCompleted !== true ||
         paymentWindow?.postSaleStable !== true ||
+        paymentCaptureSegment == null ||
+        paymentCaptureSegment !== endingCaptureSegment ||
+        paymentCaptureSegment.stopped ||
         continuousStart == null ||
         continuousDuring == null ||
         continuousEnd == null
@@ -2039,6 +2067,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         type: "payment-window",
         serialCompleted: true,
         postSaleStable: true,
+        runtimeGeneration: paymentCaptureSegment.runtimeGeneration,
         continuousCheckpointOrdinals: [
           continuousStart.ordinal,
           continuousDuring.ordinal,

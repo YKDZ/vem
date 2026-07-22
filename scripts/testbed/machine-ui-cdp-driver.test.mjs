@@ -16,6 +16,7 @@ import {
   buildWindowsMachineUiInspectionScript,
   discoverCanonicalMachineUiTarget,
   discoverMachineUiTarget,
+  findContinuousPaymentCheckpoint,
   inspectWindowsMachineUiRuntimeForTest,
   normalizeMachineRoute,
   openMachineUiCdpSidecar,
@@ -1270,6 +1271,30 @@ describe("machine-ui-cdp-driver", () => {
           entry.label === "continuous" &&
           entry.ordinal === during,
       ),
+    );
+  });
+
+  it("rejects payment-window checkpoints split across capture generations", () => {
+    const capture = { checkpoints: [{ ordinal: 11 }] };
+    const first = { capture, stopped: false };
+    const second = { capture: { checkpoints: [{ ordinal: 12 }] }, stopped: false };
+    assert.equal(
+      findContinuousPaymentCheckpoint({
+        startSegment: first,
+        endSegment: second,
+        startCheckpoint: { ordinal: 10 },
+        endCheckpoint: { ordinal: 13 },
+      }),
+      null,
+    );
+    assert.deepEqual(
+      findContinuousPaymentCheckpoint({
+        startSegment: first,
+        endSegment: first,
+        startCheckpoint: { ordinal: 10 },
+        endCheckpoint: { ordinal: 13 },
+      }),
+      { ordinal: 11 },
     );
   });
 
