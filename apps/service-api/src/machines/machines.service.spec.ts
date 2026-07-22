@@ -2443,6 +2443,7 @@ describe("MachinesService planogram lifecycle", () => {
       where: () => ({ returning: async () => [activated] }),
     });
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi
         .fn()
         .mockReturnValueOnce({
@@ -2471,6 +2472,9 @@ describe("MachinesService planogram lifecycle", () => {
     expect(retireSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: "retired" }),
     );
+    expect(tx.execute.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.select.mock.invocationCallOrder[0],
+    );
     expect(activateSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: "active" }),
     );
@@ -2494,6 +2498,7 @@ describe("MachinesService planogram lifecycle", () => {
       status: "published",
     };
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi
         .fn()
         .mockReturnValueOnce({
@@ -2536,6 +2541,7 @@ describe("MachinesService planogram lifecycle", () => {
       updatedAt: new Date("2026-06-04T12:05:00.000Z"),
     };
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi.fn().mockReturnValue({
         from: () => ({ where: () => ({ limit: async () => [active] }) }),
       }),
@@ -2687,6 +2693,7 @@ describe("MachinesService planogram lifecycle", () => {
       code: "M001",
     };
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi.fn().mockReturnValue({
         from: () => ({ where: () => ({ limit: async () => [] }) }),
       }),

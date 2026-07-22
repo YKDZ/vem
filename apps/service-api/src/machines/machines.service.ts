@@ -76,6 +76,7 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { lockMachineForVendingMutation } from "../database/machine-transaction-lock";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
@@ -1394,6 +1395,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
     const now = new Date();
     const activated = await this.db.transaction(async (tx) => {
+      await lockMachineForVendingMutation(tx, machine.id);
       const findTargetVersion = async () => {
         const [version] = await tx
           .select()

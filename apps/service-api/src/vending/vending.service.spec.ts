@@ -3,6 +3,59 @@ import { describe, expect, it, vi } from "vitest";
 import { VendingService } from "./vending.service";
 
 describe("VendingService durable command dispatcher", () => {
+  it("locks the machine before recording a vending command ACK", async () => {
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
+      insert: vi.fn().mockReturnValue({
+        values: () => ({
+          onConflictDoNothing: () => ({
+            returning: async () => [{ id: "event-1" }],
+          }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: () => ({ where: async () => undefined }),
+      }),
+    };
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: async () => [{ id: "machine-1", code: "M001" }],
+        }),
+      }),
+      transaction: async (callback: (value: typeof tx) => Promise<unknown>) =>
+        await callback(tx),
+    };
+    const service = new VendingService(
+      db as never,
+      { bindVendingService: vi.fn(), publish: vi.fn() } as never,
+      {
+        verifyFromTopic: vi.fn().mockResolvedValue({
+          messageId: "ack:CMD-1",
+          payload: {
+            commandNo: "CMD-1",
+            receivedAt: "2026-07-22T20:00:00.000Z",
+          },
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.handleMachineMessage(
+      "vem/machines/M001/commands/CMD-1/ack",
+      "{}",
+    );
+
+    expect(tx.execute.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.insert.mock.invocationCallOrder[0],
+    );
+    expect(tx.update).toHaveBeenCalledOnce();
+  });
+
   it("keeps an unpublished command pending and retries the same commandNo", async () => {
     const command = {
       id: "cmd-pending-1",

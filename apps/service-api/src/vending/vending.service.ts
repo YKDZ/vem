@@ -40,6 +40,7 @@ import { z } from "zod";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { lockMachineForVendingMutation } from "../database/machine-transaction-lock";
 import { InventoryService } from "../inventory/inventory.service";
 import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
@@ -1191,6 +1192,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     if (!machine) return;
 
     await this.db.transaction(async (tx) => {
+      await lockMachineForVendingMutation(tx, machine.id);
       const inserted = await tx
         .insert(machineEvents)
         .values({
