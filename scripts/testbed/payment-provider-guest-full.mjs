@@ -765,6 +765,8 @@ async function paymentCodeAttempt({
   handoffPath,
   client,
   token,
+  runId,
+  machineCode,
   timeoutMs,
   provider,
   setStage,
@@ -1117,6 +1119,8 @@ export async function runPaymentProviderGuest(options) {
         handoffPath: options.handoffPath,
         client,
         token,
+        runId,
+        machineCode,
         timeoutMs: PAYMENT_CODE_CLEANUP_TIMEOUT_MS,
         provider,
         setStage: (next) => {
