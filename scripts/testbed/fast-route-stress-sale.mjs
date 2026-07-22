@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -1840,27 +1841,67 @@ export async function waitForControlledVisionRuntimeClient(controlPort) {
   );
 }
 
-export async function shutdownControlledVisionMock(child, timeoutMs = 10_000) {
+async function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null) return true;
+  return await new Promise((resolvePromise) => {
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolvePromise(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolvePromise(true);
+    };
+    child.once("exit", onExit);
+    if (child.exitCode !== null) {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolvePromise(true);
+    }
+  });
+}
+
+async function verifyPortCanBeRebound(port) {
+  const listener = createServer();
+  try {
+    await new Promise((resolvePromise, reject) => {
+      listener.once("error", reject);
+      listener.listen(port, "127.0.0.1", resolvePromise);
+    });
+  } finally {
+    if (listener.listening) {
+      await new Promise((resolvePromise, reject) => {
+        listener.close((error) => (error ? reject(error) : resolvePromise()));
+      });
+    }
+  }
+}
+
+export async function shutdownControlledVisionMock(
+  child,
+  timeoutMs = 10_000,
+  visionPort = 7892,
+) {
   if (!child) return;
   if (child.exitCode == null) {
     child.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolvePromise) => child.once("exit", resolvePromise)),
-      sleep(timeoutMs),
-    ]);
-  }
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      await fetchJson("http://127.0.0.1:7892/health");
-      await sleep(250);
-    } catch {
-      return;
+    if (!(await waitForChildExit(child, timeoutMs))) {
+      child.kill("SIGKILL");
+      if (!(await waitForChildExit(child, timeoutMs))) {
+        throw new Error(
+          "controlled vision mock child did not exit after SIGTERM and SIGKILL",
+        );
+      }
     }
   }
-  throw new Error(
-    "controlled vision mock did not release port 7892 after SIGTERM",
-  );
+  try {
+    await verifyPortCanBeRebound(visionPort);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(
+      `controlled vision mock did not release port ${visionPort} after SIGTERM${detail}`,
+    );
+  }
 }
 
 async function dispatchVisionDeparture(guestInput) {

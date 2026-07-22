@@ -4,6 +4,7 @@ import {
   type VisionClientMessage,
   type VisionServerMessage,
 } from "@vem/shared/schemas/vision";
+import { createServer as createNetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, type RawData } from "ws";
 
@@ -111,6 +112,50 @@ async function openSocket(url: string): Promise<WebSocket> {
     socket.once("error", (error) => {
       clearTimeout(timer);
       reject(error);
+    });
+  });
+}
+
+async function findAvailablePort(): Promise<number> {
+  const listener = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", () => {
+      resolve();
+    });
+  });
+  const address = listener.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to reserve a TCP port");
+  }
+  await new Promise<void>((resolve, reject) => {
+    listener.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  return address.port;
+}
+
+async function canListenOnPort(port: number): Promise<boolean> {
+  const listener = createNetServer();
+  return await new Promise<boolean>((resolve) => {
+    listener.once("error", () => {
+      resolve(false);
+    });
+    listener.listen(port, "127.0.0.1", () => {
+      listener.close(() => {
+        resolve(true);
+      });
+    });
+  });
+}
+
+async function waitForSocketClose(socket: WebSocket): Promise<void> {
+  if (socket.readyState === socket.CLOSED) return;
+  await new Promise<void>((resolve) => {
+    socket.once("close", () => {
+      resolve();
     });
   });
 }
@@ -265,6 +310,39 @@ describe("vision mock server - protocol conformance", () => {
     } finally {
       messages.dispose();
       socket.close();
+    }
+  });
+});
+
+describe("vision mock server - shutdown", () => {
+  it("terminates active WebSocket clients before releasing both listeners", async () => {
+    const controlPort = await findAvailablePort();
+    const server = startMockVisionServer({
+      port: 0,
+      scenario: "controlled",
+      controlPort,
+    });
+    const url = await server.ready;
+    const visionPort = Number(new URL(url).port);
+    const socket = await openSocket(url);
+    const socketClosed = waitForSocketClose(socket);
+    const closePromise = server.close();
+
+    try {
+      await Promise.race([
+        closePromise,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("mock server close waited for a client"));
+          }, 500);
+        }),
+      ]);
+      await socketClosed;
+      expect(await canListenOnPort(visionPort)).toBe(true);
+      expect(await canListenOnPort(controlPort)).toBe(true);
+    } finally {
+      socket.terminate();
+      await closePromise.catch(() => undefined);
     }
   });
 });

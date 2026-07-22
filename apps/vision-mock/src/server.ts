@@ -619,6 +619,7 @@ export function startMockVisionServer(
   return {
     ready,
     close: async () => {
+      for (const socket of sockets) socket.terminate();
       await Promise.all([
         new Promise<void>((resolve, reject) => {
           server.close((error) => {

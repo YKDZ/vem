@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { describe, it } from "node:test";
 
 import {
@@ -16,6 +18,63 @@ import {
   waitForGuardedVisionDepartureTrace,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
+
+async function listenOnAvailablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to allocate a TCP port");
+  }
+  return { server, port: address.port };
+}
+
+async function closeServer(server) {
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+describe("controlled vision mock shutdown", () => {
+  it("forces an unresponsive child to exit and fails when it remains alive", async () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    const signals = [];
+    child.kill = (signal) => {
+      signals.push(signal);
+      return true;
+    };
+
+    await assert.rejects(
+      () => shutdownControlledVisionMock(child, 10, 0),
+      /did not exit/,
+    );
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  });
+
+  it("fails when the Vision port cannot be rebound after the child exits", async () => {
+    const { server, port } = await listenOnAvailablePort();
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      return true;
+    };
+
+    try {
+      await assert.rejects(
+        () => shutdownControlledVisionMock(child, 100, port),
+        new RegExp(`did not release port ${port}`),
+      );
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
 
 describe("pending create-order cleanup", () => {
   it("cancels the correlated active transaction and waits for terminal state", async () => {
@@ -985,7 +1044,7 @@ describe("fast route stress sale tracer", () => {
     );
     assert.match(implementation, /control\/status/);
     assert.match(implementation, /shutdownControlledVisionMock/);
-    assert.match(implementation, /did not release port 7892 after SIGTERM/);
+    assert.match(implementation, /did not release port.*after SIGTERM/);
     assert.match(
       implementation,
       /installed UI viewport must be exactly 1080x1920/,
