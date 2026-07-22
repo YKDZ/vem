@@ -1370,10 +1370,10 @@ mod tests {
             slot: SlotPayload {
                 row_no: 2,
                 cell_no: 5,
-                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
             },
             quantity: 1,
             timeout_seconds: 2,
+            recovery: None,
         }));
         assert!(
             timeout(Duration::from_millis(250), &mut dispense)
@@ -1438,10 +1438,10 @@ mod tests {
                 slot: SlotPayload {
                     row_no: 2,
                     cell_no: 5,
-                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 },
                 quantity: 1,
                 timeout_seconds: 2,
+                recovery: None,
             }),
         )
         .await

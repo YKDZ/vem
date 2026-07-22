@@ -34,6 +34,7 @@ import {
   machineHeartbeats,
   mediaAssets,
   machines,
+  vendingCommands,
   productCategories,
   productVariants,
   products,
@@ -1416,6 +1417,22 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       }
       if (targetVersion.status !== "published") {
         throw new NotFoundException("Machine planogram version not found");
+      }
+
+      const [unfinishedCommand] = await tx
+        .select({ id: vendingCommands.id })
+        .from(vendingCommands)
+        .where(
+          and(
+            eq(vendingCommands.machineId, machine.id),
+            eq(vendingCommands.status, "acknowledged"),
+          ),
+        )
+        .limit(1);
+      if (unfinishedCommand) {
+        throw new ConflictException(
+          "Cannot switch active planogram while an acknowledged dispense command is unfinished",
+        );
       }
 
       await tx

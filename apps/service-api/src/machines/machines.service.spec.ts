@@ -2415,7 +2415,7 @@ describe("MachinesService planogram lifecycle", () => {
     );
   });
 
-  it("acknowledges a published planogram version as active", async () => {
+  it("acknowledges a published planogram version as active after no acknowledged dispense remains", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",
       code: "M001",
@@ -2443,9 +2443,14 @@ describe("MachinesService planogram lifecycle", () => {
       where: () => ({ returning: async () => [activated] }),
     });
     const tx = {
-      select: vi.fn().mockReturnValue({
-        from: () => ({ where: () => ({ limit: async () => [published] }) }),
-      }),
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [published] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [] }) }),
+        }),
       update: vi
         .fn()
         .mockReturnValueOnce({ set: retireSet })
@@ -2475,6 +2480,43 @@ describe("MachinesService planogram lifecycle", () => {
       status: "active",
       activeAt: expect.any(String),
     });
+  });
+
+  it("does not switch the active planogram while an acknowledged dispense is unfinished", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const published = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-2",
+      status: "published",
+    };
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [published] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({ limit: async () => [{ id: "cmd-1" }] }),
+          }),
+        }),
+      update: vi.fn(),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    await expect(
+      service.acknowledgeMachinePlanogramVersion("M001", "PLAN-2"),
+    ).rejects.toThrow(ConflictException);
+    expect(tx.update).not.toHaveBeenCalled();
   });
 
   it("treats repeated ack for the active planogram version as idempotent", async () => {

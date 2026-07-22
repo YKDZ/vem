@@ -36,6 +36,7 @@ fn command() -> DispenseCommandPayload {
         },
         quantity: 1,
         timeout_seconds: 2,
+        recovery: None,
     }
 }
 

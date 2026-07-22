@@ -2329,6 +2329,7 @@ mod tests {
                 },
                 quantity: 1,
                 timeout_seconds: 30,
+                recovery: None,
             },
             "COM-TEST".to_string(),
         );

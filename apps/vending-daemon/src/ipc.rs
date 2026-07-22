@@ -2175,6 +2175,7 @@ async fn manual_dispense_diagnostic(
         },
         quantity: request.quantity,
         timeout_seconds: request.timeout_seconds,
+        recovery: None,
     };
     let pending = crate::state::store::ManualDispenseDiagnostic {
         diagnostic_id: diagnostic_id.clone(),

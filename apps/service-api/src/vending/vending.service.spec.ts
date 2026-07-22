@@ -11,7 +11,7 @@ describe("VendingService durable command dispatcher", () => {
       payloadJson: {
         commandNo: "CMD-PENDING-1",
         orderNo: "ORD-1",
-        slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "A1" },
+        slot: { rowNo: 1, cellNo: 1 },
         quantity: 1,
         timeoutSeconds: 120,
       },
@@ -65,6 +65,104 @@ describe("VendingService durable command dispatcher", () => {
     );
     expect(persistedSets[1]).toEqual(
       expect.objectContaining({ status: "sent" }),
+    );
+  });
+
+  it("publishes compensation recovery metadata as a top-level dispense protocol field", async () => {
+    const row = {
+      orderId: "order-1",
+      orderNo: "ORD-1",
+      machineId: "machine-1",
+      machineCode: "M001",
+      orderStatus: "manual_handling",
+      orderItemId: "item-1",
+      slotId: "slot-1",
+      inventoryId: "inventory-1",
+      quantity: 1,
+      rowNo: 7,
+      cellNo: 2,
+    };
+    const insertedCommandValues = vi.fn();
+    const created = { id: "command-2", commandNo: "CMD-COMPENSATION-1" };
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({
+          set: () => ({
+            where: () => ({ returning: async () => [{ id: row.inventoryId }] }),
+          }),
+        })
+        .mockReturnValueOnce({
+          set: () => ({ where: async () => undefined }),
+        }),
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({ values: vi.fn() })
+        .mockReturnValueOnce({
+          values: insertedCommandValues.mockReturnValue({
+            returning: async () => [created],
+          }),
+        })
+        .mockReturnValueOnce({ values: vi.fn() }),
+    };
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({ limit: async () => [row] }),
+              }),
+            }),
+          }),
+        }),
+      }),
+      transaction: async (callback: (arg: typeof tx) => Promise<unknown>) =>
+        await callback(tx),
+      update: vi.fn().mockReturnValue({
+        set: () => ({
+          where: () => ({
+            returning: async () => [{ ...created, status: "sent" }],
+          }),
+        }),
+      }),
+    };
+    const signForMachine = vi.fn().mockResolvedValue({ signed: true });
+    const service = new VendingService(
+      db as never,
+      { bindVendingService: vi.fn(), publish: vi.fn() } as never,
+      { signForMachine } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.createCompensationDispenseCommand({
+      orderId: row.orderId,
+      recoveryActionId: "recovery-1",
+      originalCommandNo: "CMD-ORIGINAL-1",
+      note: "operator confirmed the original item was not dispensed",
+    });
+
+    const expectedRecovery = {
+      action: "compensation_dispense",
+      originalCommandNo: "CMD-ORIGINAL-1",
+      note: "operator confirmed the original item was not dispensed",
+    };
+    expect(insertedCommandValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloadJson: expect.objectContaining({ recovery: expectedRecovery }),
+      }),
+    );
+    expect(signForMachine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          slot: { rowNo: 7, cellNo: 2 },
+          recovery: expectedRecovery,
+        }),
+      }),
     );
   });
 });
@@ -1095,7 +1193,7 @@ describe("VendingService line-level fulfillment", () => {
               payloadJson: {
                 commandNo: "CMD-TIMEOUT",
                 orderNo: "ORD-1",
-                slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "A1" },
+                slot: { rowNo: 1, cellNo: 1 },
                 quantity: 1,
                 timeoutSeconds: 1,
               },

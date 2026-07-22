@@ -20,6 +20,22 @@ pub struct DispenseCommandPayload {
     pub slot: SlotPayload,
     pub quantity: u32,
     pub timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<DispenseRecoveryPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DispenseRecoveryPayload {
+    pub action: DispenseRecoveryAction,
+    pub original_command_no: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispenseRecoveryAction {
+    CompensationDispense,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +233,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 30,
+            recovery: None,
         };
         let value = serde_json::to_value(&payload).expect("serialize payload");
         assert_eq!(value["commandNo"], "cmd-1");
@@ -242,6 +259,73 @@ mod tests {
         assert!(error.to_string().contains("slotId"));
     }
 
+    #[test]
+    fn compensation_recovery_metadata_is_a_strict_optional_protocol_field() {
+        let payload = serde_json::from_value::<DispenseCommandPayload>(serde_json::json!({
+            "commandNo": "cmd-compensation-1",
+            "orderNo": "ord-compensation-1",
+            "slot": { "rowNo": 1, "cellNo": 2 },
+            "quantity": 1,
+            "timeoutSeconds": 30,
+            "recovery": {
+                "action": "compensation_dispense",
+                "originalCommandNo": "cmd-original-1",
+                "note": "operator confirmed no dispense"
+            }
+        }))
+        .expect("compensation recovery is part of the protocol");
+
+        assert_eq!(
+            serde_json::to_value(&payload).expect("serialize payload")["recovery"],
+            serde_json::json!({
+                "action": "compensation_dispense",
+                "originalCommandNo": "cmd-original-1",
+                "note": "operator confirmed no dispense"
+            })
+        );
+        let error = serde_json::from_value::<DispenseCommandPayload>(serde_json::json!({
+            "commandNo": "cmd-compensation-1",
+            "orderNo": "ord-compensation-1",
+            "slot": { "rowNo": 1, "cellNo": 2 },
+            "quantity": 1,
+            "timeoutSeconds": 30,
+            "recovery": {
+                "action": "compensation_dispense",
+                "originalCommandNo": "cmd-original-1",
+                "note": "operator confirmed no dispense",
+                "unexpected": true
+            }
+        }))
+        .expect_err("recovery metadata remains strict");
+        assert!(error.to_string().contains("unexpected"));
+
+        let error = serde_json::from_value::<DispenseCommandPayload>(serde_json::json!({
+            "commandNo": "cmd-compensation-1",
+            "orderNo": "ord-compensation-1",
+            "slot": { "rowNo": 1, "cellNo": 2 },
+            "quantity": 1,
+            "timeoutSeconds": 30,
+            "recovery": {
+                "action": "unsupported_recovery",
+                "originalCommandNo": "cmd-original-1",
+                "note": "operator confirmed no dispense"
+            }
+        }))
+        .expect_err("recovery action remains protocol-bound");
+        assert!(error.to_string().contains("unsupported_recovery"));
+
+        let error = serde_json::from_value::<DispenseCommandPayload>(serde_json::json!({
+            "commandNo": "cmd-compensation-1",
+            "orderNo": "ord-compensation-1",
+            "slot": { "rowNo": 1, "cellNo": 2 },
+            "quantity": 1,
+            "timeoutSeconds": 30,
+            "unexpected": true
+        }))
+        .expect_err("command root remains strict");
+        assert!(error.to_string().contains("unexpected"));
+    }
+
     #[tokio::test]
     async fn mock_hardware_always_succeeds() {
         let adapter = MockHardwareAdapter;
@@ -254,6 +338,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 30,
+            recovery: None,
         };
         let result = adapter.dispense(payload).await;
         assert!(result.success);

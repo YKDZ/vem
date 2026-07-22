@@ -13,18 +13,29 @@ export const commandAckPayloadSchema = z
   })
   .loose();
 
-export const dispenseCommandPayloadSchema = z.object({
-  commandNo: z.string().min(1).max(64),
-  orderNo: z.string().min(1).max(64),
-  slot: z
-    .object({
-      rowNo: machineSlotRowNoSchema,
-      cellNo: machineSlotCellNoSchema,
-    })
-    .superRefine(addMachineSlotCoordinateIssue),
-  quantity: z.int().positive(),
-  timeoutSeconds: z.int().positive(),
-});
+export const dispenseCommandPayloadSchema = z
+  .object({
+    commandNo: z.string().min(1).max(64),
+    orderNo: z.string().min(1).max(64),
+    slot: z
+      .object({
+        rowNo: machineSlotRowNoSchema,
+        cellNo: machineSlotCellNoSchema,
+      })
+      .strict()
+      .superRefine(addMachineSlotCoordinateIssue),
+    quantity: z.int().positive(),
+    timeoutSeconds: z.int().positive(),
+    recovery: z
+      .object({
+        action: z.literal("compensation_dispense"),
+        originalCommandNo: z.string().min(1).max(64),
+        note: z.string().trim().min(1).max(500),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 export const environmentControlCommandPayloadSchema = z
   .object({

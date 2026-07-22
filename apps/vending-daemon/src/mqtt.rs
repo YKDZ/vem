@@ -1836,6 +1836,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 2,
+            recovery: None,
         };
         state
             .upsert_order_session(OrderSessionUpsert {

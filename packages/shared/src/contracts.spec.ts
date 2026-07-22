@@ -675,6 +675,45 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("models compensation recovery metadata as a strict dispense command field", () => {
+    const payload = dispenseCommandPayloadSchema.parse({
+      commandNo: "CMD-COMPENSATION-1",
+      orderNo: "ORD-COMPENSATION-1",
+      slot: { rowNo: 7, cellNo: 2 },
+      quantity: 1,
+      timeoutSeconds: 120,
+      recovery: {
+        action: "compensation_dispense",
+        originalCommandNo: "CMD-ORIGINAL-1",
+        note: "operator confirmed the original item was not dispensed",
+      },
+    });
+
+    expect(payload.recovery).toEqual({
+      action: "compensation_dispense",
+      originalCommandNo: "CMD-ORIGINAL-1",
+      note: "operator confirmed the original item was not dispensed",
+    });
+    expect(() =>
+      dispenseCommandPayloadSchema.parse({
+        ...payload,
+        unsupportedTopLevelField: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      dispenseCommandPayloadSchema.parse({
+        ...payload,
+        slot: { ...payload.slot, slotId: "legacy-business-id" },
+      }),
+    ).toThrow();
+    expect(() =>
+      dispenseCommandPayloadSchema.parse({
+        ...payload,
+        recovery: { ...payload.recovery, unexpected: true },
+      }),
+    ).toThrow();
+  });
+
   it("uses Machine Location Label in machine write contracts", () => {
     expect(
       createMachineSchema.parse({

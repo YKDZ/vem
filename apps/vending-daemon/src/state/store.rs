@@ -8731,6 +8731,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: None,
         }
     }
 
@@ -11631,6 +11632,11 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: Some(vending_core::hardware::DispenseRecoveryPayload {
+                action: vending_core::hardware::DispenseRecoveryAction::CompensationDispense,
+                original_command_no: "CMD-ORIGINAL-1".to_string(),
+                note: "operator confirmed no dispense".to_string(),
+            }),
         };
 
         let result = DispenseResultPayload {
@@ -11668,6 +11674,7 @@ mod tests {
             .expect("command")
             .expect("command record");
         assert_eq!(command_record.status, CommandLogStatus::Succeeded);
+        assert_eq!(command_record.command_payload.recovery, command.recovery);
     }
 
     #[tokio::test]
@@ -13941,6 +13948,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: None,
         };
         let result = DispenseResultPayload {
             command_no: command.command_no.clone(),
@@ -14258,6 +14266,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: None,
         };
         store
             .upsert_order_session(OrderSessionUpsert {
@@ -14347,6 +14356,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: None,
         };
         store
             .upsert_command_received(&command)
@@ -14395,6 +14405,7 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds: 10,
+            recovery: None,
         };
         store
             .upsert_command_received(&command)

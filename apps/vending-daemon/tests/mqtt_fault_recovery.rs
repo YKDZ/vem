@@ -48,6 +48,7 @@ fn dispense_command(command_no: &str) -> DispenseCommandPayload {
         },
         quantity: 1,
         timeout_seconds: 2,
+        recovery: None,
     }
 }
 

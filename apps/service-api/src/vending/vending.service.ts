@@ -840,7 +840,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const commandNo = createBusinessNo("CMD");
-    const basePayload = dispenseCommandPayloadSchema.parse({
+    const payload = dispenseCommandPayloadSchema.parse({
       commandNo,
       orderNo: row.orderNo,
       slot: {
@@ -849,15 +849,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       },
       quantity: row.quantity,
       timeoutSeconds: 120,
-    });
-    const payload = {
-      ...basePayload,
       recovery: {
         action: "compensation_dispense",
         originalCommandNo: input.originalCommandNo,
         note: input.note,
       },
-    };
+    });
 
     const created = await this.db.transaction(async (tx) => {
       const [inventory] = await tx
