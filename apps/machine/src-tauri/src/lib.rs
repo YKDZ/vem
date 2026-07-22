@@ -63,6 +63,42 @@ fn default_daemon_ready_file_path() -> String {
     }
 }
 
+#[cfg(windows)]
+fn enforce_kiosk_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowLongPtrW, SetWindowPos, GWL_STYLE, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_SHOWWINDOW,
+        WS_POPUP, WS_VISIBLE,
+    };
+
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return Err(windows::core::Error::from_win32().to_string());
+    }
+    let bounds = info.rcMonitor;
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as isize);
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_daemon_connection() -> Result<DaemonConnectionInfo, String> {
     let path = daemon_ready_file_path();
@@ -86,9 +122,13 @@ pub fn run() {
         .manage(MachineAudioState::default())
         .setup(|_app| {
             #[cfg(windows)]
-            _app.get_webview_window("main")
-                .ok_or("main kiosk window is missing")?
-                .set_fullscreen(true)?;
+            {
+                let window = _app
+                    .get_webview_window("main")
+                    .ok_or("main kiosk window is missing")?;
+                window.set_fullscreen(true)?;
+                enforce_kiosk_window(&window)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
