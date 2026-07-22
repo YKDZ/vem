@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   buildCreateOrderRequest,
   mqttEvidenceProvesNoDispense,
+  openFixtureProductFromCatalog,
   refreshAdminAccessToken,
   unwrapServiceApiEnvelope,
   waitForMachineOnline,
@@ -94,6 +95,36 @@ describe("payment recovery guest full", () => {
         planogramVersion: "P-7",
       },
     );
+  });
+  it("opens the fixture product after entering from another Catalog category", async () => {
+    const calls = [];
+    let selectedCategory = "tshirts";
+    const slotId = "slot-socks";
+    const productSelector = `[data-test="catalog-product"][data-slot-id=${JSON.stringify(slotId)}]`;
+    await openFixtureProductFromCatalog({
+      client: { id: "customer" },
+      slotId,
+      evaluateExpressionFn: async (client, expression) => {
+        assert.equal(client.id, "customer");
+        if (expression.includes("categories:")) {
+          return {
+            productVisible: false,
+            categories: ["tshirts", "socks"],
+          };
+        }
+        return selectedCategory === "socks";
+      },
+      activateVisibleSelectorFn: async (_client, selector) => {
+        calls.push(selector);
+        const category = /data-category-key="([^"]+)"/.exec(selector)?.[1];
+        if (category) selectedCategory = category;
+      },
+    });
+    assert.deepEqual(calls, [
+      '[data-test="catalog-category"][data-category-key="tshirts"]:not(:disabled)',
+      '[data-test="catalog-category"][data-category-key="socks"]:not(:disabled)',
+      productSelector,
+    ]);
   });
   it("builds strict create-order payloads without a slot display label", () => {
     assert.deepEqual(

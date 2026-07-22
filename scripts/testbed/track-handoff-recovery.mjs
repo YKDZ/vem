@@ -1,6 +1,11 @@
 function sessionIdFromReport(value) {
   if (value == null || typeof value !== "object") return null;
   if (
+    typeof value.controlPlaneSessionId === "string" &&
+    value.controlPlaneSessionId.trim()
+  )
+    return value.controlPlaneSessionId.trim();
+  if (
     typeof value.sessionId === "string" &&
     value.sessionId &&
     !value.sessionId.startsWith("serial-session://")

@@ -10,7 +10,7 @@ import {
   ensureFixtureStockReady,
   fixtureAllocationForTrack,
   replaceSerialSessionAndUpdateHandoff,
-  refreshCatalogPageFromClient,
+  restoreCatalogHomeFromClient,
   replaceUnavailableTestbedLowerController,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
@@ -72,6 +72,67 @@ describe("full workflow serial lifecycle", () => {
         .sessionId,
       "serial-2",
     );
+  });
+
+  it("restores a stopped pickup session before waiting for the next set hardware", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-pickup-recovery-"));
+    const handoffPath = join(root, "handoff.json");
+    const handoff = {
+      commissioningSerialSession: { sessionId: "pickup-control-plane-session" },
+    };
+    writeFileSync(handoffPath, JSON.stringify(handoff));
+    let replacementStarted = false;
+    const calls = [];
+
+    await replaceSerialSessionAndUpdateHandoff({
+      guestInput: {
+        runId: "RUN-1",
+        machineCode: "VEM-1",
+        hostControlPlane: {
+          targetIdentity: "vm-target://1",
+          runtimeBaseIdentity: "runtime-base://1",
+        },
+      },
+      handoff,
+      handoffPath,
+      sessionId: "pickup-control-plane-session",
+      control: async (_input, path) => {
+        calls.push(path);
+        if (path.endsWith("/start")) {
+          replacementStarted = true;
+          return { sessionId: "pickup-replacement-session" };
+        }
+        return {};
+      },
+    });
+    const ready = await waitForBusinessHardwareReady({
+      daemonGet: async (path) => {
+        calls.push(path);
+        const available = replacementStarted;
+        return path === "/v1/hardware-bindings"
+          ? { roles: [{ role: "lower_controller", ready: available }] }
+          : { canStartSale: available };
+      },
+      timeoutMs: 100,
+      pollMs: 1,
+    });
+
+    assert.equal(
+      handoff.commissioningSerialSession.sessionId,
+      "pickup-replacement-session",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(handoffPath, "utf8")).commissioningSerialSession
+        .sessionId,
+      "pickup-replacement-session",
+    );
+    assert.equal(ready.capability.canStartSale, true);
+    assert.deepEqual(calls, [
+      "/v1/serial-sessions/pickup-control-plane-session/abort",
+      "/v1/serial-sessions/start",
+      "/v1/hardware-bindings",
+      "/v1/sale-start-capability",
+    ]);
   });
 
   it("waits for the lower controller and sale capability before the next set", async () => {
@@ -833,27 +894,29 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
-  it("reloads the settled catalog so the UI binds the current daemon generation", async () => {
+  it("returns from a selected category to the Catalog home through the visible control", async () => {
     const calls = [];
-    const result = await refreshCatalogPageFromClient({
-      client: {
-        async send(method, params) {
-          calls.push({ method, params });
-        },
-      },
+    const result = await restoreCatalogHomeFromClient({
+      client: { id: "client" },
       async returnToCatalogFn() {
         calls.push("catalog");
       },
-      async waitForRouteFn(_client, route, options) {
-        calls.push({ route, options });
-        return { route: "#/catalog" };
+      async evaluateExpressionFn(_client, expression) {
+        calls.push(`evaluate:${expression}`);
+        return true;
+      },
+      async activateVisibleSelectorFn(_client, selector, options) {
+        calls.push({ selector, options });
       },
     });
-    assert.deepEqual(result, { route: "#/catalog" });
+    assert.equal(result, "#/catalog");
     assert.deepEqual(calls, [
       "catalog",
-      { method: "Page.reload", params: { ignoreCache: true } },
-      { route: "#/catalog", options: { timeoutMs: 20_000, pollMs: 250 } },
+      'evaluate:Boolean(document.querySelector(".catalog-back-button"))',
+      {
+        selector: ".catalog-back-button",
+        options: { kind: "touch", timeoutMs: 10_000 },
+      },
     ]);
   });
 

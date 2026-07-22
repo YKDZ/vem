@@ -608,14 +608,56 @@ async function waitForCustomerTerminal(client, order, expected) {
   );
 }
 
-async function prepareCustomerCreateFailure(client, slot) {
-  await evaluateExpression(client, 'location.hash = "#/catalog"');
-  await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
-  await activateVisibleSelector(
+export async function openFixtureProductFromCatalog({
+  client,
+  slotId,
+  evaluateExpressionFn = evaluateExpression,
+  activateVisibleSelectorFn = activateVisibleSelector,
+}) {
+  const productSelector = `[data-test="catalog-product"][data-slot-id=${JSON.stringify(slotId)}]`;
+  const categorySelector = '[data-test="catalog-category"]:not(:disabled)';
+  const state = await evaluateExpressionFn(
     client,
-    `[data-test="catalog-product"][data-slot-id=${JSON.stringify(slot.slotId)}]`,
-    { kind: "touch", timeoutMs: 30_000 },
+    `(() => ({
+      productVisible: Boolean(document.querySelector(${JSON.stringify(productSelector)})),
+      categories: Array.from(document.querySelectorAll(${JSON.stringify(categorySelector)}))
+        .map((element) => element.dataset.categoryKey)
+        .filter(Boolean),
+    }))()`,
   );
+  if (state?.productVisible) {
+    await activateVisibleSelectorFn(client, productSelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    return;
+  }
+  const categories = Array.isArray(state?.categories) ? state.categories : [];
+  for (const category of categories) {
+    await activateVisibleSelectorFn(
+      client,
+      `[data-test="catalog-category"][data-category-key=${JSON.stringify(category)}]:not(:disabled)`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    const visible = await evaluateExpressionFn(
+      client,
+      `Boolean(document.querySelector(${JSON.stringify(productSelector)}))`,
+    );
+    if (!visible) continue;
+    await activateVisibleSelectorFn(client, productSelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    return;
+  }
+  throw new Error(
+    `fixture slot ${slotId} is not visible in any enabled Catalog category`,
+  );
+}
+
+async function prepareCustomerCreateFailure(client, slot) {
+  await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
+  await openFixtureProductFromCatalog({ client, slotId: slot.slotId });
   await waitFor(
     "installed customer product detail",
     () =>

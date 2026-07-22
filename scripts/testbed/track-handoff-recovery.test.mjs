@@ -98,6 +98,43 @@ describe("Track Handoff Recovery", () => {
     );
   });
 
+  it("restores the pickup control-plane session when the pickup report stops it", async () => {
+    const restored = [];
+    const terminal = await captureTrackTerminalFacts({
+      track: { key: "pickupProtocol" },
+      context: {
+        report: {
+          controlPlaneSessionId: "pickup-control-plane-session",
+          serial: { sessionId: "serial-session://pickup-evidence" },
+        },
+      },
+      readRoute: async () => "#/catalog",
+      daemonGet: async (path) => {
+        if (path === "/v1/transactions/current") return null;
+        if (path === "/v1/hardware-bindings") return { roles: [] };
+        return {};
+      },
+      platformQuery: async () => ({ inventories: [] }),
+    });
+    const recovery = await recoverTrackHandoff({
+      track: { key: "pickupProtocol" },
+      terminal,
+      fixtureAllocation: {},
+      disableFaultInjection: async () => undefined,
+      restoreSerialSession: async (sessionId) => restored.push(sessionId),
+    });
+
+    assert.equal(
+      terminal.facts.deviceSession.sessionId,
+      "pickup-control-plane-session",
+    );
+    assert.deepEqual(restored, ["pickup-control-plane-session"]);
+    assert.deepEqual(recovery.actions, [
+      "disableFaultInjection",
+      "restoreSerialSession",
+    ]);
+  });
+
   it("records hardware binding degradation without reclassifying a completed child track", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "scanner" },

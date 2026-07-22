@@ -880,18 +880,23 @@ export async function returnToCatalogFromClient({
   );
 }
 
-export async function refreshCatalogPageFromClient({
+export async function restoreCatalogHomeFromClient({
   client,
   returnToCatalogFn = returnToCatalogFromClient,
-  waitForRouteFn = waitForRoute,
+  evaluateExpressionFn = evaluateExpression,
+  activateVisibleSelectorFn = activateVisibleSelector,
 }) {
   await returnToCatalogFn({ client });
-  await client.send("Page.reload", { ignoreCache: true });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  return waitForRouteFn(client, "#/catalog", {
-    timeoutMs: 20_000,
-    pollMs: 250,
+  const categoryIsOpen = await evaluateExpressionFn(
+    client,
+    'Boolean(document.querySelector(".catalog-back-button"))',
+  );
+  if (!categoryIsOpen) return "#/catalog";
+  await activateVisibleSelectorFn(client, ".catalog-back-button", {
+    kind: "touch",
+    timeoutMs: 10_000,
   });
+  return "#/catalog";
 }
 
 function terminalOperations(guestInput, handoff, handoffPath) {
@@ -940,7 +945,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
         daemonGet: (path) => daemonGet(handoff, path),
         daemonPost: (path, body) => daemonPost(handoff, path, body),
       });
-      return withClient((client) => refreshCatalogPageFromClient({ client }));
+      return withClient((client) => restoreCatalogHomeFromClient({ client }));
     },
     captureTerminal: async (track, context) => {
       reloadRuntimeHandoff(handoffPath, handoff);
