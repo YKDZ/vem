@@ -240,6 +240,62 @@ describe("full workflow serial lifecycle", () => {
     assert.equal(result[1].handoffRecovery.durationMs, 1_000);
   });
 
+  it("halts a warm run after fixture recovery fails and retains its recovery evidence", async () => {
+    const calls = [];
+    const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
+      (track) => track.runner && track.name !== "commissioning",
+    ).slice(0, 2);
+    const result = await runSerialTrackLifecycle({
+      tracks,
+      haltOnRecoveryFailure: true,
+      runTrack: async (track) => {
+        calls.push(`run:${track.key}`);
+        return {
+          status: "passed",
+          exitCode: 0,
+          report: {
+            schemaVersion: "vem-fast-route-stress-sale/v2",
+            ok: true,
+            summary: {
+              orderId: "order-1",
+              paymentId: "payment-1",
+              vendingCommandId: "command-1",
+              protocol: ["VEND", "F0", "F1", "F2"],
+              daemonStockDeltaAfterF2: -1,
+              platformStockDeltaAfterF2: -1,
+              visionEventId: "vision-1",
+              repeatedPhysicalTouchTraceId: 1,
+            },
+          },
+        };
+      },
+      captureTerminal: async (track) => {
+        calls.push(`terminal:${track.key}`);
+        return { ok: true, facts: { route: "#/catalog" } };
+      },
+      recover: async (track) => {
+        calls.push(`recover:${track.key}`);
+        return {
+          ok: false,
+          actions: ["restoreFixtureStock"],
+          errors: ["fixture stock did not become sale-ready"],
+          evidence: {
+            fixtureStock: { targetQuantity: 1, daemon: { changed: true } },
+          },
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ["run:sale", "terminal:sale", "recover:sale"]);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].businessStatus, "failed");
+    assert.equal(result[0].failureStage, "handoff-recovery");
+    assert.deepEqual(result[0].handoffRecovery.evidence.fixtureStock, {
+      targetQuantity: 1,
+      daemon: { changed: true },
+    });
+  });
+
   it("refreshes the shared handoff when the daemon rotates its ready generation", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-daemon-ready-"));
     const handoffPath = join(root, "handoff.json");
@@ -489,6 +545,64 @@ describe("full workflow serial lifecycle", () => {
     });
     assert.equal(result.mode, "routine_refill");
     assert.deepEqual(posts[0].body.slots, [{ slotCode: "A1", addition: 1 }]);
+  });
+
+  it("restores an overstocked warm fixture to its exact baseline through physical stock attestation", async () => {
+    const posts = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: {
+        stockMaintenance: { slotCode: "A1", onHandQty: 1 },
+      },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "stock-refill-01",
+            mode: "routine_refill",
+            slots: [{ slotCode: "A1", currentQuantity: 2 }],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          planogramVersion: "PLAN-01",
+          items: [
+            {
+              slotId: "slot-01",
+              slotCode: "A1",
+              sku: "SKU-01",
+              slotSalesState: "sale_ready",
+              saleableStock: saleViewReads > 1 ? 1 : 2,
+              physicalStock: saleViewReads > 1 ? 1 : 2,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+
+    assert.equal(result.changed, true);
+    assert.equal(result.mode, "physical_stock_attestation");
+    assert.match(result.taskId, /^testbed-stock-recovery-\d+$/);
+    assert.equal(posts[0].path, "/v1/stock/attestation");
+    assert.equal(posts[0].body.attestationId, result.taskId);
+    assert.deepEqual(posts[0].body, {
+      attestationId: result.taskId,
+      planogramVersion: "PLAN-01",
+      operatorId: "testbed-orchestrator",
+      slots: [
+        {
+          slotId: "slot-01",
+          slotCode: "A1",
+          sku: "SKU-01",
+          quantity: 1,
+          enabled: true,
+        },
+      ],
+    });
   });
 
   it("uses physical stock attestation when fixture quantities are full but sales state is frozen", async () => {

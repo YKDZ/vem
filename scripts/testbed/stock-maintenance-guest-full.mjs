@@ -533,6 +533,7 @@ export function validateStockMaintenanceReport(report) {
   const movements = report?.terminal?.movements;
   const projection = report?.maintenance?.projection;
   const platformMovement = report?.maintenance?.platformMovement;
+  const salePlatformMovements = movements?.salePlatformMovements;
   const stock = (value, quantity) =>
     value?.physicalStock === quantity && value?.saleableStock === quantity;
   const validSale = (sale) =>
@@ -585,10 +586,16 @@ export function validateStockMaintenanceReport(report) {
       `${report.maintenance.taskId}:${report.fixture.slotId}` ||
     projection?.movementType !== "planned_refill" ||
     projection?.source !== "local_maintenance" ||
+    projection?.attributedTo !== "local_operations" ||
+    typeof projection?.platformRawMovementId !== "string" ||
+    projection.platformRawMovementId === "" ||
     platformMovement?.inventoryId !== report.fixture.inventoryId ||
     platformMovement?.reason !== "hardware_sync" ||
     platformMovement?.deltaQty !== 2 ||
     typeof platformMovement?.id !== "string" ||
+    platformMovement?.taskId !== report.maintenance.taskId ||
+    platformMovement?.note !==
+      `machine_stock_movement:${projection.platformRawMovementId}` ||
     !stock(report?.restored?.daemon, 2) ||
     report?.restored?.platform?.onHandQty !== 2 ||
     !stock(report?.terminal?.daemon, 1) ||
@@ -602,6 +609,36 @@ export function validateStockMaintenanceReport(report) {
     new Set(movements.salePlatformMovementIds).size !== 2 ||
     movements.salePlatformMovementIds.some(
       (movementId) => typeof movementId !== "string" || movementId === "",
+    ) ||
+    !Array.isArray(salePlatformMovements) ||
+    salePlatformMovements.length !== 2 ||
+    salePlatformMovements.some(
+      (movement) =>
+        typeof movement?.id !== "string" ||
+        movement.id === "" ||
+        typeof movement?.orderId !== "string" ||
+        movement.orderId === "",
+    ) ||
+    !salePlatformMovements.some(
+      (movement) => movement.orderId === firstOrderId,
+    ) ||
+    !salePlatformMovements.some(
+      (movement) => movement.orderId === secondOrderId,
+    ) ||
+    new Set(salePlatformMovements.map((movement) => movement.orderId)).size !==
+      2 ||
+    new Set([
+      platformMovement.id,
+      ...salePlatformMovements.map((movement) => movement.id),
+    ]).size !== 3 ||
+    [
+      platformMovement.id,
+      ...salePlatformMovements.map((movement) => movement.id),
+    ].some((movementId) =>
+      report.movementCursor.baselineItemIds.includes(movementId),
+    ) ||
+    salePlatformMovements.some(
+      (movement) => !movements.salePlatformMovementIds.includes(movement.id),
     ) ||
     JSON.stringify(movements.refillDeltas) !== JSON.stringify([2]) ||
     report?.screenshots?.unavailable?.route !==
@@ -753,6 +790,9 @@ export async function runStockMaintenanceGuest(options) {
             slot?.movementId === `${submittedTask.taskId}:${identity.slotId}` &&
             slot?.movementType === "planned_refill" &&
             slot?.source === "local_maintenance" &&
+            slot?.attributedTo === "local_operations" &&
+            typeof slot?.platformRawMovementId === "string" &&
+            slot.platformRawMovementId !== "" &&
             slot?.syncStatus === "accepted",
         ),
     );
@@ -765,6 +805,8 @@ export async function runStockMaintenanceGuest(options) {
       movementId: completedSlot.movementId,
       movementType: completedSlot.movementType,
       source: completedSlot.source,
+      attributedTo: completedSlot.attributedTo,
+      platformRawMovementId: completedSlot.platformRawMovementId,
     };
     const afterRefillMovements = await waitFor(
       "one correlated platform refill movement",
@@ -774,7 +816,9 @@ export async function runStockMaintenanceGuest(options) {
           (movement) =>
             movement?.reason === "hardware_sync" &&
             movement?.deltaQty === 2 &&
-            movement?.inventoryId === identity.inventoryId,
+            movement?.inventoryId === identity.inventoryId &&
+            movement?.note ===
+              `machine_stock_movement:${completedSlot.platformRawMovementId}`,
         ).length === 1,
     );
     const refillMovements = movementDelta(
@@ -784,10 +828,15 @@ export async function runStockMaintenanceGuest(options) {
       (movement) =>
         movement?.reason === "hardware_sync" &&
         movement?.deltaQty === 2 &&
-        movement?.inventoryId === identity.inventoryId,
+        movement?.inventoryId === identity.inventoryId &&
+        movement?.note ===
+          `machine_stock_movement:${completedSlot.platformRawMovementId}`,
     );
     report.maintenance.refillMovementCount = refillMovements.length;
-    report.maintenance.platformMovement = refillMovements[0];
+    report.maintenance.platformMovement = {
+      ...refillMovements[0],
+      taskId: submittedTask.taskId,
+    };
     report.restored = {
       daemon: stockFact(restoredView, identity),
       platform: restoredPlatform,
@@ -848,40 +897,30 @@ export async function runStockMaintenanceGuest(options) {
         );
       },
     );
+    const salePlatformMovements = movementDelta(
+      terminalMovements,
+      report.movementCursor,
+    )
+      .filter(
+        (movement) =>
+          movement?.reason === "purchase_confirmed" &&
+          movement?.deltaQty === -1 &&
+          [report.firstSale.orderId, report.secondSale.orderId].includes(
+            movement?.orderId,
+          ),
+      )
+      .map((movement) => ({ id: movement.id, orderId: movement.orderId }));
     report.terminal = {
       daemon: stockFact(terminalView, identity),
       platform: terminalPlatform,
       movements: {
-        saleDecrementOrderIds: (terminalMovements.items ?? [])
-          .filter(
-            (movement) =>
-              movementDelta({ items: [movement] }, report.movementCursor)
-                .length === 1,
-          )
-          .filter(
-            (movement) =>
-              movement?.reason === "purchase_confirmed" &&
-              movement?.deltaQty === -1,
-          )
-          .map((movement) => movement.orderId)
-          .filter((orderId) =>
-            [report.firstSale.orderId, report.secondSale.orderId].includes(
-              orderId,
-            ),
-          ),
-        salePlatformMovementIds: movementDelta(
-          terminalMovements,
-          report.movementCursor,
-        )
-          .filter(
-            (movement) =>
-              movement?.reason === "purchase_confirmed" &&
-              movement?.deltaQty === -1 &&
-              [report.firstSale.orderId, report.secondSale.orderId].includes(
-                movement?.orderId,
-              ),
-          )
-          .map((movement) => movement.id),
+        saleDecrementOrderIds: salePlatformMovements.map(
+          (movement) => movement.orderId,
+        ),
+        salePlatformMovementIds: salePlatformMovements.map(
+          (movement) => movement.id,
+        ),
+        salePlatformMovements,
         refillDeltas: movementDelta(terminalMovements, report.movementCursor)
           .filter((movement) => movement?.reason === "hardware_sync")
           .map((movement) => movement.deltaQty),

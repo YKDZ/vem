@@ -57,12 +57,16 @@ function report() {
         movementId: "refill-task-1:slot-stock-1",
         movementType: "planned_refill",
         source: "local_maintenance",
+        attributedTo: "local_operations",
+        platformRawMovementId: "raw-refill-1",
       },
       platformMovement: {
         id: "refill-movement-1",
         inventoryId: "inventory-stock-1",
         reason: "hardware_sync",
         deltaQty: 2,
+        taskId: "refill-task-1",
+        note: "machine_stock_movement:raw-refill-1",
       },
     },
     restored: {
@@ -98,6 +102,10 @@ function report() {
         salePlatformMovementIds: [
           "sale-platform-movement-1",
           "sale-platform-movement-2",
+        ],
+        salePlatformMovements: [
+          { id: "sale-platform-movement-1", orderId: "order-stock-1" },
+          { id: "sale-platform-movement-2", orderId: "order-stock-2" },
         ],
         refillDeltas: [2],
       },
@@ -185,5 +193,44 @@ describe("stock maintenance guest full", () => {
       () => validateStockMaintenanceReport(incomplete),
       /task projection/,
     );
+  });
+
+  it("requires the maintenance projection to retain movement attribution", () => {
+    const incomplete = report();
+    delete incomplete.maintenance.projection.attributedTo;
+    assert.throws(
+      () => validateStockMaintenanceReport(incomplete),
+      /task projection/,
+    );
+  });
+
+  it("requires exactly three post-cursor platform movements bound to the task and both sales", () => {
+    for (const invalid of [
+      (value) => value.movementCursor.baselineItemIds.push("refill-movement-1"),
+      (value) =>
+        value.movementCursor.baselineItemIds.push("sale-platform-movement-1"),
+      (value) => {
+        value.terminal.movements.salePlatformMovements[1].id =
+          "refill-movement-1";
+      },
+      (value) => {
+        value.maintenance.platformMovement.taskId = "other-task";
+      },
+      (value) => {
+        value.maintenance.platformMovement.note =
+          "machine_stock_movement:other-raw-movement";
+      },
+      (value) => {
+        value.terminal.movements.salePlatformMovements[1].orderId =
+          "other-order";
+      },
+    ]) {
+      const invalidReport = report();
+      invalid(invalidReport);
+      assert.throws(
+        () => validateStockMaintenanceReport(invalidReport),
+        /1-to-0-to-2-to-1 evidence/,
+      );
+    }
   });
 });

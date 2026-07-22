@@ -70,12 +70,16 @@ function stockMaintenanceReport() {
         movementId: "refill-task-1:slot-stock-1",
         movementType: "planned_refill",
         source: "local_maintenance",
+        attributedTo: "local_operations",
+        platformRawMovementId: "raw-refill-1",
       },
       platformMovement: {
         id: "refill-movement-1",
         inventoryId: "inventory-stock-1",
         reason: "hardware_sync",
         deltaQty: 2,
+        taskId: "refill-task-1",
+        note: "machine_stock_movement:raw-refill-1",
       },
     },
     restored: {
@@ -99,6 +103,10 @@ function stockMaintenanceReport() {
         salePlatformMovementIds: [
           "sale-platform-movement-1",
           "sale-platform-movement-2",
+        ],
+        salePlatformMovements: [
+          { id: "sale-platform-movement-1", orderId: "order-stock-1" },
+          { id: "sale-platform-movement-2", orderId: "order-stock-2" },
         ],
         refillDeltas: [2],
       },

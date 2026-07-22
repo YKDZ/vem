@@ -518,6 +518,8 @@ pub struct StockMaintenanceTaskProjectionSlot {
     pub movement_id: Option<String>,
     pub movement_type: Option<String>,
     pub source: Option<String>,
+    pub attributed_to: Option<String>,
+    pub platform_raw_movement_id: Option<String>,
     pub sync_status: String,
 }
 
@@ -3070,30 +3072,73 @@ impl LocalStateStore {
                     .find(|snapshot| snapshot.slot_id == slot.slot_id)
                     .map(|snapshot| snapshot.after_quantity)
             });
-            let movement_id = if submitted_addition.is_some() {
-                Some(format!("{}:{}", identity.task_id, slot.slot_id))
-            } else {
-                None
-            };
-            let sync_status = if let Some(movement_id) = movement_id.as_deref() {
-                sqlx::query_as::<_, (String,)>(
-                    "SELECT status FROM stock_movement_sync WHERE movement_id=?1",
+            let expected_movement_id = submitted_addition
+                .as_ref()
+                .map(|_| format!("{}:{}", identity.task_id, slot.slot_id));
+            let (
+                movement_id,
+                movement_type,
+                source,
+                attributed_to,
+                platform_raw_movement_id,
+                sync_status,
+            ) = if let Some(expected_movement_id) = expected_movement_id.as_deref() {
+                let movement: Option<(
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    String,
+                    Option<String>,
+                )> = sqlx::query_as(
+                    "SELECT m.movement_id,m.movement_type,m.source,m.attributed_to,
+                                    COALESCE(s.status,'not_submitted'),s.platform_receipt_json
+                             FROM stock_movements m
+                             LEFT JOIN stock_movement_sync s ON s.movement_id=m.movement_id
+                             WHERE m.movement_id=?1",
                 )
-                .bind(movement_id)
+                .bind(expected_movement_id)
                 .fetch_optional(&self.pool)
-                .await?
-                .map(|(status,)| status)
-                .unwrap_or_else(|| "not_submitted".to_string())
+                .await?;
+                movement
+                    .map(
+                        |(id, movement_type, source, attributed_to, sync_status, receipt)| {
+                            let platform_raw_movement_id = receipt
+                                .as_deref()
+                                .and_then(|value| {
+                                    serde_json::from_str::<serde_json::Value>(value).ok()
+                                })
+                                .and_then(|value| {
+                                    value
+                                        .get("receipt")
+                                        .and_then(|receipt| receipt.get("rawMovementId"))
+                                        .or_else(|| value.get("rawMovementId"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_owned)
+                                });
+                            (
+                                Some(id),
+                                Some(movement_type),
+                                Some(source),
+                                attributed_to,
+                                platform_raw_movement_id,
+                                sync_status,
+                            )
+                        },
+                    )
+                    .unwrap_or_else(|| (None, None, None, None, None, "not_submitted".to_string()))
             } else {
-                "not_submitted".to_string()
+                (None, None, None, None, None, "not_submitted".to_string())
             };
             slots.push(StockMaintenanceTaskProjectionSlot {
                 slot_code: slot.slot_code.clone(),
                 submitted_addition,
                 preview_quantity,
                 movement_id,
-                movement_type: submitted_addition.map(|_| "planned_refill".to_string()),
-                source: submitted_addition.map(|_| "local_maintenance".to_string()),
+                movement_type,
+                source,
+                attributed_to,
+                platform_raw_movement_id,
                 sync_status,
             });
         }
@@ -8309,6 +8354,22 @@ mod tests {
             accepted_task.slots[0].movement_id.as_deref(),
             Some(movement_id.as_str())
         );
+        assert_eq!(
+            accepted_task.slots[0].movement_type.as_deref(),
+            Some("planned_refill")
+        );
+        assert_eq!(
+            accepted_task.slots[0].source.as_deref(),
+            Some("local_maintenance")
+        );
+        assert_eq!(
+            accepted_task.slots[0].attributed_to.as_deref(),
+            Some("original-session-operator")
+        );
+        assert_eq!(
+            accepted_task.slots[0].platform_raw_movement_id.as_deref(),
+            Some("raw-refill-a1")
+        );
 
         let retry = store
             .submit_stock_maintenance_batch(
@@ -8330,6 +8391,33 @@ mod tests {
         assert_eq!(
             movements,
             vec![(Some("original-session-operator".to_string()),)]
+        );
+
+        sqlx::query(
+            "UPDATE stock_movements
+             SET movement_type='stock_count_correction',source='projection-recovery',
+                 attributed_to='projection-operator'
+             WHERE movement_id=?1",
+        )
+        .bind(&movement_id)
+        .execute(store.pool())
+        .await
+        .expect("mutate recorded movement");
+        let projected = store
+            .stock_maintenance_task_projection(&task.task_id)
+            .await
+            .expect("projection reads recorded movement");
+        assert_eq!(
+            projected.slots[0].movement_type.as_deref(),
+            Some("stock_count_correction")
+        );
+        assert_eq!(
+            projected.slots[0].source.as_deref(),
+            Some("projection-recovery")
+        );
+        assert_eq!(
+            projected.slots[0].attributed_to.as_deref(),
+            Some("projection-operator")
         );
     }
 

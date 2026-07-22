@@ -19,6 +19,7 @@ function descriptor({
   validator,
   blockedReason = null,
   allowActiveTransactionHandoff = false,
+  restoreFixtureStock = false,
 }) {
   return Object.freeze({
     name,
@@ -32,6 +33,7 @@ function descriptor({
     validator,
     blockedReason,
     allowActiveTransactionHandoff,
+    restoreFixtureStock,
     evidence: Object.freeze({ passed: passedEvidence, failed: failedEvidence }),
   });
 }
@@ -155,6 +157,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   descriptor({
     name: "stockMaintenance",
     core: true,
+    restoreFixtureStock: true,
     runner: {
       kind: "node",
       script: "scripts/testbed/stock-maintenance-guest-full.mjs",

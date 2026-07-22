@@ -157,6 +157,49 @@ describe("Track Handoff Recovery", () => {
     assert.deepEqual(result.actions, ["disableFaultInjection"]);
   });
 
+  it("records supported fixture recovery evidence after restoring a track fixture", async () => {
+    const result = await recoverTrackHandoff({
+      track: {
+        key: "stockMaintenance",
+        fixtureKey: "stockMaintenance",
+        restoreFixtureStock: true,
+      },
+      terminal: { facts: { route: "#/catalog" } },
+      fixtureAllocation: {
+        stockMaintenance: { inventoryId: "inventory-stock-1", onHandQty: 1 },
+      },
+      disableFaultInjection: async () => undefined,
+      restoreFixtureStock: async (fixture) => ({
+        targetQuantity: fixture.onHandQty,
+        daemon: { changed: true, mode: "physical_stock_attestation" },
+        platform: {
+          inventories: [
+            {
+              inventoryId: fixture.inventoryId,
+              onHandQty: fixture.onHandQty,
+              reservedQty: 0,
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.actions, [
+      "disableFaultInjection",
+      "restoreFixtureStock",
+    ]);
+    assert.deepEqual(result.evidence.fixtureStock, {
+      targetQuantity: 1,
+      daemon: { changed: true, mode: "physical_stock_attestation" },
+      platform: {
+        inventories: [
+          { inventoryId: "inventory-stock-1", onHandQty: 1, reservedQty: 0 },
+        ],
+      },
+    });
+  });
+
   it("preserves every available terminal fact when one daemon observation fails", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "ipcRecovery" },

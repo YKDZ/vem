@@ -236,6 +236,7 @@ export async function runSerialTrackLifecycle({
   captureTerminal,
   recover,
   beforeTrack = () => undefined,
+  haltOnRecoveryFailure = false,
   now = () => new Date(),
 }) {
   const executed = [];
@@ -297,11 +298,14 @@ export async function runSerialTrackLifecycle({
       };
     }
     const recoveryFinishedAt = now().toISOString();
+    const recoveryFailed = recovery?.ok !== true;
     executed.push({
       key: track.key,
       reportPath: track.reportPath,
-      status: childFailed || terminalFailed ? "failed" : "passed",
-      businessStatus: childFailed || terminalFailed ? "failed" : "passed",
+      status:
+        childFailed || terminalFailed || recoveryFailed ? "failed" : "passed",
+      businessStatus:
+        childFailed || terminalFailed || recoveryFailed ? "failed" : "passed",
       exitCode: child.exitCode,
       reportOk: report?.ok ?? null,
       validator: validation,
@@ -312,14 +316,18 @@ export async function runSerialTrackLifecycle({
         ? "child"
         : terminalFailed
           ? "terminal-state"
-          : null,
+          : recoveryFailed
+            ? "handoff-recovery"
+            : null,
       error: childFailed
         ? child.stderr?.startsWith("track preflight failed:")
           ? shortError(child)
           : (shortError(child) ?? validation.reason)
         : terminalFailed
           ? (terminal.reason ?? "terminal facts are incomplete")
-          : null,
+          : recoveryFailed
+            ? (recovery.errors?.join("; ") ?? "handoff recovery failed")
+            : null,
       terminal,
       handoffRecovery: {
         ...recovery,
@@ -329,6 +337,7 @@ export async function runSerialTrackLifecycle({
           Date.parse(recoveryFinishedAt) - Date.parse(recoveryStartedAt),
       },
     });
+    if (recoveryFailed && haltOnRecoveryFailure) break;
   }
   return executed;
 }
@@ -538,8 +547,8 @@ export async function ensureFixtureStockReady({
       const item = bySlot.get(slotCode);
       return (
         item?.slotSalesState === "sale_ready" &&
-        item.saleableStock > 0 &&
-        item.physicalStock >= desiredBySlot.get(slotCode)
+        item.saleableStock === desiredBySlot.get(slotCode) &&
+        item.physicalStock === desiredBySlot.get(slotCode)
       );
     });
   };
@@ -575,12 +584,18 @@ export async function ensureFixtureStockReady({
   const initialBySlot = new Map(
     (initialSaleView?.items ?? []).map((item) => [item.slotCode, item]),
   );
-  const requiresCount = [...desiredBySlot.keys()].some(
-    (slotCode) => initialBySlot.get(slotCode)?.slotSalesState !== "sale_ready",
-  );
+  const requiresAttestation = [...desiredBySlot.keys()].some((slotCode) => {
+    const item = initialBySlot.get(slotCode);
+    const desired = desiredBySlot.get(slotCode);
+    return (
+      item?.slotSalesState !== "sale_ready" ||
+      item?.saleableStock > desired ||
+      item?.physicalStock > desired
+    );
+  });
   let operationMode = task.mode;
   let operationId = task.taskId;
-  if (task.mode === "routine_refill" && requiresCount) {
+  if (task.mode === "routine_refill" && requiresAttestation) {
     operationMode = "physical_stock_attestation";
     operationId = `testbed-stock-recovery-${Date.now()}`;
     const slots = (initialSaleView?.items ?? []).map((item) => ({
@@ -969,9 +984,21 @@ function terminalOperations(guestInput, handoff, handoffPath) {
             operatorNote,
           }),
         wholeMachineLockOperatorNote: "testbed business-set handoff recovery",
-        restoreFixtureStock: async () => ({
-          skipped: "independent fixture allocation",
-        }),
+        restoreFixtureStock: async (fixture) => {
+          const allocation = {
+            [track.fixtureKey ?? track.key]: fixture,
+          };
+          const daemon = await ensureFixtureStockReady({
+            fixtureAllocation: allocation,
+            daemonGet: (path) => daemonGet(handoff, path),
+            daemonPost: (path, body) => daemonPost(handoff, path, body),
+          });
+          const platform = await waitForPlatformFixtureStock({
+            guestInput,
+            fixtureAllocation: allocation,
+          });
+          return { targetQuantity: fixture.onHandQty, daemon, platform };
+        },
       }),
   };
 }
@@ -1032,6 +1059,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
         actions: [],
         errors: ["handoff inputs are unavailable"],
       })),
+    haltOnRecoveryFailure: options.mode === "fast",
     now: dependencies.now,
   });
   const evidenceManifestPath = join(

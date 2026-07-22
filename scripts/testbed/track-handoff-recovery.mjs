@@ -192,14 +192,17 @@ export async function recoverTrackHandoff({
 }) {
   const actions = [];
   const errors = [];
+  const evidence = {};
   const attempt = async (name, operation) => {
     try {
-      await operation();
+      const result = await operation();
       actions.push(name);
+      return result;
     } catch (error) {
       errors.push(
         `${name}: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return undefined;
     }
   };
   const route = terminal?.facts?.route;
@@ -226,7 +229,7 @@ export async function recoverTrackHandoff({
   };
   if (transactionLeaked(terminal?.facts?.transaction)) {
     if (!(await cancelAndWaitForTerminal(terminal.facts.transaction))) {
-      return { ok: false, actions, errors };
+      return { ok: false, actions, errors, evidence };
     }
   }
   if (hasWholeMachineLockBlocker(terminal?.facts?.saleStartCapability)) {
@@ -234,15 +237,15 @@ export async function recoverTrackHandoff({
       errors.push(
         "recoverWholeMachineLock: selfCheckHardware is required for WHOLE_MACHINE_LOCKED",
       );
-      return { ok: false, actions, errors };
+      return { ok: false, actions, errors, evidence };
     }
     await attempt("selfCheckHardware", selfCheckHardware);
-    if (errors.length > 0) return { ok: false, actions, errors };
+    if (errors.length > 0) return { ok: false, actions, errors, evidence };
     if (typeof clearWholeMachineLock !== "function") {
       errors.push(
         "recoverWholeMachineLock: clearWholeMachineLock is required for WHOLE_MACHINE_LOCKED",
       );
-      return { ok: false, actions, errors };
+      return { ok: false, actions, errors, evidence };
     }
     await attempt("clearWholeMachineLock", () =>
       clearWholeMachineLock(wholeMachineLockOperatorNote),
@@ -262,7 +265,7 @@ export async function recoverTrackHandoff({
       transactionLeaked(lateTransaction) &&
       !(await cancelAndWaitForTerminal(lateTransaction))
     ) {
-      return { ok: false, actions, errors };
+      return { ok: false, actions, errors, evidence };
     }
   }
   const sessionId = terminal?.facts?.deviceSession?.sessionId;
@@ -278,11 +281,14 @@ export async function recoverTrackHandoff({
         `restoreFixtureStock: fixture allocation is absent for ${track.key}`,
       );
     } else {
-      await attempt("restoreFixtureStock", () => restoreFixtureStock(fixture));
+      const fixtureStock = await attempt("restoreFixtureStock", () =>
+        restoreFixtureStock(fixture),
+      );
+      if (fixtureStock !== undefined) evidence.fixtureStock = fixtureStock;
     }
   }
   if (route && route !== "#/catalog") {
     await attempt("returnToCatalog", returnToCatalog);
   }
-  return { ok: errors.length === 0, actions, errors };
+  return { ok: errors.length === 0, actions, errors, evidence };
 }
