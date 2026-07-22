@@ -35,6 +35,7 @@ import {
   pageQuerySchema,
   type RawMachineStockMovement,
 } from "@vem/shared";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { createBusinessNo } from "../common/business-no.util";
@@ -248,41 +249,83 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             `vem/machines/${command.machineCode}/commands/dispense`,
             envelope,
           );
-          const [sent] = await this.db
-            .update(vendingCommands)
-            .set({
-              status: "sent",
-              sentAt: new Date(),
-              lastError: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(vendingCommands.id, command.id),
-                eq(vendingCommands.status, "pending"),
-              ),
-            )
-            .returning();
-          return sent;
+          return await this.markPendingCommandSent(command.id);
         } catch (error) {
-          const [retryable] = await this.db
-            .update(vendingCommands)
-            .set({
-              retryCount: sql`${vendingCommands.retryCount} + 1`,
-              lastError: error instanceof Error ? error.message : String(error),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(vendingCommands.id, command.id),
-                eq(vendingCommands.status, "pending"),
-              ),
-            )
-            .returning();
-          return retryable;
+          return await this.recordPendingCommandDispatchFailure(
+            command.id,
+            error,
+          );
         }
       }),
     );
+  }
+
+  private async markPendingCommandSent(commandId: string) {
+    return await this.db.transaction(async (tx) => {
+      const [command] = await tx
+        .select({
+          id: vendingCommands.id,
+          machineId: vendingCommands.machineId,
+          orderId: vendingCommands.orderId,
+        })
+        .from(vendingCommands)
+        .where(eq(vendingCommands.id, commandId));
+      if (!command) return undefined;
+
+      await lockMachineForVendingMutation(tx, command.machineId);
+      await lockOrderForVendingMutation(tx, command.orderId);
+      const [sent] = await tx
+        .update(vendingCommands)
+        .set({
+          status: "sent",
+          sentAt: new Date(),
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            eq(vendingCommands.status, "pending"),
+          ),
+        )
+        .returning();
+      return sent;
+    });
+  }
+
+  private async recordPendingCommandDispatchFailure(
+    commandId: string,
+    error: unknown,
+  ) {
+    return await this.db.transaction(async (tx) => {
+      const [command] = await tx
+        .select({
+          id: vendingCommands.id,
+          machineId: vendingCommands.machineId,
+          orderId: vendingCommands.orderId,
+        })
+        .from(vendingCommands)
+        .where(eq(vendingCommands.id, commandId));
+      if (!command) return undefined;
+
+      await lockMachineForVendingMutation(tx, command.machineId);
+      await lockOrderForVendingMutation(tx, command.orderId);
+      const [retryable] = await tx
+        .update(vendingCommands)
+        .set({
+          retryCount: sql`${vendingCommands.retryCount} + 1`,
+          lastError: error instanceof Error ? error.message : String(error),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            eq(vendingCommands.status, "pending"),
+          ),
+        )
+        .returning();
+      return retryable;
+    });
   }
 
   async dispatchPendingCommands(): Promise<{ processed: number }> {
@@ -389,61 +432,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       throw new ConflictException("Retry limit reached");
     }
 
-    const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
-    const envelope = await this.mqttSignatureService.signForMachine({
-      machineCode: command.machineCode,
-      payload,
-      messageId: `command:${command.commandNo}:retry:${command.retryCount + 1}`,
+    return await this.createCompensationDispenseCommand({
+      orderId: command.orderId,
+      recoveryActionId: randomUUID(),
+      originalCommandNo: command.commandNo,
+      note: `operator retry for ${command.commandNo}`,
     });
-    await this.mqttService.publish(
-      `vem/machines/${command.machineCode}/commands/dispense`,
-      envelope,
-    );
-
-    const [updated] = await this.db
-      .update(vendingCommands)
-      .set({
-        status: "sent",
-        sentAt: new Date(),
-        retryCount: command.retryCount + 1,
-        lastError: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(vendingCommands.id, command.id))
-      .returning();
-
-    await this.db.transaction(async (tx) => {
-      const [currentOrder] = await tx
-        .select({ status: orders.status, paymentState: orders.paymentState })
-        .from(orders)
-        .where(eq(orders.id, command.orderId));
-      if (!currentOrder) {
-        return;
-      }
-      if (currentOrder.status !== "dispensing") {
-        const projectedStatus = projectOrderStatus({
-          paymentState: currentOrder.paymentState,
-          fulfillmentState: "dispensing",
-        });
-        await tx
-          .update(orders)
-          .set({
-            status: projectedStatus,
-            fulfillmentState: "dispensing",
-            updatedAt: new Date(),
-          })
-          .where(eq(orders.id, command.orderId));
-        await tx.insert(orderStatusEvents).values({
-          orderId: command.orderId,
-          fromStatus: currentOrder.status,
-          toStatus: projectedStatus,
-          reason: "vending_retry",
-          metadata: { commandId: command.id },
-        });
-      }
-    });
-
-    return updated;
   }
 
   async resolveCommand(
@@ -568,48 +562,66 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     originalCommandNo: string;
     note: string;
   }) {
-    const [row] = await this.db
-      .select({
-        orderId: orders.id,
-        orderNo: orders.orderNo,
-        machineId: orders.machineId,
-        machineCode: machines.code,
-        orderStatus: orders.status,
-        orderItemId: orderItems.id,
-        slotId: orderItems.slotId,
-        inventoryId: orderItems.inventoryId,
-        quantity: orderItems.quantity,
-        rowNo: machineSlots.rowNo,
-        cellNo: machineSlots.cellNo,
-      })
-      .from(orders)
-      .innerJoin(machines, eq(machines.id, orders.machineId))
-      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
-      .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
-      .where(eq(orders.id, input.orderId))
-      .limit(1);
-    if (!row) {
-      throw new NotFoundException("Order item not found for compensation");
-    }
-
-    const commandNo = createBusinessNo("CMD");
-    const payload = dispenseCommandPayloadSchema.parse({
-      commandNo,
-      orderNo: row.orderNo,
-      slot: {
-        rowNo: row.rowNo,
-        cellNo: row.cellNo,
-      },
-      quantity: row.quantity,
-      timeoutSeconds: 120,
-      recovery: {
-        action: "compensation_dispense",
-        originalCommandNo: input.originalCommandNo,
-        note: input.note,
-      },
-    });
-
     const created = await this.db.transaction(async (tx) => {
+      const [order] = await tx
+        .select({
+          id: orders.id,
+          machineId: orders.machineId,
+        })
+        .from(orders)
+        .where(eq(orders.id, input.orderId));
+      if (!order) {
+        throw new NotFoundException("Order not found for compensation");
+      }
+      await lockMachineForVendingMutation(tx, order.machineId);
+      await lockOrderForVendingMutation(tx, order.id);
+
+      // Re-read the original command only after the machine lock. This makes
+      // its line and physical slot stable against planogram activation.
+      const [row] = await tx
+        .select({
+          orderId: orders.id,
+          orderNo: orders.orderNo,
+          machineId: orders.machineId,
+          machineCode: machines.code,
+          orderItemId: vendingCommands.orderItemId,
+          slotId: vendingCommands.slotId,
+          inventoryId: orderItems.inventoryId,
+          quantity: orderItems.quantity,
+          rowNo: machineSlots.rowNo,
+          cellNo: machineSlots.cellNo,
+        })
+        .from(vendingCommands)
+        .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
+        .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+        .innerJoin(orderItems, eq(orderItems.id, vendingCommands.orderItemId))
+        .innerJoin(machineSlots, eq(machineSlots.id, vendingCommands.slotId))
+        .where(
+          and(
+            eq(vendingCommands.orderId, input.orderId),
+            eq(vendingCommands.commandNo, input.originalCommandNo),
+          ),
+        );
+      if (!row) {
+        throw new NotFoundException(
+          "Original vending command item not found for compensation",
+        );
+      }
+      await lockInventoriesForVendingMutation(tx, [row.inventoryId]);
+
+      const commandNo = createBusinessNo("CMD");
+      const payload = dispenseCommandPayloadSchema.parse({
+        commandNo,
+        orderNo: row.orderNo,
+        slot: { rowNo: row.rowNo, cellNo: row.cellNo },
+        quantity: row.quantity,
+        timeoutSeconds: 120,
+        recovery: {
+          action: "compensation_dispense",
+          originalCommandNo: input.originalCommandNo,
+          note: input.note,
+        },
+      });
       const [inventory] = await tx
         .update(inventories)
         .set({
@@ -652,62 +664,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           status: "pending",
         })
         .returning();
-
-      await tx
-        .update(orders)
-        .set({
-          status: "dispensing",
-          fulfillmentState: "dispensing",
-          updatedAt: new Date(),
-        })
-        .where(eq(orders.id, row.orderId));
-
-      await tx.insert(orderStatusEvents).values({
-        orderId: row.orderId,
-        fromStatus: row.orderStatus,
-        toStatus: "dispensing",
-        reason: "compensation_dispense_requested",
-        metadata: {
-          commandNo,
-          originalCommandNo: input.originalCommandNo,
-        },
-      });
-
-      return command;
+      return { command, machineCode: row.machineCode, payload };
     });
-
-    try {
-      const envelope = await this.mqttSignatureService.signForMachine({
-        machineCode: row.machineCode,
-        payload,
-        messageId: `command:${commandNo}`,
-      });
-      await this.mqttService.publish(
-        `vem/machines/${row.machineCode}/commands/dispense`,
-        envelope,
-      );
-      const [sent] = await this.db
-        .update(vendingCommands)
-        .set({
-          status: "sent",
-          sentAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(vendingCommands.id, created.id))
-        .returning();
-      return sent;
-    } catch (error) {
-      const [failed] = await this.db
-        .update(vendingCommands)
-        .set({
-          status: "failed",
-          lastError: error instanceof Error ? error.message : String(error),
-          updatedAt: new Date(),
-        })
-        .where(eq(vendingCommands.id, created.id))
-        .returning();
-      return failed;
-    }
+    await this.dispatchPendingCommandsForOrder(input.orderId);
+    return created.command;
   }
 
   private async resolveCommandAsDispensed(

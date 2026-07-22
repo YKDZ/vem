@@ -73,16 +73,15 @@ describe("VendingService durable command dispatcher", () => {
       },
     };
     const persistedSets: Array<Record<string, unknown>> = [];
-    const db = {
-      select: vi.fn().mockImplementation(() => ({
+    const transitionTx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
+      select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockResolvedValue([command]),
-            }),
-          }),
+          where: vi.fn().mockResolvedValue([
+            { id: command.id, machineId: "machine-1", orderId: "order-1" },
+          ]),
         }),
-      })),
+      }),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockImplementation((set: Record<string, unknown>) => {
           persistedSets.push(set);
@@ -93,6 +92,22 @@ describe("VendingService durable command dispatcher", () => {
           };
         }),
       }),
+    };
+    const db = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([command]),
+            }),
+          }),
+        }),
+      })),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (callback: (tx: typeof transitionTx) => unknown) =>
+          await callback(transitionTx),
+        ),
     };
     const publish = vi
       .fn()
@@ -124,7 +139,7 @@ describe("VendingService durable command dispatcher", () => {
     );
   });
 
-  it("publishes compensation recovery metadata as a top-level dispense protocol field", async () => {
+  it("enqueues compensation from the exact original command before durable dispatch", async () => {
     const row = {
       orderId: "order-1",
       orderNo: "ORD-1",
@@ -140,7 +155,26 @@ describe("VendingService durable command dispatcher", () => {
     };
     const insertedCommandValues = vi.fn();
     const created = { id: "command-2", commandNo: "CMD-COMPENSATION-1" };
-    const tx = {
+    const compensationTx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({
+            where: async () => [{ id: row.orderId, machineId: row.machineId }],
+          }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                innerJoin: () => ({
+                  innerJoin: () => ({ where: async () => [row] }),
+                }),
+              }),
+            }),
+          }),
+        }),
       update: vi
         .fn()
         .mockReturnValueOnce({
@@ -161,27 +195,56 @@ describe("VendingService durable command dispatcher", () => {
         })
         .mockReturnValueOnce({ values: vi.fn() }),
     };
+    const dispatchTx = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
+      select: vi.fn().mockReturnValue({
+        from: () => ({
+          where: async () => [
+            { id: created.id, machineId: row.machineId, orderId: row.orderId },
+          ],
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: () => ({
+          where: () => ({ returning: async () => [{ ...created, status: "sent" }] }),
+        }),
+      }),
+    };
     const db = {
       select: vi.fn().mockReturnValue({
         from: () => ({
           innerJoin: () => ({
-            innerJoin: () => ({
-              innerJoin: () => ({
-                where: () => ({ limit: async () => [row] }),
-              }),
+            where: () => ({
+              orderBy: async () => [
+                {
+                  ...created,
+                  machineCode: row.machineCode,
+                  payloadJson: {
+                    commandNo: created.commandNo,
+                    orderNo: row.orderNo,
+                    slot: { rowNo: row.rowNo, cellNo: row.cellNo },
+                    quantity: row.quantity,
+                    timeoutSeconds: 120,
+                    recovery: {
+                      action: "compensation_dispense",
+                      originalCommandNo: "CMD-ORIGINAL-1",
+                      note: "operator confirmed the original item was not dispensed",
+                    },
+                  },
+                },
+              ],
             }),
           }),
         }),
       }),
-      transaction: async (callback: (arg: typeof tx) => Promise<unknown>) =>
-        await callback(tx),
-      update: vi.fn().mockReturnValue({
-        set: () => ({
-          where: () => ({
-            returning: async () => [{ ...created, status: "sent" }],
-          }),
-        }),
-      }),
+      transaction: vi
+        .fn()
+        .mockImplementationOnce(async (callback: (tx: typeof compensationTx) => unknown) =>
+          await callback(compensationTx),
+        )
+        .mockImplementationOnce(async (callback: (tx: typeof dispatchTx) => unknown) =>
+          await callback(dispatchTx),
+        ),
     };
     const signForMachine = vi.fn().mockResolvedValue({ signed: true });
     const service = new VendingService(
@@ -220,6 +283,7 @@ describe("VendingService durable command dispatcher", () => {
         }),
       }),
     );
+    expect(compensationTx.execute).toHaveBeenCalledTimes(3);
   });
 });
 
