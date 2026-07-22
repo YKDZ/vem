@@ -10,6 +10,7 @@ let installedTrace: MachineRuntimeTrace | null = null;
 const TECHNICAL_MESSAGE_LIMIT = 512;
 const TECHNICAL_RESPONSE_BODY_LIMIT = 2_048;
 const TECHNICAL_CODE_LIMIT = 128;
+const TRY_ON_CORRELATION_LIMIT = 128;
 
 export function installCustomerErrorEvidenceTrace(
   trace: MachineRuntimeTrace | null,
@@ -26,12 +27,35 @@ export function recordCustomerErrorEvidence(input: {
   orderId: string | null;
   paymentId: string | null;
   orderNo: string | null;
+  tryOnSessionId?: string | null;
+  tryOnCatalogKey?: string | null;
+  tryOnVariantId?: string | null;
 }): void {
-  const { technicalError, ...evidence } = input;
+  const {
+    technicalError,
+    tryOnSessionId,
+    tryOnCatalogKey,
+    tryOnVariantId,
+    ...evidence
+  } = input;
   const technical = serializeTechnicalError(technicalError);
-  const record = { ...evidence, technical };
-  installedTrace?.record({ type: "customer_error", ...record });
-  persistCustomerErrorEvidence(record);
+  const record = {
+    ...evidence,
+    technical,
+    tryOnSessionId: boundedText(tryOnSessionId, TRY_ON_CORRELATION_LIMIT),
+    tryOnCatalogKey: boundedText(tryOnCatalogKey, TRY_ON_CORRELATION_LIMIT),
+    tryOnVariantId: boundedText(tryOnVariantId, TRY_ON_CORRELATION_LIMIT),
+  };
+  try {
+    installedTrace?.record({ type: "customer_error", ...record });
+  } catch {
+    // Runtime evidence is observational and must not alter customer control flow.
+  }
+  try {
+    persistCustomerErrorEvidence(record);
+  } catch {
+    // localStorage is diagnostic-only and can be unavailable or quota-limited.
+  }
 }
 
 export function serializeTechnicalError(

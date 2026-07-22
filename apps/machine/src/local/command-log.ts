@@ -8,6 +8,7 @@ const CUSTOMER_ERROR_EVIDENCE_KEY = `${COMMAND_LOG_KEY}.customer-errors`;
 
 export const COMMAND_LOG_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 export const COMMAND_LOG_MAX_ENTRIES = 2_000;
+export const CUSTOMER_ERROR_EVIDENCE_MAX_BYTES = 256 * 1_024;
 
 export type CommandLogStatus =
   | "received"
@@ -46,6 +47,9 @@ export type CustomerErrorEvidence = {
   orderId: string | null;
   paymentId: string | null;
   orderNo: string | null;
+  tryOnSessionId?: string | null;
+  tryOnCatalogKey?: string | null;
+  tryOnVariantId?: string | null;
   recordedAtMs: number;
 };
 
@@ -77,6 +81,12 @@ function isCustomerErrorEvidence(
     isTechnicalErrorEvidence(entry.technical) &&
     ["checkoutAttemptIdempotencyKey", "orderId", "paymentId", "orderNo"].every(
       (key) => entry[key] === null || typeof entry[key] === "string",
+    ) &&
+    ["tryOnSessionId", "tryOnCatalogKey", "tryOnVariantId"].every(
+      (key) =>
+        entry[key] === undefined ||
+        entry[key] === null ||
+        typeof entry[key] === "string",
     ) &&
     Number.isFinite(entry.recordedAtMs)
   );
@@ -197,31 +207,101 @@ function readCustomerErrorEvidence(
   storage: StorageLike,
   nowMs = Date.now(),
 ): CustomerErrorEvidence[] {
-  const raw = storage.getItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+  let raw: string | null;
+  try {
+    raw = storage.getItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+  } catch {
+    return [];
+  }
   if (!raw) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    storage.removeItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+    removeCustomerErrorEvidence(storage);
     return [];
   }
   if (!Array.isArray(parsed)) {
-    storage.removeItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+    removeCustomerErrorEvidence(storage);
     return [];
   }
-  const fresh = parsed
-    .filter(
-      (entry): entry is CustomerErrorEvidence =>
-        isCustomerErrorEvidence(entry) &&
-        nowMs - entry.recordedAtMs <= COMMAND_LOG_TTL_MS,
-    )
-    .sort((a, b) => b.recordedAtMs - a.recordedAtMs)
-    .slice(0, COMMAND_LOG_MAX_ENTRIES);
+  const fresh = compactCustomerErrorEvidence(
+    parsed
+      .filter(
+        (entry): entry is CustomerErrorEvidence =>
+          isCustomerErrorEvidence(entry) &&
+          nowMs - entry.recordedAtMs <= COMMAND_LOG_TTL_MS,
+      )
+      .sort((a, b) => b.recordedAtMs - a.recordedAtMs),
+  );
   if (fresh.length !== parsed.length) {
-    storage.setItem(CUSTOMER_ERROR_EVIDENCE_KEY, JSON.stringify(fresh));
+    writeCustomerErrorEvidence(storage, fresh);
   }
   return fresh;
+}
+
+function compactCustomerErrorEvidence(
+  entries: CustomerErrorEvidence[],
+): CustomerErrorEvidence[] {
+  const compacted: CustomerErrorEvidence[] = [];
+  for (const entry of entries.slice(0, COMMAND_LOG_MAX_ENTRIES)) {
+    const candidate = [...compacted, entry];
+    if (
+      serializedCustomerErrorEvidenceByteLength(JSON.stringify(candidate)) >
+      CUSTOMER_ERROR_EVIDENCE_MAX_BYTES
+    ) {
+      continue;
+    }
+    compacted.push(entry);
+  }
+  return compacted;
+}
+
+function serializedCustomerErrorEvidenceByteLength(value: string): number {
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(value).byteLength;
+  }
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      index + 1 < value.length &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      bytes += 4;
+      index += 1;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function writeCustomerErrorEvidence(
+  storage: StorageLike,
+  entries: CustomerErrorEvidence[],
+): void {
+  try {
+    storage.setItem(CUSTOMER_ERROR_EVIDENCE_KEY, JSON.stringify(entries));
+  } catch {
+    // Customer evidence is diagnostic-only and must not alter checkout or
+    // try-on control flow when browser storage is unavailable or full.
+  }
+}
+
+function removeCustomerErrorEvidence(storage: StorageLike): void {
+  try {
+    storage.removeItem(CUSTOMER_ERROR_EVIDENCE_KEY);
+  } catch {
+    // Treat protected storage the same as unavailable storage.
+  }
 }
 
 export function recordCustomerErrorEvidence(
@@ -244,9 +324,11 @@ export function recordCustomerErrorEvidence(
   const existing = readCustomerErrorEvidence(storage, recordedAtMs).filter(
     (candidate) => candidate.evidenceId !== entry.evidenceId,
   );
-  storage.setItem(
-    CUSTOMER_ERROR_EVIDENCE_KEY,
-    JSON.stringify([entry, ...existing].slice(0, COMMAND_LOG_MAX_ENTRIES)),
+  writeCustomerErrorEvidence(
+    storage,
+    compactCustomerErrorEvidence(
+      [entry, ...existing].slice(0, COMMAND_LOG_MAX_ENTRIES),
+    ),
   );
   return entry;
 }

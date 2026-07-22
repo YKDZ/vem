@@ -18,18 +18,33 @@ const props = defineProps<{
 
 const dataUrl = ref("");
 const customerError = ref<string | null>(null);
+let renderSequence = 0;
 
 watch(
-  () => props.value,
-  async (value) => {
+  () => ({
+    value: props.value,
+    checkoutAttemptIdempotencyKey: props.checkoutAttemptIdempotencyKey ?? null,
+    orderId: props.orderId ?? null,
+    paymentId: props.paymentId ?? null,
+    orderNo: props.orderNo ?? null,
+  }),
+  async (snapshot, _, onCleanup) => {
+    const sequence = ++renderSequence;
+    let stale = false;
+    onCleanup(() => {
+      stale = true;
+    });
     customerError.value = null;
-    if (!value) {
+    if (!snapshot.value) {
       dataUrl.value = "";
       return;
     }
     try {
-      dataUrl.value = await renderPaymentQrDataUrl(value);
+      const rendered = await renderPaymentQrDataUrl(snapshot.value);
+      if (stale || sequence !== renderSequence) return;
+      dataUrl.value = rendered;
     } catch (err) {
+      if (stale || sequence !== renderSequence) return;
       dataUrl.value = "";
       const projection = projectCustomerError("payment_creation", err);
       customerError.value = projection.message;
@@ -38,11 +53,10 @@ watch(
         customerMessage: projection.message,
         technicalError: err,
         operation: "payment_qr.render",
-        checkoutAttemptIdempotencyKey:
-          props.checkoutAttemptIdempotencyKey ?? null,
-        orderId: props.orderId ?? null,
-        paymentId: props.paymentId ?? null,
-        orderNo: props.orderNo ?? null,
+        checkoutAttemptIdempotencyKey: snapshot.checkoutAttemptIdempotencyKey,
+        orderId: snapshot.orderId,
+        paymentId: snapshot.paymentId,
+        orderNo: snapshot.orderNo,
       });
     }
   },

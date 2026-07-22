@@ -55,6 +55,9 @@ describe("useTryOnPreview", () => {
           cause: "camera unavailable",
           responseBody: expect.stringMatching(/…$/),
         }),
+        tryOnSessionId: null,
+        tryOnCatalogKey: null,
+        tryOnVariantId: null,
       }),
     );
   });
@@ -92,6 +95,100 @@ describe("useTryOnPreview", () => {
           responseCode: "vision_stop_failed",
           responseBody: "stop response",
           cause: "socket closed",
+        }),
+        tryOnSessionId: "try-on-1",
+        tryOnCatalogKey: null,
+        tryOnVariantId: null,
+      }),
+    );
+  });
+
+  it("correlates a failed preview validation with the returned try-on session", async () => {
+    const trace = createMachineRuntimeTrace();
+    installCustomerErrorEvidenceTrace(trace);
+    openVisionTryOnSessionMock.mockResolvedValue({
+      sessionId: "try-on-invalid-url",
+      previewUrl: "https://vision.example/try-on/remote.mjpeg",
+      streamType: "mjpeg",
+      stop: vi.fn().mockResolvedValue(undefined),
+    });
+    const preview = useTryOnPreview();
+
+    await preview.startPreview({
+      catalogKey: "catalog-1",
+      variantId: "variant-1",
+    });
+
+    expect(trace.entries()).toContainEqual(
+      expect.objectContaining({
+        type: "customer_error",
+        operation: "try_on.start_preview",
+        tryOnSessionId: "try-on-invalid-url",
+        tryOnCatalogKey: "catalog-1",
+        tryOnVariantId: "variant-1",
+      }),
+    );
+  });
+
+  it("records stale session cleanup failures without changing the current preview", async () => {
+    const trace = createMachineRuntimeTrace();
+    installCustomerErrorEvidenceTrace(trace);
+    let resolveStaleSession!: (session: {
+      sessionId: string;
+      previewUrl: string;
+      streamType: "mjpeg";
+      stop: (reason?: "replaced") => Promise<void>;
+    }) => void;
+    const staleSession = new Promise<{
+      sessionId: string;
+      previewUrl: string;
+      streamType: "mjpeg";
+      stop: (reason?: "replaced") => Promise<void>;
+    }>((resolve) => {
+      resolveStaleSession = resolve;
+    });
+    const staleStopError = new Error("stale vision stop failed");
+    const currentStop = vi.fn().mockResolvedValue(undefined);
+    openVisionTryOnSessionMock
+      .mockImplementationOnce(() => staleSession)
+      .mockResolvedValueOnce({
+        sessionId: "try-on-current",
+        previewUrl: "http://127.0.0.1:7892/try-on/current.mjpeg",
+        streamType: "mjpeg",
+        stop: currentStop,
+      });
+    const preview = useTryOnPreview();
+
+    const staleStart = preview.startPreview({
+      catalogKey: "catalog-stale",
+      variantId: "variant-stale",
+    });
+    await Promise.resolve();
+    await preview.startPreview({
+      catalogKey: "catalog-current",
+      variantId: "variant-current",
+    });
+    resolveStaleSession({
+      sessionId: "try-on-stale",
+      previewUrl: "http://127.0.0.1:7892/try-on/stale.mjpeg",
+      streamType: "mjpeg",
+      stop: vi.fn().mockRejectedValue(staleStopError),
+    });
+    await staleStart;
+
+    expect(preview.previewUrl.value).toBe(
+      "http://127.0.0.1:7892/try-on/current.mjpeg",
+    );
+    expect(preview.errorMessage.value).toBeNull();
+    expect(trace.entries()).toContainEqual(
+      expect.objectContaining({
+        type: "customer_error",
+        operation: "try_on.cleanup_stale_session",
+        tryOnSessionId: "try-on-stale",
+        tryOnCatalogKey: "catalog-stale",
+        tryOnVariantId: "variant-stale",
+        technical: expect.objectContaining({
+          message: "stale vision stop failed",
         }),
       }),
     );

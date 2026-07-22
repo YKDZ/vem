@@ -9,6 +9,7 @@ import {
   recordCustomerErrorEvidence,
   COMMAND_LOG_MAX_ENTRIES,
   COMMAND_LOG_TTL_MS,
+  CUSTOMER_ERROR_EVIDENCE_MAX_BYTES,
   type StorageLike,
 } from "./command-log";
 
@@ -172,5 +173,74 @@ describe("command log", () => {
     );
 
     expect(listCustomerErrorEvidence(storage)).toEqual([]);
+  });
+
+  it("treats customer-error persistence as best effort when storage is protected or full", () => {
+    const storage: StorageLike = {
+      getItem: () => {
+        throw new DOMException("storage access denied", "SecurityError");
+      },
+      setItem: () => {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      },
+      removeItem: () => {
+        throw new DOMException("storage access denied", "SecurityError");
+      },
+    };
+    const input = {
+      stage: "payment_creation",
+      customerMessage: "支付订单创建失败，请稍后重试",
+      technical: {
+        name: "Error",
+        message: "provider timed out",
+        statusCode: 502,
+        responseCode: null,
+        responseBody: null,
+        cause: null,
+      },
+      operation: "checkout.create_order",
+      checkoutAttemptIdempotencyKey: "checkout:attempt-storage",
+      orderId: null,
+      paymentId: null,
+      orderNo: null,
+    };
+
+    expect(() => recordCustomerErrorEvidence(input, storage)).not.toThrow();
+    expect(() => listCustomerErrorEvidence(storage)).not.toThrow();
+    expect(listCustomerErrorEvidence(storage)).toEqual([]);
+  });
+
+  it("bounds customer-error evidence by serialized bytes as well as entry count", () => {
+    const storage = memoryStorage();
+    const technical = {
+      name: "Error",
+      message: "x".repeat(4_096),
+      statusCode: null,
+      responseCode: null,
+      responseBody: null,
+      cause: null,
+    };
+    for (let index = 0; index < 100; index += 1) {
+      recordCustomerErrorEvidence(
+        {
+          stage: "device",
+          customerMessage: "设备暂不可用，请联系工作人员",
+          technical,
+          operation: `try_on.stop_preview.${index}`,
+          checkoutAttemptIdempotencyKey: null,
+          orderId: null,
+          paymentId: null,
+          orderNo: null,
+        },
+        storage,
+      );
+    }
+
+    const raw = storage.getItem("vem.machine.commandLog.v1.customer-errors");
+    expect(raw).not.toBeNull();
+    expect(new TextEncoder().encode(raw ?? "").byteLength).toBeLessThanOrEqual(
+      CUSTOMER_ERROR_EVIDENCE_MAX_BYTES,
+    );
+    expect(listCustomerErrorEvidence(storage).length).toBeLessThan(100);
   });
 });
