@@ -39,9 +39,7 @@ describe("useTryOnPreview", () => {
 
     await preview.startPreview();
 
-    expect(preview.errorMessage.value).toBe(
-      "虚拟试穿预览启动失败，请联系维护人员检查视觉服务与摄像头。",
-    );
+    expect(preview.errorMessage.value).toBe("设备暂不可用，请联系工作人员");
     expect(trace.entries()).toContainEqual(
       expect.objectContaining({
         type: "customer_error",

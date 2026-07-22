@@ -1944,6 +1944,9 @@ async function submitStockMaintenanceTask(): Promise<void> {
               >
                 {{ evidence.operation }} · {{ evidence.stage }} ·
                 {{ evidence.customerMessage }}
+                <pre data-test="customer-error-technical-evidence">{{
+                  serializeDiagnosticPayload(evidence.technical)
+                }}</pre>
               </li>
             </ul>
           </details>

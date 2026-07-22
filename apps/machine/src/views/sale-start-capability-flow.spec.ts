@@ -2030,7 +2030,7 @@ describe("sale-start capability UI flow", () => {
       expect(stop).toHaveBeenCalledWith("error");
     });
     expect(host.querySelector('[data-test="try-on-preview"]')).toBeNull();
-    expect(host.textContent).toContain("虚拟试穿预览启动失败");
+    expect(host.textContent).toContain("设备暂不可用，请联系工作人员");
     expect(useVisionStore().isTryOnCapabilityDegraded).toBe(false);
   });
 
@@ -2229,7 +2229,7 @@ describe("sale-start capability UI flow", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("虚拟试穿预览启动失败");
+    ).toContain("设备暂不可用，请联系工作人员");
   });
 
   it("does not retry with browser video fallback when vision try-on fails", async () => {
@@ -2266,7 +2266,7 @@ describe("sale-start capability UI flow", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("虚拟试穿预览启动失败");
+    ).toContain("设备暂不可用，请联系工作人员");
   });
 
   it("disables try-on after a classified protocol failure while preserving purchase", async () => {
@@ -2345,7 +2345,7 @@ describe("sale-start capability UI flow", () => {
     });
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("虚拟试穿预览启动失败");
+    ).toContain("设备暂不可用，请联系工作人员");
 
     unmountMountedView();
 
@@ -2438,7 +2438,7 @@ describe("sale-start capability UI flow", () => {
     });
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("虚拟试穿预览启动失败");
+    ).toContain("设备暂不可用，请联系工作人员");
 
     unmountMountedView();
 

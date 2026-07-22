@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
 import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
+import { recordCustomerErrorEvidence } from "@/local/command-log";
 import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
@@ -1009,6 +1010,33 @@ describe("Local Operations", () => {
     expect(payload.textContent).toContain("已截断");
     expect(payload.textContent?.length ?? 0).toBeLessThan(14_000);
     expect(host.textContent).toContain("视觉运行状态");
+  });
+
+  it("shows bounded technical evidence only in Local Operations", async () => {
+    recordCustomerErrorEvidence({
+      stage: "payment_creation",
+      customerMessage: "支付订单创建失败，请稍后重试",
+      technical: {
+        name: "Error",
+        message: "BACKEND_HTTP_ERROR: 503 provider unavailable",
+        statusCode: 503,
+        responseCode: "provider_unavailable",
+        responseBody: null,
+        cause: null,
+      },
+      operation: "checkout.create_order",
+      checkoutAttemptIdempotencyKey: "checkout:test",
+      orderId: null,
+      paymentId: null,
+      orderNo: null,
+    });
+
+    const host = await render();
+    const evidence = host.querySelector(
+      "[data-test='customer-error-technical-evidence']",
+    );
+    expect(evidence?.textContent).toContain("BACKEND_HTTP_ERROR: 503");
+    expect(evidence?.textContent).toContain("provider_unavailable");
   });
 
   it("does not fabricate a test-audio success when the installed Tauri runtime is absent", async () => {

@@ -101,8 +101,7 @@ export function useTryOnPreview(): {
           visionStore.markTryOnCapabilityDegraded();
         }
         recordTryOnFailure("try_on.start_preview", error, correlation);
-        errorMessage.value =
-          "虚拟试穿预览启动失败，请联系维护人员检查视觉服务与摄像头。";
+        errorMessage.value = projectCustomerError("device", error).message;
       }
     } finally {
       if (sequence === requestSequence) {
