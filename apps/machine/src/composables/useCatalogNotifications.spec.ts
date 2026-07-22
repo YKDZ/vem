@@ -51,21 +51,17 @@ describe("useCatalogNotifications", () => {
     );
   });
 
-  it("keeps an accepted capability available while refresh diagnostics are stale", () => {
+  it("keeps an accepted capability available without exposing refresh diagnostics", () => {
     applySaleCapability();
     useSaleCapabilityStore().markStale(new Error("temporary disconnect"));
 
     const { primaryNotification } = useCatalogNotifications();
 
     expect(useSaleCapabilityStore().canStartSale).toBe(true);
-    expect(primaryNotification.value).toEqual({
-      id: "sale-capability-refreshing",
-      message: "购买状态正在更新，仍可继续选购。",
-      tone: "info",
-    });
+    expect(primaryNotification.value).toBeNull();
   });
 
-  it("prioritizes refresh state over an accepted stale blocker", () => {
+  it("keeps the accepted blocker visible while its refresh is stale", () => {
     applySaleCapability({
       canStartSale: false,
       blockerCode: "NO_SALEABLE_SLOTS",
@@ -75,9 +71,9 @@ describe("useCatalogNotifications", () => {
     const { primaryNotification } = useCatalogNotifications();
 
     expect(primaryNotification.value).toEqual({
-      id: "sale-capability-refreshing",
-      message: "购买状态正在更新，仍可继续选购。",
-      tone: "info",
+      id: "NO_SALEABLE_SLOTS",
+      message: "设备暂时不可购买，请稍后再试。",
+      tone: "warning",
     });
   });
 

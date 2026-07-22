@@ -62,16 +62,6 @@ export function useCatalogNotifications(): {
       ];
     }
 
-    if (saleCapabilityStore.stale || saleCapabilityStore.updating) {
-      return [
-        {
-          id: "sale-capability-refreshing",
-          message: "购买状态正在更新，仍可继续选购。",
-          tone: "info",
-        },
-      ];
-    }
-
     if (!saleCapabilityStore.canStartSale) {
       const blocker: CapabilityReason | null =
         saleCapabilityStore.accepted.blockers[0] ?? null;
