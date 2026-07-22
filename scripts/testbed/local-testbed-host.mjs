@@ -210,7 +210,7 @@ $sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } 
 $session = @($sessions | Where-Object { Test-ExpectedInteractiveSession $_ $expectedUser } | Select-Object -First 1)
 if ($session.Count -eq 0) { throw "interactive session for $expectedUser was not observed" }
 $videoController = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object {
-  [string]$_.PNPDeviceID -match '^PCI\\VEN_1AF4&DEV_1050' -and
+  [string]$_.PNPDeviceID -like 'PCI\VEN_1AF4&DEV_1050*' -and
   [string]$_.Status -eq 'OK' -and
   [int]$_.ConfigManagerErrorCode -eq 0 -and
   $null -ne $_.CurrentHorizontalResolution -and

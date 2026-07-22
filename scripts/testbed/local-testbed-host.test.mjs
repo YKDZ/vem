@@ -274,6 +274,8 @@ describe("tracked local testbed host lifecycle", () => {
     assert.match(plan[1].input, /CurrentHorizontalResolution/);
     assert.match(plan[1].input, /CurrentVerticalResolution/);
     assert.match(plan[1].input, /VEN_1AF4&DEV_1050/);
+    assert.match(plan[1].input, /PNPDeviceID -like/);
+    assert.doesNotMatch(plan[1].input, /PNPDeviceID -match/);
     assert.match(plan[1].input, /ConfigManagerErrorCode/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.ok(
