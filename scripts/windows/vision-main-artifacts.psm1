@@ -450,7 +450,12 @@ function Stop-VisionMainTask([string]$AppDirectory, [string]$ConfigurationPath, 
   $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
   if ($null -ne $task -and [string]$task.State -eq "Running") { Stop-ScheduledTask -InputObject $task -ErrorAction Stop }
   foreach ($processId in @(Get-VisionMainOwnedProcessIds $AppDirectory $ConfigurationPath)) {
-    Stop-Process -Id $processId -Force -ErrorAction Stop
+    try {
+      Stop-Process -Id $processId -Force -ErrorAction Stop
+    } catch {
+      if ($_.FullyQualifiedErrorId -like "NoProcessFoundForGivenId,*") { continue }
+      throw
+    }
   }
   $deadline = [DateTime]::UtcNow.AddSeconds(15)
   do {
