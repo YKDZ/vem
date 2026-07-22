@@ -92,7 +92,10 @@ import type {
 
 import { resetCustomerInteractionSessionForTests } from "@/composables/customer-interaction-session";
 import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
-import { installVisionRecommendationCoordinator } from "@/runtime/vision-recommendation-coordinator";
+import {
+  installVisionRecommendationCoordinator,
+  type VisionRecommendationCoordinator,
+} from "@/runtime/vision-recommendation-coordinator";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -113,6 +116,8 @@ let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 let propertyRestorers: Array<() => void> = [];
 let capabilityRevision = 0;
+let visionRecommendationCoordinator: VisionRecommendationCoordinator | null =
+  null;
 
 beforeEach(() => {
   resetCustomerInteractionSessionForTests();
@@ -177,10 +182,11 @@ beforeEach(() => {
   );
   getSaleStartCapabilityMock.mockResolvedValue(saleCapability(true));
   createOrderMock.mockResolvedValue(transactionSnapshot());
-  installVisionRecommendationCoordinator(pinia);
 });
 
 afterEach(() => {
+  visionRecommendationCoordinator?.close();
+  visionRecommendationCoordinator = null;
   resetCustomerInteractionSessionForTests();
   resetStableVisionPresenceSessionForTests();
   unmountMountedView();
@@ -575,6 +581,8 @@ function applyBlockedCapability(): void {
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
+  visionRecommendationCoordinator ??=
+    installVisionRecommendationCoordinator(pinia);
   const host = document.createElement("div");
   document.body.append(host);
   mountedApp = createApp(component);
@@ -1023,6 +1031,7 @@ describe("sale-start capability UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
+    applyVisionTryOnConfig();
 
     const host = await mountView(CatalogView);
     requireButtonByText(host, "T恤").click();
@@ -1123,6 +1132,7 @@ describe("sale-start capability UI flow", () => {
     const blockedCapability = saleCapability(false);
     getSaleStartCapabilityMock.mockResolvedValue(blockedCapability);
     useSaleCapabilityStore().acceptSnapshot(blockedCapability);
+    applyVisionTryOnConfig();
 
     await mountView(CatalogView);
 
@@ -1170,6 +1180,7 @@ describe("sale-start capability UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
+    applyVisionTryOnConfig();
 
     const host = await mountView(CatalogView);
 
@@ -1262,6 +1273,7 @@ describe("sale-start capability UI flow", () => {
     });
     routeParams.catalogKey = mediumItem.catalogKey;
     routeQuery.variantId = largeItem.variantId;
+    applyVisionTryOnConfig();
 
     const host = await mountView(ProductDetailView);
     await Promise.resolve(
@@ -1493,6 +1505,7 @@ describe("sale-start capability UI flow", () => {
       lastUpdatedAt: "2026-07-22T10:00:00Z",
     });
     routeParams.catalogKey = mediumItem.catalogKey;
+    applyVisionTryOnConfig();
 
     const host = await mountView(ProductDetailView);
     const page = requireElement<HTMLElement>(
