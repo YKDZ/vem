@@ -16,6 +16,7 @@ use crate::{
 
 const AUTOMATIC_VENT_GUARD: Duration = Duration::from_secs(5);
 const AUTOMATIC_VENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTOMATIC_VENT_DEFER_RETRY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +44,12 @@ struct AutomaticVentIntent {
     edge_id: String,
     speed: u8,
     force: bool,
+}
+
+enum AutomaticVentExecution {
+    Skipped,
+    Deferred,
+    Completed(Result<(), String>),
 }
 
 #[derive(Clone)]
@@ -265,12 +272,29 @@ impl AutomaticVentController {
             let Some(intent) = intent else {
                 continue;
             };
-            let Some(result) = self.execute_automatic_intent(&intent).await else {
-                self.state.lock().await.executing = None;
-                continue;
-            };
+            let result = self.execute_automatic_intent(&intent).await;
             let mut state = self.state.lock().await;
             state.executing = None;
+            if matches!(result, AutomaticVentExecution::Deferred) {
+                // A newer edge wins. Otherwise retain this edge for a bounded retry
+                // after Admin or another B3 owner releases the protocol guard.
+                if !state.closed
+                    && !self.shutdown.is_cancelled()
+                    && !state.admin_superseded
+                    && state.pending.is_none()
+                {
+                    state.pending = Some(intent.clone());
+                }
+                drop(state);
+                tokio::select! {
+                    _ = self.shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(AUTOMATIC_VENT_DEFER_RETRY) => {}
+                }
+                continue;
+            }
+            let AutomaticVentExecution::Completed(result) = result else {
+                continue;
+            };
             match result {
                 Ok(()) => {
                     state.confirmed_speed = Some(intent.speed);
@@ -291,18 +315,18 @@ impl AutomaticVentController {
     async fn execute_automatic_intent(
         &self,
         intent: &AutomaticVentIntent,
-    ) -> Option<Result<(), String>> {
+    ) -> AutomaticVentExecution {
         let _protocol_guard = match self.acquire_b3_protocol_guard().await {
-            None => return None,
-            Some(Err(error)) => return Some(Err(error)),
+            None => return AutomaticVentExecution::Skipped,
+            Some(Err(())) => return AutomaticVentExecution::Deferred,
             Some(Ok(guard)) => guard,
         };
         if !self.automatic_intent_is_current(intent).await || !self.wait_for_protocol_guard().await
         {
-            return None;
+            return AutomaticVentExecution::Skipped;
         }
         let hardware = tokio::select! {
-            _ = self.shutdown.cancelled() => return None,
+            _ = self.shutdown.cancelled() => return AutomaticVentExecution::Skipped,
             result = tokio::time::timeout(
                 self.operation_timeout,
                 self.hardware.acquire_environment_hardware(),
@@ -311,30 +335,32 @@ impl AutomaticVentController {
         let hardware = match hardware {
             Ok(hardware) => hardware,
             Err(_) => {
-                return Some(Err(
+                return AutomaticVentExecution::Completed(Err(
                     "automatic B3 lower-controller ownership acquisition timed out".to_string(),
                 ));
             }
         };
         if !self.automatic_intent_is_current(intent).await {
-            return None;
+            return AutomaticVentExecution::Skipped;
         }
         self.state.lock().await.last_attempt_at = Some(Instant::now());
         match tokio::select! {
-            _ = self.shutdown.cancelled() => return None,
+            _ = self.shutdown.cancelled() => return AutomaticVentExecution::Skipped,
             result = tokio::time::timeout(
                 self.operation_timeout,
                 hardware.set_vent_speed(intent.speed),
             ) => result,
         } {
-            Ok(result) => Some(result),
-            Err(_) => Some(Err("automatic B3 operation timed out".to_string())),
+            Ok(result) => AutomaticVentExecution::Completed(result),
+            Err(_) => AutomaticVentExecution::Completed(Err(
+                "automatic B3 operation timed out".to_string()
+            )),
         }
     }
 
     async fn acquire_b3_protocol_guard(
         &self,
-    ) -> Option<Result<tokio::sync::MutexGuard<'_, ()>, String>> {
+    ) -> Option<Result<tokio::sync::MutexGuard<'_, ()>, ()>> {
         match tokio::select! {
             _ = self.shutdown.cancelled() => return None,
             result = tokio::time::timeout(
@@ -343,9 +369,7 @@ impl AutomaticVentController {
             ) => result,
         } {
             Ok(guard) => Some(Ok(guard)),
-            Err(_) => Some(Err(
-                "automatic B3 protocol guard acquisition timed out".to_string()
-            )),
+            Err(_) => Some(Err(())),
         }
     }
 
@@ -629,6 +653,39 @@ mod tests {
         assert!(
             attempts[1].1.duration_since(attempts[0].1) >= std::time::Duration::from_millis(50)
         );
+    }
+
+    #[tokio::test]
+    async fn latest_automatic_edge_retries_after_admin_holds_the_protocol_guard_past_timeout() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard_and_operation_timeout(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(10),
+        );
+        let admin_guard = controller.b3_protocol_guard.lock().await;
+
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("automatic intent accepted");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(adapter.vent_speeds.lock().expect("speeds").is_empty());
+        assert!(controller.state.lock().await.last_error.is_none());
+
+        drop(admin_guard);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![2] {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("deferred latest automatic intent must execute after Admin releases B3");
+        assert!(controller.state.lock().await.last_error.is_none());
     }
 
     #[tokio::test]

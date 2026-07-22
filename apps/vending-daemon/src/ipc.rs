@@ -1741,6 +1741,19 @@ async fn apply_planogram(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
+    let _lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+        Ok(value) => value,
+        Err(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "planogram_sale_start_in_progress",
+                "planogram cannot switch while a sale or controller operation is active",
+            );
+        }
+    };
+    if let Err(safety) = require_binding_mutation_safe(&ctx).await {
+        return binding_mutation_safety_response(safety);
+    }
     let topology = match ctx.runtime_sources.hardware_topology_readiness().await {
         Ok(value) => value,
         Err(error) => {
@@ -3269,6 +3282,20 @@ mod tests {
             .expect("manual dispense lease after binding refresh");
         drop(manual_dispense);
         release.await.expect("binding release task");
+    }
+
+    #[tokio::test]
+    async fn planogram_reconfigure_cannot_overlap_sale_start_and_can_retry_after_release() {
+        let gate = Arc::new(SaleBindingOperationGate::default());
+        let sale = gate.try_acquire_sale_start().expect("sale start lease");
+
+        assert!(gate.try_acquire_reconfigure().is_err());
+
+        drop(sale);
+        let reconfigure = gate
+            .try_acquire_reconfigure()
+            .expect("planogram reconfigure lease after sale completes");
+        drop(reconfigure);
     }
 
     async fn test_context(

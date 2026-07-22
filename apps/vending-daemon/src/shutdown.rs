@@ -16,7 +16,7 @@ use crate::{
     device_binding::{self, LocalDeviceRole, LocalSerialRoleBinding, SerialDeviceRoleProbeConfig},
     events::DaemonEvent,
     hardware::HardwareSupervisor,
-    ipc::{self, IpcContext},
+    ipc::{self, IpcContext, SaleBindingOperationGate},
     local_runtime_settings::{effective_scanner_protocol, LocalRuntimeSettings},
     mqtt::MqttSyncRuntime,
     provisioning,
@@ -957,8 +957,14 @@ async fn run_platform_stock_sync_watcher(
         return Ok(());
     };
     loop {
-        match sync_platform_planogram_and_stock(&runtime_sources, &state, &backend, &machine_code)
-            .await
+        match sync_platform_planogram_and_stock(
+            &runtime_sources,
+            &state,
+            &backend,
+            &ipc_context.sale_binding_gate,
+            &machine_code,
+        )
+        .await
         {
             Ok(()) => ipc::refresh_sale_start_capability(&ipc_context).await,
             Err(error) => eprintln!("platform stock sync failed: {error}"),
@@ -974,17 +980,9 @@ async fn sync_platform_planogram_and_stock(
     runtime_sources: &RuntimeSources,
     state: &LocalStateStore,
     backend: &BackendClient,
+    sale_binding_gate: &Arc<SaleBindingOperationGate>,
     machine_code: &str,
 ) -> Result<(), String> {
-    if state
-        .current_transaction_snapshot()
-        .await
-        .map_err(|error| error.to_string())?
-        .as_ref()
-        .is_some_and(is_active_transaction)
-    {
-        return Ok(());
-    }
     let published = backend.get_published_planogram(machine_code).await?;
     if !published.is_null() {
         let topology = runtime_sources.hardware_topology_readiness().await?;
@@ -1003,6 +1001,20 @@ async fn sync_platform_planogram_and_stock(
                 .ok_or_else(|| "published planogram response missing slots".to_string())?,
         )
         .map_err(|error| error.to_string())?;
+
+        let _lease = match sale_binding_gate.try_acquire_reconfigure() {
+            Ok(lease) => lease,
+            Err(_) => return Ok(()),
+        };
+        if state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string())?
+            .as_ref()
+            .is_some_and(is_active_transaction)
+        {
+            return Ok(());
+        }
         state
             .apply_planogram(MachinePlanogramInput {
                 planogram_version: planogram_version.clone(),
@@ -1405,6 +1417,27 @@ mod tests {
         assert!(
             persistence.contains("save_local_device_binding_if_revision"),
             "auto binding persistence must use the binding revision CAS"
+        );
+    }
+
+    #[test]
+    fn platform_stock_sync_acquires_the_reconfigure_lease_before_observing_or_switching_planogram()
+    {
+        let source = include_str!("shutdown.rs");
+        let sync = &source[source
+            .find("async fn sync_platform_planogram_and_stock")
+            .expect("platform stock sync")
+            ..source
+                .find("async fn run_vision_watch")
+                .expect("platform stock sync end")];
+
+        assert!(
+            sync.find("try_acquire_reconfigure") < sync.find("current_transaction_snapshot()"),
+            "the stock-sync lease must precede its active-sale observation"
+        );
+        assert!(
+            sync.find("current_transaction_snapshot()") < sync.find(".apply_planogram("),
+            "the stock-sync active-sale observation must precede the planogram switch"
         );
     }
 
