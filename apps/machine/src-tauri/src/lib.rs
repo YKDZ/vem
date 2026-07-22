@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+#[cfg(windows)]
+use tauri::Manager;
 
 mod native_audio;
 use native_audio::{play_machine_audio, stop_machine_audio, MachineAudioState};
@@ -82,6 +84,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(MachineAudioState::default())
+        .setup(|_app| {
+            #[cfg(windows)]
+            _app.get_webview_window("main")
+                .ok_or("main kiosk window is missing")?
+                .set_fullscreen(true)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
             play_machine_audio,
