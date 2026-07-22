@@ -36,6 +36,7 @@ struct AutomaticVentState {
     confirmed_speed: Option<u8>,
     last_attempt_at: Option<Instant>,
     last_error: Option<String>,
+    latest_intent_generation: u64,
     seen_edge_ids: HashSet<String>,
 }
 
@@ -44,6 +45,7 @@ struct AutomaticVentIntent {
     edge_id: String,
     speed: u8,
     force: bool,
+    generation: u64,
 }
 
 enum AutomaticVentExecution {
@@ -178,10 +180,15 @@ impl AutomaticVentController {
         if !force {
             state.admin_superseded = false;
         }
+        state.latest_intent_generation = state
+            .latest_intent_generation
+            .checked_add(1)
+            .expect("automatic vent intent generation exhausted");
         state.pending = Some(AutomaticVentIntent {
             edge_id: edge_id.to_string(),
             speed,
             force,
+            generation: state.latest_intent_generation,
         });
         if !state.worker_running {
             state.worker_running = true;
@@ -321,8 +328,13 @@ impl AutomaticVentController {
             Some(Err(())) => return AutomaticVentExecution::Deferred,
             Some(Ok(guard)) => guard,
         };
-        if !self.automatic_intent_is_current(intent).await || !self.wait_for_protocol_guard().await
-        {
+        if !self.automatic_intent_is_current(intent).await {
+            return AutomaticVentExecution::Skipped;
+        }
+        if !self.wait_for_protocol_guard().await {
+            return AutomaticVentExecution::Skipped;
+        }
+        if !self.automatic_intent_is_current(intent).await {
             return AutomaticVentExecution::Skipped;
         }
         let hardware = tokio::select! {
@@ -343,7 +355,12 @@ impl AutomaticVentController {
         if !self.automatic_intent_is_current(intent).await {
             return AutomaticVentExecution::Skipped;
         }
-        self.state.lock().await.last_attempt_at = Some(Instant::now());
+        // A newer stable edge may arrive while this intent waits for either B3
+        // guard or lower-controller ownership. Check at the write boundary so
+        // only the latest intent can emit a controller frame.
+        if !self.prepare_automatic_hardware_write(intent).await {
+            return AutomaticVentExecution::Skipped;
+        }
         match tokio::select! {
             _ = self.shutdown.cancelled() => return AutomaticVentExecution::Skipped,
             result = tokio::time::timeout(
@@ -375,7 +392,23 @@ impl AutomaticVentController {
 
     async fn automatic_intent_is_current(&self, intent: &AutomaticVentIntent) -> bool {
         let state = self.state.lock().await;
-        !state.closed && !self.shutdown.is_cancelled() && !(state.admin_superseded && !intent.force)
+        !state.closed
+            && !self.shutdown.is_cancelled()
+            && state.latest_intent_generation == intent.generation
+            && !(state.admin_superseded && !intent.force)
+    }
+
+    async fn prepare_automatic_hardware_write(&self, intent: &AutomaticVentIntent) -> bool {
+        let mut state = self.state.lock().await;
+        if state.closed
+            || self.shutdown.is_cancelled()
+            || state.latest_intent_generation != intent.generation
+            || (state.admin_superseded && !intent.force)
+        {
+            return false;
+        }
+        state.last_attempt_at = Some(Instant::now());
+        true
     }
 
     async fn wait_for_protocol_guard(&self) -> bool {
@@ -686,6 +719,55 @@ mod tests {
         .await
         .expect("deferred latest automatic intent must execute after Admin releases B3");
         assert!(controller.state.lock().await.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn newer_edge_during_admin_b3_lock_skips_the_stale_intent() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard_and_operation_timeout(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_secs(1),
+        );
+        let admin_guard = controller.b3_protocol_guard.lock().await;
+
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("first automatic edge");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let admin_controller = controller.clone();
+        let admin_b3 =
+            tokio::spawn(async move { admin_controller.execute_admin_one_shot(3).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if controller.state.lock().await.admin_superseded {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Admin B3 must supersede the first edge before the next edge arrives");
+        controller
+            .request("presence-2:departure", 0)
+            .await
+            .expect("newer automatic edge");
+
+        drop(admin_guard);
+        admin_b3.await.expect("Admin B3 task").expect("Admin B3");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![3, 0] {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("only the newest edge may execute after Admin releases B3");
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 0]);
     }
 
     #[tokio::test]

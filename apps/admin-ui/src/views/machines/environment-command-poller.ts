@@ -1,7 +1,5 @@
 import type { MachineCommandStatus } from "@vem/shared";
 
-import type { EnvironmentControlAction } from "./machine-contract-mappers";
-
 export type EnvironmentCommandSnapshot = {
   commandNo?: string | null;
   status?: MachineCommandStatus | null;
@@ -16,33 +14,7 @@ export type EnvironmentCommandSource = {
 
 export type EnvironmentCommandStateCallbacks = {
   setEnvironmentCommandStatus: (status: MachineCommandStatus | null) => void;
-  setActionStatus?: (
-    action: EnvironmentControlAction,
-    status: MachineCommandStatus | null,
-  ) => void;
-  setActionPayload?: (
-    action: EnvironmentControlAction,
-    payload: Record<string, unknown> | null,
-  ) => void;
-  setActionResult?: (
-    action: EnvironmentControlAction,
-    result: Record<string, unknown> | null,
-  ) => void;
-  setActionError?: (
-    action: EnvironmentControlAction,
-    error: string | null,
-  ) => void;
 };
-
-export function detectEnvironmentControlActionFromPayload(
-  payload: Record<string, unknown> | null | undefined,
-): EnvironmentControlAction | null {
-  if (!payload || typeof payload !== "object") return null;
-  if ("airConditionerOn" in payload) return "airConditionerOn";
-  if ("targetTemperatureCelsius" in payload) return "targetTemperatureCelsius";
-  if ("ventSpeed" in payload) return "ventSpeed";
-  return null;
-}
 
 export function isEnvironmentCommandTerminalStatus(
   status: MachineCommandStatus | null | undefined,
@@ -56,13 +28,6 @@ export function syncEnvironmentCommandStateFromSnapshot(
 ): void {
   if (!command) return;
   callbacks.setEnvironmentCommandStatus(command.status ?? null);
-  const action = detectEnvironmentControlActionFromPayload(command.payloadJson);
-  if (!action) return;
-  const status = command.status ?? null;
-  callbacks.setActionStatus?.(action, status);
-  callbacks.setActionPayload?.(action, command.payloadJson ?? null);
-  callbacks.setActionResult?.(action, command.resultJson ?? null);
-  callbacks.setActionError?.(action, command.lastError ?? null);
 }
 
 type EnvironmentCommandPollerConfig = {

@@ -45,31 +45,6 @@ export function commandStatusLabel(
   return "命令状态未知";
 }
 
-const ventSpeedRequestedValue: Record<number, string> = {
-  0: "关闭",
-  1: "低",
-  2: "中",
-  3: "高",
-  4: "全",
-};
-
-export function environmentCommandRequestedValue(
-  payload: Record<string, unknown> | null | undefined,
-): string | null {
-  if (!payload) return null;
-  if (payload.airConditionerOn === true) return "开启";
-  if (payload.airConditionerOn === false) return "软关闭";
-  if (typeof payload.targetTemperatureCelsius === "number") {
-    return `${payload.targetTemperatureCelsius} C`;
-  }
-  if (typeof payload.ventSpeed === "number") {
-    return (
-      ventSpeedRequestedValue[payload.ventSpeed] ?? String(payload.ventSpeed)
-    );
-  }
-  return null;
-}
-
 export function environmentCommandFailureLabel(
   resultJson: Record<string, unknown> | null | undefined,
   lastError: string | null | undefined,
