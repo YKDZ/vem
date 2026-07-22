@@ -784,6 +784,7 @@ function validateVisionTrack(report, reportPath) {
   }
   const visionDown = report.degradations?.visionDown ?? {};
   const protocol = report.health?.vision?.protocolSummary ?? null;
+  const eventFence = protocol?.eventFence ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
   const recommendation = report.ui?.recommendationPresentation ?? {};
   const recommendationVariants =
@@ -809,6 +810,16 @@ function validateVisionTrack(report, reportPath) {
     recommendation.manual.variantId !== recommendation.automatic.variantId;
   const vision =
     protocol &&
+    eventFence?.source === "installed_machine_runtime_trace_generation" &&
+    typeof eventFence.runtimeGenerationId === "string" &&
+    eventFence.runtimeGenerationId.length > 0 &&
+    Number.isInteger(eventFence.lastEntryId) &&
+    eventFence.lastEntryId >= 0 &&
+    typeof eventFence.visionStartedAt === "string" &&
+    eventFence.visionStartedAt.length > 0 &&
+    typeof protocol.presenceDetectedAt === "string" &&
+    typeof protocol.profileDetectedAt === "string" &&
+    typeof protocol.departureDetectedAt === "string" &&
     visionDown.experienceCapabilityDegraded === true &&
     visionDown.saleStartStillAvailable === true &&
     recommendationComplete
@@ -821,7 +832,7 @@ function validateVisionTrack(report, reportPath) {
           "Vision",
           reportPath,
           "vision degradation evidence is incomplete",
-          { protocol, visionDown, recommendation },
+          { protocol, eventFence, visionDown, recommendation },
         );
   const tryOn =
     tryOnSummary &&

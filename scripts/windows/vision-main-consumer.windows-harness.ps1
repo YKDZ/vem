@@ -142,6 +142,7 @@ try {
   $global:VisionHarnessEvents = [Collections.Generic.List[string]]::new()
   $global:VisionHarnessStoppedProcessIds = [Collections.Generic.List[int]]::new()
   $global:VisionHarnessOwnedVisionPath = Join-Path $root "vision\app\vending-vision.exe"
+  $global:VisionHarnessSiteConfigurationPath = Join-Path $root "program-data\vision\site.json"
   function global:Get-ScheduledTask { param($TaskName, $TaskPath) if ($global:VisionHarnessTaskRegistered) { return [pscustomobject]@{ State = "Ready" } } return $null }
   function global:Stop-ScheduledTask { param($InputObject) }
   function global:Start-ScheduledTask { param($InputObject) $global:VisionHarnessTaskStarts++; $global:VisionHarnessEvents.Add("task-start") | Out-Null }
@@ -151,6 +152,13 @@ try {
       [pscustomobject]@{ Id = 4101; Path = $global:VisionHarnessOwnedVisionPath },
       [pscustomobject]@{ Id = 4102; Path = (Join-Path $root "unrelated\vending-vision.exe") }
     )
+  }
+  function global:Get-CimInstance {
+    param($ClassName, $Filter, $ErrorAction)
+    return @(
+      [pscustomobject]@{ ProcessId = 4101; ExecutablePath = $global:VisionHarnessOwnedVisionPath; CommandLine = ('"' + $global:VisionHarnessOwnedVisionPath + '" --config "' + $global:VisionHarnessSiteConfigurationPath + '"') },
+      [pscustomobject]@{ ProcessId = 4102; ExecutablePath = (Join-Path $root "unrelated\vending-vision.exe"); CommandLine = '"C:\\unrelated\\vending-vision.exe" --config "C:\\unrelated\\site.json"' }
+    ) | Where-Object { -not $global:VisionHarnessStoppedProcessIds.Contains([int]$_.ProcessId) }
   }
   function global:Stop-Process {
     param([int]$Id, [switch]$Force, $ErrorAction)

@@ -430,21 +430,34 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
   throw "Vision main artifact: health and protocol probe failed: $($lastError.Exception.Message)"
 }
 
-function Stop-VisionMainTask([string]$AppDirectory, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
+function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$ConfigurationPath) {
+  $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
+  $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
+  return @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.ExecutablePath -and
+        $_.CommandLine -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
+        ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains("--config") -and
+        ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains($canonicalConfigurationPath.ToLowerInvariant())
+      } |
+      Select-Object -ExpandProperty ProcessId
+  )
+}
+
+function Stop-VisionMainTask([string]$AppDirectory, [string]$ConfigurationPath, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
   $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
   if ($null -ne $task -and [string]$task.State -eq "Running") { Stop-ScheduledTask -InputObject $task -ErrorAction Stop }
-  $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
-  $ownedProcessIds = @(
-    Get-Process -ErrorAction SilentlyContinue |
-      Where-Object {
-        $null -ne $_.Path -and
-        [IO.Path]::GetFullPath([string]$_.Path) -ieq $canonicalExecutablePath
-      } |
-      Select-Object -ExpandProperty Id
-  )
-  foreach ($processId in $ownedProcessIds) {
+  foreach ($processId in @(Get-VisionMainOwnedProcessIds $AppDirectory $ConfigurationPath)) {
     Stop-Process -Id $processId -Force -ErrorAction Stop
   }
+  $deadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    if (@(Get-VisionMainOwnedProcessIds $AppDirectory $ConfigurationPath).Count -eq 0) { return }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Vision main artifact: canonical Vision process did not stop"
 }
 
 function Ensure-VisionMainTask([string]$LauncherPath, [string]$WorkingDirectory, [string]$TaskUser, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
@@ -521,7 +534,7 @@ function Install-VisionMainArtifact {
   $deliveryManifest = Read-VisionJson $deliveryManifestPath "download manifest"
   Assert-VisionMainCondition ($deliveryManifest.commit -ceq $Commit) "download manifest does not bind commit $Commit"
   $staging = "$AppDirectory.staging-$([guid]::NewGuid().ToString('N'))"
-  Stop-VisionMainTask -AppDirectory $AppDirectory -TaskName $TaskName -TaskPath $TaskPath
+  Stop-VisionMainTask -AppDirectory $AppDirectory -ConfigurationPath $SiteConfigurationDestination -TaskName $TaskName -TaskPath $TaskPath
   try {
     Expand-VisionRuntimeArchive $RuntimeArchive $staging $Commit
     $sourceConfiguration = Read-VisionJson $SiteConfigurationPath "site configuration"

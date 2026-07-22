@@ -66,15 +66,18 @@ function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
 }
 
 function Get-ManagedVisionProcessIds() {
+  $canonicalExecutablePath = [IO.Path]::GetFullPath("C:\VEM\vision\app\vending-vision.exe")
+  $canonicalConfigPath = [IO.Path]::GetFullPath("C:\ProgramData\VEM\vision\site.json")
   return @(
-    Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction SilentlyContinue |
-      ForEach-Object { [int]$_.OwningProcess } |
-      Sort-Object -Unique |
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
-        $process = Get-Process -Id $_ -ErrorAction SilentlyContinue
-        $null -ne $process -and
-          [string]$process.Path -ieq "C:\VEM\vision\app\vending-vision.exe"
-      }
+        $_.ExecutablePath -and
+        $_.CommandLine -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
+        ([string]$_.CommandLine).Replace('"', '').ToLowerInvariant().Contains('--config') -and
+        ([string]$_.CommandLine).Replace('"', '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant())
+      } |
+      ForEach-Object { [int]$_.ProcessId }
   )
 }
 
@@ -84,10 +87,15 @@ function Stop-ManagedVision([int[]]$OwnedProcessIds) {
     Stop-ScheduledTask -InputObject $task -ErrorAction Stop
   }
   foreach ($processId in @($OwnedProcessIds)) {
-    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if ($null -ne $process -and [string]$process.Path -ieq "C:\VEM\vision\app\vending-vision.exe") {
-      Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-    }
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    if (@(Get-ManagedVisionProcessIds).Count -eq 0) { return }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if (@(Get-ManagedVisionProcessIds).Count -ne 0) {
+    throw "Vision test isolation: canonical Vision process did not stop"
   }
 }
 
@@ -141,7 +149,6 @@ try {
   if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
     throw "installed Vision commit does not match the resolved cached commit"
   }
-  $managedVisionProcessIds = Get-ManagedVisionProcessIds
   node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath --fixture-key $FixtureKey
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 } catch {
@@ -150,7 +157,7 @@ try {
 } finally {
   $cleanupFailures = @()
   try {
-    Stop-ManagedVision -OwnedProcessIds $managedVisionProcessIds
+    Stop-ManagedVision -OwnedProcessIds (Get-ManagedVisionProcessIds)
   } catch {
     $cleanupFailures += $_
   }

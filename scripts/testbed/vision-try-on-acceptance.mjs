@@ -676,8 +676,17 @@ export function compareObservedVisionProtocolToExpected({
   expectedResults,
   protocolEvidence,
   installedBinding = null,
+  eventFence,
+  runtimeTraceSnapshot,
   freshnessWindowMs = 5 * 60 * 1000,
 }) {
+  if (eventFence !== undefined || runtimeTraceSnapshot !== undefined) {
+    validateVisionEventFence({
+      eventFence,
+      protocolEvidence,
+      runtimeTraceSnapshot,
+    });
+  }
   const expected = normalizeVisionExpectedResults(expectedResults);
   const summary = validateVisionProtocolEvidence(
     protocolEvidence,
@@ -775,7 +784,92 @@ export function compareObservedVisionProtocolToExpected({
     expectedSequence,
     observationStartedAt,
     observationCompletedAt,
+    eventFence:
+      eventFence === undefined ? null : normalizeVisionEventFence(eventFence),
   };
+}
+
+function normalizeRuntimeTraceSnapshot(value, label) {
+  const snapshot = requiredObject(value, label);
+  return {
+    runtimeGenerationId: required(
+      snapshot.runtimeGenerationId,
+      `${label} runtimeGenerationId`,
+    ),
+    entries: Array.isArray(snapshot.entries) ? snapshot.entries : [],
+  };
+}
+
+export function createVisionEventFence({
+  runtimeTraceSnapshot,
+  visionStartedAt,
+}) {
+  const runtime = normalizeRuntimeTraceSnapshot(
+    runtimeTraceSnapshot,
+    "Vision event fence runtime trace",
+  );
+  if (!isVisionProtocolTimestamp(visionStartedAt)) {
+    throw new Error("Vision event fence start time is invalid");
+  }
+  const lastEntryId = runtime.entries.reduce(
+    (maximum, entry) =>
+      Number.isInteger(entry?.id) && entry.id > maximum ? entry.id : maximum,
+    0,
+  );
+  return {
+    source: "installed_machine_runtime_trace_generation",
+    runtimeGenerationId: runtime.runtimeGenerationId,
+    lastEntryId,
+    visionStartedAt,
+  };
+}
+
+function normalizeVisionEventFence(value) {
+  const fence = requiredObject(value, "Vision event fence");
+  if (fence.source !== "installed_machine_runtime_trace_generation") {
+    throw new Error("Vision event fence source is invalid");
+  }
+  if (!isVisionProtocolTimestamp(fence.visionStartedAt)) {
+    throw new Error("Vision event fence start time is invalid");
+  }
+  return {
+    source: fence.source,
+    runtimeGenerationId: required(
+      fence.runtimeGenerationId,
+      "Vision event fence runtime generation",
+    ),
+    lastEntryId: nonNegativeInteger(
+      fence.lastEntryId,
+      "Vision event fence last trace entry",
+    ),
+    visionStartedAt: fence.visionStartedAt,
+  };
+}
+
+export function validateVisionEventFence({
+  eventFence,
+  protocolEvidence,
+  runtimeTraceSnapshot,
+}) {
+  const fence = normalizeVisionEventFence(eventFence);
+  const runtime = normalizeRuntimeTraceSnapshot(
+    runtimeTraceSnapshot,
+    "current Vision runtime trace",
+  );
+  if (runtime.runtimeGenerationId !== fence.runtimeGenerationId) {
+    throw new Error("Machine Runtime generation changed across the Vision event fence");
+  }
+  for (const event of [
+    protocolEvidence?.ready,
+    protocolEvidence?.presence,
+    protocolEvidence?.profile,
+    protocolEvidence?.departure,
+  ]) {
+    if (!protocolEventAfter(event, fence.visionStartedAt)) {
+      throw new Error("Vision protocol event predates this runtime event fence");
+    }
+  }
+  return fence;
 }
 
 export function validateRecommendationProjection({
@@ -1313,6 +1407,19 @@ export function validateVisionInstalledBinding(binding) {
     );
   }
   if (
+    facts.visionProcessOwnershipSource !== "Win32_Process" ||
+    facts.visionProcessCount !== 1 ||
+    !Array.isArray(facts.visionProcessIds) ||
+    facts.visionProcessIds.length !== 1 ||
+    facts.visionProcessIds[0] !== facts.processId ||
+    !Array.isArray(facts.visionProcessCommandLines) ||
+    facts.visionProcessCommandLines.length !== 1
+  ) {
+    throw new Error(
+      "Vision process ownership must enumerate exactly one canonical executable",
+    );
+  }
+  if (
     required(facts.listenerBindingSource, "Vision listener binding source") !==
     "Get-NetTCPConnection"
   ) {
@@ -1330,6 +1437,9 @@ export function validateVisionInstalledBinding(binding) {
     throw new Error(
       "Vision process command line is not bound to the fixed --config site path",
     );
+  }
+  if (facts.visionProcessCommandLines[0] !== commandLine) {
+    throw new Error("Vision process enumeration command line drifted");
   }
   if (!windowsPathEquals(facts.taskCommand, "C:\\Windows\\System32\\cmd.exe")) {
     throw new Error("Vision scheduled task command drifted");
@@ -1397,6 +1507,8 @@ export function validateVisionInstalledBinding(binding) {
     listenerProcessId: facts.listenerProcessId,
     listenerOwnerCount: facts.listenerOwnerCount,
     listenerBindingSource: facts.listenerBindingSource,
+    visionProcessCount: facts.visionProcessCount,
+    visionProcessIds: facts.visionProcessIds,
     siteConfigurationSha256,
     frameSourceBinding,
   };
@@ -1441,6 +1553,192 @@ export function buildRecordedVisionSiteConfiguration({
       },
     },
   };
+}
+
+function createVisionHello(machineCode) {
+  return {
+    protocol: "vem.vision.v1",
+    type: "vision.hello",
+    messageId: `vision-try-on-acceptance-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    payload: {
+      clientRole: "machine",
+      machineCode: machineCode ?? null,
+      protocolVersion: 1,
+      capabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "try_on_session",
+      ],
+    },
+  };
+}
+
+async function openVisionSocket(url, timeoutMs = 8_000) {
+  if (typeof WebSocket === "undefined") {
+    throw new Error("WebSocket is not available in this runtime");
+  }
+  return await new Promise((resolvePromise, reject) => {
+    const socket = new WebSocket(url);
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.close();
+      reject(new Error(`connect vision websocket timed out: ${url}`));
+    }, timeoutMs);
+    const onOpen = () => {
+      cleanup();
+      resolvePromise(socket);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(`connect vision websocket failed: ${url}`));
+    };
+    function cleanup() {
+      clearTimeout(timer);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+    }
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+  });
+}
+
+async function nextVisionMessage(socket, timeoutMs) {
+  return await new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("waiting for vision message timed out"));
+    }, timeoutMs);
+    const onMessage = (event) => {
+      cleanup();
+      if (typeof event.data !== "string") {
+        reject(new Error("vision websocket returned a non-text frame"));
+        return;
+      }
+      try {
+        resolvePromise(JSON.parse(event.data));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("vision websocket error"));
+    };
+    function cleanup() {
+      clearTimeout(timer);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    }
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+  });
+}
+
+function protocolEventTime(message) {
+  return message?.type === "vision.ready"
+    ? message.timestamp
+    : message?.payload?.detectedAt;
+}
+
+function protocolEventAfter(message, lowerBound) {
+  const timestamp = protocolEventTime(message);
+  return (
+    isVisionProtocolTimestamp(timestamp) &&
+    Date.parse(timestamp) >= Date.parse(lowerBound)
+  );
+}
+
+export async function collectVisionProtocolEvidence({
+  machineCode,
+  eventFence,
+  timeoutMs = 120_000,
+  openSocket = openVisionSocket,
+  readMessage = nextVisionMessage,
+  fetchHealth = fetchJson,
+  now = () => new Date().toISOString(),
+  closeSocket,
+  onProfile = null,
+}) {
+  const fence = normalizeVisionEventFence(eventFence);
+  const observationStartedAt = now();
+  const health = await fetchHealth("http://127.0.0.1:7892/health");
+  const socket = await openSocket("ws://127.0.0.1:7892/ws");
+  const observedMessages = [];
+  try {
+    socket.send(JSON.stringify(createVisionHello(machineCode)));
+    const state = {
+      health,
+      ready: null,
+      presence: null,
+      profile: null,
+      departure: null,
+      observedMessages,
+    };
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const message = await readMessage(
+        socket,
+        Math.max(1_000, deadline - Date.now()),
+      );
+      const receivedAt = now();
+      observedMessages.push({
+        type: message?.type ?? null,
+        messageId: message?.messageId ?? null,
+        timestamp: protocolEventTime(message) ?? null,
+        receivedAt,
+      });
+      if (!protocolEventAfter(message, fence.visionStartedAt)) continue;
+      if (message?.type === "vision.ready" && state.ready === null) {
+        state.ready = message;
+      } else if (
+        message?.type === "vision.presence_status" &&
+        message?.payload?.personPresent === true &&
+        state.ready !== null &&
+        state.presence === null &&
+        Date.parse(message.payload.detectedAt) > Date.parse(state.ready.timestamp)
+      ) {
+        state.presence = message;
+      } else if (
+        message?.type === "vision.profile_result" &&
+        state.presence !== null &&
+        state.profile === null &&
+        Date.parse(message.payload?.detectedAt) >
+          Date.parse(state.presence.payload.detectedAt)
+      ) {
+        state.profile = message;
+        onProfile?.(message);
+      } else if (
+        message?.type === "vision.person_departed" &&
+        state.profile !== null &&
+        state.departure === null &&
+        Date.parse(message.payload?.detectedAt) >
+          Date.parse(state.profile.payload.detectedAt)
+      ) {
+        state.departure = message;
+      }
+      if (state.ready && state.presence && state.profile && state.departure) {
+        return {
+          ...state,
+          observation: {
+            startedAt: observationStartedAt,
+            completedAt: now(),
+          },
+          eventFence: fence,
+        };
+      }
+    }
+    throw new Error(
+      `vision protocol did not produce one fenced ready/presence/profile/departure chronology within ${timeoutMs} ms`,
+    );
+  } finally {
+    if (typeof closeSocket === "function") {
+      await closeSocket(socket);
+    } else if (typeof socket?.close === "function") {
+      socket.close();
+    }
+  }
 }
 
 export function validateVisionProtocolEvidence(
@@ -1600,9 +1898,12 @@ export function validateVisionRuntimeEvidence({
 }
 
 async function readRuntimeTrace(client) {
-  return evaluateExpression(
-    client,
-    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+  return normalizeRuntimeTraceSnapshot(
+    await evaluateExpression(
+      client,
+      "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
+    ),
+    "Machine Runtime Trace",
   );
 }
 
@@ -1672,6 +1973,10 @@ async function waitForCatalogRecommendationProjection(
   client,
   baselineOrder,
   requireRecommendation,
+  {
+    profileEventId = null,
+    excludedProfileEventId = null,
+  } = {},
   timeoutMs = 90_000,
 ) {
   return waitForCondition(
@@ -1681,12 +1986,18 @@ async function waitForCatalogRecommendationProjection(
       const currentOrder = Array.isArray(state?.products)
         ? state.products.map((product) => product.catalogKey)
         : [];
+      const expectedProfileEventId =
+        typeof profileEventId === "function" ? profileEventId() : profileEventId;
       return {
         ok:
           state?.route === "#/catalog" &&
           state?.recommendationActive === "true" &&
           typeof state?.profileEventId === "string" &&
           state.profileEventId.length > 0 &&
+          typeof expectedProfileEventId === "string" &&
+          expectedProfileEventId.length > 0 &&
+          state.profileEventId === expectedProfileEventId &&
+          state.profileEventId !== excludedProfileEventId &&
           currentOrder.length > 0 &&
           (!requireRecommendation ||
             (currentOrder.join("\n") !== baselineOrder.join("\n") &&
@@ -1932,15 +2243,20 @@ async function collectVisionInstalledBinding() {
     "$ErrorActionPreference = 'Stop'",
     `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
     "$action = @($task.Actions | Select-Object -First 1)",
+    "$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')",
+    "$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')",
+    "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
+    'if ($visionProcesses.Count -ne 1) { throw "Vision must have exactly one canonical executable process" }',
+    "$canonicalCommandLine = $visionProcesses[0].commandLine.Replace([char]34, '').ToLowerInvariant()",
+    'if (-not $canonicalCommandLine.Contains($canonicalExecutablePath.ToLowerInvariant()) -or -not $canonicalCommandLine.Contains("--config") -or -not $canonicalCommandLine.Contains($canonicalConfigPath.ToLowerInvariant())) { throw "canonical Vision process command line drifted" }',
     "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
     'if ($listener.Count -ne 1) { throw "Vision must have exactly one 127.0.0.1:7892 listener" }',
     "$visionPid = [int]$listener[0].OwningProcess",
-    "$process = Get-Process -Id $visionPid -ErrorAction Stop",
     '$processWmi = Get-CimInstance Win32_Process -Filter "ProcessId = $visionPid" -ErrorAction Stop',
     "$owner = Invoke-CimMethod -InputObject $processWmi -MethodName GetOwner -ErrorAction Stop",
-    "$path = [string]$process.Path",
+    "$path = [IO.Path]::GetFullPath([string]$processWmi.ExecutablePath)",
     "$commandLine = [string]$processWmi.CommandLine",
-    "[Console]::Out.Write((@{ processId = $visionPid; listenerProcessId = $visionPid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
+    "[Console]::Out.Write((@{ processId = $visionPid; listenerProcessId = $visionPid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; visionProcessOwnershipSource = 'Win32_Process'; visionProcessCount = $visionProcesses.Count; visionProcessIds = @($visionProcesses | ForEach-Object { $_.processId }); visionProcessCommandLines = @($visionProcesses | ForEach-Object { $_.commandLine }); executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
   ].join("; ");
   const runtimeBinding = await new Promise((resolvePromise, reject) => {
     let stdout = "";
@@ -1994,8 +2310,10 @@ async function stopVisionRuntime() {
     "$ErrorActionPreference = 'Stop'",
     `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
     "if ($null -ne $task -and [string]$task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue }",
-    "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction SilentlyContinue | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
-    "foreach ($entry in $listener) { $process = Get-Process -Id $entry.OwningProcess -ErrorAction SilentlyContinue; if ($null -ne $process -and [string]$process.Path -ieq 'C:\\VEM\\vision\\app\\vending-vision.exe') { Stop-Process -Id $entry.OwningProcess -Force -ErrorAction SilentlyContinue } }",
+    `$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')`,
+    `$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')`,
+    "$ownedVisionProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
+    "foreach ($process in $ownedVisionProcesses) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue }",
     "$deadline = [DateTime]::UtcNow.AddSeconds(15)",
     "while ([DateTime]::UtcNow -lt $deadline) {",
     `  $task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
@@ -2003,6 +2321,8 @@ async function stopVisionRuntime() {
     "  Start-Sleep -Milliseconds 250",
     "}",
     "if ($null -ne $task -and [string]$task.State -eq 'Running') { throw 'Vision scheduled task did not stop' }",
+    "$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
+    "if ($remaining.Count -ne 0) { throw 'canonical Vision process did not stop' }",
   ].join("; ");
   await new Promise((resolvePromise, reject) => {
     const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
@@ -2493,34 +2813,59 @@ async function runVisionTryOnAcceptance(options) {
       { kind: "touch", timeoutMs: 30_000 },
     );
     const baselineCatalogProjection = await waitForCatalogProducts(client);
+    if (
+      baselineCatalogProjection.recommendationActive !== "false" ||
+      baselineCatalogProjection.profileEventId !== null
+    ) {
+      throw new Error(
+        "catalog retained a Vision recommendation after the previous runtime stopped",
+      );
+    }
 
     stage = "start-installed-vision-fixture-source";
+    const eventFence = createVisionEventFence({
+      runtimeTraceSnapshot: await readRuntimeTrace(client),
+      visionStartedAt: new Date().toISOString(),
+    });
+    let observedProfileEventId = null;
     await startInstalledVisionRuntime();
-    const visionHealth = await waitForCondition(
-      "restarted Vision health",
-      async () => {
-        const health = await fetchJson("http://127.0.0.1:7892/health").catch(
-          () => null,
-        );
-        return { ok: health?.status === "ok", value: health };
-      },
-      45_000,
-      100,
-    );
     realVisionStopped = false;
 
-    stage = "observe-recorded-video-profile-in-machine-catalog";
-    const catalogRecommendation = await waitForCatalogRecommendationProjection(
-      client,
-      baselineCatalogProjection.products.map((product) => product.catalogKey),
-      true,
-    );
-    const protocolSummary = validateVisionRuntimeEvidence({
-      health: visionHealth,
-      catalogRecommendation,
+    stage = "observe-fenced-recorded-video-chronology-in-machine-catalog";
+    const [protocolEvidence, catalogRecommendation] = await Promise.all([
+      collectVisionProtocolEvidence({
+        machineCode: guestInput.machineCode,
+        eventFence,
+        onProfile: (message) => {
+          observedProfileEventId = message.payload?.eventId ?? null;
+        },
+      }),
+      waitForCatalogRecommendationProjection(
+        client,
+        baselineCatalogProjection.products.map((product) => product.catalogKey),
+        true,
+        {
+          profileEventId: () => observedProfileEventId,
+          excludedProfileEventId: baselineCatalogProjection.profileEventId,
+        },
+      ),
+    ]);
+    const protocolSummary = compareObservedVisionProtocolToExpected({
+      expectedResults,
+      protocolEvidence,
       installedBinding: installedBindingSummary,
+      eventFence,
+      runtimeTraceSnapshot: await readRuntimeTrace(client),
     });
-    const catalogProfileEventId = protocolSummary.catalogProfileEventId;
+    const catalogProfileEventId = required(
+      protocolEvidence.profile?.payload?.eventId,
+      "fenced recorded-video profile eventId",
+    );
+    if (catalogRecommendation.profileEventId !== catalogProfileEventId) {
+      throw new Error(
+        "catalog recommendation was not projected from the fenced Vision profile event",
+      );
+    }
 
     stage = "validate-catalog-recommendation-projection";
     const recommendationSummary = validateRecommendationProjection({
@@ -2870,7 +3215,7 @@ async function runVisionTryOnAcceptance(options) {
             degradedDaemon.saleCapability?.canStartSale === true,
         },
       },
-      runtimeTrace: compactRuntimeTrace(runtimeTrace),
+      runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
       checkpoints,
       logs: {
         daemonStdout: writeBoundedLogTail(
@@ -2894,8 +3239,8 @@ async function runVisionTryOnAcceptance(options) {
   } catch (error) {
     pendingError = error instanceof Error ? error : new Error(String(error));
     const failureTrace = client
-      ? await readRuntimeTrace(client).catch(() => [])
-      : [];
+      ? await readRuntimeTrace(client).catch(() => ({ entries: [] }))
+      : { entries: [] };
     const failureCheckpoint = client
       ? await captureCheckpoint(client, `failure-${stage}`, {
           screenshot: true,
@@ -2911,7 +3256,7 @@ async function runVisionTryOnAcceptance(options) {
       mode: options.mode,
       stage,
       error: serializeError(pendingError),
-      runtimeTrace: compactRuntimeTrace(failureTrace, 128),
+      runtimeTrace: compactRuntimeTrace(failureTrace.entries, 128),
       checkpoints: failureCheckpoints,
       logs: {
         daemonStdout: writeBoundedLogTail(

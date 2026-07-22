@@ -7,7 +7,9 @@ import { describe, it } from "node:test";
 import {
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
+  collectVisionProtocolEvidence,
   compareObservedVisionProtocolToExpected,
+  createVisionEventFence,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
@@ -19,6 +21,7 @@ import {
   validateSizeControlPresentation,
   validateTryOnPresentation,
   validateVisionInstalledBinding,
+  validateVisionEventFence,
   validateVisionProtocolEvidence,
   validateVisionRuntimeEvidence,
   waitForVisionPortRelease,
@@ -105,8 +108,12 @@ describe("vision try-on acceptance script", () => {
     );
     assert.doesNotMatch(source, /startVisionMockScenario\("success"\)/);
     assert.doesNotMatch(source, /recommendation_unmatched/);
-    assert.match(source, /observe-recorded-video-profile-in-machine-catalog/);
-    assert.doesNotMatch(source, /collectVisionProtocolEvidence/);
+    assert.match(
+      source,
+      /observe-fenced-recorded-video-chronology-in-machine-catalog/,
+    );
+    assert.match(source, /collectVisionProtocolEvidence\([\s\S]*eventFence/);
+    assert.match(source, /profileEventId: \(\) => observedProfileEventId/);
     assert.match(source, /state\?\.profileEventId === catalogProfileEventId/);
     assert.match(
       source,
@@ -817,6 +824,120 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("rejects protocol events from before the Vision runtime event fence or another runtime generation", () => {
+    const eventFence = createVisionEventFence({
+      runtimeTraceSnapshot: {
+        runtimeGenerationId: "runtime:vision-fence-1",
+        entries: [{ id: 18 }],
+      },
+      visionStartedAt: "2026-07-18T00:00:00.500Z",
+    });
+    const protocolEvidence = {
+      ready: { type: "vision.ready", timestamp: "2026-07-18T00:00:01.000Z" },
+      presence: {
+        type: "vision.presence_status",
+        payload: { detectedAt: "2026-07-18T00:00:02.000Z" },
+      },
+      profile: {
+        type: "vision.profile_result",
+        payload: { detectedAt: "2026-07-18T00:00:03.000Z" },
+      },
+      departure: {
+        type: "vision.person_departed",
+        payload: { detectedAt: "2026-07-18T00:00:04.000Z" },
+      },
+    };
+    assert.equal(
+      validateVisionEventFence({
+        eventFence,
+        protocolEvidence,
+        runtimeTraceSnapshot: {
+          runtimeGenerationId: "runtime:vision-fence-1",
+          entries: [{ id: 19 }],
+        },
+      }).lastEntryId,
+      18,
+    );
+    assert.throws(
+      () =>
+        validateVisionEventFence({
+          eventFence,
+          protocolEvidence: {
+            ...protocolEvidence,
+            profile: {
+              type: "vision.profile_result",
+              payload: { detectedAt: "2026-07-18T00:00:00.499Z" },
+            },
+          },
+          runtimeTraceSnapshot: {
+            runtimeGenerationId: "runtime:vision-fence-1",
+            entries: [],
+          },
+        }),
+      /predates this runtime event fence/,
+    );
+    assert.throws(
+      () =>
+        validateVisionEventFence({
+          eventFence,
+          protocolEvidence,
+          runtimeTraceSnapshot: {
+            runtimeGenerationId: "runtime:vision-fence-2",
+            entries: [],
+          },
+        }),
+      /generation changed/,
+    );
+  });
+
+  it("collects one chronology after the fence instead of equating first socket events", async () => {
+    const messages = [
+      { type: "vision.ready", timestamp: "2026-07-18T00:00:00.400Z" },
+      { type: "vision.ready", timestamp: "2026-07-18T00:00:01.000Z" },
+      {
+        type: "vision.presence_status",
+        payload: { personPresent: false, detectedAt: "2026-07-18T00:00:01.100Z" },
+      },
+      {
+        type: "vision.profile_result",
+        payload: { eventId: "early", detectedAt: "2026-07-18T00:00:01.200Z" },
+      },
+      {
+        type: "vision.presence_status",
+        payload: { personPresent: true, detectedAt: "2026-07-18T00:00:02.000Z" },
+      },
+      {
+        type: "vision.profile_result",
+        payload: { eventId: "profile-fenced", detectedAt: "2026-07-18T00:00:03.000Z" },
+      },
+      {
+        type: "vision.person_departed",
+        payload: { detectedAt: "2026-07-18T00:00:04.000Z" },
+      },
+    ];
+    const evidence = await collectVisionProtocolEvidence({
+      machineCode: "MACHINE-01",
+      eventFence: createVisionEventFence({
+        runtimeTraceSnapshot: {
+          runtimeGenerationId: "runtime:vision-fence-1",
+          entries: [],
+        },
+        visionStartedAt: "2026-07-18T00:00:00.500Z",
+      }),
+      openSocket: async () => ({ send: () => {}, close: () => {} }),
+      readMessage: async () => {
+        const message = messages.shift();
+        if (!message) throw new Error("message queue exhausted");
+        return message;
+      },
+      fetchHealth: async () => ({ status: "ok" }),
+      now: () => "2026-07-18T00:00:05.000Z",
+      timeoutMs: 5_000,
+    });
+    assert.equal(evidence.profile.payload.eventId, "profile-fenced");
+    assert.equal(evidence.observedMessages.length, 7);
+  });
+
   it("uses the Catalog Vision event as the navigation fence while retaining runtime health evidence", () => {
     const summary = validateVisionRuntimeEvidence({
       health: {
@@ -1463,9 +1584,16 @@ describe("vision try-on acceptance script", () => {
       listenerProcessId: 4242,
       listenerOwnerCount: 1,
       listenerBindingSource: "Get-NetTCPConnection",
+      visionProcessOwnershipSource: "Win32_Process",
+      visionProcessCount: 1,
+      visionProcessIds: [4242],
+      visionProcessCommandLines: [
+        '"C:\\VEM\\vision\\app\\vending-vision.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
+      ],
     });
     assert.equal(binding.processId, 4242);
     assert.equal(binding.processOwner, "VEMKiosk");
+    assert.deepEqual(binding.visionProcessIds, [4242]);
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
     assert.throws(
       () =>

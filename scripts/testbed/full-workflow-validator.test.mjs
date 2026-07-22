@@ -37,7 +37,22 @@ function visionExperienceReport() {
   return {
     schemaVersion: "vem-vision-try-on-acceptance/v1",
     ok: true,
-    health: { vision: { protocolSummary: { protocol: "vem.vision.v1" } } },
+    health: {
+      vision: {
+        protocolSummary: {
+          protocol: "vem.vision.v1",
+          presenceDetectedAt: "2026-07-22T00:00:02.000Z",
+          profileDetectedAt: "2026-07-22T00:00:03.000Z",
+          departureDetectedAt: "2026-07-22T00:00:04.000Z",
+          eventFence: {
+            source: "installed_machine_runtime_trace_generation",
+            runtimeGenerationId: "runtime:vision-acceptance",
+            lastEntryId: 4,
+            visionStartedAt: "2026-07-22T00:00:01.000Z",
+          },
+        },
+      },
+    },
     visionInstall: {
       runtimeExpectation: {
         recommendationVariants: [
@@ -1063,6 +1078,17 @@ describe("full workflow aggregate validator", () => {
     );
     assert.equal(rejected.status, "failed");
     assert.match(rejected.reason, /vision degradation evidence is incomplete/);
+
+    const unfenced = visionExperienceReport();
+    delete unfenced.health.vision.protocolSummary.eventFence;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        unfenced,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
 
     const forgedIdentity = visionExperienceReport();
     forgedIdentity.visionInstall.runtimeExpectation.recommendationVariants[0].variantId =

@@ -28,19 +28,34 @@ export function installVisionRecommendationCoordinator(
   const visionStore = useVisionStore(pinia);
   let subscription: ReturnType<typeof subscribeVisionProfiles> | null = null;
   let subscribedMachineCode: string | null = null;
+  let subscriptionGeneration = 0;
 
   const connect = (machineCode: string): void => {
+    const generation = ++subscriptionGeneration;
+    const isCurrentSubscription = (): boolean =>
+      generation === subscriptionGeneration &&
+      machineStore.machineCode === machineCode;
     subscription = subscribeVisionProfiles(
       { machineCode },
       {
-        onReady: (payload) => visionStore.applyVisionReady(payload),
-        onPresenceStatus: (payload: VisionPresenceStatusPayload) =>
-          visionStore.applyPresenceStatus(payload),
-        onPersonDeparted: (payload: VisionPersonDepartedPayload) =>
-          visionStore.applyPersonDeparted(payload),
-        onProfile: (payload: VisionProfileResultPayload) =>
-          visionStore.applyRecommendationProfileResult(payload),
+        onReady: (payload) => {
+          if (!isCurrentSubscription()) return;
+          visionStore.applyVisionReady(payload);
+        },
+        onPresenceStatus: (payload: VisionPresenceStatusPayload) => {
+          if (!isCurrentSubscription()) return;
+          visionStore.applyPresenceStatus(payload);
+        },
+        onPersonDeparted: (payload: VisionPersonDepartedPayload) => {
+          if (!isCurrentSubscription()) return;
+          visionStore.applyPersonDeparted(payload);
+        },
+        onProfile: (payload: VisionProfileResultPayload) => {
+          if (!isCurrentSubscription()) return;
+          visionStore.applyRecommendationProfileResult(payload);
+        },
         onError: (error) => {
+          if (!isCurrentSubscription()) return;
           if (isVisionTryOnCapabilityDegraded(error)) {
             visionStore.markTryOnCapabilityDegraded();
           }
@@ -55,9 +70,11 @@ export function installVisionRecommendationCoordinator(
     () => machineStore.machineCode,
     (machineCode) => {
       if (machineCode === subscribedMachineCode) return;
+      subscriptionGeneration += 1;
       subscription?.close();
       subscription = null;
       subscribedMachineCode = null;
+      visionStore.clearLatestDiagnosticPayload();
       if (machineCode) connect(machineCode);
     },
     { immediate: true, flush: "sync" },
@@ -66,6 +83,7 @@ export function installVisionRecommendationCoordinator(
     close: () => {
       if (coordinators.get(pinia) !== coordinator) return;
       stopMachineCodeWatch();
+      subscriptionGeneration += 1;
       subscription?.close();
       subscription = null;
       coordinators.delete(pinia);
