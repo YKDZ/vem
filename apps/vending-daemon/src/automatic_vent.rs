@@ -193,7 +193,9 @@ impl AutomaticVentController {
             }
             state.last_attempt_at = Some(Instant::now());
         }
-        hardware.set_vent_speed(speed).await
+        hardware.set_vent_speed(speed).await?;
+        self.state.lock().await.confirmed_speed = Some(speed);
+        Ok(())
     }
 
     pub async fn close(&self) {
@@ -514,6 +516,33 @@ mod tests {
         assert!(
             attempts[1].1.duration_since(attempts[0].1) >= std::time::Duration::from_millis(50)
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_automatic_edge_reapplies_speed_after_successful_admin_b3() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            std::time::Duration::from_millis(1),
+        );
+
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("initial automatic edge");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        controller
+            .execute_admin_one_shot(3)
+            .await
+            .expect("successful Admin B3");
+        controller
+            .request("presence-2:arrival", 2)
+            .await
+            .expect("fresh automatic edge");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 3, 2]);
     }
 
     #[tokio::test]
