@@ -32,12 +32,6 @@ export class VendingController {
   }
 
   @RequirePermissions("machines.command")
-  @Post(":id/retry")
-  async retry(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.vendingService.retryCommand(id);
-  }
-
-  @RequirePermissions("machines.command")
   @Post(":id/resolve")
   async resolve(
     @Param("id", ParseUUIDPipe) id: string,

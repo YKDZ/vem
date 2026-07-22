@@ -35,7 +35,6 @@ import {
   pageQuerySchema,
   type RawMachineStockMovement,
 } from "@vem/shared";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { createBusinessNo } from "../common/business-no.util";
@@ -403,41 +402,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .from(vendingCommands);
 
     return toPageResult(items, query, Number(totalRow.total));
-  }
-
-  async retryCommand(id: string) {
-    const [command] = await this.db
-      .select({
-        id: vendingCommands.id,
-        commandNo: vendingCommands.commandNo,
-        orderId: vendingCommands.orderId,
-        machineId: vendingCommands.machineId,
-        status: vendingCommands.status,
-        retryCount: vendingCommands.retryCount,
-        payloadJson: vendingCommands.payloadJson,
-        machineCode: machines.code,
-      })
-      .from(vendingCommands)
-      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
-      .where(eq(vendingCommands.id, id));
-    if (!command) {
-      throw new NotFoundException("Vending command not found");
-    }
-    if (command.status !== "failed" && command.status !== "timeout") {
-      throw new ConflictException(
-        "Only failed or timeout command can be retried",
-      );
-    }
-    if (command.retryCount >= 3) {
-      throw new ConflictException("Retry limit reached");
-    }
-
-    return await this.createCompensationDispenseCommand({
-      orderId: command.orderId,
-      recoveryActionId: randomUUID(),
-      originalCommandNo: command.commandNo,
-      note: `operator retry for ${command.commandNo}`,
-    });
   }
 
   async resolveCommand(

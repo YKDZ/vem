@@ -222,6 +222,7 @@ function makeRecoveryDb(
   rowsBySelect: unknown[][],
   options?: { insertError?: Error },
 ) {
+  rowsBySelect.unshift([{ machineId: "machine-1" }]);
   class SelectResult implements PromiseLike<unknown[]> {
     constructor(private readonly rows: unknown[]) {}
 
@@ -258,6 +259,7 @@ function makeRecoveryDb(
   }
 
   const tx = {
+    execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
     select: vi.fn().mockImplementation(() => {
       const rows = rowsBySelect.shift();
       if (!rows) throw new Error("unexpected select");
@@ -1117,6 +1119,40 @@ describe("OrdersService", () => {
           note: "duplicate operator action",
         }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("does not create a second compensation when the recovery CAS is already claimed", async () => {
+      const uniqueViolation = Object.assign(new Error("unique violation"), {
+        code: "23505",
+      });
+      const { db } = makeRecoveryDb(
+        [
+          [{ ...resultUnknownCommand, status: "failed" }],
+          [
+            {
+              id: "confirm-action-1",
+              commandId: "command-1",
+              action: "confirm_not_dispensed",
+              status: "completed",
+            },
+          ],
+          [],
+        ],
+        { insertError: uniqueViolation },
+      );
+      const createCompensationDispenseCommand = vi.fn();
+      const service = makeService({
+        db: db as never,
+        vendingService: { createCompensationDispenseCommand },
+      });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "compensation_dispense",
+          note: "duplicate operator retry",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(createCompensationDispenseCommand).not.toHaveBeenCalled();
     });
 
     it("requires completed not-dispensed confirmation before requesting refund", async () => {

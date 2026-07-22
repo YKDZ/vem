@@ -75,6 +75,7 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import {
   lockInventoriesForVendingMutation,
   lockMachineForVendingMutation,
+  lockOrderForVendingMutation,
 } from "../database/machine-transaction-lock";
 import { InventoryService } from "../inventory/inventory.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
@@ -2107,6 +2108,15 @@ export class OrdersService {
   }> {
     try {
       return await this.db.transaction(async (tx) => {
+        const [order] = await tx
+          .select({ machineId: orders.machineId })
+          .from(orders)
+          .where(eq(orders.id, orderId));
+        if (!order) {
+          throw new NotFoundException("Order not found for recovery");
+        }
+        await lockMachineForVendingMutation(tx, order.machineId);
+        await lockOrderForVendingMutation(tx, orderId);
         const commandRows = await tx
           .select({
             id: vendingCommands.id,
