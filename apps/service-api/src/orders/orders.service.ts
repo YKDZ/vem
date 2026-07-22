@@ -72,6 +72,10 @@ import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import {
+  lockInventoriesForVendingMutation,
+  lockMachineForVendingMutation,
+} from "../database/machine-transaction-lock";
 import { InventoryService } from "../inventory/inventory.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
@@ -619,6 +623,8 @@ export class OrdersService {
       const inventoryIds = [
         ...new Set(input.items.map((item) => item.inventoryId)),
       ];
+      await lockMachineForVendingMutation(tx, machineId);
+      await lockInventoriesForVendingMutation(tx, inventoryIds);
       const availableRows = await tx
         .select({
           inventoryId: inventories.id,

@@ -1333,6 +1333,7 @@ describe("OrdersService", () => {
       db.transaction.mockImplementation(
         async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             select: vi.fn(),
             insert: vi.fn(),
             update: vi.fn(),
@@ -1483,6 +1484,7 @@ describe("OrdersService", () => {
       db.transaction.mockImplementation(
         async (fn: (tx: unknown) => unknown) => {
           const tx = {
+            execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
             select: vi.fn(),
             insert: vi.fn(),
             update: vi.fn(),
@@ -2438,6 +2440,7 @@ function makeProviderSelectResult() {
 
 function makeGenericTx(db: OrdersDbHarness) {
   const tx = {
+    execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),

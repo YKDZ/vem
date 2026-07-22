@@ -1427,13 +1427,19 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .where(
           and(
             eq(vendingCommands.machineId, machine.id),
-            eq(vendingCommands.status, "acknowledged"),
+            inArray(vendingCommands.status, [
+              "pending",
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+            ]),
           ),
         )
         .limit(1);
       if (unfinishedCommand) {
         throw new ConflictException(
-          "Cannot switch active planogram while an acknowledged dispense command is unfinished",
+          "Cannot switch active planogram while a dispense command has an unresolved physical result",
         );
       }
 

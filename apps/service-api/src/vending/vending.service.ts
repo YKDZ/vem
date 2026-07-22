@@ -40,7 +40,11 @@ import { z } from "zod";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
-import { lockMachineForVendingMutation } from "../database/machine-transaction-lock";
+import {
+  lockInventoriesForVendingMutation,
+  lockMachineForVendingMutation,
+  lockOrderForVendingMutation,
+} from "../database/machine-transaction-lock";
 import { InventoryService } from "../inventory/inventory.service";
 import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
@@ -131,6 +135,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(orders.id, orderId));
     if (!order) throw new NotFoundException("Order not found");
 
+    await lockMachineForVendingMutation(tx, order.machineId);
+    await lockOrderForVendingMutation(tx, orderId);
+
     const existing = await tx
       .select()
       .from(vendingCommands)
@@ -146,6 +153,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const items = await tx
       .select({
         orderItemId: orderItems.id,
+        inventoryId: orderItems.inventoryId,
         slotId: orderItems.slotId,
         quantity: orderItems.quantity,
         rowNo: machineSlots.rowNo,
@@ -154,6 +162,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .from(orderItems)
       .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
       .where(eq(orderItems.orderId, orderId));
+    await lockInventoriesForVendingMutation(
+      tx,
+      items.map((item) => item.inventoryId),
+    );
 
     const created = [];
     // oxlint-disable no-await-in-loop -- each insert observes the same transaction and unique slot constraint
@@ -289,272 +301,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async createAndDispatchCommands(orderId: string) {
-    const [order] = await this.db
-      .select({
-        id: orders.id,
-        orderNo: orders.orderNo,
-        status: orders.status,
-        machineId: orders.machineId,
-        machineCode: machines.code,
-      })
-      .from(orders)
-      .innerJoin(machines, eq(machines.id, orders.machineId))
-      .where(eq(orders.id, orderId));
-    if (!order) {
-      throw new NotFoundException("Order not found");
-    }
-
-    const existingCommands = await this.db
-      .select()
-      .from(vendingCommands)
-      .where(
-        and(
-          eq(vendingCommands.orderId, orderId),
-          eq(vendingCommands.commandKind, "dispatch"),
-        ),
-      )
-      .orderBy(vendingCommands.createdAt);
-    if (existingCommands.length > 0) {
-      await this.dispatchPendingCommandsForOrder(orderId);
-      return await this.db
-        .select()
-        .from(vendingCommands)
-        .where(
-          and(
-            eq(vendingCommands.orderId, orderId),
-            eq(vendingCommands.commandKind, "dispatch"),
-          ),
-        )
-        .orderBy(vendingCommands.createdAt);
-    }
-
-    const items = await this.db
-      .select({
-        orderItemId: orderItems.id,
-        slotId: orderItems.slotId,
-        quantity: orderItems.quantity,
-        rowNo: machineSlots.rowNo,
-        cellNo: machineSlots.cellNo,
-      })
-      .from(orderItems)
-      .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
-      .where(eq(orderItems.orderId, orderId));
-    if (items.length === 0) {
-      return [];
-    }
-
-    try {
-      const commandResults = await Promise.all(
-        items.map(async (item) => {
-          const commandNo = createBusinessNo("CMD");
-          const payload = dispenseCommandPayloadSchema.parse({
-            commandNo,
-            orderNo: order.orderNo,
-            slot: {
-              rowNo: item.rowNo,
-              cellNo: item.cellNo,
-            },
-            quantity: item.quantity,
-            timeoutSeconds: 120,
-          });
-
-          const [created] = await this.db
-            .insert(vendingCommands)
-            .values({
-              commandNo,
-              orderId,
-              machineId: order.machineId,
-              slotId: item.slotId,
-              orderItemId: item.orderItemId,
-              commandKind: "dispatch",
-              payloadJson: payload,
-              status: "pending",
-            })
-            .returning();
-
-          try {
-            const envelope = await this.mqttSignatureService.signForMachine({
-              machineCode: order.machineCode,
-              payload,
-              messageId: `command:${commandNo}`,
-            });
-            await this.mqttService.publish(
-              `vem/machines/${order.machineCode}/commands/dispense`,
-              envelope,
-            );
-            const [sent] = await this.db
-              .update(vendingCommands)
-              .set({
-                status: "sent",
-                sentAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(vendingCommands.id, created.id))
-              .returning();
-            return sent;
-          } catch (error) {
-            const [failed] = await this.db
-              .update(vendingCommands)
-              .set({
-                status: "failed",
-                lastError:
-                  error instanceof Error ? error.message : String(error),
-                updatedAt: new Date(),
-              })
-              .where(eq(vendingCommands.id, created.id))
-              .returning();
-            return failed;
-          }
-        }),
-      );
-
-      const hasFailure = commandResults.some(
-        (command) => command?.status === "failed",
-      );
-      if (hasFailure) {
-        const failedCommands = commandResults.filter(
-          (command): command is NonNullable<typeof command> =>
-            command?.status === "failed",
-        );
-        const sentLikeCommands = commandResults.filter(
-          (command) =>
-            command?.status === "sent" ||
-            command?.status === "acknowledged" ||
-            command?.status === "succeeded",
-        );
-        const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
-        const refundDecision = await this.db.transaction(async (tx) => {
-          await this.lockOrderForTerminalMutation(tx, orderId);
-          const sentLineIds = sentLikeCommands
-            .map((command) => command?.orderItemId)
-            .filter((id): id is string => typeof id === "string");
-          if (sentLineIds.length > 0) {
-            await tx
-              .update(orderItems)
-              .set({ fulfillmentStatus: "dispensing" })
-              .where(inArray(orderItems.id, sentLineIds));
-          }
-
-          let decision:
-            | { kind: "none" }
-            | {
-                kind: "full";
-                orderId: string;
-                metadata: Record<string, unknown>;
-              }
-            | {
-                kind: "partial";
-                orderId: string;
-                orderItemIds: string[];
-                amountCents: number;
-                metadata: Record<string, unknown>;
-              } = { kind: "none" };
-
-          // oxlint-disable no-await-in-loop -- each failed line mutates order-line state before the next refund decision is calculated
-          for (const failedCommand of failedCommands) {
-            await this.inventoryService.releaseAffectedReservationForDispenseFailure(
-              tx,
-              {
-                orderId,
-                orderItemId: failedCommand.orderItemId ?? null,
-                slotId: failedCommand.slotId,
-                errorCode: null,
-                message: failedCommand.lastError ?? "MQTT dispatch failed",
-              },
-            );
-
-            const metadata = {
-              allCommandsFailedBeforeDelivery,
-              failedCommandId: failedCommand.id,
-              failedCommandNo: failedCommand.commandNo,
-              releaseReason: "mqtt_dispatch_failed",
-            };
-            decision = await this.markOrderLinesFailedAndBuildRefundDecision(
-              tx,
-              {
-                orderId,
-                orderItemId: failedCommand.orderItemId ?? null,
-                slotId: failedCommand.slotId,
-                reason: "mqtt_dispatch_failed",
-                metadata,
-              },
-            );
-            await this.stageFailedLineRefund(tx, decision);
-
-            await this.notificationsService.createDispenseFailedNotification(
-              tx,
-              {
-                orderId,
-                commandId: failedCommand.id,
-                message: failedCommand.lastError ?? "MQTT dispatch failed",
-              },
-            );
-          }
-          // oxlint-enable no-await-in-loop
-
-          return decision;
-        });
-
-        if (refundDecision.kind !== "none") {
-          await this.refundsService.dispatchPendingRefunds();
-        }
-        return commandResults;
-      }
-
-      await this.db.transaction(async (tx) => {
-        const commandLineIds = commandResults
-          .map((command) => command?.orderItemId)
-          .filter((id): id is string => typeof id === "string");
-        if (commandLineIds.length > 0) {
-          await tx
-            .update(orderItems)
-            .set({ fulfillmentStatus: "dispensing" })
-            .where(inArray(orderItems.id, commandLineIds));
-        }
-
-        const [currentOrder] = await tx
-          .select({ status: orders.status, paymentState: orders.paymentState })
-          .from(orders)
-          .where(eq(orders.id, orderId));
-        if (!currentOrder || currentOrder.status === "dispensing") {
-          return;
-        }
-        const projectedStatus = projectOrderStatus({
-          paymentState: currentOrder.paymentState,
-          fulfillmentState: "dispensing",
-        });
-        await tx
-          .update(orders)
-          .set({
-            status: projectedStatus,
-            fulfillmentState: "dispensing",
-            updatedAt: new Date(),
-          })
-          .where(eq(orders.id, orderId));
-        await tx.insert(orderStatusEvents).values({
-          orderId,
-          fromStatus: currentOrder.status,
-          toStatus: projectedStatus,
-          reason: "vending_command_sent",
-        });
-      });
-
-      return commandResults;
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        return await this.db
-          .select()
-          .from(vendingCommands)
-          .where(
-            and(
-              eq(vendingCommands.orderId, orderId),
-              eq(vendingCommands.commandKind, "dispatch"),
-            ),
-          )
-          .orderBy(vendingCommands.createdAt);
-      }
-      throw error;
-    }
+    const commands = await this.db.transaction(
+      async (tx) => await this.createPendingDispatchCommands(tx, orderId),
+    );
+    await this.dispatchPendingCommandsForOrder(orderId);
+    return commands;
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {
@@ -728,7 +479,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const failureContext = await this.db.transaction(async (tx) => {
-      await this.lockOrderForTerminalMutation(tx, command.orderId);
+      await lockMachineForVendingMutation(tx, command.machineId);
+      await lockOrderForVendingMutation(tx, command.orderId);
       const [updated] = await tx
         .update(vendingCommands)
         .set({
@@ -1049,6 +801,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: vendingCommands.id,
         commandNo: vendingCommands.commandNo,
+        machineId: vendingCommands.machineId,
         orderId: vendingCommands.orderId,
         slotId: vendingCommands.slotId,
         payloadJson: vendingCommands.payloadJson,
@@ -1091,6 +844,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       command: {
         id: string;
         commandNo: string;
+        machineId: string;
         orderId: string;
         slotId: string;
       };
@@ -1101,7 +855,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       >;
     },
   ): Promise<boolean> {
-    await this.lockOrderForTerminalMutation(tx, input.command.orderId);
+    await lockMachineForVendingMutation(tx, input.command.machineId);
+    await lockOrderForVendingMutation(tx, input.command.orderId);
     const [updated] = await tx
       .update(vendingCommands)
       .set({
@@ -1193,6 +948,19 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
     await this.db.transaction(async (tx) => {
       await lockMachineForVendingMutation(tx, machine.id);
+      const [command] = await tx
+        .select({ orderId: vendingCommands.orderId })
+        .from(vendingCommands)
+        .where(
+          and(
+            eq(vendingCommands.commandNo, commandNo),
+            eq(vendingCommands.machineId, machine.id),
+          ),
+        )
+        .limit(1);
+      if (command) {
+        await lockOrderForVendingMutation(tx, command.orderId);
+      }
       const inserted = await tx
         .insert(machineEvents)
         .values({
@@ -1251,6 +1019,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     if (!machine) return;
 
     const resultContext = await this.db.transaction(async (tx) => {
+      await lockMachineForVendingMutation(tx, machine.id);
       const [command] = await tx
         .select({
           id: vendingCommands.id,
@@ -1340,7 +1109,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           : null;
       }
 
-      await this.lockOrderForTerminalMutation(tx, command.orderId);
+      await lockOrderForVendingMutation(tx, command.orderId);
       const [updated] = await tx
         .update(vendingCommands)
         .set({
@@ -1480,21 +1249,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         messageId: input.messageId,
       })
       .onConflictDoNothing();
-  }
-
-  private async lockOrderForTerminalMutation(
-    tx: DrizzleTransaction,
-    orderId: string,
-  ): Promise<void> {
-    const locked = await tx.execute(sql`
-      select id
-      from orders
-      where id = ${orderId}
-      for update
-    `);
-    if ((locked.rowCount ?? 0) !== 1) {
-      throw new NotFoundException("Order not found");
-    }
   }
 
   private async markOrderLinesFailedAndBuildRefundDecision(

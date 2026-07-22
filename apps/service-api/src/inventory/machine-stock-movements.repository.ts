@@ -23,6 +23,11 @@ import {
 } from "@vem/db";
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import {
+  lockInventoriesForVendingMutation,
+  lockMachineForVendingMutation,
+  lockOrderForVendingMutation,
+} from "../database/machine-transaction-lock";
 import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 
@@ -568,15 +573,15 @@ export class MachineStockMovementsRepository {
     tx: DrizzleTransaction,
     input: ConfirmOrderBoundDispenseInput,
   ): Promise<void> {
-    const [lockedOrder] = await tx
-      .select({ id: orders.id })
-      .from(orders)
-      .where(eq(orders.id, input.context.orderId))
-      .for("update");
-    if (!lockedOrder) {
-      throw new OrderBoundDispenseConfirmationFailedError(
-        "Order could not be locked for dispense confirmation",
-      );
+    await lockMachineForVendingMutation(tx, input.machineId);
+    try {
+      await lockOrderForVendingMutation(tx, input.context.orderId);
+      await lockInventoriesForVendingMutation(tx, [input.context.inventoryId]);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new OrderBoundDispenseConfirmationFailedError(error.message);
+      }
+      throw error;
     }
 
     const [claimedCommand] = await tx
