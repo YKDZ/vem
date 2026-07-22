@@ -65,6 +65,34 @@ function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
   Set-Content -LiteralPath $indexPath -Value $Commit -NoNewline -Encoding utf8
 }
 
+function Stop-ManagedVision() {
+  $task = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+  if ($null -ne $task -and [string]$task.State -eq "Running") {
+    Stop-ScheduledTask -InputObject $task -ErrorAction Stop
+  }
+  Get-Process -Name "vending-vision" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+function Wait-ForVisionPortRebind([int]$TimeoutSeconds = 30) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastError = $null
+  do {
+    $listener = $null
+    try {
+      $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 7892)
+      $listener.Start()
+      return
+    } catch {
+      $lastError = $_
+      Start-Sleep -Milliseconds 250
+    } finally {
+      if ($null -ne $listener) { $listener.Stop() }
+    }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Vision test isolation: port 7892 could not be rebound within $TimeoutSeconds seconds: $($lastError.Exception.Message)"
+}
+
 $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
 Import-Module $visionModulePath -Force
 $visionCacheRoot = Join-Path $CacheRoot "vision-main"
@@ -83,15 +111,32 @@ if ([string]::IsNullOrWhiteSpace($visionCommit)) {
   }
 }
 Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-$visionInstallation = Install-VisionMainArtifact `
-  -RuntimeArchive ([string]$visionCache.runtimeArchive) `
-  -FixtureArchive ([string]$visionCache.fixtureArchive) `
-  -Commit ([string]$visionCache.commit) `
-  -SiteConfigurationPath $visionSiteConfigurationSourcePath `
-  -TaskUser "VEMKiosk" `
-  -ProbeTimeoutSeconds 60
-if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
-  throw "installed Vision commit does not match the resolved cached commit"
+$primaryFailure = $null
+try {
+  $visionInstallation = Install-VisionMainArtifact `
+    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
+    -FixtureArchive ([string]$visionCache.fixtureArchive) `
+    -Commit ([string]$visionCache.commit) `
+    -SiteConfigurationPath $visionSiteConfigurationSourcePath `
+    -TaskUser "VEMKiosk" `
+    -ProbeTimeoutSeconds 60
+  if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
+    throw "installed Vision commit does not match the resolved cached commit"
+  }
+  node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath --fixture-key $FixtureKey
+  if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
+} catch {
+  $primaryFailure = $_
+  throw
+} finally {
+  try {
+    Stop-ManagedVision
+    Wait-ForVisionPortRebind
+  } catch {
+    if ($null -ne $primaryFailure) {
+      Write-Warning "Vision test isolation cleanup failed after the business failure: $($_.Exception.Message)"
+    } else {
+      throw
+    }
+  }
 }
-node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath --fixture-key $FixtureKey
-if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
