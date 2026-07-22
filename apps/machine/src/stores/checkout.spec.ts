@@ -1477,7 +1477,10 @@ describe("checkout store", () => {
     store.applyTransaction(failedTransaction);
     expect(store.customerCheckoutView.stage).toBe("result");
 
+    store.transactionRecoveryOrderNo = failedTransaction.orderNo;
     store.dismissCurrentTerminalTransaction();
+    expect(store.transaction).toBeNull();
+    expect(store.transactionRecoveryOrderNo).toBeNull();
     store.reset();
     const refreshed = await store.refreshCurrentTransaction();
 

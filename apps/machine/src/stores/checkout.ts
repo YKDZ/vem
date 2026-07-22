@@ -427,6 +427,12 @@ export const useCheckoutStore = defineStore("checkout", {
         orderNo,
       );
       writeDismissedTerminalOrderNos(this.dismissedTerminalOrderNos);
+      if (this.transaction?.orderNo === orderNo) {
+        this.transaction = null;
+      }
+      if (this.transactionRecoveryOrderNo === orderNo) {
+        this.transactionRecoveryOrderNo = null;
+      }
     },
     applyTransaction(
       snapshot: TransactionSnapshot,
