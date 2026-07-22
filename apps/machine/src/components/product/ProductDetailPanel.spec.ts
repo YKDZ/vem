@@ -262,7 +262,7 @@ describe("ProductDetailPanel recommendation policy", () => {
     expect(selectedOptionText(host)).not.toContain("L");
   });
 
-  it("reselects a saleable default when the automatic variant becomes unsaleable after refresh", async () => {
+  it("keeps a product purchasable by selecting its sale-ready alternate when the default variant is frozen", async () => {
     const baseItem = makeCatalogItem();
     const catalogStore = useCatalogStore();
     catalogStore.applySnapshot({
@@ -305,8 +305,8 @@ describe("ProductDetailPanel recommendation policy", () => {
         {
           ...baseItem,
           saleableStock: 0,
-          physicalStock: 0,
-          slotSalesState: "sold_out",
+          physicalStock: 3,
+          slotSalesState: "frozen",
         },
         {
           ...baseItem,

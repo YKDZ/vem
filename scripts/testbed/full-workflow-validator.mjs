@@ -330,16 +330,47 @@ function validatePaymentRecoveryTrack(report, reportPath) {
     );
   }
   const action = report.recovery?.action ?? {};
+  const attempts = Array.isArray(report.attempts) ? report.attempts : [];
+  const attemptKinds = [
+    "create_failure",
+    "query_failure",
+    "canceled",
+    "expired",
+  ];
+  const completeAttempts = attemptKinds.every((kind) => {
+    const attempt = attempts.find((candidate) => candidate?.kind === kind);
+    return (
+      attempt != null &&
+      ["failed", "canceled", "expired"].includes(
+        attempt.terminalPaymentState,
+      ) &&
+      attempt.reservation?.reservedQty ===
+        attempt.reservation?.baselineReservedQty &&
+      attempt.reservation?.activeRows === 0 &&
+      attempt.reservation?.daemonActiveReservations === 0 &&
+      attempt.customer?.saleable === true &&
+      attempt.customer?.semanticChineseOnly === true &&
+      typeof attempt.technicalEvidence?.correlationId === "string"
+    );
+  });
   if (
     report.boundaries?.serviceApi !== true ||
     report.boundaries?.mqttNoDispense !== true ||
     report.boundaries?.daemon !== true ||
+    report.boundaries?.customerProjection !== true ||
+    report.boundaries?.variantSaleability !== true ||
     !report.payment?.id ||
     !["query_payment", "close_or_reverse_uncertain_payment"].includes(
       action.action,
     ) ||
     report.assertions?.duplicatePaymentCount !== 0 ||
-    report.assertions?.dispenseStarted === true
+    report.assertions?.dispenseStarted === true ||
+    !completeAttempts ||
+    report.subsequentSale?.sameInventoryOrderCreated !== true ||
+    report.subsequentSale?.mockPaid !== true ||
+    report.variantSaleability?.frozenDefaultVariant !== true ||
+    report.variantSaleability?.saleReadyAlternateVariant !== true ||
+    report.variantSaleability?.selectedSaleReadyVariant !== true
   ) {
     return failedTrack(
       "paymentRecovery",
@@ -358,6 +389,7 @@ function validatePaymentRecoveryTrack(report, reportPath) {
     paymentId: report.payment.id,
     action: action.action,
     duplicatePaymentCount: report.assertions.duplicatePaymentCount,
+    recoveryAttempts: attempts.length,
   });
 }
 

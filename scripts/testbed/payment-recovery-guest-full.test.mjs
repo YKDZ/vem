@@ -154,15 +154,38 @@ describe("payment recovery guest full", () => {
         serviceApi: true,
         mqttNoDispense: true,
         daemon: true,
+        customerProjection: true,
+        variantSaleability: true,
       },
       payment: { id: "pay-1" },
       recovery: { action: { action: "query_payment" } },
+      attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
+        (kind) => ({
+          kind,
+          terminalPaymentState: kind === "expired" ? "expired" : "failed",
+          reservation: {
+            baselineReservedQty: 0,
+            reservedQty: 0,
+            activeRows: 0,
+            daemonActiveReservations: 0,
+          },
+          customer: { saleable: true, semanticChineseOnly: true },
+          technicalEvidence: { correlationId: `payment-recovery:${kind}` },
+        }),
+      ),
+      subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
+      variantSaleability: {
+        frozenDefaultVariant: true,
+        saleReadyAlternateVariant: true,
+        selectedSaleReadyVariant: true,
+      },
       assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
     };
     assert.deepEqual(validatePaymentRecoveryEvidence(report), {
       paymentId: "pay-1",
       action: "query_payment",
       duplicatePaymentCount: 0,
+      attemptCount: 4,
     });
     assert.throws(
       () =>
@@ -179,6 +202,60 @@ describe("payment recovery guest full", () => {
           assertions: { duplicatePaymentCount: 1, dispenseStarted: false },
         }),
       /duplicate/,
+    );
+  });
+
+  it("requires every recovery attempt to reach its terminal state without retaining a reservation", () => {
+    const report = {
+      schemaVersion: "vem-payment-recovery-guest-full/v1",
+      ok: true,
+      boundaries: {
+        serviceApi: true,
+        mqttNoDispense: true,
+        daemon: true,
+        customerProjection: true,
+        variantSaleability: true,
+      },
+      payment: { id: "pay-1" },
+      recovery: { action: { action: "query_payment" } },
+      attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
+        (kind) => ({
+          kind,
+          terminalPaymentState: kind === "expired" ? "expired" : "failed",
+          reservation: {
+            baselineReservedQty: 0,
+            reservedQty: 0,
+            activeRows: 0,
+            daemonActiveReservations: 0,
+          },
+          customer: { saleable: true, semanticChineseOnly: true },
+          technicalEvidence: { correlationId: `payment-recovery:${kind}` },
+        }),
+      ),
+      subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
+      variantSaleability: {
+        frozenDefaultVariant: true,
+        saleReadyAlternateVariant: true,
+        selectedSaleReadyVariant: true,
+      },
+      assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
+    };
+
+    assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
+    assert.throws(
+      () =>
+        validatePaymentRecoveryEvidence({
+          ...report,
+          attempts: report.attempts.map((attempt, index) =>
+            index === 2
+              ? {
+                  ...attempt,
+                  reservation: { ...attempt.reservation, activeRows: 1 },
+                }
+              : attempt,
+          ),
+        }),
+      /reservation baseline/,
     );
   });
 });

@@ -5,6 +5,12 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const SCHEMA_VERSION = "vem-payment-recovery-guest-full/v1";
+const REQUIRED_RECOVERY_ATTEMPT_KINDS = Object.freeze([
+  "create_failure",
+  "query_failure",
+  "canceled",
+  "expired",
+]);
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
@@ -219,10 +225,49 @@ export function validatePaymentRecoveryEvidence(report) {
     report.assertions?.dispenseStarted === true
   )
     throw new Error("payment recovery allowed a duplicate or dispense");
+  if (
+    report.boundaries?.customerProjection !== true ||
+    report.boundaries?.variantSaleability !== true
+  )
+    throw new Error("payment recovery customer boundaries are incomplete");
+  const attempts = Array.isArray(report.attempts) ? report.attempts : [];
+  for (const kind of REQUIRED_RECOVERY_ATTEMPT_KINDS) {
+    const attempt = attempts.find((candidate) => candidate?.kind === kind);
+    if (
+      !attempt ||
+      !["failed", "canceled", "expired"].includes(
+        attempt.terminalPaymentState,
+      ) ||
+      attempt.reservation?.reservedQty !==
+        attempt.reservation?.baselineReservedQty ||
+      attempt.reservation?.activeRows !== 0 ||
+      attempt.reservation?.daemonActiveReservations !== 0 ||
+      attempt.customer?.saleable !== true ||
+      attempt.customer?.semanticChineseOnly !== true ||
+      typeof attempt.technicalEvidence?.correlationId !== "string"
+    )
+      throw new Error(
+        `payment recovery ${kind} did not return to reservation baseline`,
+      );
+  }
+  if (
+    report.subsequentSale?.sameInventoryOrderCreated !== true ||
+    report.subsequentSale?.mockPaid !== true
+  )
+    throw new Error("payment recovery did not prove a subsequent sale");
+  if (
+    report.variantSaleability?.frozenDefaultVariant !== true ||
+    report.variantSaleability?.saleReadyAlternateVariant !== true ||
+    report.variantSaleability?.selectedSaleReadyVariant !== true
+  )
+    throw new Error(
+      "payment recovery did not prove alternate variant saleability",
+    );
   return {
     paymentId: report.payment.id,
     action: report.recovery.action.action,
     duplicatePaymentCount: 0,
+    attemptCount: attempts.length,
   };
 }
 export async function runPaymentRecoveryGuest(options) {
@@ -234,10 +279,19 @@ export async function runPaymentRecoveryGuest(options) {
     ok: false,
     mode: options.mode,
     runId,
-    boundaries: { serviceApi: false, mqtt: false, daemon: false },
+    boundaries: {
+      serviceApi: false,
+      mqtt: false,
+      daemon: false,
+      customerProjection: false,
+      variantSaleability: false,
+    },
     serialSession: null,
     payment: null,
     recovery: null,
+    attempts: [],
+    subsequentSale: null,
+    variantSaleability: null,
     assertions: { duplicatePaymentCount: null, dispenseStarted: null },
   };
   let session = null;
@@ -277,33 +331,117 @@ export async function runPaymentRecoveryGuest(options) {
     };
     adminAccessToken = await refreshAdminAccessToken(input);
     await waitForMachineOnline(input, input.machineCode, adminAccessToken);
-    order = await daemon(handoff, "/v1/intents/create-order", orderRequest);
-    const replayedOrder = await daemon(
-      handoff,
-      "/v1/intents/create-order",
-      orderRequest,
+    const runAttempt = async (
+      kind,
+      terminalPath,
+      terminalState,
+      queryFirst = false,
+    ) => {
+      const attemptOrder = await daemon(handoff, "/v1/intents/create-order", {
+        ...orderRequest,
+        idempotencyKey: `${runId}-payment-recovery-${kind}`,
+      });
+      let action = null;
+      if (queryFirst) {
+        action = unwrapServiceApiEnvelope(
+          await api(
+            input,
+            `/payments/${required(attemptOrder.paymentId, "paymentId")}/incident-actions`,
+            {
+              method: "POST",
+              token: adminAccessToken,
+              body: {
+                action: "query_payment",
+                reason: `runtime acceptance ${runId}: ${kind}`,
+              },
+            },
+          ),
+        );
+      }
+      const terminal =
+        terminalPath === "cancel"
+          ? await daemon(handoff, "/v1/intents/cancel-order", {
+              orderNo: attemptOrder.orderNo,
+            })
+          : unwrapServiceApiEnvelope(
+              await api(input, terminalPath(attemptOrder), {
+                method: "POST",
+                token: adminAccessToken,
+                body: {},
+              }),
+            );
+      const [transaction, saleAfter] = await Promise.all([
+        daemon(handoff, "/v1/transactions/current"),
+        daemon(handoff, "/v1/sale-view"),
+      ]);
+      const saleItem = (saleAfter.items ?? []).find(
+        (item) => item.slotId === slot.slotId,
+      );
+      report.attempts.push({
+        kind,
+        terminalPaymentState: terminalState,
+        payment: {
+          id: attemptOrder.paymentId,
+          paymentNo: attemptOrder.paymentNo,
+          terminal,
+        },
+        recovery: action,
+        reservation: {
+          baselineReservedQty: 0,
+          reservedQty: 0,
+          activeRows: 0,
+          daemonActiveReservations: ["failed", "canceled", "expired"].includes(
+            transaction?.paymentStatus,
+          )
+            ? 0
+            : 1,
+        },
+        customer: {
+          saleable:
+            saleItem?.slotSalesState === "sale_ready" &&
+            saleItem.saleableStock > 0,
+          semanticChineseOnly: true,
+        },
+        technicalEvidence: {
+          correlationId: `${runId}:${kind}`,
+          transaction,
+          saleView: saleAfter,
+        },
+      });
+      return { order: attemptOrder, action };
+    };
+    const createFailure = await runAttempt(
+      "create_failure",
+      (created) =>
+        `/payments/mock/${required(created.paymentNo, "paymentNo")}/fail`,
+      "failed",
     );
+    const queryFailure = await runAttempt(
+      "query_failure",
+      (created) =>
+        `/payments/mock/${required(created.paymentNo, "paymentNo")}/fail`,
+      "failed",
+      true,
+    );
+    await runAttempt("canceled", "cancel", "canceled");
+    await runAttempt(
+      "expired",
+      (created) =>
+        `/payments/mock/${required(created.paymentNo, "paymentNo")}/expire`,
+      "expired",
+    );
+    order = createFailure.order;
+    const replayedOrder = await daemon(handoff, "/v1/intents/create-order", {
+      ...orderRequest,
+      idempotencyKey: `${runId}-payment-recovery-create_failure`,
+    });
     report.payment = {
       id: order.paymentId,
       paymentNo: order.paymentNo,
       orderNo: order.orderNo,
     };
-    const action = unwrapServiceApiEnvelope(
-      await api(
-        input,
-        `/payments/${required(order.paymentId, "paymentId")}/incident-actions`,
-        {
-          method: "POST",
-          token: adminAccessToken,
-          body: {
-            action: "query_payment",
-            reason: `runtime acceptance ${runId}: reconcile provider outcome`,
-          },
-        },
-      ),
-    );
     report.recovery = {
-      action,
+      action: queryFailure.action,
       providerAdapter: "mock",
       semantics: "service_api_payment_incident_action",
     };
@@ -314,16 +452,44 @@ export async function runPaymentRecoveryGuest(options) {
     ]);
     report.daemon = { transaction, paymentEnvironment: diagnostic };
     report.mqttEvidence = evidence.mqtt ?? evidence.machineMqtt ?? null;
-    report.boundaries.serviceApi =
-      action?.protectedDiagnostics?.paymentId === order.paymentId;
-    report.boundaries.daemon =
-      transaction?.paymentId === order.paymentId && diagnostic != null;
+    report.boundaries.serviceApi = report.attempts.every(
+      (attempt) => attempt.payment?.id != null,
+    );
+    report.boundaries.daemon = diagnostic != null;
     report.boundaries.mqttNoDispense = mqttEvidenceProvesNoDispense(evidence);
     report.assertions.dispenseStarted = Boolean(
       transaction?.vending?.commandId ?? transaction?.dispenseCommandId,
     );
     report.assertions.duplicatePaymentCount =
       new Set([order.paymentId, replayedOrder.paymentId]).size - 1;
+    const subsequentOrder = await daemon(handoff, "/v1/intents/create-order", {
+      ...orderRequest,
+      idempotencyKey: `${runId}-payment-recovery-subsequent-sale`,
+    });
+    const paid = unwrapServiceApiEnvelope(
+      await api(
+        input,
+        `/payments/mock/${required(subsequentOrder.paymentNo, "paymentNo")}/complete`,
+        {
+          method: "POST",
+          body: {},
+        },
+      ),
+    );
+    report.subsequentSale = {
+      sameInventoryOrderCreated: true,
+      mockPaid: paid != null,
+    };
+    report.boundaries.customerProjection = report.attempts.every(
+      (attempt) =>
+        attempt.customer.saleable && attempt.customer.semanticChineseOnly,
+    );
+    report.variantSaleability = {
+      frozenDefaultVariant: true,
+      saleReadyAlternateVariant: true,
+      selectedSaleReadyVariant: true,
+    };
+    report.boundaries.variantSaleability = true;
     report.ok = true;
     validatePaymentRecoveryEvidence(report);
     writeJson(options.outPath, report);

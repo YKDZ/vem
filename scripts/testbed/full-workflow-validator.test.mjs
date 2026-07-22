@@ -273,9 +273,31 @@ function paymentRecoveryReport() {
       serviceApi: true,
       mqttNoDispense: true,
       daemon: true,
+      customerProjection: true,
+      variantSaleability: true,
     },
     payment: { id: "payment-recovery-1" },
     recovery: { action: { action: "query_payment" } },
+    attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
+      (kind) => ({
+        kind,
+        terminalPaymentState: kind === "expired" ? "expired" : "failed",
+        reservation: {
+          baselineReservedQty: 0,
+          reservedQty: 0,
+          activeRows: 0,
+          daemonActiveReservations: 0,
+        },
+        customer: { saleable: true, semanticChineseOnly: true },
+        technicalEvidence: { correlationId: `payment-recovery:${kind}` },
+      }),
+    ),
+    subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
+    variantSaleability: {
+      frozenDefaultVariant: true,
+      saleReadyAlternateVariant: true,
+      selectedSaleReadyVariant: true,
+    },
     assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
   };
 }
@@ -726,7 +748,7 @@ describe("full workflow aggregate validator", () => {
     );
   });
 
-  it("accepts payment recovery only with Service API, MQTT, daemon, and no duplicate dispense", () => {
+  it("accepts payment recovery only with terminal cleanup, customer projection, and later sale evidence", () => {
     assert.equal(
       validateBusinessCheckReport(
         descriptor("paymentRecovery"),
@@ -741,6 +763,17 @@ describe("full workflow aggregate validator", () => {
         {
           ...paymentRecoveryReport(),
           boundaries: { serviceApi: true, mqtt: false, daemon: true },
+        },
+        "/reports/payment-recovery.json",
+      ).status,
+      "failed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentRecovery"),
+        {
+          ...paymentRecoveryReport(),
+          attempts: paymentRecoveryReport().attempts.slice(0, 3),
         },
         "/reports/payment-recovery.json",
       ).status,
