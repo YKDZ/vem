@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 $modulePath = Join-Path $PSScriptRoot "vision-main-artifacts.psm1"
 Import-Module $modulePath -Force
 $visionArtifactModule = Get-Module -Name "vision-main-artifacts"
+$global:VisionArtifactModule = $visionArtifactModule
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
@@ -347,18 +348,23 @@ try {
   }
 
   $global:TestbedVisionModule = New-Module -ScriptBlock {
+    function Test-VisionMainCanonicalConfigurationCommandLine {
+      param([string]$CommandLine, [string]$ConfigurationPath)
+      return & $global:VisionArtifactModule {
+        param($NestedCommandLine, $NestedConfigurationPath)
+        Test-VisionMainCanonicalConfigurationCommandLine $NestedCommandLine $NestedConfigurationPath
+      } $CommandLine $ConfigurationPath
+    }
+
     function Stop-VisionMainTask {
       param([string]$AppDirectory, [string]$ConfigurationPath)
       $global:TestbedCanonicalVisionStops += [pscustomobject]@{ appDirectory = $AppDirectory; configurationPath = $ConfigurationPath }
       $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
-      $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath).ToLowerInvariant()
       foreach ($processId in @($global:TestbedVisionProcesses.Keys)) {
         $process = $global:TestbedVisionProcesses[$processId]
-        $normalizedCommandLine = ([string]$process.CommandLine).Replace([string][char]34, '').ToLowerInvariant()
         if (
           [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ieq $canonicalExecutablePath -and
-          $normalizedCommandLine.Contains("--config") -and
-          $normalizedCommandLine.Contains($canonicalConfigurationPath)
+          (Test-VisionMainCanonicalConfigurationCommandLine $process.CommandLine $ConfigurationPath)
         ) {
           $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne [int]$processId })
           [void]$global:TestbedVisionProcesses.Remove([int]$processId)
@@ -393,6 +399,11 @@ try {
     ExecutablePath = $canonicalExecutablePath
     CommandLine = "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath`""
   }
+  Assert-True (& $visionArtifactModule { param($CommandLine, $ConfigurationPath) Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $ConfigurationPath } $canonicalProcess.CommandLine $canonicalConfigPath) "quoted canonical --config argument was rejected"
+  Assert-True (-not (& $visionArtifactModule { param($CommandLine, $ConfigurationPath) Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $ConfigurationPath } "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath.bak`"" $canonicalConfigPath)) "site.json.bak was accepted as canonical"
+  Assert-True (-not (& $visionArtifactModule { param($CommandLine, $ConfigurationPath) Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $ConfigurationPath } "`"$canonicalExecutablePath`" --log-path `"$canonicalConfigurationPath`"" $canonicalConfigPath)) "canonical path in another parameter was accepted"
+  Assert-True (-not (& $visionArtifactModule { param($CommandLine, $ConfigurationPath) Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $ConfigurationPath } "`"$canonicalExecutablePath`" --config" $canonicalConfigPath)) "missing --config value was accepted"
+  Assert-True (-not (& $visionArtifactModule { param($CommandLine, $ConfigurationPath) Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $ConfigurationPath } "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath`" --config `"$canonicalConfigurationPath`"" $canonicalConfigPath)) "ambiguous --config arguments were accepted"
   Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess }
   Clear-TestbedVisionProcesses $testbedGuestInput
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical listener was not stopped"
@@ -413,6 +424,26 @@ try {
   try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $wrongConfigRejected = $_.Exception.Message -match "unknown canonical executable processes" }
   Assert-True $wrongConfigRejected "wrong-config canonical process did not fail closed"
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0 -and $global:TestbedVisionStoppedProcessIds.Count -eq 0) "wrong-config canonical process was stopped"
+
+  $backupConfigCanonicalProcess = [pscustomobject]@{
+    ProcessId = 4106
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath.bak`""
+  }
+  Set-TestbedVisionCleanupFixture @() @{ 4106 = $backupConfigCanonicalProcess }
+  $backupConfigRejected = $false
+  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $backupConfigRejected = $_.Exception.Message -match "unknown canonical executable processes" }
+  Assert-True $backupConfigRejected "site.json.bak canonical process did not fail closed"
+
+  $otherArgumentCanonicalProcess = [pscustomobject]@{
+    ProcessId = 4107
+    ExecutablePath = $canonicalExecutablePath
+    CommandLine = "`"$canonicalExecutablePath`" --log-path `"$canonicalConfigurationPath`""
+  }
+  Set-TestbedVisionCleanupFixture @() @{ 4107 = $otherArgumentCanonicalProcess }
+  $otherArgumentRejected = $false
+  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $otherArgumentRejected = $_.Exception.Message -match "unknown canonical executable processes" }
+  Assert-True $otherArgumentRejected "canonical path in another argument did not fail closed"
 
   $canonicalSecondProcess = [pscustomobject]@{
     ProcessId = 4105

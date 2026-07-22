@@ -58,6 +58,9 @@ test("installs one fixed app directory and probes health plus machine protocol",
     module,
     /Get-VisionMainOwnedProcessIds[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*CommandLine[\s\S]*Stop-Process -Id \$processId/,
   );
+  assert.match(module, /Split-VisionWindowsCommandLine/);
+  assert.match(module, /Test-VisionMainCanonicalConfigurationCommandLine/);
+  assert.doesNotMatch(module, /CommandLine\)\.Replace\(\[string\]\[char\]34, ''\)\.ToLowerInvariant\(\)\.Contains/);
   assert.doesNotMatch(module, /Get-Process -Name "vending-vision"/);
   assert.match(module, /Start-VisionMainTask/);
   assert.match(module, /\/health/);

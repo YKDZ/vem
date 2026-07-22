@@ -474,6 +474,7 @@ function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$Configurati
 function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$ConfigurationPath) {
   $canonicalVisionExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   $canonicalVisionConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
+  $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
   $canonicalVisionProcesses = @(
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
@@ -484,8 +485,10 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
   $managedCanonicalVisionProcesses = @(
     $canonicalVisionProcesses | Where-Object {
       $_.CommandLine -and
-      ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains("--config") -and
-      ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains($canonicalVisionConfigurationPath.ToLowerInvariant())
+      (& $visionModule {
+        param($CommandLine, $CanonicalConfigurationPath)
+        Test-VisionMainCanonicalConfigurationCommandLine $CommandLine $CanonicalConfigurationPath
+      } $_.CommandLine $canonicalVisionConfigurationPath)
     }
   )
   $unknownCanonicalVisionProcesses = @(

@@ -430,6 +430,56 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
   throw "Vision main artifact: health and protocol probe failed: $($lastError.Exception.Message)"
 }
 
+function Split-VisionWindowsCommandLine([string]$CommandLine) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return @() }
+  $arguments = [Collections.Generic.List[string]]::new()
+  $index = 0
+  while ($index -lt $CommandLine.Length) {
+    while ($index -lt $CommandLine.Length -and [char]::IsWhiteSpace($CommandLine[$index])) { $index += 1 }
+    if ($index -ge $CommandLine.Length) { break }
+    $argument = [Text.StringBuilder]::new()
+    $inQuotes = $false
+    while ($index -lt $CommandLine.Length -and ($inQuotes -or -not [char]::IsWhiteSpace($CommandLine[$index]))) {
+      if ($CommandLine[$index] -eq '\') {
+        $slashCount = 0
+        while ($index -lt $CommandLine.Length -and $CommandLine[$index] -eq '\') { $slashCount += 1; $index += 1 }
+        if ($index -lt $CommandLine.Length -and $CommandLine[$index] -eq [char]34) {
+          [void]$argument.Append('\' * [int]($slashCount / 2))
+          if ($slashCount % 2 -eq 0) { $inQuotes = -not $inQuotes } else { [void]$argument.Append([char]34) }
+          $index += 1
+        } else {
+          [void]$argument.Append('\' * $slashCount)
+        }
+      } elseif ($CommandLine[$index] -eq [char]34) {
+        $inQuotes = -not $inQuotes
+        $index += 1
+      } else {
+        [void]$argument.Append($CommandLine[$index])
+        $index += 1
+      }
+    }
+    if ($inQuotes) { return @() }
+    $arguments.Add($argument.ToString())
+  }
+  return @($arguments)
+}
+
+function Test-VisionMainCanonicalConfigurationCommandLine([string]$CommandLine, [string]$ConfigurationPath) {
+  $arguments = @(Split-VisionWindowsCommandLine $CommandLine)
+  if ($arguments.Count -eq 0) { return $false }
+  $configIndexes = @(
+    for ($index = 0; $index -lt $arguments.Count; $index += 1) {
+      if ($arguments[$index] -ceq "--config") { $index }
+    }
+  )
+  if ($configIndexes.Count -ne 1 -or $configIndexes[0] -ge ($arguments.Count - 1)) { return $false }
+  try {
+    return [IO.Path]::GetFullPath($arguments[$configIndexes[0] + 1]) -ieq [IO.Path]::GetFullPath($ConfigurationPath)
+  } catch {
+    return $false
+  }
+}
+
 function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$ConfigurationPath) {
   $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
@@ -439,8 +489,7 @@ function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$Configura
         $_.ExecutablePath -and
         $_.CommandLine -and
         [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
-        ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains("--config") -and
-        ([string]$_.CommandLine).Replace([string][char]34, '').ToLowerInvariant().Contains($canonicalConfigurationPath.ToLowerInvariant())
+        (Test-VisionMainCanonicalConfigurationCommandLine $_.CommandLine $canonicalConfigurationPath)
       } |
       Select-Object -ExpandProperty ProcessId
   )
@@ -632,4 +681,4 @@ function Install-VisionMainArtifact {
   }
 }
 
-Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact
+Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact, Test-VisionMainCanonicalConfigurationCommandLine
