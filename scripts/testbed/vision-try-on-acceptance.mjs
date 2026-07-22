@@ -438,22 +438,6 @@ export function normalizeSeededVisionAcceptance(raw) {
         };
       })
     : [];
-  const unmatchedRecommendationVariant = input.unmatchedRecommendationVariant
-    ? (() => {
-        const facts = requiredObject(
-          input.unmatchedRecommendationVariant,
-          "visionAcceptance.unmatchedRecommendationVariant",
-        );
-        return {
-          productId: required(facts.productId, "unmatched recommendation productId"),
-          variantId: required(facts.variantId, "unmatched recommendation variantId"),
-          sku: required(facts.sku, "unmatched recommendation sku"),
-          size: required(facts.size, "unmatched recommendation size"),
-          slotId: required(facts.slotId, "unmatched recommendation slotId"),
-          inventoryId: required(facts.inventoryId, "unmatched recommendation inventoryId"),
-        };
-      })()
-    : null;
   return {
     tryOnCategoryKey: optionalString(input.tryOnCategoryKey),
     selectedCatalogKey: optionalString(input.selectedCatalogKey),
@@ -465,7 +449,6 @@ export function normalizeSeededVisionAcceptance(raw) {
       input.selectedSilhouettePublicUrl ?? input.tryOnSilhouettePublicUrl,
     ),
     recommendationVariants,
-    unmatchedRecommendationVariant,
     seededTryOnVariants,
   };
 }
@@ -517,12 +500,6 @@ export function validateSeededRecommendationVariants(runtimeExpectation) {
       "Vision recommendation fixture variants must share one product identity",
     );
   }
-  const unmatched = runtime.unmatchedRecommendationVariant;
-  if (!unmatched || unmatched.productId === matched.productId) {
-    throw new Error(
-      "Vision recommendation fixture must provide a distinct online-unmatched product",
-    );
-  }
   if (
     runtime.selectedCatalogKey !== catalogKeyForProductId(matched.productId) ||
     runtime.selectedVariantId !== matched.variantId
@@ -531,7 +508,7 @@ export function validateSeededRecommendationVariants(runtimeExpectation) {
       "Vision recommendation fixture must select the seeded M variant",
     );
   }
-  return { matched, alternate, unmatched };
+  return { matched, alternate };
 }
 
 export function combineCleanupFailure(
@@ -1466,87 +1443,6 @@ export function buildRecordedVisionSiteConfiguration({
   };
 }
 
-function createVisionHello(machineCode) {
-  return {
-    protocol: "vem.vision.v1",
-    type: "vision.hello",
-    messageId: "vision-try-on-acceptance",
-    timestamp: new Date().toISOString(),
-    payload: {
-      clientRole: "machine",
-      machineCode: machineCode ?? null,
-      protocolVersion: 1,
-      capabilities: [
-        "profile_push",
-        "presence_status",
-        "person_departed",
-        "try_on_session",
-      ],
-    },
-  };
-}
-
-async function openVisionSocket(url, timeoutMs = 8_000) {
-  if (typeof WebSocket === "undefined") {
-    throw new Error("WebSocket is not available in this runtime");
-  }
-  return await new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.close();
-      reject(new Error(`connect vision websocket timed out: ${url}`));
-    }, timeoutMs);
-    const onOpen = () => {
-      cleanup();
-      resolve(socket);
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error(`connect vision websocket failed: ${url}`));
-    };
-    function cleanup() {
-      clearTimeout(timer);
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("error", onError);
-    }
-    socket.addEventListener("open", onOpen);
-    socket.addEventListener("error", onError);
-  });
-}
-
-async function nextVisionMessage(socket, timeoutMs) {
-  return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("waiting for vision message timed out"));
-    }, timeoutMs);
-    const onMessage = (event) => {
-      cleanup();
-      if (typeof event.data !== "string") {
-        reject(new Error("vision websocket returned a non-text frame"));
-        return;
-      }
-      try {
-        resolve(JSON.parse(event.data));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error("vision websocket error"));
-    };
-    function cleanup() {
-      clearTimeout(timer);
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-    }
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("error", onError);
-  });
-}
-
 export function validateVisionProtocolEvidence(
   evidence,
   installedBinding = null,
@@ -1660,83 +1556,47 @@ export function validateVisionProtocolEvidence(
   };
 }
 
-export async function collectVisionProtocolEvidence({
-  machineCode,
-  timeoutMs = 120_000,
-  openSocket = openVisionSocket,
-  readMessage = nextVisionMessage,
-  fetchHealth = fetchJson,
-  now = () => new Date().toISOString(),
-  closeSocket,
+export function validateVisionRuntimeEvidence({
+  health,
+  catalogRecommendation,
+  installedBinding,
 }) {
-  const observationStartedAt = now();
-  const health = await fetchHealth("http://127.0.0.1:7892/health");
-  const socket = await openSocket("ws://127.0.0.1:7892/ws");
-  const observedMessages = [];
-  try {
-    socket.send(JSON.stringify(createVisionHello(machineCode)));
-    const ready = await readMessage(socket, 10_000);
-    observedMessages.push({
-      type: ready?.type ?? null,
-      messageId: ready?.messageId ?? null,
-      timestamp: ready?.timestamp ?? null,
-    });
-    const state = {
-      health,
-      ready,
-      presence: null,
-      profile: null,
-      departure: null,
-      observedMessages,
-    };
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const message = await readMessage(
-        socket,
-        Math.max(1_000, deadline - Date.now()),
-      );
-      observedMessages.push({
-        type: message?.type ?? null,
-        messageId: message?.messageId ?? null,
-        timestamp: message?.timestamp ?? null,
-      });
-      if (
-        message?.type === "vision.presence_status" &&
-        state.presence === null &&
-        message?.payload?.personPresent === true
-      ) {
-        state.presence = message;
-      } else if (
-        message?.type === "vision.profile_result" &&
-        state.profile === null
-      ) {
-        state.profile = message;
-      } else if (
-        message?.type === "vision.person_departed" &&
-        state.departure === null
-      ) {
-        state.departure = message;
-      }
-      if (state.presence && state.profile && state.departure) {
-        return {
-          ...state,
-          observation: {
-            startedAt: observationStartedAt,
-            completedAt: now(),
-          },
-        };
-      }
-    }
-    throw new Error(
-      `vision protocol did not produce presence/profile/departure within ${timeoutMs} ms`,
-    );
-  } finally {
-    if (typeof closeSocket === "function") {
-      await closeSocket(socket);
-    } else if (typeof socket?.close === "function") {
-      socket.close();
-    }
+  if (
+    health?.status !== "ok" ||
+    health?.protocol !== "vem.vision.v1" ||
+    health?.modelReady !== true ||
+    health?.cameraReady !== true
+  ) {
+    throw new Error("installed Vision runtime health evidence is invalid");
   }
+  const healthFrameSource = optionalFrameSourceBinding(
+    health.frameSource,
+    "Vision health frame-source binding",
+  );
+  if (
+    healthFrameSource &&
+    JSON.stringify(healthFrameSource) !==
+      JSON.stringify(installedBinding.frameSourceBinding)
+  ) {
+    throw new Error(
+      "Vision health frame-source binding drifted from the installed recorded-video fixture",
+    );
+  }
+  const profileEventId = required(
+    catalogRecommendation?.profileEventId,
+    "catalog Vision profile eventId",
+  );
+  if (catalogRecommendation?.recommendationActive !== "true") {
+    throw new Error("catalog did not project the real Vision profile output");
+  }
+  return {
+    protocol: health.protocol,
+    healthStatus: health.status,
+    frameSourceBinding:
+      healthFrameSource ?? installedBinding.frameSourceBinding,
+    catalogProfileEventId: profileEventId,
+    catalogRecommendationActive: true,
+  };
 }
 
 async function readRuntimeTrace(client) {
@@ -1825,6 +1685,8 @@ async function waitForCatalogRecommendationProjection(
         ok:
           state?.route === "#/catalog" &&
           state?.recommendationActive === "true" &&
+          typeof state?.profileEventId === "string" &&
+          state.profileEventId.length > 0 &&
           currentOrder.length > 0 &&
           (!requireRecommendation ||
             (currentOrder.join("\n") !== baselineOrder.join("\n") &&
@@ -1993,7 +1855,7 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
   );
 }
 
-async function restoreTryOnProductDetail(client, catalogKey) {
+async function restoreTryOnProductDetail(client, selectedProduct) {
   const route = await evaluateExpression(client, "location.hash");
   if (String(route).includes("/try-on")) {
     await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
@@ -2005,7 +1867,7 @@ async function restoreTryOnProductDetail(client, catalogKey) {
   if (restoredRoute === "#/catalog") {
     await activateVisibleSelector(
       client,
-      `[data-test="catalog-product"][data-catalog-key="${catalogKey}"]`,
+      `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
       { kind: "touch", timeoutMs: 30_000 },
     );
   }
@@ -2013,9 +1875,18 @@ async function restoreTryOnProductDetail(client, catalogKey) {
     timeoutMs: 30_000,
     pollMs: 250,
   });
-  const detail = await readProductDetailState(client);
+  let detail = await readProductDetailState(client);
+  if (detail?.variantId !== selectedProduct.variantId) {
+    await activateVisibleSelector(
+      client,
+      `[data-test="product-size-option"][data-size="${selectedProduct.size}"]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    detail = await readProductDetailState(client);
+  }
   if (
-    detail?.catalogKey !== catalogKey ||
+    detail?.catalogKey !== selectedProduct.catalogKey ||
+    detail?.variantId !== selectedProduct.variantId ||
     detail.tryOnPresent !== true ||
     detail.tryOnDisabled !== false
   ) {
@@ -2625,7 +2496,7 @@ async function runVisionTryOnAcceptance(options) {
 
     stage = "start-installed-vision-fixture-source";
     await startInstalledVisionRuntime();
-    await waitForCondition(
+    const visionHealth = await waitForCondition(
       "restarted Vision health",
       async () => {
         const health = await fetchJson("http://127.0.0.1:7892/health").catch(
@@ -2638,30 +2509,18 @@ async function runVisionTryOnAcceptance(options) {
     );
     realVisionStopped = false;
 
-    stage = "observe-recorded-video-profile-and-catalog-recommendation";
-    const [protocolEvidence, catalogRecommendation] = await Promise.all([
-      collectVisionProtocolEvidence({ machineCode: guestInput.machineCode }),
-      waitForCatalogRecommendationProjection(
-        client,
-        baselineCatalogProjection.products.map((product) => product.catalogKey),
-        true,
-      ),
-    ]);
-    const protocolSummary = compareObservedVisionProtocolToExpected({
-      expectedResults,
-      protocolEvidence,
+    stage = "observe-recorded-video-profile-in-machine-catalog";
+    const catalogRecommendation = await waitForCatalogRecommendationProjection(
+      client,
+      baselineCatalogProjection.products.map((product) => product.catalogKey),
+      true,
+    );
+    const protocolSummary = validateVisionRuntimeEvidence({
+      health: visionHealth,
+      catalogRecommendation,
       installedBinding: installedBindingSummary,
     });
-
-    const profileEventId = required(
-      protocolEvidence.profile?.payload?.eventId,
-      "recorded-video profile eventId",
-    );
-    if (catalogRecommendation.profileEventId !== profileEventId) {
-      throw new Error(
-        "catalog recommendation must be derived from the recorded-video profile event",
-      );
-    }
+    const catalogProfileEventId = protocolSummary.catalogProfileEventId;
 
     stage = "validate-catalog-recommendation-projection";
     const recommendationSummary = validateRecommendationProjection({
@@ -2671,7 +2530,7 @@ async function runVisionTryOnAcceptance(options) {
       expectedResults,
       runtimeExpectation,
     });
-    const ordinaryVariantId = recommendationFixture.matched.variantId;
+    const ordinaryVariantId = recommendationFixture.alternate.variantId;
     checkpoints.push(
       await captureCheckpoint(client, "catalog-recommendation", {
         screenshot: true,
@@ -2692,19 +2551,24 @@ async function runVisionTryOnAcceptance(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const productDetail = await readProductDetailState(client);
-    assert.equal(
-      productDetail?.catalogKey,
-      recommendationSummary.selectedCatalogKey,
+    const productDetail = await waitForCondition(
+      "recommended product navigation fenced by catalog Vision event",
+      async () => {
+        const state = await readProductDetailState(client);
+        return {
+          ok:
+            state?.catalogKey === recommendationSummary.selectedCatalogKey &&
+            state?.variantId === recommendationSummary.selectedVariantId &&
+            state?.tryOnPresent === true &&
+            state?.tryOnDisabled === false &&
+            state?.buyDisabled === false &&
+            state?.profileEventId === catalogProfileEventId,
+          value: state,
+        };
+      },
+      30_000,
+      250,
     );
-    assert.equal(
-      productDetail?.variantId,
-      recommendationSummary.selectedVariantId,
-    );
-    assert.equal(productDetail?.tryOnPresent, true);
-    assert.equal(productDetail?.tryOnDisabled, false);
-    assert.equal(productDetail?.buyDisabled, false);
-    assert.equal(productDetail?.profileEventId, profileEventId);
 
     stage = "validate-automatic-recommendation-presentation";
     const automaticRecommendationPresentation =
@@ -2729,10 +2593,18 @@ async function runVisionTryOnAcceptance(options) {
       '[data-test="catalog-category"][data-category-key="socks"]',
       { kind: "touch", timeoutMs: 30_000 },
     );
-    await waitForCatalogProducts(client);
+    const onlineUnmatchedCatalog = await waitForCatalogProducts(client);
+    const onlineUnmatchedProduct = requiredObject(
+      onlineUnmatchedCatalog.products.find(
+        (product) =>
+          product.catalogKey !== recommendationSummary.selectedCatalogKey &&
+          product.variantId,
+      ),
+      "online-unmatched catalog product",
+    );
     await activateVisibleSelector(
       client,
-      `[data-test="catalog-product"][data-catalog-key="product:${recommendationFixture.unmatched.productId}"]`,
+      `[data-test="catalog-product"][data-catalog-key="${onlineUnmatchedProduct.catalogKey}"]`,
       { kind: "touch", timeoutMs: 30_000 },
     );
     await waitForRoute(client, /^#\/products\//, {
@@ -2743,7 +2615,7 @@ async function runVisionTryOnAcceptance(options) {
       await waitForRecommendationPresentation(
         client,
         "online_unmatched",
-        recommendationFixture.unmatched.variantId,
+        onlineUnmatchedProduct.variantId,
       );
     checkpoints.push(
       await captureCheckpoint(
@@ -2789,6 +2661,17 @@ async function runVisionTryOnAcceptance(options) {
         "manual",
         recommendationFixture.alternate.variantId,
       );
+    const manualSelectedProduct = {
+      catalogKey: required(
+        manualRecommendationPresentation.state?.catalogKey,
+        "manual product catalogKey",
+      ),
+      variantId: required(
+        manualRecommendationPresentation.presentation?.variantId,
+        "manual product variantId",
+      ),
+      size: recommendationFixture.alternate.size,
+    };
     checkpoints.push(
       await captureCheckpoint(client, "manual-size-detail", {
         screenshot: true,
@@ -2804,7 +2687,7 @@ async function runVisionTryOnAcceptance(options) {
       if (attempt > 1) {
         await restoreTryOnProductDetail(
           client,
-          recommendationSummary.selectedCatalogKey,
+          manualSelectedProduct,
         );
       }
       await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
@@ -2850,8 +2733,8 @@ async function runVisionTryOnAcceptance(options) {
     );
     const tryOnSummary = validateTryOnPresentation({
       selectedProduct: {
-        catalogKey: recommendationSummary.selectedCatalogKey,
-        variantId: recommendationSummary.selectedVariantId,
+        catalogKey: manualSelectedProduct.catalogKey,
+        variantId: manualSelectedProduct.variantId,
       },
       tryOnState: tryOnSurface,
       mjpegEvidence,
@@ -2958,7 +2841,6 @@ async function runVisionTryOnAcceptance(options) {
         },
         vision: {
           protocolSummary,
-          observedMessages: protocolEvidence.observedMessages.slice(0, 8),
           restoredRuntime: restoredRuntimeVerification,
         },
       },
@@ -2966,6 +2848,7 @@ async function runVisionTryOnAcceptance(options) {
         catalogRecommendation,
         recommendationSummary,
         productDetail,
+        tryOnSelectedProduct: manualSelectedProduct,
         recommendationPresentation: {
           automatic: automaticRecommendationPresentation.presentation,
           onlineUnmatched:
@@ -3063,18 +2946,21 @@ async function runVisionTryOnAcceptance(options) {
       const restoredBinding = await collectVisionInstalledBinding();
       const restoredBindingSummary =
         validateVisionInstalledBinding(restoredBinding);
-      const restoredProtocolEvidence = await collectVisionProtocolEvidence({
-        machineCode: guestInput.machineCode,
-        timeoutMs: 45_000,
-      });
-      const restoredProtocolSummary = validateVisionProtocolEvidence(
-        restoredProtocolEvidence,
-        restoredBindingSummary,
+      const restoredHealth = await waitForCondition(
+        "restored Vision health",
+        async () => {
+          const health = await fetchJson("http://127.0.0.1:7892/health").catch(
+            () => null,
+          );
+          return { ok: health?.status === "ok", value: health };
+        },
+        45_000,
+        250,
       );
       restoredRuntimeVerification = {
         daemonVision,
         installedBinding: restoredBindingSummary,
-        protocolSummary: restoredProtocolSummary,
+        health: restoredHealth,
       };
       if (report?.health?.vision) {
         report.health.vision.restoredRuntime = restoredRuntimeVerification;

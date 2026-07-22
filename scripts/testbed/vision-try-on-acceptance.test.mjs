@@ -10,7 +10,6 @@ import {
   compareObservedVisionProtocolToExpected,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
-  collectVisionProtocolEvidence,
   parseVisionTryOnAcceptanceArgs,
   startVisionMockScenario,
   stopVisionChild,
@@ -21,29 +20,9 @@ import {
   validateTryOnPresentation,
   validateVisionInstalledBinding,
   validateVisionProtocolEvidence,
+  validateVisionRuntimeEvidence,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
-
-function queuedReader(queue, timestamps) {
-  let index = 0;
-  return async () => {
-    const entry = queue[index++];
-    if (!entry) {
-      throw new Error("vision protocol message queue exhausted");
-    }
-    const timestamp = timestamps[index - 1] ?? new Date().toISOString();
-    return { ...entry, timestamp };
-  };
-}
-
-function visionProtocolMessage(type, payload) {
-  return {
-    protocol: "vem.vision.v1",
-    type,
-    messageId: `${type}-${Math.random()}`,
-    payload,
-  };
-}
 
 function baseExpectedResults() {
   return {
@@ -126,10 +105,20 @@ describe("vision try-on acceptance script", () => {
     );
     assert.doesNotMatch(source, /startVisionMockScenario\("success"\)/);
     assert.doesNotMatch(source, /recommendation_unmatched/);
-    assert.match(source, /recorded-video-profile/);
+    assert.match(source, /observe-recorded-video-profile-in-machine-catalog/);
+    assert.doesNotMatch(source, /collectVisionProtocolEvidence/);
+    assert.match(source, /state\?\.profileEventId === catalogProfileEventId/);
     assert.match(
       source,
-      /"online_unmatched"[\s\S]*recommendationFixture\.unmatched\.variantId/,
+      /"online_unmatched"[\s\S]*onlineUnmatchedProduct\.variantId/,
+    );
+    assert.match(
+      source,
+      /restoreTryOnProductDetail\([\s\S]*manualSelectedProduct/,
+    );
+    assert.match(
+      source,
+      /selectedProduct: \{[\s\S]*manualSelectedProduct\.catalogKey[\s\S]*manualSelectedProduct\.variantId/,
     );
     assert.match(
       source,
@@ -499,7 +488,6 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
         recommendationVariants: [],
-        unmatchedRecommendationVariant: null,
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -521,7 +509,6 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
         recommendationVariants: [],
-        unmatchedRecommendationVariant: null,
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -560,14 +547,6 @@ describe("vision try-on acceptance script", () => {
             onHandQty: 3,
           },
         ],
-        unmatchedRecommendationVariant: {
-          productId: "product-unmatched",
-          variantId: "variant-unmatched",
-          sku: "TSC-LOCAL-002",
-          size: "常规码",
-          slotId: "slot-unmatched",
-          inventoryId: "inventory-unmatched",
-        },
       }),
       {
         matched: {
@@ -587,14 +566,6 @@ describe("vision try-on acceptance script", () => {
           slotId: "slot-l",
           inventoryId: "inventory-l",
           onHandQty: 3,
-        },
-        unmatched: {
-          productId: "product-unmatched",
-          variantId: "variant-unmatched",
-          sku: "TSC-LOCAL-002",
-          size: "常规码",
-          slotId: "slot-unmatched",
-          inventoryId: "inventory-unmatched",
         },
       },
     );
@@ -846,111 +817,39 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("collects the first true presence event without requiring a non-contract source field", async () => {
-    const closeArguments = [];
-    const messages = [
-      visionProtocolMessage("vision.ready", {
-        serverName: "vem-vision-runtime",
-        serverVersion: "1.2.3",
-        modelReady: true,
-        cameraReady: true,
-        capabilities: [
-          "profile_push",
-          "presence_status",
-          "person_departed",
-          "try_on_session",
-        ],
-        frameSource: frameSourceBinding(),
-      }),
-      visionProtocolMessage("vision.presence_status", {
-        source: "top",
-        detectedAt: "2026-07-18T00:00:01.000Z",
-        personPresent: false,
-        sourceFrame: sourceFrame("top", "b".repeat(64)),
-      }),
-      visionProtocolMessage("vision.presence_status", {
-        source: "front",
-        detectedAt: "2026-07-18T00:00:01.500Z",
-        personPresent: false,
-        sourceFrame: sourceFrame("front", "c".repeat(64), {
-          frameIndex: 3,
-          decodedFrameCount: 4,
-        }),
-      }),
-      visionProtocolMessage("vision.presence_status", {
-        detectedAt: "2026-07-18T00:00:02.000Z",
-        personPresent: true,
-        sourceFrame: sourceFrame("top", "b".repeat(64), {
-          frameIndex: 4,
-          decodedFrameCount: 5,
-        }),
-      }),
-      visionProtocolMessage("vision.profile_result", {
-        source: "front",
-        detectedAt: "2026-07-18T00:00:03.000Z",
-        profile: { personPresent: true },
-        quality: { profileUsable: true },
-        sourceFrame: sourceFrame("front", "c".repeat(64), {
-          frameIndex: 6,
-          decodedFrameCount: 7,
-        }),
-      }),
-      visionProtocolMessage("vision.person_departed", {
-        source: "top",
-        detectedAt: "2026-07-18T00:00:04.000Z",
-        sourceFrame: sourceFrame("top", "b".repeat(64), {
-          frameIndex: 8,
-          decodedFrameCount: 9,
-        }),
-      }),
-    ];
-
-    const evidence = await collectVisionProtocolEvidence({
-      machineCode: "MACHINE-01",
-      openSocket: async () => ({
-        send: () => {},
-        close: (...args) => closeArguments.push(args),
-      }),
-      readMessage: queuedReader(messages, [
-        "2026-07-18T00:00:00.100Z",
-        "2026-07-18T00:00:01.000Z",
-        "2026-07-18T00:00:01.500Z",
-        "2026-07-18T00:00:02.000Z",
-        "2026-07-18T00:00:03.000Z",
-        "2026-07-18T00:00:04.000Z",
-      ]),
-      fetchHealth: async () => ({
+  it("uses the Catalog Vision event as the navigation fence while retaining runtime health evidence", () => {
+    const summary = validateVisionRuntimeEvidence({
+      health: {
         status: "ok",
         protocol: "vem.vision.v1",
         modelReady: true,
         cameraReady: true,
         frameSource: frameSourceBinding(),
-      }),
-      now: () => "2026-07-18T00:00:00.999Z",
-      timeoutMs: 20_000,
-    });
-
-    assert.equal(evidence.presence.payload.personPresent, true);
-    assert.equal(
-      evidence.presence.payload.detectedAt,
-      "2026-07-18T00:00:02.000Z",
-    );
-    assert.equal(evidence.observedMessages[1]?.type, "vision.presence_status");
-    assert.equal(
-      evidence.observedMessages[1]?.timestamp,
-      "2026-07-18T00:00:01.000Z",
-    );
-    assert.equal(evidence.observedMessages[2]?.type, "vision.presence_status");
-    assert.equal(evidence.presence.payload.sourceFrame.frameIndex, 4);
-    assert.deepEqual(closeArguments, [[]]);
-
-    const summary = compareObservedVisionProtocolToExpected({
-      expectedResults: baseExpectedResults(),
-      protocolEvidence: evidence,
+      },
+      catalogRecommendation: {
+        recommendationActive: "true",
+        profileEventId: "catalog-profile-001",
+      },
       installedBinding: { frameSourceBinding: frameSourceBinding() },
     });
-
-    assert.equal(summary.profileUsable, true);
+    assert.equal(summary.catalogProfileEventId, "catalog-profile-001");
+    assert.throws(
+      () =>
+        validateVisionRuntimeEvidence({
+          health: {
+            status: "ok",
+            protocol: "vem.vision.v1",
+            modelReady: true,
+            cameraReady: true,
+          },
+          catalogRecommendation: {
+            recommendationActive: "true",
+            profileEventId: "",
+          },
+          installedBinding: { frameSourceBinding: frameSourceBinding() },
+        }),
+      /catalog Vision profile eventId/,
+    );
   });
 
   it("fails closed unless recommendation changes and the seeded variant matches", () => {

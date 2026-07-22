@@ -1217,7 +1217,7 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
-  it("clears only the managed Vision executable before both full and fast runs", () => {
+  it("cleans only the acceptance-owned Node Vision mock before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -1228,13 +1228,18 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /\$visionPorts = @\(7892, \[int\]\$GuestInput\.hostControlPlane\.visionMockControlPort\)/,
+      /\$visionMockControlPort = \[int\]\$GuestInput\.hostControlPlane\.visionMockControlPort/,
     );
     assert.match(
       guestScript,
-      /Get-NetTCPConnection -State Listen[\s\S]*\$process\.Path -ieq[\s\S]*Stop-Process -Id \$ownerId/,
+      /LocalPort -eq \$visionMockControlPort[\s\S]*processWmi\.CommandLine -match[\s\S]*vision-mock[\s\S]*Stop-Process -Id \$ownerId/,
     );
     assert.doesNotMatch(guestScript, /Get-Process vending-vision/);
+    assert.doesNotMatch(guestScript, /Stop-ScheduledTask -TaskName "StartVisionServer"/);
+    assert.match(
+      guestScript,
+      /Vision mock cleanup did not release ports/,
+    );
     assert.match(
       guestScript,
       /if \(\$Mode -in @\("fast", "full"\)\) \{\s+Clear-TestbedVisionProcesses \$guestInput\s+\}/,
@@ -1249,7 +1254,7 @@ describe("Windows D cache contract", () => {
           /Stop-ScheduledTask -TaskName "StartVisionServer"/g,
         ) ?? []
       ).length,
-      1,
+      0,
     );
   });
 

@@ -54,6 +54,11 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /Ensure-VisionMainRuntimeWorkDirectory/);
   assert.match(module, /\(OI\)\(CI\)\(M\)/);
   assert.match(module, /Stop-VisionMainTask/);
+  assert.match(
+    module,
+    /\[IO\.Path\]::GetFullPath\(\(Join-Path \$AppDirectory "vending-vision\.exe"\)\)[\s\S]*Get-Process -ErrorAction SilentlyContinue[\s\S]*Stop-Process -Id \$processId/,
+  );
+  assert.doesNotMatch(module, /Get-Process -Name "vending-vision"/);
   assert.match(module, /Start-VisionMainTask/);
   assert.match(module, /\/health/);
   assert.match(module, /vision\.hello/);

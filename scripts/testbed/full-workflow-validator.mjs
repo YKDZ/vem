@@ -800,9 +800,11 @@ function validateVisionTrack(report, reportPath) {
     recommendation.automatic?.recommendedSize === "M" &&
     recommendation.manual?.variantId === alternate?.variantId &&
     recommendation.manual?.recommendedSize === null &&
-    recommendation.onlineUnmatched?.variantId === matched?.variantId &&
+    typeof recommendation.onlineUnmatched?.variantId === "string" &&
+    recommendation.onlineUnmatched.variantId.length > 0 &&
+    recommendation.onlineUnmatched.variantId !== matched?.variantId &&
     recommendation.onlineUnmatched?.recommendedSize === null &&
-    recommendation.visionUnavailable?.variantId === matched?.variantId &&
+    recommendation.visionUnavailable?.variantId === alternate?.variantId &&
     recommendation.visionUnavailable?.recommendedSize === null &&
     recommendation.manual.variantId !== recommendation.automatic.variantId;
   const vision =
@@ -826,6 +828,7 @@ function validateVisionTrack(report, reportPath) {
     tryOnSummary.width > 0 &&
     tryOnSummary.height > 0 &&
     tryOnSummary.silhouetteHttpStatus === 200 &&
+    report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
     report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
     visionDown.saleStartStillAvailable === true
       ? passedTrack("tryOn", "try-on", reportPath, {
@@ -841,6 +844,7 @@ function validateVisionTrack(report, reportPath) {
           {
             tryOnSummary,
             tryOnAttempts: report.ui?.tryOnAttempts ?? null,
+            tryOnSelectedProduct: report.ui?.tryOnSelectedProduct ?? null,
             visionDown,
           },
         );

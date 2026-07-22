@@ -430,10 +430,21 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
   throw "Vision main artifact: health and protocol probe failed: $($lastError.Exception.Message)"
 }
 
-function Stop-VisionMainTask([string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
+function Stop-VisionMainTask([string]$AppDirectory, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
   $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
   if ($null -ne $task -and [string]$task.State -eq "Running") { Stop-ScheduledTask -InputObject $task -ErrorAction Stop }
-  Get-Process -Name "vending-vision" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Stop
+  $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
+  $ownedProcessIds = @(
+    Get-Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $null -ne $_.Path -and
+        [IO.Path]::GetFullPath([string]$_.Path) -ieq $canonicalExecutablePath
+      } |
+      Select-Object -ExpandProperty Id
+  )
+  foreach ($processId in $ownedProcessIds) {
+    Stop-Process -Id $processId -Force -ErrorAction Stop
+  }
 }
 
 function Ensure-VisionMainTask([string]$LauncherPath, [string]$WorkingDirectory, [string]$TaskUser, [string]$TaskName = "StartVisionServer", [string]$TaskPath = "\VEM\") {
@@ -510,7 +521,7 @@ function Install-VisionMainArtifact {
   $deliveryManifest = Read-VisionJson $deliveryManifestPath "download manifest"
   Assert-VisionMainCondition ($deliveryManifest.commit -ceq $Commit) "download manifest does not bind commit $Commit"
   $staging = "$AppDirectory.staging-$([guid]::NewGuid().ToString('N'))"
-  Stop-VisionMainTask $TaskName $TaskPath
+  Stop-VisionMainTask -AppDirectory $AppDirectory -TaskName $TaskName -TaskPath $TaskPath
   try {
     Expand-VisionRuntimeArchive $RuntimeArchive $staging $Commit
     $sourceConfiguration = Read-VisionJson $SiteConfigurationPath "site configuration"

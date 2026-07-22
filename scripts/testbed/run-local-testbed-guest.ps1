@@ -460,16 +460,21 @@ function Invoke-FullVisionTryOnAcceptance(
 }
 
 function Clear-TestbedVisionProcesses([object]$GuestInput) {
-  Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-  $visionPorts = @(7892, [int]$GuestInput.hostControlPlane.visionMockControlPort) | Select-Object -Unique
-  $visionOwnerIds = @(
+  $visionMockControlPort = [int]$GuestInput.hostControlPlane.visionMockControlPort
+  $visionPorts = @(7892, $visionMockControlPort) | Select-Object -Unique
+  $visionMockOwnerIds = @(
     Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-      Where-Object { $visionPorts -contains $_.LocalPort } |
+      Where-Object { $_.LocalPort -eq $visionMockControlPort } |
       Select-Object -ExpandProperty OwningProcess -Unique
   )
-  foreach ($ownerId in $visionOwnerIds) {
+  foreach ($ownerId in $visionMockOwnerIds) {
     $process = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
-    if ($null -ne $process -and [string]$process.Path -ieq "C:\VEM\vision\app\vending-vision.exe") {
+    $processWmi = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+    if (
+      $null -ne $process -and
+      [string]$process.Path -match '\\node(?:\.exe)?$' -and
+      [string]$processWmi.CommandLine -match 'apps[\\/]vision-mock[\\/]src[\\/]server\.ts'
+    ) {
       Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
     }
   }
@@ -479,6 +484,14 @@ function Clear-TestbedVisionProcesses([object]$GuestInput) {
       Where-Object { $visionPorts -contains $_.LocalPort }) -and
     (Get-Date) -lt $visionPortDeadline
   ) { Start-Sleep -Milliseconds 100 }
+  $remainingListeners = @(
+    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $visionPorts -contains $_.LocalPort } |
+      Select-Object LocalAddress, LocalPort, OwningProcess
+  )
+  if ($remainingListeners.Count -gt 0) {
+    throw "Vision mock cleanup did not release ports $($visionPorts -join ', '): $($remainingListeners | ConvertTo-Json -Compress)"
+  }
 }
 
 if ($Mode -eq "clear_cache") {

@@ -1,5 +1,7 @@
 import type { Pinia } from "pinia";
 
+import { watch, type WatchStopHandle } from "vue";
+
 import {
   isVisionTryOnCapabilityDegraded,
   subscribeVisionProfiles,
@@ -24,28 +26,48 @@ export function installVisionRecommendationCoordinator(
 
   const machineStore = useMachineStore(pinia);
   const visionStore = useVisionStore(pinia);
-  const subscription = subscribeVisionProfiles(
-    { machineCode: machineStore.machineCode },
-    {
-      onReady: (payload) => visionStore.applyVisionReady(payload),
-      onPresenceStatus: (payload: VisionPresenceStatusPayload) =>
-        visionStore.applyPresenceStatus(payload),
-      onPersonDeparted: (payload: VisionPersonDepartedPayload) =>
-        visionStore.applyPersonDeparted(payload),
-      onProfile: (payload: VisionProfileResultPayload) =>
-        visionStore.applyRecommendationProfileResult(payload),
-      onError: (error) => {
-        if (isVisionTryOnCapabilityDegraded(error)) {
-          visionStore.markTryOnCapabilityDegraded();
-        }
-        visionStore.clearRecommendationForVisionFailure();
+  let subscription: ReturnType<typeof subscribeVisionProfiles> | null = null;
+  let subscribedMachineCode: string | null = null;
+
+  const connect = (machineCode: string): void => {
+    subscription = subscribeVisionProfiles(
+      { machineCode },
+      {
+        onReady: (payload) => visionStore.applyVisionReady(payload),
+        onPresenceStatus: (payload: VisionPresenceStatusPayload) =>
+          visionStore.applyPresenceStatus(payload),
+        onPersonDeparted: (payload: VisionPersonDepartedPayload) =>
+          visionStore.applyPersonDeparted(payload),
+        onProfile: (payload: VisionProfileResultPayload) =>
+          visionStore.applyRecommendationProfileResult(payload),
+        onError: (error) => {
+          if (isVisionTryOnCapabilityDegraded(error)) {
+            visionStore.markTryOnCapabilityDegraded();
+          }
+          visionStore.clearRecommendationForVisionFailure();
+        },
       },
+    );
+    subscribedMachineCode = machineCode;
+  };
+
+  const stopMachineCodeWatch: WatchStopHandle = watch(
+    () => machineStore.machineCode,
+    (machineCode) => {
+      if (machineCode === subscribedMachineCode) return;
+      subscription?.close();
+      subscription = null;
+      subscribedMachineCode = null;
+      if (machineCode) connect(machineCode);
     },
+    { immediate: true, flush: "sync" },
   );
   const coordinator: VisionRecommendationCoordinator = {
     close: () => {
       if (coordinators.get(pinia) !== coordinator) return;
-      subscription.close();
+      stopMachineCodeWatch();
+      subscription?.close();
+      subscription = null;
       coordinators.delete(pinia);
     },
   };

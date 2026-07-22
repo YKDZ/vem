@@ -55,10 +55,11 @@ function visionExperienceReport() {
     ui: {
       recommendationPresentation: {
         automatic: { variantId: "variant-m", recommendedSize: "M" },
-        onlineUnmatched: { variantId: "variant-m", recommendedSize: null },
+        onlineUnmatched: { variantId: "variant-online", recommendedSize: null },
         manual: { variantId: "variant-l", recommendedSize: null },
-        visionUnavailable: { variantId: "variant-m", recommendedSize: null },
+        visionUnavailable: { variantId: "variant-l", recommendedSize: null },
       },
+      tryOnSelectedProduct: { variantId: "variant-l" },
       tryOnSummary: { width: 640, height: 480, silhouetteHttpStatus: 200 },
       tryOnAttempts: [{ result: "passed" }],
     },
@@ -1068,6 +1069,41 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("visionExperience"),
         forgedIdentity,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const reusedRecommendationVariant = visionExperienceReport();
+    reusedRecommendationVariant.ui.recommendationPresentation.onlineUnmatched.variantId =
+      "variant-m";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        reusedRecommendationVariant,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const wrongTryOnIdentity = visionExperienceReport();
+    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-m";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        wrongTryOnIdentity,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const wrongUnavailableIdentity = visionExperienceReport();
+    wrongUnavailableIdentity.ui.recommendationPresentation.visionUnavailable.variantId =
+      "variant-m";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        wrongUnavailableIdentity,
         "vision-experience.json",
       ).status,
       "failed",

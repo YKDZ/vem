@@ -140,9 +140,22 @@ try {
   $global:VisionHarnessTaskRegistrations = 0
   $global:VisionHarnessAclArguments = @()
   $global:VisionHarnessEvents = [Collections.Generic.List[string]]::new()
+  $global:VisionHarnessStoppedProcessIds = [Collections.Generic.List[int]]::new()
+  $global:VisionHarnessOwnedVisionPath = Join-Path $root "vision\app\vending-vision.exe"
   function global:Get-ScheduledTask { param($TaskName, $TaskPath) if ($global:VisionHarnessTaskRegistered) { return [pscustomobject]@{ State = "Ready" } } return $null }
   function global:Stop-ScheduledTask { param($InputObject) }
   function global:Start-ScheduledTask { param($InputObject) $global:VisionHarnessTaskStarts++; $global:VisionHarnessEvents.Add("task-start") | Out-Null }
+  function global:Get-Process {
+    param($ErrorAction)
+    return @(
+      [pscustomobject]@{ Id = 4101; Path = $global:VisionHarnessOwnedVisionPath },
+      [pscustomobject]@{ Id = 4102; Path = (Join-Path $root "unrelated\vending-vision.exe") }
+    )
+  }
+  function global:Stop-Process {
+    param([int]$Id, [switch]$Force, $ErrorAction)
+    $global:VisionHarnessStoppedProcessIds.Add($Id) | Out-Null
+  }
   function global:icacls.exe {
     $global:VisionHarnessAclArguments = @($args)
     $global:VisionHarnessEvents.Add("runtime-acl") | Out-Null
@@ -181,6 +194,8 @@ try {
   Assert-True (Test-Path -LiteralPath (Join-Path $root "bringup\start_vision.bat")) "installer did not write the scheduled-task launcher"
   Assert-True $global:VisionHarnessTaskRegistered "clean install did not create StartVisionServer"
   Assert-True ($global:VisionHarnessTaskStarts -eq 1) "clean install did not start the created Vision task"
+  Assert-True ($global:VisionHarnessStoppedProcessIds -contains 4101) "installer did not stop the canonical app-directory Vision process"
+  Assert-True (-not ($global:VisionHarnessStoppedProcessIds -contains 4102)) "installer stopped an unrelated same-name Vision process"
   Assert-True (($global:VisionHarnessTaskCreateArguments -join " ") -match 'VEM\\StartVisionServer') "created task did not use the fixed Vision task name"
   $taskDocument = [xml]$global:VisionHarnessTaskXml
   Assert-True ($taskDocument.Task.Actions.Exec.Command -eq "C:\Windows\System32\cmd.exe") "created task XML has an invalid executable"
