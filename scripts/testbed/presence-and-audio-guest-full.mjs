@@ -6,7 +6,6 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
-import { validateBehaviorAudioAcceptanceEvidence } from "./behavior-audio-acceptance.mjs";
 import {
   ensureControlledVisionMock,
   shutdownControlledVisionMock,
@@ -24,10 +23,11 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { validatePresenceAndAudioAcceptanceEvidence } from "./presence-and-audio-acceptance.mjs";
 
 const MODE = "full";
 const SHORT_EMPTY_MS = 1_000;
-const SUSTAINED_EMPTY_MS = 3_500;
+const SUSTAINED_EMPTY_MS = 10_000;
 const TRACE_TIMEOUT_MS = 30_000;
 
 function required(value, label) {
@@ -82,7 +82,7 @@ function writeText(path, value) {
 async function captureScreenshotArtifact(client, path) {
   return captureScreenshot(client, {
     format: "png",
-    label: "behavior-audio-final",
+    label: "presence-and-audio-final",
     screenshotSink: async ({ bytes }) => {
       writeFileSync(path, bytes, { mode: 0o600 });
       return { ref: path };
@@ -103,7 +103,7 @@ function optionalOption(args, name) {
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-export function parseBehaviorAudioGuestArgs(args) {
+export function parsePresenceAndAudioGuestArgs(args) {
   const allowed = new Set([
     "--mode",
     "--guest-input",
@@ -113,7 +113,7 @@ export function parseBehaviorAudioGuestArgs(args) {
   ]);
   for (const value of args) {
     if (value.startsWith("--") && !allowed.has(value)) {
-      throw new Error(`unsupported behavior-audio option: ${value}`);
+      throw new Error(`unsupported presence-and-audio option: ${value}`);
     }
   }
   const mode = required(option(args, "mode"), "--mode");
@@ -364,6 +364,22 @@ function captureSummary(stopReport) {
   };
 }
 
+function automaticVentEvidence(evidence, beforeFrameCount) {
+  const frames = (evidence?.rawFrames ?? []).slice(beforeFrameCount);
+  const b3Frames = frames.filter((frame) => frame?.parsedOpcode === "B3");
+  const speeds = b3Frames
+    .map((frame) => String(frame?.rawFrameHex ?? "").toLowerCase())
+    .map((frame) => /^55b3(0[0-4])$/.exec(frame)?.[1] ?? null)
+    .filter(Boolean)
+    .map((value) => Number.parseInt(value, 16));
+  if (!speeds.includes(2) || !speeds.includes(0)) {
+    throw new Error(
+      `automatic B3 evidence is incomplete: ${JSON.stringify(b3Frames)}`,
+    );
+  }
+  return { protocolFrames: b3Frames, speeds };
+}
+
 function defaultDependencies() {
   return {
     readJson,
@@ -389,15 +405,15 @@ function defaultDependencies() {
     now: () => Date.now(),
     randomUUID,
     artifactRoot: (outPath) =>
-      join(dirname(localPath(outPath)), "behavior-audio-artifacts"),
+      join(dirname(localPath(outPath)), "presence-and-audio-artifacts"),
     makeDirectory: (path) => mkdirSync(path, { recursive: true }),
   };
 }
 
-export async function runBehaviorAudioGuestFull(options, injected = {}) {
+export async function runPresenceAndAudioGuestFull(options, injected = {}) {
   const dependencies = { ...defaultDependencies(), ...injected };
   const report = {
-    schemaVersion: "vem-behavior-audio-guest-full/v1",
+    schemaVersion: "vem-presence-and-audio-guest-full/v1",
     ok: false,
     mode: options.mode,
     boundaries: {
@@ -406,7 +422,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       windowsAudioCapture: false,
     },
     artifacts: null,
-    behaviorAudio: null,
+    presenceAndAudio: null,
     error: null,
   };
   let guestInput = null;
@@ -459,15 +475,15 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       handoff?.commissioningSerialSession?.sessionId,
       "commissioning serial session id",
     );
-    const operationId = `behavior-audio-${dependencies.randomUUID()}`;
+    const operationId = `presence-and-audio-${dependencies.randomUUID()}`;
     const audioStart = await dependencies.controlPlaneRequest(
       guestInput,
       "/v1/audio-captures/start",
       {
         sessionId,
         runId: required(guestInput.runId, "runId"),
-        lifecycleReference: `vm-lifecycle://${required(guestInput.runId, "runId").toLowerCase()}.behavior-audio`,
-        transactionId: `transaction://${required(guestInput.runId, "runId").toLowerCase()}.behavior-audio`,
+        lifecycleReference: `vm-lifecycle://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
+        transactionId: `transaction://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
         targetIdentity: required(
           guestInput.hostControlPlane?.targetIdentity,
           "hostControlPlane.targetIdentity",
@@ -487,6 +503,13 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       runtimeTrace = await dependencies.readTrace(client);
       return runtimeTrace;
     };
+    const ventEvidenceBefore = await dependencies.controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+    );
+    const ventFrameCount = Array.isArray(ventEvidenceBefore?.rawFrames)
+      ? ventEvidenceBefore.rawFrames.length
+      : 0;
     let boundary = traceId(await readTrace());
     await injectVisionPresence(guestInput, "approach", dependencies);
     const initialWelcome = await waitForAudioStart(
@@ -552,6 +575,13 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       label: "sustained-empty-departed",
       traceId: Number(departure.entry.id),
     });
+    const automaticVent = automaticVentEvidence(
+      await dependencies.controlPlaneRequest(
+        guestInput,
+        `/v1/serial-sessions/${sessionId}/evidence`,
+      ),
+      ventFrameCount,
+    );
 
     boundary = traceId(departure.trace);
     await injectVisionPresence(guestInput, "approach", dependencies);
@@ -730,7 +760,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       ...categories.map((category) => category.transitionId),
     ];
     const acceptance = {
-      schemaVersion: "behavior-audio-production-acceptance/v1",
+      schemaVersion: "presence-and-audio-production-acceptance/v1",
       result: "passed",
       boundaries: {
         vision: "controlled_mock_protocol",
@@ -761,11 +791,12 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
           rejectedTraceId: Number(disabledWelcome.entry.id),
         },
       },
+      automaticVent,
     };
     runtimeTrace = await readTrace();
     acceptance.runtimeTrace = runtimeTrace;
-    validateBehaviorAudioAcceptanceEvidence(acceptance);
-    const screenshotPath = join(artifactRoot, "behavior-audio-final.png");
+    validatePresenceAndAudioAcceptanceEvidence(acceptance);
+    const screenshotPath = join(artifactRoot, "presence-and-audio-final.png");
     const screenshot = await dependencies.captureScreenshotArtifact(
       client,
       screenshotPath,
@@ -774,7 +805,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       join(artifactRoot, "runtime-trace.json"),
       runtimeTrace,
     );
-    const logPath = join(artifactRoot, "behavior-audio-summary.log");
+    const logPath = join(artifactRoot, "presence-and-audio-summary.log");
     dependencies.writeText(
       logPath,
       `${JSON.stringify({
@@ -788,7 +819,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       })}\n`,
     );
     report.ok = true;
-    report.behaviorAudio = acceptance;
+    report.presenceAndAudio = acceptance;
     report.artifacts = {
       directory: artifactRoot,
       audioStartReport: join(artifactRoot, "audio-capture-start.json"),
@@ -805,7 +836,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
             stack: String(error.stack ?? "").slice(0, 16_384),
           }
         : { message: String(error) };
-    report.behaviorAudio = report.behaviorAudio ?? {
+    report.presenceAndAudio = report.presenceAndAudio ?? {
       result: "failed",
       runtimeTrace,
     };
@@ -836,30 +867,32 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
   return report;
 }
 
-export function validateBehaviorAudioGuestReport(report) {
+export function validatePresenceAndAudioGuestReport(report) {
   if (
-    report?.schemaVersion !== "vem-behavior-audio-guest-full/v1" ||
+    report?.schemaVersion !== "vem-presence-and-audio-guest-full/v1" ||
     report?.ok !== true
   ) {
-    throw new Error("behavior audio guest runner did not pass");
+    throw new Error("presence and audio guest runner did not pass");
   }
   if (
     report?.boundaries?.visionMock !== true ||
     report?.boundaries?.machineCdp !== true ||
     report?.boundaries?.windowsAudioCapture !== true
   ) {
-    throw new Error("behavior audio guest boundaries are incomplete");
+    throw new Error("presence and audio guest boundaries are incomplete");
   }
   for (const name of ["audioStartReport", "audioStopReport", "runtimeTrace"]) {
-    required(report?.artifacts?.[name], `behavior audio artifact ${name}`);
+    required(report?.artifacts?.[name], `presence and audio artifact ${name}`);
   }
-  const summary = validateBehaviorAudioAcceptanceEvidence(report.behaviorAudio);
+  const summary = validatePresenceAndAudioAcceptanceEvidence(
+    report.presenceAndAudio,
+  );
   return { schemaVersion: report.schemaVersion, ...summary };
 }
 
 async function main() {
-  const report = await runBehaviorAudioGuestFull(
-    parseBehaviorAudioGuestArgs(process.argv.slice(2)),
+  const report = await runPresenceAndAudioGuestFull(
+    parsePresenceAndAudioGuestArgs(process.argv.slice(2)),
   );
   if (!report.ok) process.exitCode = 1;
 }

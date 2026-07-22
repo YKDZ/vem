@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { validateBehaviorAudioAcceptanceEvidence } from "./behavior-audio-acceptance.mjs";
+import { validatePresenceAndAudioAcceptanceEvidence } from "./presence-and-audio-acceptance.mjs";
 
 function traceLifecycle(transitionId, startId, at) {
   return [
@@ -60,7 +60,7 @@ function passingAcceptance() {
   const socks = "category:category-entry-socks-1";
   const underwear = "category:category-entry-underwear-1";
   return {
-    schemaVersion: "behavior-audio-production-acceptance/v1",
+    schemaVersion: "presence-and-audio-production-acceptance/v1",
     result: "passed",
     boundaries: {
       vision: "controlled_mock_protocol",
@@ -164,6 +164,13 @@ function passingAcceptance() {
         },
       ],
     },
+    automaticVent: {
+      protocolFrames: [
+        { parsedOpcode: "B3", rawFrameHex: "55b302" },
+        { parsedOpcode: "B3", rawFrameHex: "55b300" },
+      ],
+      speeds: [2, 0],
+    },
   };
 }
 
@@ -180,10 +187,10 @@ function renumberTrace(trace) {
   }));
 }
 
-describe("behavior audio acceptance", () => {
+describe("presence and audio acceptance", () => {
   it("accepts one stable welcome, one rearmed welcome, and category entry-only intros", () => {
     const summary =
-      validateBehaviorAudioAcceptanceEvidence(passingAcceptance());
+      validatePresenceAndAudioAcceptanceEvidence(passingAcceptance());
     assert.deepEqual(summary.welcomeTransitions, [
       "vision:presence-1:welcome",
       "vision:presence-3:welcome",
@@ -203,7 +210,7 @@ describe("behavior audio acceptance", () => {
       }
     }
     assert.equal(
-      validateBehaviorAudioAcceptanceEvidence(acceptance).nativeSource,
+      validatePresenceAndAudioAcceptanceEvidence(acceptance).nativeSource,
       "windows_default_output",
     );
   });
@@ -235,7 +242,7 @@ describe("behavior audio acceptance", () => {
         (entry) => entry.type === "audio_rejected",
       ).id;
     assert.throws(
-      () => validateBehaviorAudioAcceptanceEvidence(acceptance),
+      () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
       /transient empty incorrectly rearmed welcome/,
     );
   });
@@ -244,7 +251,7 @@ describe("behavior audio acceptance", () => {
     const acceptance = passingAcceptance();
     acceptance.scenario.categories.pop();
     assert.throws(
-      () => validateBehaviorAudioAcceptanceEvidence(acceptance),
+      () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
       /supported product categories were not independently covered/,
     );
   });
@@ -292,7 +299,7 @@ describe("behavior audio acceptance", () => {
         (entry) => entry.type === "audio_rejected",
       ).id;
     assert.throws(
-      () => validateBehaviorAudioAcceptanceEvidence(acceptance),
+      () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
       /category socks introduction started too late/,
     );
   });

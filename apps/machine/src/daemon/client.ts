@@ -498,6 +498,16 @@ export class DaemonApiClient {
     );
   }
 
+  async submitAutomaticVentIntent(input: {
+    edgeId: string;
+    ventSpeed: 0 | 2;
+  }): Promise<unknown> {
+    return this.request("/v1/intents/automatic-vent", {
+      method: "POST",
+      body: input,
+    });
+  }
+
   async getCurrentTransaction(): Promise<TransactionSnapshot> {
     return transactionSnapshotSchema.parse(
       await this.request("/v1/transactions/current"),

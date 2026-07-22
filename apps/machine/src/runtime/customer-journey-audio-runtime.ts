@@ -12,11 +12,13 @@ import {
   mapCustomerJourneyAudioPresentation,
   type CustomerAudioPresentationContext,
 } from "@/audio-coordinator/customer-audio-presentation";
+import { getStableVisionPresenceSession } from "@/composables/stable-vision-presence-session";
 import { getCustomerPresenceSession } from "@/composables/usePresenceInteraction";
 import {
   createCustomerJourneyTransitionProjector,
   type CustomerJourneyFacts,
 } from "@/customer-journey/transition-projector";
+import { daemonClient } from "@/daemon/client";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
@@ -51,6 +53,7 @@ export function createCustomerJourneyAudioRuntime(
     const checkoutStore = useCheckoutStore(pinia);
     const customerJourneyStore = useCustomerJourneyStore(pinia);
     const session = getCustomerPresenceSession();
+    const stableVisionSession = getStableVisionPresenceSession();
 
     watch(
       () =>
@@ -58,9 +61,26 @@ export function createCustomerJourneyAudioRuntime(
           checkoutStore,
           customerJourneyStore,
           session,
+          stableVisionSession,
         }),
       (facts) => {
         void coordinator.accept(projector.project(facts));
+      },
+      { immediate: true, flush: "sync" },
+    );
+    watch(
+      () => ({
+        edge: stableVisionSession.state.value.edge,
+        edgeId: stableVisionSession.state.value.edgeId,
+      }),
+      ({ edge, edgeId }) => {
+        if (!edge || !edgeId) return;
+        const ventSpeed = edge === "arrival" ? 2 : 0;
+        // Presence experience must remain responsive when the daemon or lower
+        // controller cannot accept this optional environmental intent.
+        void daemonClient
+          .submitAutomaticVentIntent({ edgeId, ventSpeed })
+          .catch(() => undefined);
       },
       { immediate: true, flush: "sync" },
     );
@@ -88,12 +108,14 @@ function customerJourneyFacts(input: {
   checkoutStore: ReturnType<typeof useCheckoutStore>;
   customerJourneyStore: ReturnType<typeof useCustomerJourneyStore>;
   session: ReturnType<typeof getCustomerPresenceSession>;
+  stableVisionSession: ReturnType<typeof getStableVisionPresenceSession>;
 }): CustomerJourneyFacts {
   const selectedItem = input.checkoutStore.selectedItem;
   const transaction = input.checkoutStore.transaction;
   const categoryEntry = input.customerJourneyStore.categoryEntry;
   const pickupReminder = transaction?.vending?.pickupReminder ?? null;
   const customerSession = input.session.state.value;
+  const stableVision = input.stableVisionSession.state.value;
 
   return {
     touchscreen: {
@@ -102,15 +124,15 @@ function customerJourneyFacts(input: {
       lastInteractionAt: customerSession.lastInteractionAt,
     },
     vision:
-      customerSession.source === "vision"
+      stableVision.edgeId !== null
         ? {
-            personPresent: customerSession.personPresent,
-            occupancyState: customerSession.occupancyState,
-            lastSeenAt: customerSession.lastSeenAt,
-            departedAt: customerSession.departedAt,
-            lastChangedAt: customerSession.personPresent
-              ? customerSession.lastSeenAt
-              : customerSession.departedAt,
+            personPresent: stableVision.present,
+            occupancyState: stableVision.present ? "single" : "none",
+            lastSeenAt: stableVision.lastSeenAt,
+            departedAt: stableVision.departedAt,
+            lastChangedAt: stableVision.present
+              ? stableVision.lastSeenAt
+              : stableVision.departedAt,
           }
         : null,
     categoryEntry: categoryEntry

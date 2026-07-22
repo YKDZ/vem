@@ -97,8 +97,12 @@ describe("full workflow evidence manifest", () => {
       ],
       ["visionExperience", { runtimeTrace: [{ id: "vision-trace" }] }, true],
       [
-        "behaviorAudio",
-        { behaviorAudio: { runtimeTrace: [{ id: "behavior-audio-trace" }] } },
+        "presenceAndAudio",
+        {
+          presenceAndAudio: {
+            runtimeTrace: [{ id: "presence-and-audio-trace" }],
+          },
+        },
         true,
       ],
     ];

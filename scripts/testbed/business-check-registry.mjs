@@ -96,16 +96,16 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "pickupProtocol",
   }),
   descriptor({
-    name: "behaviorAudio",
+    name: "presenceAndAudio",
     fixtureKey: "sale",
     runner: {
       kind: "node",
-      script: "scripts/testbed/behavior-audio-guest-full.mjs",
+      script: "scripts/testbed/presence-and-audio-guest-full.mjs",
       args: ["--mode", "full"],
-      reportFileName: "behavior-audio.json",
-      artifactDirectory: "behavior-audio-artifacts",
+      reportFileName: "presence-and-audio.json",
+      artifactDirectory: "presence-and-audio-artifacts",
     },
-    validator: "behaviorAudio",
+    validator: "presenceAndAudio",
   }),
   descriptor({
     name: "ipcRecovery",

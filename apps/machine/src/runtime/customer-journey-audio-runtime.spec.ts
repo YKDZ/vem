@@ -7,6 +7,7 @@ import { nextTick } from "vue";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
 import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 
 const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
@@ -42,9 +43,17 @@ const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
   };
 });
 
+const { submitAutomaticVentIntent } = vi.hoisted(() => ({
+  submitAutomaticVentIntent: vi.fn().mockResolvedValue({ outcome: "accepted" }),
+}));
+
 vi.mock("@/audio-playback/machine-audio-playback", () => ({
   createTauriNativeMachineAudioPlaybackDriver: nativePlaybackFactory,
   createBrowserMachineAudioPlaybackDriver: vi.fn(),
+}));
+
+vi.mock("@/daemon/client", () => ({
+  daemonClient: { submitAutomaticVentIntent },
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -109,6 +118,7 @@ describe("Customer journey audio runtime", () => {
     pinia = createPinia();
     setActivePinia(pinia);
     resetCustomerPresenceSessionForTests();
+    resetStableVisionPresenceSessionForTests();
     runtime = null;
     vi.clearAllMocks();
   });
@@ -116,6 +126,7 @@ describe("Customer journey audio runtime", () => {
   afterEach(async () => {
     await runtime?.dispose();
     resetCustomerPresenceSessionForTests();
+    resetStableVisionPresenceSessionForTests();
   });
 
   it("plays transaction transitions with effective customer audio settings and rejects later disabled cues", async () => {
@@ -228,7 +239,7 @@ describe("Customer journey audio runtime", () => {
       proximity: { present: false },
     });
     await nextTick();
-    await vi.advanceTimersByTimeAsync(2_999);
+    await vi.advanceTimersByTimeAsync(9_999);
     visionStore.applyPresenceStatus({
       source: "top",
       eventId: "VISION-PRESENT-002",
@@ -242,7 +253,7 @@ describe("Customer journey audio runtime", () => {
       proximity: { present: true },
     });
     await nextTick();
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(nativePlaybackDriver.playLocal).toHaveBeenCalledTimes(1);
     expect(
@@ -254,6 +265,10 @@ describe("Customer journey audio runtime", () => {
             entry.transitionId.endsWith(":welcome"),
         ),
     ).toHaveLength(1);
+    expect(submitAutomaticVentIntent).toHaveBeenCalledWith({
+      edgeId: "vision-presence-1:arrival",
+      ventSpeed: 2,
+    });
     vi.useRealTimers();
   });
 

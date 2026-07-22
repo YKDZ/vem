@@ -421,9 +421,9 @@ function localOperationsReport() {
   };
 }
 
-function behaviorAudioReport() {
+function presenceAndAudioReport() {
   return {
-    schemaVersion: "vem-behavior-audio-guest-full/v1",
+    schemaVersion: "vem-presence-and-audio-guest-full/v1",
     ok: true,
     boundaries: {
       visionMock: true,
@@ -432,13 +432,13 @@ function behaviorAudioReport() {
     },
     artifacts: {
       audioStartReport:
-        "/reports/behavior-audio-artifacts/audio-capture-start.json",
+        "/reports/presence-and-audio-artifacts/audio-capture-start.json",
       audioStopReport:
-        "/reports/behavior-audio-artifacts/audio-capture-stop.json",
-      runtimeTrace: "/reports/behavior-audio-artifacts/runtime-trace.json",
+        "/reports/presence-and-audio-artifacts/audio-capture-stop.json",
+      runtimeTrace: "/reports/presence-and-audio-artifacts/runtime-trace.json",
     },
-    behaviorAudio: {
-      schemaVersion: "behavior-audio-production-acceptance/v1",
+    presenceAndAudio: {
+      schemaVersion: "presence-and-audio-production-acceptance/v1",
       result: "passed",
       boundaries: {
         vision: "controlled_mock_protocol",
@@ -644,6 +644,13 @@ function behaviorAudioReport() {
           },
         ],
       },
+      automaticVent: {
+        protocolFrames: [
+          { parsedOpcode: "B3", rawFrameHex: "55b302" },
+          { parsedOpcode: "B3", rawFrameHex: "55b300" },
+        ],
+        speeds: [2, 0],
+      },
     },
   };
 }
@@ -803,17 +810,17 @@ describe("full workflow aggregate validator", () => {
     );
   });
 
-  it("accepts behavior audio only with independent welcome/category native evidence", () => {
+  it("accepts presence and audio only with independent welcome/category native evidence", () => {
     assert.equal(
       validateBusinessCheckReport(
-        descriptor("behaviorAudio"),
-        behaviorAudioReport(),
-        "/reports/behavior-audio.json",
+        descriptor("presenceAndAudio"),
+        presenceAndAudioReport(),
+        "/reports/presence-and-audio.json",
       ).status,
       "passed",
     );
-    const duplicateWelcome = behaviorAudioReport();
-    duplicateWelcome.behaviorAudio.runtimeTrace.splice(4, 0, {
+    const duplicateWelcome = presenceAndAudioReport();
+    duplicateWelcome.presenceAndAudio.runtimeTrace.splice(4, 0, {
       type: "audio_started",
       id: 50,
       at: "2026-07-22T08:00:02.000Z",
@@ -826,9 +833,9 @@ describe("full workflow aggregate validator", () => {
     });
     assert.equal(
       validateBusinessCheckReport(
-        descriptor("behaviorAudio"),
+        descriptor("presenceAndAudio"),
         duplicateWelcome,
-        "/reports/behavior-audio.json",
+        "/reports/presence-and-audio.json",
       ).status,
       "failed",
     );

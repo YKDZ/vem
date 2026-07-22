@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 export const DEFAULT_INVENTORY = [
   ...[
     "delayed-pickup-native-audio-guest-full.mjs",
+    "presence-and-audio-acceptance.mjs",
+    "presence-and-audio-guest-full.mjs",
     "daemon-ready-refresh.mjs",
     "business-check-registry.mjs",
     "commissioning-acceptance.mjs",
@@ -26,6 +28,7 @@ export const DEFAULT_INVENTORY = [
     "local-operations-guest-full.mjs",
     "scanner-payment-code-guest-full.mjs",
     "serial-fulfillment-error-guest-full.mjs",
+    "serial-session-handoff.mjs",
     "track-handoff-recovery.mjs",
     "vision-try-on-acceptance.mjs",
   ].map((path) => ({
@@ -46,6 +49,8 @@ export const DEFAULT_INVENTORY = [
     "full-workflow-validator.test.mjs",
     "payment-provider-guest-full.test.mjs",
     "payment-recovery-guest-full.test.mjs",
+    "presence-and-audio-acceptance.test.mjs",
+    "presence-and-audio-guest-full.test.mjs",
     "stock-maintenance-guest-full.test.mjs",
     "local-operations-guest-full.test.mjs",
     "installed-system-touch-keyboard.test.mjs",

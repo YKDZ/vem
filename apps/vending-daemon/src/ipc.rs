@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
+    automatic_vent::AutomaticVentController,
     backend::BackendClient,
     device_binding::{self, DeviceRoleRuntimeReadiness, LocalDeviceRole, LocalSerialRoleBinding},
     events::{scanner_runtime_status_contract, DaemonEvent},
@@ -80,6 +81,13 @@ struct CreateOrder {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CancelOrder {
     order_no: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutomaticVentIntentRequest {
+    edge_id: String,
+    vent_speed: u8,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -348,6 +356,7 @@ pub struct IpcContext {
     pub runtime_sources: Arc<RuntimeSources>,
     pub state: LocalStateStore,
     pub hardware: HardwareSupervisor,
+    pub automatic_vent: AutomaticVentController,
     pub events: broadcast::Sender<DaemonEvent>,
     pub runtime_tx: mpsc::Sender<crate::transaction::ArmedPaymentCode>,
     pub scanner_runtime: ScannerRuntimeController,
@@ -524,6 +533,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order))
         .route("/v1/intents/cancel-order", post(cancel_order))
+        .route("/v1/intents/automatic-vent", post(automatic_vent_intent))
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(current_transaction))
         .route("/v1/stock/planogram", post(apply_planogram))
@@ -589,6 +599,31 @@ pub fn build_router(ctx: IpcContext) -> Router {
                 .allow_private_network(true),
         )
         .with_state(ctx)
+}
+
+async fn automatic_vent_intent(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<AutomaticVentIntentRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    if request.edge_id.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "automatic_vent_edge_required",
+            "automatic vent intent requires a stable presence edge id".to_string(),
+        );
+    }
+    match ctx.automatic_vent.request(request.vent_speed).await {
+        Ok(outcome) => Json(serde_json::json!({
+            "edgeId": request.edge_id,
+            "outcome": outcome,
+        }))
+        .into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, "automatic_vent_invalid", error),
+    }
 }
 
 pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
@@ -3237,15 +3272,16 @@ mod tests {
         let cache = RuntimeStatusCache::new(None, state.clone()).await;
         let transaction =
             TransactionStateMachine::new(state.clone(), backend.clone(), None, events.clone());
+        let hardware =
+            HardwareSupervisor::from_adapter(Arc::new(vending_core::hardware::MockHardwareAdapter));
         (
             IpcContext {
                 data_dir: data_dir.clone(),
                 token: "test-token".to_string(),
                 runtime_sources: sources,
                 state,
-                hardware: HardwareSupervisor::from_adapter(Arc::new(
-                    vending_core::hardware::MockHardwareAdapter,
-                )),
+                hardware: hardware.clone(),
+                automatic_vent: AutomaticVentController::new(hardware, CancellationToken::new()),
                 events: events.clone(),
                 runtime_tx: raw_tx.clone(),
                 scanner_runtime: ScannerRuntimeController::new(

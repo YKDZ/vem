@@ -168,7 +168,7 @@ describe("full workflow serial lifecycle", () => {
         "scannerPayment",
         "visionExperience",
         "pickupProtocol",
-        "behaviorAudio",
+        "presenceAndAudio",
         "ipcRecovery",
         "fulfillmentRecovery",
         "paymentRecovery",
@@ -200,7 +200,7 @@ describe("full workflow serial lifecycle", () => {
   it("keeps warm VM selection separate from full business-check semantics", () => {
     const plan = buildWorkflowTrackCommands({
       mode: "fast",
-      focus: ["visionExperience", "behaviorAudio", "environmentControl"],
+      focus: ["visionExperience", "presenceAndAudio", "environmentControl"],
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       handoffPath:
         "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
@@ -595,9 +595,7 @@ describe("full workflow serial lifecycle", () => {
       pollMs: 0,
     });
     assert.equal(result.mode, "routine_refill");
-    assert.deepEqual(posts[0].body.slots, [
-      { slotId: "slot-1", addition: 1 },
-    ]);
+    assert.deepEqual(posts[0].body.slots, [{ slotId: "slot-1", addition: 1 }]);
   });
 
   it("restores an overstocked warm fixture to its exact baseline through physical stock attestation", async () => {

@@ -188,25 +188,26 @@ function validateCategoryScenario(trace, checkpoints, scenario) {
   };
 }
 
-export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
+export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   if (
-    acceptance?.schemaVersion !== "behavior-audio-production-acceptance/v1" ||
+    acceptance?.schemaVersion !==
+      "presence-and-audio-production-acceptance/v1" ||
     acceptance?.result !== "passed"
   ) {
-    throw new Error("behavior audio acceptance did not pass");
+    throw new Error("presence and audio acceptance did not pass");
   }
   if (
     acceptance?.boundaries?.vision !== "controlled_mock_protocol" ||
     acceptance?.boundaries?.cdp !== "installed_canonical_machine_cdp" ||
     acceptance?.boundaries?.audio !== "windows_default_output_capture"
   ) {
-    throw new Error("behavior audio boundaries are incomplete");
+    throw new Error("presence and audio boundaries are incomplete");
   }
   if (
     !Array.isArray(acceptance?.diagnostics) ||
     acceptance.diagnostics.length > 0
   ) {
-    throw new Error("behavior audio diagnostics must be empty");
+    throw new Error("presence and audio diagnostics must be empty");
   }
   const audio = acceptance?.audio ?? {};
   if (
@@ -216,11 +217,11 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
     !Number.isInteger(audio.capture?.peakAbsoluteSample) ||
     audio.capture.peakAbsoluteSample <= 0
   ) {
-    throw new Error("behavior audio native capture is incomplete");
+    throw new Error("presence and audio native capture is incomplete");
   }
   const cueWindows = assertArray(audio.cueWindows, "audio.cueWindows");
   if (cueWindows.some((window) => window?.kind !== "passed")) {
-    throw new Error("behavior audio cue windows are incomplete");
+    throw new Error("presence and audio cue windows are incomplete");
   }
   const trace = assertArray(acceptance.runtimeTrace, "runtimeTrace");
   ensureMonotonicTrace(trace);
@@ -351,8 +352,24 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
   ];
   for (const transitionId of requiredCueTransitions) {
     if (!cueWindows.some((entry) => entry?.transitionId === transitionId)) {
-      throw new Error(`behavior audio cue window is missing ${transitionId}`);
+      throw new Error(
+        `presence and audio cue window is missing ${transitionId}`,
+      );
     }
+  }
+  const automaticVentSpeeds = assertArray(
+    acceptance?.automaticVent?.speeds,
+    "automaticVent.speeds",
+  );
+  if (
+    !automaticVentSpeeds.includes(2) ||
+    !automaticVentSpeeds.includes(0) ||
+    !assertArray(
+      acceptance?.automaticVent?.protocolFrames,
+      "automaticVent.protocolFrames",
+    ).every((frame) => frame?.parsedOpcode === "B3")
+  ) {
+    throw new Error("automatic B3 evidence is incomplete");
   }
 
   return {
@@ -361,5 +378,6 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
     categoryTransitions: categories,
     cueWindowCount: cueWindows.length,
     nativeSource: audio.source,
+    automaticVentSpeeds,
   };
 }

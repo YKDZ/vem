@@ -16,7 +16,7 @@ describe("runtime business-check registry", () => {
         "scannerPayment",
         "visionExperience",
         "pickupProtocol",
-        "behaviorAudio",
+        "presenceAndAudio",
         "ipcRecovery",
         "fulfillmentRecovery",
         "paymentRecovery",
@@ -77,13 +77,13 @@ describe("runtime business-check registry", () => {
     );
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
-        (descriptor) => descriptor.name === "behaviorAudio",
+        (descriptor) => descriptor.name === "presenceAndAudio",
       )?.runner?.script,
-      "scripts/testbed/behavior-audio-guest-full.mjs",
+      "scripts/testbed/presence-and-audio-guest-full.mjs",
     );
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
-        (descriptor) => descriptor.name === "behaviorAudio",
+        (descriptor) => descriptor.name === "presenceAndAudio",
       )?.fixtureKey,
       "sale",
     );

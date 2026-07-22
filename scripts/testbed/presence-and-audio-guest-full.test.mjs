@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  parseBehaviorAudioGuestArgs,
-  runBehaviorAudioGuestFull,
-  validateBehaviorAudioGuestReport,
-} from "./behavior-audio-guest-full.mjs";
+  parsePresenceAndAudioGuestArgs,
+  runPresenceAndAudioGuestFull,
+  validatePresenceAndAudioGuestReport,
+} from "./presence-and-audio-guest-full.mjs";
 
 function report() {
   return {
-    schemaVersion: "vem-behavior-audio-guest-full/v1",
+    schemaVersion: "vem-presence-and-audio-guest-full/v1",
     ok: true,
     boundaries: {
       visionMock: true,
@@ -21,8 +21,8 @@ function report() {
       audioStopReport: "C:\\artifacts\\audio-capture-stop.json",
       runtimeTrace: "C:\\artifacts\\runtime-trace.json",
     },
-    behaviorAudio: {
-      schemaVersion: "behavior-audio-production-acceptance/v1",
+    presenceAndAudio: {
+      schemaVersion: "presence-and-audio-production-acceptance/v1",
       result: "passed",
       boundaries: {
         vision: "controlled_mock_protocol",
@@ -231,14 +231,21 @@ function report() {
           },
         ],
       },
+      automaticVent: {
+        protocolFrames: [
+          { parsedOpcode: "B3", rawFrameHex: "55b302" },
+          { parsedOpcode: "B3", rawFrameHex: "55b300" },
+        ],
+        speeds: [2, 0],
+      },
     },
   };
 }
 
-describe("behavior audio guest full", () => {
+describe("presence and audio guest full", () => {
   it("parses the installed guest contract", () => {
     assert.equal(
-      parseBehaviorAudioGuestArgs([
+      parsePresenceAndAudioGuestArgs([
         "--mode",
         "full",
         "--guest-input",
@@ -252,7 +259,7 @@ describe("behavior audio guest full", () => {
     );
     assert.throws(
       () =>
-        parseBehaviorAudioGuestArgs([
+        parsePresenceAndAudioGuestArgs([
           "--mode",
           "full",
           "--guest-input",
@@ -264,19 +271,19 @@ describe("behavior audio guest full", () => {
           "--report-path",
           "C:\\report.json",
         ]),
-      /unsupported behavior-audio option: --report-path/,
+      /unsupported presence-and-audio option: --report-path/,
     );
   });
 
   it("requires explicit vision, CDP, and native audio boundaries", () => {
-    const summary = validateBehaviorAudioGuestReport(report());
-    assert.equal(summary.schemaVersion, "vem-behavior-audio-guest-full/v1");
+    const summary = validatePresenceAndAudioGuestReport(report());
+    assert.equal(summary.schemaVersion, "vem-presence-and-audio-guest-full/v1");
     assert.equal(summary.nativeSource, "windows_default_output");
 
     const missingBoundary = report();
     missingBoundary.boundaries.windowsAudioCapture = false;
     assert.throws(
-      () => validateBehaviorAudioGuestReport(missingBoundary),
+      () => validatePresenceAndAudioGuestReport(missingBoundary),
       /boundaries are incomplete/,
     );
   });
@@ -320,9 +327,10 @@ describe("behavior audio guest full", () => {
       }
     };
     let approachCount = 0;
+    let serialEvidenceReads = 0;
     let now = 0;
     let audioStopBody = null;
-    const report = await runBehaviorAudioGuestFull(
+    const report = await runPresenceAndAudioGuestFull(
       {
         mode: "full",
         guestInputPath: "C:\\guest.json",
@@ -368,7 +376,7 @@ describe("behavior audio guest full", () => {
           format: "png",
           ref: path,
         }),
-        artifactRoot: () => "/tmp/behavior-audio-test-artifacts",
+        artifactRoot: () => "/tmp/presence-and-audio-test-artifacts",
         makeDirectory() {},
         ensureControlledVisionMock: async () => {
           calls.push("vision-start");
@@ -439,7 +447,7 @@ describe("behavior audio guest full", () => {
         },
         sleep: async (milliseconds) => {
           now += milliseconds;
-          if (milliseconds === 3_500) {
+          if (milliseconds === 10_000) {
             const at = traceTimestamp();
             trace.push({
               type: "journey_transition",
@@ -477,18 +485,33 @@ describe("behavior audio guest full", () => {
               evidencePayloads: [],
             };
           }
+          if (
+            path.includes("/serial-sessions/") &&
+            path.endsWith("/evidence")
+          ) {
+            serialEvidenceReads += 1;
+            return {
+              rawFrames:
+                serialEvidenceReads === 1
+                  ? []
+                  : [
+                      { parsedOpcode: "B3", rawFrameHex: "55b302" },
+                      { parsedOpcode: "B3", rawFrameHex: "55b300" },
+                    ],
+            };
+          }
           throw new Error(`unexpected control-plane call ${path}`);
         },
       },
     );
     assert.equal(report.ok, true, JSON.stringify(report.error));
-    assert.deepEqual(report.behaviorAudio.scenario.supportedCategoryKeys, [
+    assert.deepEqual(report.presenceAndAudio.scenario.supportedCategoryKeys, [
       "socks",
       "underwear",
     ]);
-    assert.equal(report.behaviorAudio.scenario.categories.length, 2);
+    assert.equal(report.presenceAndAudio.scenario.categories.length, 2);
     assert.equal(
-      report.behaviorAudio.runtimeTrace.filter(
+      report.presenceAndAudio.runtimeTrace.filter(
         (entry) =>
           entry.type === "audio_started" &&
           entry.transitionId.endsWith(":welcome"),
@@ -527,14 +550,14 @@ describe("behavior audio guest full", () => {
     assert.deepEqual(audioStopBody, { captureKind: "default-audio" });
     assert.ok(calls.includes("/v1/audio-captures/start"));
     assert.ok(calls.includes("/v1/audio-captures/audio-1/stop"));
-    assert.ok(report.behaviorAudio.runtimeTrace.length > 0);
+    assert.ok(report.presenceAndAudio.runtimeTrace.length > 0);
     assert.equal(writes.get("C:\\out.json").ok, true);
   });
 
   it("fails closed and cancels an active host audio capture when Vision injection fails", async () => {
     const calls = [];
     const writes = new Map();
-    const report = await runBehaviorAudioGuestFull(
+    const report = await runPresenceAndAudioGuestFull(
       {
         mode: "full",
         guestInputPath: "C:\\guest.json",
@@ -565,7 +588,7 @@ describe("behavior audio guest full", () => {
                 commissioningSerialSession: { sessionId: "serial-1" },
               },
         writeJson: (path, value) => writes.set(path, value),
-        artifactRoot: () => "/tmp/behavior-audio-test-artifacts",
+        artifactRoot: () => "/tmp/presence-and-audio-test-artifacts",
         makeDirectory() {},
         ensureControlledVisionMock: async () => ({
           child: null,

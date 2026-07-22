@@ -116,9 +116,9 @@ function reportTrace(track, reportPath, report, artifactFiles) {
     sale: ["runtimeTrace", report?.runtimeTrace],
     scannerPayment: ["runtimeTrace", report?.runtimeTrace],
     visionExperience: ["runtimeTrace", report?.runtimeTrace],
-    behaviorAudio: [
-      "behaviorAudio.runtimeTrace",
-      report?.behaviorAudio?.runtimeTrace,
+    presenceAndAudio: [
+      "presenceAndAudio.runtimeTrace",
+      report?.presenceAndAudio?.runtimeTrace,
     ],
     ipcRecovery: [
       "ipcRecovery.provenance.ui",

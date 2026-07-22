@@ -1,4 +1,4 @@
-import { validateBehaviorAudioGuestReport } from "./behavior-audio-guest-full.mjs";
+import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.mjs";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.mjs";
 
 function requiredString(value, label) {
@@ -140,10 +140,10 @@ function validateDelayedAudioTrack(report, reportPath) {
       );
 }
 
-function validateBehaviorAudioTrack(report, reportPath) {
+function validatePresenceAndAudioTrack(report, reportPath) {
   try {
-    const summary = validateBehaviorAudioGuestReport(report);
-    return passedTrack("behaviorAudio", "behavior audio", reportPath, {
+    const summary = validatePresenceAndAudioGuestReport(report);
+    return passedTrack("presenceAndAudio", "presence and audio", reportPath, {
       welcomeTransitions: summary.welcomeTransitions,
       categoryTransitions: summary.categoryTransitions.map(
         (entry) => entry.key,
@@ -152,13 +152,13 @@ function validateBehaviorAudioTrack(report, reportPath) {
     });
   } catch (error) {
     return failedTrack(
-      "behaviorAudio",
-      "behavior audio",
+      "presenceAndAudio",
+      "presence and audio",
       reportPath,
       error instanceof Error
         ? error.message
-        : "behavior audio evidence is incomplete",
-      report?.behaviorAudio ?? report ?? null,
+        : "presence and audio evidence is incomplete",
+      report?.presenceAndAudio ?? report ?? null,
     );
   }
 }
@@ -827,7 +827,7 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
     pickupProtocol: validateDelayedAudioTrack,
-    behaviorAudio: validateBehaviorAudioTrack,
+    presenceAndAudio: validatePresenceAndAudioTrack,
     ipcRecovery: validateIpcRecoveryTrack,
     fulfillmentRecovery: validateFulfillmentFailureTrack,
     paymentRecovery: validatePaymentRecoveryTrack,

@@ -211,6 +211,10 @@ async fn run_console_cycle(
         runtime_sources: runtime_sources.clone(),
         state: state.clone(),
         hardware: hardware.clone(),
+        automatic_vent: crate::automatic_vent::AutomaticVentController::new(
+            hardware.clone(),
+            runtime.shutdown_token(),
+        ),
         events: events_tx.clone(),
         runtime_tx: tx_raw,
         scanner_runtime: scanner_runtime.clone(),

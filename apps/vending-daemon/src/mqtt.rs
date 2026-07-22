@@ -511,6 +511,12 @@ impl MqttSyncRuntime {
             .map_err(|error| format!("parse environment control command failed: {error}"))?;
         validate_environment_control_command(&command)?;
 
+        if command.vent_speed.is_some() {
+            if let Some(context) = self.readiness_context.as_ref() {
+                context.automatic_vent.supersede_by_admin().await;
+            }
+        }
+
         let mut ack_event =
             crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
         ack_event.payload_json = self.sign_outbox_payload(
