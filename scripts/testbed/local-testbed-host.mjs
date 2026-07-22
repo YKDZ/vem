@@ -213,7 +213,7 @@ $displayReportPath = 'C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-displ
 if (-not (Test-Path -LiteralPath $displayReportPath -PathType Leaf)) { throw 'interactive display report was not found' }
 $displayReport = Get-Content -LiteralPath $displayReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentBootIdentity = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o')
-if ([string]$displayReport.bootIdentity -ne $currentBootIdentity) { throw 'interactive display report belongs to an earlier Windows boot' }
+if ($null -ne $displayReport.bootIdentity -and [string]$displayReport.bootIdentity -ne $currentBootIdentity) { throw 'interactive display report belongs to an earlier Windows boot' }
 $screen = [pscustomobject]@{
   widthPx = [int]$displayReport.desktop.width
   heightPx = [int]$displayReport.desktop.height
