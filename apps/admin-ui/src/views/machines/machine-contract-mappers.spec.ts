@@ -111,7 +111,6 @@ describe("Machine Operations form contract mappers", () => {
     ).toEqual({
       rowNo: 1,
       cellNo: 2,
-      slotDisplayLabel: "R1C2",
       capacity: 10,
       status: "enabled",
     });

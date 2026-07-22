@@ -84,7 +84,7 @@ describe("machines api", () => {
       `/machines/${machineId}/slots`,
       expect.any(Object),
       expect.any(Object),
-      expect.objectContaining({ slotDisplayLabel: "A1" }),
+      expect.objectContaining({ rowNo: 1, cellNo: 1 }),
     );
     expect(postContract).toHaveBeenCalledWith(
       `/machines/${machineId}/claim-codes`,

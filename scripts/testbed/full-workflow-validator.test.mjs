@@ -327,14 +327,27 @@ function environmentControlReport() {
 
 function paymentRecoveryReport() {
   const expectedByKind = {
-    create_failure: ["failed", "canceled", "payment_failed", "payment_failed"],
-    query_failure: ["canceled", "canceled", "canceled", "closed"],
-    canceled: ["canceled", "canceled", "canceled", "closed"],
+    create_failure: [
+      "failed",
+      "canceled",
+      "payment_failed",
+      "payment_failed",
+      "支付失败",
+    ],
+    query_failure: [
+      "canceled",
+      "canceled",
+      "canceled",
+      "closed",
+      "订单已关闭",
+    ],
+    canceled: ["canceled", "canceled", "canceled", "closed", "订单已关闭"],
     expired: [
       "expired",
       "payment_expired",
       "payment_expired",
       "payment_expired",
+      "支付超时",
     ],
   };
   return {
@@ -346,7 +359,13 @@ function paymentRecoveryReport() {
       mqtt: { topic: "vem/machines/M-1/commands/dispense", messages: [] },
     },
     attempts: Object.entries(expectedByKind).map(([kind, expected]) => {
-      const [paymentStatus, orderStatus, paymentState, resultKind] = expected;
+      const [
+        paymentStatus,
+        orderStatus,
+        paymentState,
+        resultKind,
+        customerCopy,
+      ] = expected;
       return {
         kind,
         order: { id: `order-${kind}`, paymentId: `payment-${kind}` },
@@ -356,6 +375,7 @@ function paymentRecoveryReport() {
           orderStatus,
           paymentState,
           resultKind,
+          customerCopy,
         },
         terminal: { paymentStatus, orderStatus, paymentState },
         reservation: {
@@ -406,7 +426,7 @@ function paymentRecoveryReport() {
                 orderId: `order-${kind}`,
                 paymentId: `payment-${kind}`,
                 resultKind,
-                text: "本次订单已结束。",
+                text: `${customerCopy}，请重新选择商品。`,
               },
         technicalEvidence:
           kind === "create_failure"
