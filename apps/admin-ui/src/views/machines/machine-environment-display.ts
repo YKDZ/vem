@@ -1,5 +1,8 @@
 import type { MachineCommandStatus } from "@vem/shared";
 
+import type { EnvironmentCommandSnapshot } from "./environment-command-poller";
+import type { EnvironmentControlAction } from "./machine-contract-mappers";
+
 export function formatEnvironmentNumber(
   value: number | undefined,
   suffix: string,
@@ -93,4 +96,30 @@ export function environmentCommandFailureLabel(
   }
   if (lastError) return lastError;
   return resultMessage;
+}
+
+export function environmentControlActionLabel(
+  action: EnvironmentControlAction,
+): string {
+  if (action === "airConditionerOn") return "空调";
+  if (action === "targetTemperatureCelsius") return "目标温度";
+  return "出风口与风速";
+}
+
+export function environmentControlFeedback(
+  action: EnvironmentControlAction,
+  command: EnvironmentCommandSnapshot,
+): { type: "success" | "error"; content: string } | null {
+  const actionLabel = environmentControlActionLabel(action);
+  if (command.status === "succeeded") {
+    return { type: "success", content: `${actionLabel}控制已完成` };
+  }
+  if (command.status !== "failed" && command.status !== "timeout") return null;
+
+  const failure =
+    environmentCommandFailureLabel(command.resultJson, command.lastError) ??
+    (command.status === "timeout"
+      ? "设备控制超时，请稍后确认后重试"
+      : "设备控制未完成，请稍后重试");
+  return { type: "error", content: `${actionLabel}控制失败：${failure}` };
 }

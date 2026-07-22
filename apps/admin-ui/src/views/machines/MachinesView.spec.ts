@@ -21,6 +21,8 @@ const apiMocks = vi.hoisted(() => ({
   requestLogExport: vi.fn(),
   createMachine: vi.fn(),
   updateMachine: vi.fn(),
+  messageSuccess: vi.fn(),
+  messageError: vi.fn(),
 }));
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -65,6 +67,10 @@ vi.mock("@/api/machine-ops", () => ({
 }));
 
 vi.mock("antdv-next", () => ({
+  message: {
+    success: apiMocks.messageSuccess,
+    error: apiMocks.messageError,
+  },
   Modal: {
     confirm: vi.fn(),
     error: vi.fn(),
@@ -1046,31 +1052,26 @@ describe("MachinesView environment controls", () => {
             ).disabled,
         ),
       ).toBe(true);
-      expect(dialog.textContent).toContain("请求：25 C");
+      expect(dialog.textContent).not.toContain("请求：");
     },
   );
 
-  it("shows the requested value and correlated failure on its action row", async () => {
+  it("uses a transient toast for a failed environment command without inline request details", async () => {
     listMachines.mockResolvedValue({
       items: [createMachineFixture()],
       total: 1,
       page: 1,
       pageSize: 20,
     });
-    getMachine.mockResolvedValue(
-      createMachineFixture({
-        latestEnvironmentCommand: {
-          id: "cmd-failed",
-          machineId: "11111111-1111-4111-8111-111111111111",
-          commandNo: "MCMD-FAILED",
-          type: "environment-control",
-          status: "failed",
-          payloadJson: { ventSpeed: 4 },
-          resultJson: { errorCode: "E4" },
-          lastError: "controller rejected command",
-        },
-      }),
-    );
+    getMachine.mockResolvedValue(createMachineFixture());
+    commandEnvironment.mockResolvedValue({
+      id: "cmd-failed",
+      commandNo: "MCMD-FAILED",
+      status: "failed",
+      payloadJson: { ventSpeed: 4 },
+      resultJson: { errorCode: "E4" },
+      lastError: "controller rejected command",
+    });
 
     const { root } = await mountMachinesView();
     await openEnvironmentDrawer(root);
@@ -1078,17 +1079,54 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "environment dialog",
     );
-    const speedRow = requireElement(
-      Array.from(dialog.querySelectorAll("div.flex")).find((row) =>
-        row.textContent?.includes("出风口与风速"),
+    const speedButton = requireElement(
+      Array.from(dialog.querySelectorAll("button")).find(
+        (button) =>
+          button.textContent?.includes("设定") &&
+          button.previousElementSibling instanceof HTMLSelectElement,
       ),
-      "outlet and speed row",
+      "speed set button",
     );
+    speedButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
 
-    expect(speedRow.textContent).toContain("请求：全");
-    expect(speedRow.textContent).toContain(
-      "失败：控制器操作过于频繁，请稍后重试（E4）",
+    expect(apiMocks.messageError).toHaveBeenCalledWith(
+      "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
     );
+    expect(dialog.textContent).not.toContain("请求：");
+    expect(dialog.textContent).not.toContain("失败：");
+  });
+
+  it("uses a transient toast for a successful environment command", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    getMachine.mockResolvedValue(createMachineFixture());
+    commandEnvironment.mockResolvedValue({
+      id: "cmd-succeeded",
+      commandNo: "MCMD-SUCCEEDED",
+      status: "succeeded",
+      payloadJson: { airConditionerOn: true },
+    });
+
+    const { root } = await mountMachinesView();
+    await openEnvironmentDrawer(root);
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "environment dialog",
+    );
+    requireElement(
+      Array.from(dialog.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("开启"),
+      ),
+      "air-conditioner on button",
+    ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
   });
 
   it("shows command loading and result statuses", async () => {

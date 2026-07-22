@@ -12,29 +12,13 @@ import type {
 
 import {
   commandStatusLabel,
-  environmentCommandFailureLabel,
-  environmentCommandRequestedValue,
   formatEnvironmentNumber,
   sensorStatusLabel,
 } from "./machine-environment-display";
 
-type ActionStatusMap = Record<
-  EnvironmentControlAction,
-  MachineCommandStatus | null
->;
-type ActionCommandDataMap = Record<
-  EnvironmentControlAction,
-  Record<string, unknown> | null
->;
-type ActionErrorMap = Record<EnvironmentControlAction, string | null>;
-
 const props = defineProps<{
   environment: Machine["latestEnvironment"] | null | undefined;
   commandStatus: MachineCommandStatus | null;
-  actionStatuses: ActionStatusMap;
-  actionPayloads: ActionCommandDataMap;
-  actionResults: ActionCommandDataMap;
-  actionErrors: ActionErrorMap;
   form: EnvironmentControlForm;
   canCommand: boolean;
   controlsDisabled: boolean;
@@ -64,20 +48,6 @@ function emitAction(
   value: boolean | number,
 ): void {
   emit("command", action, value);
-}
-
-function actionFeedback(action: EnvironmentControlAction): string[] {
-  const feedback: string[] = [];
-  const requested = environmentCommandRequestedValue(
-    props.actionPayloads[action],
-  );
-  if (requested) feedback.push(`请求：${requested}`);
-  const failure = environmentCommandFailureLabel(
-    props.actionResults[action],
-    props.actionErrors[action],
-  );
-  if (failure) feedback.push(`失败：${failure}`);
-  return feedback;
 }
 </script>
 
@@ -128,15 +98,6 @@ function actionFeedback(action: EnvironmentControlAction): string[] {
             >
               软关闭
             </a-button>
-            <span class="text-xs text-slate-500">
-              {{ commandStatusLabel(actionStatuses.airConditionerOn) }}
-              <template
-                v-for="item in actionFeedback('airConditionerOn')"
-                :key="item"
-              >
-                · {{ item }}</template
-              >
-            </span>
           </div>
 
           <div class="flex items-center gap-3">
@@ -162,15 +123,6 @@ function actionFeedback(action: EnvironmentControlAction): string[] {
             >
               设定
             </a-button>
-            <span class="text-xs text-slate-500">
-              {{ commandStatusLabel(actionStatuses.targetTemperatureCelsius) }}
-              <template
-                v-for="item in actionFeedback('targetTemperatureCelsius')"
-                :key="item"
-              >
-                · {{ item }}</template
-              >
-            </span>
           </div>
           <div v-if="targetTemperatureInvalid" class="text-xs text-red-600">
             目标温度必须在 18-30 C
@@ -205,12 +157,6 @@ function actionFeedback(action: EnvironmentControlAction): string[] {
             >
               设定
             </a-button>
-            <span class="text-xs text-slate-500">
-              {{ commandStatusLabel(actionStatuses.ventSpeed) }}
-              <template v-for="item in actionFeedback('ventSpeed')" :key="item">
-                · {{ item }}</template
-              >
-            </span>
           </div>
         </div>
       </div>

@@ -6,7 +6,7 @@ import type {
 } from "@vem/shared";
 
 import { formatMachineSlotCoordinate } from "@vem/shared";
-import { Modal } from "antdv-next";
+import { message, Modal } from "antdv-next";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -51,6 +51,7 @@ import {
 } from "./machine-contract-mappers";
 import {
   commandStatusLabel,
+  environmentControlFeedback,
   formatEnvironmentNumber,
 } from "./machine-environment-display";
 import MachineEnvironmentCard from "./MachineEnvironmentCard.vue";
@@ -104,22 +105,6 @@ const machineForm = ref({
 });
 const environmentSubmittingAction = ref<EnvironmentControlAction | null>(null);
 const environmentCommandStatus = ref<MachineCommandStatus | null>(null);
-const environmentControlActionStatus = ref<
-  Record<EnvironmentControlAction, MachineCommandStatus | null>
->({
-  airConditionerOn: null,
-  targetTemperatureCelsius: null,
-  ventSpeed: null,
-});
-const environmentControlActionPayload = ref<
-  Record<EnvironmentControlAction, Record<string, unknown> | null>
->({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
-const environmentControlActionResult = ref<
-  Record<EnvironmentControlAction, Record<string, unknown> | null>
->({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
-const environmentControlActionError = ref<
-  Record<EnvironmentControlAction, string | null>
->({ airConditionerOn: null, targetTemperatureCelsius: null, ventSpeed: null });
 const environmentCommandPoller = ref<ReturnType<
   typeof startEnvironmentCommandPoller
 > | null>(null);
@@ -136,43 +121,9 @@ function syncEnvironmentCommandStateFromMachine(
     setEnvironmentCommandStatus: (status) => {
       environmentCommandStatus.value = status;
     },
-    setActionStatus: (action, status) => {
-      environmentControlActionStatus.value[action] = status;
-    },
-    setActionPayload: (action, payload) => {
-      environmentControlActionPayload.value[action] = payload;
-    },
-    setActionResult: (action, result) => {
-      environmentControlActionResult.value[action] = result;
-    },
-    setActionError: (action, error) => {
-      environmentControlActionError.value[action] = error;
-    },
   });
 }
 
-function clearEnvironmentControlActionStatus(): void {
-  environmentControlActionStatus.value = {
-    airConditionerOn: null,
-    targetTemperatureCelsius: null,
-    ventSpeed: null,
-  };
-  environmentControlActionPayload.value = {
-    airConditionerOn: null,
-    targetTemperatureCelsius: null,
-    ventSpeed: null,
-  };
-  environmentControlActionResult.value = {
-    airConditionerOn: null,
-    targetTemperatureCelsius: null,
-    ventSpeed: null,
-  };
-  environmentControlActionError.value = {
-    airConditionerOn: null,
-    targetTemperatureCelsius: null,
-    ventSpeed: null,
-  };
-}
 const exportingLogs = ref(false);
 
 const adjustModalOpen = ref(false);
@@ -391,7 +342,6 @@ async function loadMachine(): Promise<void> {
   machine.value = nextMachine;
   environmentCommandStatus.value =
     nextMachine.latestEnvironmentCommand?.status ?? null;
-  clearEnvironmentControlActionStatus();
   syncEnvironmentCommandStateFromMachine(nextMachine.latestEnvironmentCommand);
   environmentControlForm.value = defaultEnvironmentControlForm();
 }
@@ -492,6 +442,10 @@ async function submitEnvironmentCommand(
   try {
     const command = await commandEnvironment(machineId.value, body);
     syncEnvironmentCommandStateFromMachine(command);
+    const terminalFeedback = environmentControlFeedback(action, command);
+    if (terminalFeedback) {
+      void message[terminalFeedback.type](terminalFeedback.content);
+    }
     if (
       command.commandNo &&
       !isEnvironmentCommandTerminalStatus(command.status)
@@ -504,6 +458,13 @@ async function submitEnvironmentCommand(
           machineId.value === machine.value?.id,
         onCommand: (commandSnapshot) => {
           syncEnvironmentCommandStateFromMachine(commandSnapshot);
+          const polledFeedback = environmentControlFeedback(
+            action,
+            commandSnapshot,
+          );
+          if (polledFeedback) {
+            void message[polledFeedback.type](polledFeedback.content);
+          }
         },
       });
       environmentCommandPoller.value = poller;
@@ -842,10 +803,6 @@ onBeforeUnmount(() => {
         <MachineEnvironmentCard
           :environment="environment"
           :command-status="environmentCommandStatus"
-          :action-statuses="environmentControlActionStatus"
-          :action-payloads="environmentControlActionPayload"
-          :action-results="environmentControlActionResult"
-          :action-errors="environmentControlActionError"
           :form="environmentControlForm"
           :can-command="canCommand"
           :submitting-action="environmentSubmittingAction"

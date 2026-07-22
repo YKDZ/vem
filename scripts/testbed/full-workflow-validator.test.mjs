@@ -239,8 +239,23 @@ function environmentCommand(action, commandNo, resultJson = { success: true }) {
     action,
     admin: { commandNo, status: "sent" },
     result: { status: "succeeded", resultJson },
-    mqtt: { commandObserved: true, resultObserved: true },
-    serial: { lowerBoundaryObserved: true },
+    mqtt: {
+      commandObserved: true,
+      resultObserved: true,
+      commandNo,
+      resultCommandNo: commandNo,
+      command: { payload: { commandNo } },
+      result: { payload: { commandNo } },
+    },
+    serial: {
+      lowerBoundaryObserved: true,
+      automaticB3FrameCount: action === "ventSpeed" ? 1 : 0,
+      protocolFrame: {
+        parsedOpcode: action === "ventSpeed" ? "B3" : "B2",
+        rawFrameHex: action === "ventSpeed" ? "55b303" : "55b201",
+        capturedAt: "2026-07-22T08:00:05.000Z",
+      },
+    },
   };
 }
 
@@ -258,6 +273,48 @@ function environmentControlReport() {
       rejected: true,
       httpStatus: 409,
       error: "ENVIRONMENT_COMMAND_IN_PROGRESS",
+    },
+    daemon: {
+      health: { hardwareOnline: true },
+      readiness: { ready: true },
+    },
+    precedence: {
+      automaticArrival: {
+        edgeId: "presence-1:arrival",
+        requestedSpeed: 2,
+        outcome: "accepted",
+        frame: {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+          capturedAt: "2026-07-22T08:00:00.000Z",
+        },
+      },
+      adminB3: {
+        commandNo: "MCMD-3",
+        resultStatus: "succeeded",
+        mqttCommandNo: "MCMD-3",
+        mqttResultNo: "MCMD-3",
+        frame: {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b303",
+          capturedAt: "2026-07-22T08:00:05.000Z",
+        },
+      },
+      sameEdgeAfterAdmin: {
+        edgeId: "presence-1:arrival",
+        outcome: "deduplicated",
+        b3FrameCountDelta: 0,
+      },
+      nextStableEdge: {
+        edgeId: "presence-2:departure",
+        requestedSpeed: 0,
+        outcome: "accepted",
+        frame: {
+          parsedOpcode: "B3",
+          rawFrameHex: "55b300",
+          capturedAt: "2026-07-22T08:00:10.000Z",
+        },
+      },
     },
     boundaries: {
       adminApi: true,
@@ -947,6 +1004,36 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("environmentControl"),
         missingSerial,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const automaticB2 = environmentControlReport();
+    automaticB2.commands[0].serial.automaticB3FrameCount = 1;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        automaticB2,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const automaticB1 = environmentControlReport();
+    automaticB1.commands[3].serial.automaticB3FrameCount = 1;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        automaticB1,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const missingNextStableEdge = environmentControlReport();
+    delete missingNextStableEdge.precedence.nextStableEdge;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        missingNextStableEdge,
         "/reports/environment-control.json",
       ).status,
       "failed",

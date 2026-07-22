@@ -1,5 +1,5 @@
-import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.mjs";
 import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.mjs";
+import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.mjs";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.mjs";
 
 function requiredString(value, label) {
@@ -643,15 +643,54 @@ function validateEnvironmentControlTrack(report, reportPath) {
       entry?.result?.resultJson?.success === true &&
       entry?.mqtt?.commandObserved === true &&
       entry?.mqtt?.resultObserved === true &&
-      entry?.serial?.lowerBoundaryObserved === true
+      entry?.mqtt?.commandNo === entry.admin.commandNo &&
+      entry?.mqtt?.resultCommandNo === entry.admin.commandNo &&
+      entry?.serial?.lowerBoundaryObserved === true &&
+      (action === "ventSpeed" || entry?.serial?.automaticB3FrameCount === 0)
     );
   });
   const hasTemperature =
     optionalTemperature === null ||
     (optionalTemperature.result?.status === "succeeded" &&
       optionalTemperature.result?.resultJson?.success === true &&
-      optionalTemperature.serial?.lowerBoundaryObserved === true);
+      optionalTemperature.serial?.lowerBoundaryObserved === true &&
+      optionalTemperature.serial?.automaticB3FrameCount === 0);
   const overlap = report.overlapRejection ?? {};
+  const precedence = report.precedence ?? {};
+  const automaticArrival = precedence.automaticArrival ?? {};
+  const adminB3 = precedence.adminB3 ?? {};
+  const sameEdgeAfterAdmin = precedence.sameEdgeAfterAdmin ?? {};
+  const nextStableEdge = precedence.nextStableEdge ?? {};
+  const b3Speed = (frame) => {
+    const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
+    return match ? Number.parseInt(match[1], 16) : null;
+  };
+  const validPrecedenceFrame = (frame, speed) =>
+    frame?.parsedOpcode === "B3" &&
+    b3Speed(frame) === speed &&
+    Number.isFinite(Date.parse(frame?.capturedAt));
+  const precedenceCorrelated =
+    automaticArrival.edgeId &&
+    automaticArrival.requestedSpeed === 2 &&
+    automaticArrival.outcome === "accepted" &&
+    validPrecedenceFrame(automaticArrival.frame, 2) &&
+    adminB3.commandNo === byAction.get("ventSpeed")?.admin?.commandNo &&
+    adminB3.resultStatus === "succeeded" &&
+    adminB3.mqttCommandNo === adminB3.commandNo &&
+    adminB3.mqttResultNo === adminB3.commandNo &&
+    validPrecedenceFrame(adminB3.frame, 3) &&
+    sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
+    sameEdgeAfterAdmin.outcome === "deduplicated" &&
+    sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
+    nextStableEdge.edgeId &&
+    nextStableEdge.edgeId !== automaticArrival.edgeId &&
+    nextStableEdge.requestedSpeed === 0 &&
+    nextStableEdge.outcome === "accepted" &&
+    validPrecedenceFrame(nextStableEdge.frame, 0) &&
+    Date.parse(automaticArrival.frame.capturedAt) <
+      Date.parse(adminB3.frame.capturedAt) &&
+    Date.parse(adminB3.frame.capturedAt) <
+      Date.parse(nextStableEdge.frame.capturedAt);
   if (
     hasRequiredActions !== true ||
     hasTemperature !== true ||
@@ -661,20 +700,34 @@ function validateEnvironmentControlTrack(report, reportPath) {
     report.boundaries?.adminApi !== true ||
     report.boundaries?.mqtt !== true ||
     report.boundaries?.daemonIpc !== true ||
-    report.boundaries?.lowerSerial !== true
+    report.boundaries?.lowerSerial !== true ||
+    report.daemon?.health?.hardwareOnline !== true ||
+    report.daemon?.readiness?.ready !== true ||
+    precedenceCorrelated !== true
   ) {
     return failedTrack(
       "environmentControl",
       "environment control",
       reportPath,
       "environment control evidence is incomplete",
-      { commands, overlap, boundaries: report.boundaries ?? null },
+      {
+        commands,
+        overlap,
+        boundaries: report.boundaries ?? null,
+        daemon: report.daemon ?? null,
+        precedence,
+      },
     );
   }
   return passedTrack("environmentControl", "environment control", reportPath, {
     commandNos: commands.map((entry) => entry.admin.commandNo),
     overlapError: overlap.error,
     temperatureProved: optionalTemperature !== null,
+    precedence: {
+      adminCommandNo: adminB3.commandNo,
+      automaticArrivalEdgeId: automaticArrival.edgeId,
+      nextStableEdgeId: nextStableEdge.edgeId,
+    },
   });
 }
 

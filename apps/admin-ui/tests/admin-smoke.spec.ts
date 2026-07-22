@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
+const ENVIRONMENT_MACHINE_ID = "11111111-1111-4111-8111-111111111111";
+const ENVIRONMENT_COMMAND_ID = "22222222-2222-4222-8222-222222222222";
+const ENVIRONMENT_NOW = "2026-07-22T08:00:00.000Z";
 
 const PROTECTED_PAGES = [
   { path: "/dashboard", label: "仪表盘" },
@@ -108,6 +111,101 @@ test.describe("admin-smoke", () => {
       await expect(page.getByText("E2E-MACHINE-001")).toBeVisible({
         timeout: 5_000,
       });
+    });
+
+    test("machine environment controls use transient success and failure toasts", async ({
+      page,
+    }) => {
+      const machine = {
+        id: ENVIRONMENT_MACHINE_ID,
+        code: "E2E-ENVIRONMENT-001",
+        name: "环境反馈测试机",
+        locationLabel: null,
+        geoLocation: null,
+        status: "online",
+        mqttClientId: null,
+        lastSeenAt: ENVIRONMENT_NOW,
+        createdAt: ENVIRONMENT_NOW,
+        updatedAt: ENVIRONMENT_NOW,
+        latestEnvironment: {
+          temperatureCelsius: 23,
+          humidityRh: 51,
+          sampledAt: ENVIRONMENT_NOW,
+          sensorStatus: "ok",
+        },
+        latestEnvironmentCommand: null,
+      };
+      let commandCount = 0;
+      await page.route("**/api/machines**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (request.method() === "GET" && url.pathname === "/api/machines") {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              code: 0,
+              message: "ok",
+              data: { items: [machine], total: 1, page: 1, pageSize: 20 },
+            }),
+          });
+          return;
+        }
+        if (
+          request.method() === "GET" &&
+          url.pathname === `/api/machines/${ENVIRONMENT_MACHINE_ID}`
+        ) {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({ code: 0, message: "ok", data: machine }),
+          });
+          return;
+        }
+        if (
+          request.method() === "POST" &&
+          url.pathname ===
+            `/api/machines/${ENVIRONMENT_MACHINE_ID}/commands/environment-control`
+        ) {
+          commandCount += 1;
+          const payloadJson = request.postDataJSON();
+          const failed = commandCount === 2;
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              code: 0,
+              message: "ok",
+              data: {
+                id: ENVIRONMENT_COMMAND_ID,
+                machineId: ENVIRONMENT_MACHINE_ID,
+                commandNo: `E2E-ENV-${commandCount}`,
+                type: "environment-control",
+                status: failed ? "failed" : "succeeded",
+                payloadJson,
+                ...(failed ? { resultJson: { errorCode: "E4" } } : {}),
+              },
+            }),
+          });
+          return;
+        }
+        await route.fallback();
+      });
+
+      await page.goto("/machines");
+      await page.getByRole("button", { name: "环境" }).click();
+      const drawer = page.getByRole("dialog", {
+        name: /环境 - E2E-ENVIRONMENT-001/,
+      });
+      await expect(drawer).toBeVisible();
+      await drawer.getByRole("button", { name: "开启" }).click();
+      await expect(page.locator(".ant-message-notice")).toContainText(
+        "空调控制已完成",
+      );
+
+      await drawer.locator("select").selectOption("3");
+      await drawer.getByRole("button", { name: "设定" }).last().click();
+      await expect(page.locator(".ant-message-notice")).toContainText(
+        "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
+      );
+      await expect(drawer).not.toContainText("失败：");
     });
 
     test("payment provider drawer shows provider-specific fields and hides generic api key", async ({

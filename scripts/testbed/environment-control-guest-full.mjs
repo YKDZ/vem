@@ -220,16 +220,18 @@ function mqttMessages(evidence) {
   ];
 }
 
-function mqttObserved(evidence, commandNo, suffix) {
-  return mqttMessages(evidence).some((entry) => {
-    const topic = String(entry?.topic ?? "");
-    const payload = entry?.payload?.payload ?? entry?.payload;
-    return (
-      topic.includes("/environment-control") &&
-      topic.includes(suffix) &&
-      payload?.commandNo === commandNo
-    );
-  });
+function mqttMessage(evidence, commandNo, suffix) {
+  return (
+    mqttMessages(evidence).find((entry) => {
+      const topic = String(entry?.topic ?? "");
+      const payload = entry?.payload?.payload ?? entry?.payload;
+      return (
+        topic.includes("/environment-control") &&
+        topic.includes(suffix) &&
+        payload?.commandNo === commandNo
+      );
+    }) ?? null
+  );
 }
 
 function serialFrameCount(evidence) {
@@ -252,6 +254,94 @@ function serialProtocolFrames(evidence, beforeFrameCount) {
     .slice(beforeFrameCount)
     .filter((frame) => frame?.parsedOpcode)
     .map((frame) => frame.parsedOpcode);
+}
+
+function b3Speed(frame) {
+  const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
+  return match ? Number.parseInt(match[1], 16) : null;
+}
+
+function b3FramesSince(evidence, beforeFrameCount) {
+  return (evidence?.rawFrames ?? [])
+    .slice(beforeFrameCount)
+    .filter((frame) => frame?.parsedOpcode === "B3")
+    .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
+}
+
+async function waitForB3Frame({
+  guestInput,
+  sessionId,
+  beforeFrameCount,
+  expectedSpeed,
+  timeoutMs = 45_000,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let evidence = null;
+  do {
+    evidence = await control(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+      {},
+    );
+    const frame = b3FramesSince(evidence, beforeFrameCount).find(
+      (entry) => entry.speed === expectedSpeed,
+    );
+    if (frame) return { evidence, frame };
+    await sleep(100);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `automatic B3=${expectedSpeed} was not observed: ${JSON.stringify(b3FramesSince(evidence, beforeFrameCount))}`,
+  );
+}
+
+async function requestAutomaticVentIntent({
+  guestInput,
+  handoff,
+  sessionId,
+  edgeId,
+  ventSpeed,
+}) {
+  const beforeEvidence = await control(
+    guestInput,
+    `/v1/serial-sessions/${sessionId}/evidence`,
+    {},
+  );
+  const beforeFrameCount = serialFrameCount(beforeEvidence);
+  const response = await daemonPost(handoff, "/v1/intents/automatic-vent", {
+    edgeId,
+    ventSpeed,
+  });
+  if (response?.edgeId !== edgeId) {
+    throw new Error(
+      `automatic vent edge correlation is invalid: ${JSON.stringify(response)}`,
+    );
+  }
+  if (response.outcome !== "accepted") {
+    const evidence = await control(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+      {},
+    );
+    return {
+      edgeId,
+      requestedSpeed: ventSpeed,
+      outcome: response.outcome,
+      b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
+    };
+  }
+  const { evidence, frame } = await waitForB3Frame({
+    guestInput,
+    sessionId,
+    beforeFrameCount,
+    expectedSpeed: ventSpeed,
+  });
+  return {
+    edgeId,
+    requestedSpeed: ventSpeed,
+    outcome: response.outcome,
+    frame,
+    b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
+  };
 }
 
 async function commandEnvironment({
@@ -295,22 +385,36 @@ async function commandEnvironment({
       : action === "ventSpeed"
         ? "B3"
         : "B1";
+  const commandMqtt = mqttMessage(
+    afterEvidence,
+    admin.commandNo,
+    "/commands/environment-control",
+  );
+  const resultMqtt = mqttMessage(
+    afterEvidence,
+    admin.commandNo,
+    "/events/environment-control-result",
+  );
+  const protocolFrames = serialProtocolFrames(afterEvidence, beforeFrameCount);
+  const protocolFrame = (afterEvidence?.rawFrames ?? [])
+    .slice(beforeFrameCount)
+    .find((frame) => frame?.parsedOpcode === expectedOpcode);
   return {
     action,
     request: body,
     admin,
     result,
     mqtt: {
-      commandObserved: mqttObserved(
-        afterEvidence,
-        admin.commandNo,
-        "/commands/environment-control",
-      ),
-      resultObserved: mqttObserved(
-        afterEvidence,
-        admin.commandNo,
-        "/events/environment-control-result",
-      ),
+      commandObserved: commandMqtt !== null,
+      resultObserved: resultMqtt !== null,
+      commandNo:
+        commandMqtt?.payload?.payload?.commandNo ??
+        commandMqtt?.payload?.commandNo ??
+        null,
+      resultCommandNo:
+        resultMqtt?.payload?.payload?.commandNo ??
+        resultMqtt?.payload?.commandNo ??
+        null,
     },
     serial: {
       lowerBoundaryObserved:
@@ -318,12 +422,12 @@ async function commandEnvironment({
         serialTailIdentity(afterEvidence) !== beforeTail,
       beforeFrameCount,
       afterFrameCount: serialFrameCount(afterEvidence),
-      protocolFrames: serialProtocolFrames(afterEvidence, beforeFrameCount),
+      protocolFrames,
       expectedOpcode,
-      protocolFrameObserved: serialProtocolFrames(
-        afterEvidence,
-        beforeFrameCount,
-      ).includes(expectedOpcode),
+      protocolFrame,
+      protocolFrameObserved: protocolFrames.includes(expectedOpcode),
+      automaticB3FrameCount: b3FramesSince(afterEvidence, beforeFrameCount)
+        .length,
     },
   };
 }
@@ -381,8 +485,10 @@ export async function runEnvironmentControlGuest(options) {
     machineCode,
     commands: [],
     overlapRejection: null,
+    daemon: null,
+    precedence: null,
     boundaries: {
-      adminApi: true,
+      adminApi: false,
       mqtt: false,
       daemonIpc: false,
       lowerSerial: false,
@@ -430,8 +536,6 @@ export async function runEnvironmentControlGuest(options) {
     for (const step of [
       ["airConditionerOnTrue", { airConditionerOn: true }],
       ["airConditionerOnFalse", { airConditionerOn: false }],
-      ["ventSpeed", { ventSpeed: 3 }],
-      ["targetTemperatureCelsius", { targetTemperatureCelsius: 23 }],
     ]) {
       report.commands.push(
         await commandEnvironment({
@@ -444,18 +548,100 @@ export async function runEnvironmentControlGuest(options) {
         }),
       );
     }
+    const automaticArrival = await requestAutomaticVentIntent({
+      guestInput,
+      handoff,
+      sessionId: session.sessionId,
+      edgeId: `environment-control:${runId}:arrival`,
+      ventSpeed: 2,
+    });
+    const adminVent = await commandEnvironment({
+      guestInput,
+      token,
+      machineId: machine.id,
+      sessionId: session.sessionId,
+      action: "ventSpeed",
+      body: { ventSpeed: 3 },
+    });
+    report.commands.push(adminVent);
+    const sameEdgeAfterAdmin = await requestAutomaticVentIntent({
+      guestInput,
+      handoff,
+      sessionId: session.sessionId,
+      edgeId: automaticArrival.edgeId,
+      ventSpeed: 2,
+    });
+    const nextStableEdge = await requestAutomaticVentIntent({
+      guestInput,
+      handoff,
+      sessionId: session.sessionId,
+      edgeId: `environment-control:${runId}:departure`,
+      ventSpeed: 0,
+    });
+    report.commands.push(
+      await commandEnvironment({
+        guestInput,
+        token,
+        machineId: machine.id,
+        sessionId: session.sessionId,
+        action: "targetTemperatureCelsius",
+        body: { targetTemperatureCelsius: 23 },
+      }),
+    );
+    report.precedence = {
+      automaticArrival,
+      adminB3: {
+        commandNo: adminVent.admin.commandNo,
+        resultStatus: adminVent.result.status,
+        mqttCommandNo: adminVent.mqtt.commandNo,
+        mqttResultNo: adminVent.mqtt.resultCommandNo,
+        frame: adminVent.serial.protocolFrame ?? null,
+      },
+      sameEdgeAfterAdmin,
+      nextStableEdge,
+    };
+    report.daemon = {
+      health: await daemonGet(handoff, "/healthz"),
+      readiness: await daemonGet(handoff, "/readyz"),
+    };
+    report.boundaries.adminApi = report.commands.every(
+      (entry) =>
+        typeof entry.admin?.commandNo === "string" &&
+        entry.admin.commandNo !== "" &&
+        entry.admin.status === "sent" &&
+        entry.result?.status === "succeeded" &&
+        entry.result?.resultJson?.success === true,
+    );
     report.boundaries.mqtt = report.commands.every(
-      (entry) => entry.mqtt.commandObserved && entry.mqtt.resultObserved,
+      (entry) =>
+        entry.mqtt.commandObserved &&
+        entry.mqtt.resultObserved &&
+        entry.mqtt.commandNo === entry.admin.commandNo &&
+        entry.mqtt.resultCommandNo === entry.admin.commandNo,
     );
     report.boundaries.lowerSerial = report.commands.every(
       (entry) =>
         entry.serial.lowerBoundaryObserved &&
         entry.serial.protocolFrameObserved &&
-        entry.result?.status === "succeeded",
+        entry.result?.status === "succeeded" &&
+        entry.serial.protocolFrame?.parsedOpcode ===
+          entry.serial.expectedOpcode,
     );
     report.boundaries.daemonIpc =
-      (await daemonGet(handoff, "/healthz")).hardwareOnline === true &&
-      (await daemonGet(handoff, "/readyz")).ready === true;
+      report.daemon.health?.hardwareOnline === true &&
+      report.daemon.readiness?.ready === true &&
+      automaticArrival.outcome === "accepted" &&
+      automaticArrival.requestedSpeed === 2 &&
+      automaticArrival.frame?.parsedOpcode === "B3" &&
+      b3Speed(automaticArrival.frame) === 2 &&
+      sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
+      sameEdgeAfterAdmin.outcome === "deduplicated" &&
+      sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
+      nextStableEdge.edgeId !== automaticArrival.edgeId &&
+      nextStableEdge.outcome === "accepted" &&
+      nextStableEdge.requestedSpeed === 0 &&
+      nextStableEdge.frame?.parsedOpcode === "B3" &&
+      b3Speed(nextStableEdge.frame) === 0;
     report.ok = Object.values(report.boundaries).every(Boolean);
     writeJson(options.outPath, report);
     return report;

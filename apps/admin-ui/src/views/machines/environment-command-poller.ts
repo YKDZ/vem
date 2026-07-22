@@ -16,19 +16,19 @@ export type EnvironmentCommandSource = {
 
 export type EnvironmentCommandStateCallbacks = {
   setEnvironmentCommandStatus: (status: MachineCommandStatus | null) => void;
-  setActionStatus: (
+  setActionStatus?: (
     action: EnvironmentControlAction,
     status: MachineCommandStatus | null,
   ) => void;
-  setActionPayload: (
+  setActionPayload?: (
     action: EnvironmentControlAction,
     payload: Record<string, unknown> | null,
   ) => void;
-  setActionResult: (
+  setActionResult?: (
     action: EnvironmentControlAction,
     result: Record<string, unknown> | null,
   ) => void;
-  setActionError: (
+  setActionError?: (
     action: EnvironmentControlAction,
     error: string | null,
   ) => void;
@@ -59,10 +59,10 @@ export function syncEnvironmentCommandStateFromSnapshot(
   const action = detectEnvironmentControlActionFromPayload(command.payloadJson);
   if (!action) return;
   const status = command.status ?? null;
-  callbacks.setActionStatus(action, status);
-  callbacks.setActionPayload(action, command.payloadJson ?? null);
-  callbacks.setActionResult(action, command.resultJson ?? null);
-  callbacks.setActionError(action, command.lastError ?? null);
+  callbacks.setActionStatus?.(action, status);
+  callbacks.setActionPayload?.(action, command.payloadJson ?? null);
+  callbacks.setActionResult?.(action, command.resultJson ?? null);
+  callbacks.setActionError?.(action, command.lastError ?? null);
 }
 
 type EnvironmentCommandPollerConfig = {

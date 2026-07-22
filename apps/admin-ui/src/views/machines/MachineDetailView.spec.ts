@@ -23,6 +23,8 @@ const apiMocks = vi.hoisted(() => ({
   resolveStockReconciliationCase: vi.fn(),
   listMachineOps: vi.fn(),
   requestLogExport: vi.fn(),
+  messageSuccess: vi.fn(),
+  messageError: vi.fn(),
 }));
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -62,6 +64,10 @@ vi.mock("@/api/machine-ops", () => ({
 }));
 
 vi.mock("antdv-next", () => ({
+  message: {
+    success: apiMocks.messageSuccess,
+    error: apiMocks.messageError,
+  },
   Modal: {
     error: vi.fn(),
     success: vi.fn(),
@@ -509,6 +515,50 @@ describe("MachineDetailView", () => {
     });
   });
 
+  it("uses transient toasts for terminal environment command results", async () => {
+    apiMocks.commandEnvironment
+      .mockResolvedValueOnce({
+        id: "cmd-success",
+        commandNo: "MCMD-SUCCESS",
+        status: "succeeded",
+        payloadJson: { targetTemperatureCelsius: 24 },
+      })
+      .mockResolvedValueOnce({
+        id: "cmd-timeout",
+        commandNo: "MCMD-TIMEOUT",
+        status: "timeout",
+        payloadJson: { ventSpeed: 2 },
+      });
+
+    const { root } = await mountView();
+    const controls = Array.from(root.querySelectorAll("button"));
+    const targetButton = controls.find(
+      (button) =>
+        button.textContent?.includes("设定") &&
+        button.previousElementSibling?.textContent?.includes("C"),
+    );
+    if (!targetButton) throw new Error("target temperature button is missing");
+    targetButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.messageSuccess).toHaveBeenCalledWith("目标温度控制已完成");
+
+    const ventButton = Array.from(root.querySelectorAll("button")).find(
+      (button) =>
+        button.textContent?.includes("设定") &&
+        button.previousElementSibling instanceof HTMLSelectElement,
+    );
+    if (!ventButton) throw new Error("vent speed button is missing");
+    ventButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.messageError).toHaveBeenCalledWith(
+      "出风口与风速控制失败：设备控制超时，请稍后确认后重试",
+    );
+    expect(root.textContent).not.toContain("请求：");
+    expect(root.textContent).not.toContain("失败：");
+  });
+
   it("tracks environment command progress until terminal status and releases controls", async () => {
     const machine = machineFixture({
       latestEnvironment: {
@@ -564,7 +614,7 @@ describe("MachineDetailView", () => {
       await vi.advanceTimersByTimeAsync(500);
       await Promise.resolve();
       await nextTick();
-      expect(root.textContent).toContain("命令成功");
+      expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
       expect(openButton?.disabled).toBe(false);
     } finally {
       vi.useRealTimers();
