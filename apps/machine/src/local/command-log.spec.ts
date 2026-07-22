@@ -146,4 +146,20 @@ describe("command log", () => {
       }),
     ]);
   });
+
+  it("drops malformed customer-error evidence from local storage", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "vem.machine.commandLog.v1.customer-errors",
+      JSON.stringify([
+        {
+          evidenceId: "customer-error:invalid",
+          technicalMessage: "missing required evidence fields",
+          recordedAtMs: Date.now(),
+        },
+      ]),
+    );
+
+    expect(listCustomerErrorEvidence(storage)).toEqual([]);
+  });
 });

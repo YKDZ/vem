@@ -267,7 +267,7 @@ export const machineHeartbeatStatusPayloadSchema = z
         source: z.string(),
         orderNo: z.string().optional(),
         commandNo: z.string().optional(),
-        slotId: z.string().uuid().optional(),
+        slotId: z.uuid().optional(),
         errorCode: z.string().nullable().optional(),
         createdAt: z.iso.datetime().optional(),
       })
@@ -295,7 +295,7 @@ export const adminMachineHeartbeatStatusPayloadSchema = z.strictObject({
       source: z.string(),
       orderNo: z.string().optional(),
       commandNo: z.string().optional(),
-      slotId: z.string().uuid().optional(),
+      slotId: z.uuid().optional(),
       errorCode: z.string().nullable().optional(),
       createdAt: z.iso.datetime().optional(),
     })

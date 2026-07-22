@@ -1240,7 +1240,7 @@ describe("sale-start capability UI flow", () => {
       color: "蓝色",
       slotCandidates: [
         {
-          ...mediumItem.slotCandidates[0]!,
+          ...mediumItem.slotCandidates[0],
           slotId: "550e8400-e29b-41d4-a716-446655440021",
           slotDisplayLabel: "A2",
           inventoryId: "550e8400-e29b-41d4-a716-446655440022",

@@ -1356,7 +1356,9 @@ describe("full workflow stability gate", () => {
   it("compares the registered full business-set order across two reconstructed passes", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
     try {
-      const descriptors = BUSINESS_CHECK_REGISTRY;
+      const descriptors = BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      );
       const report = (reconstruction) => ({
         schemaVersion: "vem-local-testbed-full-workflow/v4",
         mode: "full",
@@ -1404,15 +1406,14 @@ describe("full workflow stability gate", () => {
           mode: "full",
           ok: true,
           businessSets: Object.fromEntries(
-            BUSINESS_CHECK_REGISTRY.map((descriptor) => [
-              descriptor.name,
-              { status: "passed" },
-            ]),
+            BUSINESS_CHECK_REGISTRY.filter(
+              (descriptor) => descriptor.fullRequired,
+            ).map((descriptor) => [descriptor.name, { status: "passed" }]),
           ),
           execution: {
-            selectedBusinessSets: BUSINESS_CHECK_REGISTRY.map(
-              (descriptor) => descriptor.name,
-            ),
+            selectedBusinessSets: BUSINESS_CHECK_REGISTRY.filter(
+              (descriptor) => descriptor.fullRequired,
+            ).map((descriptor) => descriptor.name),
           },
           identity: workflowIdentity,
         };

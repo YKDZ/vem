@@ -14,6 +14,7 @@ const failedEvidence = Object.freeze({
 function descriptor({
   name,
   core = false,
+  fullRequired = true,
   fixtureKey = name,
   runner = null,
   validator,
@@ -25,9 +26,7 @@ function descriptor({
     name,
     key: name,
     core,
-    // Business sets are full-required unless they are deliberately kept out of
-    // this registry as supporting evidence.
-    fullRequired: true,
+    fullRequired,
     fixtureKey,
     runner: runner && Object.freeze(runner),
     validator,
@@ -144,6 +143,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "paymentProvider",
+    fullRequired: false,
     fixtureKey: "sale",
     runner: {
       kind: "node",

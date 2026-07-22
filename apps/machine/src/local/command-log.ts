@@ -48,8 +48,32 @@ function browserStorage(): StorageLike | null {
   }
 }
 
-function isCommandLogRecord(v: unknown): v is Record<string, CommandLogEntry> {
+function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
+}
+
+function isCommandLogRecord(v: unknown): v is Record<string, CommandLogEntry> {
+  return isRecord(v);
+}
+
+function isCustomerErrorEvidence(
+  value: unknown,
+): value is CustomerErrorEvidence {
+  if (!isRecord(value)) return false;
+  const entry = value;
+  return (
+    [
+      "evidenceId",
+      "stage",
+      "customerMessage",
+      "technicalMessage",
+      "operation",
+    ].every((key) => typeof entry[key] === "string") &&
+    ["checkoutAttemptIdempotencyKey", "orderId", "paymentId", "orderNo"].every(
+      (key) => entry[key] === null || typeof entry[key] === "string",
+    ) &&
+    Number.isFinite(entry.recordedAtMs)
+  );
 }
 
 function writeAll(
@@ -170,13 +194,8 @@ function readCustomerErrorEvidence(
   const fresh = parsed
     .filter(
       (entry): entry is CustomerErrorEvidence =>
-        typeof entry === "object" &&
-        entry !== null &&
-        typeof (entry as CustomerErrorEvidence).evidenceId === "string" &&
-        typeof (entry as CustomerErrorEvidence).technicalMessage === "string" &&
-        Number.isFinite((entry as CustomerErrorEvidence).recordedAtMs) &&
-        nowMs - (entry as CustomerErrorEvidence).recordedAtMs <=
-          COMMAND_LOG_TTL_MS,
+        isCustomerErrorEvidence(entry) &&
+        nowMs - entry.recordedAtMs <= COMMAND_LOG_TTL_MS,
     )
     .sort((a, b) => b.recordedAtMs - a.recordedAtMs)
     .slice(0, COMMAND_LOG_MAX_ENTRIES);

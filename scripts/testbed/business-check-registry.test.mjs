@@ -33,8 +33,30 @@ describe("runtime business-check registry", () => {
       ),
       ["sale", "stockMaintenance"],
     );
+    assert.deepEqual(
+      BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      ).map((descriptor) => descriptor.name),
+      [
+        "commissioning",
+        "sale",
+        "scannerPayment",
+        "visionExperience",
+        "pickupProtocol",
+        "presenceAndAudio",
+        "ipcRecovery",
+        "fulfillmentRecovery",
+        "paymentRecovery",
+        "stockMaintenance",
+        "hardwareLifecycle",
+        "localOperations",
+        "environmentControl",
+      ],
+    );
     assert.ok(
-      BUSINESS_CHECK_REGISTRY.every((descriptor) => descriptor.fullRequired),
+      BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.name !== "paymentProvider",
+      ).every((descriptor) => descriptor.fullRequired),
     );
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
@@ -68,7 +90,7 @@ describe("runtime business-check registry", () => {
       "scripts/testbed/payment-provider-guest-full.mjs",
     );
     assert.equal(paymentProvider?.core, false);
-    assert.equal(paymentProvider?.fullRequired, true);
+    assert.equal(paymentProvider?.fullRequired, false);
     assert.equal(
       BUSINESS_CHECK_REGISTRY.find(
         (descriptor) => descriptor.name === "localOperations",
@@ -107,7 +129,7 @@ describe("runtime business-check registry", () => {
     );
   });
 
-  it("keeps the real payment-provider boundary out of warm fast runs while allowing focus", () => {
+  it("keeps the real payment-provider boundary out of default selections while allowing fast focus", () => {
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast" }).map(
         (descriptor) => descriptor.name,
@@ -119,6 +141,11 @@ describe("runtime business-check registry", () => {
         (descriptor) => descriptor.name,
       ),
       ["paymentProvider"],
+    );
+    assert.ok(
+      !selectBusinessChecks({ mode: "full" }).some(
+        (descriptor) => descriptor.name === "paymentProvider",
+      ),
     );
   });
 
