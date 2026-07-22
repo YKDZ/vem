@@ -1413,13 +1413,15 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     expectedMachinePath: expectedRuntime.machine.executablePath,
     timeoutMs,
   });
-  const inspectedRuntime = normalizeWindowsRuntimeObservation(observedRuntime, {
+  let inspectedRuntime = normalizeWindowsRuntimeObservation(observedRuntime, {
     remoteCdpPort: inspectionRemoteCdpPort,
   });
   const sidecar = await dependencies.openSidecar(
     buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime),
   );
   let client;
+  let target;
+  let runtimeEvidence;
   let capture;
   let unsubscribeCdpRoutes;
   let scenarioError;
@@ -1479,41 +1481,23 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     capture?.throwIfFailed();
     if (fatalError) throw fatalError;
   };
-
-  try {
-    const target = await discoverMachineUiTarget({
-      endpoint: sidecar.endpoint,
-      expectedTargetId: expectedRuntime.targetId,
-      fetchImpl: dependencies.fetchImpl,
-      timeoutMs,
-    });
-    const runtimeEvidence = bindMachineUiRuntimeEvidence({
-      expectedRuntimeAttestation: expectedRuntime,
+  const connectTarget = async ({ nextTarget, nextRuntime, expected }) => {
+    target = nextTarget;
+    inspectedRuntime = nextRuntime;
+    runtimeEvidence = bindMachineUiRuntimeEvidence({
+      expectedRuntimeAttestation: expected,
       observedRuntime: inspectedRuntime,
       target,
     });
     record({ type: "runtime-attestation", attestation: runtimeEvidence });
-    if (!matchesRoute(target.route, expectedInitialRoute)) {
-      throw new Error(
-        `initial CDP target route mismatch: expected ${formatExpectedRoute(expectedInitialRoute)}, got ${target.route}`,
-      );
-    }
-    assertAllowedRoute(
-      target.route,
-      activeForbiddenRoutes,
-      activeAllowedRoutes,
+    client = new CdpClient(
+      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, sidecar.endpoint),
+      {
+        webSocketFactory: dependencies.webSocketFactory,
+        defaultTimeoutMs: timeoutMs,
+      },
     );
-    const webSocketUrl = rewriteWebSocketDebuggerUrl(
-      target.webSocketDebuggerUrl,
-      sidecar.endpoint,
-    );
-    client = new CdpClient(webSocketUrl, {
-      webSocketFactory: dependencies.webSocketFactory,
-      defaultTimeoutMs: timeoutMs,
-    });
     await client.connect({ timeoutMs });
-
-    // Route listeners are installed before protocol enablement or scenario actions.
     const offWithinDocument = client.on(
       "Page.navigatedWithinDocument",
       (params) => classifyRouteEvent({ url: params.url }, "cdp"),
@@ -1523,14 +1507,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         classifyRouteEvent({ url: params.frame?.url }, "cdp");
       }
     });
-    const offCdpRoutes = () => {
+    unsubscribeCdpRoutes = () => {
       offWithinDocument();
       offFrameNavigated();
     };
-    unsubscribeCdpRoutes = offCdpRoutes;
-
     await enablePageRuntime(client);
-    assertHealthy();
     capture = continuousCapture
       ? startContinuousIdentityCapture(client, {
           intervalMs: continuousCaptureIntervalMs,
@@ -1539,10 +1520,77 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           routePolicy: currentRoutePolicy,
           timeoutMs,
           clock,
-          startOrdinal: 1_000_000,
+          startOrdinal: 1_000_000 + ordinal,
           maxCheckpoints: MAX_CONTINUOUS_CHECKPOINTS,
         })
       : null;
+  };
+  const reconnectIfClosed = async () => {
+    if (!client?.closed) return;
+    await Promise.resolve().then(() => unsubscribeCdpRoutes?.());
+    unsubscribeCdpRoutes = undefined;
+    await capture?.stop().catch(() => {});
+    capture = null;
+    const observed = await dependencies.inspectRuntime({
+      remote: tunnelTransport.remote,
+      sshPort: tunnelTransport.sshPort,
+      identityFile: tunnelTransport.identityFile,
+      certificateFile: tunnelTransport.certificateFile,
+      sshKnownHostsPath: tunnelTransport.sshKnownHostsPath,
+      sshHostKeyAlias: tunnelTransport.sshHostKeyAlias,
+      sshArgs: tunnelTransport.sshArgs,
+      remoteCdpPort: inspectionRemoteCdpPort,
+      expectedMachinePath: expectedRuntime.machine.executablePath,
+      timeoutMs,
+    });
+    const nextRuntime = normalizeWindowsRuntimeObservation(observed, {
+      remoteCdpPort: inspectionRemoteCdpPort,
+    });
+    const nextTarget = await discoverCanonicalMachineUiTarget({
+      endpoint: sidecar.endpoint,
+      fetchImpl: dependencies.fetchImpl,
+      timeoutMs,
+    });
+    activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
+    activeAllowedRoutes = null;
+    paymentBarrierTerminalObserved = false;
+    routePolicyEpoch += 1;
+    await connectTarget({
+      nextTarget,
+      nextRuntime,
+      expected: {
+        targetId: nextTarget.id,
+        machine: {
+          ...expectedRuntime.machine,
+          processId: nextRuntime.machine.processId,
+        },
+      },
+    });
+  };
+
+  try {
+    const initialTarget = await discoverMachineUiTarget({
+      endpoint: sidecar.endpoint,
+      expectedTargetId: expectedRuntime.targetId,
+      fetchImpl: dependencies.fetchImpl,
+      timeoutMs,
+    });
+    if (!matchesRoute(initialTarget.route, expectedInitialRoute)) {
+      throw new Error(
+        `initial CDP target route mismatch: expected ${formatExpectedRoute(expectedInitialRoute)}, got ${initialTarget.route}`,
+      );
+    }
+    assertAllowedRoute(
+      initialTarget.route,
+      activeForbiddenRoutes,
+      activeAllowedRoutes,
+    );
+    await connectTarget({
+      nextTarget: initialTarget,
+      nextRuntime: inspectedRuntime,
+      expected: expectedRuntime,
+    });
+    assertHealthy();
 
     const initial = await captureCheckpoint(client, "initial", {
       timeoutMs,
@@ -1559,6 +1607,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     record(initial);
 
     for (const step of sequence) {
+      await reconnectIfClosed();
       assertHealthy();
       if (step.type === "customer-activation") {
         const before = await waitForRoute(client, step.routeBefore, {
@@ -1821,6 +1870,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     }
 
     if (typeof onPaymentWindow === "function") {
+      await reconnectIfClosed();
       const continuousStart = capture ? await capture.captureNow() : null;
       const paymentWindow = await onPaymentWindow();
       const continuousEnd = capture ? await capture.captureNow() : null;
@@ -1853,6 +1903,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       assertHealthy();
     }
 
+    await reconnectIfClosed();
     const final = await captureCheckpoint(client, "final", {
       timeoutMs,
       screenshot: screenshotCheckpoints,
