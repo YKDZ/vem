@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::events::DaemonEvent;
 use crate::{
+    automatic_vent::AutomaticVentController,
     hardware::HardwareSupervisor,
     state::{LocalStateStore, StoreError},
 };
@@ -68,6 +69,7 @@ pub struct MqttSyncRuntime {
     state: LocalStateStore,
     hardware: HardwareSupervisor,
     readiness_context: Option<crate::ipc::IpcContext>,
+    automatic_vent: Option<AutomaticVentController>,
     environment: Arc<RwLock<EnvironmentHeartbeatCache>>,
     events: broadcast::Sender<DaemonEvent>,
     shutdown: CancellationToken,
@@ -92,6 +94,7 @@ impl MqttSyncRuntime {
             state,
             hardware,
             readiness_context: None,
+            automatic_vent: None,
             environment: Arc::new(RwLock::new(EnvironmentHeartbeatCache::default())),
             events,
             shutdown,
@@ -109,7 +112,14 @@ impl MqttSyncRuntime {
 
     pub fn with_readiness_context(mut self, context: crate::ipc::IpcContext) -> Self {
         self.environment = context.ui.status_cache.environment.clone();
+        self.automatic_vent = Some(context.automatic_vent.clone());
         self.readiness_context = Some(context);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_automatic_vent(mut self, automatic_vent: AutomaticVentController) -> Self {
+        self.automatic_vent = Some(automatic_vent);
         self
     }
 
@@ -512,24 +522,41 @@ impl MqttSyncRuntime {
         validate_environment_control_command(&command)?;
 
         if command.vent_speed.is_some() {
-            if let Some(context) = self.readiness_context.as_ref() {
-                context.automatic_vent.supersede_by_admin().await;
+            if let Some(automatic_vent) = self.automatic_vent.as_ref() {
+                // Receipt is the single Admin supersession boundary. A stable
+                // edge observed after this point must remain armed while the
+                // one-shot command waits for B3 ownership.
+                automatic_vent.supersede_by_admin().await;
             }
         }
 
         let mut ack_event =
             crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
-        ack_event.payload_json = self.sign_outbox_payload(
+        ack_event.payload_json = match self.sign_outbox_payload(
             format!("ack:{}", command.command_no),
             ack_event.payload_json,
-        )?;
-        self.state
-            .enqueue_outbox(&ack_event)
-            .await
-            .map_err(|error| error.to_string())?;
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.cancel_automatic_vent_admin(&command).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.state.enqueue_outbox(&ack_event).await {
+            self.cancel_automatic_vent_admin(&command).await;
+            return Err(error.to_string());
+        }
 
-        let deadline = environment_command_deadline(&envelope.issued_at, command.timeout_seconds)?;
+        let deadline =
+            match environment_command_deadline(&envelope.issued_at, command.timeout_seconds) {
+                Ok(deadline) => deadline,
+                Err(error) => {
+                    self.cancel_automatic_vent_admin(&command).await;
+                    return Err(error);
+                }
+            };
         if command_deadline_elapsed(&deadline) {
+            self.cancel_automatic_vent_admin(&command).await;
             self.enqueue_environment_control_result(
                 &command,
                 false,
@@ -545,7 +572,15 @@ impl MqttSyncRuntime {
             });
         }
 
-        if self.is_dispense_in_progress().await? {
+        let dispense_in_progress = match self.is_dispense_in_progress().await {
+            Ok(value) => value,
+            Err(error) => {
+                self.cancel_automatic_vent_admin(&command).await;
+                return Err(error);
+            }
+        };
+        if dispense_in_progress {
+            self.cancel_automatic_vent_admin(&command).await;
             self.enqueue_environment_control_result(
                 &command,
                 false,
@@ -564,6 +599,7 @@ impl MqttSyncRuntime {
         let environment_guard = match self.acquire_environment_command_lock() {
             Ok(guard) => guard,
             Err(error) => {
+                self.cancel_automatic_vent_admin(&command).await;
                 self.enqueue_environment_control_result(
                     &command,
                     false,
@@ -581,6 +617,7 @@ impl MqttSyncRuntime {
         };
 
         let Some(remaining) = command_deadline_remaining(&deadline) else {
+            self.cancel_automatic_vent_admin(&command).await;
             self.enqueue_environment_control_result(
                 &command,
                 false,
@@ -692,15 +729,20 @@ impl MqttSyncRuntime {
         if failure.is_none() {
             if let Some(speed) = command.vent_speed {
                 if let Some(remaining) = command_deadline_remaining(&deadline) {
+                    let automatic_vent = self.automatic_vent.clone();
                     let set_vent_speed = async {
-                        if let Some(context) = self.readiness_context.as_ref() {
-                            context.automatic_vent.execute_admin_one_shot(speed).await
+                        if let Some(automatic_vent) = automatic_vent.as_ref() {
+                            automatic_vent.execute_admin_one_shot(speed).await
                         } else {
                             let hardware = self.hardware.acquire_environment_hardware().await;
                             hardware.set_vent_speed(speed).await
                         }
                     };
-                    match tokio::time::timeout(remaining, set_vent_speed).await {
+                    let result = tokio::time::timeout(remaining, set_vent_speed).await;
+                    if let Some(automatic_vent) = automatic_vent {
+                        automatic_vent.cancel_admin_one_shot().await;
+                    }
+                    match result {
                         Err(_) => {
                             failure = Some((
                                 "COMMAND_EXPIRED".to_string(),
@@ -772,6 +814,14 @@ impl MqttSyncRuntime {
         Ok(CommandHandlingResult::Processed {
             command_no: command.command_no,
         })
+    }
+
+    async fn cancel_automatic_vent_admin(&self, command: &EnvironmentControlCommandPayload) {
+        if command.vent_speed.is_some() {
+            if let Some(automatic_vent) = self.automatic_vent.as_ref() {
+                automatic_vent.cancel_admin_one_shot().await;
+            }
+        }
     }
 
     async fn reject_environment_command_while_slot_occupied(
@@ -1466,6 +1516,7 @@ fn map_mqtt_error(error: ClientError) -> String {
 mod tests {
     use super::*;
     use crate::{
+        automatic_vent::AutomaticVentController,
         hardware::HardwareSupervisor,
         state::{
             store::{MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput},
@@ -1496,6 +1547,7 @@ mod tests {
         target_temperature_calls: AtomicUsize,
         air_conditioner_calls: AtomicUsize,
         vent_speed_calls: AtomicUsize,
+        vent_speeds: Mutex<Vec<u8>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1606,9 +1658,14 @@ mod tests {
             Ok(())
         }
 
-        async fn set_vent_speed(&self, _speed: u8) -> Result<(), String> {
+        async fn set_vent_speed(&self, speed: u8) -> Result<(), String> {
             tokio::time::sleep(self.delay()).await;
             self.calls.vent_speed_calls.fetch_add(1, Ordering::SeqCst);
+            self.calls
+                .vent_speeds
+                .lock()
+                .expect("tracking vent speeds")
+                .push(speed);
             Ok(())
         }
 
@@ -2202,6 +2259,89 @@ mod tests {
             serde_json::Value::String("ENVIRONMENT_COMMAND_IN_PROGRESS".to_string()),
         );
         assert_eq!(calls.vent_speed_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mqtt_admin_b3_receipt_keeps_a_new_stable_edge_armed_until_execution_completes() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let (hardware, calls) = TrackingEnvironmentHardware::new(80);
+        let supervisor = HardwareSupervisor::from_adapter(Arc::new(hardware));
+        let automatic_vent = AutomaticVentController::new_with_guard(
+            supervisor.clone(),
+            CancellationToken::new(),
+            StdDuration::from_millis(1),
+        );
+        let runtime = Arc::new(
+            MqttSyncRuntime::new(
+                "MACHINE-ENV".to_string(),
+                "mqtt-signing-secret-for-env".to_string(),
+                state.clone(),
+                supervisor,
+                broadcast::channel(1).0,
+                CancellationToken::new(),
+            )
+            .with_automatic_vent(automatic_vent.clone()),
+        );
+        let command = environment_control_command("ENV-ADMIN-B3", None, None, Some(3), 5);
+        let envelope = environment_control_envelope(
+            "MACHINE-ENV",
+            "mqtt-signing-secret-for-env",
+            "ENV-ADMIN-B3-MSG",
+            &command,
+            None,
+        );
+        let mut task_slot = None;
+
+        runtime
+            .dispatch_environment_command(envelope, &mut task_slot)
+            .await
+            .expect("MQTT dispatch");
+
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            loop {
+                if !state
+                    .list_due_outbox(chrono::Utc::now())
+                    .await
+                    .expect("outbox")
+                    .is_empty()
+                {
+                    return;
+                }
+                tokio::time::sleep(StdDuration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Admin receipt must enqueue its acknowledgement before execution");
+
+        automatic_vent
+            .request("presence-2:departure", 0)
+            .await
+            .expect("new stable edge after Admin receipt");
+
+        task_slot
+            .take()
+            .expect("environment task")
+            .await
+            .expect("environment task panicked")
+            .expect("Admin B3 command");
+
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            loop {
+                if *calls.vent_speeds.lock().expect("tracking vent speeds") == vec![3, 0] {
+                    return;
+                }
+                tokio::time::sleep(StdDuration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the next stable intent must run once after Admin B3 without an immediate rebound");
+        assert_eq!(
+            *calls.vent_speeds.lock().expect("tracking vent speeds"),
+            vec![3, 0]
+        );
     }
 
     #[tokio::test]

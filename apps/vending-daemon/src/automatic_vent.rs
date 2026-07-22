@@ -17,6 +17,9 @@ use crate::{
 const AUTOMATIC_VENT_GUARD: Duration = Duration::from_secs(5);
 const AUTOMATIC_VENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOMATIC_VENT_DEFER_RETRY: Duration = Duration::from_millis(100);
+const AUTOMATIC_VENT_RETRY_BUDGET: Duration = Duration::from_secs(15);
+const AUTOMATIC_VENT_LIFECYCLE_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+const AUTOMATIC_VENT_RETRY_EXHAUSTED: &str = "automatic B3 retry budget exhausted";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +34,7 @@ struct AutomaticVentState {
     closed: bool,
     worker_running: bool,
     admin_superseded: bool,
+    admin_execution_pending: bool,
     pending: Option<AutomaticVentIntent>,
     executing: Option<AutomaticVentIntent>,
     confirmed_speed: Option<u8>,
@@ -46,6 +50,7 @@ struct AutomaticVentIntent {
     speed: u8,
     force: bool,
     generation: u64,
+    retry_deadline: Instant,
 }
 
 enum AutomaticVentExecution {
@@ -66,6 +71,8 @@ pub struct AutomaticVentController {
     shutdown: CancellationToken,
     guard: Duration,
     operation_timeout: Duration,
+    retry_budget: Duration,
+    lifecycle_wait_timeout: Duration,
     b3_protocol_guard: Arc<Mutex<()>>,
     state: Arc<Mutex<AutomaticVentState>>,
     evidence: Option<AutomaticVentEvidence>,
@@ -95,11 +102,31 @@ impl AutomaticVentController {
         guard: Duration,
         operation_timeout: Duration,
     ) -> Self {
+        Self::new_with_timeouts(
+            hardware,
+            shutdown,
+            guard,
+            operation_timeout,
+            AUTOMATIC_VENT_RETRY_BUDGET,
+            AUTOMATIC_VENT_LIFECYCLE_WAIT_TIMEOUT,
+        )
+    }
+
+    pub(crate) fn new_with_timeouts(
+        hardware: HardwareSupervisor,
+        shutdown: CancellationToken,
+        guard: Duration,
+        operation_timeout: Duration,
+        retry_budget: Duration,
+        lifecycle_wait_timeout: Duration,
+    ) -> Self {
         Self {
             hardware,
             shutdown,
             guard,
             operation_timeout,
+            retry_budget,
+            lifecycle_wait_timeout,
             b3_protocol_guard: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(AutomaticVentState::default())),
             evidence: None,
@@ -124,8 +151,13 @@ impl AutomaticVentController {
         lifecycle_id: &str,
     ) -> Result<AutomaticVentRequestOutcome, String> {
         let outcome = self.enqueue(lifecycle_id, 0, true).await?;
-        if outcome == AutomaticVentRequestOutcome::Accepted {
-            self.wait_until_idle().await;
+        if outcome == AutomaticVentRequestOutcome::Accepted
+            && !self.wait_until_idle(self.lifecycle_wait_timeout).await
+        {
+            return Err(format!(
+                "automatic vent lifecycle close timed out after {}ms",
+                self.lifecycle_wait_timeout.as_millis()
+            ));
         }
         Ok(outcome)
     }
@@ -189,6 +221,9 @@ impl AutomaticVentController {
             speed,
             force,
             generation: state.latest_intent_generation,
+            retry_deadline: Instant::now()
+                .checked_add(self.retry_budget)
+                .unwrap_or_else(Instant::now),
         });
         if !state.worker_running {
             state.worker_running = true;
@@ -202,31 +237,40 @@ impl AutomaticVentController {
         let mut state = self.state.lock().await;
         state.pending = None;
         state.admin_superseded = true;
+        state.admin_execution_pending = true;
+    }
+
+    pub async fn cancel_admin_one_shot(&self) {
+        self.complete_admin_one_shot().await;
     }
 
     pub async fn execute_admin_one_shot(&self, speed: u8) -> Result<(), String> {
         if speed > 4 {
             return Err("Admin vent speed must be between 0 and 4".to_string());
         }
-        self.supersede_by_admin().await;
-        let _protocol_guard = self.b3_protocol_guard.lock().await;
-        if !self.wait_for_protocol_guard().await {
-            return Err("automatic vent controller is closed".to_string());
-        }
-        let hardware = tokio::select! {
-            _ = self.shutdown.cancelled() => return Err("automatic vent controller is closed".to_string()),
-            hardware = self.hardware.acquire_environment_hardware() => hardware,
-        };
-        {
-            let mut state = self.state.lock().await;
-            if state.closed || self.shutdown.is_cancelled() {
+        let result = async {
+            let _protocol_guard = self.b3_protocol_guard.lock().await;
+            if !self.wait_for_protocol_guard().await {
                 return Err("automatic vent controller is closed".to_string());
             }
-            state.last_attempt_at = Some(Instant::now());
-        }
-        hardware.set_vent_speed(speed).await?;
-        self.state.lock().await.confirmed_speed = Some(speed);
-        Ok(())
+            let hardware = tokio::select! {
+                _ = self.shutdown.cancelled() => return Err("automatic vent controller is closed".to_string()),
+                hardware = self.hardware.acquire_environment_hardware() => hardware,
+            };
+            {
+                let mut state = self.state.lock().await;
+                if state.closed || self.shutdown.is_cancelled() {
+                    return Err("automatic vent controller is closed".to_string());
+                }
+                state.last_attempt_at = Some(Instant::now());
+            }
+            hardware.set_vent_speed(speed).await?;
+            self.state.lock().await.confirmed_speed = Some(speed);
+            Ok(())
+        };
+        let result = result.await;
+        self.complete_admin_one_shot().await;
+        result
     }
 
     pub async fn close(&self) {
@@ -256,46 +300,67 @@ impl AutomaticVentController {
                 return;
             }
 
-            let intent = {
+            let (intent, wait_for_admin) = {
                 let mut state = self.state.lock().await;
                 if state.closed
                     || self.shutdown.is_cancelled()
                     || (state.admin_superseded
                         && state.pending.as_ref().is_some_and(|pending| !pending.force))
                 {
-                    None
+                    (None, false)
+                } else if state.admin_execution_pending
+                    && state.pending.as_ref().is_some_and(|pending| !pending.force)
+                {
+                    (None, true)
                 } else {
                     let pending = state.pending.take();
                     if pending.as_ref().is_some_and(|pending| {
                         !pending.force && Some(pending.speed) == state.confirmed_speed
                     }) {
-                        None
+                        (None, false)
                     } else {
                         state.executing = pending.clone();
-                        pending
+                        (pending, false)
                     }
                 }
             };
             let Some(intent) = intent else {
+                if wait_for_admin {
+                    tokio::select! {
+                        _ = self.shutdown.cancelled() => return,
+                        _ = tokio::time::sleep(AUTOMATIC_VENT_DEFER_RETRY) => {}
+                    }
+                }
                 continue;
             };
             let result = self.execute_automatic_intent(&intent).await;
             let mut state = self.state.lock().await;
             state.executing = None;
             if matches!(result, AutomaticVentExecution::Deferred) {
-                // A newer edge wins. Otherwise retain this edge for a bounded retry
-                // after Admin or another B3 owner releases the protocol guard.
-                if !state.closed
+                // A newer edge wins. The current intent may retry only until its
+                // own deadline, so persistent B1/B2 or B3 contention cannot hold
+                // the worker or lifecycle close open forever.
+                let retry_current_intent = !state.closed
                     && !self.shutdown.is_cancelled()
                     && !state.admin_superseded
-                    && state.pending.is_none()
-                {
+                    && state.latest_intent_generation == intent.generation
+                    && state.pending.is_none();
+                if retry_current_intent && self.retry_budget_exhausted(&intent) {
+                    state.last_error = Some(AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string());
+                    drop(state);
+                    self.record_outcome(&intent, Some(AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string()))
+                        .await;
+                    continue;
+                }
+                if retry_current_intent {
                     state.pending = Some(intent.clone());
                 }
                 drop(state);
-                tokio::select! {
-                    _ = self.shutdown.cancelled() => return,
-                    _ = tokio::time::sleep(AUTOMATIC_VENT_DEFER_RETRY) => {}
+                if retry_current_intent {
+                    tokio::select! {
+                        _ = self.shutdown.cancelled() => return,
+                        _ = tokio::time::sleep(self.retry_delay(&intent)) => {}
+                    }
                 }
                 continue;
             }
@@ -323,6 +388,14 @@ impl AutomaticVentController {
         &self,
         intent: &AutomaticVentIntent,
     ) -> AutomaticVentExecution {
+        if !self.automatic_intent_is_current(intent).await {
+            return AutomaticVentExecution::Skipped;
+        }
+        if self.retry_budget_exhausted(intent) {
+            return AutomaticVentExecution::Completed(Err(
+                AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string()
+            ));
+        }
         let _protocol_guard = match self.acquire_b3_protocol_guard().await {
             None => return AutomaticVentExecution::Skipped,
             Some(Err(())) => return AutomaticVentExecution::Deferred,
@@ -331,11 +404,21 @@ impl AutomaticVentController {
         if !self.automatic_intent_is_current(intent).await {
             return AutomaticVentExecution::Skipped;
         }
+        if self.retry_budget_exhausted(intent) {
+            return AutomaticVentExecution::Completed(Err(
+                AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string()
+            ));
+        }
         if !self.wait_for_protocol_guard().await {
             return AutomaticVentExecution::Skipped;
         }
         if !self.automatic_intent_is_current(intent).await {
             return AutomaticVentExecution::Skipped;
+        }
+        if self.retry_budget_exhausted(intent) {
+            return AutomaticVentExecution::Completed(Err(
+                AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string()
+            ));
         }
         let hardware = tokio::select! {
             _ = self.shutdown.cancelled() => return AutomaticVentExecution::Skipped,
@@ -358,6 +441,12 @@ impl AutomaticVentController {
         // guard or lower-controller ownership. Check at the write boundary so
         // only the latest intent can emit a controller frame.
         if !self.prepare_automatic_hardware_write(intent).await {
+            if self.retry_budget_exhausted(intent) && self.automatic_intent_is_current(intent).await
+            {
+                return AutomaticVentExecution::Completed(Err(
+                    AUTOMATIC_VENT_RETRY_EXHAUSTED.to_string()
+                ));
+            }
             return AutomaticVentExecution::Skipped;
         }
         match tokio::select! {
@@ -395,6 +484,7 @@ impl AutomaticVentController {
             && !self.shutdown.is_cancelled()
             && state.latest_intent_generation == intent.generation
             && !(state.admin_superseded && !intent.force)
+            && !(state.admin_execution_pending && !intent.force)
     }
 
     async fn prepare_automatic_hardware_write(&self, intent: &AutomaticVentIntent) -> bool {
@@ -403,6 +493,8 @@ impl AutomaticVentController {
             || self.shutdown.is_cancelled()
             || state.latest_intent_generation != intent.generation
             || (state.admin_superseded && !intent.force)
+            || (state.admin_execution_pending && !intent.force)
+            || self.retry_budget_exhausted(intent)
         {
             return false;
         }
@@ -427,17 +519,37 @@ impl AutomaticVentController {
         }
     }
 
-    async fn wait_until_idle(&self) {
-        loop {
-            let idle = {
-                let state = self.state.lock().await;
-                !state.worker_running && state.pending.is_none() && state.executing.is_none()
-            };
-            if idle {
-                return;
+    fn retry_budget_exhausted(&self, intent: &AutomaticVentIntent) -> bool {
+        Instant::now() >= intent.retry_deadline
+    }
+
+    async fn complete_admin_one_shot(&self) {
+        self.state.lock().await.admin_execution_pending = false;
+    }
+
+    fn retry_delay(&self, intent: &AutomaticVentIntent) -> Duration {
+        AUTOMATIC_VENT_DEFER_RETRY.min(
+            intent
+                .retry_deadline
+                .saturating_duration_since(Instant::now()),
+        )
+    }
+
+    async fn wait_until_idle(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            loop {
+                let idle = {
+                    let state = self.state.lock().await;
+                    !state.worker_running && state.pending.is_none() && state.executing.is_none()
+                };
+                if idle {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .is_ok()
     }
 
     async fn record_outcome(&self, intent: &AutomaticVentIntent, error: Option<String>) {
@@ -507,7 +619,9 @@ mod tests {
 
     use crate::{hardware::HardwareSupervisor, state::LocalStateStore};
 
-    use super::{AutomaticVentController, AutomaticVentRequestOutcome};
+    use super::{
+        AutomaticVentController, AutomaticVentRequestOutcome, AUTOMATIC_VENT_RETRY_EXHAUSTED,
+    };
 
     #[derive(Default)]
     struct RecordingHardware {
@@ -649,6 +763,7 @@ mod tests {
         controller.supersede_by_admin().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(adapter.vent_speeds.lock().expect("speeds").is_empty());
+        controller.cancel_admin_one_shot().await;
 
         controller
             .request("presence-2:departure", 0)
@@ -768,6 +883,7 @@ mod tests {
             .await
             .expect("first automatic edge");
         tokio::time::sleep(Duration::from_millis(20)).await;
+        controller.supersede_by_admin().await;
         let admin_controller = controller.clone();
         let admin_b3 =
             tokio::spawn(async move { admin_controller.execute_admin_one_shot(3).await });
@@ -815,6 +931,7 @@ mod tests {
             .await
             .expect("initial automatic edge");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        controller.supersede_by_admin().await;
         controller
             .execute_admin_one_shot(3)
             .await
@@ -850,6 +967,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2]);
+        controller.cancel_admin_one_shot().await;
 
         controller
             .request("presence-2:departure", 0)
@@ -913,6 +1031,75 @@ mod tests {
             .expect("lifecycle close");
 
         assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0]);
+    }
+
+    #[tokio::test]
+    async fn permanent_b3_contention_exhausts_the_intent_budget_and_stops_the_worker() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_timeouts(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(10),
+            Duration::from_millis(35),
+            Duration::from_secs(1),
+        );
+        let b3_guard = controller.b3_protocol_guard.lock().await;
+
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("automatic intent accepted");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let state = controller.state.lock().await;
+                if !state.worker_running
+                    && state.pending.is_none()
+                    && state.executing.is_none()
+                    && state.last_error.as_deref() == Some(AUTOMATIC_VENT_RETRY_EXHAUSTED)
+                {
+                    return;
+                }
+                drop(state);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("persistent B3 contention must exhaust the automatic intent budget");
+
+        assert!(adapter.vent_speeds.lock().expect("speeds").is_empty());
+        assert_eq!(
+            controller.health_component().await.code,
+            "AUTOMATIC_VENT_COMMAND_FAILED"
+        );
+        drop(b3_guard);
+    }
+
+    #[tokio::test]
+    async fn shutdown_lifecycle_wait_has_an_independent_deadline_under_b3_contention() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_timeouts(
+            HardwareSupervisor::from_adapter(adapter),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_millis(25),
+        );
+        let b3_guard = controller.b3_protocol_guard.lock().await;
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            controller.close_for_lifecycle("runtime-shutdown"),
+        )
+        .await
+        .expect("shutdown lifecycle close must not wait indefinitely")
+        .expect_err("B3 contention must exhaust the lifecycle wait deadline");
+
+        assert!(result.contains("lifecycle close timed out"));
+        controller.close().await;
+        drop(b3_guard);
     }
 
     #[tokio::test]
