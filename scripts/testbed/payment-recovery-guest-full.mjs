@@ -84,10 +84,11 @@ function daemonHeaders(handoff) {
     "content-type": "application/json",
   };
 }
-function daemon(handoff, path, body) {
+function daemon(handoff, path, body, { timeoutMs = 30_000 } = {}) {
   return json(`${daemonUrl(handoff)}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: daemonHeaders(handoff),
+    signal: AbortSignal.timeout(timeoutMs),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
@@ -252,16 +253,52 @@ export function validatePaymentRecoveryEvidence(report) {
       active.row?.status !== "active" ||
       terminal.row?.id !== active.row?.id ||
       terminal.row?.status !== "released" ||
+      attempt.assertions?.duplicatePaymentCount !== 0
+    )
+      throw new Error(
+        `payment recovery ${kind} did not return to reservation baseline`,
+      );
+    if (kind === "create_failure") {
+      if (
+        attempt.createGate?.source !== "mock_provider_create_gate" ||
+        attempt.createGate?.paymentNo !== attempt.payment.paymentNo ||
+        attempt.createGate?.released !== false ||
+        attempt.createGate?.openedAfterFailure !== true ||
+        !attempt.createGate?.error?.includes(
+          "mock payment create gate timed out before release",
+        ) ||
+        attempt.technicalEvidence?.providerCreate?.source !==
+          "mock_provider_create_gate" ||
+        attempt.technicalEvidence.providerCreate.paymentNo !==
+          attempt.payment.paymentNo ||
+        !attempt.technicalEvidence.providerCreate.error?.includes(
+          "mock payment create gate timed out before release",
+        ) ||
+        attempt.daemon?.active !== null ||
+        attempt.daemon?.terminal?.orderId !== null ||
+        attempt.daemon?.terminal?.paymentId !== null ||
+        attempt.daemon?.terminal?.paymentStatus !== null ||
+        attempt.daemon?.terminal?.nextAction !== null ||
+        attempt.customer !== null
+      ) {
+        throw new Error(
+          "payment recovery create failure did not prove provider gate cleanup",
+        );
+      }
+      continue;
+    }
+    if (
       attempt.daemon?.active?.orderId !== attempt.order.id ||
       attempt.daemon?.active?.paymentId !== attempt.payment.id ||
       attempt.daemon?.terminal?.orderId !== attempt.order.id ||
       attempt.daemon?.terminal?.paymentId !== attempt.payment.id ||
       attempt.daemon?.terminal?.paymentStatus !==
         attempt.expectedTerminal.paymentStatus
-    )
+    ) {
       throw new Error(
-        `payment recovery ${kind} did not return to reservation baseline`,
+        `payment recovery ${kind} daemon terminal state is incomplete`,
       );
+    }
     if (
       attempt.customer?.source !== "installed_machine_runtime_cdp" ||
       attempt.customer?.orderId !== attempt.order.id ||
@@ -421,6 +458,25 @@ function terminalRows(platform, orderId, paymentId) {
   };
 }
 
+function orderForPaymentNo(platform, paymentNo) {
+  const payment = exactlyOne(
+    rows(platform.raw, "payments").filter((row) => row.paymentNo === paymentNo),
+    `platform payment ${paymentNo} was not unique`,
+  );
+  const order = exactlyOne(
+    rows(platform.raw, "orders").filter((row) => row.id === payment.orderId),
+    `platform order for payment ${paymentNo} was not unique`,
+  );
+  return {
+    order: {
+      id: order.id,
+      orderNo: order.orderNo,
+      paymentId: payment.id,
+    },
+    payment: { id: payment.id, paymentNo: payment.paymentNo },
+  };
+}
+
 function dispenseMovementsForOrder(platform, order, inventoryId) {
   const orderItem = rows(platform.raw, "orderItems").find(
     (item) =>
@@ -444,6 +500,18 @@ async function waitForDaemonTransaction(handoff, order, expectedStatus = null) {
       transaction?.paymentId === order.paymentId &&
       (expectedStatus === null ||
         transaction?.paymentStatus === expectedStatus),
+  );
+}
+
+async function waitForDaemonCleanup(handoff, paymentNo) {
+  return await waitFor(
+    `daemon create failure cleanup ${paymentNo}`,
+    () => daemon(handoff, "/v1/transactions/current"),
+    (transaction) =>
+      transaction?.orderId === null &&
+      transaction?.paymentId === null &&
+      transaction?.paymentStatus === null &&
+      transaction?.nextAction === null,
   );
 }
 
@@ -548,7 +616,6 @@ export async function runPaymentRecoveryGuest(options) {
     payment: null,
     attempts: [],
     recoveryMqttEvidence: null,
-    replay: null,
     subsequentSale: null,
     assertions: { duplicatePaymentCount: null },
   };
@@ -601,36 +668,93 @@ export async function runPaymentRecoveryGuest(options) {
       const baseline = reservationBaseline(baselinePlatform, slot.inventoryId);
       let attemptOrder;
       let gate = null;
+      let activePlatform = null;
+      let activeDaemon = null;
       if (kind === "create_failure") {
         await control(input, "/v1/mock-payment-create-gate/arm");
-        const pendingOrder = daemon(handoff, "/v1/intents/create-order", {
-          ...orderRequest,
-          idempotencyKey: `${runId}-payment-recovery-${kind}`,
-        });
-        const pending = await waitForCreateGatePending(input);
-        const activePlatformBeforeRelease = await waitFor(
-          `platform active reservation for ${pending.pending.paymentNo}`,
-          () => platformReport(input, runId, machineCode, session.sessionId),
-          (platform) =>
-            rows(platform.raw, "payments").some(
-              (payment) => payment.paymentNo === pending.pending.paymentNo,
-            ) &&
-            rows(platform.raw, "reservations").some(
-              (reservation) =>
-                reservation.status === "active" &&
-                reservation.inventoryId === slot.inventoryId,
-            ),
+        const pendingOrder = daemon(
+          handoff,
+          "/v1/intents/create-order",
+          {
+            ...orderRequest,
+            idempotencyKey: `${runId}-payment-recovery-${kind}`,
+          },
+          { timeoutMs: 45_000 },
+        ).then(
+          (value) => ({ value, error: null }),
+          (error) => ({ value: null, error }),
         );
-        await control(input, "/v1/mock-payment-create-gate/release", {
-          paymentNo: pending.pending.paymentNo,
-        });
-        attemptOrder = await pendingOrder;
-        await control(input, "/v1/mock-payment-create-gate/open");
-        gate = {
-          pendingObservedAt: pending.pending.observedAt,
-          paymentNo: pending.pending.paymentNo,
-          activePlatformBeforeRelease,
-        };
+        let pending = null;
+        let outcome = null;
+        let openedAfterFailure = false;
+        try {
+          pending = await waitForCreateGatePending(input);
+          activePlatform = await waitFor(
+            `platform active reservation for ${pending.pending.paymentNo}`,
+            () => platformReport(input, runId, machineCode, session.sessionId),
+            (platform) => {
+              const correlated = orderForPaymentNo(
+                platform,
+                pending.pending.paymentNo,
+              );
+              return rows(platform.raw, "reservations").some(
+                (reservation) =>
+                  reservation.orderId === correlated.order.id &&
+                  reservation.status === "active" &&
+                  reservation.inventoryId === slot.inventoryId,
+              );
+            },
+            45_000,
+          );
+          outcome = await pendingOrder;
+          if (outcome.value !== null) {
+            throw new Error(
+              "mock payment create gate unexpectedly allowed provider creation",
+            );
+          }
+          const createError =
+            outcome.error instanceof Error
+              ? outcome.error
+              : new Error(String(outcome.error));
+          if (
+            !createError.message.includes(
+              "mock payment create gate timed out before release",
+            )
+          ) {
+            throw createError;
+          }
+          const correlated = orderForPaymentNo(
+            activePlatform,
+            pending.pending.paymentNo,
+          );
+          attemptOrder = {
+            orderId: correlated.order.id,
+            orderNo: correlated.order.orderNo,
+            paymentId: correlated.payment.id,
+            paymentNo: correlated.payment.paymentNo,
+          };
+          gate = {
+            source: "mock_provider_create_gate",
+            pendingObservedAt: pending.pending.observedAt,
+            paymentNo: pending.pending.paymentNo,
+            released: false,
+            openedAfterFailure: false,
+            error: createError.message,
+            httpStatus: createError.httpStatus ?? null,
+          };
+        } finally {
+          const opened = await control(
+            input,
+            "/v1/mock-payment-create-gate/open",
+          );
+          openedAfterFailure = opened?.state === "open";
+          if (gate) gate.openedAfterFailure = openedAfterFailure;
+        }
+        if (!gate?.openedAfterFailure) {
+          throw new Error(
+            "mock payment create gate did not reopen after timeout",
+          );
+        }
       } else {
         attemptOrder = await daemon(handoff, "/v1/intents/create-order", {
           ...orderRequest,
@@ -651,21 +775,26 @@ export async function runPaymentRecoveryGuest(options) {
           "create gate pending payment did not match daemon order response",
         );
       }
-      const activePlatform = await waitFor(
-        `platform active reservation ${payment.id}`,
-        () => platformReport(input, runId, machineCode, session.sessionId),
-        (platform) => {
-          const reservation = rows(platform.raw, "reservations").filter(
-            (row) =>
-              row.orderId === order.id && row.inventoryId === slot.inventoryId,
-          );
-          return reservation.length === 1 && reservation[0].status === "active";
-        },
-      );
-      const activeDaemon = await waitForDaemonTransaction(handoff, {
-        orderId: order.id,
-        paymentId: payment.id,
-      });
+      if (kind !== "create_failure") {
+        activePlatform = await waitFor(
+          `platform active reservation ${payment.id}`,
+          () => platformReport(input, runId, machineCode, session.sessionId),
+          (platform) => {
+            const reservation = rows(platform.raw, "reservations").filter(
+              (row) =>
+                row.orderId === order.id &&
+                row.inventoryId === slot.inventoryId,
+            );
+            return (
+              reservation.length === 1 && reservation[0].status === "active"
+            );
+          },
+        );
+        activeDaemon = await waitForDaemonTransaction(handoff, {
+          orderId: order.id,
+          paymentId: payment.id,
+        });
+      }
       return { baseline, activePlatform, activeDaemon, order, payment, gate };
     };
 
@@ -674,11 +803,8 @@ export async function runPaymentRecoveryGuest(options) {
       let recovery = null;
       let expiryInjection = null;
       if (kind === "create_failure") {
-        await api(input, `/payments/mock/${created.payment.paymentNo}/fail`, {
-          method: "POST",
-          token: adminAccessToken,
-          body: {},
-        });
+        // The provider create timeout above is the production failure input.
+        // OrdersService performs the local cancellation and reservation release.
       } else if (kind === "query_failure") {
         const queryFault = await control(
           input,
@@ -786,16 +912,22 @@ export async function runPaymentRecoveryGuest(options) {
         },
         kind === "expired" ? 95_000 : 30_000,
       );
-      const terminalDaemon = await waitForDaemonTransaction(
-        handoff,
-        { orderId: created.order.id, paymentId: created.payment.id },
-        expectedTerminal.paymentStatus,
-      );
-      const customerSurface = await waitForCustomerTerminal(
-        customer,
-        { orderId: created.order.id, paymentId: created.payment.id },
-        expectedTerminal,
-      );
+      const terminalDaemon =
+        kind === "create_failure"
+          ? await waitForDaemonCleanup(handoff, created.payment.paymentNo)
+          : await waitForDaemonTransaction(
+              handoff,
+              { orderId: created.order.id, paymentId: created.payment.id },
+              expectedTerminal.paymentStatus,
+            );
+      const customerSurface =
+        kind === "create_failure"
+          ? null
+          : await waitForCustomerTerminal(
+              customer,
+              { orderId: created.order.id, paymentId: created.payment.id },
+              expectedTerminal,
+            );
       const terminal = terminalRows(
         terminalPlatform,
         created.order.id,
@@ -828,28 +960,47 @@ export async function runPaymentRecoveryGuest(options) {
           ),
         },
         daemon: { active: created.activeDaemon, terminal: terminalDaemon },
-        customer: {
-          source: "installed_machine_runtime_cdp",
-          observedAt: new Date().toISOString(),
-          orderId: customerSurface.orderId,
-          paymentId: customerSurface.paymentId,
-          resultKind: customerSurface.resultKind,
-          displayIntent: customerSurface.displayIntent,
-          text: customerSurface.text,
-          route: customerSurface.route,
-        },
-        technicalEvidence: {
-          runtimeTrace: {
-            source: "installed_machine_runtime_trace_cdp",
-            orderId: customerSurface.trace.orderId,
-            paymentId: customerSurface.trace.paymentId,
-            resultKind: customerSurface.trace.resultKind,
-            entry: customerSurface.trace,
-          },
-        },
+        customer:
+          customerSurface === null
+            ? null
+            : {
+                source: "installed_machine_runtime_cdp",
+                observedAt: new Date().toISOString(),
+                orderId: customerSurface.orderId,
+                paymentId: customerSurface.paymentId,
+                resultKind: customerSurface.resultKind,
+                displayIntent: customerSurface.displayIntent,
+                text: customerSurface.text,
+                route: customerSurface.route,
+              },
+        technicalEvidence:
+          kind === "create_failure"
+            ? {
+                providerCreate: {
+                  source: "mock_provider_create_gate",
+                  paymentNo: created.payment.paymentNo,
+                  error: created.gate?.error ?? null,
+                  httpStatus: created.gate?.httpStatus ?? null,
+                },
+              }
+            : {
+                runtimeTrace: {
+                  source: "installed_machine_runtime_trace_cdp",
+                  orderId: customerSurface.trace.orderId,
+                  paymentId: customerSurface.trace.paymentId,
+                  resultKind: customerSurface.trace.resultKind,
+                  entry: customerSurface.trace,
+                },
+              },
         ...(created.gate ? { createGate: created.gate } : {}),
         ...(recovery ? { recovery } : {}),
         ...(expiryInjection ? { expiryInjection } : {}),
+        assertions: {
+          duplicatePaymentCount:
+            rows(terminalPlatform.raw, "payments").filter(
+              (payment) => payment.orderId === created.order.id,
+            ).length - 1,
+        },
       };
     };
 
@@ -864,21 +1015,8 @@ export async function runPaymentRecoveryGuest(options) {
       paymentNo: createFailure.payment.paymentNo,
       orderNo: createFailure.order.orderNo,
     };
-    const replayedOrder = await daemon(handoff, "/v1/intents/create-order", {
-      ...orderRequest,
-      idempotencyKey: `${runId}-payment-recovery-create_failure`,
-    });
-    const replayPlatform = await platformReport(
-      input,
-      runId,
-      machineCode,
-      session.sessionId,
-    );
-    report.replay = { response: replayedOrder, platform: replayPlatform };
     report.assertions.duplicatePaymentCount =
-      rows(replayPlatform.raw, "payments").filter(
-        (payment) => payment.orderId === createFailure.order.id,
-      ).length - 1;
+      createFailure.assertions.duplicatePaymentCount;
     const recoveryEvidence = await control(
       input,
       `/v1/serial-sessions/${session.sessionId}/evidence`,

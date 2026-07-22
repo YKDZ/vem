@@ -116,16 +116,19 @@ function stockMaintenanceReport() {
         ref: "unavailable.png",
         route: "#/maintenance?source=operator",
         slotDisplayLabel: "B2",
+        slotId: "slot-stock-1",
       },
       refillConfirmed: {
         ref: "refill-confirmed.png",
         route: "#/maintenance?source=operator",
         slotDisplayLabel: "B2",
+        slotId: "slot-stock-1",
       },
       restoredSaleability: {
         ref: "restored.png",
         route: "#/catalog",
         slotDisplayLabel: "B2",
+        slotId: "slot-stock-1",
       },
     },
   };
@@ -316,30 +319,67 @@ function paymentRecoveryReport() {
             row: { id: `reservation-${kind}`, status: "released" },
           },
         },
-        daemon: {
-          active: { orderId: `order-${kind}`, paymentId: `payment-${kind}` },
-          terminal: {
-            orderId: `order-${kind}`,
-            paymentId: `payment-${kind}`,
-            paymentStatus,
-          },
-        },
-        customer: {
-          source: "installed_machine_runtime_cdp",
-          orderId: `order-${kind}`,
-          paymentId: `payment-${kind}`,
-          resultKind,
-          text: "本次订单已结束。",
-        },
-        technicalEvidence: {
-          runtimeTrace: {
-            source: "installed_machine_runtime_trace_cdp",
-            orderId: `order-${kind}`,
-            paymentId: `payment-${kind}`,
-            resultKind,
-            entry: { id: 1 },
-          },
-        },
+        daemon:
+          kind === "create_failure"
+            ? {
+                active: null,
+                terminal: {
+                  orderId: null,
+                  paymentId: null,
+                  paymentStatus: null,
+                  nextAction: null,
+                },
+              }
+            : {
+                active: {
+                  orderId: `order-${kind}`,
+                  paymentId: `payment-${kind}`,
+                },
+                terminal: {
+                  orderId: `order-${kind}`,
+                  paymentId: `payment-${kind}`,
+                  paymentStatus,
+                },
+              },
+        customer:
+          kind === "create_failure"
+            ? null
+            : {
+                source: "installed_machine_runtime_cdp",
+                orderId: `order-${kind}`,
+                paymentId: `payment-${kind}`,
+                resultKind,
+                text: "本次订单已结束。",
+              },
+        technicalEvidence:
+          kind === "create_failure"
+            ? {
+                providerCreate: {
+                  source: "mock_provider_create_gate",
+                  paymentNo: `payment-no-${kind}`,
+                  error: "mock payment create gate timed out before release",
+                },
+              }
+            : {
+                runtimeTrace: {
+                  source: "installed_machine_runtime_trace_cdp",
+                  orderId: `order-${kind}`,
+                  paymentId: `payment-${kind}`,
+                  resultKind,
+                  entry: { id: 1 },
+                },
+              },
+        ...(kind === "create_failure"
+          ? {
+              createGate: {
+                source: "mock_provider_create_gate",
+                paymentNo: `payment-no-${kind}`,
+                released: false,
+                openedAfterFailure: true,
+                error: "mock payment create gate timed out before release",
+              },
+            }
+          : {}),
         ...(kind === "query_failure"
           ? {
               recovery: {
@@ -364,6 +404,7 @@ function paymentRecoveryReport() {
               },
             }
           : {}),
+        assertions: { duplicatePaymentCount: 0 },
       };
     }),
     subsequentSale: {
@@ -1078,10 +1119,15 @@ describe("full workflow aggregate validator", () => {
   });
 
   it("accepts only the installed 1-to-0-to-2-to-1 stock maintenance loop", () => {
+    const report = stockMaintenanceReport();
+    assert.deepEqual(
+      Object.values(report.screenshots).map((screenshot) => screenshot.slotId),
+      ["slot-stock-1", "slot-stock-1", "slot-stock-1"],
+    );
     assert.equal(
       validateBusinessCheckReport(
         descriptor("stockMaintenance"),
-        stockMaintenanceReport(),
+        report,
         "/reports/stock-maintenance.json",
       ).status,
       "passed",

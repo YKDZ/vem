@@ -21,6 +21,17 @@ describe("payment recovery guest full", () => {
     assert.match(source, /report\.serialSession\s*=\s*\{/);
     assert.match(source, /sessionId:\s*required\(session\.sessionId/);
   });
+  it("drives create_failure through the provider create gate timeout without release or mock fail", () => {
+    const source = readFileSync(
+      new URL("./payment-recovery-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /mock-payment-create-gate\/arm/);
+    assert.match(source, /mock payment create gate timed out before release/);
+    assert.match(source, /mock-payment-create-gate\/open/);
+    assert.doesNotMatch(source, /mock-payment-create-gate\/release/);
+    assert.doesNotMatch(source, /payments\/mock\/\$\{.*paymentNo.*\}\/fail/);
+  });
   it("parses the installed guest contract", () => {
     assert.equal(
       parsePaymentRecoveryGuestArgs([
@@ -204,17 +215,33 @@ describe("payment recovery guest full", () => {
     );
   });
 
+  it("rejects create_failure evidence that releases the gate or leaves daemon state", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.createGate.released = true;
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /provider gate cleanup/,
+    );
+  });
+
   it("rejects report-only customer copy and locally invented correlations", () => {
     const report = recoveryReport();
     assert.throws(
       () =>
         validatePaymentRecoveryEvidence({
           ...report,
-          attempts: report.attempts.map((attempt) => ({
-            ...attempt,
-            customer: { saleable: true, semanticChineseOnly: true },
-            technicalEvidence: { correlationId: `local:${attempt.kind}` },
-          })),
+          attempts: report.attempts.map((attempt) =>
+            attempt.kind === "create_failure"
+              ? attempt
+              : {
+                  ...attempt,
+                  customer: { saleable: true, semanticChineseOnly: true },
+                  technicalEvidence: { correlationId: `local:${attempt.kind}` },
+                },
+          ),
         }),
       /customer surface|correlation/,
     );
@@ -279,35 +306,69 @@ function recoveryReport() {
           row: { id: `reservation-${kind}`, status: "released" },
         },
       },
-      daemon: {
-        active: { orderId: `order-${kind}`, paymentId: `pay-${kind}` },
-        terminal: {
-          orderId: `order-${kind}`,
-          paymentId: `pay-${kind}`,
-          paymentStatus: terminal.paymentStatus,
-        },
-      },
+      daemon:
+        kind === "create_failure"
+          ? {
+              active: null,
+              terminal: {
+                orderId: null,
+                paymentId: null,
+                paymentStatus: null,
+                nextAction: null,
+              },
+            }
+          : {
+              active: { orderId: `order-${kind}`, paymentId: `pay-${kind}` },
+              terminal: {
+                orderId: `order-${kind}`,
+                paymentId: `pay-${kind}`,
+                paymentStatus: terminal.paymentStatus,
+              },
+            },
       terminal: {
         paymentStatus: terminal.paymentStatus,
         orderStatus: terminal.orderStatus,
         paymentState: terminal.paymentState,
       },
-      customer: {
-        source: "installed_machine_runtime_cdp",
-        orderId: `order-${kind}`,
-        paymentId: `pay-${kind}`,
-        resultKind: terminal.resultKind,
-        text: "本次订单已取消，未完成扣款。",
-      },
-      technicalEvidence: {
-        runtimeTrace: {
-          source: "installed_machine_runtime_trace_cdp",
-          orderId: `order-${kind}`,
-          paymentId: `pay-${kind}`,
-          resultKind: terminal.resultKind,
-          entry: { id: 1 },
-        },
-      },
+      customer:
+        kind === "create_failure"
+          ? null
+          : {
+              source: "installed_machine_runtime_cdp",
+              orderId: `order-${kind}`,
+              paymentId: `pay-${kind}`,
+              resultKind: terminal.resultKind,
+              text: "本次订单已取消，未完成扣款。",
+            },
+      technicalEvidence:
+        kind === "create_failure"
+          ? {
+              providerCreate: {
+                source: "mock_provider_create_gate",
+                paymentNo: `payment-${kind}`,
+                error: "mock payment create gate timed out before release",
+              },
+            }
+          : {
+              runtimeTrace: {
+                source: "installed_machine_runtime_trace_cdp",
+                orderId: `order-${kind}`,
+                paymentId: `pay-${kind}`,
+                resultKind: terminal.resultKind,
+                entry: { id: 1 },
+              },
+            },
+      ...(kind === "create_failure"
+        ? {
+            createGate: {
+              source: "mock_provider_create_gate",
+              paymentNo: `payment-${kind}`,
+              released: false,
+              openedAfterFailure: true,
+              error: "mock payment create gate timed out before release",
+            },
+          }
+        : {}),
       ...(kind === "query_failure"
         ? {
             recovery: {
@@ -332,6 +393,7 @@ function recoveryReport() {
             },
           }
         : {}),
+      assertions: { duplicatePaymentCount: 0 },
     })),
     subsequentSale: {
       order: {
