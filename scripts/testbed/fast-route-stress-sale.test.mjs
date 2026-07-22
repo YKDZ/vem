@@ -504,6 +504,33 @@ describe("fast route stress sale tracer", () => {
     assert.equal(result.sourceEventId, "vision-1");
     assert.equal(reads, 2);
   });
+
+  it("waits for the guarded Vision departure after its stability window", async () => {
+    let elapsedMs = 0;
+    const result = await waitForGuardedVisionDepartureTrace(null, "vision-1", {
+      now: () => elapsedMs,
+      sleepFn: async (delayMs) => {
+        elapsedMs += delayMs;
+      },
+      readTrace: async () =>
+        elapsedMs < 10_000
+          ? []
+          : [
+              {
+                type: "navigation",
+                intentType: "presence.departed",
+                sourceEventId: "vision-1",
+                decision: "rejected",
+                reasonCode: "active_transaction_route",
+                finalRoute: "#/payment",
+              },
+            ],
+    });
+
+    assert.equal(result.sourceEventId, "vision-1");
+    assert.equal(elapsedMs, 10_000);
+  });
+
   it("parses a guest-local tracer contract with handoff and guest input evidence", () => {
     const options = parseFastRouteStressSaleArgs([
       "--mode",

@@ -1391,9 +1391,14 @@ async function waitForRepeatedCustomerTouchTrace(
 export async function waitForGuardedVisionDepartureTrace(
   client,
   eventId,
-  { timeoutMs = 8_000, readTrace = readRuntimeTrace, sleepFn = sleep } = {},
+  {
+    timeoutMs = 15_000,
+    readTrace = readRuntimeTrace,
+    sleepFn = sleep,
+    now = () => Date.now(),
+  } = {},
 ) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = now() + timeoutMs;
   let lastTrace = [];
   do {
     lastTrace = await readTrace(client);
@@ -1410,7 +1415,7 @@ export async function waitForGuardedVisionDepartureTrace(
     );
     if (departure) return departure;
     await sleepFn(25);
-  } while (Date.now() < deadline);
+  } while (now() < deadline);
   throw new Error(
     `installed runtime did not trace guarded Vision departure ${eventId}: ${JSON.stringify(lastTrace.slice(-8))}`,
   );
