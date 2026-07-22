@@ -31,7 +31,8 @@ export function installVisionRecommendationCoordinator(
   let subscriptionGeneration = 0;
 
   const connect = (machineCode: string): void => {
-    const generation = ++subscriptionGeneration;
+    subscriptionGeneration += 1;
+    const generation = subscriptionGeneration;
     const isCurrentSubscription = (): boolean =>
       generation === subscriptionGeneration &&
       machineStore.machineCode === machineCode;

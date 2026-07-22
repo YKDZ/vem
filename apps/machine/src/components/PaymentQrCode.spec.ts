@@ -46,9 +46,11 @@ afterEach(() => {
 });
 
 async function flushPromises(times = 6): Promise<void> {
+  let pending = Promise.resolve();
   for (let index = 0; index < times; index += 1) {
-    await Promise.resolve();
+    pending = pending.then(() => undefined);
   }
+  await pending;
   await nextTick();
 }
 

@@ -29,7 +29,8 @@ watch(
     orderNo: props.orderNo ?? null,
   }),
   async (snapshot, _, onCleanup) => {
-    const sequence = ++renderSequence;
+    renderSequence += 1;
+    const sequence = renderSequence;
     let stale = false;
     onCleanup(() => {
       stale = true;

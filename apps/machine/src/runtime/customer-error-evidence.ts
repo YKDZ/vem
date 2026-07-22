@@ -99,7 +99,7 @@ function boundedText(value: unknown, limit: number): string | null {
     text = value;
   } else {
     try {
-      text = JSON.stringify(value) ?? String(value);
+      text = JSON.stringify(value) ?? Object.prototype.toString.call(value);
     } catch {
       text = "unserializable value";
     }
