@@ -64,6 +64,18 @@ describe("runtime business-check registry", () => {
       )?.runner?.script,
       "scripts/testbed/local-operations-guest-full.mjs",
     );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "behaviorAudio",
+      )?.runner?.script,
+      "scripts/testbed/behavior-audio-guest-full.mjs",
+    );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "behaviorAudio",
+      )?.fixtureKey,
+      "sale",
+    );
   });
 
   it("deduplicates focused fast selection in registry order and rejects it for full", () => {

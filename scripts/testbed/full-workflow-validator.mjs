@@ -1,3 +1,5 @@
+import { validateBehaviorAudioGuestReport } from "./behavior-audio-guest-full.mjs";
+
 function requiredString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -135,6 +137,29 @@ function validateDelayedAudioTrack(report, reportPath) {
         "audio cue windows are incomplete",
         acceptance.audio ?? null,
       );
+}
+
+function validateBehaviorAudioTrack(report, reportPath) {
+  try {
+    const summary = validateBehaviorAudioGuestReport(report);
+    return passedTrack("behaviorAudio", "behavior audio", reportPath, {
+      welcomeTransitions: summary.welcomeTransitions,
+      categoryTransitions: summary.categoryTransitions.map(
+        (entry) => entry.key,
+      ),
+      nativeSource: summary.nativeSource,
+    });
+  } catch (error) {
+    return failedTrack(
+      "behaviorAudio",
+      "behavior audio",
+      reportPath,
+      error instanceof Error
+        ? error.message
+        : "behavior audio evidence is incomplete",
+      report?.behaviorAudio ?? report ?? null,
+    );
+  }
 }
 
 function validateScannerTrack(report, reportPath) {
@@ -623,7 +648,7 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
     pickupProtocol: validateDelayedAudioTrack,
-    behaviorAudio: validateDelayedAudioTrack,
+    behaviorAudio: validateBehaviorAudioTrack,
     ipcRecovery: validateIpcRecoveryTrack,
     fulfillmentRecovery: validateFulfillmentFailureTrack,
     paymentRecovery: validatePaymentRecoveryTrack,

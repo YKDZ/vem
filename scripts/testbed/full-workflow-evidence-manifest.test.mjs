@@ -56,7 +56,7 @@ describe("full workflow evidence manifest", () => {
     assert.ok(failures.some((failure) => failure.includes("inconsistent")));
   });
 
-  it("binds all six workflow tracks to their own real evidence", () => {
+  it("binds workflow tracks to their own real evidence", () => {
     const temp = root();
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
     const definitions = [
@@ -96,6 +96,11 @@ describe("full workflow evidence manifest", () => {
         false,
       ],
       ["visionExperience", { runtimeTrace: [{ id: "vision-trace" }] }, true],
+      [
+        "behaviorAudio",
+        { behaviorAudio: { runtimeTrace: [{ id: "behavior-audio-trace" }] } },
+        true,
+      ],
     ];
     const tracks = definitions.map(([key, reportValue, needsPhysicalLog]) => {
       const artifactRoot = join(temp, `${key}-artifacts`);
@@ -119,9 +124,9 @@ describe("full workflow evidence manifest", () => {
     });
     const manifest = buildFullWorkflowEvidenceManifest({ tracks });
     assert.equal(manifest.ok, true, JSON.stringify(manifest.failures));
-    assert.equal(manifest.tracks.length, 6);
-    assert.equal(manifest.totals.machineRuntimeTrace, 6);
-    assert.equal(manifest.totals.screenshots, 6);
+    assert.equal(manifest.tracks.length, 7);
+    assert.equal(manifest.totals.machineRuntimeTrace, 7);
+    assert.equal(manifest.totals.screenshots, 7);
     assert.deepEqual(validateFullWorkflowEvidenceManifest(manifest), []);
   });
 

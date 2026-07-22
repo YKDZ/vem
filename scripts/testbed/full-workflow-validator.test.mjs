@@ -179,6 +179,217 @@ function localOperationsReport() {
   };
 }
 
+function behaviorAudioReport() {
+  return {
+    schemaVersion: "vem-behavior-audio-guest-full/v1",
+    ok: true,
+    boundaries: {
+      visionMock: true,
+      machineCdp: true,
+      windowsAudioCapture: true,
+    },
+    artifacts: {
+      audioStartReport:
+        "/reports/behavior-audio-artifacts/audio-capture-start.json",
+      audioStopReport:
+        "/reports/behavior-audio-artifacts/audio-capture-stop.json",
+      runtimeTrace: "/reports/behavior-audio-artifacts/runtime-trace.json",
+    },
+    behaviorAudio: {
+      schemaVersion: "behavior-audio-production-acceptance/v1",
+      result: "passed",
+      boundaries: {
+        vision: "controlled_mock_protocol",
+        cdp: "installed_canonical_machine_cdp",
+        audio: "windows_default_output_capture",
+      },
+      diagnostics: [],
+      audio: {
+        source: "windows_default_output",
+        capture: { nonSilentFrameCount: 4_800, peakAbsoluteSample: 2_048 },
+        cueWindows: [
+          { transitionId: "vision:presence-1:welcome", kind: "passed" },
+          { transitionId: "vision:presence-3:welcome", kind: "passed" },
+          { transitionId: "category:category-entry-socks-1", kind: "passed" },
+        ],
+      },
+      runtimeTrace: [
+        {
+          type: "journey_transition",
+          id: 1,
+          at: "2026-07-22T08:00:00.000Z",
+          recordedAt: "2026-07-22T08:00:00.000Z",
+          transitionId: "vision:presence-1:welcome",
+          requestId: null,
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_queued",
+          id: 2,
+          at: "2026-07-22T08:00:00.000Z",
+          recordedAt: "2026-07-22T08:00:00.000Z",
+          transitionId: "vision:presence-1:welcome",
+          requestId: "audio-request-1",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_started",
+          id: 3,
+          at: "2026-07-22T08:00:00.000Z",
+          recordedAt: "2026-07-22T08:00:00.000Z",
+          transitionId: "vision:presence-1:welcome",
+          requestId: "audio-request-1",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "native",
+        },
+        {
+          type: "audio_terminal",
+          id: 4,
+          at: "2026-07-22T08:00:00.000Z",
+          recordedAt: "2026-07-22T08:00:00.000Z",
+          transitionId: "vision:presence-1:welcome",
+          requestId: "audio-request-1",
+          terminalOutcomeId: "audio-terminal-1",
+          outcome: "completed",
+          message: null,
+        },
+        {
+          type: "journey_transition",
+          id: 5,
+          at: "2026-07-22T08:00:03.000Z",
+          recordedAt: "2026-07-22T08:00:03.000Z",
+          transitionId: "vision:presence-2:departed",
+          requestId: null,
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "journey_transition",
+          id: 6,
+          at: "2026-07-22T08:00:06.000Z",
+          recordedAt: "2026-07-22T08:00:06.000Z",
+          transitionId: "vision:presence-3:welcome",
+          requestId: null,
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_queued",
+          id: 7,
+          at: "2026-07-22T08:00:06.000Z",
+          recordedAt: "2026-07-22T08:00:06.000Z",
+          transitionId: "vision:presence-3:welcome",
+          requestId: "audio-request-6",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_started",
+          id: 8,
+          at: "2026-07-22T08:00:06.000Z",
+          recordedAt: "2026-07-22T08:00:06.000Z",
+          transitionId: "vision:presence-3:welcome",
+          requestId: "audio-request-6",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "native",
+        },
+        {
+          type: "audio_terminal",
+          id: 9,
+          at: "2026-07-22T08:00:06.000Z",
+          recordedAt: "2026-07-22T08:00:06.000Z",
+          transitionId: "vision:presence-3:welcome",
+          requestId: "audio-request-6",
+          terminalOutcomeId: "audio-terminal-6",
+          outcome: "completed",
+          message: null,
+        },
+        {
+          type: "journey_transition",
+          id: 10,
+          at: "2026-07-22T08:00:10.000Z",
+          recordedAt: "2026-07-22T08:00:10.000Z",
+          transitionId: "category:category-entry-socks-1",
+          requestId: null,
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_queued",
+          id: 11,
+          at: "2026-07-22T08:00:10.000Z",
+          recordedAt: "2026-07-22T08:00:10.000Z",
+          transitionId: "category:category-entry-socks-1",
+          requestId: "audio-request-10",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: null,
+        },
+        {
+          type: "audio_started",
+          id: 12,
+          at: "2026-07-22T08:00:10.000Z",
+          recordedAt: "2026-07-22T08:00:10.000Z",
+          transitionId: "category:category-entry-socks-1",
+          requestId: "audio-request-10",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "native",
+        },
+        {
+          type: "audio_terminal",
+          id: 13,
+          at: "2026-07-22T08:00:10.000Z",
+          recordedAt: "2026-07-22T08:00:10.000Z",
+          transitionId: "category:category-entry-socks-1",
+          requestId: "audio-request-10",
+          terminalOutcomeId: "audio-terminal-10",
+          outcome: "completed",
+          message: null,
+        },
+      ],
+      checkpoints: [
+        { label: "stable-arrival-settled", traceId: 4 },
+        { label: "initial-duplicate-approach-settled", traceId: 4 },
+        { label: "transient-empty-recovered", traceId: 4 },
+        { label: "sustained-empty-departed", traceId: 5 },
+        { label: "rearmed-arrival-settled", traceId: 9 },
+        { label: "category-socks-entry", traceId: 9 },
+        { label: "category-socks-detail", traceId: 13 },
+        { label: "category-socks-checkout", traceId: 13 },
+      ],
+      scenario: {
+        welcome: {
+          initialTransitionId: "vision:presence-1:welcome",
+          departureTransitionId: "vision:presence-2:departed",
+          rearmedTransitionId: "vision:presence-3:welcome",
+        },
+        supportedCategoryKeys: ["socks"],
+        categories: [
+          {
+            key: "socks",
+            transitionId: "category:category-entry-socks-1",
+            sourceUrl: "/audio/voice/product/socks.mp3",
+            entryCheckpointLabel: "category-socks-entry",
+            detailCheckpointLabel: "category-socks-detail",
+            checkoutCheckpointLabel: "category-socks-checkout",
+          },
+        ],
+      },
+    },
+  };
+}
+
 function identity(reconstruction) {
   const caches = [
     "D:\\runtime-cache\\v1\\pnpm-store",
@@ -318,6 +529,37 @@ describe("full workflow aggregate validator", () => {
           manualDispense: { slotCode: "R8C2", outcome: "completed" },
         },
         "/reports/local-operations.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts behavior audio only with independent welcome/category native evidence", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("behaviorAudio"),
+        behaviorAudioReport(),
+        "/reports/behavior-audio.json",
+      ).status,
+      "passed",
+    );
+    const duplicateWelcome = behaviorAudioReport();
+    duplicateWelcome.behaviorAudio.runtimeTrace.splice(4, 0, {
+      type: "audio_started",
+      id: 50,
+      at: "2026-07-22T08:00:02.000Z",
+      recordedAt: "2026-07-22T08:00:02.000Z",
+      transitionId: "vision:presence-2:welcome",
+      requestId: "audio-request-50",
+      terminalOutcomeId: null,
+      outcome: null,
+      message: "native",
+    });
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("behaviorAudio"),
+        duplicateWelcome,
+        "/reports/behavior-audio.json",
       ).status,
       "failed",
     );

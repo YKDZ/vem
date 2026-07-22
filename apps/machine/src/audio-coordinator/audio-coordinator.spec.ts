@@ -423,6 +423,13 @@ describe("Audio Coordinator", () => {
       "/audio/payment-prompt.mp3",
       expect.objectContaining({ volume: 0.35 }),
     );
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        type: "audio_started",
+        transitionId: "payment-prompt",
+        volume: 0.35,
+      }),
+    );
 
     effectiveAudioPreferences.transactionCuesEnabled = false;
     await coordinator.accept([transition("payment-succeeded")]);
@@ -568,6 +575,13 @@ describe("Audio Coordinator", () => {
         volume: 0.35,
         onTerminal: expect.any(Function),
       },
+    );
+    expect(coordinator.trace()).toContainEqual(
+      expect.objectContaining({
+        type: "audio_started",
+        requestId,
+        volume: 0.35,
+      }),
     );
   });
 

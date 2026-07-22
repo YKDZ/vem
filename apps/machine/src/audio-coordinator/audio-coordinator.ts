@@ -311,6 +311,7 @@ export function createAudioCoordinator(
         terminalOutcomeId: null,
         outcome: null,
         message: options.driver.name,
+        volume,
       });
     } catch (error) {
       finishActive({

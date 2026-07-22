@@ -1771,7 +1771,7 @@ async function collectPlatformLog(guestInput, sessionId, outPath) {
   };
 }
 
-async function ensureControlledVisionMock(controlPort) {
+export async function ensureControlledVisionMock(controlPort) {
   try {
     const status = await fetchJson(
       `http://127.0.0.1:${controlPort}/control/status`,
@@ -1818,7 +1818,7 @@ async function ensureControlledVisionMock(controlPort) {
   throw new Error("controlled vision mock did not become ready");
 }
 
-async function waitForControlledVisionRuntimeClient(controlPort) {
+export async function waitForControlledVisionRuntimeClient(controlPort) {
   const deadline = Date.now() + 30_000;
   let lastStatus = null;
   while (Date.now() < deadline) {

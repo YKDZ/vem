@@ -95,10 +95,10 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "behaviorAudio",
-    fixtureKey: "pickupProtocol",
+    fixtureKey: "sale",
     runner: {
       kind: "node",
-      script: "scripts/testbed/delayed-pickup-native-audio-guest-full.mjs",
+      script: "scripts/testbed/behavior-audio-guest-full.mjs",
       args: ["--mode", "full"],
       reportFileName: "behavior-audio.json",
       artifactDirectory: "behavior-audio-artifacts",

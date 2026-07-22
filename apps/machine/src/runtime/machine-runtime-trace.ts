@@ -43,6 +43,7 @@ export type MachineRuntimeAudioTraceEntry = {
   terminalOutcomeId: string | null;
   outcome: "completed" | "failed" | "stopped" | null;
   message: string | null;
+  volume?: number | null;
 };
 
 export type MachineRuntimeTransactionSurfaceTraceEntry = {

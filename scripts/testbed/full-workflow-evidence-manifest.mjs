@@ -116,6 +116,10 @@ function reportTrace(track, reportPath, report, artifactFiles) {
     sale: ["runtimeTrace", report?.runtimeTrace],
     scannerPayment: ["runtimeTrace", report?.runtimeTrace],
     visionExperience: ["runtimeTrace", report?.runtimeTrace],
+    behaviorAudio: [
+      "behaviorAudio.runtimeTrace",
+      report?.behaviorAudio?.runtimeTrace,
+    ],
     ipcRecovery: [
       "ipcRecovery.provenance.ui",
       [
@@ -134,7 +138,7 @@ function reportTrace(track, reportPath, report, artifactFiles) {
       direct[1],
     );
   }
-  if (track === "pickupProtocol" || track === "behaviorAudio") {
+  if (track === "pickupProtocol") {
     const path = artifactFiles.find(
       (candidate) => basename(candidate) === "machine-production-evidence.json",
     );
