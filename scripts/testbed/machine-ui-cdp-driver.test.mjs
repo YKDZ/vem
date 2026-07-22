@@ -101,6 +101,9 @@ async function runInstalledRouteCompetitionScenario({
           cdpSocket = socket;
           if (message.method === "Runtime.evaluate") {
             const expression = message.params.expression;
+            if (expression.includes("runtimeGenerationId")) {
+              return cdpValue("runtime-generation-installed-1", message.id);
+            }
             if (expression.includes("catalogRequests")) {
               const catalogRevision = "a".repeat(64);
               const catalogInvalidationId = `catalog-invalidation:guest-catalog_projection_refresh:${catalogRevision}`;
@@ -1263,6 +1266,10 @@ describe("machine-ui-cdp-driver", () => {
       (entry) => entry.type === "payment-window",
     );
     const [before, during, after] = paymentWindow.continuousCheckpointOrdinals;
+    assert.equal(
+      paymentWindow.runtimeGeneration,
+      "runtime-generation-installed-1",
+    );
     assert.ok(before < during && during < after);
     assert.ok(
       result.evidence.some(

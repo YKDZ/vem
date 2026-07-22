@@ -2710,6 +2710,8 @@ function boundEvidenceEntry(entry) {
     if (
       entry.serialCompleted !== true ||
       entry.postSaleStable !== true ||
+      typeof entry.runtimeGeneration !== "string" ||
+      entry.runtimeGeneration.trim() === "" ||
       !Array.isArray(entry.continuousCheckpointOrdinals) ||
       entry.continuousCheckpointOrdinals.length !== 3 ||
       entry.continuousCheckpointOrdinals.some(
@@ -2728,6 +2730,7 @@ function boundEvidenceEntry(entry) {
       type: "payment-window",
       serialCompleted: true,
       postSaleStable: true,
+      runtimeGeneration: entry.runtimeGeneration,
       continuousCheckpointOrdinals: [...entry.continuousCheckpointOrdinals],
     };
   }
