@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 import {
   deploymentRecord,
+  validateAdminProxyHealth,
   validateCommit as validateDeployCommit,
 } from "./deploy-backend-stack.mjs";
 import {
@@ -97,5 +98,25 @@ describe("backend deployment record", () => {
     );
     assert.match(compose, /b\.data\?\.database !== 'ok'/);
     assert.match(compose, /b\.data\?\.mqtt !== 'connected'/);
+  });
+
+  it("requires backend health through the Admin UI proxy", () => {
+    assert.deepEqual(
+      validateAdminProxyHealth(
+        JSON.stringify({ data: { database: "ok", mqtt: "connected" } }),
+      ).data,
+      { database: "ok", mqtt: "connected" },
+    );
+    assert.throws(
+      () => validateAdminProxyHealth("<html>admin</html>"),
+      /did not return JSON/,
+    );
+    assert.throws(
+      () =>
+        validateAdminProxyHealth(
+          JSON.stringify({ data: { database: "ok", mqtt: "disconnected" } }),
+        ),
+      /healthy backend state/,
+    );
   });
 });

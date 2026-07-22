@@ -51,6 +51,19 @@ export function deploymentRecord({
   };
 }
 
+export function validateAdminProxyHealth(raw) {
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw new Error("Admin UI API proxy did not return JSON");
+  }
+  if (body?.data?.database !== "ok" || body?.data?.mqtt !== "connected") {
+    throw new Error("Admin UI API proxy did not return healthy backend state");
+  }
+  return body;
+}
+
 export async function deploy(args = process.argv.slice(2), env = process.env) {
   const requestedCommit = validateCommit(option(args, "--commit"));
   const envFile = resolve(
@@ -119,6 +132,16 @@ export async function deploy(args = process.argv.slice(2), env = process.env) {
     }
     if (!healthy) throw new Error(`${service} did not become healthy`);
   }
+
+  const adminContainer = run("docker", [...pinned, "ps", "-q", "admin-ui"], {
+    quiet: true,
+  });
+  const proxyHealth = run(
+    "docker",
+    ["exec", adminContainer, "wget", "-qO-", "http://127.0.0.1/api/health"],
+    { quiet: true },
+  );
+  validateAdminProxyHealth(proxyHealth);
 
   const record = deploymentRecord({
     commit: requestedCommit,
