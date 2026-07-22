@@ -36,7 +36,6 @@ fn command(command_no: &str) -> DispenseCommandPayload {
         slot: SlotPayload {
             row_no: 2,
             cell_no: 5,
-            slot_id: "A25".to_string(),
         },
         quantity: 1,
         timeout_seconds: 2,

@@ -6,15 +6,14 @@ use serde::{Deserialize, Serialize};
 use crate::serial::{EnvironmentSample, LowerControllerDiscoveryCandidate, SerialPortUsbIdentity};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SlotPayload {
     pub row_no: u32,
     pub cell_no: u32,
-    pub slot_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DispenseCommandPayload {
     pub command_no: String,
     pub order_no: String,
@@ -208,14 +207,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dispense_payload_is_snake_case_json() {
+    fn dispense_payload_uses_coordinate_only_json() {
         let payload = DispenseCommandPayload {
             command_no: "cmd-1".to_string(),
             order_no: "ord-1".to_string(),
             slot: SlotPayload {
                 row_no: 1,
                 cell_no: 2,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 30,
@@ -224,6 +222,24 @@ mod tests {
         assert_eq!(value["commandNo"], "cmd-1");
         assert_eq!(value["orderNo"], "ord-1");
         assert_eq!(value["timeoutSeconds"], 30);
+        assert_eq!(
+            value["slot"],
+            serde_json::json!({ "rowNo": 1, "cellNo": 2 })
+        );
+    }
+
+    #[test]
+    fn legacy_slot_id_is_rejected_from_dispense_payload() {
+        let error = serde_json::from_value::<DispenseCommandPayload>(serde_json::json!({
+            "commandNo": "cmd-1",
+            "orderNo": "ord-1",
+            "slot": { "rowNo": 1, "cellNo": 2, "slotId": "legacy-business-id" },
+            "quantity": 1,
+            "timeoutSeconds": 30,
+        }))
+        .expect_err("strict command contract rejects legacy slotId");
+
+        assert!(error.to_string().contains("slotId"));
     }
 
     #[tokio::test]
@@ -235,7 +251,6 @@ mod tests {
             slot: SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 30,

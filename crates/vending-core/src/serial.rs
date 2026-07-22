@@ -140,8 +140,6 @@ struct SerialProtocolLogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     order_no: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    slot_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     row_no: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cell_no: Option<u32>,
@@ -174,7 +172,6 @@ impl SerialProtocolLogEntry {
             port_path: Some(port_path),
             command_no: Some(command.command_no.clone()),
             order_no: Some(command.order_no.clone()),
-            slot_id: Some(command.slot.slot_id.clone()),
             row_no: Some(command.slot.row_no),
             cell_no: Some(command.slot.cell_no),
             quantity: Some(command.quantity),
@@ -2327,7 +2324,6 @@ mod tests {
                 command_no: "CMD-1".to_string(),
                 order_no: "ORD-1".to_string(),
                 slot: crate::hardware::SlotPayload {
-                    slot_id: "A1".to_string(),
                     row_no: 1,
                     cell_no: 1,
                 },

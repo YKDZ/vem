@@ -2172,7 +2172,6 @@ async fn manual_dispense_diagnostic(
         slot: vending_core::hardware::SlotPayload {
             row_no: slot.row_no,
             cell_no: slot.cell_no,
-            slot_id: slot.slot_id.clone(),
         },
         quantity: request.quantity,
         timeout_seconds: request.timeout_seconds,

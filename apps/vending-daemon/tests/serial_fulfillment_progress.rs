@@ -33,7 +33,6 @@ fn command() -> DispenseCommandPayload {
         slot: SlotPayload {
             row_no: 1,
             cell_no: 1,
-            slot_id: "A1".to_string(),
         },
         quantity: 1,
         timeout_seconds: 2,
@@ -88,7 +87,7 @@ async fn seed_dispensing_order(store: &LocalStateStore, command: &DispenseComman
             order_no: &command.order_no,
             payment_method: "payment_code",
             payment_provider: Some("alipay"),
-            items_json: json!([{ "slotId": command.slot.slot_id, "quantity": 1 }]),
+            items_json: json!([{ "slotId": SLOT_ID, "quantity": 1 }]),
             status: "dispensing",
             next_action: "dispensing",
             payment_attempt_json: None,

@@ -780,6 +780,26 @@ impl LocalStateStore {
         }))
     }
 
+    async fn active_planogram_slot_id_by_coordinate(
+        &self,
+        row_no: u32,
+        cell_no: u32,
+    ) -> Result<Option<String>, StoreError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT s.slot_id
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version=s.planogram_version AND v.active=1
+             WHERE s.row_no=?1 AND s.cell_no=?2
+             LIMIT 1",
+        )
+        .bind(row_no)
+        .bind(cell_no)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(slot_id,)| slot_id))
+    }
+
     #[cfg(test)]
     pub async fn close_for_tests(&self) {
         self.pool.close().await;
@@ -978,12 +998,28 @@ impl LocalStateStore {
             }
         }
         if current_version < 19 {
-            sqlx::query(MIGRATION_V19)
-                .execute(&self.pool)
-                .await
-                .map_err(StoreError::Sqlx)?;
+            self.migrate_machine_planogram_slots_to_v19().await?;
         }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
+        Ok(())
+    }
+
+    async fn migrate_machine_planogram_slots_to_v19(&self) -> Result<(), StoreError> {
+        let columns: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
+                .fetch_all(&self.pool)
+                .await?;
+        let row_column = if columns.iter().any(|(name,)| name == "layer_no") {
+            "layer_no"
+        } else if columns.iter().any(|(name,)| name == "row_no") {
+            "row_no"
+        } else {
+            return Err(StoreError::InvalidStockInput(
+                "machine planogram slot migration is missing a row coordinate".to_string(),
+            ));
+        };
+        let migration = MIGRATION_V19.replace("layer_no", row_column);
+        sqlx::query(&migration).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -5285,6 +5321,12 @@ impl LocalStateStore {
             _ => "frozen",
         };
         if lower_controller_fault.is_some_and(LowerControllerFault::requires_whole_machine_lock) {
+            let Some(slot_id) = self
+                .active_planogram_slot_id_by_coordinate(command.slot.row_no, command.slot.cell_no)
+                .await?
+            else {
+                return Ok(None);
+            };
             self.put_metadata(
                 WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
                 &WholeMachineMaintenanceLock {
@@ -5296,7 +5338,7 @@ impl LocalStateStore {
                     source: "dispense_failure".to_string(),
                     order_no: command.order_no.clone(),
                     command_no: command.command_no.clone(),
-                    slot_id: command.slot.slot_id.clone(),
+                    slot_id,
                     error_code: error_code.map(ToString::to_string),
                     created_at: now_iso(),
                 },
@@ -5323,10 +5365,9 @@ impl LocalStateStore {
                ON v.planogram_version = s.planogram_version AND v.active = 1
              JOIN current_stock_projection c
                ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
-             WHERE s.slot_id = ?1 AND s.row_no = ?2 AND s.cell_no = ?3
+             WHERE s.row_no = ?1 AND s.cell_no = ?2
              LIMIT 1",
         )
-        .bind(&command.slot.slot_id)
         .bind(command.slot.row_no)
         .bind(command.slot.cell_no)
         .fetch_optional(tx.as_mut())
@@ -5398,10 +5439,9 @@ impl LocalStateStore {
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
-             WHERE s.slot_id = ?1 AND s.row_no = ?2 AND s.cell_no = ?3
+             WHERE s.row_no = ?1 AND s.cell_no = ?2
              LIMIT 1",
         )
-        .bind(&command.slot.slot_id)
         .bind(command.slot.row_no)
         .bind(command.slot.cell_no)
         .fetch_optional(&self.pool)
@@ -6970,10 +7010,9 @@ async fn apply_dispense_success_to_local_stock_in_tx(
            ON v.planogram_version=s.planogram_version AND v.active=1
          JOIN current_stock_projection c
            ON c.planogram_version=s.planogram_version AND c.slot_id=s.slot_id
-         WHERE s.slot_id=?1 AND s.row_no=?2 AND s.cell_no=?3
+         WHERE s.row_no=?1 AND s.cell_no=?2
          LIMIT 1",
     )
-    .bind(&command.slot.slot_id)
     .bind(command.slot.row_no)
     .bind(command.slot.cell_no)
     .fetch_optional(tx.as_mut())
@@ -6982,8 +7021,8 @@ async fn apply_dispense_success_to_local_stock_in_tx(
         row
     else {
         return Err(StoreError::InvalidStockInput(format!(
-            "dispense slot {} ({},{}) is missing from the active counted planogram",
-            command.slot.slot_id, command.slot.row_no, command.slot.cell_no
+            "dispense coordinates ({},{}) are missing from the active counted planogram",
+            command.slot.row_no, command.slot.cell_no
         )));
     };
 
@@ -7001,8 +7040,8 @@ async fn apply_dispense_success_to_local_stock_in_tx(
         .filter(|value| *value >= 0)
         .ok_or_else(|| {
             StoreError::InvalidStockInput(format!(
-                "dispense quantity exceeds counted stock for slot {}",
-                command.slot.slot_id
+                "dispense quantity exceeds counted stock for coordinates ({},{})",
+                command.slot.row_no, command.slot.cell_no
             ))
         })?;
     let occurred_at = now_iso();
@@ -7868,7 +7907,10 @@ mod tests {
 
         let task = store.stock_maintenance_task().await.expect("task");
         assert_eq!(task.mode, "initial_count");
-        assert_eq!(task.slots[0].slot_id, "A1");
+        assert_eq!(
+            task.slots[0].slot_id,
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
         assert_eq!(task.slots[0].product_name, "water");
         assert_eq!(task.slots[0].current_quantity, 0);
         assert_eq!(task.slots[0].sync_status, "not_submitted");
@@ -7878,12 +7920,12 @@ mod tests {
             mode: "initial_count".to_string(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     quantity: Some(3),
                     addition: None,
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A2".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                     quantity: Some(4),
                     addition: None,
                 },
@@ -7975,7 +8017,8 @@ mod tests {
         sqlx::query(
             "UPDATE machine_planogram_slots
              SET sku='WATER-REBOUND', capacity=9
-             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_id='A1'",
+             WHERE planogram_version='PLAN-PARTIAL-ACK'
+               AND slot_id='550e8400-e29b-41d4-a716-446655440001'",
         )
         .execute(store.pool())
         .await
@@ -7988,12 +8031,12 @@ mod tests {
                     mode: task.mode,
                     slots: vec![
                         StockMaintenanceBatchSlotInput {
-                            slot_id: "A1".to_string(),
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                             quantity: None,
                             addition: Some(1),
                         },
                         StockMaintenanceBatchSlotInput {
-                            slot_id: "A2".to_string(),
+                            slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                             quantity: None,
                             addition: Some(1),
                         },
@@ -8020,10 +8063,16 @@ mod tests {
                 .expect("outbox count");
         assert_eq!((movement_count.0, outbox_count.0), (0, 0));
         let sale_view = store.sale_view(None).await.expect("targeted freeze");
-        assert_eq!(sale_view.items[0].slot_id, "A1");
+        assert_eq!(
+            sale_view.items[0].slot_id,
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
         assert_eq!(sale_view.items[0].saleable_stock, 0);
         assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
-        assert_eq!(sale_view.items[1].slot_id, "A2");
+        assert_eq!(
+            sale_view.items[1].slot_id,
+            "550e8400-e29b-41d4-a716-446655440011"
+        );
         assert_eq!(sale_view.items[1].saleable_stock, 2);
         assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
         let audit: (String,) = sqlx::query_as(
@@ -8053,7 +8102,8 @@ mod tests {
         sqlx::query(
             "UPDATE machine_planogram_slots
              SET sku='WATER-CONCURRENT-REBOUND', capacity=9
-             WHERE planogram_version='PLAN-PARTIAL-ACK' AND slot_id='A1'",
+             WHERE planogram_version='PLAN-PARTIAL-ACK'
+               AND slot_id='550e8400-e29b-41d4-a716-446655440001'",
         )
         .execute(switch_tx.as_mut())
         .await
@@ -8069,12 +8119,12 @@ mod tests {
                         mode: "initial_count".to_string(),
                         slots: vec![
                             StockMaintenanceBatchSlotInput {
-                                slot_id: "A1".to_string(),
+                                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                                 quantity: Some(3),
                                 addition: None,
                             },
                             StockMaintenanceBatchSlotInput {
-                                slot_id: "A2".to_string(),
+                                slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                                 quantity: Some(4),
                                 addition: None,
                             },
@@ -8129,12 +8179,12 @@ mod tests {
             mode: task.mode.clone(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     quantity: None,
                     addition: Some(2),
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A2".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                     quantity: None,
                     addition: Some(1),
                 },
@@ -8264,7 +8314,7 @@ mod tests {
             task_id: task.task_id.clone(),
             mode: task.mode,
             slots: vec![StockMaintenanceBatchSlotInput {
-                slot_id: "A1".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 quantity: None,
                 addition: Some(2),
             }],
@@ -8398,7 +8448,7 @@ mod tests {
                     task_id: task.task_id.clone(),
                     mode: task.mode.clone(),
                     slots: vec![StockMaintenanceBatchSlotInput {
-                        slot_id: "A1".to_string(),
+                        slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                         quantity: None,
                         addition: Some(2),
                     }],
@@ -8416,7 +8466,7 @@ mod tests {
                     task_id: task.task_id.clone(),
                     mode: task.mode,
                     slots: vec![StockMaintenanceBatchSlotInput {
-                        slot_id: "A2".to_string(),
+                        slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                         quantity: None,
                         addition: Some(1),
                     }],
@@ -8438,7 +8488,7 @@ mod tests {
         assert_eq!(
             movements,
             vec![(
-                "A1".to_string(),
+                "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 2,
                 Some("first-session-operator".to_string())
             )]
@@ -8469,12 +8519,12 @@ mod tests {
             mode: first.mode.clone(),
             slots: vec![
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     quantity: Some(3),
                     addition: None,
                 },
                 StockMaintenanceBatchSlotInput {
-                    slot_id: "A2".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                     quantity: Some(4),
                     addition: None,
                 },
@@ -8548,12 +8598,12 @@ mod tests {
                     mode: retry.mode,
                     slots: vec![
                         StockMaintenanceBatchSlotInput {
-                            slot_id: "A1".to_string(),
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                             quantity: Some(3),
                             addition: None,
                         },
                         StockMaintenanceBatchSlotInput {
-                            slot_id: "A2".to_string(),
+                            slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
                             quantity: Some(6),
                             addition: None,
                         },
@@ -8598,7 +8648,7 @@ mod tests {
             task_id: "stale-task".to_string(),
             mode: "routine_refill".to_string(),
             slots: vec![StockMaintenanceBatchSlotInput {
-                slot_id: "A1".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 quantity: None,
                 addition: Some(1),
             }],
@@ -8678,7 +8728,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -8966,7 +9015,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -8994,7 +9042,6 @@ mod tests {
                     items_json: json!({
                         "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                         "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                        "slotId": "A1",
                         "quantity": 1
                     }),
                     status,
@@ -9045,7 +9092,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -9502,7 +9548,7 @@ mod tests {
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-hash".to_string(),
             controller: json!({"adapter":"serial","portPath":"COM5"}),
-            command: json!({"slotId":"A1","quantity":1}),
+            command: json!({"slotId":"550e8400-e29b-41d4-a716-446655440001","quantity":1}),
             started_at: "2026-07-15T00:00:00.000Z".to_string(),
             completed_at: None,
             raw_result: None,
@@ -9756,7 +9802,7 @@ mod tests {
             operator_id: "operator-1".to_string(),
             session_correlation_id: "session-1".to_string(),
             controller: json!({}),
-            command: json!({"slotId":"A1","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+            command: json!({"slotId":"550e8400-e29b-41d4-a716-446655440001","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
             started_at: now_iso(),
             completed_at: None,
             raw_result: None,
@@ -9805,7 +9851,7 @@ mod tests {
                 operator_id: "operator-1".to_string(),
                 session_correlation_id: "session-1".to_string(),
                 controller: json!({}),
-                command: json!({"slotId":"A1","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
+                command: json!({"slotId":"550e8400-e29b-41d4-a716-446655440001","rowNo":1,"cellNo":1,"quantity":1,"timeoutSeconds":5}),
                 started_at: now_iso(),
                 completed_at: Some(now_iso()),
                 raw_result: None,
@@ -10152,7 +10198,7 @@ mod tests {
                 order_no: &command.order_no,
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "550e8400-e29b-41d4-a716-446655440001", "quantity": 1 }]),
                 status: "dispensing",
                 next_action: "dispensing",
                 payment_attempt_json: None,
@@ -10290,7 +10336,7 @@ mod tests {
                 order_no: &command.order_no,
                 payment_method: "payment_code",
                 payment_provider: Some("alipay"),
-                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
+                items_json: json!([{ "slotId": "550e8400-e29b-41d4-a716-446655440001", "quantity": 1 }]),
                 status: "dispensing",
                 next_action: "dispensing",
                 payment_attempt_json: None,
@@ -10739,7 +10785,7 @@ mod tests {
                 )
                 .await,
             Err(StoreError::InvalidStockInput(message))
-                if message.contains("Platform-accepted attested slot A1 cannot be changed")
+                if message.contains("Platform-accepted attested slot 550e8400-e29b-41d4-a716-446655440001 cannot be changed")
         ));
         restarted
             .record_physical_stock_attestation_with_upload(
@@ -11028,7 +11074,10 @@ mod tests {
             .expect("attestation status");
 
         assert_eq!(status.status, "inconsistent");
-        assert_eq!(status.inconsistent_slots, vec!["A1".to_string()]);
+        assert_eq!(
+            status.inconsistent_slots,
+            vec!["550e8400-e29b-41d4-a716-446655440001".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -11120,7 +11169,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11159,7 +11207,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11205,7 +11252,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "payment_expired",
@@ -11251,7 +11297,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11301,7 +11346,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "waiting_payment",
@@ -11347,7 +11391,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "pending_payment",
@@ -11367,7 +11410,6 @@ mod tests {
                 items_json: json!({
                     "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
                     "slotId": "550e8400-e29b-41d4-a716-446655440001",
-                    "slotId": "A1",
                     "quantity": 1
                 }),
                 status: "payment_expired",
@@ -11451,7 +11493,7 @@ mod tests {
             .expect("whole machine lock");
         assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
         assert_eq!(lock.command_no, "CMD-JAMMED");
-        assert_eq!(lock.slot_id, "A1");
+        assert_eq!(lock.slot_id, "550e8400-e29b-41d4-a716-446655440001");
     }
 
     #[test]
@@ -11586,7 +11628,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -11758,7 +11799,10 @@ mod tests {
         assert_eq!(movement_record.1, 3);
         let slot_mapping_snapshot: serde_json::Value =
             serde_json::from_str(&movement_record.2).expect("slot mapping snapshot");
-        assert_eq!(slot_mapping_snapshot["slotId"], "A1");
+        assert_eq!(
+            slot_mapping_snapshot["slotId"],
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
         assert_eq!(slot_mapping_snapshot["capacity"], 8);
         assert_eq!(
             slot_mapping_snapshot["inventoryId"],
@@ -11789,7 +11833,10 @@ mod tests {
         assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
         assert_eq!(outbox.payload_json["beforeQuantity"], 0);
         assert_eq!(outbox.payload_json["afterQuantity"], 3);
-        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotId"], "A1");
+        assert_eq!(
+            outbox.payload_json["slotMappingSnapshot"]["slotId"],
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
         assert_eq!(outbox.payload_json["slotMappingSnapshot"]["capacity"], 8);
     }
 
@@ -12249,7 +12296,7 @@ mod tests {
                 task_id: task.task_id.clone(),
                 mode: task.mode,
                 slots: vec![StockMaintenanceBatchSlotInput {
-                    slot_id: "A1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                     quantity: None,
                     addition: Some(addition),
                 }],
@@ -13891,7 +13938,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14209,7 +14255,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14299,7 +14344,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,
@@ -14348,7 +14392,6 @@ mod tests {
             slot: vending_core::hardware::SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 10,

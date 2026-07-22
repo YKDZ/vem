@@ -1477,7 +1477,10 @@ mod tests {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     use std::{
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
         time::Duration as StdDuration,
     };
     use vending_core::{
@@ -1517,6 +1520,49 @@ mod tests {
 
         fn delay(&self) -> StdDuration {
             StdDuration::from_millis(self.command_delay_ms)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct TrackingDispenseHardware {
+        commands: Mutex<Vec<DispenseCommandPayload>>,
+    }
+
+    #[async_trait]
+    impl HardwareAdapter for TrackingDispenseHardware {
+        fn adapter_name(&self) -> &str {
+            "tracking-dispense"
+        }
+
+        async fn self_check(&self) -> HardwareStatus {
+            HardwareStatus {
+                adapter: self.adapter_name().to_string(),
+                online: true,
+                message: "test controller".to_string(),
+                port_path: None,
+                resolution_source: Some("test".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+                lower_controller_fault: None,
+            }
+        }
+
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            self.commands
+                .lock()
+                .expect("tracking dispense commands")
+                .push(command.clone());
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: true,
+                error_code: None,
+                message: "ok".to_string(),
+                reported_at: crate::state::store::now_iso(),
+                lower_controller_fault: None,
+            }
         }
     }
 
@@ -1734,7 +1780,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_last_unit_dispense_emits_transaction_change_without_waiting_for_polling() {
+    async fn slot_id_free_dispense_envelope_reaches_hardware_and_emits_transaction_change() {
         let temp = tempfile::tempdir().expect("temp");
         let state = LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1787,7 +1833,6 @@ mod tests {
             slot: SlotPayload {
                 row_no: 1,
                 cell_no: 1,
-                slot_id: "A1".to_string(),
             },
             quantity: 1,
             timeout_seconds: 2,
@@ -1817,11 +1862,12 @@ mod tests {
             .expect("order");
 
         let (events, mut received) = broadcast::channel(8);
+        let hardware = Arc::new(TrackingDispenseHardware::default());
         let runtime = MqttSyncRuntime::new(
             "MACHINE-LAST-UNIT".to_string(),
             "mqtt-signing-secret-for-last-unit-test".to_string(),
             state.clone(),
-            HardwareSupervisor::from_adapter(Arc::new(vending_core::hardware::MockHardwareAdapter)),
+            HardwareSupervisor::from_adapter(hardware.clone()),
             events,
             CancellationToken::new(),
         );
@@ -1829,7 +1875,13 @@ mod tests {
             "MACHINE-LAST-UNIT",
             "mqtt-signing-secret-for-last-unit-test",
             "MESSAGE-LAST-UNIT",
-            serde_json::to_value(command).expect("command payload"),
+            serde_json::json!({
+                "commandNo": command.command_no,
+                "orderNo": command.order_no,
+                "slot": { "rowNo": 1, "cellNo": 1 },
+                "quantity": command.quantity,
+                "timeoutSeconds": command.timeout_seconds,
+            }),
         );
 
         runtime
@@ -1845,6 +1897,13 @@ mod tests {
         let sale_view = state.sale_view(None).await.expect("sale view");
         assert_eq!(sale_view.items[0].saleable_stock, 0);
         assert_eq!(sale_view.items[0].slot_sales_state, "sold_out");
+        let commands = hardware
+            .commands
+            .lock()
+            .expect("tracking dispense commands");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].slot.row_no, 1);
+        assert_eq!(commands[0].slot.cell_no, 1);
     }
 
     #[tokio::test]

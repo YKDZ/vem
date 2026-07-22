@@ -45,7 +45,6 @@ fn dispense_command(command_no: &str) -> DispenseCommandPayload {
         slot: vending_core::hardware::SlotPayload {
             row_no: 1,
             cell_no: 1,
-            slot_id: "A1".to_string(),
         },
         quantity: 1,
         timeout_seconds: 2,
