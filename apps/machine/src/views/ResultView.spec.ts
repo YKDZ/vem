@@ -5,6 +5,7 @@ import { createApp, nextTick, type App } from "vue";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import { listCustomerErrorEvidence } from "@/local/command-log";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
@@ -444,7 +445,9 @@ describe("ResultView", () => {
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
     applyCapability(true);
-    getSaleViewMock.mockRejectedValue(new Error("sale view unavailable"));
+    getSaleViewMock.mockRejectedValue(
+      new Error("HTTP 502 provider MQTT IPC serial COM3 schema failed"),
+    );
 
     const host = await mountView();
 
@@ -459,6 +462,23 @@ describe("ResultView", () => {
     });
     expect(getSaleViewMock).toHaveBeenCalledOnce();
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+    expect(host.textContent).not.toContain("HTTP 502");
+    expect(host.textContent).not.toContain("MQTT");
+    expect(host.textContent).not.toContain("COM3");
+    await vi.waitFor(() => {
+      expect(listCustomerErrorEvidence()).toContainEqual(
+        expect.objectContaining({
+          stage: "product_refresh",
+          customerMessage: "商品信息更新失败，请重新选择商品",
+          technicalMessage:
+            "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+          operation: "result.refresh_catalog",
+          orderId: transaction.orderId,
+          paymentId: transaction.paymentId,
+          orderNo: transaction.orderNo,
+        }),
+      );
+    });
   });
 
   it("lets customers leave a terminal dispense failure when the machine remains blocked", async () => {

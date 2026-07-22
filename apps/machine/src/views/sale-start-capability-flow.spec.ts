@@ -92,6 +92,7 @@ import type {
 
 import { resetCustomerInteractionSessionForTests } from "@/composables/customer-interaction-session";
 import { resetStableVisionPresenceSessionForTests } from "@/composables/stable-vision-presence-session";
+import { installVisionRecommendationCoordinator } from "@/runtime/vision-recommendation-coordinator";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -99,7 +100,6 @@ import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useVisionStore } from "@/stores/vision";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
-import { installVisionRecommendationCoordinator } from "@/runtime/vision-recommendation-coordinator";
 
 import BootView from "./BootView.vue";
 import CatalogView from "./CatalogView.vue";
@@ -2675,7 +2675,8 @@ describe("sale-start capability UI flow", () => {
 
     expect(host.textContent).toContain("确认购买");
     expect(host.textContent).toContain("基础短袖");
-    expect(host.textContent).toContain("platform unavailable");
+    expect(host.textContent).toContain("设备暂不可用，请联系工作人员");
+    expect(host.textContent).not.toContain("platform unavailable");
     await vi.waitFor(() => {
       expect(useCheckoutStore().loading).toBe(false);
     });

@@ -109,7 +109,7 @@ const isDispenseFailureResult = computed(
 const isDispenseResolutionResult = computed(() =>
   kind.value ? DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value) : false,
 );
-const resultReadinessError = ref<string | null>(null);
+const resultReadinessError = ref(false);
 const activeReturnPolicy = computed<CustomerCheckoutReturnPolicy | null>(() => {
   return projectedResult.value?.returnPolicy ?? null;
 });
@@ -168,6 +168,12 @@ async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   stopAutoReturn();
   returningToCatalog = true;
+  const errorCorrelation = {
+    checkoutAttemptIdempotencyKey: checkoutStore.checkoutAttemptIdempotencyKey,
+    orderId: checkoutStore.transaction?.orderId ?? null,
+    paymentId: checkoutStore.transaction?.paymentId ?? null,
+    orderNo: checkoutStore.transaction?.orderNo ?? null,
+  };
   const returnPolicy = activeReturnPolicy.value;
   if (returnPolicy?.canManualReturn !== true) {
     returningToCatalog = false;
@@ -185,8 +191,13 @@ async function backToCatalog(): Promise<void> {
   });
   if (projectedTargetRoute === "catalog") {
     await catalogStore.refresh().catch((error: unknown) => {
-      resultReadinessError.value =
-        error instanceof Error ? error.message : String(error);
+      resultReadinessError.value = true;
+      checkoutStore.setCustomerError(
+        "product_refresh",
+        error,
+        "result.refresh_catalog",
+        errorCorrelation,
+      );
     });
   }
 }

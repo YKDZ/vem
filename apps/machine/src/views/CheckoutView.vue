@@ -10,6 +10,7 @@ import alipayScanImage from "@/assets/payment/alipay-scan.png";
 import { topCategoryForItem } from "@/catalog/view-model";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
+import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
@@ -22,6 +23,7 @@ const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const machineStore = useMachineStore();
 const saleCapabilityStore = useSaleCapabilityStore();
+const deviceUnavailableCopy = projectCustomerError("device").message;
 
 const item = computed(() => {
   const selectedItem = checkoutStore.selectedItem;
@@ -93,6 +95,16 @@ function paymentDescription(description: string, method: string): string {
   return method === "payment_code"
     ? "展示付款码扫码界面"
     : "展示二维码支付界面";
+}
+
+function paymentOptionDescription(
+  disabled: boolean,
+  description: string,
+  method: string,
+): string {
+  return disabled
+    ? deviceUnavailableCopy
+    : paymentDescription(description, method);
 }
 
 async function submitOrder(): Promise<void> {
@@ -234,9 +246,11 @@ async function submitOrder(): Promise<void> {
                 </strong>
                 <small>
                   {{
-                    option.disabled
-                      ? option.disabledReason
-                      : paymentDescription(option.description, option.method)
+                    paymentOptionDescription(
+                      option.disabled,
+                      option.description,
+                      option.method,
+                    )
                   }}
                 </small>
               </span>
@@ -266,10 +280,7 @@ async function submitOrder(): Promise<void> {
             }}
           </p>
           <p v-if="!saleCapabilityStore.canStartSale">
-            {{
-              saleCapabilityStore.blockingMessages[0] ??
-              "正在确认当前购买状态。"
-            }}
+            {{ deviceUnavailableCopy }}
           </p>
           <p v-if="checkoutStore.customerErrorMessage">
             {{ checkoutStore.customerErrorMessage }}

@@ -29,6 +29,13 @@ export type ApplyTransactionOptions = {
   restored?: boolean;
 };
 
+export type CustomerErrorCorrelation = {
+  checkoutAttemptIdempotencyKey: string | null;
+  orderId: string | null;
+  paymentId: string | null;
+  orderNo: string | null;
+};
+
 export type TransactionRefreshOutcome =
   | {
       status: "refreshed";
@@ -352,6 +359,7 @@ export const useCheckoutStore = defineStore("checkout", {
       stage: CustomerErrorStage,
       error: unknown,
       operation: string,
+      correlation?: CustomerErrorCorrelation,
     ): void {
       const projection = projectCustomerError(stage, error);
       this.customerError = projection;
@@ -360,10 +368,13 @@ export const useCheckoutStore = defineStore("checkout", {
         customerMessage: projection.message,
         technicalMessage: technicalErrorMessage(error),
         operation,
-        checkoutAttemptIdempotencyKey: this.checkoutAttemptIdempotencyKey,
-        orderId: this.transaction?.orderId ?? null,
-        paymentId: this.transaction?.paymentId ?? null,
-        orderNo: this.transaction?.orderNo ?? null,
+        checkoutAttemptIdempotencyKey:
+          correlation?.checkoutAttemptIdempotencyKey ??
+          this.checkoutAttemptIdempotencyKey,
+        orderId: correlation?.orderId ?? this.transaction?.orderId ?? null,
+        paymentId:
+          correlation?.paymentId ?? this.transaction?.paymentId ?? null,
+        orderNo: correlation?.orderNo ?? this.transaction?.orderNo ?? null,
       });
     },
     tick(nowMs = Date.now()): void {

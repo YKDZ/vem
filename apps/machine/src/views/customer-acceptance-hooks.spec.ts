@@ -82,6 +82,7 @@ import type { MachineSaleViewItem } from "@/types/catalog";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import {
   applySaleCapability,
   saleCapabilitySnapshot,
@@ -275,5 +276,30 @@ describe("customer acceptance hooks", () => {
     expect(host.textContent).not.toContain("MQTT");
     expect(host.textContent).not.toContain("COM3");
     expect(host.textContent).not.toContain("schema validation");
+  });
+
+  it("does not render raw payment-option or sale-blocker diagnostics", async () => {
+    applySaleView();
+    const capability = saleCapabilitySnapshot({
+      canStartSale: false,
+      blockerMessage: "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+      paymentCodeReady: false,
+    });
+    capability.paymentOptions.options[1].disabledReason =
+      "provider scanner serial COM3 unavailable over IPC";
+    useSaleCapabilityStore().acceptSnapshot(capability);
+    const checkoutStore = useCheckoutStore();
+    const selectedItem = useCatalogStore().availableItems[0];
+    if (!selectedItem) throw new Error("expected saleable catalog item");
+    checkoutStore.selectItem(selectedItem);
+
+    const host = await mountView(CheckoutView);
+
+    expect(host.textContent).toContain("设备暂不可用，请联系工作人员");
+    expect(host.textContent).not.toContain("HTTP 502");
+    expect(host.textContent).not.toContain("MQTT");
+    expect(host.textContent).not.toContain("IPC");
+    expect(host.textContent).not.toContain("COM3");
+    expect(host.textContent).not.toContain("schema failed");
   });
 });
