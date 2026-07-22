@@ -30,6 +30,14 @@ describe("payment provider guest full", () => {
       true,
     );
     assert.equal(
+      isRetryableAlipaySandboxError(
+        new Error(
+          "payment provider remained uncertain: PAYMENT_CODE_QUERY_UNKNOWN",
+        ),
+      ),
+      true,
+    );
+    assert.equal(
       isRetryableAlipaySandboxError(new Error("ACQ.INVALID_AUTH_CODE")),
       false,
     );

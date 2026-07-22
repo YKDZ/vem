@@ -119,7 +119,10 @@ export function sanitizeProviderEvidence(value, depth = 0) {
 }
 
 export function isRetryableAlipaySandboxError(error) {
-  return errorMessage(error).includes("aop.ACQ.SYSTEM_ERROR");
+  const message = errorMessage(error);
+  return ["aop.ACQ.SYSTEM_ERROR", "PAYMENT_CODE_QUERY_UNKNOWN"].some((code) =>
+    message.includes(code),
+  );
 }
 
 export function parsePaymentProviderGuestArgs(args) {
