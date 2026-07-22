@@ -3,6 +3,25 @@ use windows::{
     core::factory, Win32::System::WinRT::IInputPaneInterop, UI::ViewManagement::InputPane,
 };
 
+#[cfg(windows)]
+fn start_windows_touch_keyboard() -> Result<(), String> {
+    let common_program_files = std::env::var_os("CommonProgramFiles")
+        .unwrap_or_else(|| r"C:\Program Files\Common Files".into());
+    let executable = std::path::PathBuf::from(common_program_files)
+        .join("microsoft shared")
+        .join("ink")
+        .join("TabTip.exe");
+    std::process::Command::new(&executable)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "启动 Windows 系统触摸键盘失败 ({}): {error}",
+                executable.display()
+            )
+        })
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemTouchKeyboardState {
@@ -39,14 +58,17 @@ pub fn show_system_touch_keyboard(
         window
             .set_focus()
             .map_err(|error| format!("聚焦 Machine UI 窗口失败: {error}"))?;
-        if input_pane_for_window(&window).and_then(|input_pane| {
+        let input_pane_result = input_pane_for_window(&window).and_then(|input_pane| {
             input_pane
                 .TryShow()
                 .map_err(|error| format!("显示 Windows 输入面板失败: {error}"))
-        })? {
-            Ok(SystemTouchKeyboardState { visible: true })
-        } else {
-            Err("Windows 输入面板未接受显示请求".to_string())
+        });
+        match input_pane_result {
+            Ok(true) => Ok(SystemTouchKeyboardState { visible: true }),
+            Ok(false) | Err(_) => {
+                start_windows_touch_keyboard()?;
+                Ok(SystemTouchKeyboardState { visible: true })
+            }
         }
     }
 

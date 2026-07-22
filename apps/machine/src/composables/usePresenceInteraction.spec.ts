@@ -109,7 +109,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.presenceClass?.value).toBe("presence-present");
   });
 
-  it("applies explicit vision presence and departure facts", async () => {
+  it("applies explicit vision departure after the departure hysteresis", async () => {
     vi.useFakeTimers();
     const presence = await mountPresence();
 
@@ -129,6 +129,9 @@ describe("usePresenceInteraction", () => {
     });
     await nextTick();
 
+    expect(presence.state?.value.personPresent).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+
     expect(presence.state?.value).toEqual({
       eventId: "VISION-DEPARTURE-EVENT-001",
       personPresent: false,
@@ -139,6 +142,37 @@ describe("usePresenceInteraction", () => {
       source: "vision",
     });
     expect(presence.presenceClass?.value).toBe("presence-idle");
+  });
+
+  it("cancels an explicit vision departure when presence immediately recovers", async () => {
+    vi.useFakeTimers();
+    const presence = await mountPresence();
+
+    emitPresenceStatus({
+      eventId: "VISION-PRESENCE-BEFORE-FLICKER",
+      detectedAt: "2026-07-22T14:06:17.963Z",
+      personPresent: true,
+    });
+    useVisionStore().applyPersonDeparted({
+      source: "top",
+      eventId: "VISION-DEPARTURE-FLICKER",
+      detectedAt: "2026-07-22T14:06:18.563Z",
+      lastSeenAt: "2026-07-22T14:06:17.963Z",
+      reason: "no_person",
+    });
+    await vi.advanceTimersByTimeAsync(550);
+    emitPresenceStatus({
+      eventId: "VISION-PRESENCE-RECOVERED",
+      detectedAt: "2026-07-22T14:06:19.117Z",
+      personPresent: true,
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(presence.state?.value).toMatchObject({
+      eventId: "VISION-PRESENCE-RECOVERED",
+      personPresent: true,
+      source: "vision",
+    });
   });
 
   it("clears stale presence when vision becomes unavailable", async () => {

@@ -80,11 +80,34 @@ describe("customer presence navigation", () => {
       reason: "left_frame",
     });
     await nextTick();
+    await vi.advanceTimersByTimeAsync(3_000);
 
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
       type: "presence.departed",
       eventId: "VISION-DEPARTURE-001",
     });
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it("does not submit departure when an explicit event is immediately contradicted", async () => {
+    vi.useFakeTimers();
+    const unmount = await mountPresenceDepartureNavigation();
+
+    emitPresence(true, "2026-07-22T14:06:17.963Z");
+    await nextTick();
+    useVisionStore().applyPersonDeparted({
+      source: "top",
+      eventId: "VISION-DEPARTURE-FLICKER",
+      detectedAt: "2026-07-22T14:06:18.563Z",
+      lastSeenAt: "2026-07-22T14:06:17.963Z",
+      reason: "no_person",
+    });
+    await vi.advanceTimersByTimeAsync(550);
+    emitPresence(true, "2026-07-22T14:06:19.117Z");
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
     unmount();
     vi.useRealTimers();
   });

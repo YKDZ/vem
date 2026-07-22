@@ -81,6 +81,10 @@ async function refreshContract(force = false): Promise<void> {
     contract.value = force
       ? await daemonClient.refreshVisionCameraMaintenanceContract()
       : await daemonClient.getVisionCameraMaintenanceContract();
+    if (message.value === "读取视觉摄像头维护状态失败") {
+      message.value = null;
+      technicalEvidence.value = null;
+    }
   } catch (error) {
     message.value = "读取视觉摄像头维护状态失败";
     technicalEvidence.value = error instanceof Error ? error.message : String(error);

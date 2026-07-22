@@ -149,6 +149,24 @@ describe("VisionCameraMaintenancePanel", () => {
     );
   });
 
+  it("clears a transient read failure after the periodic retry succeeds", async () => {
+    vi.useFakeTimers();
+    getVisionCameraMaintenanceContractMock.mockRejectedValueOnce(
+      new Error("daemon request failed"),
+    );
+    const host = await render();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.textContent).toContain("读取视觉摄像头维护状态失败");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await nextTick();
+
+    expect(host.textContent).not.toContain("读取视觉摄像头维护状态失败");
+    expect(host.querySelector("details")).toBeNull();
+    vi.useRealTimers();
+  });
+
   afterEach(() => {
     mountedApp?.unmount();
     mountedApp = null;

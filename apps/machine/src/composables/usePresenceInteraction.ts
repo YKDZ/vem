@@ -263,8 +263,7 @@ function startCustomerPresenceSession(
       }
       if (!presence.personPresent) {
         if (presence.source === "person_departed") {
-          markDeparted({
-            source: "vision",
+          scheduleVisionDeparture({
             departedAt: presence.departedAt ?? presence.lastChangedAt,
             lastSeenAt: presence.lastSeenAt,
             eventId: presence.eventId,
