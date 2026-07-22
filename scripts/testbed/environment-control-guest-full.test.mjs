@@ -8,6 +8,7 @@ import {
   automaticSerialEvidence,
   isReplacementSessionB3,
   replaceEnvironmentSerialHandoff,
+  serialFramesSince,
   unwrapServiceApiEnvelope,
 } from "./environment-control-guest-full.mjs";
 
@@ -41,6 +42,24 @@ describe("environment control guest full", () => {
     assert.deepEqual(automaticSerialEvidence(evidence, 0), {
       b3FrameCountDelta: 1,
       protocolFrames: ["B3", "B1", "B2"],
+    });
+  });
+
+  it("treats a reset evidence window as a fresh automatic-vent increment", () => {
+    const evidence = {
+      rawFrames: [
+        {
+          sessionId: "serial-replacement",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(evidence, 5), evidence.rawFrames);
+    assert.deepEqual(automaticSerialEvidence(evidence, 5), {
+      b3FrameCountDelta: 1,
+      protocolFrames: ["B3"],
     });
   });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -216,6 +216,26 @@ export function rewriteWebSocketDebuggerUrl(
   original.hostname = forwarded.hostname;
   original.port = forwarded.port;
   return original.toString();
+}
+
+function cdpTargetIdFromWebSocketUrl(webSocketUrl) {
+  let url;
+  try {
+    url = new URL(String(webSocketUrl));
+  } catch {
+    throw new Error("CDP target webSocketDebuggerUrl is invalid");
+  }
+  const match = /^\/devtools\/page\/([^/]+)$/.exec(url.pathname);
+  if (!match) {
+    throw new Error(
+      "CDP target webSocketDebuggerUrl pathname does not match target id",
+    );
+  }
+  return boundedRequiredString(
+    decodeURIComponent(match[1]),
+    "CDP target id",
+    MAX_TARGET_ID_LENGTH,
+  );
 }
 
 export function assertTargetDebuggerWebSocketUrl(
@@ -691,6 +711,9 @@ export class CdpClient {
     this.eventHandlers = new Map();
     this.closed = false;
     this.socket = null;
+    this.targetId = cdpTargetIdFromWebSocketUrl(this.webSocketUrl);
+    this.connectionSessionId = null;
+    this.connectedAt = null;
   }
 
   async connect({ timeoutMs = this.defaultTimeoutMs } = {}) {
@@ -723,7 +746,16 @@ export class CdpClient {
       await this.close({ timeoutMs }).catch(() => {});
       throw error;
     }
+    this.connectionSessionId ??= `cdp-connection:${randomUUID()}`;
+    this.connectedAt ??= new Date().toISOString();
     return this;
+  }
+
+  async observeIdentity() {
+    if (!this.socket || this.closed || this.socket.readyState !== 1) {
+      throw new Error("CDP client is closed");
+    }
+    return observeConnectedCdpIdentity(this);
   }
 
   async send(method, params = {}, { timeoutMs = this.defaultTimeoutMs } = {}) {
@@ -874,6 +906,38 @@ export class CdpClient {
       this.pending.delete(id);
     }
   }
+}
+
+export function observeConnectedCdpIdentity(client) {
+  if (!client || typeof client !== "object") {
+    throw new Error("connected production CDP client is required");
+  }
+  const targetId =
+    typeof client.targetId === "string" && client.targetId.trim() !== ""
+      ? boundedRequiredString(
+          client.targetId,
+          "CDP target id",
+          MAX_TARGET_ID_LENGTH,
+        )
+      : cdpTargetIdFromWebSocketUrl(client.webSocketUrl);
+  const sessionId =
+    typeof client.connectionSessionId === "string" &&
+    client.connectionSessionId.trim() !== ""
+      ? client.connectionSessionId
+      : `cdp-connection:${randomUUID()}`;
+  const connectedAt =
+    typeof client.connectedAt === "string" &&
+    Number.isFinite(Date.parse(client.connectedAt))
+      ? client.connectedAt
+      : new Date().toISOString();
+  client.targetId = targetId;
+  client.connectionSessionId = sessionId;
+  client.connectedAt = connectedAt;
+  return {
+    targetId,
+    sessionId,
+    connectedAt,
+  };
 }
 
 export async function enablePageRuntime(client) {

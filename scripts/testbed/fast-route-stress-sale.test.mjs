@@ -1001,6 +1001,18 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("accepts MQTT vend coordinates when the payload serializes rowNo and cellNo as strings", () => {
+    const evidence = validEvidence();
+    evidence.mqttMessages[0].payload.payload.slot = {
+      rowNo: "2",
+      cellNo: "5",
+    };
+
+    const summary = validateFastRouteStressSaleEvidence(evidence);
+
+    assert.equal(summary.slotDisplayLabel, "R2C5");
+  });
+
   it("fails closed when the repeated touch creates a late duplicate order or payment", () => {
     const evidence = validEvidence();
     evidence.platform.afterF2.raw.orders = [

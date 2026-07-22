@@ -279,8 +279,7 @@ function serialTailIdentity(evidence) {
 }
 
 function serialProtocolFrames(evidence, beforeFrameCount) {
-  return (evidence?.rawFrames ?? [])
-    .slice(beforeFrameCount)
+  return serialFramesSince(evidence, beforeFrameCount)
     .filter((frame) => frame?.parsedOpcode)
     .map((frame) => frame.parsedOpcode);
 }
@@ -306,9 +305,16 @@ function automaticVentHealth(health) {
   );
 }
 
+export function serialFramesSince(evidence, beforeFrameCount) {
+  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+  if (!Number.isInteger(beforeFrameCount) || beforeFrameCount < 0) {
+    return frames.slice();
+  }
+  return frames.slice(beforeFrameCount > frames.length ? 0 : beforeFrameCount);
+}
+
 function b3FramesSince(evidence, beforeFrameCount) {
-  return (evidence?.rawFrames ?? [])
-    .slice(beforeFrameCount)
+  return serialFramesSince(evidence, beforeFrameCount)
     .filter((frame) => frame?.parsedOpcode === "B3")
     .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
 }

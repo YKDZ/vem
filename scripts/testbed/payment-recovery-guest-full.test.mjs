@@ -102,6 +102,30 @@ describe("payment recovery guest full", () => {
       },
     );
   });
+  it("derives the fixture category from daemon sale-view when the allocation omits it", () => {
+    assert.deepEqual(
+      selectFixtureSlot(
+        {
+          planogramVersion: "P-7",
+          items: [
+            {
+              slotId: "slot-underwear",
+              inventoryId: "inv-underwear",
+              categoryName: "",
+              productName: "男士平角裤",
+            },
+          ],
+        },
+        { slotId: "slot-underwear" },
+      ),
+      {
+        slotId: "slot-underwear",
+        categoryKey: "underwear",
+        inventoryId: "inv-underwear",
+        planogramVersion: "P-7",
+      },
+    );
+  });
   it("rejects a fixture category that diverges from Machine Catalog semantics", () => {
     assert.throws(
       () =>

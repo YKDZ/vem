@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  observeGuestRuntimeIdentity,
   parsePresenceAndAudioGuestArgs,
   runPresenceAndAudioGuestFull,
   validatePresenceAndAudioGuestReport,
@@ -319,6 +320,25 @@ function report() {
 }
 
 describe("presence and audio guest full", () => {
+  it("falls back to the shared CDP identity helper when the client lacks observeIdentity", async () => {
+    const identity = await observeGuestRuntimeIdentity(
+      { webSocketUrl: "ws://127.0.0.1:9222/devtools/page/target-1" },
+      {
+        observeConnectedCdpIdentity: () => ({
+          targetId: "target-1",
+          sessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          connectedAt: "2026-07-22T08:00:00.000Z",
+        }),
+      },
+    );
+
+    assert.deepEqual(identity, {
+      targetId: "target-1",
+      sessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+      connectedAt: "2026-07-22T08:00:00.000Z",
+    });
+  });
+
   it("parses the installed guest contract", () => {
     assert.equal(
       parsePresenceAndAudioGuestArgs([
@@ -495,12 +515,15 @@ describe("presence and audio guest full", () => {
           async connect() {
             calls.push("cdp-connect");
           },
-          async observeIdentity() {
-            return { targetId: "target-1", sessionId: "cdp-1" };
-          },
           async close() {
             calls.push("cdp-close");
           },
+          webSocketUrl: "ws://127.0.0.1:9222/devtools/page/target-1",
+        }),
+        observeConnectedCdpIdentity: () => ({
+          targetId: "target-1",
+          sessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          connectedAt: "2026-07-22T08:00:00.000Z",
         }),
         enablePageRuntime: async () => calls.push("cdp-enable"),
         waitForRoute: async (_client, route) => calls.push(`route:${route}`),
@@ -733,11 +756,13 @@ describe("presence and audio guest full", () => {
         rewriteWebSocketDebuggerUrl: (url) => url,
         createClient: () => ({
           connect: async () => {},
-          observeIdentity: async () => ({
-            targetId: "target-1",
-            sessionId: "cdp-1",
-          }),
           close: async () => {},
+          webSocketUrl: "ws://127.0.0.1:9222/devtools/page/target-1",
+        }),
+        observeConnectedCdpIdentity: () => ({
+          targetId: "target-1",
+          sessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          connectedAt: "2026-07-22T08:00:00.000Z",
         }),
         enablePageRuntime: async () => {},
         waitForRoute: async () => {},

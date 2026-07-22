@@ -687,8 +687,7 @@ describe("full workflow serial lifecycle", () => {
           };
         }
         if (
-          path ===
-          "/v1/stock/maintenance-tasks/historical-refill-01/projection"
+          path === "/v1/stock/maintenance-tasks/historical-refill-01/projection"
         ) {
           projectionReads += 1;
           return {
@@ -716,8 +715,7 @@ describe("full workflow serial lifecycle", () => {
           items: [
             {
               slotId: "slot-1",
-              slotSalesState:
-                saleViewReads > 1 ? "sale_ready" : "needs_count",
+              slotSalesState: saleViewReads > 1 ? "sale_ready" : "needs_count",
               saleableStock: 3,
               physicalStock: 3,
             },
@@ -841,6 +839,14 @@ describe("full workflow serial lifecycle", () => {
               saleableStock: saleViewReads > 1 ? 1 : 2,
               physicalStock: saleViewReads > 1 ? 1 : 2,
             },
+            {
+              slotId: "slot-02",
+              slotDisplayLabel: "A2",
+              sku: "SKU-02",
+              slotSalesState: "sale_ready",
+              saleableStock: 3,
+              physicalStock: 3,
+            },
           ],
         };
       },
@@ -865,6 +871,12 @@ describe("full workflow serial lifecycle", () => {
           slotId: "slot-01",
           sku: "SKU-01",
           quantity: 1,
+          enabled: true,
+        },
+        {
+          slotId: "slot-02",
+          sku: "SKU-02",
+          quantity: 3,
           enabled: true,
         },
       ],

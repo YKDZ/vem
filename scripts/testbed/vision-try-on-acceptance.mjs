@@ -217,12 +217,13 @@ function visionInstalledBindingDiagnostic(observation) {
   const listeners = Array.isArray(observation?.listeners)
     ? observation.listeners
     : [];
-  const processDetails = canonicalProcesses
-    .map(
-      (process) =>
-        `PID=${process.processId ?? null}, ParentProcessId=${process.parentProcessId ?? null}, CreationDate=${process.creationDate ?? null}, CommandLine=${JSON.stringify(process.commandLine ?? null)}`,
-    )
-    .join(" | ") ||
+  const processDetails =
+    canonicalProcesses
+      .map(
+        (process) =>
+          `PID=${process.processId ?? null}, ParentProcessId=${process.parentProcessId ?? null}, CreationDate=${process.creationDate ?? null}, CommandLine=${JSON.stringify(process.commandLine ?? null)}`,
+      )
+      .join(" | ") ||
     "PID=<none>, ParentProcessId=<none>, CreationDate=<none>, CommandLine=<none>";
   return [
     `count={canonical:${canonicalProcesses.length},listener:${listeners.length}}`,
@@ -914,7 +915,9 @@ export function validateVisionEventFence({
     "current Vision runtime trace",
   );
   if (runtime.runtimeGenerationId !== fence.runtimeGenerationId) {
-    throw new Error("Machine Runtime generation changed across the Vision event fence");
+    throw new Error(
+      "Machine Runtime generation changed across the Vision event fence",
+    );
   }
   for (const event of [
     protocolEvidence?.ready,
@@ -923,7 +926,9 @@ export function validateVisionEventFence({
     protocolEvidence?.departure,
   ]) {
     if (!protocolEventAfter(event, fence.visionStartedAt)) {
-      throw new Error("Vision protocol event predates this runtime event fence");
+      throw new Error(
+        "Vision protocol event predates this runtime event fence",
+      );
     }
   }
   return fence;
@@ -1754,7 +1759,8 @@ export async function collectVisionProtocolEvidence({
         message?.payload?.personPresent === true &&
         state.ready !== null &&
         state.presence === null &&
-        Date.parse(message.payload.detectedAt) > Date.parse(state.ready.timestamp)
+        Date.parse(message.payload.detectedAt) >
+          Date.parse(state.ready.timestamp)
       ) {
         state.presence = message;
       } else if (
@@ -2026,14 +2032,46 @@ async function waitForCatalogProducts(client, timeoutMs = 30_000) {
   );
 }
 
+export async function waitForClearedVisionRecommendationBaseline(
+  { readCatalogState, readRuntimeTraceSnapshot },
+  timeoutMs = 45_000,
+  pollMs = 250,
+) {
+  return waitForCondition(
+    "Vision recommendation baseline clear",
+    async () => {
+      const [catalogState, runtimeTraceSnapshot] = await Promise.all([
+        readCatalogState(),
+        readRuntimeTraceSnapshot(),
+      ]);
+      const runtime = normalizeRuntimeTraceSnapshot(
+        runtimeTraceSnapshot,
+        "Vision recommendation baseline runtime trace",
+      );
+      return {
+        ok:
+          catalogState?.route === "#/catalog" &&
+          Array.isArray(catalogState?.products) &&
+          catalogState.products.length > 0 &&
+          catalogState.recommendationActive === "false" &&
+          catalogState.profileEventId === null,
+        value: {
+          catalogState,
+          runtimeTraceSnapshot: runtime,
+          runtimeGenerationId: runtime.runtimeGenerationId,
+        },
+      };
+    },
+    timeoutMs,
+    pollMs,
+  );
+}
+
 async function waitForCatalogRecommendationProjection(
   client,
   baselineOrder,
   requireRecommendation,
-  {
-    profileEventId = null,
-    excludedProfileEventId = null,
-  } = {},
+  { profileEventId = null, excludedProfileEventId = null } = {},
   timeoutMs = 90_000,
 ) {
   return waitForCondition(
@@ -2044,7 +2082,9 @@ async function waitForCatalogRecommendationProjection(
         ? state.products.map((product) => product.catalogKey)
         : [];
       const expectedProfileEventId =
-        typeof profileEventId === "function" ? profileEventId() : profileEventId;
+        typeof profileEventId === "function"
+          ? profileEventId()
+          : profileEventId;
       return {
         ok:
           state?.route === "#/catalog" &&
@@ -2305,7 +2345,7 @@ async function collectVisionInstalledBinding() {
       "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; parentProcessId = [int]$_.ParentProcessId; creationDate = [string]$_.CreationDate; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
       "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
       "$listenerDetails = @($listener | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess } })",
-      "$processOwner = $null; if ($visionProcesses.Count -eq 1 -and $listenerDetails.Count -eq 1 -and $visionProcesses[0].processId -eq $listenerDetails[0].owningProcess) { $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter \"ProcessId = $($visionProcesses[0].processId)\" -ErrorAction Stop) -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User }",
+      '$processOwner = $null; if ($visionProcesses.Count -eq 1 -and $listenerDetails.Count -eq 1 -and $visionProcesses[0].processId -eq $listenerDetails[0].owningProcess) { $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId = $($visionProcesses[0].processId)" -ErrorAction Stop) -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User }',
       `$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }`,
       "[Console]::Out.Write((@{ canonicalProcesses = $visionProcesses; listeners = $listenerDetails; processOwner = $processOwner; task = $taskDetails } | ConvertTo-Json -Compress -Depth 4))",
     ].join("; ");
@@ -2892,19 +2932,15 @@ async function runVisionTryOnAcceptance(options) {
       '[data-test="catalog-category"][data-category-key="tshirts"]',
       { kind: "touch", timeoutMs: 30_000 },
     );
-    const baselineCatalogProjection = await waitForCatalogProducts(client);
-    if (
-      baselineCatalogProjection.recommendationActive !== "false" ||
-      baselineCatalogProjection.profileEventId !== null
-    ) {
-      throw new Error(
-        "catalog retained a Vision recommendation after the previous runtime stopped",
-      );
-    }
+    const baseline = await waitForClearedVisionRecommendationBaseline({
+      readCatalogState: () => readCatalogProducts(client),
+      readRuntimeTraceSnapshot: () => readRuntimeTrace(client),
+    });
+    const baselineCatalogProjection = baseline.catalogState;
 
     stage = "start-installed-vision-fixture-source";
     const eventFence = createVisionEventFence({
-      runtimeTraceSnapshot: await readRuntimeTrace(client),
+      runtimeTraceSnapshot: baseline.runtimeTraceSnapshot,
       visionStartedAt: new Date().toISOString(),
     });
     let observedProfileEventId = null;
@@ -3072,7 +3108,11 @@ async function runVisionTryOnAcceptance(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    await waitForRecommendationPresentation(client, "automatic", recommendationFixture.matched.variantId);
+    await waitForRecommendationPresentation(
+      client,
+      "automatic",
+      recommendationFixture.matched.variantId,
+    );
 
     stage = "validate-manual-recommendation-override";
     await activateVisibleSelector(
@@ -3110,10 +3150,7 @@ async function runVisionTryOnAcceptance(options) {
     for (let attempt = 1; attempt <= 2 && !tryOnSurface; attempt += 1) {
       stage = `open-try-on-attempt-${attempt}`;
       if (attempt > 1) {
-        await restoreTryOnProductDetail(
-          client,
-          manualSelectedProduct,
-        );
+        await restoreTryOnProductDetail(client, manualSelectedProduct);
       }
       await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
         kind: "touch",

@@ -20,6 +20,7 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  observeConnectedCdpIdentity,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
@@ -313,6 +314,16 @@ function runtimeBinding(handoff, cdpIdentity) {
   };
 }
 
+export async function observeGuestRuntimeIdentity(client, dependencies) {
+  if (typeof client?.observeIdentity === "function") {
+    return client.observeIdentity();
+  }
+  if (typeof dependencies?.observeConnectedCdpIdentity === "function") {
+    return dependencies.observeConnectedCdpIdentity(client);
+  }
+  throw new Error("connected production CDP client identity is unavailable");
+}
+
 function captureSummary(stopReport) {
   const capture = stopReport?.capture;
   if (
@@ -584,6 +595,7 @@ function defaultDependencies() {
     activateVisibleSelector,
     evaluateExpression,
     rewriteWebSocketDebuggerUrl,
+    observeConnectedCdpIdentity,
     sleep,
     now: () => Date.now(),
     randomUUID,
@@ -653,7 +665,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     await dependencies.waitForSaleStartReady(handoff, client);
     report.boundaries.machineCdp = true;
 
-    const cdpIdentity = await client.observeIdentity();
+    const cdpIdentity = await observeGuestRuntimeIdentity(client, dependencies);
     const runtime = runtimeBinding(handoff, cdpIdentity);
     const sessionId = required(
       handoff?.commissioningSerialSession?.sessionId,

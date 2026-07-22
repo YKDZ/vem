@@ -53,6 +53,15 @@ function timestamp(value, label) {
   return parsed;
 }
 
+function integerLike(value, label) {
+  const normalized =
+    typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (!Number.isInteger(normalized)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  return normalized;
+}
+
 function windowsAbsolute(value, label) {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
@@ -647,8 +656,10 @@ export function validateFastRouteStressSaleEvidence(input) {
     throw new Error("MQTT vend command must correlate order and quantity");
   }
   if (
-    mqttPayload.slot?.rowNo !== daemonBefore.rowNo ||
-    mqttPayload.slot?.cellNo !== daemonBefore.cellNo
+    integerLike(mqttPayload.slot?.rowNo, "MQTT vend slot rowNo") !==
+      daemonBefore.rowNo ||
+    integerLike(mqttPayload.slot?.cellNo, "MQTT vend slot cellNo") !==
+      daemonBefore.cellNo
   ) {
     throw new Error(
       "MQTT vend command must correlate the daemon slot coordinates",

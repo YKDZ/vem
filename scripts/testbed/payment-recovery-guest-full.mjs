@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
+import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-
-import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 
 import {
   CdpClient,
@@ -192,7 +191,6 @@ export async function waitForMachineOnline(
 }
 export function selectFixtureSlot(saleView, fixture) {
   const slotId = required(fixture?.slotId, "fixture.slotId");
-  const categoryKey = required(fixture?.categoryKey, "fixture.categoryKey");
   const item = (saleView?.items ?? []).find(
     (entry) => entry?.slotId === slotId,
   );
@@ -204,6 +202,11 @@ export function selectFixtureSlot(saleView, fixture) {
     categoryName: item.categoryName,
     productName: item.productName,
   });
+  const categoryKey =
+    typeof fixture?.categoryKey === "string" &&
+    fixture.categoryKey.trim() !== ""
+      ? fixture.categoryKey.trim()
+      : actualCategoryKey;
   if (actualCategoryKey !== categoryKey) {
     throw new Error(
       `fixture slot ${slotId} category ${categoryKey} does not match Machine Catalog category ${actualCategoryKey ?? "other"}`,

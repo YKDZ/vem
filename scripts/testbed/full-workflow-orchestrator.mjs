@@ -584,6 +584,20 @@ export async function ensureFixtureStockReady({
   const initialBySlot = new Map(
     (initialSaleView?.items ?? []).map((item) => [item.slotId, item]),
   );
+  const activeAttestationSlots = (initialSaleView?.items ?? [])
+    .filter(
+      (item) =>
+        typeof item?.slotId === "string" &&
+        item.slotId !== "" &&
+        typeof item?.sku === "string" &&
+        item.sku !== "",
+    )
+    .map((item) => ({
+      slotId: item.slotId,
+      sku: item.sku,
+      quantity: desiredBySlotId.get(item.slotId) ?? item.physicalStock,
+      enabled: true,
+    }));
   const taskSlotsById = new Map(
     (task.slots ?? []).map((slot) => [slot?.slotId, slot]),
   );
@@ -676,19 +690,13 @@ export async function ensureFixtureStockReady({
   if (task.mode === "routine_refill" && requiresAttestation) {
     operationMode = "physical_stock_attestation";
     operationId = `testbed-stock-recovery-${Date.now()}`;
-    const slots = fixtures.map((fixture) => {
-      const item = initialBySlot.get(fixture.slotId);
-      return {
-        slotId: fixture.slotId,
-        sku: item?.sku,
-        quantity: fixture.onHandQty,
-        enabled: true,
-      };
-    });
+    const slots = activeAttestationSlots;
     if (
       !initialSaleView?.planogramVersion ||
       slots.length === 0 ||
-      slots.some((slot) => !slot.slotId || !slot.sku)
+      slots.some(
+        (slot) => !slot.slotId || !slot.sku || !Number.isInteger(slot.quantity),
+      )
     ) {
       throw new Error("fixture stock attestation inputs are incomplete");
     }
@@ -701,8 +709,7 @@ export async function ensureFixtureStockReady({
   } else {
     const slots =
       task.mode === "routine_refill"
-        ? routineRefillSlots
-            .filter((slot) => slot.addition > 0)
+        ? routineRefillSlots.filter((slot) => slot.addition > 0)
         : (task.slots ?? []).map((slot) => ({
             slotId: slot.slotId,
             quantity: desiredBySlotId.get(slot.slotId) ?? slot.currentQuantity,

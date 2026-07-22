@@ -24,6 +24,7 @@ import {
   validateVisionEventFence,
   validateVisionProtocolEvidence,
   validateVisionRuntimeEvidence,
+  waitForClearedVisionRecommendationBaseline,
   waitForVisionInstalledBindingObservation,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
@@ -963,7 +964,10 @@ describe("vision try-on acceptance script", () => {
       { type: "vision.ready", timestamp: "2026-07-18T00:00:01.000Z" },
       {
         type: "vision.presence_status",
-        payload: { personPresent: false, detectedAt: "2026-07-18T00:00:01.100Z" },
+        payload: {
+          personPresent: false,
+          detectedAt: "2026-07-18T00:00:01.100Z",
+        },
       },
       {
         type: "vision.profile_result",
@@ -971,11 +975,17 @@ describe("vision try-on acceptance script", () => {
       },
       {
         type: "vision.presence_status",
-        payload: { personPresent: true, detectedAt: "2026-07-18T00:00:02.000Z" },
+        payload: {
+          personPresent: true,
+          detectedAt: "2026-07-18T00:00:02.000Z",
+        },
       },
       {
         type: "vision.profile_result",
-        payload: { eventId: "profile-fenced", detectedAt: "2026-07-18T00:00:03.000Z" },
+        payload: {
+          eventId: "profile-fenced",
+          detectedAt: "2026-07-18T00:00:03.000Z",
+        },
       },
       {
         type: "vision.person_departed",
@@ -1037,6 +1047,67 @@ describe("vision try-on acceptance script", () => {
           installedBinding: { frameSourceBinding: frameSourceBinding() },
         }),
       /catalog Vision profile eventId/,
+    );
+  });
+
+  it("waits until the catalog clears the previous Vision recommendation and returns the baseline generation", async () => {
+    let reads = 0;
+    const baseline = await waitForClearedVisionRecommendationBaseline(
+      {
+        readCatalogState: async () => {
+          reads += 1;
+          if (reads === 1) {
+            return {
+              route: "#/catalog",
+              recommendationActive: "true",
+              profileEventId: "profile-old",
+              products: [{ catalogKey: "shirt:l" }],
+            };
+          }
+          return {
+            route: "#/catalog",
+            recommendationActive: "false",
+            profileEventId: null,
+            products: [{ catalogKey: "shirt:l" }],
+          };
+        },
+        readRuntimeTraceSnapshot: async () => ({
+          runtimeGenerationId: "runtime:baseline-1",
+          entries: [{ id: 41 }],
+        }),
+      },
+      50,
+      1,
+    );
+    assert.equal(baseline.catalogState.recommendationActive, "false");
+    assert.equal(baseline.catalogState.profileEventId, null);
+    assert.equal(
+      baseline.runtimeTraceSnapshot.runtimeGenerationId,
+      "runtime:baseline-1",
+    );
+    assert.equal(baseline.runtimeGenerationId, "runtime:baseline-1");
+    assert.equal(reads, 2);
+  });
+
+  it("times out while the previous Vision recommendation remains projected in the catalog baseline", async () => {
+    await assert.rejects(
+      waitForClearedVisionRecommendationBaseline(
+        {
+          readCatalogState: async () => ({
+            route: "#/catalog",
+            recommendationActive: "true",
+            profileEventId: "profile-old",
+            products: [{ catalogKey: "shirt:l" }],
+          }),
+          readRuntimeTraceSnapshot: async () => ({
+            runtimeGenerationId: "runtime:baseline-stuck",
+            entries: [{ id: 7 }],
+          }),
+        },
+        10,
+        1,
+      ),
+      /Vision recommendation baseline clear did not become true/,
     );
   });
 
