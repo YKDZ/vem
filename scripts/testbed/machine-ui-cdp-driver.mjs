@@ -1082,30 +1082,48 @@ export async function probeSelectorBounds(client, selector, options = {}) {
     client,
     `(() => {
       const selector = ${JSON.stringify(selector)};
-      const element = document.querySelector(selector);
-      if (!element) return { selector, exists: false, actionable: false };
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      const center = {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2
-      };
-      const inViewport = (
-        rect.left >= 0 && rect.top >= 0 &&
-        rect.right <= innerWidth && rect.bottom <= innerHeight
-      );
-      const hit = inViewport ? document.elementFromPoint(center.x, center.y) : null;
-      const hitTarget = hit === element || element.contains(hit);
-      const actionable = (
-        rect.width > 0 && rect.height > 0 && inViewport && hitTarget &&
-        style.visibility !== "hidden" && style.display !== "none" &&
-        style.pointerEvents !== "none" && Number(style.opacity || "1") > 0 &&
-        !element.hasAttribute("disabled") &&
-        element.getAttribute("aria-disabled") !== "true"
-      );
+      const elements = [...document.querySelectorAll(selector)];
+      if (elements.length === 0) {
+        return { selector, exists: false, actionable: false };
+      }
+      const probes = elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const center = {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2
+        };
+        const inViewport = (
+          rect.left >= 0 && rect.top >= 0 &&
+          rect.right <= innerWidth && rect.bottom <= innerHeight
+        );
+        const hit = inViewport
+          ? document.elementFromPoint(center.x, center.y)
+          : null;
+        const hitTarget = hit === element || element.contains(hit);
+        const actionable = (
+          rect.width > 0 && rect.height > 0 && inViewport && hitTarget &&
+          style.visibility !== "hidden" && style.display !== "none" &&
+          style.pointerEvents !== "none" && Number(style.opacity || "1") > 0 &&
+          !element.hasAttribute("disabled") &&
+          element.getAttribute("aria-disabled") !== "true"
+        );
+        return {
+          element,
+          rect,
+          style,
+          center,
+          inViewport,
+          hitTarget,
+          actionable,
+        };
+      });
+      const selected = probes.find((probe) => probe.actionable) ?? probes[0];
+      const { element, rect, style, center, inViewport, hitTarget, actionable } = selected;
       return {
         selector,
         exists: true,
+        matchCount: elements.length,
         actionable,
         disabled: element.hasAttribute("disabled"),
         ariaDisabled: element.getAttribute("aria-disabled"),
@@ -1187,7 +1205,11 @@ export async function activateVisibleSelector(client, selector, options = {}) {
       await evaluateExpression(
         client,
         `(() => {
-          const element = document.querySelector(${JSON.stringify(selector)});
+          const elements = [...document.querySelectorAll(${JSON.stringify(selector)})];
+          const element = elements.find((candidate) => {
+            const rect = candidate.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }) ?? elements[0];
           if (!element) return false;
           element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
           return true;

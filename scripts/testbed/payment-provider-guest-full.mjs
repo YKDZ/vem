@@ -437,6 +437,7 @@ async function visiblePaymentSurface(client, method, timeoutMs) {
             orderId: el.dataset.orderId || null,
             paymentId: el.dataset.paymentId || null,
             orderNo: el.dataset.orderNo || null,
+            paymentNo: el.dataset.paymentNo || null,
             paymentUrl: el.dataset.paymentUrl || null,
             paymentMethod: el.dataset.paymentMethod || null,
             providerCode: el.dataset.paymentProvider || null,

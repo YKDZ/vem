@@ -147,6 +147,7 @@ onUnmounted(() => {
       :data-order-id="checkoutStore.transaction?.orderId ?? ''"
       :data-payment-id="checkoutStore.transaction?.paymentId ?? ''"
       :data-order-no="checkoutStore.transaction?.orderNo ?? ''"
+      :data-payment-no="checkoutStore.transaction?.paymentNo ?? ''"
       :data-payment-url="paymentView.paymentUrl ?? ''"
       data-test="payment-page"
       :data-payment-method="paymentView.method"
