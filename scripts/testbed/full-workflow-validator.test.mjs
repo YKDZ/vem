@@ -266,39 +266,121 @@ function environmentControlReport() {
 }
 
 function paymentRecoveryReport() {
+  const expectedByKind = {
+    create_failure: ["failed", "canceled", "payment_failed", "payment_failed"],
+    query_failure: ["canceled", "canceled", "canceled", "closed"],
+    canceled: ["canceled", "canceled", "canceled", "closed"],
+    expired: [
+      "expired",
+      "payment_expired",
+      "payment_expired",
+      "payment_expired",
+    ],
+  };
   return {
     schemaVersion: "vem-payment-recovery-guest-full/v1",
     ok: true,
-    boundaries: {
-      serviceApi: true,
-      mqttNoDispense: true,
-      daemon: true,
-      customerProjection: true,
-      variantSaleability: true,
-    },
+    inventory: { id: "inventory-payment-recovery" },
     payment: { id: "payment-recovery-1" },
-    recovery: { action: { action: "query_payment" } },
-    attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
-      (kind) => ({
-        kind,
-        terminalPaymentState: kind === "expired" ? "expired" : "failed",
-        reservation: {
-          baselineReservedQty: 0,
-          reservedQty: 0,
-          activeRows: 0,
-          daemonActiveReservations: 0,
-        },
-        customer: { saleable: true, semanticChineseOnly: true },
-        technicalEvidence: { correlationId: `payment-recovery:${kind}` },
-      }),
-    ),
-    subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
-    variantSaleability: {
-      frozenDefaultVariant: true,
-      saleReadyAlternateVariant: true,
-      selectedSaleReadyVariant: true,
+    recoveryMqttEvidence: {
+      mqtt: { topic: "vem/machines/M-1/commands/dispense", messages: [] },
     },
-    assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
+    attempts: Object.entries(expectedByKind).map(([kind, expected]) => {
+      const [paymentStatus, orderStatus, paymentState, resultKind] = expected;
+      return {
+        kind,
+        order: { id: `order-${kind}`, paymentId: `payment-${kind}` },
+        payment: { id: `payment-${kind}`, paymentNo: `payment-no-${kind}` },
+        expectedTerminal: {
+          paymentStatus,
+          orderStatus,
+          paymentState,
+          resultKind,
+        },
+        terminal: { paymentStatus, orderStatus, paymentState },
+        reservation: {
+          quantity: 1,
+          baseline: { onHandQty: 3, reservedQty: 0, activeRows: 0 },
+          active: {
+            onHandQty: 3,
+            reservedQty: 1,
+            activeRows: 1,
+            orderReservationRows: 1,
+            row: { id: `reservation-${kind}`, status: "active" },
+          },
+          terminal: {
+            onHandQty: 3,
+            reservedQty: 0,
+            activeRows: 0,
+            orderReservationRows: 1,
+            row: { id: `reservation-${kind}`, status: "released" },
+          },
+        },
+        daemon: {
+          active: { orderId: `order-${kind}`, paymentId: `payment-${kind}` },
+          terminal: {
+            orderId: `order-${kind}`,
+            paymentId: `payment-${kind}`,
+            paymentStatus,
+          },
+        },
+        customer: {
+          source: "installed_machine_runtime_cdp",
+          orderId: `order-${kind}`,
+          paymentId: `payment-${kind}`,
+          resultKind,
+          text: "本次订单已结束。",
+        },
+        technicalEvidence: {
+          runtimeTrace: {
+            source: "installed_machine_runtime_trace_cdp",
+            orderId: `order-${kind}`,
+            paymentId: `payment-${kind}`,
+            resultKind,
+            entry: { id: 1 },
+          },
+        },
+        ...(kind === "query_failure"
+          ? {
+              recovery: {
+                queryFault: {
+                  source: "mock_provider_query_fault_boundary",
+                  paymentNo: `payment-no-${kind}`,
+                },
+                reconciliationAttempt: {
+                  paymentId: `payment-${kind}`,
+                  status: "network_error",
+                  errorCode: "query_failed",
+                },
+                closeAction: { action: "close_or_reverse_uncertain_payment" },
+              },
+            }
+          : {}),
+        ...(kind === "expired"
+          ? {
+              expiryInjection: {
+                source: "testbed_payment_expiry_time_injection",
+                beforePaymentStatus: "pending",
+              },
+            }
+          : {}),
+      };
+    }),
+    subsequentSale: {
+      order: {
+        id: "order-paid",
+        paymentId: "payment-paid",
+        inventoryId: "inventory-payment-recovery",
+      },
+      terminal: {
+        paymentStatus: "succeeded",
+        orderStatus: "fulfilled",
+        fulfillmentState: "dispensed",
+      },
+      inventory: { beforeOnHandQty: 3, afterOnHandQty: 2, movementCount: 1 },
+      serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+    },
+    assertions: { duplicatePaymentCount: 0 },
   };
 }
 
@@ -769,7 +851,12 @@ describe("full workflow aggregate validator", () => {
         descriptor("paymentRecovery"),
         {
           ...paymentRecoveryReport(),
-          boundaries: { serviceApi: true, mqtt: false, daemon: true },
+          recoveryMqttEvidence: {
+            mqtt: {
+              topic: "vem/machines/M-1/commands/dispense",
+              messages: [{ payload: { commandNo: "CMD-1" } }],
+            },
+          },
         },
         "/reports/payment-recovery.json",
       ).status,
@@ -951,7 +1038,7 @@ describe("full workflow aggregate validator", () => {
       ],
     });
     assert.equal(aggregate.ok, false);
-    assert.match(aggregate.failures[0].reason, /did not finish successfully/);
+    assert.match(aggregate.failures[0].reason, /evidence is incomplete/);
   });
 });
 

@@ -126,6 +126,14 @@ export class AppConfigService {
     );
   }
 
+  get paymentMockProviderQueryFaultPath(): string | null {
+    return (
+      this.config.get("PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH", {
+        infer: true,
+      }) ?? null
+    );
+  }
+
   get paymentWebhookBaseUrl(): string {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
   }

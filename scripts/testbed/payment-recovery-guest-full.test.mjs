@@ -147,40 +147,7 @@ describe("payment recovery guest full", () => {
     );
   });
   it("requires production recovery boundaries and no duplicate dispense", () => {
-    const report = {
-      schemaVersion: "vem-payment-recovery-guest-full/v1",
-      ok: true,
-      boundaries: {
-        serviceApi: true,
-        mqttNoDispense: true,
-        daemon: true,
-        customerProjection: true,
-        variantSaleability: true,
-      },
-      payment: { id: "pay-1" },
-      recovery: { action: { action: "query_payment" } },
-      attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
-        (kind) => ({
-          kind,
-          terminalPaymentState: kind === "expired" ? "expired" : "failed",
-          reservation: {
-            baselineReservedQty: 0,
-            reservedQty: 0,
-            activeRows: 0,
-            daemonActiveReservations: 0,
-          },
-          customer: { saleable: true, semanticChineseOnly: true },
-          technicalEvidence: { correlationId: `payment-recovery:${kind}` },
-        }),
-      ),
-      subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
-      variantSaleability: {
-        frozenDefaultVariant: true,
-        saleReadyAlternateVariant: true,
-        selectedSaleReadyVariant: true,
-      },
-      assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
-    };
+    const report = recoveryReport();
     assert.deepEqual(validatePaymentRecoveryEvidence(report), {
       paymentId: "pay-1",
       action: "query_payment",
@@ -191,9 +158,14 @@ describe("payment recovery guest full", () => {
       () =>
         validatePaymentRecoveryEvidence({
           ...report,
-          boundaries: { ...report.boundaries, mqttNoDispense: false },
+          recoveryMqttEvidence: {
+            mqtt: {
+              topic: "vem/machines/M-1/commands/dispense",
+              messages: [{ payload: { commandNo: "CMD-1" } }],
+            },
+          },
         }),
-      /boundaries/,
+      /MQTT/,
     );
     assert.throws(
       () =>
@@ -206,40 +178,7 @@ describe("payment recovery guest full", () => {
   });
 
   it("requires every recovery attempt to reach its terminal state without retaining a reservation", () => {
-    const report = {
-      schemaVersion: "vem-payment-recovery-guest-full/v1",
-      ok: true,
-      boundaries: {
-        serviceApi: true,
-        mqttNoDispense: true,
-        daemon: true,
-        customerProjection: true,
-        variantSaleability: true,
-      },
-      payment: { id: "pay-1" },
-      recovery: { action: { action: "query_payment" } },
-      attempts: ["create_failure", "query_failure", "canceled", "expired"].map(
-        (kind) => ({
-          kind,
-          terminalPaymentState: kind === "expired" ? "expired" : "failed",
-          reservation: {
-            baselineReservedQty: 0,
-            reservedQty: 0,
-            activeRows: 0,
-            daemonActiveReservations: 0,
-          },
-          customer: { saleable: true, semanticChineseOnly: true },
-          technicalEvidence: { correlationId: `payment-recovery:${kind}` },
-        }),
-      ),
-      subsequentSale: { sameInventoryOrderCreated: true, mockPaid: true },
-      variantSaleability: {
-        frozenDefaultVariant: true,
-        saleReadyAlternateVariant: true,
-        selectedSaleReadyVariant: true,
-      },
-      assertions: { duplicatePaymentCount: 0, dispenseStarted: false },
-    };
+    const report = recoveryReport();
 
     assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
     assert.throws(
@@ -250,7 +189,13 @@ describe("payment recovery guest full", () => {
             index === 2
               ? {
                   ...attempt,
-                  reservation: { ...attempt.reservation, activeRows: 1 },
+                  reservation: {
+                    ...attempt.reservation,
+                    terminal: {
+                      ...attempt.reservation.terminal,
+                      activeRows: 1,
+                    },
+                  },
                 }
               : attempt,
           ),
@@ -258,4 +203,150 @@ describe("payment recovery guest full", () => {
       /reservation baseline/,
     );
   });
+
+  it("rejects report-only customer copy and locally invented correlations", () => {
+    const report = recoveryReport();
+    assert.throws(
+      () =>
+        validatePaymentRecoveryEvidence({
+          ...report,
+          attempts: report.attempts.map((attempt) => ({
+            ...attempt,
+            customer: { saleable: true, semanticChineseOnly: true },
+            technicalEvidence: { correlationId: `local:${attempt.kind}` },
+          })),
+        }),
+      /customer surface|correlation/,
+    );
+  });
 });
+
+function recoveryReport() {
+  const terminalByKind = {
+    create_failure: {
+      paymentStatus: "failed",
+      orderStatus: "canceled",
+      paymentState: "payment_failed",
+      resultKind: "payment_failed",
+    },
+    query_failure: {
+      paymentStatus: "canceled",
+      orderStatus: "canceled",
+      paymentState: "canceled",
+      resultKind: "closed",
+    },
+    canceled: {
+      paymentStatus: "canceled",
+      orderStatus: "canceled",
+      paymentState: "canceled",
+      resultKind: "closed",
+    },
+    expired: {
+      paymentStatus: "expired",
+      orderStatus: "payment_expired",
+      paymentState: "payment_expired",
+      resultKind: "payment_expired",
+    },
+  };
+  return {
+    schemaVersion: "vem-payment-recovery-guest-full/v1",
+    ok: true,
+    inventory: { id: "inventory-1" },
+    payment: { id: "pay-1" },
+    recoveryMqttEvidence: {
+      mqtt: { topic: "vem/machines/M-1/commands/dispense", messages: [] },
+    },
+    attempts: Object.entries(terminalByKind).map(([kind, terminal]) => ({
+      kind,
+      order: { id: `order-${kind}`, paymentId: `pay-${kind}` },
+      payment: { id: `pay-${kind}`, paymentNo: `payment-${kind}` },
+      expectedTerminal: terminal,
+      reservation: {
+        quantity: 1,
+        baseline: { onHandQty: 3, reservedQty: 0, activeRows: 0 },
+        active: {
+          onHandQty: 3,
+          reservedQty: 1,
+          activeRows: 1,
+          orderReservationRows: 1,
+          row: { id: `reservation-${kind}`, status: "active" },
+        },
+        terminal: {
+          onHandQty: 3,
+          reservedQty: 0,
+          activeRows: 0,
+          orderReservationRows: 1,
+          row: { id: `reservation-${kind}`, status: "released" },
+        },
+      },
+      daemon: {
+        active: { orderId: `order-${kind}`, paymentId: `pay-${kind}` },
+        terminal: {
+          orderId: `order-${kind}`,
+          paymentId: `pay-${kind}`,
+          paymentStatus: terminal.paymentStatus,
+        },
+      },
+      terminal: {
+        paymentStatus: terminal.paymentStatus,
+        orderStatus: terminal.orderStatus,
+        paymentState: terminal.paymentState,
+      },
+      customer: {
+        source: "installed_machine_runtime_cdp",
+        orderId: `order-${kind}`,
+        paymentId: `pay-${kind}`,
+        resultKind: terminal.resultKind,
+        text: "本次订单已取消，未完成扣款。",
+      },
+      technicalEvidence: {
+        runtimeTrace: {
+          source: "installed_machine_runtime_trace_cdp",
+          orderId: `order-${kind}`,
+          paymentId: `pay-${kind}`,
+          resultKind: terminal.resultKind,
+          entry: { id: 1 },
+        },
+      },
+      ...(kind === "query_failure"
+        ? {
+            recovery: {
+              queryFault: {
+                source: "mock_provider_query_fault_boundary",
+                paymentNo: `payment-${kind}`,
+              },
+              reconciliationAttempt: {
+                paymentId: `pay-${kind}`,
+                status: "network_error",
+                errorCode: "query_failed",
+              },
+              closeAction: { action: "close_or_reverse_uncertain_payment" },
+            },
+          }
+        : {}),
+      ...(kind === "expired"
+        ? {
+            expiryInjection: {
+              source: "testbed_payment_expiry_time_injection",
+              beforePaymentStatus: "pending",
+            },
+          }
+        : {}),
+    })),
+    subsequentSale: {
+      order: {
+        id: "order-paid",
+        paymentId: "pay-paid",
+        inventoryId: "inventory-1",
+      },
+      inventory: { beforeOnHandQty: 3, afterOnHandQty: 2, movementCount: 1 },
+      terminal: {
+        paymentStatus: "succeeded",
+        orderStatus: "fulfilled",
+        fulfillmentState: "dispensed",
+      },
+      serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+    },
+    assertions: { duplicatePaymentCount: 0 },
+  };
+}

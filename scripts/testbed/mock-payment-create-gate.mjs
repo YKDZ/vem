@@ -26,6 +26,15 @@ export function paymentMockCreateGatePaths(stateRoot) {
   });
 }
 
+export function paymentMockQueryFaultPaths(stateRoot) {
+  const statePath = join(
+    resolve(required(stateRoot, "stateRoot")),
+    "fast-route",
+    "mock-payment-query-fault.json",
+  );
+  return Object.freeze({ statePath });
+}
+
 export function writePaymentMockCreateGateState(stateRoot, value) {
   const gate = paymentMockCreateGatePaths(stateRoot);
   mkdirSync(dirname(gate.statePath), { recursive: true });
@@ -54,5 +63,22 @@ export function readPaymentMockCreateGateStatus(stateRoot) {
             observedAt: pending.observedAt,
           }
         : null,
+  };
+}
+
+export function writePaymentMockQueryFaultState(stateRoot, value) {
+  const fault = paymentMockQueryFaultPaths(stateRoot);
+  mkdirSync(dirname(fault.statePath), { recursive: true });
+  writeFileSync(fault.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  return fault;
+}
+
+export function readPaymentMockQueryFaultStatus(stateRoot) {
+  const fault = paymentMockQueryFaultPaths(stateRoot);
+  if (!existsSync(fault.statePath)) return { state: "open", paymentNo: null };
+  const state = JSON.parse(readFileSync(fault.statePath, "utf8"));
+  return {
+    state: state?.state === "fail" ? "fail" : "open",
+    paymentNo: typeof state?.paymentNo === "string" ? state.paymentNo : null,
   };
 }

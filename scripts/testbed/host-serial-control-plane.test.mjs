@@ -23,6 +23,7 @@ import {
   buildSerialOperationCommand,
   createHostSerialControlPlane,
   mockPaymentCreateGatePaths,
+  mockPaymentQueryFaultPaths,
   parseHostSerialControlPlaneArgs,
   runJsonCommand,
   serialDeviceXmlForRole,
@@ -354,6 +355,58 @@ describe("host serial control plane", () => {
           if (error) reject(error);
           else resolve();
         });
+      });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arms and clears a payment-specific mock provider query fault through the host control plane API", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-host-query-fault-"));
+    const controlPlane = createHostSerialControlPlane({
+      workspace: "/workspaces/vem",
+      stateRoot: root,
+      bind: "127.0.0.1",
+      port: 0,
+      token: "control-plane-token",
+    });
+    const server = controlPlane.listen();
+    try {
+      if (!server.listening) await once(server, "listening");
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const headers = {
+        authorization: "Bearer control-plane-token",
+        "content-type": "application/json",
+      };
+      const armed = await fetch(`${baseUrl}/v1/mock-payment-query-fault/arm`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ paymentNo: "PAY-QUERY-1" }),
+      }).then((response) => response.json());
+      assert.deepEqual(armed, {
+        ok: true,
+        state: "fail",
+        paymentNo: "PAY-QUERY-1",
+        armedAt: armed.armedAt,
+      });
+      const fault = mockPaymentQueryFaultPaths(root);
+      assert.deepEqual(JSON.parse(readFileSync(fault.statePath, "utf8")), {
+        state: "fail",
+        paymentNo: "PAY-QUERY-1",
+      });
+      const open = await fetch(`${baseUrl}/v1/mock-payment-query-fault/open`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      }).then((response) => response.json());
+      assert.equal(open.state, "open");
+      assert.deepEqual(JSON.parse(readFileSync(fault.statePath, "utf8")), {
+        state: "open",
+      });
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
       });
       rmSync(root, { recursive: true, force: true });
     }

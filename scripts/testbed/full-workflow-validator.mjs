@@ -1,4 +1,5 @@
 import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.mjs";
+import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.mjs";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.mjs";
 
 function requiredString(value, label) {
@@ -318,79 +319,27 @@ function validateFulfillmentFailureTrack(report, reportPath) {
 }
 
 function validatePaymentRecoveryTrack(report, reportPath) {
-  if (
-    report?.schemaVersion !== "vem-payment-recovery-guest-full/v1" ||
-    report?.ok !== true
-  ) {
-    return failedTrack(
+  try {
+    const summary = validatePaymentRecoveryEvidence(report);
+    return passedTrack(
       "paymentRecovery",
       "payment recovery",
       reportPath,
-      "payment recovery track did not finish successfully",
+      summary,
     );
-  }
-  const action = report.recovery?.action ?? {};
-  const attempts = Array.isArray(report.attempts) ? report.attempts : [];
-  const attemptKinds = [
-    "create_failure",
-    "query_failure",
-    "canceled",
-    "expired",
-  ];
-  const completeAttempts = attemptKinds.every((kind) => {
-    const attempt = attempts.find((candidate) => candidate?.kind === kind);
-    return (
-      attempt != null &&
-      ["failed", "canceled", "expired"].includes(
-        attempt.terminalPaymentState,
-      ) &&
-      attempt.reservation?.reservedQty ===
-        attempt.reservation?.baselineReservedQty &&
-      attempt.reservation?.activeRows === 0 &&
-      attempt.reservation?.daemonActiveReservations === 0 &&
-      attempt.customer?.saleable === true &&
-      attempt.customer?.semanticChineseOnly === true &&
-      typeof attempt.technicalEvidence?.correlationId === "string"
-    );
-  });
-  if (
-    report.boundaries?.serviceApi !== true ||
-    report.boundaries?.mqttNoDispense !== true ||
-    report.boundaries?.daemon !== true ||
-    report.boundaries?.customerProjection !== true ||
-    report.boundaries?.variantSaleability !== true ||
-    !report.payment?.id ||
-    !["query_payment", "close_or_reverse_uncertain_payment"].includes(
-      action.action,
-    ) ||
-    report.assertions?.duplicatePaymentCount !== 0 ||
-    report.assertions?.dispenseStarted === true ||
-    !completeAttempts ||
-    report.subsequentSale?.sameInventoryOrderCreated !== true ||
-    report.subsequentSale?.mockPaid !== true ||
-    report.variantSaleability?.frozenDefaultVariant !== true ||
-    report.variantSaleability?.saleReadyAlternateVariant !== true ||
-    report.variantSaleability?.selectedSaleReadyVariant !== true
-  ) {
+  } catch (error) {
     return failedTrack(
       "paymentRecovery",
       "payment recovery",
       reportPath,
       "payment recovery evidence is incomplete",
       {
-        boundaries: report.boundaries ?? null,
-        payment: report.payment ?? null,
-        recovery: report.recovery ?? null,
-        assertions: report.assertions ?? null,
+        payment: report?.payment ?? null,
+        assertions: report?.assertions ?? null,
+        error: error instanceof Error ? error.message : String(error),
       },
     );
   }
-  return passedTrack("paymentRecovery", "payment recovery", reportPath, {
-    paymentId: report.payment.id,
-    action: action.action,
-    duplicatePaymentCount: report.assertions.duplicatePaymentCount,
-    recoveryAttempts: attempts.length,
-  });
 }
 
 function validatePaymentProviderTrack(report, reportPath) {

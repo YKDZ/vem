@@ -16,8 +16,11 @@ import { pathToFileURL } from "node:url";
 
 import {
   paymentMockCreateGatePaths,
+  paymentMockQueryFaultPaths,
   readPaymentMockCreateGateStatus,
+  readPaymentMockQueryFaultStatus,
   writePaymentMockCreateGateState,
+  writePaymentMockQueryFaultState,
 } from "./mock-payment-create-gate.mjs";
 import {
   parseLibvirtUsbSerialMappings,
@@ -246,6 +249,37 @@ function buildPlatformQueryCommand({ workspace, runId, machineCode, outPath }) {
   };
 }
 
+function buildPaymentExpiryInjectionCommand({
+  workspace,
+  runId,
+  machineCode,
+  paymentId,
+  expiresAt,
+}) {
+  return {
+    command: process.execPath,
+    args: [
+      "--conditions=vem-source",
+      "--import",
+      "tsx",
+      "apps/service-api/src/testbed/inject-installed-kiosk-payment-expiry.cli.ts",
+      "--run-id",
+      runId,
+      "--machine-code",
+      machineCode,
+      "--payment-id",
+      paymentId,
+      "--expires-at",
+      expiresAt,
+    ],
+    cwd: workspace,
+    env: {
+      ...process.env,
+      VEM_INSTALLED_KIOSK_SALE_DATABASE_URL: PLATFORM_DATABASE_URL,
+    },
+  };
+}
+
 function ensureParent(path) {
   mkdirSync(dirname(path), { recursive: true });
 }
@@ -258,6 +292,7 @@ function parseJsonLine(stdout, path) {
       return JSON.parse(lastLine);
     } catch {}
   }
+  if (!path) throw new Error("command did not emit JSON output");
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
@@ -502,7 +537,10 @@ async function terminateProcessGroup(pid) {
   }
 }
 
-export { paymentMockCreateGatePaths as mockPaymentCreateGatePaths } from "./mock-payment-create-gate.mjs";
+export {
+  paymentMockCreateGatePaths as mockPaymentCreateGatePaths,
+  paymentMockQueryFaultPaths as mockPaymentQueryFaultPaths,
+} from "./mock-payment-create-gate.mjs";
 
 function armMockPaymentCreateGate(server) {
   writePaymentMockCreateGateState(server.options.stateRoot, { state: "hold" });
@@ -533,6 +571,24 @@ function openMockPaymentCreateGate(server) {
     openedAt: new Date().toISOString(),
     state: "open",
   };
+}
+
+function armMockPaymentQueryFault(server, input) {
+  const paymentNo = required(input.paymentNo, "paymentNo");
+  writePaymentMockQueryFaultState(server.options.stateRoot, {
+    state: "fail",
+    paymentNo,
+  });
+  return { armedAt: new Date().toISOString(), state: "fail", paymentNo };
+}
+
+function readMockPaymentQueryFault(server) {
+  return readPaymentMockQueryFaultStatus(server.options.stateRoot);
+}
+
+function openMockPaymentQueryFault(server) {
+  writePaymentMockQueryFaultState(server.options.stateRoot, { state: "open" });
+  return { openedAt: new Date().toISOString(), state: "open" };
 }
 
 function writeProtectedTempFile(root, prefix, contents) {
@@ -1391,6 +1447,18 @@ async function executePlatformQuery(server, input) {
   return parseJsonLine(stdout, outPath);
 }
 
+async function injectPlatformPaymentExpiry(server, input) {
+  const command = buildPaymentExpiryInjectionCommand({
+    workspace: server.options.workspace,
+    runId: required(input.runId, "runId"),
+    machineCode: required(input.machineCode, "machineCode"),
+    paymentId: required(input.paymentId, "paymentId"),
+    expiresAt: required(input.expiresAt, "expiresAt"),
+  });
+  const { stdout } = await runJsonCommand(command);
+  return parseJsonLine(stdout);
+}
+
 async function createSerialSession(server, input) {
   await abortExistingSerialSessions(server);
   const runId = required(input.runId, "runId");
@@ -1656,6 +1724,19 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
       }
       if (
         request.method === "POST" &&
+        request.url === "/v1/platform/payment-expiry"
+      ) {
+        jsonResponse(response, 200, {
+          ok: true,
+          report: await injectPlatformPaymentExpiry(
+            serverState,
+            await readRequestBody(request),
+          ),
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
         request.url === "/v1/mock-payment-create-gate/arm"
       ) {
         jsonResponse(response, 200, {
@@ -1694,6 +1775,39 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         jsonResponse(response, 200, {
           ok: true,
           ...openMockPaymentCreateGate(serverState),
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-query-fault/arm"
+      ) {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...armMockPaymentQueryFault(
+            serverState,
+            await readRequestBody(request),
+          ),
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-query-fault/status"
+      ) {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...readMockPaymentQueryFault(serverState),
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/mock-payment-query-fault/open"
+      ) {
+        jsonResponse(response, 200, {
+          ok: true,
+          ...openMockPaymentQueryFault(serverState),
         });
         return;
       }

@@ -236,9 +236,40 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 
   async queryPayment(
-    _input: ProviderPaymentQueryInput,
+    input: ProviderPaymentQueryInput,
   ): Promise<ProviderPaymentQueryResult> {
+    await this.throwIfQueryFaultIsArmed(input.paymentNo);
     return { status: "pending", rawPayload: { provider: "mock" } };
+  }
+
+  private async throwIfQueryFaultIsArmed(paymentNo: string): Promise<void> {
+    const faultPath = this.config.paymentMockProviderQueryFaultPath;
+    if (!faultPath) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(faultPath, "utf8"));
+    } catch (error) {
+      throw new Error(
+        `mock payment query fault is unreadable at ${faultPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const state = z
+      .strictObject({
+        state: z.enum(["open", "fail"]),
+        paymentNo: z.string().min(1).optional(),
+      })
+      .safeParse(parsed);
+    if (!state.success) {
+      throw new Error(`mock payment query fault is invalid at ${faultPath}`);
+    }
+    if (
+      state.data.state === "fail" &&
+      (state.data.paymentNo === undefined || state.data.paymentNo === paymentNo)
+    ) {
+      throw new Error(`mock payment query fault injected for ${paymentNo}`);
+    }
   }
 
   async cancelPayment(

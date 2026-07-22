@@ -539,7 +539,6 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     paymentNo: string,
     reason: string,
     adminUserId: string | null,
-    terminalStatus: "failed" | "expired" = "failed",
   ) {
     this.assertMockPaymentEnabled();
     const result = await this.db.transaction(async (tx) => {
@@ -596,11 +595,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       await tx
         .update(payments)
-        .set({
-          status: terminalStatus,
-          failedReason: reason,
-          updatedAt: new Date(),
-        })
+        .set({ status: "failed", failedReason: reason, updatedAt: new Date() })
         .where(eq(payments.id, row.paymentId));
 
       if (row.orderStatus !== "canceled") {
@@ -608,10 +603,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .update(orders)
           .set({
             status: "canceled",
-            paymentState:
-              terminalStatus === "expired"
-                ? "payment_expired"
-                : "payment_failed",
+            paymentState: "payment_failed",
             fulfillmentState: "canceled",
             canceledAt: new Date(),
             updatedAt: new Date(),
@@ -621,21 +613,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderId: row.orderId,
           fromStatus: row.orderStatus,
           toStatus: "canceled",
-          reason:
-            terminalStatus === "expired" ? "payment_expired" : "payment_failed",
+          reason: "payment_failed",
         });
       }
 
       await this.releaseActiveReservationsForOrder(tx, {
         orderId: row.orderId,
-        reason:
-          terminalStatus === "expired" ? "payment_expired" : "payment_failed",
+        reason: "payment_failed",
       });
 
       return {
         paymentNo: row.paymentNo,
         paymentId: row.paymentId,
-        status: terminalStatus,
+        status: "failed",
         orderId: row.orderId,
         alreadyHandled: false,
       };
@@ -644,10 +634,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (!result.alreadyHandled) {
       await this.auditService.record({
         adminUserId,
-        action:
-          terminalStatus === "expired"
-            ? "payments.mock.expire"
-            : "payments.mock.fail",
+        action: "payments.mock.fail",
         resourceType: "payment",
         resourceId: result.paymentId,
         afterJson: {

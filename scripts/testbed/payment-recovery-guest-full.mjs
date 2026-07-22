@@ -4,6 +4,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  CdpClient,
+  discoverMachineUiTarget,
+  enablePageRuntime,
+  evaluateExpression,
+  rewriteWebSocketDebuggerUrl,
+} from "./machine-ui-cdp-driver.mjs";
+
 const SCHEMA_VERSION = "vem-payment-recovery-guest-full/v1";
 const REQUIRED_RECOVERY_ATTEMPT_KINDS = Object.freeze([
   "create_failure",
@@ -204,109 +212,359 @@ export function mqttEvidenceProvesNoDispense(evidence) {
   );
 }
 export function validatePaymentRecoveryEvidence(report) {
-  if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true)
+  if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true) {
     throw new Error("payment recovery report is not successful");
-  if (
-    report.boundaries?.serviceApi !== true ||
-    report.boundaries?.mqttNoDispense !== true ||
-    report.boundaries?.daemon !== true ||
-    report.payment?.id == null
-  )
-    throw new Error("payment recovery boundaries are incomplete");
-  if (
-    !report.recovery?.action ||
-    !["query_payment", "close_or_reverse_uncertain_payment"].includes(
-      report.recovery.action.action,
-    )
-  )
-    throw new Error("payment recovery action is missing");
-  if (
-    report.assertions?.duplicatePaymentCount !== 0 ||
-    report.assertions?.dispenseStarted === true
-  )
-    throw new Error("payment recovery allowed a duplicate or dispense");
-  if (
-    report.boundaries?.customerProjection !== true ||
-    report.boundaries?.variantSaleability !== true
-  )
-    throw new Error("payment recovery customer boundaries are incomplete");
+  }
+  if (!report.payment?.id || report.assertions?.duplicatePaymentCount !== 0) {
+    throw new Error("payment recovery allowed a duplicate payment");
+  }
+  if (!mqttEvidenceProvesNoDispense(report.recoveryMqttEvidence)) {
+    throw new Error("payment recovery MQTT evidence includes a dispense");
+  }
   const attempts = Array.isArray(report.attempts) ? report.attempts : [];
   for (const kind of REQUIRED_RECOVERY_ATTEMPT_KINDS) {
     const attempt = attempts.find((candidate) => candidate?.kind === kind);
+    const baseline = attempt?.reservation?.baseline;
+    const active = attempt?.reservation?.active;
+    const terminal = attempt?.reservation?.terminal;
     if (
       !attempt ||
-      !["failed", "canceled", "expired"].includes(
-        attempt.terminalPaymentState,
-      ) ||
-      attempt.reservation?.reservedQty !==
-        attempt.reservation?.baselineReservedQty ||
-      attempt.reservation?.activeRows !== 0 ||
-      attempt.reservation?.daemonActiveReservations !== 0 ||
-      attempt.customer?.saleable !== true ||
-      attempt.customer?.semanticChineseOnly !== true ||
-      typeof attempt.technicalEvidence?.correlationId !== "string"
+      !attempt.order?.id ||
+      attempt.order.paymentId !== attempt.payment?.id ||
+      !attempt.expectedTerminal ||
+      attempt.terminal?.paymentStatus !==
+        attempt.expectedTerminal.paymentStatus ||
+      attempt.terminal?.orderStatus !== attempt.expectedTerminal.orderStatus ||
+      attempt.terminal?.paymentState !==
+        attempt.expectedTerminal.paymentState ||
+      !baseline ||
+      !active ||
+      !terminal ||
+      active.activeRows !== baseline.activeRows + 1 ||
+      terminal.activeRows !== baseline.activeRows ||
+      active.onHandQty !== baseline.onHandQty ||
+      terminal.onHandQty !== baseline.onHandQty ||
+      active.reservedQty !==
+        baseline.reservedQty + attempt.reservation.quantity ||
+      terminal.reservedQty !== baseline.reservedQty ||
+      active.orderReservationRows !== 1 ||
+      terminal.orderReservationRows !== 1 ||
+      active.row?.status !== "active" ||
+      terminal.row?.id !== active.row?.id ||
+      terminal.row?.status !== "released" ||
+      attempt.daemon?.active?.orderId !== attempt.order.id ||
+      attempt.daemon?.active?.paymentId !== attempt.payment.id ||
+      attempt.daemon?.terminal?.orderId !== attempt.order.id ||
+      attempt.daemon?.terminal?.paymentId !== attempt.payment.id ||
+      attempt.daemon?.terminal?.paymentStatus !==
+        attempt.expectedTerminal.paymentStatus
     )
       throw new Error(
         `payment recovery ${kind} did not return to reservation baseline`,
       );
+    if (
+      attempt.customer?.source !== "installed_machine_runtime_cdp" ||
+      attempt.customer?.orderId !== attempt.order.id ||
+      attempt.customer?.paymentId !== attempt.payment.id ||
+      attempt.customer?.resultKind !== attempt.expectedTerminal.resultKind ||
+      typeof attempt.customer?.text !== "string" ||
+      !/[\u3400-\u9fff]/.test(attempt.customer.text) ||
+      attempt.customer.text.includes(attempt.payment.paymentNo) ||
+      attempt.technicalEvidence?.runtimeTrace?.source !==
+        "installed_machine_runtime_trace_cdp" ||
+      attempt.technicalEvidence.runtimeTrace.orderId !== attempt.order.id ||
+      attempt.technicalEvidence.runtimeTrace.paymentId !== attempt.payment.id ||
+      attempt.technicalEvidence.runtimeTrace.resultKind !==
+        attempt.expectedTerminal.resultKind ||
+      !Number.isFinite(attempt.technicalEvidence.runtimeTrace.entry?.id)
+    ) {
+      throw new Error(
+        `payment recovery ${kind} customer surface or correlation is not installed-runtime evidence`,
+      );
+    }
+    if (
+      kind === "query_failure" &&
+      (attempt.recovery?.queryFault?.source !==
+        "mock_provider_query_fault_boundary" ||
+        attempt.recovery?.queryFault?.paymentNo !== attempt.payment.paymentNo ||
+        attempt.recovery?.reconciliationAttempt?.paymentId !==
+          attempt.payment.id ||
+        attempt.recovery?.reconciliationAttempt?.status !== "network_error" ||
+        attempt.recovery?.reconciliationAttempt?.errorCode !== "query_failed" ||
+        attempt.recovery?.closeAction?.action !==
+          "close_or_reverse_uncertain_payment")
+    ) {
+      throw new Error(
+        "payment recovery query failure did not use provider recovery",
+      );
+    }
+    if (
+      kind === "expired" &&
+      (attempt.expiryInjection?.source !==
+        "testbed_payment_expiry_time_injection" ||
+        !["created", "pending", "processing"].includes(
+          attempt.expiryInjection.beforePaymentStatus,
+        ))
+    ) {
+      throw new Error(
+        "payment recovery expiry did not use the production worker",
+      );
+    }
   }
   if (
-    report.subsequentSale?.sameInventoryOrderCreated !== true ||
-    report.subsequentSale?.mockPaid !== true
-  )
-    throw new Error("payment recovery did not prove a subsequent sale");
-  if (
-    report.variantSaleability?.frozenDefaultVariant !== true ||
-    report.variantSaleability?.saleReadyAlternateVariant !== true ||
-    report.variantSaleability?.selectedSaleReadyVariant !== true
+    report.subsequentSale?.order?.inventoryId !== report.inventory?.id ||
+    report.subsequentSale?.terminal?.paymentStatus !== "succeeded" ||
+    report.subsequentSale?.terminal?.orderStatus !== "fulfilled" ||
+    report.subsequentSale?.terminal?.fulfillmentState !== "dispensed" ||
+    report.subsequentSale?.inventory?.afterOnHandQty !==
+      report.subsequentSale?.inventory?.beforeOnHandQty - 1 ||
+    report.subsequentSale?.inventory?.movementCount !== 1 ||
+    report.subsequentSale?.serial?.stopped !== true ||
+    !["VEND", "F0", "F1", "F2"].every((frame) =>
+      report.subsequentSale?.serial?.protocol?.includes(frame),
+    )
   )
     throw new Error(
-      "payment recovery did not prove alternate variant saleability",
+      "payment recovery did not prove the fulfilled subsequent sale",
     );
   return {
     paymentId: report.payment.id,
-    action: report.recovery.action.action,
+    action: "query_payment",
     duplicatePaymentCount: 0,
     attemptCount: attempts.length,
   };
+}
+
+function rows(raw, key) {
+  return Array.isArray(raw?.[key]) ? raw[key] : [];
+}
+
+function exactlyOne(values, message) {
+  if (values.length !== 1) throw new Error(message);
+  return values[0];
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolvePromise) =>
+    setTimeout(resolvePromise, milliseconds),
+  );
+}
+
+async function waitFor(label, observe, predicate, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = await observe();
+    if (predicate(last)) return last;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  throw new Error(`${label} did not settle: ${JSON.stringify(last)}`);
+}
+
+async function platformReport(input, runId, machineCode, sessionId) {
+  const response = await control(input, "/v1/platform/query", {
+    runId,
+    machineCode,
+    ...(sessionId ? { sessionId } : {}),
+  });
+  if (!response?.report?.raw)
+    throw new Error("platform query returned no raw rows");
+  return response.report;
+}
+
+function inventorySnapshot(platform, inventoryId) {
+  return exactlyOne(
+    rows(platform.raw, "inventories").filter((row) => row.id === inventoryId),
+    `platform inventory ${inventoryId} was not unique`,
+  );
+}
+
+function activeReservationCount(platform, inventoryId) {
+  return rows(platform.raw, "reservations").filter(
+    (row) => row.inventoryId === inventoryId && row.status === "active",
+  ).length;
+}
+
+function reservationBaseline(platform, inventoryId) {
+  const inventory = inventorySnapshot(platform, inventoryId);
+  return {
+    onHandQty: inventory.onHandQty,
+    reservedQty: inventory.reservedQty,
+    activeRows: activeReservationCount(platform, inventoryId),
+  };
+}
+
+function reservationObservation(platform, orderId, inventoryId) {
+  const inventory = inventorySnapshot(platform, inventoryId);
+  const own = rows(platform.raw, "reservations").filter(
+    (row) => row.orderId === orderId && row.inventoryId === inventoryId,
+  );
+  return {
+    onHandQty: inventory.onHandQty,
+    reservedQty: inventory.reservedQty,
+    activeRows: activeReservationCount(platform, inventoryId),
+    orderReservationRows: own.length,
+    row: own[0] ?? null,
+  };
+}
+
+function terminalRows(platform, orderId, paymentId) {
+  return {
+    order: exactlyOne(
+      rows(platform.raw, "orders").filter((row) => row.id === orderId),
+      `platform order ${orderId} was not unique`,
+    ),
+    payment: exactlyOne(
+      rows(platform.raw, "payments").filter((row) => row.id === paymentId),
+      `platform payment ${paymentId} was not unique`,
+    ),
+  };
+}
+
+function dispenseMovementsForOrder(platform, order, inventoryId) {
+  const orderItem = rows(platform.raw, "orderItems").find(
+    (item) =>
+      item.orderId === order.orderId && item.inventoryId === inventoryId,
+  );
+  if (!orderItem) return [];
+  return rows(platform.raw, "movements").filter(
+    (movement) =>
+      movement.inventoryId === inventoryId &&
+      (movement.orderNo === order.orderNo ||
+        movement.orderItemId === orderItem.id),
+  );
+}
+
+async function waitForDaemonTransaction(handoff, order, expectedStatus = null) {
+  return await waitFor(
+    `daemon transaction ${order.paymentId}`,
+    () => daemon(handoff, "/v1/transactions/current"),
+    (transaction) =>
+      transaction?.orderId === order.orderId &&
+      transaction?.paymentId === order.paymentId &&
+      (expectedStatus === null ||
+        transaction?.paymentStatus === expectedStatus),
+  );
+}
+
+async function connectInstalledCustomerRuntime(handoff) {
+  const target = await discoverMachineUiTarget({
+    endpoint: "http://127.0.0.1:9222",
+    expectedTargetId: required(handoff.cdp?.targetId, "handoff.cdp.targetId"),
+  });
+  const client = new CdpClient(
+    rewriteWebSocketDebuggerUrl(
+      target.webSocketDebuggerUrl,
+      "http://127.0.0.1:9222",
+    ),
+  );
+  await client.connect();
+  await enablePageRuntime(client);
+  return client;
+}
+
+async function waitForCustomerTerminal(client, order, expected) {
+  return await waitFor(
+    `installed customer result ${order.paymentId}`,
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const el = document.querySelector("[data-installed-kiosk-sale-result-surface]");
+          const entries = Array.isArray(window.__VEM_MACHINE_RUNTIME_TRACE__) ? window.__VEM_MACHINE_RUNTIME_TRACE__ : [];
+          const trace = [...entries].reverse().find((entry) =>
+            entry && entry.type === "transaction_surface" && entry.stage === "result" &&
+            entry.orderId === ${JSON.stringify(order.orderId)} &&
+            entry.paymentId === ${JSON.stringify(order.paymentId)} &&
+            entry.resultKind === ${JSON.stringify(expected.resultKind)}
+          );
+          return el ? {
+            route: location.hash,
+            orderId: el.dataset.orderId || null,
+            paymentId: el.dataset.paymentId || null,
+            resultKind: el.dataset.resultKind || null,
+            displayIntent: el.dataset.resultDisplayIntent || null,
+            text: (el.textContent || "").replace(/\\s+/g, " ").trim(),
+            trace: trace || null
+          } : null;
+        })()`,
+      ),
+    (surface) =>
+      surface?.orderId === order.orderId &&
+      surface?.paymentId === order.paymentId &&
+      surface?.resultKind === expected.resultKind &&
+      surface?.trace?.orderId === order.orderId &&
+      surface?.trace?.paymentId === order.paymentId,
+    60_000,
+  );
+}
+
+const RECOVERY_TERMINALS = Object.freeze({
+  create_failure: {
+    paymentStatus: "failed",
+    orderStatus: "canceled",
+    paymentState: "payment_failed",
+    resultKind: "payment_failed",
+  },
+  query_failure: {
+    paymentStatus: "canceled",
+    orderStatus: "canceled",
+    paymentState: "canceled",
+    resultKind: "closed",
+  },
+  canceled: {
+    paymentStatus: "canceled",
+    orderStatus: "canceled",
+    paymentState: "canceled",
+    resultKind: "closed",
+  },
+  expired: {
+    paymentStatus: "expired",
+    orderStatus: "payment_expired",
+    paymentState: "payment_expired",
+    resultKind: "payment_expired",
+  },
+});
+
+async function waitForCreateGatePending(input) {
+  return await waitFor(
+    "mock payment create gate pending marker",
+    () => control(input, "/v1/mock-payment-create-gate/status"),
+    (state) => state?.pending?.state === "pending" && state.pending.paymentNo,
+  );
 }
 export async function runPaymentRecoveryGuest(options) {
   const input = readJson(options.guestInputPath);
   const handoff = readJson(options.handoffPath);
   const runId = required(input.runId, "runId");
+  const machineCode = required(input.machineCode, "machineCode");
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     mode: options.mode,
     runId,
-    boundaries: {
-      serviceApi: false,
-      mqtt: false,
-      daemon: false,
-      customerProjection: false,
-      variantSaleability: false,
-    },
+    inventory: null,
     serialSession: null,
     payment: null,
-    recovery: null,
     attempts: [],
+    recoveryMqttEvidence: null,
+    replay: null,
     subsequentSale: null,
-    variantSaleability: null,
-    assertions: { duplicatePaymentCount: null, dispenseStarted: null },
+    assertions: { duplicatePaymentCount: null },
   };
   let session = null;
-  let order = null;
-  let adminAccessToken = null;
+  let customer = null;
+  let serialStopped = false;
   try {
     session = await control(input, "/v1/serial-sessions/start", {
       runId,
-      machineCode: required(input.machineCode, "machineCode"),
+      machineCode,
       targetIdentity: required(
-        input.hostControlPlane.targetIdentity,
+        input.hostControlPlane?.targetIdentity,
         "hostControlPlane.targetIdentity",
       ),
       runtimeBase: required(
-        input.hostControlPlane.runtimeBaseIdentity,
+        input.hostControlPlane?.runtimeBaseIdentity,
         "hostControlPlane.runtimeBaseIdentity",
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.payment-recovery`,
@@ -314,11 +572,13 @@ export async function runPaymentRecoveryGuest(options) {
     report.serialSession = {
       sessionId: required(session.sessionId, "serial session id"),
     };
+    customer = await connectInstalledCustomerRuntime(handoff);
     const saleView = await daemon(handoff, "/v1/sale-view");
     const fixture =
       input.fixtureAllocation?.[options.fixtureKey ?? "paymentRecovery"] ??
       input.fixtureAllocation?.sale;
     const slot = selectCanonicalSlot(saleView, fixture);
+    report.inventory = { id: slot.inventoryId, slotId: slot.slotId };
     const orderRequest = {
       inventoryId: slot.inventoryId,
       quantity: 1,
@@ -327,169 +587,454 @@ export async function runPaymentRecoveryGuest(options) {
       slotDisplayLabel: slot.slotDisplayLabel,
       paymentMethod: "mock",
       paymentProviderCode: "mock",
-      idempotencyKey: `${runId}-payment-recovery`,
     };
-    adminAccessToken = await refreshAdminAccessToken(input);
-    await waitForMachineOnline(input, input.machineCode, adminAccessToken);
-    const runAttempt = async (
-      kind,
-      terminalPath,
-      terminalState,
-      queryFirst = false,
-    ) => {
-      const attemptOrder = await daemon(handoff, "/v1/intents/create-order", {
-        ...orderRequest,
-        idempotencyKey: `${runId}-payment-recovery-${kind}`,
-      });
-      let action = null;
-      if (queryFirst) {
-        action = unwrapServiceApiEnvelope(
-          await api(
-            input,
-            `/payments/${required(attemptOrder.paymentId, "paymentId")}/incident-actions`,
-            {
-              method: "POST",
-              token: adminAccessToken,
-              body: {
-                action: "query_payment",
-                reason: `runtime acceptance ${runId}: ${kind}`,
-              },
-            },
-          ),
+    const adminAccessToken = await refreshAdminAccessToken(input);
+    await waitForMachineOnline(input, machineCode, adminAccessToken);
+
+    const createAttempt = async (kind) => {
+      const baselinePlatform = await platformReport(
+        input,
+        runId,
+        machineCode,
+        session.sessionId,
+      );
+      const baseline = reservationBaseline(baselinePlatform, slot.inventoryId);
+      let attemptOrder;
+      let gate = null;
+      if (kind === "create_failure") {
+        await control(input, "/v1/mock-payment-create-gate/arm");
+        const pendingOrder = daemon(handoff, "/v1/intents/create-order", {
+          ...orderRequest,
+          idempotencyKey: `${runId}-payment-recovery-${kind}`,
+        });
+        const pending = await waitForCreateGatePending(input);
+        const activePlatformBeforeRelease = await waitFor(
+          `platform active reservation for ${pending.pending.paymentNo}`,
+          () => platformReport(input, runId, machineCode, session.sessionId),
+          (platform) =>
+            rows(platform.raw, "payments").some(
+              (payment) => payment.paymentNo === pending.pending.paymentNo,
+            ) &&
+            rows(platform.raw, "reservations").some(
+              (reservation) =>
+                reservation.status === "active" &&
+                reservation.inventoryId === slot.inventoryId,
+            ),
+        );
+        await control(input, "/v1/mock-payment-create-gate/release", {
+          paymentNo: pending.pending.paymentNo,
+        });
+        attemptOrder = await pendingOrder;
+        await control(input, "/v1/mock-payment-create-gate/open");
+        gate = {
+          pendingObservedAt: pending.pending.observedAt,
+          paymentNo: pending.pending.paymentNo,
+          activePlatformBeforeRelease,
+        };
+      } else {
+        attemptOrder = await daemon(handoff, "/v1/intents/create-order", {
+          ...orderRequest,
+          idempotencyKey: `${runId}-payment-recovery-${kind}`,
+        });
+      }
+      const order = {
+        id: required(attemptOrder.orderId, "orderId"),
+        orderNo: required(attemptOrder.orderNo, "orderNo"),
+        paymentId: required(attemptOrder.paymentId, "paymentId"),
+      };
+      const payment = {
+        id: order.paymentId,
+        paymentNo: required(attemptOrder.paymentNo, "paymentNo"),
+      };
+      if (gate?.paymentNo !== payment.paymentNo) {
+        throw new Error(
+          "create gate pending payment did not match daemon order response",
         );
       }
-      const terminal =
-        terminalPath === "cancel"
-          ? await daemon(handoff, "/v1/intents/cancel-order", {
-              orderNo: attemptOrder.orderNo,
-            })
-          : unwrapServiceApiEnvelope(
-              await api(input, terminalPath(attemptOrder), {
-                method: "POST",
-                token: adminAccessToken,
-                body: {},
-              }),
-            );
-      const [transaction, saleAfter] = await Promise.all([
-        daemon(handoff, "/v1/transactions/current"),
-        daemon(handoff, "/v1/sale-view"),
-      ]);
-      const saleItem = (saleAfter.items ?? []).find(
-        (item) => item.slotId === slot.slotId,
+      const activePlatform = await waitFor(
+        `platform active reservation ${payment.id}`,
+        () => platformReport(input, runId, machineCode, session.sessionId),
+        (platform) => {
+          const reservation = rows(platform.raw, "reservations").filter(
+            (row) =>
+              row.orderId === order.id && row.inventoryId === slot.inventoryId,
+          );
+          return reservation.length === 1 && reservation[0].status === "active";
+        },
       );
-      report.attempts.push({
+      const activeDaemon = await waitForDaemonTransaction(handoff, {
+        orderId: order.id,
+        paymentId: payment.id,
+      });
+      return { baseline, activePlatform, activeDaemon, order, payment, gate };
+    };
+
+    const terminalizeAttempt = async (kind, created) => {
+      const expectedTerminal = RECOVERY_TERMINALS[kind];
+      let recovery = null;
+      let expiryInjection = null;
+      if (kind === "create_failure") {
+        await api(input, `/payments/mock/${created.payment.paymentNo}/fail`, {
+          method: "POST",
+          token: adminAccessToken,
+          body: {},
+        });
+      } else if (kind === "query_failure") {
+        const queryFault = await control(
+          input,
+          "/v1/mock-payment-query-fault/arm",
+          {
+            paymentNo: created.payment.paymentNo,
+          },
+        );
+        let queryError = null;
+        try {
+          await api(input, `/payments/${created.payment.id}/incident-actions`, {
+            method: "POST",
+            token: adminAccessToken,
+            body: {
+              action: "query_payment",
+              reason: `runtime acceptance ${runId}`,
+            },
+          });
+        } catch (error) {
+          queryError = error instanceof Error ? error.message : String(error);
+        }
+        if (!queryError?.includes("mock payment query fault injected")) {
+          throw new Error(
+            "query failure did not reach the mock provider boundary",
+          );
+        }
+        const queryFaultPlatform = await waitFor(
+          `query reconciliation attempt ${created.payment.id}`,
+          () => platformReport(input, runId, machineCode, session.sessionId),
+          (platform) =>
+            rows(platform.raw, "paymentReconciliationAttempts").some(
+              (attempt) =>
+                attempt.paymentId === created.payment.id &&
+                attempt.status === "network_error" &&
+                attempt.errorCode === "query_failed",
+            ),
+        );
+        await control(input, "/v1/mock-payment-query-fault/open");
+        const closeAction = unwrapServiceApiEnvelope(
+          await api(input, `/payments/${created.payment.id}/incident-actions`, {
+            method: "POST",
+            token: adminAccessToken,
+            body: {
+              action: "close_or_reverse_uncertain_payment",
+              reason: `runtime acceptance ${runId}`,
+            },
+          }),
+        );
+        recovery = {
+          queryFault: {
+            source: "mock_provider_query_fault_boundary",
+            paymentNo: queryFault.paymentNo,
+            armedAt: queryFault.armedAt,
+            error: queryError,
+          },
+          reconciliationAttempt: exactlyOne(
+            rows(
+              queryFaultPlatform.raw,
+              "paymentReconciliationAttempts",
+            ).filter(
+              (attempt) =>
+                attempt.paymentId === created.payment.id &&
+                attempt.status === "network_error" &&
+                attempt.errorCode === "query_failed",
+            ),
+            "query failure reconciliation attempt was not unique",
+          ),
+          closeAction,
+        };
+      } else if (kind === "canceled") {
+        await daemon(handoff, "/v1/intents/cancel-order", {
+          orderNo: created.order.orderNo,
+        });
+      } else if (kind === "expired") {
+        expiryInjection = (
+          await control(input, "/v1/platform/payment-expiry", {
+            runId,
+            machineCode,
+            paymentId: created.payment.id,
+            expiresAt: new Date(Date.now() - 60_000).toISOString(),
+          })
+        ).report;
+      }
+      const terminalPlatform = await waitFor(
+        `platform terminal ${created.payment.id}`,
+        () => platformReport(input, runId, machineCode, session.sessionId),
+        (platform) => {
+          const order = rows(platform.raw, "orders").find(
+            (row) => row.id === created.order.id,
+          );
+          const payment = rows(platform.raw, "payments").find(
+            (row) => row.id === created.payment.id,
+          );
+          const reservation = rows(platform.raw, "reservations").find(
+            (row) =>
+              row.orderId === created.order.id &&
+              row.inventoryId === slot.inventoryId,
+          );
+          return (
+            order?.status === expectedTerminal.orderStatus &&
+            order?.paymentState === expectedTerminal.paymentState &&
+            payment?.status === expectedTerminal.paymentStatus &&
+            reservation?.status === "released"
+          );
+        },
+        kind === "expired" ? 95_000 : 30_000,
+      );
+      const terminalDaemon = await waitForDaemonTransaction(
+        handoff,
+        { orderId: created.order.id, paymentId: created.payment.id },
+        expectedTerminal.paymentStatus,
+      );
+      const customerSurface = await waitForCustomerTerminal(
+        customer,
+        { orderId: created.order.id, paymentId: created.payment.id },
+        expectedTerminal,
+      );
+      const terminal = terminalRows(
+        terminalPlatform,
+        created.order.id,
+        created.payment.id,
+      );
+      return {
         kind,
-        terminalPaymentState: terminalState,
-        payment: {
-          id: attemptOrder.paymentId,
-          paymentNo: attemptOrder.paymentNo,
-          terminal,
+        order: { ...created.order },
+        payment: { ...created.payment },
+        expectedTerminal,
+        terminal: {
+          paymentStatus: terminal.payment.status,
+          orderStatus: terminal.order.status,
+          paymentState: terminal.order.paymentState,
+          fulfillmentState: terminal.order.fulfillmentState,
         },
-        recovery: action,
         reservation: {
-          baselineReservedQty: 0,
-          reservedQty: 0,
-          activeRows: 0,
-          daemonActiveReservations: ["failed", "canceled", "expired"].includes(
-            transaction?.paymentStatus,
-          )
-            ? 0
-            : 1,
+          inventoryId: slot.inventoryId,
+          quantity: 1,
+          baseline: created.baseline,
+          active: reservationObservation(
+            created.activePlatform,
+            created.order.id,
+            slot.inventoryId,
+          ),
+          terminal: reservationObservation(
+            terminalPlatform,
+            created.order.id,
+            slot.inventoryId,
+          ),
         },
+        daemon: { active: created.activeDaemon, terminal: terminalDaemon },
         customer: {
-          saleable:
-            saleItem?.slotSalesState === "sale_ready" &&
-            saleItem.saleableStock > 0,
-          semanticChineseOnly: true,
+          source: "installed_machine_runtime_cdp",
+          observedAt: new Date().toISOString(),
+          orderId: customerSurface.orderId,
+          paymentId: customerSurface.paymentId,
+          resultKind: customerSurface.resultKind,
+          displayIntent: customerSurface.displayIntent,
+          text: customerSurface.text,
+          route: customerSurface.route,
         },
         technicalEvidence: {
-          correlationId: `${runId}:${kind}`,
-          transaction,
-          saleView: saleAfter,
+          runtimeTrace: {
+            source: "installed_machine_runtime_trace_cdp",
+            orderId: customerSurface.trace.orderId,
+            paymentId: customerSurface.trace.paymentId,
+            resultKind: customerSurface.trace.resultKind,
+            entry: customerSurface.trace,
+          },
         },
-      });
-      return { order: attemptOrder, action };
+        ...(created.gate ? { createGate: created.gate } : {}),
+        ...(recovery ? { recovery } : {}),
+        ...(expiryInjection ? { expiryInjection } : {}),
+      };
     };
-    const createFailure = await runAttempt(
-      "create_failure",
-      (created) =>
-        `/payments/mock/${required(created.paymentNo, "paymentNo")}/fail`,
-      "failed",
-    );
-    const queryFailure = await runAttempt(
-      "query_failure",
-      (created) =>
-        `/payments/mock/${required(created.paymentNo, "paymentNo")}/fail`,
-      "failed",
-      true,
-    );
-    await runAttempt("canceled", "cancel", "canceled");
-    await runAttempt(
-      "expired",
-      (created) =>
-        `/payments/mock/${required(created.paymentNo, "paymentNo")}/expire`,
-      "expired",
-    );
-    order = createFailure.order;
+
+    let createFailure = null;
+    for (const kind of REQUIRED_RECOVERY_ATTEMPT_KINDS) {
+      const attempt = await terminalizeAttempt(kind, await createAttempt(kind));
+      report.attempts.push(attempt);
+      if (kind === "create_failure") createFailure = attempt;
+    }
+    report.payment = {
+      id: createFailure.payment.id,
+      paymentNo: createFailure.payment.paymentNo,
+      orderNo: createFailure.order.orderNo,
+    };
     const replayedOrder = await daemon(handoff, "/v1/intents/create-order", {
       ...orderRequest,
       idempotencyKey: `${runId}-payment-recovery-create_failure`,
     });
-    report.payment = {
-      id: order.paymentId,
-      paymentNo: order.paymentNo,
-      orderNo: order.orderNo,
-    };
-    report.recovery = {
-      action: queryFailure.action,
-      providerAdapter: "mock",
-      semantics: "service_api_payment_incident_action",
-    };
-    const [transaction, diagnostic, evidence] = await Promise.all([
-      daemon(handoff, "/v1/transactions/current"),
-      daemon(handoff, "/v1/maintenance/payment-environment"),
-      control(input, `/v1/serial-sessions/${session.sessionId}/evidence`),
-    ]);
-    report.daemon = { transaction, paymentEnvironment: diagnostic };
-    report.mqttEvidence = evidence.mqtt ?? evidence.machineMqtt ?? null;
-    report.boundaries.serviceApi = report.attempts.every(
-      (attempt) => attempt.payment?.id != null,
+    const replayPlatform = await platformReport(
+      input,
+      runId,
+      machineCode,
+      session.sessionId,
     );
-    report.boundaries.daemon = diagnostic != null;
-    report.boundaries.mqttNoDispense = mqttEvidenceProvesNoDispense(evidence);
-    report.assertions.dispenseStarted = Boolean(
-      transaction?.vending?.commandId ?? transaction?.dispenseCommandId,
-    );
+    report.replay = { response: replayedOrder, platform: replayPlatform };
     report.assertions.duplicatePaymentCount =
-      new Set([order.paymentId, replayedOrder.paymentId]).size - 1;
+      rows(replayPlatform.raw, "payments").filter(
+        (payment) => payment.orderId === createFailure.order.id,
+      ).length - 1;
+    const recoveryEvidence = await control(
+      input,
+      `/v1/serial-sessions/${session.sessionId}/evidence`,
+    );
+    report.recoveryMqttEvidence = recoveryEvidence;
+
+    const subsequentBaseline = await platformReport(
+      input,
+      runId,
+      machineCode,
+      session.sessionId,
+    );
+    const subsequentInventoryBefore = inventorySnapshot(
+      subsequentBaseline,
+      slot.inventoryId,
+    );
     const subsequentOrder = await daemon(handoff, "/v1/intents/create-order", {
       ...orderRequest,
       idempotencyKey: `${runId}-payment-recovery-subsequent-sale`,
     });
-    const paid = unwrapServiceApiEnvelope(
-      await api(
+    await api(
+      input,
+      `/payments/mock/${required(subsequentOrder.paymentNo, "paymentNo")}/complete`,
+      {
+        method: "POST",
+        body: {},
+      },
+    );
+    const paidDaemon = await waitFor(
+      `paid dispense command ${subsequentOrder.paymentId}`,
+      () => daemon(handoff, "/v1/transactions/current"),
+      (transaction) =>
+        transaction?.orderId === subsequentOrder.orderId &&
+        transaction?.paymentId === subsequentOrder.paymentId &&
+        transaction?.paymentStatus === "succeeded" &&
+        typeof (
+          transaction?.vending?.commandId ?? transaction?.dispenseCommandId
+        ) === "string",
+    );
+    const vendingCommandId =
+      paidDaemon.vending?.commandId ?? paidDaemon.dispenseCommandId;
+    const serial = [];
+    serial.push(
+      await control(
         input,
-        `/payments/mock/${required(subsequentOrder.paymentNo, "paymentNo")}/complete`,
-        {
-          method: "POST",
-          body: {},
-        },
+        `/v1/serial-sessions/${session.sessionId}/wait-frame`,
+        { parsedOpcode: "VEND", timeoutMs: 30_000 },
       ),
     );
-    report.subsequentSale = {
-      sameInventoryOrderCreated: true,
-      mockPaid: paid != null,
-    };
-    report.boundaries.customerProjection = report.attempts.every(
-      (attempt) =>
-        attempt.customer.saleable && attempt.customer.semanticChineseOnly,
+    serial.push(
+      await control(
+        input,
+        `/v1/serial-sessions/${session.sessionId}/release-f0`,
+      ),
     );
-    report.variantSaleability = {
-      frozenDefaultVariant: true,
-      saleReadyAlternateVariant: true,
-      selectedSaleReadyVariant: true,
+    serial.push(
+      await control(
+        input,
+        `/v1/serial-sessions/${session.sessionId}/wait-frame`,
+        { parsedOpcode: "F0", timeoutMs: 30_000 },
+      ),
+    );
+    serial.push(
+      await control(
+        input,
+        `/v1/serial-sessions/${session.sessionId}/wait-frame`,
+        { parsedOpcode: "F1", timeoutMs: 30_000 },
+      ),
+    );
+    serial.push(
+      await control(
+        input,
+        `/v1/serial-sessions/${session.sessionId}/release-f2`,
+      ),
+    );
+    serial.push(
+      await control(
+        input,
+        `/v1/serial-sessions/${session.sessionId}/wait-frame`,
+        { parsedOpcode: "F2", timeoutMs: 30_000 },
+      ),
+    );
+    const fulfilledPlatform = await waitFor(
+      `platform fulfillment ${subsequentOrder.paymentId}`,
+      () => platformReport(input, runId, machineCode, session.sessionId),
+      (platform) => {
+        const terminal = terminalRows(
+          platform,
+          subsequentOrder.orderId,
+          subsequentOrder.paymentId,
+        );
+        const command = rows(platform.raw, "commands").find(
+          (row) => row.id === vendingCommandId,
+        );
+        const movements = dispenseMovementsForOrder(
+          platform,
+          subsequentOrder,
+          slot.inventoryId,
+        );
+        return (
+          terminal.payment.status === "succeeded" &&
+          terminal.order.status === "fulfilled" &&
+          terminal.order.fulfillmentState === "dispensed" &&
+          command?.status === "succeeded" &&
+          movements.length === 1
+        );
+      },
+      60_000,
+    );
+    const fulfilled = terminalRows(
+      fulfilledPlatform,
+      subsequentOrder.orderId,
+      subsequentOrder.paymentId,
+    );
+    const subsequentInventoryAfter = inventorySnapshot(
+      fulfilledPlatform,
+      slot.inventoryId,
+    );
+    const movementCount = dispenseMovementsForOrder(
+      fulfilledPlatform,
+      subsequentOrder,
+      slot.inventoryId,
+    ).length;
+    const serialEvidence = await control(
+      input,
+      `/v1/serial-sessions/${session.sessionId}/evidence`,
+    );
+    await control(input, `/v1/serial-sessions/${session.sessionId}/stop`, {
+      orderId: subsequentOrder.orderId,
+      paymentId: subsequentOrder.paymentId,
+      vendingCommandId,
+    });
+    serialStopped = true;
+    report.subsequentSale = {
+      order: {
+        id: subsequentOrder.orderId,
+        paymentId: subsequentOrder.paymentId,
+        inventoryId: slot.inventoryId,
+      },
+      terminal: {
+        paymentStatus: fulfilled.payment.status,
+        orderStatus: fulfilled.order.status,
+        fulfillmentState: fulfilled.order.fulfillmentState,
+      },
+      inventory: {
+        beforeOnHandQty: subsequentInventoryBefore.onHandQty,
+        afterOnHandQty: subsequentInventoryAfter.onHandQty,
+        movementCount,
+      },
+      serial: {
+        protocol: ["VEND", "F0", "F1", "F2"],
+        boundaries: serial,
+        evidence: serialEvidence,
+        stopped: true,
+      },
     };
-    report.boundaries.variantSaleability = true;
     report.ok = true;
     validatePaymentRecoveryEvidence(report);
     writeJson(options.outPath, report);
@@ -501,11 +1046,13 @@ export async function runPaymentRecoveryGuest(options) {
     writeJson(options.outPath, report);
     throw error;
   } finally {
-    if (session?.sessionId)
+    await customer?.close().catch(() => undefined);
+    if (session?.sessionId && !serialStopped) {
       await control(
         input,
         `/v1/serial-sessions/${session.sessionId}/abort`,
       ).catch(() => null);
+    }
   }
 }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

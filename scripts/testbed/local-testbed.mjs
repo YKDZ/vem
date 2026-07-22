@@ -17,7 +17,11 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { allocateFullWorkflowFixtures } from "./full-workflow-fixtures.mjs";
-import { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
+import {
+  paymentMockCreateGatePaths,
+  paymentMockQueryFaultPaths,
+  writePaymentMockQueryFaultState,
+} from "./mock-payment-create-gate.mjs";
 import { validateInstallationOwnedAlipaySandboxFixture } from "./payment-provider-guest-full.mjs";
 
 const FIXTURE_PATH = new URL(
@@ -68,6 +72,7 @@ const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "MACHINE_MQTT_URL",
   "PAYMENT_MOCK_ENABLED",
   "PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH",
+  "PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH",
   "PAYMENT_WEBHOOK_BASE_URL",
   "MACHINE_API_BASE_URL",
   "MEDIA_ASSET_STORAGE_ROOT",
@@ -694,6 +699,7 @@ export async function ensureLowerControllerSimCached({
 
 export function buildHostLocalServiceApiEnvironment(options) {
   const createOrderGate = paymentMockCreateGatePaths(options.stateRoot);
+  const queryFault = paymentMockQueryFaultPaths(options.stateRoot);
   return {
     NODE_ENV: "development",
     DATABASE_URL:
@@ -704,6 +710,7 @@ export function buildHostLocalServiceApiEnvironment(options) {
     PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
     PAYMENT_MOCK_ENABLED: "true",
     PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH: createOrderGate.statePath,
+    PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH: queryFault.statePath,
     CORS_ORIGINS: [
       "http://127.0.0.1:1420",
       "http://tauri.localhost",
@@ -729,7 +736,10 @@ export function buildHostLocalServiceApiEnvironment(options) {
   };
 }
 
-export { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
+export {
+  paymentMockCreateGatePaths,
+  paymentMockQueryFaultPaths,
+} from "./mock-payment-create-gate.mjs";
 
 function mergeCommandEnvironment(
   explicitEnvironment,
@@ -1664,6 +1674,7 @@ async function reconstruct(options) {
     `${JSON.stringify({ state: "open" })}\n`,
     "utf8",
   );
+  writePaymentMockQueryFaultState(options.stateRoot, { state: "open" });
   const plan = buildReconstructionPlan(options, contract);
   const identity = workflowIdentity(options, contract);
   if (options.dryRun)

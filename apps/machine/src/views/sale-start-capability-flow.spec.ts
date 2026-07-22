@@ -1563,6 +1563,80 @@ describe("sale-start capability UI flow", () => {
     expect(recommendedSize.classList).toContain("option-pill-recommended");
   });
 
+  it("routes frozen defaults to a sale-ready alternate and blocks the all-unavailable product detail", async () => {
+    const frozenDefault = {
+      ...makeCatalogItem(),
+      saleableStock: 0,
+      physicalStock: 3,
+      slotSalesState: "frozen" as const,
+    };
+    const saleReadyAlternate: MachineCatalogItem = {
+      ...frozenDefault,
+      slotId: "550e8400-e29b-41d4-a716-446655440041",
+      slotDisplayLabel: "B1",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440042",
+      variantId: "550e8400-e29b-41d4-a716-446655440043",
+      sku: "TEE-BASIC-L-BLUE",
+      size: "L",
+      color: "蓝色",
+      saleableStock: 2,
+      physicalStock: 2,
+      slotSalesState: "sale_ready",
+    };
+    const snapshot = {
+      source: "local_stock" as const,
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-07-22T00:00:00Z",
+    };
+    useCatalogStore().applySnapshot({
+      ...snapshot,
+      items: [frozenDefault, saleReadyAlternate],
+    });
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    routeParams.catalogKey = frozenDefault.catalogKey;
+    delete routeQuery.variantId;
+
+    let host = await mountView(ProductDetailView);
+    const selectedPage = requireElement<HTMLElement>(
+      host,
+      '[data-test="product-detail-page"]',
+    );
+    const selectedBuy = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-buy"]',
+    );
+    expect(selectedPage.dataset.variantId).toBe(saleReadyAlternate.variantId);
+    expect(selectedBuy.dataset.variantId).toBe(saleReadyAlternate.variantId);
+    expect(selectedBuy.disabled).toBe(false);
+    selectedBuy.click();
+    await nextTick();
+    expect(useCheckoutStore().selectedItem?.variantId).toBe(
+      saleReadyAlternate.variantId,
+    );
+
+    unmountMountedView();
+    useCatalogStore().applySnapshot({
+      ...snapshot,
+      items: [
+        frozenDefault,
+        {
+          ...saleReadyAlternate,
+          saleableStock: 0,
+          physicalStock: 2,
+          slotSalesState: "frozen",
+        },
+      ],
+    });
+    useCheckoutStore().selectedItem = null;
+    host = await mountView(ProductDetailView);
+    const unavailableBuy = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-buy"]',
+    );
+    expect(unavailableBuy.disabled).toBe(true);
+    expect(unavailableBuy.textContent).toContain("暂不可购买");
+  });
+
   it("does not select a product for passive catalog navigation, restored detail routes, or variant adjustment", async () => {
     const item = makeCatalogItem();
     const secondVariant: MachineCatalogItem = {

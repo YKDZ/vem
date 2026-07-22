@@ -45,6 +45,7 @@ describe("installed kiosk sale platform raw query", () => {
         orderItems: [],
         payments: [],
         paymentCodeAttempts: [],
+        paymentReconciliationAttempts: [],
         reservations: [],
         commands: [],
         movements: [],
@@ -66,6 +67,7 @@ describe("installed kiosk sale platform raw query", () => {
         orderItems: [],
         payments: [],
         paymentCodeAttempts: [],
+        paymentReconciliationAttempts: [],
         reservations: [],
         commands: [],
         movements: [],
@@ -81,6 +83,7 @@ describe("installed kiosk sale platform raw query", () => {
       orderItems: "enumerated_order_ids",
       payments: "enumerated_order_ids",
       paymentCodeAttempts: "enumerated_order_ids",
+      paymentReconciliationAttempts: "enumerated_payment_ids",
       reservations: "enumerated_order_ids",
       commands: "enumerated_order_ids",
       movements: "machine_id + dispense_succeeded",
@@ -95,6 +98,7 @@ describe("installed kiosk sale platform raw query", () => {
     expect(source).toContain("inArray(payments.orderId, orderIds)");
     expect(source).toContain("status: payments.status");
     expect(source).toContain("inArray(paymentCodeAttempts.orderId, orderIds)");
+    expect(source).toContain("paymentReconciliationAttempts.paymentId");
     expect(source).toContain("scannerEventId");
     expect(source).toContain("paymentState: orders.paymentState");
     expect(source).toContain("fulfillmentState: orders.fulfillmentState");

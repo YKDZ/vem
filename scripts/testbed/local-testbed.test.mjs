@@ -32,6 +32,7 @@ import {
   lowerControllerSimSourceFingerprint,
   parseOptions,
   paymentMockCreateGatePaths,
+  paymentMockQueryFaultPaths,
   prepareInstallationOwnedPaymentProvider,
   reprepareGuestInputForRefresh,
   refreshGuestInputForRun,
@@ -693,12 +694,13 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("publishes one shared mock create gate path for service-api and fast-sale tracer", () => {
+  it("publishes initialized mock create and query testbed boundaries for service-api", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const parsedOptions = options(root);
       const environment = buildHostLocalServiceApiEnvironment(parsedOptions);
       const gate = paymentMockCreateGatePaths(parsedOptions.stateRoot);
+      const queryFault = paymentMockQueryFaultPaths(parsedOptions.stateRoot);
       assert.equal(
         environment.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH,
         gate.statePath,
@@ -710,6 +712,10 @@ describe("local testbed orchestration", () => {
       assert.match(
         gate.pendingPath,
         /mock-payment-create-gate\.json\.pending\.json$/,
+      );
+      assert.equal(
+        environment.PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH,
+        queryFault.statePath,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

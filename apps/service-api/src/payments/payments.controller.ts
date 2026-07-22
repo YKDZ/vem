@@ -126,22 +126,6 @@ export class PaymentsController {
     );
   }
 
-  @RequirePermissions("payments.configure")
-  @Post("mock/:paymentNo/expire")
-  async markMockExpired(
-    @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("paymentNo") paymentNo: string,
-    @Body(new ZodValidationPipe(paymentAdminNoBodySchema))
-    _body: z.infer<typeof paymentAdminNoBodySchema>,
-  ) {
-    return await this.paymentsService.markMockFailed(
-      paymentNo,
-      "mock_expired",
-      admin.id,
-      "expired",
-    );
-  }
-
   @Public()
   @Post("mock/:paymentNo/complete")
   async completeMockPaymentFromProvider(@Param("paymentNo") paymentNo: string) {

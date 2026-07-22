@@ -12,6 +12,7 @@ import {
   orders,
   orderItems,
   paymentCodeAttempts,
+  paymentReconciliationAttempts,
   payments,
   sql,
   vendingCommands,
@@ -30,6 +31,7 @@ export const installedKioskSalePlatformQueryScope = Object.freeze({
   orderItems: "enumerated_order_ids",
   payments: "enumerated_order_ids",
   paymentCodeAttempts: "enumerated_order_ids",
+  paymentReconciliationAttempts: "enumerated_payment_ids",
   reservations: "enumerated_order_ids",
   commands: "enumerated_order_ids",
   movements: "machine_id + dispense_succeeded",
@@ -76,6 +78,14 @@ type PlatformRawRecords = {
     isActive: boolean;
     source: string | null;
     scannerEventId: string | null;
+  }>;
+  paymentReconciliationAttempts: Array<{
+    id: string;
+    paymentId: string;
+    trigger: string;
+    status: string;
+    providerPaymentStatus: string | null;
+    errorCode: string | null;
   }>;
   reservations: Array<{
     id: string;
@@ -218,6 +228,7 @@ export async function queryInstalledKioskSalePlatform(
               orderItems: [],
               payments: [],
               paymentCodeAttempts: [],
+              paymentReconciliationAttempts: [],
               reservations: [],
               commands: [],
               movements: [],
@@ -242,6 +253,7 @@ export async function queryInstalledKioskSalePlatform(
           orderItems: [],
           payments: [],
           paymentCodeAttempts: [],
+          paymentReconciliationAttempts: [],
           reservations: [],
           commands: [],
         };
@@ -369,6 +381,24 @@ export async function queryInstalledKioskSalePlatform(
           })
           .from(inventories)
           .where(eq(inventories.machineId, machine.id));
+        const paymentIds = paymentRows.map((row) => row.id);
+        const reconciliationAttemptRows =
+          paymentIds.length === 0
+            ? []
+            : await client
+                .select({
+                  id: paymentReconciliationAttempts.id,
+                  paymentId: paymentReconciliationAttempts.paymentId,
+                  trigger: paymentReconciliationAttempts.trigger,
+                  status: paymentReconciliationAttempts.status,
+                  providerPaymentStatus:
+                    paymentReconciliationAttempts.providerPaymentStatus,
+                  errorCode: paymentReconciliationAttempts.errorCode,
+                })
+                .from(paymentReconciliationAttempts)
+                .where(
+                  inArray(paymentReconciliationAttempts.paymentId, paymentIds),
+                );
 
         return buildInstalledKioskSalePlatformRawReport({
           options,
@@ -379,6 +409,7 @@ export async function queryInstalledKioskSalePlatform(
             orderItems: orderItemRows,
             payments: paymentRows,
             paymentCodeAttempts: paymentCodeAttemptRows,
+            paymentReconciliationAttempts: reconciliationAttemptRows,
             reservations: reservationRows,
             commands: commandRows,
             movements: movementRows,

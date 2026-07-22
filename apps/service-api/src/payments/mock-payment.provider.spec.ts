@@ -232,4 +232,36 @@ describe("MockPaymentProvider", () => {
       }),
     ).rejects.toThrow(/mock payment create gate is unreadable/);
   });
+
+  it("injects a bounded testbed failure at the mock provider query boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vem-mock-payment-query-fault-"));
+    const faultPath = join(root, "query-fault.json");
+    await writeFile(
+      faultPath,
+      `${JSON.stringify({ state: "fail", paymentNo: "PAY-QUERY-FAULT-001" })}\n`,
+      "utf8",
+    );
+    const provider = new MockPaymentProvider(
+      {
+        paymentMockEnabled: true,
+        paymentMockProviderQueryFaultPath: faultPath,
+      } as unknown as AppConfigService,
+      makeTradeStore(),
+    );
+
+    await expect(
+      provider.queryPayment({
+        paymentNo: "PAY-QUERY-FAULT-001",
+        providerTradeNo: "MOCK-PAY-QUERY-FAULT-001",
+        amountCents: 199,
+        config: {
+          providerCode: "mock",
+          merchantNo: null,
+          appId: null,
+          publicConfigJson: {},
+          sensitiveConfigJson: {},
+        },
+      }),
+    ).rejects.toThrow(/mock payment query fault injected/);
+  });
 });
