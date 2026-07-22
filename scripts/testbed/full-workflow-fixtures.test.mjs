@@ -44,7 +44,14 @@ describe("full workflow fixture allocation", () => {
     assert.throws(
       () =>
         allocateFullWorkflowFixtures([
-          { slotId: "550e8400-e29b-41d4-a716-446655440001", rowNo: 1, cellNo: 1, slotDisplayLabel: "A1", inventoryId: "a", sku: "TSC-LOCAL-001" },
+          {
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            rowNo: 1,
+            cellNo: 1,
+            slotDisplayLabel: "A1",
+            inventoryId: "a",
+            sku: "TSC-LOCAL-001",
+          },
         ]),
       /requires seeded fixture slot R1C2/,
     );

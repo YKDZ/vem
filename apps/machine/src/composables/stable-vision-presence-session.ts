@@ -1,7 +1,7 @@
 import { readonly, ref, watch, type Ref, type WatchStopHandle } from "vue";
 
-import { useVisionStore } from "@/stores/vision";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
+import { useVisionStore } from "@/stores/vision";
 
 const ABSENCE_DEPARTURE_MS = 10_000;
 const MIN_OCCUPANCY_CONFIDENCE = 0.5;

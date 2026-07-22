@@ -159,7 +159,12 @@ postgresDescribe("machine stock movement PostgreSQL identity binding", () => {
         quantity: 1,
         source: "sale",
         occurredAt: new Date().toISOString(),
-        orderContext: { orderNo, orderItemId, inventoryId, vendingCommandNo: commandNo },
+        orderContext: {
+          orderNo,
+          orderItemId,
+          inventoryId,
+          vendingCommandNo: commandNo,
+        },
       },
     );
 

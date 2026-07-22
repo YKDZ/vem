@@ -38,7 +38,10 @@ function fixtureForSlot(slots, coordinate) {
     slotId: required(fixture.slotId, "fixture slotId"),
     rowNo: coordinate.rowNo,
     cellNo: coordinate.cellNo,
-    slotDisplayLabel: required(fixture.slotDisplayLabel, "fixture slotDisplayLabel"),
+    slotDisplayLabel: required(
+      fixture.slotDisplayLabel,
+      "fixture slotDisplayLabel",
+    ),
     inventoryId: required(
       fixture.inventoryId,
       `fixture ${fixture.slotId} inventoryId`,
@@ -71,11 +74,12 @@ export function allocateFullWorkflowFixtures(slots) {
 
 export function catalogProductSelectorForFixture(allocation, trackKey) {
   const fixture = allocation?.[trackKey];
-  const slotId = required(
-    fixture?.slotId,
-    `${trackKey} fixture slotId`,
-  );
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(slotId)) {
+  const slotId = required(fixture?.slotId, `${trackKey} fixture slotId`);
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      slotId,
+    )
+  ) {
     throw new Error(`${trackKey} fixture slotId is invalid`);
   }
   return `[data-test="catalog-product"][data-slot-id="${slotId}"]`;

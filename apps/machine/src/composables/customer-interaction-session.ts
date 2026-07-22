@@ -52,8 +52,12 @@ function installInteractionListeners(): void {
 
 function removeInteractionListeners(): void {
   if (typeof window === "undefined") return;
-  window.removeEventListener("pointerdown", registerInteraction, { capture: true });
-  window.removeEventListener("touchstart", registerInteraction, { capture: true });
+  window.removeEventListener("pointerdown", registerInteraction, {
+    capture: true,
+  });
+  window.removeEventListener("touchstart", registerInteraction, {
+    capture: true,
+  });
   window.removeEventListener("keydown", registerInteraction, { capture: true });
 }
 
