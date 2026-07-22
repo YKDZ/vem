@@ -210,6 +210,63 @@ async function waitForCondition(name, predicate, timeoutMs, pollMs = 500) {
   );
 }
 
+function visionInstalledBindingDiagnostic(observation) {
+  const canonicalProcesses = Array.isArray(observation?.canonicalProcesses)
+    ? observation.canonicalProcesses
+    : [];
+  const listeners = Array.isArray(observation?.listeners)
+    ? observation.listeners
+    : [];
+  const processDetails = canonicalProcesses
+    .map(
+      (process) =>
+        `PID=${process.processId ?? null}, ParentProcessId=${process.parentProcessId ?? null}, CreationDate=${process.creationDate ?? null}, CommandLine=${JSON.stringify(process.commandLine ?? null)}`,
+    )
+    .join(" | ") ||
+    "PID=<none>, ParentProcessId=<none>, CreationDate=<none>, CommandLine=<none>";
+  return [
+    `count={canonical:${canonicalProcesses.length},listener:${listeners.length}}`,
+    `canonical=[${processDetails}]`,
+    `listener=${JSON.stringify(listeners)}`,
+    `task=${JSON.stringify(observation?.task ?? null)}`,
+  ].join("; ");
+}
+
+function hasExactVisionInstalledBinding(observation) {
+  const canonicalProcesses = Array.isArray(observation?.canonicalProcesses)
+    ? observation.canonicalProcesses
+    : [];
+  const listeners = Array.isArray(observation?.listeners)
+    ? observation.listeners
+    : [];
+  if (listeners.length !== 1 || canonicalProcesses.length !== 1) return false;
+  const listenerOwner = listeners[0]?.owningProcess;
+  return (
+    Number.isInteger(listenerOwner) &&
+    canonicalProcesses[0]?.processId === listenerOwner
+  );
+}
+
+export async function waitForVisionInstalledBindingObservation({
+  collectObservation,
+  timeoutMs = 8_000,
+  pollMs = 250,
+  now = () => Date.now(),
+  sleep = (milliseconds) =>
+    new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+}) {
+  const deadline = now() + timeoutMs;
+  let lastObservation = null;
+  while (now() < deadline) {
+    lastObservation = await collectObservation();
+    if (hasExactVisionInstalledBinding(lastObservation)) return lastObservation;
+    await sleep(pollMs);
+  }
+  throw new Error(
+    `Vision installed binding did not stabilize in ${timeoutMs} ms: ${visionInstalledBindingDiagnostic(lastObservation)}`,
+  );
+}
+
 function isVisionProtocolTimestamp(value) {
   return (
     typeof value === "string" &&
@@ -2239,56 +2296,79 @@ async function collectVisionInstalledBinding() {
     VISION_SITE_CONFIGURATION_PATH,
     "installed Vision site configuration",
   );
-  const command = [
-    "$ErrorActionPreference = 'Stop'",
-    `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
-    "$action = @($task.Actions | Select-Object -First 1)",
-    "$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')",
-    "$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')",
-    "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
-    'if ($visionProcesses.Count -ne 1) { throw "Vision must have exactly one canonical executable process" }',
-    "$canonicalCommandLine = $visionProcesses[0].commandLine.Replace([char]34, '').ToLowerInvariant()",
-    'if (-not $canonicalCommandLine.Contains($canonicalExecutablePath.ToLowerInvariant()) -or -not $canonicalCommandLine.Contains("--config") -or -not $canonicalCommandLine.Contains($canonicalConfigPath.ToLowerInvariant())) { throw "canonical Vision process command line drifted" }',
-    "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
-    'if ($listener.Count -ne 1) { throw "Vision must have exactly one 127.0.0.1:7892 listener" }',
-    "$visionPid = [int]$listener[0].OwningProcess",
-    '$processWmi = Get-CimInstance Win32_Process -Filter "ProcessId = $visionPid" -ErrorAction Stop',
-    "$owner = Invoke-CimMethod -InputObject $processWmi -MethodName GetOwner -ErrorAction Stop",
-    "$path = [IO.Path]::GetFullPath([string]$processWmi.ExecutablePath)",
-    "$commandLine = [string]$processWmi.CommandLine",
-    "[Console]::Out.Write((@{ processId = $visionPid; listenerProcessId = $visionPid; listenerOwnerCount = $listener.Count; listenerBindingSource = 'Get-NetTCPConnection'; visionProcessOwnershipSource = 'Win32_Process'; visionProcessCount = $visionProcesses.Count; visionProcessIds = @($visionProcesses | ForEach-Object { $_.processId }); visionProcessCommandLines = @($visionProcesses | ForEach-Object { $_.commandLine }); executablePath = $path; commandLine = $commandLine; processOwner = [string]$owner.User; taskUser = [string]$task.Principal.UserId; taskCommand = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; taskArguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; taskWorkingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } } | ConvertTo-Json -Compress))",
-  ].join("; ");
-  const runtimeBinding = await new Promise((resolvePromise, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) {
-        try {
-          resolvePromise(JSON.parse(stdout));
-        } catch (error) {
-          reject(error);
+  const collectRuntimeBinding = async () => {
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
+      "$action = @($task.Actions | Select-Object -First 1)",
+      "$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')",
+      "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; parentProcessId = [int]$_.ParentProcessId; creationDate = [string]$_.CreationDate; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
+      "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
+      "$listenerDetails = @($listener | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess } })",
+      "$processOwner = $null; if ($visionProcesses.Count -eq 1 -and $listenerDetails.Count -eq 1 -and $visionProcesses[0].processId -eq $listenerDetails[0].owningProcess) { $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter \"ProcessId = $($visionProcesses[0].processId)\" -ErrorAction Stop) -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User }",
+      "$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }",
+      "[Console]::Out.Write((@{ canonicalProcesses = $visionProcesses; listeners = $listenerDetails; processOwner = $processOwner; task = $taskDetails } | ConvertTo-Json -Compress -Depth 4))",
+    ].join("; ");
+    return new Promise((resolvePromise, reject) => {
+      let stdout = "";
+      let stderr = "";
+      const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) {
+          try {
+            resolvePromise(JSON.parse(stdout));
+          } catch (error) {
+            reject(error);
+          }
+        } else {
+          reject(
+            new Error(
+              `pwsh exited with ${code ?? "signal"} while collecting Vision binding: ${stderr || stdout}`,
+            ),
+          );
         }
-      } else {
-        reject(
-          new Error(
-            `pwsh exited with ${code ?? "signal"} while collecting Vision binding: ${stderr || stdout}`,
-          ),
-        );
-      }
+      });
     });
+  };
+  const observation = await waitForVisionInstalledBindingObservation({
+    collectObservation: collectRuntimeBinding,
   });
+  const visionProcess = observation.canonicalProcesses[0];
+  const visionPid = visionProcess.processId;
+  const listener = observation.listeners[0];
+  const task = observation.task;
+  const runtimeBinding = {
+    processId: visionPid,
+    listenerProcessId: listener.owningProcess,
+    listenerOwnerCount: observation.listeners.length,
+    listenerBindingSource: "Get-NetTCPConnection",
+    visionProcessOwnershipSource: "Win32_Process",
+    visionProcessCount: observation.canonicalProcesses.length,
+    visionProcessIds: observation.canonicalProcesses.map(
+      (process) => process.processId,
+    ),
+    visionProcessCommandLines: observation.canonicalProcesses.map(
+      (process) => process.commandLine,
+    ),
+    executablePath: visionProcess.executablePath,
+    commandLine: visionProcess.commandLine,
+    processOwner: observation.processOwner,
+    taskUser: task.user,
+    taskCommand: task.command,
+    taskArguments: task.arguments,
+    taskWorkingDirectory: task.workingDirectory,
+  };
   return {
     installedRecord,
     siteConfiguration,

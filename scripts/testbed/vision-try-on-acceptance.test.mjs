@@ -24,6 +24,7 @@ import {
   validateVisionEventFence,
   validateVisionProtocolEvidence,
   validateVisionRuntimeEvidence,
+  waitForVisionInstalledBindingObservation,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
 
@@ -86,6 +87,68 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
+  function installedBindingObservation(processIds, listenerProcessIds) {
+    return {
+      canonicalProcesses: processIds.map((processId) => ({
+        processId,
+        parentProcessId: 100,
+        creationDate: "20260722120000.000000+000",
+        commandLine: `C:\\VEM\\vision\\app\\vending-vision.exe --pid ${processId}`,
+      })),
+      listeners: listenerProcessIds.map((owningProcess) => ({
+        localAddress: "127.0.0.1",
+        localPort: 7892,
+        owningProcess,
+      })),
+      task: { name: "StartVisionServer", state: "Running" },
+    };
+  }
+
+  async function pollInstalledBinding(observations, timeoutMs = 8_000) {
+    let index = 0;
+    let clock = 0;
+    return waitForVisionInstalledBindingObservation({
+      collectObservation: async () =>
+        observations[Math.min(index++, observations.length - 1)],
+      timeoutMs,
+      pollMs: 250,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+    });
+  }
+
+  it("waits through 0->2->1 canonical Vision processes before accepting the listener owner", async () => {
+    const binding = await pollInstalledBinding([
+      installedBindingObservation([], []),
+      installedBindingObservation([4201, 4202], [4201]),
+      installedBindingObservation([4202], [4202]),
+    ]);
+    assert.equal(binding.canonicalProcesses[0].processId, 4202);
+    assert.equal(binding.listeners[0].owningProcess, 4202);
+  });
+
+  it("times out with process, listener, and task diagnostics when two canonical Vision processes persist", async () => {
+    await assert.rejects(
+      pollInstalledBinding(
+        [installedBindingObservation([4201, 4202], [4201])],
+        750,
+      ),
+      /count=\{canonical:2,listener:1\}[\s\S]*PID=4201[\s\S]*ParentProcessId=100[\s\S]*CreationDate=[\s\S]*CommandLine=[\s\S]*listener=[\s\S]*task=/,
+    );
+  });
+
+  it("times out when an extra non-listening canonical Vision instance remains", async () => {
+    await assert.rejects(
+      pollInstalledBinding(
+        [installedBindingObservation([4201, 4202], [4202])],
+        750,
+      ),
+      /Vision installed binding did not stabilize/,
+    );
+  });
+
   it("waits for the scheduled Vision task to stop before restarting it", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
