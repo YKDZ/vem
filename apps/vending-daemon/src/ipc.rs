@@ -1747,6 +1747,16 @@ async fn apply_planogram(
             );
         }
     };
+    if matches!(
+        TransactionStateMachine::checkout_creation_in_flight(&ctx.state).await,
+        Ok(true) | Err(_)
+    ) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "planogram_sale_start_in_progress",
+            "planogram cannot switch while checkout creation is active",
+        );
+    }
     if let Err(safety) = require_binding_mutation_safe(&ctx).await {
         return binding_mutation_safety_response(safety);
     }
@@ -4122,9 +4132,43 @@ mod tests {
         }))
         .expect("planogram");
         ctx.state
-            .apply_planogram(planogram)
+            .apply_planogram(planogram.clone())
             .await
             .expect("planogram");
+        ctx.state
+            .put_metadata(
+                "checkout_creation_recovery",
+                &serde_json::json!({
+                    "payment_method": "mock",
+                    "payment_provider_code": "mock",
+                    "items": [{ "slotId": "550e8400-e29b-41d4-a716-446655440021", "quantity": 1 }],
+                    "profile_snapshot": null,
+                    "idempotency_key": "checkout:planogram-fence",
+                    "generation": "generation-planogram-fence",
+                    "planogram_version": "PLAN-OPERATIONS"
+                }),
+            )
+            .await
+            .expect("checkout recovery marker");
+        let fenced_planogram_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stock/planogram")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&planogram).expect("planogram body"),
+                    ))
+                    .expect("fenced planogram request"),
+            )
+            .await
+            .expect("fenced planogram response");
+        assert_eq!(fenced_planogram_response.status(), StatusCode::CONFLICT);
+        ctx.state
+            .delete_metadata("checkout_creation_recovery")
+            .await
+            .expect("clear checkout recovery marker");
 
         let retired_movement_response = build_router(ctx.clone())
             .oneshot(

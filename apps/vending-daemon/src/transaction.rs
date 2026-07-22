@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
+    ops::Deref,
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -46,15 +47,44 @@ struct CheckoutCreationRecovery {
 struct CheckoutCreationFlight {
     idempotency_key: String,
     generation: String,
+    request: CheckoutCreationRequest,
     completed: Arc<Notify>,
     participants: Arc<AtomicUsize>,
     participants_drained: Arc<Notify>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct CheckoutCreationRequest {
+    payment_method: String,
+    payment_provider_code: Option<String>,
+    items: serde_json::Value,
+    profile_snapshot: Option<serde_json::Value>,
+}
+
+struct CheckoutCreationParticipant {
+    flight: CheckoutCreationFlight,
+}
+
+impl Deref for CheckoutCreationParticipant {
+    type Target = CheckoutCreationFlight;
+
+    fn deref(&self) -> &Self::Target {
+        &self.flight
+    }
+}
+
+impl Drop for CheckoutCreationParticipant {
+    fn drop(&mut self) {
+        self.flight.leave();
+    }
+}
+
 impl CheckoutCreationFlight {
-    fn join(&self) -> Self {
+    fn join(&self) -> CheckoutCreationParticipant {
         self.participants.fetch_add(1, Ordering::AcqRel);
-        self.clone()
+        CheckoutCreationParticipant {
+            flight: self.clone(),
+        }
     }
 
     fn leave(&self) {
@@ -76,7 +106,7 @@ impl CheckoutCreationFlight {
 
 enum CheckoutCreationRole {
     Owner(CheckoutCreationFlight),
-    Join(CheckoutCreationFlight),
+    Join(CheckoutCreationParticipant),
     Existing(vending_core::domain::InternalCurrentTransactionSnapshot),
 }
 
@@ -504,10 +534,8 @@ impl TransactionStateMachine {
             .await?;
         let flight = match role {
             CheckoutCreationRole::Owner(flight) => flight,
-            CheckoutCreationRole::Join(flight) => {
-                let result = self.wait_for_joined_checkout(&flight).await;
-                flight.leave();
-                return result;
+            CheckoutCreationRole::Join(participant) => {
+                return self.wait_for_joined_checkout(&participant).await;
             }
             CheckoutCreationRole::Existing(current) => return Ok(current),
         };
@@ -628,12 +656,24 @@ impl TransactionStateMachine {
         profile_snapshot: Option<serde_json::Value>,
         idempotency_key: String,
     ) -> Result<CheckoutCreationRole, String> {
+        let request = CheckoutCreationRequest {
+            payment_method: payment_method.to_string(),
+            payment_provider_code: payment_provider_code.clone(),
+            items: items.clone(),
+            profile_snapshot: profile_snapshot.clone(),
+        };
         if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+            if flight.idempotency_key != idempotency_key || flight.request != request {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
             return Ok(CheckoutCreationRole::Join(flight.join()));
         }
 
         let _checkout_creation = self.checkout_creation_lock.lock().await;
         if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+            if flight.idempotency_key != idempotency_key || flight.request != request {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
             return Ok(CheckoutCreationRole::Join(flight.join()));
         }
         let _sale = self.acquire_checkout_sale_lease().await?;
@@ -661,6 +701,14 @@ impl TransactionStateMachine {
             .map_err(|error| error.to_string())?;
         let recovery = match recovery {
             Some(recovery) if recovery.idempotency_key != idempotency_key => {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
+            Some(recovery)
+                if recovery.payment_method != request.payment_method
+                    || recovery.payment_provider_code != request.payment_provider_code
+                    || recovery.items != request.items
+                    || recovery.profile_snapshot != request.profile_snapshot =>
+            {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
             Some(mut recovery) => {
@@ -694,6 +742,7 @@ impl TransactionStateMachine {
         let flight = CheckoutCreationFlight {
             idempotency_key: recovery.idempotency_key,
             generation: recovery.generation,
+            request,
             completed: Arc::new(Notify::new()),
             participants: Arc::new(AtomicUsize::new(1)),
             participants_drained: Arc::new(Notify::new()),
@@ -1717,7 +1766,7 @@ mod tests {
             second_machine.create_order_with_idempotency(
                 "mock",
                 Some("mock".to_string()),
-                json!([{ "slotId": "B1", "quantity": 1 }]),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
                 None,
                 Some("checkout:first"),
             ),
@@ -1779,6 +1828,30 @@ mod tests {
             CheckoutCreationRole::Join(flight) => flight,
             _ => panic!("same idempotency key must join the owner"),
         };
+        assert!(matches!(
+            machine
+                .reserve_checkout_creation(
+                    "mock",
+                    Some("mock".to_string()),
+                    json!([{ "slotId": "B1", "quantity": 1 }]),
+                    None,
+                    "checkout:single-flight".to_string(),
+                )
+                .await,
+            Err(error) if error == "CHECKOUT_CREATION_RECOVERY_PENDING"
+        ));
+        assert!(matches!(
+            machine
+                .reserve_checkout_creation(
+                    "mock",
+                    Some("mock".to_string()),
+                    json!([{ "slotId": "A1", "quantity": 1 }]),
+                    None,
+                    "checkout:different".to_string(),
+                )
+                .await,
+            Err(error) if error == "CHECKOUT_CREATION_RECOVERY_PENDING"
+        ));
 
         machine.finish_checkout_creation_flight(&owner).await;
         owner.leave();
@@ -1789,7 +1862,7 @@ mod tests {
             "the owner must not clear a marker while a joined request is still in flight"
         );
 
-        joined.leave();
+        drop(joined);
         owner.wait_for_other_participants().await;
         machine
             .clear_checkout_recovery_if_owner(&owner)
