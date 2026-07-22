@@ -13,7 +13,7 @@ describe("Track Handoff Recovery", () => {
     const calls = [];
     const terminal = await captureTrackTerminalFacts({
       track: { key: "scanner" },
-      context: { report: { sessionStart: { sessionId: "serial-1" } } },
+      context: { report: { handoffSerialSessionId: "serial-1" } },
       readRoute: async () => "#/checkout",
       daemonGet: async (path) => {
         calls.push(path);
@@ -29,14 +29,14 @@ describe("Track Handoff Recovery", () => {
       "/v1/sale-view",
       "/v1/hardware-bindings",
     ]);
-    assert.equal(terminal.facts.deviceSession.sessionId, "serial-1");
+    assert.equal(terminal.facts.handoffSerialSessionId, "serial-1");
   });
 
   it("does not require host fast-sale session IDs to match hardware binding identities", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "scanner" },
       context: {
-        report: { sessionStart: { sessionId: "host-fast-sale-session" } },
+        report: { handoffSerialSessionId: "host-fast-sale-session" },
       },
       readRoute: async () => "#/result/success",
       daemonGet: async (path) => {
@@ -62,21 +62,23 @@ describe("Track Handoff Recovery", () => {
     });
     assert.equal(terminal.ok, true);
     assert.equal(
-      terminal.facts.deviceSession.sessionId,
+      terminal.facts.handoffSerialSessionId,
       "host-fast-sale-session",
     );
     assert.equal(terminal.facts.hardwareBindings.roles.length, 1);
   });
 
-  it("selects the host control-plane session instead of the nested serial evidence identity", async () => {
+  it("rejects nested and generic report session identifiers", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "fast" },
       context: {
         report: {
+          controlPlaneSessionId: "legacy-control-plane-session",
+          sessionId: "generic-root-session",
           summary: { serialSessionId: "serial-session://sha256-evidence" },
           serial: {
             start: {
-              sessionId: "fast-sale-control-session",
+              sessionId: "nested-control-session",
               binding: {
                 serialSessionId: "serial-session://sha256-evidence",
               },
@@ -92,19 +94,16 @@ describe("Track Handoff Recovery", () => {
       },
       platformQuery: async () => ({ inventories: [] }),
     });
-    assert.equal(
-      terminal.facts.deviceSession.sessionId,
-      "fast-sale-control-session",
-    );
+    assert.equal(terminal.facts.handoffSerialSessionId, null);
   });
 
-  it("restores the pickup control-plane session when the pickup report stops it", async () => {
+  it("restores only the session explicitly published by the pickup report", async () => {
     const restored = [];
     const terminal = await captureTrackTerminalFacts({
       track: { key: "pickupProtocol" },
       context: {
         report: {
-          controlPlaneSessionId: "pickup-control-plane-session",
+          handoffSerialSessionId: "pickup-control-plane-session",
           serial: { sessionId: "serial-session://pickup-evidence" },
         },
       },
@@ -125,7 +124,7 @@ describe("Track Handoff Recovery", () => {
     });
 
     assert.equal(
-      terminal.facts.deviceSession.sessionId,
+      terminal.facts.handoffSerialSessionId,
       "pickup-control-plane-session",
     );
     assert.deepEqual(restored, ["pickup-control-plane-session"]);
@@ -133,6 +132,37 @@ describe("Track Handoff Recovery", () => {
       "disableFaultInjection",
       "restoreSerialSession",
     ]);
+  });
+
+  it("does not abort a Vision or try-on evidence session", async () => {
+    const restored = [];
+    const terminal = await captureTrackTerminalFacts({
+      track: { key: "visionExperience" },
+      context: {
+        report: {
+          vision: { sessionId: "vision-session" },
+          tryOn: { sessionId: "try-on-session" },
+        },
+      },
+      readRoute: async () => "#/catalog",
+      daemonGet: async (path) => {
+        if (path === "/v1/transactions/current") return null;
+        if (path === "/v1/hardware-bindings") return { roles: [] };
+        return {};
+      },
+      platformQuery: async () => ({ inventories: [] }),
+    });
+    const recovery = await recoverTrackHandoff({
+      track: { key: "visionExperience" },
+      terminal,
+      fixtureAllocation: {},
+      disableFaultInjection: async () => undefined,
+      restoreSerialSession: async (sessionId) => restored.push(sessionId),
+    });
+
+    assert.equal(terminal.facts.handoffSerialSessionId, null);
+    assert.deepEqual(restored, []);
+    assert.deepEqual(recovery.actions, ["disableFaultInjection"]);
   });
 
   it("records hardware binding degradation without reclassifying a completed child track", async () => {

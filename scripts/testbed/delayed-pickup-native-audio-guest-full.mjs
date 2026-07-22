@@ -1140,7 +1140,7 @@ async function runDelayedPickupGuestFull(options) {
     report.status = "passed";
     report.ok = true;
     report.delayedPickupNativeAudio = acceptance;
-    report.controlPlaneSessionId = sessionStart.sessionId;
+    report.handoffSerialSessionId = sessionStart.sessionId;
   } catch (error) {
     primaryError = error;
   } finally {
@@ -1306,7 +1306,7 @@ async function runDelayedPickupGuestFull(options) {
       primaryError.errors[0] instanceof Error
         ? formatError(primaryError.errors[0])
         : formatError(primaryError);
-    report.controlPlaneSessionId = sessionStart?.sessionId ?? null;
+    report.handoffSerialSessionId = sessionStart?.sessionId ?? null;
   } else {
     report.errors.primary = null;
   }

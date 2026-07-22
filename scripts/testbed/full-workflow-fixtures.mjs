@@ -42,6 +42,7 @@ function fixtureForSlot(slots, coordinate) {
       fixture.slotDisplayLabel,
       "fixture slotDisplayLabel",
     ),
+    categoryKey: required(fixture.categoryKey, "fixture categoryKey"),
     inventoryId: required(
       fixture.inventoryId,
       `fixture ${fixture.slotId} inventoryId`,

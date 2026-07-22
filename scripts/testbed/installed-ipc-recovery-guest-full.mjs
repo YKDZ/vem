@@ -269,6 +269,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
+    handoffSerialSessionId: null,
     mode: options.mode,
     artifacts: { milestones: [] },
   };
@@ -332,6 +333,10 @@ export async function runInstalledIpcRecoveryGuest(options) {
           "hostControlPlane.runtimeBaseIdentity",
         ),
       },
+    );
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "IPC recovery serial session id",
     );
     await waitForDaemonReadyRefresh(handoff);
     await waitForHardwareBindings(handoff, session);

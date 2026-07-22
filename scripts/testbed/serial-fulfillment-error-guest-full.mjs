@@ -482,6 +482,7 @@ export async function runSerialFulfillmentErrorGuest(options) {
   const report = {
     schemaVersion: "vem-serial-fulfillment-error-guest-full/v1",
     ok: false,
+    handoffSerialSessionId: null,
     mode: options.mode,
     evidence: { checkpoints },
   };
@@ -559,6 +560,10 @@ export async function runSerialFulfillmentErrorGuest(options) {
         "hostControlPlane.runtimeBaseIdentity",
       ),
     });
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "fulfillment recovery serial session id",
+    );
     await waitForDaemonReadyRefresh(handoff);
     stage = "await-daemon-binding-and-capability";
     report.evidence.hardwareBindings = await waitForHardwareBindings(

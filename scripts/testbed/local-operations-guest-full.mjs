@@ -808,6 +808,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     ok: false,
     mode: options.mode,
     runId,
+    handoffSerialSessionId: null,
     boundaries: { daemon: false, hardwareSelfCheck: false, serial: false },
     planogram: { canonical: false },
     manualDispense: null,
@@ -830,6 +831,10 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.local-operations`,
     });
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "local operations serial session id",
+    );
     const saleView = await daemonRequest(handoff, "/v1/sale-view");
     const slot = selectPlanogramSlot(saleView, fixture);
     report.planogram = {

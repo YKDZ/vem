@@ -563,6 +563,8 @@ export function validateStockMaintenanceReport(report) {
     report?.schemaVersion !== SCHEMA_VERSION ||
     report?.ok !== true ||
     typeof runId !== "string" ||
+    typeof report?.handoffSerialSessionId !== "string" ||
+    report.handoffSerialSessionId === "" ||
     report?.fixture?.initialQuantity !== 1 ||
     typeof report?.fixture?.slotDisplayLabel !== "string" ||
     typeof report?.fixture?.sku !== "string" ||
@@ -679,6 +681,7 @@ export async function runStockMaintenanceGuest(options) {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     runId: required(input.runId, "runId"),
+    handoffSerialSessionId: null,
     fixture: null,
     movementCursor: null,
     firstSale: null,
@@ -706,6 +709,8 @@ export async function runStockMaintenanceGuest(options) {
       identity.inventoryId,
     );
     const firstHandoff = await replaceSaleHandoff(input, handoff, options);
+    report.handoffSerialSessionId =
+      firstHandoff.replacementControlPlaneSessionId;
     handoff = readJson(options.handoffPath);
     const firstReportPath = join(
       dirname(localPath(options.outPath)),
@@ -877,6 +882,8 @@ export async function runStockMaintenanceGuest(options) {
       "stock-maintenance-second-sale.json",
     );
     const secondHandoff = await replaceSaleHandoff(input, handoff, options);
+    report.handoffSerialSessionId =
+      secondHandoff.replacementControlPlaneSessionId;
     handoff = readJson(options.handoffPath);
     const second = await runSale(options, secondReportPath);
     report.secondSale = saleEvidence(second, report.runId, secondHandoff);

@@ -15,6 +15,7 @@ describe("full workflow fixture allocation", () => {
           rowNo: index < 5 ? 1 : 2,
           cellNo: index < 5 ? index + 1 : index - 4,
           slotDisplayLabel,
+          categoryKey: slotDisplayLabel === "A3" ? "tshirts" : "socks",
           inventoryId: `inventory-${index + 1}`,
           onHandQty: slotDisplayLabel === "B2" ? 1 : 3,
           sku: `TSC-LOCAL-${String(index + 1).padStart(3, "0")}`,
@@ -31,6 +32,7 @@ describe("full workflow fixture allocation", () => {
     );
     assert.deepEqual(allocation.stockMaintenance, {
       slotDisplayLabel: "B2",
+      categoryKey: "socks",
       slotId: "550e8400-e29b-41d4-a716-446655440007",
       rowNo: 2,
       cellNo: 2,
@@ -49,6 +51,7 @@ describe("full workflow fixture allocation", () => {
             rowNo: 1,
             cellNo: 1,
             slotDisplayLabel: "A1",
+            categoryKey: "socks",
             inventoryId: "a",
             sku: "TSC-LOCAL-001",
           },
@@ -64,6 +67,7 @@ describe("full workflow fixture allocation", () => {
               rowNo: slotDisplayLabel.startsWith("A") ? 1 : 2,
               cellNo: Number(slotDisplayLabel[1]),
               slotDisplayLabel,
+              categoryKey: "socks",
               inventoryId: "shared",
               sku: "TSC-LOCAL-001",
             }),

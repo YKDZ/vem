@@ -190,6 +190,7 @@ export async function waitForMachineOnline(
 }
 export function selectFixtureSlot(saleView, fixture) {
   const slotId = required(fixture?.slotId, "fixture.slotId");
+  const categoryKey = required(fixture?.categoryKey, "fixture.categoryKey");
   const item = (saleView?.items ?? []).find(
     (entry) => entry?.slotId === slotId,
   );
@@ -199,6 +200,7 @@ export function selectFixtureSlot(saleView, fixture) {
     );
   return {
     slotId,
+    categoryKey,
     inventoryId: item.inventoryId,
     planogramVersion: saleView.planogramVersion,
   };
@@ -223,6 +225,14 @@ export function mqttEvidenceProvesNoDispense(evidence) {
 export function validatePaymentRecoveryEvidence(report) {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true) {
     throw new Error("payment recovery report is not successful");
+  }
+  if (
+    typeof report.handoffSerialSessionId !== "string" ||
+    report.handoffSerialSessionId === ""
+  ) {
+    throw new Error(
+      "payment recovery report did not publish its handoff serial session",
+    );
   }
   if (!report.payment?.id || report.assertions?.duplicatePaymentCount !== 0) {
     throw new Error("payment recovery allowed a duplicate payment");
@@ -420,19 +430,13 @@ function exactlyOne(values, message) {
   return values[0];
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolvePromise) =>
-    setTimeout(resolvePromise, milliseconds),
-  );
-}
-
 async function waitFor(label, observe, predicate, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   do {
     last = await observe();
     if (predicate(last)) return last;
-    await sleep(250);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   } while (Date.now() < deadline);
   throw new Error(`${label} did not settle: ${JSON.stringify(last)}`);
 }
@@ -611,53 +615,68 @@ async function waitForCustomerTerminal(client, order, expected) {
 export async function openFixtureProductFromCatalog({
   client,
   slotId,
+  categoryKey,
   evaluateExpressionFn = evaluateExpression,
   activateVisibleSelectorFn = activateVisibleSelector,
 }) {
   const productSelector = `[data-test="catalog-product"][data-slot-id=${JSON.stringify(slotId)}]`;
-  const categorySelector = '[data-test="catalog-category"]:not(:disabled)';
-  const state = await evaluateExpressionFn(
+  const expectedCategoryKey = required(categoryKey, "fixture categoryKey");
+  const expectedCategorySelector = `[data-test="catalog-category"][data-category-key=${JSON.stringify(expectedCategoryKey)}]:not(:disabled)`;
+  let state = await evaluateExpressionFn(
     client,
     `(() => ({
+      activeCategoryKey: document.querySelector('[data-test="catalog-page"]')?.dataset.categoryKey || null,
       productVisible: Boolean(document.querySelector(${JSON.stringify(productSelector)})),
-      categories: Array.from(document.querySelectorAll(${JSON.stringify(categorySelector)}))
-        .map((element) => element.dataset.categoryKey)
-        .filter(Boolean),
+      expectedCategoryAvailable: Boolean(document.querySelector(${JSON.stringify(expectedCategorySelector)})),
     }))()`,
   );
-  if (state?.productVisible) {
-    await activateVisibleSelectorFn(client, productSelector, {
+  if (state?.activeCategoryKey !== expectedCategoryKey) {
+    if (!state?.expectedCategoryAvailable) {
+      throw new Error(
+        `fixture slot ${slotId} expected Catalog category ${expectedCategoryKey} is unavailable`,
+      );
+    }
+    await activateVisibleSelectorFn(client, expectedCategorySelector, {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    return;
-  }
-  const categories = Array.isArray(state?.categories) ? state.categories : [];
-  for (const category of categories) {
-    await activateVisibleSelectorFn(
-      client,
-      `[data-test="catalog-category"][data-category-key=${JSON.stringify(category)}]:not(:disabled)`,
-      { kind: "touch", timeoutMs: 30_000 },
+    state = await waitFor(
+      `fixture slot ${slotId} expected Catalog category ${expectedCategoryKey}`,
+      () =>
+        evaluateExpressionFn(
+          client,
+          `(() => ({
+            activeCategoryKey: document.querySelector('[data-test="catalog-page"]')?.dataset.categoryKey || null,
+            productVisible: Boolean(document.querySelector(${JSON.stringify(productSelector)})),
+          }))()`,
+        ),
+      (candidate) =>
+        candidate?.activeCategoryKey === expectedCategoryKey &&
+        candidate.productVisible === true,
+      30_000,
     );
-    const visible = await evaluateExpressionFn(
-      client,
-      `Boolean(document.querySelector(${JSON.stringify(productSelector)}))`,
-    );
-    if (!visible) continue;
-    await activateVisibleSelectorFn(client, productSelector, {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    return;
   }
-  throw new Error(
-    `fixture slot ${slotId} is not visible in any enabled Catalog category`,
-  );
+  if (
+    state?.activeCategoryKey !== expectedCategoryKey ||
+    state.productVisible !== true
+  ) {
+    throw new Error(
+      `fixture slot ${slotId} is not visible in expected Catalog category ${expectedCategoryKey}`,
+    );
+  }
+  await activateVisibleSelectorFn(client, productSelector, {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
 }
 
 async function prepareCustomerCreateFailure(client, slot) {
   await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
-  await openFixtureProductFromCatalog({ client, slotId: slot.slotId });
+  await openFixtureProductFromCatalog({
+    client,
+    slotId: slot.slotId,
+    categoryKey: slot.categoryKey,
+  });
   await waitFor(
     "installed customer product detail",
     () =>
@@ -726,17 +745,16 @@ async function waitForCustomerCreateFailure(client, idempotencyKey, expected) {
 }
 
 async function readCustomerErrorFromLocalOperations(client, idempotencyKey) {
-  await client.send("Page.reload", { ignoreCache: true });
-  await waitFor(
-    "installed machine reload",
-    () => evaluateExpression(client, "document.readyState"),
-    (state) => state === "complete",
-    30_000,
-  );
-  await evaluateExpression(
-    client,
-    'location.hash = "#/maintenance?source=operator"',
-  );
+  for (let tapCount = 0; tapCount < 7; tapCount += 1) {
+    await activateVisibleSelector(
+      client,
+      "[data-test=maintenance-entry-header]",
+      {
+        kind: "touch",
+        timeoutMs: 30_000,
+      },
+    );
+  }
   await waitForRoute(client, "#/maintenance?source=operator", {
     timeoutMs: 30_000,
     forbiddenRoutes: [],
@@ -818,6 +836,7 @@ export async function runPaymentRecoveryGuest(options) {
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
+    handoffSerialSessionId: null,
     mode: options.mode,
     runId,
     inventory: null,
@@ -845,6 +864,10 @@ export async function runPaymentRecoveryGuest(options) {
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.payment-recovery`,
     });
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "payment recovery serial session id",
+    );
     report.serialSession = {
       sessionId: required(session.sessionId, "serial session id"),
     };

@@ -526,6 +526,7 @@ export async function runEnvironmentControlGuest(options) {
     mode: options.mode,
     runId,
     machineCode,
+    handoffSerialSessionId: null,
     commands: [],
     overlapRejection: null,
     daemon: null,
@@ -551,6 +552,10 @@ export async function runEnvironmentControlGuest(options) {
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.environment-control`,
     });
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "environment control serial session id",
+    );
     await waitForDaemonReadyRefresh(handoff);
     await waitForHardwareBindings(handoff, session);
     const hardware = await daemonPost(handoff, "/v1/hardware/self-check", {});

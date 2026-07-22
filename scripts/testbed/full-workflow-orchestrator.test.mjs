@@ -11,6 +11,7 @@ import {
   fixtureAllocationForTrack,
   replaceSerialSessionAndUpdateHandoff,
   restoreCatalogHomeFromClient,
+  waitForCatalogHomeState,
   replaceUnavailableTestbedLowerController,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
@@ -912,6 +913,16 @@ describe("full workflow serial lifecycle", () => {
         calls.push({ route, options });
         return { route };
       },
+      async waitForCatalogHomeStateFn({
+        client,
+        evaluateExpressionFn,
+        timeoutMs,
+      }) {
+        assert.deepEqual(client, { id: "client" });
+        assert.equal(typeof evaluateExpressionFn, "function");
+        calls.push({ homeStateTimeoutMs: timeoutMs });
+        return "#/catalog";
+      },
     });
     assert.equal(result, "#/catalog");
     assert.deepEqual(calls, [
@@ -925,7 +936,26 @@ describe("full workflow serial lifecycle", () => {
         route: "#/catalog",
         options: { timeoutMs: 10_000, pollMs: 250 },
       },
+      {
+        homeStateTimeoutMs: 10_000,
+      },
     ]);
+  });
+
+  it("waits for the Catalog home marker after back disappears", async () => {
+    const states = [
+      { homeMarkerVisible: false, categoryBackVisible: true },
+      { homeMarkerVisible: true, categoryBackVisible: false },
+    ];
+    assert.equal(
+      await waitForCatalogHomeState({
+        client: { id: "client" },
+        evaluateExpressionFn: async () => states.shift(),
+        timeoutMs: 100,
+        pollMs: 0,
+      }),
+      "#/catalog",
+    );
   });
 
   it("does not treat persistent boot, offline, or maintenance routes as catalog", async () => {

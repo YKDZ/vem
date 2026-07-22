@@ -210,6 +210,7 @@ export async function runHardwareLifecycleGuest(options) {
     mode: options.mode,
     runId,
     machineCode,
+    handoffSerialSessionId: null,
     discovery: null,
     readiness: null,
     lifecycle: [],
@@ -228,6 +229,10 @@ export async function runHardwareLifecycleGuest(options) {
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.hardware-lifecycle`,
     });
+    report.handoffSerialSessionId = required(
+      session?.sessionId,
+      "hardware lifecycle serial session id",
+    );
     await waitForDaemonReadyRefresh(handoff);
     const ready = await waitForHardwareBindings(handoff, session);
     const beforeCapability = await daemonGet(

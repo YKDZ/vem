@@ -1489,6 +1489,14 @@ export async function seedThroughSupportedApis({
       rowNo: slot.rowNo,
       cellNo: slot.cellNo,
       slotDisplayLabel: slot.slotDisplayLabel,
+      categoryKey:
+        product.category === "袜子"
+          ? "socks"
+          : product.category === "内裤"
+            ? "underwear"
+            : product.category === "T恤"
+              ? "tshirts"
+              : "other",
       inventoryId: inventory.id,
       onHandQty: slot.onHandQty,
       sku: product.variant.sku,

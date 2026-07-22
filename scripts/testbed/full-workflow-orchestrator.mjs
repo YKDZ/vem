@@ -886,6 +886,7 @@ export async function restoreCatalogHomeFromClient({
   evaluateExpressionFn = evaluateExpression,
   activateVisibleSelectorFn = activateVisibleSelector,
   waitForRouteFn = waitForRoute,
+  waitForCatalogHomeStateFn = waitForCatalogHomeState,
   settleRouteTimeoutMs = 10_000,
 }) {
   await returnToCatalogFn({ client });
@@ -893,17 +894,47 @@ export async function restoreCatalogHomeFromClient({
     client,
     'Boolean(document.querySelector(".catalog-back-button"))',
   );
-  if (!categoryIsOpen) return "#/catalog";
-  await activateVisibleSelectorFn(client, ".catalog-back-button", {
-    kind: "touch",
-    timeoutMs: 10_000,
+  if (categoryIsOpen) {
+    await activateVisibleSelectorFn(client, ".catalog-back-button", {
+      kind: "touch",
+      timeoutMs: 10_000,
+    });
+  }
+  await waitForRouteFn(client, "#/catalog", {
+    timeoutMs: settleRouteTimeoutMs,
+    pollMs: 250,
   });
-  return (
-    await waitForRouteFn(client, "#/catalog", {
-      timeoutMs: settleRouteTimeoutMs,
-      pollMs: 250,
-    })
-  ).route;
+  return await waitForCatalogHomeStateFn({
+    client,
+    evaluateExpressionFn,
+    timeoutMs: settleRouteTimeoutMs,
+  });
+}
+
+export async function waitForCatalogHomeState({
+  client,
+  evaluateExpressionFn = evaluateExpression,
+  timeoutMs = 10_000,
+  pollMs = 250,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let state = null;
+  do {
+    state = await evaluateExpressionFn(
+      client,
+      `(() => ({
+        homeMarkerVisible: Boolean(document.querySelector('[data-test="catalog-page"]:not([data-category-key])')),
+        categoryBackVisible: Boolean(document.querySelector('.catalog-back-button')),
+      }))()`,
+    );
+    if (
+      state?.homeMarkerVisible === true &&
+      state.categoryBackVisible === false
+    )
+      return "#/catalog";
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+  } while (Date.now() < deadline);
+  throw new Error(`Catalog home did not settle: ${JSON.stringify(state)}`);
 }
 
 function terminalOperations(guestInput, handoff, handoffPath) {

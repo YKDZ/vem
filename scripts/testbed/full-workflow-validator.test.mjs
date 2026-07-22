@@ -71,6 +71,7 @@ function stockMaintenanceReport() {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
     ok: true,
     runId: "RUN-STOCK-1",
+    handoffSerialSessionId: "stock-serial-session-2",
     fixture: {
       slotDisplayLabel: "B2",
       sku: "TSC-LOCAL-007",
@@ -391,6 +392,7 @@ function paymentRecoveryReport() {
   return {
     schemaVersion: "vem-payment-recovery-guest-full/v1",
     ok: true,
+    handoffSerialSessionId: "payment-recovery-serial-session",
     inventory: { id: "inventory-payment-recovery" },
     payment: { id: "payment-recovery-1" },
     recoveryMqttEvidence: {

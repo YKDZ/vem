@@ -15,13 +15,15 @@ import {
 } from "./payment-recovery-guest-full.mjs";
 
 describe("payment recovery guest full", () => {
-  it("publishes its serial session so track handoff can restore hardware", () => {
+  it("publishes its root handoff serial session for recovery", () => {
     const source = readFileSync(
       new URL("./payment-recovery-guest-full.mjs", import.meta.url),
       "utf8",
     );
-    assert.match(source, /report\.serialSession\s*=\s*\{/);
-    assert.match(source, /sessionId:\s*required\(session\.sessionId/);
+    assert.match(source, /report\.handoffSerialSessionId\s*=\s*required\(/);
+    assert.doesNotMatch(source, /controlPlaneSessionId/);
+    assert.doesNotMatch(source, /Page\.reload|location\.hash\s*=/);
+    assert.match(source, /maintenance-entry-header/);
   });
   it("drives create_failure through the provider create gate timeout without release or mock fail", () => {
     const source = readFileSync(
@@ -87,16 +89,17 @@ describe("payment recovery guest full", () => {
             },
           ],
         },
-        { slotId: "slot-1" },
+        { slotId: "slot-1", categoryKey: "socks" },
       ),
       {
         slotId: "slot-1",
+        categoryKey: "socks",
         inventoryId: "inv-1",
         planogramVersion: "P-7",
       },
     );
   });
-  it("opens the fixture product after entering from another Catalog category", async () => {
+  it("opens the fixture product through its expected Catalog category", async () => {
     const calls = [];
     let selectedCategory = "tshirts";
     const slotId = "slot-socks";
@@ -104,15 +107,20 @@ describe("payment recovery guest full", () => {
     await openFixtureProductFromCatalog({
       client: { id: "customer" },
       slotId,
+      categoryKey: "socks",
       evaluateExpressionFn: async (client, expression) => {
         assert.equal(client.id, "customer");
-        if (expression.includes("categories:")) {
+        if (expression.includes("expectedCategoryAvailable")) {
           return {
+            activeCategoryKey: selectedCategory,
             productVisible: false,
-            categories: ["tshirts", "socks"],
+            expectedCategoryAvailable: true,
           };
         }
-        return selectedCategory === "socks";
+        return {
+          activeCategoryKey: selectedCategory,
+          productVisible: selectedCategory === "socks",
+        };
       },
       activateVisibleSelectorFn: async (_client, selector) => {
         calls.push(selector);
@@ -121,10 +129,28 @@ describe("payment recovery guest full", () => {
       },
     });
     assert.deepEqual(calls, [
-      '[data-test="catalog-category"][data-category-key="tshirts"]:not(:disabled)',
       '[data-test="catalog-category"][data-category-key="socks"]:not(:disabled)',
       productSelector,
     ]);
+  });
+  it("does not use another category when the fixture category is unavailable", async () => {
+    await assert.rejects(
+      () =>
+        openFixtureProductFromCatalog({
+          client: { id: "customer" },
+          slotId: "slot-socks",
+          categoryKey: "socks",
+          evaluateExpressionFn: async () => ({
+            activeCategoryKey: null,
+            productVisible: false,
+            expectedCategoryAvailable: false,
+          }),
+          activateVisibleSelectorFn: async () => {
+            throw new Error("must not select another category");
+          },
+        }),
+      /expected Catalog category socks is unavailable/,
+    );
   });
   it("builds strict create-order payloads without a slot display label", () => {
     assert.deepEqual(
@@ -347,6 +373,7 @@ function recoveryReport() {
   return {
     schemaVersion: "vem-payment-recovery-guest-full/v1",
     ok: true,
+    handoffSerialSessionId: "payment-recovery-serial-session",
     inventory: { id: "inventory-1" },
     payment: { id: "pay-1" },
     recoveryMqttEvidence: {

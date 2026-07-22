@@ -636,6 +636,7 @@ async function qrAttempt({
   timeoutMs,
   provider,
   setStage,
+  publishHandoffSerialSessionId,
 }) {
   const surface = await beginMachineUiOrder(
     client,
@@ -770,6 +771,7 @@ async function paymentCodeAttempt({
   timeoutMs,
   provider,
   setStage,
+  publishHandoffSerialSessionId,
 }) {
   const { replacement: session } = await replaceSerialSessionAndUpdateHandoff({
     guestInput: input,
@@ -781,6 +783,9 @@ async function paymentCodeAttempt({
     ),
     control,
   });
+  publishHandoffSerialSessionId(
+    required(session?.sessionId, "payment-code serial session id"),
+  );
   let order = null;
   let completedAttempt = null;
   let authoritativeError = null;
@@ -1079,6 +1084,7 @@ export async function runPaymentProviderGuest(options) {
     mode: options.mode,
     runId,
     machineCode,
+    handoffSerialSessionId: null,
     environment: null,
     fixture: null,
     authoritative: { ok: false, attempts: [] },
@@ -1123,6 +1129,9 @@ export async function runPaymentProviderGuest(options) {
         machineCode,
         timeoutMs: PAYMENT_CODE_CLEANUP_TIMEOUT_MS,
         provider,
+        publishHandoffSerialSessionId: (sessionId) => {
+          report.handoffSerialSessionId = sessionId;
+        },
         setStage: (next) => {
           stage = next;
         },

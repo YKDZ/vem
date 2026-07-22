@@ -1248,6 +1248,10 @@ export async function runScannerPaymentCodeGuest(options) {
     successReport = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
       ok: true,
+      handoffSerialSessionId: required(
+        sessionStart?.sessionId,
+        "scanner payment serial session id",
+      ),
       mode: options.mode,
       runId,
       machineCode,
@@ -1311,6 +1315,7 @@ export async function runScannerPaymentCodeGuest(options) {
     failureReport = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
       ok: false,
+      handoffSerialSessionId: sessionStart?.sessionId ?? null,
       stage,
       error: serializeError(primaryError),
       evidence: { checkpoints },
@@ -1371,6 +1376,7 @@ export async function runScannerPaymentCodeGuest(options) {
       failureReport = {
         schemaVersion: "vem-scanner-payment-code-guest-full/v1",
         ok: false,
+        handoffSerialSessionId: sessionStart?.sessionId ?? null,
         stage: "cleanup",
         error: serializeError(finalError),
         evidence: {

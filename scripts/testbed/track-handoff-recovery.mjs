@@ -1,21 +1,11 @@
-function sessionIdFromReport(value) {
-  if (value == null || typeof value !== "object") return null;
+function publishedHandoffSerialSessionId(report) {
+  if (report == null || typeof report !== "object") return null;
   if (
-    typeof value.controlPlaneSessionId === "string" &&
-    value.controlPlaneSessionId.trim()
+    typeof report.handoffSerialSessionId !== "string" ||
+    report.handoffSerialSessionId.trim() === ""
   )
-    return value.controlPlaneSessionId.trim();
-  if (
-    typeof value.sessionId === "string" &&
-    value.sessionId &&
-    !value.sessionId.startsWith("serial-session://")
-  )
-    return value.sessionId;
-  for (const child of Object.values(value)) {
-    const sessionId = sessionIdFromReport(child);
-    if (sessionId) return sessionId;
-  }
-  return null;
+    return null;
+  return report.handoffSerialSessionId.trim();
 }
 
 function terminalRoute(track, route) {
@@ -149,7 +139,7 @@ export async function captureTrackTerminalFacts({
       daemonGet("/v1/hardware-bindings"),
     ),
     inventory: await observe("inventory", platformQuery),
-    deviceSession: { sessionId: sessionIdFromReport(context?.report) },
+    handoffSerialSessionId: publishedHandoffSerialSessionId(context?.report),
   };
   if (diagnostics.length > 0) {
     return {
@@ -273,7 +263,7 @@ export async function recoverTrackHandoff({
       return { ok: false, actions, errors, evidence };
     }
   }
-  const sessionId = terminal?.facts?.deviceSession?.sessionId;
+  const sessionId = terminal?.facts?.handoffSerialSessionId;
   if (sessionId) {
     await attempt("restoreSerialSession", () =>
       restoreSerialSession(sessionId),

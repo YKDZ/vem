@@ -13,6 +13,7 @@ function report() {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
     ok: true,
     runId: "RUN-STOCK-1",
+    handoffSerialSessionId: "session-stock-2",
     fixture: {
       slotDisplayLabel: "B2",
       sku: "TSC-LOCAL-007",
