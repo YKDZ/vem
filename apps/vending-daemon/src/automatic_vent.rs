@@ -346,11 +346,10 @@ impl AutomaticVentController {
         };
         let hardware = match hardware {
             Ok(hardware) => hardware,
-            Err(_) => {
-                return AutomaticVentExecution::Completed(Err(
-                    "automatic B3 lower-controller ownership acquisition timed out".to_string(),
-                ));
-            }
+            // B1/B2, sampling, or another bounded controller operation may
+            // temporarily own the serial boundary. Release the B3 guard and
+            // retain only the latest automatic intent for a bounded retry.
+            Err(_) => return AutomaticVentExecution::Deferred,
         };
         if !self.automatic_intent_is_current(intent).await {
             return AutomaticVentExecution::Skipped;
@@ -718,6 +717,38 @@ mod tests {
         })
         .await
         .expect("deferred latest automatic intent must execute after Admin releases B3");
+        assert!(controller.state.lock().await.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn first_automatic_intent_retries_after_non_b3_hardware_ownership_timeout() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard_and_operation_timeout(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(10),
+        );
+        let non_b3_hardware_owner = controller.hardware.acquire_environment_hardware().await;
+
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("first automatic intent accepted");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(adapter.vent_speeds.lock().expect("speeds").is_empty());
+
+        drop(non_b3_hardware_owner);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![2] {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("first automatic intent must execute after B1/B2 ownership releases");
         assert!(controller.state.lock().await.last_error.is_none());
     }
 
