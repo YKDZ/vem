@@ -178,6 +178,10 @@ async function backToCatalog(): Promise<void> {
     target: { name: projectedTargetRoute },
   });
   checkoutStore.reset();
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: { name: projectedTargetRoute },
+  });
   if (projectedTargetRoute === "catalog") {
     await catalogStore.refresh().catch((error: unknown) => {
       resultReadinessError.value =

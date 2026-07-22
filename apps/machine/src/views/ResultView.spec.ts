@@ -373,6 +373,10 @@ describe("ResultView", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "customer.navigate",
+      target: { name: "catalog" },
+    });
   });
 
   it("retains successful auto-return when capability refresh becomes stale", async () => {
