@@ -389,20 +389,64 @@ function validatePaymentProviderTrack(report, reportPath) {
     !["paid", "fulfilled"].includes(attempt?.terminal?.paymentState);
   const qrValid =
     qr?.order?.providerCode === "alipay" &&
-    qr?.credential?.present === true &&
-    qr?.query?.status === "pending" &&
-    qr?.query?.reconciliationState === "provider_trade_not_exist" &&
+    qr?.machine?.boundary === "installed_machine_ui_cdp" &&
+    qr?.machine?.paymentMethod === "qr_code" &&
+    qr?.machine?.providerCode === "alipay" &&
+    qr?.machine?.surface?.orderId === qr?.order?.orderId &&
+    qr?.machine?.surface?.paymentId === qr?.order?.paymentId &&
+    qr?.machine?.surface?.orderNo === qr?.order?.orderNo &&
+    String(qr?.credential?.paymentUrlSha256 ?? "").startsWith("sha256:") &&
+    typeof qr?.query?.reconciliationAttemptId === "string" &&
+    qr.query.reconciliationAttemptId.length > 0 &&
+    qr?.query?.providerCode === "alipay" &&
+    qr?.query?.status === "provider_trade_not_exist" &&
+    qr?.query?.providerPaymentStatus === "pending" &&
     qr?.closure?.action === "close_or_reverse_uncertain_payment" &&
     qr?.closure?.handled === true &&
+    typeof qr?.closure?.providerConfigId === "string" &&
+    qr.closure.providerConfigId ===
+      report?.provider?.identity?.providerConfigId &&
     ["canceled", "expired"].includes(qr?.terminal?.paymentStatus) &&
     terminalClean(qr);
   const codeValid =
     code?.order?.providerCode === "alipay" &&
+    code?.machine?.boundary === "installed_machine_ui_cdp" &&
+    code?.machine?.paymentMethod === "payment_code" &&
+    code?.machine?.providerCode === "alipay" &&
+    code?.machine?.surface?.orderId === code?.order?.orderId &&
+    code?.machine?.surface?.paymentId === code?.order?.paymentId &&
+    code?.machine?.surface?.orderNo === code?.order?.orderNo &&
+    String(code?.machine?.scannerPrompt ?? "").includes("请出示付款码") &&
     code?.submission?.providerCode === "alipay" &&
     typeof code?.submission?.attemptId === "string" &&
     code.submission.attemptId.length > 0 &&
     code?.submission?.status === "failed" &&
+    typeof code?.submission?.failureCode === "string" &&
+    code.submission.failureCode.length > 0 &&
+    typeof code?.submission?.providerStatus === "string" &&
+    code.submission.providerStatus.length > 0 &&
+    code?.cleanup?.action === "customer_cancel_order" &&
+    code?.cleanup?.serialSession?.action === "abort" &&
+    code?.cleanup?.serialSession?.aborted === true &&
+    typeof code?.cleanup?.providerConfigId === "string" &&
+    code.cleanup.providerConfigId ===
+      report?.provider?.identity?.providerConfigId &&
     terminalClean(code);
+  const providerIdentity = report?.provider?.identity;
+  const providerPrepared =
+    providerIdentity?.providerCode === "alipay" &&
+    typeof providerIdentity?.providerConfigId === "string" &&
+    providerIdentity.providerConfigId.length > 0 &&
+    typeof providerIdentity?.appId === "string" &&
+    providerIdentity.appId.length > 0 &&
+    typeof providerIdentity?.merchantNo === "string" &&
+    providerIdentity.merchantNo.length > 0 &&
+    providerIdentity?.mode === "sandbox" &&
+    providerIdentity?.keyType === "PKCS1" &&
+    providerIdentity?.gatewayUrl ===
+      "https://openapi-sandbox.dl.alipaydev.com/gateway.do" &&
+    report?.provider?.hostPreparation?.source === "host_installation_fixture" &&
+    report?.provider?.hostPreparation?.preflight === "configured";
   const uniqueOrders = new Set(
     attempts.map((attempt) => attempt?.order?.orderId).filter(Boolean),
   );
@@ -412,6 +456,7 @@ function validatePaymentProviderTrack(report, reportPath) {
   if (
     attempts?.length !== 2 ||
     uniqueOrders.size !== 2 ||
+    !providerPrepared ||
     !qrValid ||
     !codeValid ||
     diagnostics.length > 2

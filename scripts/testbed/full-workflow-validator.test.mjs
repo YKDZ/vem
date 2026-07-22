@@ -224,6 +224,21 @@ function paymentProviderReport() {
     schemaVersion: "vem-payment-provider-guest-full/v1",
     ok: true,
     environment: { environment: "sandbox", readiness: "ready" },
+    provider: {
+      identity: {
+        providerCode: "alipay",
+        providerConfigId: "provider-config-1",
+        appId: "9021000163629927",
+        merchantNo: "2088721101045878",
+        mode: "sandbox",
+        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        keyType: "PKCS1",
+      },
+      hostPreparation: {
+        source: "host_installation_fixture",
+        preflight: "configured",
+      },
+    },
     authoritative: {
       ok: true,
       attempts: [
@@ -235,15 +250,28 @@ function paymentProviderReport() {
             orderNo: "PAYMENT-PROVIDER-QR-1",
             providerCode: "alipay",
           },
-          credential: { present: true },
+          machine: {
+            boundary: "installed_machine_ui_cdp",
+            paymentMethod: "qr_code",
+            providerCode: "alipay",
+            surface: {
+              orderId: "order-qr-1",
+              paymentId: "payment-qr-1",
+              orderNo: "PAYMENT-PROVIDER-QR-1",
+            },
+          },
+          credential: { paymentUrlSha256: "sha256:credential" },
           query: {
-            status: "pending",
-            reconciliationState: "provider_trade_not_exist",
+            reconciliationAttemptId: "reconciliation-1",
+            providerCode: "alipay",
+            status: "provider_trade_not_exist",
+            providerPaymentStatus: "pending",
           },
           closure: {
             action: "close_or_reverse_uncertain_payment",
             status: "canceled",
             handled: true,
+            providerConfigId: "provider-config-1",
           },
           terminal: {
             paymentStatus: "canceled",
@@ -260,11 +288,28 @@ function paymentProviderReport() {
             orderNo: "PAYMENT-PROVIDER-CODE-1",
             providerCode: "alipay",
           },
+          machine: {
+            boundary: "installed_machine_ui_cdp",
+            paymentMethod: "payment_code",
+            providerCode: "alipay",
+            surface: {
+              orderId: "order-code-1",
+              paymentId: "payment-code-1",
+              orderNo: "PAYMENT-PROVIDER-CODE-1",
+            },
+            scannerPrompt: "请出示付款码",
+          },
           submission: {
             status: "failed",
             providerCode: "alipay",
             attemptId: "attempt-1",
             failureCode: "ACQ.INVALID_AUTH_CODE",
+            providerStatus: "FAILED",
+          },
+          cleanup: {
+            action: "customer_cancel_order",
+            providerConfigId: "provider-config-1",
+            serialSession: { action: "abort", aborted: true },
           },
           terminal: {
             paymentStatus: "failed",

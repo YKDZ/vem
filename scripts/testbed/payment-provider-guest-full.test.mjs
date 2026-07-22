@@ -5,7 +5,7 @@ import {
   buildProviderFailureReport,
   parsePaymentProviderGuestArgs,
   sanitizeProviderEvidence,
-  validateHostLocalSandboxFixture,
+  validateInstallationOwnedAlipaySandboxFixture,
   validateUnattendedProviderAttempt,
 } from "./payment-provider-guest-full.mjs";
 
@@ -25,7 +25,7 @@ describe("payment provider guest full", () => {
     assert.equal(options.fixtureKey, null);
   });
 
-  it("proves only a non-paid QR creation, query, and closure", () => {
+  it("requires provider API identifiers and installed Machine UI evidence", () => {
     assert.doesNotThrow(() =>
       validateUnattendedProviderAttempt({
         channel: "qr_code:alipay",
@@ -35,15 +35,28 @@ describe("payment provider guest full", () => {
           paymentId: "payment-1",
           orderNo: "order-no-1",
         },
-        credential: { present: true },
+        machine: {
+          boundary: "installed_machine_ui_cdp",
+          paymentMethod: "qr_code",
+          providerCode: "alipay",
+          surface: {
+            orderId: "order-1",
+            paymentId: "payment-1",
+            orderNo: "order-no-1",
+          },
+        },
+        credential: { paymentUrlSha256: "sha256:credential" },
         query: {
-          status: "pending",
-          reconciliationState: "provider_trade_not_exist",
+          reconciliationAttemptId: "reconciliation-1",
+          providerCode: "alipay",
+          status: "provider_trade_not_exist",
+          providerPaymentStatus: "pending",
         },
         closure: {
           action: "close_or_reverse_uncertain_payment",
           status: "canceled",
           handled: true,
+          providerConfigId: "provider-config-1",
         },
         terminal: {
           paymentStatus: "canceled",
@@ -64,20 +77,30 @@ describe("payment provider guest full", () => {
             orderNo: "order-no-1",
           },
           credential: { present: true },
-          query: { status: "succeeded" },
+          machine: {
+            boundary: "installed_machine_ui_cdp",
+            paymentMethod: "qr_code",
+            providerCode: "alipay",
+            surface: {
+              orderId: "order-1",
+              paymentId: "payment-1",
+              orderNo: "order-no-1",
+            },
+          },
+          query: { reconciliationState: "provider_trade_not_exist" },
           closure: {
             action: "close_or_reverse_uncertain_payment",
             status: "canceled",
             handled: true,
           },
           terminal: {
-            paymentStatus: "succeeded",
-            orderStatus: "fulfilled",
-            paymentState: "paid",
+            paymentStatus: "canceled",
+            orderStatus: "canceled",
+            paymentState: "canceled",
             reservedInventory: false,
           },
         }),
-      /must not claim a paid customer result/,
+      /QR provider attempt did not prove/,
     );
   });
 
@@ -111,23 +134,42 @@ describe("payment provider guest full", () => {
     });
     assert.equal(report.ok, false);
     assert.equal(report.diagnostics.length, 2);
+    assert.throws(
+      () =>
+        buildProviderFailureReport({
+          runId: "RUN-1",
+          stage: "unclassified",
+          error: new Error("provider unavailable"),
+        }),
+      /failure stage is invalid/,
+    );
   });
 
-  it("requires an installation-owned fixture for the VM-local Service API", () => {
+  it("requires an installation-owned fixture and rejects guest secret transport", () => {
     assert.equal(
-      validateHostLocalSandboxFixture({
-        schemaVersion: "vem-host-local-alipay-sandbox-fixture/v1",
-        ownership: "host-local-installation",
+      validateInstallationOwnedAlipaySandboxFixture({
+        schemaVersion: "vem-installation-alipay-sandbox-fixture/v1",
+        ownership: "host-installation",
         target: "local-service-api",
-        providerConfig: { providerCode: "alipay" },
+        providerConfig: {
+          providerCode: "alipay",
+          appId: "9021000163629927",
+          merchantNo: "2088721101045878",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+            keyType: "PKCS1",
+          },
+          sensitiveConfigJson: { privateKeyPem: "not-in-repository" },
+        },
       }).providerConfig.providerCode,
       "alipay",
     );
     assert.throws(
       () =>
-        validateHostLocalSandboxFixture({
-          schemaVersion: "vem-host-local-alipay-sandbox-fixture/v1",
-          ownership: "vps",
+        validateInstallationOwnedAlipaySandboxFixture({
+          schemaVersion: "vem-installation-alipay-sandbox-fixture/v1",
+          ownership: "guest",
           target: "local-service-api",
           providerConfig: { providerCode: "alipay" },
         }),

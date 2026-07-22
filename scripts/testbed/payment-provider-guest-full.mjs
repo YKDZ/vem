@@ -1,17 +1,38 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
+import {
+  activateVisibleSelector,
+  CdpClient,
+  discoverMachineUiTarget,
+  enablePageRuntime,
+  evaluateExpression,
+  rewriteWebSocketDebuggerUrl,
+  waitForRoute,
+} from "./machine-ui-cdp-driver.mjs";
+
 const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
-const DEFAULT_FIXTURE_PATH =
-  "C:\\ProgramData\\VEM\\testbed\\payment-provider-sandbox.fixture.json";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
 const INVALID_ALIPAY_CUSTOMER_CODE = "000000000000000000\\r\\n";
+const PROVIDER_FAILURE_STAGES = new Set([
+  "host-preparation",
+  "readiness",
+  "creation",
+  "customer-code-submission",
+  "query",
+  "notification",
+  "closure",
+  "terminal-state",
+  "serial-cleanup",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -195,49 +216,63 @@ async function adminToken(input) {
   return required(result?.accessToken, "auth.login.accessToken");
 }
 
-function fixturePath(input) {
-  return input.paymentProviderFixture?.path ?? DEFAULT_FIXTURE_PATH;
-}
-
-export function validateHostLocalSandboxFixture(fixture) {
+export function validateInstallationOwnedAlipaySandboxFixture(fixture) {
   if (
-    fixture?.schemaVersion !== "vem-host-local-alipay-sandbox-fixture/v1" ||
-    fixture?.ownership !== "host-local-installation" ||
+    fixture?.schemaVersion !== "vem-installation-alipay-sandbox-fixture/v1" ||
+    fixture?.ownership !== "host-installation" ||
     fixture?.target !== "local-service-api" ||
-    fixture?.providerConfig?.providerCode !== "alipay"
+    fixture?.providerConfig?.providerCode !== "alipay" ||
+    fixture?.providerConfig?.publicConfigJson?.mode !== "sandbox" ||
+    fixture?.providerConfig?.publicConfigJson?.keyType !== "PKCS1" ||
+    fixture?.providerConfig?.publicConfigJson?.gatewayUrl !==
+      "https://openapi-sandbox.dl.alipaydev.com/gateway.do" ||
+    typeof fixture?.providerConfig?.sensitiveConfigJson?.privateKeyPem !==
+      "string" ||
+    fixture.providerConfig.sensitiveConfigJson.privateKeyPem.trim() === ""
   ) {
     throw new Error(
-      "host-local Alipay sandbox fixture is invalid or not installation-owned",
+      "installation-owned Alipay sandbox fixture is invalid or incomplete",
     );
   }
   return fixture;
 }
 
-function readHostLocalFixture(input) {
-  const path = fixturePath(input);
-  return { path, fixture: validateHostLocalSandboxFixture(readJson(path)) };
+function containsSecretMaterial(value, key = "") {
+  if (/(?:sensitiveConfigJson|privateKey|cert|secret)/i.test(key)) return true;
+  if (Array.isArray(value))
+    return value.some((entry) => containsSecretMaterial(entry));
+  if (value && typeof value === "object") {
+    return Object.entries(value).some(([entryKey, entry]) =>
+      containsSecretMaterial(entry, entryKey),
+    );
+  }
+  return false;
 }
 
-async function importHostLocalFixture(input, token, hostFixture) {
-  const providerConfig = hostFixture.fixture.providerConfig;
-  await api(input, "/payments/provider-configs", {
-    method: "POST",
-    token,
-    body: providerConfig,
-  });
-  if (hostFixture.fixture.channelPolicy) {
-    await api(input, "/payments/channel-policy", {
-      method: "PUT",
-      token,
-      body: hostFixture.fixture.channelPolicy,
-    });
+function providerIdentity(input) {
+  const identity = input?.paymentProvider?.identity;
+  if (
+    containsSecretMaterial(input?.paymentProvider) ||
+    identity?.providerCode !== "alipay" ||
+    typeof identity?.providerConfigId !== "string" ||
+    identity.providerConfigId.length === 0 ||
+    typeof identity?.appId !== "string" ||
+    identity.appId.length === 0 ||
+    typeof identity?.merchantNo !== "string" ||
+    identity.merchantNo.length === 0 ||
+    identity?.mode !== "sandbox" ||
+    identity?.keyType !== "PKCS1" ||
+    identity?.gatewayUrl !==
+      "https://openapi-sandbox.dl.alipaydev.com/gateway.do" ||
+    input?.paymentProvider?.hostPreparation?.source !==
+      "host_installation_fixture" ||
+    input?.paymentProvider?.hostPreparation?.preflight !== "configured"
+  ) {
+    throw new Error(
+      "guest input must contain host-prepared Alipay identity without provider secrets",
+    );
   }
-  return {
-    ownership: hostFixture.fixture.ownership,
-    source: "host_local_installation_fixture",
-    imported: true,
-    hasChannelPolicy: Boolean(hostFixture.fixture.channelPolicy),
-  };
+  return identity;
 }
 
 function alipayOptions(capability) {
@@ -279,36 +314,6 @@ async function waitForProviderReadiness(handoff, timeoutMs) {
       ),
     { timeoutMs, label: "local Alipay sandbox readiness" },
   );
-}
-
-function selectSlot(saleView, fixture) {
-  const slotCode = required(fixture?.slotCode, "fixture.slotCode");
-  const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotCode === slotCode,
-  );
-  if (!item?.inventoryId || !item?.slotId || !saleView?.planogramVersion) {
-    throw new Error(`fixture slot ${slotCode} is not saleable`);
-  }
-  return {
-    inventoryId: item.inventoryId,
-    slotId: item.slotId,
-    slotCode,
-    planogramVersion: saleView.planogramVersion,
-  };
-}
-
-function orderRequest(slot, method, runId, suffix) {
-  return {
-    ...slot,
-    quantity: 1,
-    paymentMethod: method,
-    paymentProviderCode: "alipay",
-    idempotencyKey:
-      `payment-provider:${runId}:${suffix}:${crypto.randomUUID()}`.slice(
-        0,
-        128,
-      ),
-  };
 }
 
 function orderIdentity(snapshot) {
@@ -397,33 +402,177 @@ async function waitForPreScanQueryEvidence(input, token, order, timeoutMs) {
       );
     },
     (attempt) =>
-      attempt?.status === "pending" &&
-      attempt?.errorCode === "ACQ.TRADE_NOT_EXIST",
+      attempt?.id &&
+      attempt?.paymentId === order.paymentId &&
+      attempt?.providerCode === "alipay" &&
+      attempt?.status === "provider_trade_not_exist" &&
+      attempt?.providerPaymentStatus === "pending",
     { timeoutMs, label: `pre-scan query evidence for ${order.orderNo}` },
+  );
+}
+
+async function connectMachineUi(handoff) {
+  const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
+  const target = await discoverMachineUiTarget({
+    endpoint,
+    expectedTargetId: required(handoff?.cdp?.targetId, "handoff cdp targetId"),
+  });
+  const client = new CdpClient(
+    rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
+  );
+  await client.connect();
+  await enablePageRuntime(client);
+  return client;
+}
+
+async function visiblePaymentSurface(client, method, timeoutMs) {
+  return await waitForCondition(
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const el = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
+          return el && el.getClientRects().length ? {
+            orderId: el.dataset.orderId || null,
+            paymentId: el.dataset.paymentId || null,
+            orderNo: el.dataset.orderNo || null,
+            paymentUrl: el.dataset.paymentUrl || null,
+            paymentMethod: el.dataset.paymentMethod || null,
+            providerCode: el.dataset.paymentProvider || null,
+            route: location.hash,
+            scannerPrompt: el.dataset.paymentMethod === 'payment_code'
+              ? (el.querySelector('.payment-code-panel')?.textContent || '').trim()
+              : null
+          } : null;
+        })()`,
+      ),
+    (surface) =>
+      surface?.paymentMethod === method &&
+      surface?.providerCode === "alipay" &&
+      typeof surface?.orderId === "string" &&
+      typeof surface?.paymentId === "string",
+    { timeoutMs, label: `visible ${method} Alipay payment surface` },
+  );
+}
+
+async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
+  await evaluateExpression(client, "location.hash = '#/catalog'");
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
+  const steps = [
+    '[data-test="catalog-category"]:not(:disabled)',
+    catalogProductSelectorForFixture(fixture, "sale"),
+    '[data-test="product-buy"]:not(:disabled)',
+    `[data-test="payment-option"][data-payment-option-key="${method}:alipay"]:not(:disabled)`,
+    '[data-test="checkout-submit"]:not(:disabled)',
+  ];
+  for (const selector of steps) {
+    await activateVisibleSelector(client, selector, {
+      kind: "touch",
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    });
+  }
+  return await visiblePaymentSurface(client, method, timeoutMs);
+}
+
+async function cancelVisibleMachineOrder(client, timeoutMs) {
+  await activateVisibleSelector(
+    client,
+    '[data-test="payment-cancel"]:not(:disabled)',
+    {
+      kind: "touch",
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    },
+  );
+  await waitForRoute(client, /^#\/(products|catalog)/, {
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
+}
+
+async function cleanAuthoritativeOrderBeforeDiagnostics(
+  client,
+  handoff,
+  timeoutMs,
+) {
+  const visible = await evaluateExpression(
+    client,
+    "Boolean(document.querySelector('[data-installed-kiosk-sale-payment-surface]')?.getClientRects().length)",
+  );
+  if (visible) await cancelVisibleMachineOrder(client, timeoutMs);
+  const transaction = await waitForCondition(
+    () => daemon(handoff, "/v1/transactions/current"),
+    (current) =>
+      current == null ||
+      current?.orderId == null ||
+      ["canceled", "failed", "expired"].includes(current?.paymentStatus),
+    { timeoutMs, label: "authoritative order cleanup before diagnostics" },
+  );
+  return { machineBoundary: "installed_machine_ui_cdp", transaction };
+}
+
+async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
+  return await waitForCondition(
+    async () => {
+      const page = await api(
+        input,
+        `/payments/payment-code-attempts?orderNo=${encodeURIComponent(order.orderNo)}&providerCode=alipay&page=1&pageSize=10`,
+        { token },
+      );
+      return (page?.items ?? []).find(
+        (entry) =>
+          entry?.orderId === order.orderId &&
+          entry?.paymentNo === order.paymentNo &&
+          entry?.providerCode === "alipay",
+      );
+    },
+    (attempt) =>
+      typeof attempt?.id === "string" &&
+      attempt.id.length > 0 &&
+      attempt?.status === "failed" &&
+      typeof attempt?.failureCode === "string" &&
+      attempt.failureCode.length > 0,
+    {
+      timeoutMs,
+      label: `provider rejected payment-code attempt for ${order.orderNo}`,
+    },
   );
 }
 
 async function qrAttempt({
   input,
-  handoff,
+  client,
   token,
   runId,
   machineCode,
-  slot,
   timeoutMs,
+  provider,
+  setStage,
 }) {
-  const snapshot = await daemon(
-    handoff,
-    "/v1/intents/create-order",
-    orderRequest(slot, "qr_code", runId, "qr"),
+  const surface = await beginMachineUiOrder(
+    client,
+    input,
+    input.fixtureAllocation,
+    "qr_code",
+    timeoutMs,
   );
-  const order = orderIdentity(snapshot);
+  const order = orderIdentity({
+    ...surface,
+    paymentProviderCode: surface.providerCode,
+  });
   const credential = {
-    present:
-      typeof snapshot?.paymentUrl === "string" &&
-      snapshot.paymentUrl.length > 0,
+    paymentUrlSha256:
+      typeof surface.paymentUrl === "string" && surface.paymentUrl.length > 0
+        ? `sha256:${createHash("sha256").update(surface.paymentUrl).digest("hex")}`
+        : null,
   };
-  if (!credential.present) throw new Error("Alipay QR credential is empty");
+  if (!credential.paymentUrlSha256)
+    throw new Error("Alipay QR credential is empty");
+  setStage("query");
   const queryResult = await api(
     input,
     `/payments/${encodeURIComponent(order.paymentId)}/incident-actions`,
@@ -443,25 +592,31 @@ async function qrAttempt({
     timeoutMs,
   );
   const query = {
-    status: queryResult?.status ?? null,
-    reconciliationState: "provider_trade_not_exist",
+    reconciliationAttemptId: reconciliation.id,
+    providerCode: reconciliation.providerCode,
+    status: reconciliation.status,
+    providerPaymentStatus: reconciliation.providerPaymentStatus,
     evidence: sanitizeProviderEvidence({
+      incidentActionStatus: queryResult?.status ?? null,
       reconciliationStatus: reconciliation.status,
-      errorCode: reconciliation.errorCode,
       providerPaymentStatus: reconciliation.providerPaymentStatus,
     }),
   };
   if (
-    query.status !== "pending" ||
-    query.reconciliationState !== "provider_trade_not_exist"
+    !query.reconciliationAttemptId ||
+    query.providerCode !== "alipay" ||
+    query.status !== "provider_trade_not_exist" ||
+    query.providerPaymentStatus !== "pending"
   ) {
     throw new Error(
-      "pre-scan Alipay query did not expose provider_trade_not_exist pending semantics",
+      "pre-scan Alipay query did not expose a real TRADE_NOT_EXIST reconciliation projection",
     );
   }
+  setStage("closure");
   const closure = sanitizeProviderEvidence(
     await closePayment(input, token, order),
   );
+  setStage("terminal-state");
   const report = await waitForTerminal(
     input,
     runId,
@@ -472,9 +627,20 @@ async function qrAttempt({
   const attempt = {
     channel: "qr_code:alipay",
     order,
+    machine: {
+      boundary: "installed_machine_ui_cdp",
+      paymentMethod: surface.paymentMethod,
+      providerCode: surface.providerCode,
+      surface: {
+        orderId: surface.orderId,
+        paymentId: surface.paymentId,
+        orderNo: surface.orderNo,
+        route: surface.route,
+      },
+    },
     credential,
     query,
-    closure,
+    closure: { ...closure, providerConfigId: provider.providerConfigId },
     terminal: terminalFromReport(report, order),
   };
   validateUnattendedProviderAttempt(attempt);
@@ -483,12 +649,13 @@ async function qrAttempt({
 
 async function paymentCodeAttempt({
   input,
-  handoff,
+  client,
   token,
   runId,
   machineCode,
-  slot,
   timeoutMs,
+  provider,
+  setStage,
 }) {
   const session = await control(input, "/v1/serial-sessions/start", {
     runId,
@@ -504,13 +671,21 @@ async function paymentCodeAttempt({
     ),
   });
   let order = null;
+  let completedAttempt = null;
   try {
-    const snapshot = await daemon(
-      handoff,
-      "/v1/intents/create-order",
-      orderRequest(slot, "payment_code", runId, "payment-code"),
+    setStage("creation");
+    const surface = await beginMachineUiOrder(
+      client,
+      input,
+      input.fixtureAllocation,
+      "payment_code",
+      timeoutMs,
     );
-    order = orderIdentity(snapshot);
+    order = orderIdentity({
+      ...surface,
+      paymentProviderCode: surface.providerCode,
+    });
+    setStage("customer-code-submission");
     await control(
       input,
       `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/inject`,
@@ -522,26 +697,11 @@ async function paymentCodeAttempt({
         ),
       },
     );
-    const platform = await waitForCondition(
-      () => platformReport(input, runId, machineCode),
-      (report) =>
-        (report?.raw?.paymentCodeAttempts ?? []).some(
-          (entry) =>
-            entry?.orderId === order.orderId &&
-            entry?.paymentId === order.paymentId &&
-            entry?.status === "failed" &&
-            entry?.providerCode === "alipay",
-        ),
-      {
-        timeoutMs,
-        label: `failed Alipay payment-code attempt for ${order.orderNo}`,
-      },
-    );
-    const row = platform.raw.paymentCodeAttempts.find(
-      (entry) =>
-        entry?.orderId === order.orderId &&
-        entry?.paymentId === order.paymentId,
-    );
+    setStage("notification");
+    const row = await paymentCodeAttemptFromApi(input, token, order, timeoutMs);
+    setStage("closure");
+    await cancelVisibleMachineOrder(client, timeoutMs);
+    setStage("terminal-state");
     const terminalReport = await waitForTerminal(
       input,
       runId,
@@ -549,9 +709,21 @@ async function paymentCodeAttempt({
       order,
       timeoutMs,
     );
-    const attempt = {
+    completedAttempt = {
       channel: "payment_code:alipay",
       order,
+      machine: {
+        boundary: "installed_machine_ui_cdp",
+        paymentMethod: surface.paymentMethod,
+        providerCode: surface.providerCode,
+        surface: {
+          orderId: surface.orderId,
+          paymentId: surface.paymentId,
+          orderNo: surface.orderNo,
+          route: surface.route,
+        },
+        scannerPrompt: surface.scannerPrompt,
+      },
       submission: {
         status: row.status,
         providerCode: row.providerCode,
@@ -563,20 +735,33 @@ async function paymentCodeAttempt({
           failureMessage: row.failureMessage,
         }),
       },
+      cleanup: {
+        action: "customer_cancel_order",
+        providerConfigId: provider.providerConfigId,
+        serialSession: null,
+      },
       terminal: terminalFromReport(terminalReport, order),
     };
-    validateUnattendedProviderAttempt(attempt);
-    return attempt;
   } finally {
-    const stopBody = order
-      ? { orderId: order.orderId, paymentId: order.paymentId }
-      : {};
-    await control(
+    setStage("serial-cleanup");
+    const serialCleanup = await control(
       input,
-      `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/stop`,
-      stopBody,
-    ).catch(() => undefined);
+      `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/abort`,
+    );
+    if (serialCleanup?.aborted !== true) {
+      throw new Error(
+        "payment-code serial session abort did not confirm cleanup",
+      );
+    }
+    if (completedAttempt)
+      completedAttempt.cleanup.serialSession = {
+        action: "abort",
+        aborted: true,
+        cleanup: sanitizeProviderEvidence(serialCleanup.cleanup),
+      };
   }
+  validateUnattendedProviderAttempt(completedAttempt);
+  return completedAttempt;
 }
 
 export function validateUnattendedProviderAttempt(attempt) {
@@ -602,11 +787,22 @@ export function validateUnattendedProviderAttempt(attempt) {
   }
   if (attempt.channel === "qr_code:alipay") {
     if (
-      attempt.credential?.present !== true ||
-      attempt.query?.status !== "pending" ||
-      attempt.query?.reconciliationState !== "provider_trade_not_exist" ||
+      attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
+      attempt.machine?.paymentMethod !== "qr_code" ||
+      attempt.machine?.providerCode !== "alipay" ||
+      attempt.machine?.surface?.orderId !== order.orderId ||
+      attempt.machine?.surface?.paymentId !== order.paymentId ||
+      attempt.machine?.surface?.orderNo !== order.orderNo ||
+      !String(attempt.credential?.paymentUrlSha256 ?? "").startsWith(
+        "sha256:",
+      ) ||
+      !attempt.query?.reconciliationAttemptId ||
+      attempt.query?.providerCode !== "alipay" ||
+      attempt.query?.status !== "provider_trade_not_exist" ||
+      attempt.query?.providerPaymentStatus !== "pending" ||
       attempt.closure?.action !== "close_or_reverse_uncertain_payment" ||
       attempt.closure?.handled !== true ||
+      !attempt.closure?.providerConfigId ||
       !["canceled", "expired"].includes(terminal.paymentStatus)
     ) {
       throw new Error(
@@ -617,9 +813,22 @@ export function validateUnattendedProviderAttempt(attempt) {
   }
   if (attempt.channel === "payment_code:alipay") {
     if (
+      attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
+      attempt.machine?.paymentMethod !== "payment_code" ||
+      attempt.machine?.providerCode !== "alipay" ||
+      attempt.machine?.surface?.orderId !== order.orderId ||
+      attempt.machine?.surface?.paymentId !== order.paymentId ||
+      attempt.machine?.surface?.orderNo !== order.orderNo ||
+      !String(attempt.machine?.scannerPrompt ?? "").includes("请出示付款码") ||
       attempt.submission?.status !== "failed" ||
       attempt.submission?.providerCode !== "alipay" ||
       !attempt.submission?.attemptId ||
+      !attempt.submission?.failureCode ||
+      !attempt.submission?.providerStatus ||
+      attempt.cleanup?.action !== "customer_cancel_order" ||
+      !attempt.cleanup?.providerConfigId ||
+      attempt.cleanup?.serialSession?.action !== "abort" ||
+      attempt.cleanup?.serialSession?.aborted !== true ||
       !["failed", "canceled", "expired"].includes(terminal.paymentStatus)
     ) {
       throw new Error(
@@ -638,6 +847,9 @@ export function buildProviderFailureReport({
   diagnostics = [],
   report = {},
 }) {
+  if (!PROVIDER_FAILURE_STAGES.has(stage)) {
+    throw new Error(`payment provider failure stage is invalid: ${stage}`);
+  }
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
@@ -659,17 +871,17 @@ async function diagnosticRetries(context, failedStage) {
     attemptNo += 1
   ) {
     try {
-      const snapshot = await daemon(
-        context.handoff,
-        "/v1/intents/create-order",
-        orderRequest(
-          context.slot,
-          "qr_code",
-          context.runId,
-          `diagnostic-${attemptNo}`,
-        ),
+      const surface = await beginMachineUiOrder(
+        context.client,
+        context.input,
+        context.input.fixtureAllocation,
+        "qr_code",
+        context.timeoutMs,
       );
-      const order = orderIdentity(snapshot);
+      const order = orderIdentity({
+        ...surface,
+        paymentProviderCode: surface.providerCode,
+      });
       const closure = await closePayment(context.input, context.token, order);
       const terminalReport = await waitForTerminal(
         context.input,
@@ -705,14 +917,11 @@ export async function runPaymentProviderGuest(options) {
   const handoff = readJson(options.handoffPath);
   const runId = required(input.runId, "runId");
   const machineCode = required(input.machineCode, "machineCode");
-  const timeoutMs =
-    Number.isInteger(input.paymentProviderFixture?.businessTimeoutMs) &&
-    input.paymentProviderFixture.businessTimeoutMs > 0
-      ? input.paymentProviderFixture.businessTimeoutMs
-      : DEFAULT_TIMEOUT_MS;
-  let stage = "host-local-fixture";
+  const timeoutMs = DEFAULT_TIMEOUT_MS;
+  let stage = "host-preparation";
   let token = null;
-  let slot = null;
+  let client = null;
+  let provider = null;
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
@@ -725,39 +934,49 @@ export async function runPaymentProviderGuest(options) {
     diagnostics: [],
   };
   try {
-    const hostFixture = readHostLocalFixture(input);
+    provider = providerIdentity(input);
     token = await adminToken(input);
-    report.fixture = await importHostLocalFixture(input, token, hostFixture);
+    report.provider = {
+      identity: provider,
+      hostPreparation: input.paymentProvider.hostPreparation,
+    };
     stage = "readiness";
     const readiness = await waitForProviderReadiness(handoff, timeoutMs);
     report.environment = sanitizeProviderEvidence(readiness.environment);
-    stage = "slot";
-    const fixture =
-      input.fixtureAllocation?.[options.fixtureKey ?? "paymentProvider"] ??
-      input.fixtureAllocation?.sale;
-    slot = selectSlot(await daemon(handoff, "/v1/sale-view"), fixture);
-    stage = "qr-creation";
+    client = await connectMachineUi(handoff);
+    await evaluateExpression(client, "location.hash = '#/catalog'");
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    });
+    stage = "creation";
     report.authoritative.attempts.push(
       await qrAttempt({
         input,
-        handoff,
+        client,
         token,
         runId,
         machineCode,
-        slot,
         timeoutMs,
+        provider,
+        setStage: (next) => {
+          stage = next;
+        },
       }),
     );
-    stage = "payment-code-submission";
+    stage = "creation";
     report.authoritative.attempts.push(
       await paymentCodeAttempt({
         input,
-        handoff,
+        client,
         token,
         runId,
         machineCode,
-        slot,
         timeoutMs,
+        provider,
+        setStage: (next) => {
+          stage = next;
+        },
       }),
     );
     report.authoritative.ok = true;
@@ -765,9 +984,15 @@ export async function runPaymentProviderGuest(options) {
     writeJson(options.outPath, report);
     return report;
   } catch (error) {
-    if (token && slot) {
+    if (token && client) {
+      report.cleanupBeforeDiagnostics =
+        await cleanAuthoritativeOrderBeforeDiagnostics(
+          client,
+          handoff,
+          timeoutMs,
+        );
       report.diagnostics = await diagnosticRetries(
-        { input, handoff, token, runId, machineCode, slot, timeoutMs },
+        { input, client, token, runId, machineCode, timeoutMs },
         stage,
       );
     }
@@ -780,6 +1005,8 @@ export async function runPaymentProviderGuest(options) {
     });
     writeJson(options.outPath, failed);
     throw error;
+  } finally {
+    await client?.close().catch(() => undefined);
   }
 }
 

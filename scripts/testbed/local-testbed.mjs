@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 
 import { allocateFullWorkflowFixtures } from "./full-workflow-fixtures.mjs";
 import { paymentMockCreateGatePaths } from "./mock-payment-create-gate.mjs";
+import { validateInstallationOwnedAlipaySandboxFixture } from "./payment-provider-guest-full.mjs";
 
 const FIXTURE_PATH = new URL(
   "./fixtures/local-testbed-catalog.json",
@@ -93,6 +94,8 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
 ]);
 const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
 const HOST_SIMULATOR_CACHE_DIRECTORY = "host-lower-controller-sim";
+const INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV =
+  "VEM_LOCAL_TESTBED_ALIPAY_SANDBOX_FIXTURE";
 const LOWER_CONTROLLER_SIM_CACHE_DIRECTORY_NAME = /^[a-f0-9]{64}$/;
 const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
   "Cargo.lock",
@@ -997,6 +1000,104 @@ async function requestJson(baseUrl, path, options = {}) {
   return payload.data;
 }
 
+function installationFixturePath(
+  fixturePath = process.env[INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV],
+) {
+  if (typeof fixturePath !== "string" || fixturePath.trim() === "") {
+    throw new Error(
+      `${INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV} must identify the host-owned Alipay sandbox fixture`,
+    );
+  }
+  return absolute(fixturePath, INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV);
+}
+
+function validateAlipayFixtureChannels(fixture) {
+  const channels = fixture?.channelPolicy?.channels;
+  if (
+    !Array.isArray(channels) ||
+    !["qr_code:alipay", "payment_code:alipay"].every((channelKey) =>
+      channels.some(
+        (channel) =>
+          channel?.channelKey === channelKey && channel?.enabled === true,
+      ),
+    )
+  ) {
+    throw new Error(
+      "installation-owned Alipay fixture must enable qr_code:alipay and payment_code:alipay",
+    );
+  }
+}
+
+export async function prepareInstallationOwnedPaymentProvider({
+  baseUrl,
+  fixturePath,
+  readFixture = async (path) => JSON.parse(await readFile(path, "utf8")),
+  request = requestJson,
+}) {
+  const resolvedFixturePath = installationFixturePath(fixturePath);
+  const fixture = validateInstallationOwnedAlipaySandboxFixture(
+    await readFixture(resolvedFixturePath),
+  );
+  validateAlipayFixtureChannels(fixture);
+  const login = await request(baseUrl, "/auth/login", {
+    method: "POST",
+    body: {
+      username: LOCAL_TESTBED_ADMIN_USERNAME,
+      password: LOCAL_TESTBED_ADMIN_PASSWORD,
+    },
+  });
+  const token = required(
+    login?.accessToken,
+    "host preparation admin access token",
+  );
+  const config = await request(baseUrl, "/payments/provider-configs", {
+    method: "POST",
+    token,
+    body: fixture.providerConfig,
+  });
+  await request(baseUrl, "/payments/channel-policy", {
+    method: "PUT",
+    token,
+    body: fixture.channelPolicy,
+  });
+  const publicConfig = fixture.providerConfig.publicConfigJson;
+  const providerConfigId = required(config?.id, "Alipay provider config id");
+  const configured = await request(baseUrl, "/payments/provider-configs", {
+    token,
+  });
+  const projection = Array.isArray(configured)
+    ? configured.find((entry) => entry?.id === providerConfigId)
+    : null;
+  if (
+    projection?.providerCode !== "alipay" ||
+    projection?.publicConfigJson?.mode !== publicConfig.mode ||
+    projection?.publicConfigJson?.gatewayUrl !== publicConfig.gatewayUrl ||
+    projection?.publicConfigJson?.keyType !== publicConfig.keyType
+  ) {
+    throw new Error(
+      "host-side Alipay provider configuration preflight did not match the imported public identity",
+    );
+  }
+  return {
+    identity: {
+      providerCode: "alipay",
+      providerConfigId,
+      appId: required(fixture.providerConfig.appId, "Alipay appId"),
+      merchantNo: required(
+        fixture.providerConfig.merchantNo,
+        "Alipay merchantNo",
+      ),
+      mode: publicConfig.mode,
+      gatewayUrl: publicConfig.gatewayUrl,
+      keyType: publicConfig.keyType,
+    },
+    hostPreparation: {
+      source: "host_installation_fixture",
+      preflight: "configured",
+    },
+  };
+}
+
 const TESTBED_TRY_ON_SILHOUETTE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAEAAAACACAYAAAC7gW9qAAAEt0lEQVR4AexYPU9UQRSdeYhYWtlK4u+w0iCsmlBbgJWNEtZQGiM/gITlo6IC1NhqjEuM/gUtsJAfgIn2oIUu45y3Edbd2Xlv5s28nRnuZoe8fXPvueeee3bnhYyd8xcJUJcB3t1butqeW3y7N98UuoUYxNbFy7sD2jMLE3tzzWfZ+J8DzvmdosYQg1jkILcovuq+VwHa84+n+JWxA8bZMmP8Eiv9krEyB7nAKJ1mEehFgL37zUlYmTPxXnKalMv2PQkMYAHTFkSX51QAWBbWZUJ8hZV1hU32ciyJCWzUMMktinUmAKwKy5rbvYjiv30/XwsnAmAysKqkWsXuMr3UO/9aoGap6IKgygK05xeXulMvqOR6W/5I5rUr4lYSAAQ44ysVOVinozY4WAPIRGsBUBgEJMZI3+AALrYkrARAQRS2Leo6D1zAyQbXWAAUQkGbYj5zwAncTGsYCYACKGRapK54cANHk3qlBQAwCpiAjyIWHMF1WO3++6UEACCA+5ND/Qyu4FyGX6EAAAJgGbCQYsAZ3Is4aQUAAICKQELdB3f0oOM3VAAkAkCXHMMeekAvw7gqBUACEoclxXYfvaAnFe8BARCIBFVwzPfQE3rr72FAAC749f6gVD6rehsQ4CLjD+U/NI5Safq0DyGO8t5Ob3QvBgS4sbv6TQj+tLudzl/0hN76OxoQAAEz1y6vCyY+4TqFhV7Qk6oXpQB8efkk6/AHQoiOKimme+gBvaAnFW+lAAicftH6zBjfZNG/+Ga3F3UjQwVA+Ji48EQqeIjrGBe4owcdd60At56vHLOML+gAgt6T3PMeNCS1AiCvsd16zQR7g+uoluSccy8gnRXs59ui03lU7tlArOcJPv8ItlEI33PmF8WWEqDxcuMQ56gOTB41H6Z31pq6GBd707utRdTSYYGr6sxX5ZQSAIk4R2Vh9bOBEPudiV+znMkvC4I9LtRALenIfVUZcARX1Z7qXmkBcI7iPJW/rP89G8iC38d/s6m7W1s/VQV83EMt1ETtXnxwA0dw7b2vuy4tAEC652nPs4Fgx4JnUzdfrf3Afp0LNVFbeu74rK7+zD+LO7syEgBpOFel0oeCsRNpx9nb26tfcH8UC7XBAVzACdxMeRgLkJ+r8nyVyjflD9JH04Ku43MOgjWZ5JRzY2YvYwEA35DPBo3dVvFxhOAaFriAk02pzCYppRwSIKVp2vRCDrBRLaUcckBK07TphRxgo1rIOabcyAGmiqUWTw5IbaKm/ZADTBVLLZ4ckNpETfshB5gqllo8OSC1iZr2Qw4wVSy1eHJA7BOtyp8cUFXB2PPJAbFPsCp/ckBVBWPPJwfEPsGq/MkBVRWMPZ8cEPsEq/InB1RVMPZ8ckBsE3TNlxzgWtHY8MgBsU3MNV9ygGtFY8MjB8Q2Mdd8yQGuFY0NjxwQ28Rc8yUHuFY0NjxyQOgT882PHOBb4dDxyQGhT8g3P3KAb4VDxycHhD6hHzzIwf4Vjh0fHJAaBOqmw85oG7FQ6tHDghtInXzIQfUrXho9Zw7YGanxX0u1wI6F8A1Qd94JIBvhUPHJweEPiHf/MgBvhUOHZ8cMOoJjbr+XwAAAP//Umx9GAAAAAZJREFUAwAlVYwQwXgfGgAAAABJRU5ErkJggg==";
 
@@ -1590,11 +1691,15 @@ async function reconstruct(options) {
       hostSimulator.binaryPath,
     );
     let seeded;
+    let paymentProvider;
     try {
       seeded = await seedThroughSupportedApis({
         baseUrl: apiBaseUrl,
         fixture,
         hostPrivateAddress: options.hostPrivateAddress,
+      });
+      paymentProvider = await prepareInstallationOwnedPaymentProvider({
+        baseUrl: apiBaseUrl,
       });
     } catch (error) {
       throw await serviceApiFailure(error);
@@ -1628,6 +1733,7 @@ async function reconstruct(options) {
       fastSale: {
         paymentOptionKey: "mock:mock",
       },
+      paymentProvider,
       fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
       claimCode: seeded.claim.claimCode,
       machineCode: seeded.machine.code,

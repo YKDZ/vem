@@ -32,6 +32,7 @@ import {
   lowerControllerSimSourceFingerprint,
   parseOptions,
   paymentMockCreateGatePaths,
+  prepareInstallationOwnedPaymentProvider,
   refreshGuestInputForRun,
   seedThroughSupportedApis,
   validateRefreshGuestInput,
@@ -305,6 +306,77 @@ async function publishCurrentManifest(root) {
 }
 
 describe("local testbed orchestration", () => {
+  it("imports the installation-owned Alipay fixture on the host without returning secrets", async () => {
+    const calls = [];
+    const prepared = await prepareInstallationOwnedPaymentProvider({
+      baseUrl: "http://127.0.0.1:26849/api",
+      fixturePath: "/srv/vem/alipay-sandbox.fixture.json",
+      readFixture: async () => ({
+        schemaVersion: "vem-installation-alipay-sandbox-fixture/v1",
+        ownership: "host-installation",
+        target: "local-service-api",
+        providerConfig: {
+          providerCode: "alipay",
+          appId: "9021000163629927",
+          merchantNo: "2088721101045878",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+            keyType: "PKCS1",
+          },
+          sensitiveConfigJson: { privateKeyPem: "host-only" },
+        },
+        channelPolicy: {
+          channels: [
+            { channelKey: "qr_code:alipay", enabled: true },
+            { channelKey: "payment_code:alipay", enabled: true },
+          ],
+        },
+      }),
+      request: async (_baseUrl, path, options = {}) => {
+        calls.push({ path, body: options.body });
+        if (path === "/auth/login") return { accessToken: "host-token" };
+        if (
+          path === "/payments/provider-configs" &&
+          options.method === "POST"
+        ) {
+          return { id: "config-1" };
+        }
+        if (path === "/payments/provider-configs") {
+          return [
+            {
+              id: "config-1",
+              providerCode: "alipay",
+              publicConfigJson: {
+                mode: "sandbox",
+                gatewayUrl:
+                  "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+                keyType: "PKCS1",
+              },
+            },
+          ];
+        }
+        return {};
+      },
+    });
+    assert.deepEqual(prepared, {
+      identity: {
+        providerCode: "alipay",
+        providerConfigId: "config-1",
+        appId: "9021000163629927",
+        merchantNo: "2088721101045878",
+        mode: "sandbox",
+        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        keyType: "PKCS1",
+      },
+      hostPreparation: {
+        source: "host_installation_fixture",
+        preflight: "configured",
+      },
+    });
+    assert.equal(calls[1].body.sensitiveConfigJson.privateKeyPem, "host-only");
+    assert.equal(JSON.stringify(prepared).includes("host-only"), false);
+  });
   it("plans a non-destructive host runtime refresh from the committed workspace", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
