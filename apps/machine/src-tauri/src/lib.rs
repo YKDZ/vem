@@ -131,6 +131,14 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_page_load(|_webview, _payload| {
+            #[cfg(windows)]
+            if _payload.event() == tauri::webview::PageLoadEvent::Finished {
+                if let Some(window) = _webview.app_handle().get_webview_window("main") {
+                    enforce_kiosk_window(&window).expect("failed to enforce kiosk window bounds");
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
             play_machine_audio,
