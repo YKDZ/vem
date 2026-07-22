@@ -4484,6 +4484,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const providerStatus = result.status;
+    const reconciliationStatus = result.reconciliationState ?? providerStatus;
     const isTerminal =
       providerStatus === "succeeded" || providerStatus === "failed";
 
@@ -4504,9 +4505,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .update(paymentReconciliationAttempts)
         .set({
           // oxlint-disable-next-line no-unsafe-type-assertion
-          status: providerStatus as "pending" | "processing",
+          status: reconciliationStatus,
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
+          errorCode: result.failedReason ?? null,
           ...rawPayloadFields,
           finishedAt: new Date(),
         })
@@ -4523,7 +4525,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return {
         status: providerStatus,
         reconciled: false,
-        reason: `provider_${providerStatus}`,
+        reason: result.reconciliationState ?? `provider_${providerStatus}`,
       };
     }
 

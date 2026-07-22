@@ -16,12 +16,13 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
-const INVALID_ALIPAY_CUSTOMER_CODE = "000000000000000000\\r\\n";
+export const INVALID_ALIPAY_CUSTOMER_CODE = "000000000000000000\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
   "readiness",
@@ -647,31 +648,44 @@ async function qrAttempt({
   return attempt;
 }
 
+export function buildPaymentCodeSubmission(row) {
+  return {
+    status: row.status,
+    providerCode: row.providerCode,
+    attemptId: row.id,
+    failureCode: row.failureCode ?? null,
+    providerStatus: row.providerStatus ?? null,
+    evidence: sanitizeProviderEvidence({
+      providerStatus: row.providerStatus,
+      failureCode: row.failureCode,
+      failureMessage: row.failureMessage,
+    }),
+  };
+}
+
 async function paymentCodeAttempt({
   input,
+  handoff,
+  handoffPath,
   client,
   token,
-  runId,
-  machineCode,
   timeoutMs,
   provider,
   setStage,
 }) {
-  const session = await control(input, "/v1/serial-sessions/start", {
-    runId,
-    machineCode,
-    saleCorrelationId: `sale-correlation://payment-provider/${crypto.randomUUID()}`,
-    targetIdentity: required(
-      input.hostControlPlane?.targetIdentity,
-      "hostControlPlane.targetIdentity",
+  const { replacement: session } = await replaceSerialSessionAndUpdateHandoff({
+    guestInput: input,
+    handoff,
+    handoffPath,
+    sessionId: required(
+      handoff?.commissioningSerialSession?.sessionId,
+      "handoff commissioning serial session id",
     ),
-    runtimeBase: required(
-      input.hostControlPlane?.runtimeBaseIdentity,
-      "hostControlPlane.runtimeBaseIdentity",
-    ),
+    control,
   });
   let order = null;
   let completedAttempt = null;
+  let authoritativeError = null;
   try {
     setStage("creation");
     const surface = await beginMachineUiOrder(
@@ -724,17 +738,7 @@ async function paymentCodeAttempt({
         },
         scannerPrompt: surface.scannerPrompt,
       },
-      submission: {
-        status: row.status,
-        providerCode: row.providerCode,
-        attemptId: row.id,
-        failureCode: row.failureCode ?? null,
-        evidence: sanitizeProviderEvidence({
-          providerStatus: row.providerStatus,
-          failureCode: row.failureCode,
-          failureMessage: row.failureMessage,
-        }),
-      },
+      submission: buildPaymentCodeSubmission(row),
       cleanup: {
         action: "customer_cancel_order",
         providerConfigId: provider.providerConfigId,
@@ -742,23 +746,30 @@ async function paymentCodeAttempt({
       },
       terminal: terminalFromReport(terminalReport, order),
     };
+  } catch (error) {
+    authoritativeError = error;
+    throw error;
   } finally {
-    setStage("serial-cleanup");
-    const serialCleanup = await control(
-      input,
-      `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/abort`,
-    );
-    if (serialCleanup?.aborted !== true) {
-      throw new Error(
-        "payment-code serial session abort did not confirm cleanup",
+    try {
+      setStage("serial-cleanup");
+      const serialCleanup = await control(
+        input,
+        `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/abort`,
       );
+      if (serialCleanup?.aborted !== true) {
+        throw new Error(
+          "payment-code serial session abort did not confirm cleanup",
+        );
+      }
+      if (completedAttempt)
+        completedAttempt.cleanup.serialSession = {
+          action: "abort",
+          aborted: true,
+          cleanup: sanitizeProviderEvidence(serialCleanup.cleanup),
+        };
+    } catch (cleanupError) {
+      if (!authoritativeError) throw cleanupError;
     }
-    if (completedAttempt)
-      completedAttempt.cleanup.serialSession = {
-        action: "abort",
-        aborted: true,
-        cleanup: sanitizeProviderEvidence(serialCleanup.cleanup),
-      };
   }
   validateUnattendedProviderAttempt(completedAttempt);
   return completedAttempt;
@@ -851,16 +862,39 @@ export function buildProviderFailureReport({
     throw new Error(`payment provider failure stage is invalid: ${stage}`);
   }
   return {
+    ...report,
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     runId,
     stage,
     error: { message: boundedText(errorMessage(error)) },
-    ...report,
     diagnostics: diagnostics
       .slice(0, MAX_DIAGNOSTIC_ATTEMPTS)
       .map(sanitizeProviderEvidence),
   };
+}
+
+export async function collectPaymentProviderFailureEvidence({
+  cleanAuthoritativeOrder,
+  diagnosticRetries: collectDiagnostics,
+}) {
+  let cleanupBeforeDiagnostics;
+  try {
+    cleanupBeforeDiagnostics = await cleanAuthoritativeOrder();
+  } catch (error) {
+    cleanupBeforeDiagnostics = {
+      ok: false,
+      error: { message: boundedText(errorMessage(error)) },
+    };
+  }
+
+  let diagnostics;
+  try {
+    diagnostics = await collectDiagnostics();
+  } catch (error) {
+    diagnostics = [{ error: { message: boundedText(errorMessage(error)) } }];
+  }
+  return { cleanupBeforeDiagnostics, diagnostics };
 }
 
 async function diagnosticRetries(context, failedStage) {
@@ -968,10 +1002,10 @@ export async function runPaymentProviderGuest(options) {
     report.authoritative.attempts.push(
       await paymentCodeAttempt({
         input,
+        handoff,
+        handoffPath: options.handoffPath,
         client,
         token,
-        runId,
-        machineCode,
         timeoutMs,
         provider,
         setStage: (next) => {
@@ -985,16 +1019,17 @@ export async function runPaymentProviderGuest(options) {
     return report;
   } catch (error) {
     if (token && client) {
-      report.cleanupBeforeDiagnostics =
-        await cleanAuthoritativeOrderBeforeDiagnostics(
-          client,
-          handoff,
-          timeoutMs,
-        );
-      report.diagnostics = await diagnosticRetries(
-        { input, client, token, runId, machineCode, timeoutMs },
-        stage,
-      );
+      const recovery = await collectPaymentProviderFailureEvidence({
+        cleanAuthoritativeOrder: () =>
+          cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs),
+        diagnosticRetries: () =>
+          diagnosticRetries(
+            { input, client, token, runId, machineCode, timeoutMs },
+            stage,
+          ),
+      });
+      report.cleanupBeforeDiagnostics = recovery.cleanupBeforeDiagnostics;
+      report.diagnostics = recovery.diagnostics;
     }
     const failed = buildProviderFailureReport({
       runId,

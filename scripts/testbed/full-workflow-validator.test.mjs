@@ -10,6 +10,7 @@ import {
   buildFullWorkflowAggregate,
   validateBusinessCheckReport,
 } from "./full-workflow-validator.mjs";
+import { buildPaymentCodeSubmission } from "./payment-provider-guest-full.mjs";
 
 function saleReport() {
   return {
@@ -351,13 +352,13 @@ function paymentProviderReport() {
             },
             scannerPrompt: "请出示付款码",
           },
-          submission: {
+          submission: buildPaymentCodeSubmission({
+            id: "attempt-1",
             status: "failed",
             providerCode: "alipay",
-            attemptId: "attempt-1",
             failureCode: "ACQ.INVALID_AUTH_CODE",
             providerStatus: "FAILED",
-          },
+          }),
           cleanup: {
             action: "customer_cancel_order",
             providerConfigId: "provider-config-1",
@@ -828,6 +829,38 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("paymentProvider"),
         paid,
+        "/reports/payment-provider.json",
+      ).status,
+      "failed",
+    );
+    const missingTerminal = paymentProviderReport();
+    missingTerminal.authoritative.attempts[1].terminal = {
+      reservedInventory: false,
+    };
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        missingTerminal,
+        "/reports/payment-provider.json",
+      ).status,
+      "failed",
+    );
+    const reserved = paymentProviderReport();
+    reserved.authoritative.attempts[0].terminal.reservedInventory = true;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        reserved,
+        "/reports/payment-provider.json",
+      ).status,
+      "failed",
+    );
+    const incompleteCleanup = paymentProviderReport();
+    incompleteCleanup.authoritative.attempts[1].cleanup.serialSession.aborted = false;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        incompleteCleanup,
         "/reports/payment-provider.json",
       ).status,
       "failed",

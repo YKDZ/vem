@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  INVALID_ALIPAY_CUSTOMER_CODE,
+  buildPaymentCodeSubmission,
   buildProviderFailureReport,
+  collectPaymentProviderFailureEvidence,
   parsePaymentProviderGuestArgs,
   sanitizeProviderEvidence,
   validateInstallationOwnedAlipaySandboxFixture,
@@ -10,6 +13,37 @@ import {
 } from "./payment-provider-guest-full.mjs";
 
 describe("payment provider guest full", () => {
+  it("submits the invalid Alipay customer code with real CRLF bytes", () => {
+    const bytes = Buffer.from(INVALID_ALIPAY_CUSTOMER_CODE, "utf8");
+    assert.deepEqual([...bytes.subarray(-2)], [0x0d, 0x0a]);
+    assert.equal(bytes.length, 20);
+  });
+
+  it("places the provider status at the payment-code submission contract path", () => {
+    assert.deepEqual(
+      buildPaymentCodeSubmission({
+        id: "attempt-1",
+        status: "failed",
+        providerCode: "alipay",
+        providerStatus: "FAILED",
+        failureCode: "ACQ.INVALID_AUTH_CODE",
+        failureMessage: "invalid customer code",
+      }),
+      {
+        status: "failed",
+        providerCode: "alipay",
+        attemptId: "attempt-1",
+        failureCode: "ACQ.INVALID_AUTH_CODE",
+        providerStatus: "FAILED",
+        evidence: {
+          providerStatus: "FAILED",
+          failureCode: "ACQ.INVALID_AUTH_CODE",
+          failureMessage: "invalid customer code",
+        },
+      },
+    );
+  });
+
   it("parses the existing full-mode guest runner contract", () => {
     const options = parsePaymentProviderGuestArgs([
       "--mode",
@@ -142,6 +176,40 @@ describe("payment provider guest full", () => {
           error: new Error("provider unavailable"),
         }),
       /failure stage is invalid/,
+    );
+  });
+
+  it("preserves the authoritative provider failure when recovery evidence fails", async () => {
+    const recovery = await collectPaymentProviderFailureEvidence({
+      cleanAuthoritativeOrder: async () => {
+        throw new Error("cleanup control plane unavailable");
+      },
+      diagnosticRetries: async () => {
+        throw new Error("diagnostic UI unavailable");
+      },
+    });
+    const failure = buildProviderFailureReport({
+      runId: "RUN-1",
+      stage: "query",
+      error: new Error("authoritative provider query rejected"),
+      diagnostics: recovery.diagnostics,
+      report: {
+        cleanupBeforeDiagnostics: recovery.cleanupBeforeDiagnostics,
+        error: { message: "must not replace the original failure" },
+      },
+    });
+
+    assert.equal(
+      failure.error.message,
+      "authoritative provider query rejected",
+    );
+    assert.match(
+      failure.cleanupBeforeDiagnostics.error.message,
+      /cleanup control plane/,
+    );
+    assert.match(
+      failure.diagnostics[0].error.message,
+      /diagnostic UI unavailable/,
     );
   });
 

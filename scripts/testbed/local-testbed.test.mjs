@@ -33,6 +33,7 @@ import {
   parseOptions,
   paymentMockCreateGatePaths,
   prepareInstallationOwnedPaymentProvider,
+  reprepareGuestInputForRefresh,
   refreshGuestInputForRun,
   seedThroughSupportedApis,
   validateRefreshGuestInput,
@@ -415,18 +416,68 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("refreshes only the per-run guest identity", () => {
+  it("refreshes the per-run guest identity and host-preflighted provider identity", () => {
     const previous = {
       runId: "RUN-PREVIOUS-FULL",
       machineCode: "VEM-TESTBED-LOCAL",
       claimCode: "ABCD-EFGH",
       fixtureAllocation: { sale: { slotCode: "A1" } },
       hostControlPlane: { token: "retained-token" },
+      paymentProvider: {
+        identity: { providerCode: "alipay", providerConfigId: "stale-config" },
+        hostPreparation: {
+          source: "host_installation_fixture",
+          preflight: "configured",
+        },
+      },
     };
-    assert.deepEqual(refreshGuestInputForRun(previous, "RUN-CURRENT-FAST"), {
-      ...previous,
+    const paymentProvider = {
+      identity: { providerCode: "alipay", providerConfigId: "fresh-config" },
+      hostPreparation: {
+        source: "host_installation_fixture",
+        preflight: "configured",
+      },
+    };
+    assert.deepEqual(
+      refreshGuestInputForRun(previous, "RUN-CURRENT-FAST", paymentProvider),
+      {
+        ...previous,
+        runId: "RUN-CURRENT-FAST",
+        paymentProvider,
+      },
+    );
+  });
+
+  it("reimports the host-owned payment fixture before refreshing guest identity", async () => {
+    const preparePaymentProvider = async ({ baseUrl }) => {
+      assert.equal(baseUrl, "http://127.0.0.1:26849/api");
+      return {
+        identity: { providerCode: "alipay", providerConfigId: "fresh-config" },
+        hostPreparation: {
+          source: "host_installation_fixture",
+          preflight: "configured",
+        },
+      };
+    };
+    const refreshed = await reprepareGuestInputForRefresh({
+      input: {
+        runId: "RUN-PREVIOUS-FULL",
+        paymentProvider: {
+          identity: {
+            providerCode: "alipay",
+            providerConfigId: "stale-config",
+          },
+        },
+      },
       runId: "RUN-CURRENT-FAST",
+      baseUrl: "http://127.0.0.1:26849/api",
+      preparePaymentProvider,
     });
+    assert.equal(refreshed.runId, "RUN-CURRENT-FAST");
+    assert.equal(
+      refreshed.paymentProvider.identity.providerConfigId,
+      "fresh-config",
+    );
   });
 
   it("requires refresh to retain the existing guest identity and control-plane token", () => {

@@ -1568,6 +1568,57 @@ describe("PaymentsService", () => {
       );
     });
 
+    it("persists Alipay TRADE_NOT_EXIST as a reusable reconciliation outcome", async () => {
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-trade-not-exist-001",
+        paymentNo: "PAY-TRADE-NOT-EXIST001",
+      });
+      mockManualAttemptCount(db);
+      mockManualAttemptInsert(db);
+      const attemptUpdates: Record<string, unknown>[] = [];
+      db.update.mockImplementation(() => ({
+        set: vi.fn((values) => {
+          attemptUpdates.push(values);
+          return { where: vi.fn().mockResolvedValue([]) };
+        }),
+      }));
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({
+            queryPayment: vi.fn().mockResolvedValue({
+              status: "pending",
+              providerTradeNo: null,
+              failedReason: "ACQ.TRADE_NOT_EXIST",
+              reconciliationState: "provider_trade_not_exist",
+              rawPayload: { sub_code: "ACQ.TRADE_NOT_EXIST" },
+            }),
+          }),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-trade-not-exist-001",
+          "admin-6",
+          "operator verifies pre-scan Alipay trade absence",
+        ),
+      ).resolves.toEqual({
+        status: "pending",
+        reconciled: false,
+        reason: "provider_trade_not_exist",
+      });
+
+      expect(attemptUpdates).toContainEqual(
+        expect.objectContaining({
+          status: "provider_trade_not_exist",
+          providerPaymentStatus: "pending",
+          errorCode: "ACQ.TRADE_NOT_EXIST",
+        }),
+      );
+    });
+
     it("queries unknown payments instead of treating them as terminal", async () => {
       const db = makeDb();
       mockManualPaymentSelect(db, {

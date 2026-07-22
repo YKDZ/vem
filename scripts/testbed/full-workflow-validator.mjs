@@ -384,10 +384,9 @@ function validatePaymentProviderTrack(report, reportPath) {
   );
   const terminalClean = (attempt) =>
     attempt?.terminal?.reservedInventory === false &&
-    !["succeeded", "paid", "fulfilled"].includes(
+    ["failed", "canceled", "expired"].includes(
       attempt?.terminal?.paymentStatus,
-    ) &&
-    !["paid", "fulfilled"].includes(attempt?.terminal?.paymentState);
+    );
   const qrValid =
     qr?.order?.providerCode === "alipay" &&
     qr?.machine?.boundary === "installed_machine_ui_cdp" &&
