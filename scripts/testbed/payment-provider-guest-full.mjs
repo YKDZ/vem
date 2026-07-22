@@ -23,6 +23,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
 const MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS = 3;
+const PAYMENT_CODE_CLEANUP_TIMEOUT_MS = 180_000;
 export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
@@ -1137,7 +1138,7 @@ export async function runPaymentProviderGuest(options) {
         await cleanAuthoritativeOrderBeforeDiagnostics(
           client,
           readJson(options.handoffPath),
-          timeoutMs * 3,
+          PAYMENT_CODE_CLEANUP_TIMEOUT_MS,
         );
         stage = "creation";
       }
