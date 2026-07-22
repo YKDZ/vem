@@ -57,6 +57,7 @@ function matchesColor(
 export type VariantRecommendation = {
   variant: MachineCatalogVariantCandidate | null;
   score: number;
+  sizeMatched: boolean;
 };
 
 /**
@@ -69,10 +70,10 @@ export function recommendVariant(
   profile?: VisionProfile | null,
 ): VariantRecommendation {
   const fallback = defaultVariant(variants);
-  if (!fallback) return { variant: null, score: 0 };
+  if (!fallback) return { variant: null, score: 0, sizeMatched: false };
   const saleableVariants = variants.filter(variantIsSaleable);
   if (saleableVariants.length === 0) {
-    return { variant: fallback, score: 0 };
+    return { variant: fallback, score: 0, sizeMatched: false };
   }
 
   const inferredSize = inferSize(
@@ -93,6 +94,7 @@ export function recommendVariant(
   return {
     variant: colorMatch ?? scopedFallback,
     score: (hasSizeMatch ? 2 : 0) + (colorMatch ? 1 : 0),
+    sizeMatched: hasSizeMatch,
   };
 }
 

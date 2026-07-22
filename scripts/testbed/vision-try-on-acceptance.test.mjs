@@ -16,6 +16,7 @@ import {
   stopVisionChild,
   validateRecommendationProjection,
   validateRecommendationPresentation,
+  validateSizeControlPresentation,
   validateTryOnPresentation,
   validateVisionInstalledBinding,
   validateVisionProtocolEvidence,
@@ -115,6 +116,33 @@ describe("vision try-on acceptance script", () => {
       source,
       /task\.State -eq 'Running'\) \{ throw 'Vision scheduled task is still running before start'/,
     );
+  });
+
+  it("reestablishes automatic recommendation before Vision degradation and validates detail screenshots", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /stage = "reestablish-automatic-recommendation"[\s\S]*waitForRecommendationPresentation\([\s\S]*"automatic"[\s\S]*stage = "stop-real-vision-runtime"/,
+    );
+    assert.match(
+      source,
+      /const degradedDaemon = await waitForVisionDegradation[\s\S]*waitForRecommendationPresentation\([\s\S]*"vision_unavailable"[\s\S]*ordinaryVariantId/,
+    );
+    for (const label of [
+      "automatic-recommendation-detail",
+      "manual-size-detail",
+      "vision-degraded-product",
+    ]) {
+      assert.match(
+        source,
+        new RegExp(
+          `captureCheckpoint\\(client, "${label}", \\{[\\s\\S]*validatePng: true`,
+        ),
+      );
+    }
   });
 
   it("accepts only full mode with absolute Windows inputs", () => {
@@ -1063,6 +1091,45 @@ describe("vision try-on acceptance script", () => {
           phase: "manual",
         }),
       /must not retain recommendation styling/,
+    );
+  });
+
+  it("requires 1080x1920 visible, bounded size controls without overflow", () => {
+    assert.deepEqual(
+      validateSizeControlPresentation({
+        viewport: { width: 1080, height: 1920 },
+        horizontalOverflow: false,
+        sizeControlsOverflow: false,
+        sizeOptions: [
+          {
+            size: "M",
+            visible: true,
+            bounds: { left: 120, top: 1100, right: 300, bottom: 1180 },
+          },
+          {
+            size: "L",
+            visible: true,
+            bounds: { left: 320, top: 1100, right: 500, bottom: 1180 },
+          },
+        ],
+      }),
+      { viewport: { width: 1080, height: 1920 }, sizeOptionCount: 2 },
+    );
+    assert.throws(
+      () =>
+        validateSizeControlPresentation({
+          viewport: { width: 1080, height: 1920 },
+          horizontalOverflow: false,
+          sizeControlsOverflow: true,
+          sizeOptions: [
+            {
+              size: "L",
+              visible: true,
+              bounds: { left: 960, top: 1100, right: 1100, bottom: 1180 },
+            },
+          ],
+        }),
+      /overflow|viewport/,
     );
   });
 

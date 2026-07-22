@@ -1382,6 +1382,187 @@ describe("sale-start capability UI flow", () => {
     );
   });
 
+  it("keeps a saleable manual variant through same-product catalog snapshots and reconnect refresh", async () => {
+    const mediumItem = makeCatalogItem();
+    const largeItem: MachineCatalogItem = {
+      ...mediumItem,
+      slotId: "550e8400-e29b-41d4-a716-446655440021",
+      slotDisplayLabel: "A2",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      slotCandidates: [
+        {
+          ...mediumItem.slotCandidates[0],
+          slotId: "550e8400-e29b-41d4-a716-446655440021",
+          slotDisplayLabel: "A2",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+          variantId: "550e8400-e29b-41d4-a716-446655440023",
+          sku: "TEE-BASIC-L-WHITE",
+          size: "L",
+          color: "白色",
+        },
+      ],
+      variantCandidates: [],
+    };
+    const initialSnapshot = {
+      items: [mediumItem, largeItem],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-07-22T10:00:00Z",
+    };
+    const refreshedSnapshot = {
+      ...initialSnapshot,
+      source: "daemon_reconnect",
+      lastUpdatedAt: "2026-07-22T10:01:00Z",
+    };
+    useCatalogStore().applySnapshot(initialSnapshot);
+    routeParams.catalogKey = mediumItem.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+    requireButtonByText(host, "L", "exact").click();
+    await nextTick();
+    expect(
+      requireElement<HTMLElement>(
+        host,
+        '[data-test="product-detail-page"]',
+      ).getAttribute("data-variant-id"),
+    ).toBe(largeItem.variantId);
+
+    useCatalogStore().applySnapshot({
+      ...initialSnapshot,
+      lastUpdatedAt: "2026-07-22T10:00:30Z",
+    });
+    await nextTick();
+    expect(
+      requireElement<HTMLElement>(
+        host,
+        '[data-test="product-detail-page"]',
+      ).getAttribute("data-variant-id"),
+    ).toBe(largeItem.variantId);
+
+    getSaleViewMock.mockResolvedValue(refreshedSnapshot);
+    await useCatalogStore().refresh();
+    await nextTick();
+    expect(
+      requireElement<HTMLElement>(
+        host,
+        '[data-test="product-detail-page"]',
+      ).getAttribute("data-variant-id"),
+    ).toBe(largeItem.variantId);
+  });
+
+  it("styles a recommendation only when Vision matches an available size", async () => {
+    const mediumItem = makeCatalogItem();
+    const largeItem: MachineCatalogItem = {
+      ...mediumItem,
+      slotId: "550e8400-e29b-41d4-a716-446655440021",
+      slotDisplayLabel: "A2",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-BLUE",
+      size: "L",
+      color: "蓝色",
+      slotCandidates: [
+        {
+          ...mediumItem.slotCandidates[0],
+          slotId: "550e8400-e29b-41d4-a716-446655440021",
+          slotDisplayLabel: "A2",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+          variantId: "550e8400-e29b-41d4-a716-446655440023",
+          sku: "TEE-BASIC-L-BLUE",
+          size: "L",
+          color: "蓝色",
+        },
+      ],
+      variantCandidates: [],
+    };
+    useCatalogStore().applySnapshot({
+      items: [mediumItem, largeItem],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-07-22T10:00:00Z",
+    });
+    routeParams.catalogKey = mediumItem.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+    const page = requireElement<HTMLElement>(
+      host,
+      '[data-test="product-detail-page"]',
+    );
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-missing-height",
+        detectedAt: "2026-07-22T10:00:01Z",
+        profile: {
+          personPresent: true,
+          upperColor: "黑",
+          confidence: 0.94,
+        },
+        quality: { overall: "good", warnings: [], profileUsable: true },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-unavailable-size",
+        detectedAt: "2026-07-22T10:00:02Z",
+        profile: {
+          personPresent: true,
+          heightCm: 190,
+          bodyType: "regular",
+          upperColor: "黑",
+          confidence: 0.94,
+        },
+        quality: { overall: "good", warnings: [], profileUsable: true },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe(
+      "false",
+    );
+
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        source: "front",
+        eventId: "vision-size-match",
+        detectedAt: "2026-07-22T10:00:03Z",
+        profile: {
+          personPresent: true,
+          heightCm: 178,
+          bodyType: "regular",
+          upperColor: "蓝",
+          confidence: 0.94,
+        },
+        quality: { overall: "good", warnings: [], profileUsable: true },
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
+    );
+    await nextTick();
+
+    const recommendedSize = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-size-option"][data-size="L"]',
+    );
+    expect(page.getAttribute("data-vision-recommendation-active")).toBe("true");
+    expect(page.getAttribute("data-variant-id")).toBe(largeItem.variantId);
+    expect(recommendedSize.classList).toContain("option-pill-recommended");
+  });
+
   it("does not select a product for passive catalog navigation, restored detail routes, or variant adjustment", async () => {
     const item = makeCatalogItem();
     const secondVariant: MachineCatalogItem = {

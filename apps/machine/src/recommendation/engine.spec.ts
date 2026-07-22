@@ -199,6 +199,32 @@ describe("choosePreferredVariant", () => {
     );
   });
 
+  it("keeps a color-only fallback from claiming a size match", () => {
+    const recommendation = recommendVariant(variants, {
+      personPresent: true,
+      upperColor: "黑",
+    });
+
+    expect(recommendation).toMatchObject({
+      variant: { variantId: "m-black" },
+      sizeMatched: false,
+    });
+  });
+
+  it("keeps an unavailable inferred size from claiming a size match", () => {
+    const recommendation = recommendVariant(variants, {
+      personPresent: true,
+      heightCm: 190,
+      bodyType: "regular",
+      upperColor: "黑",
+    });
+
+    expect(recommendation).toMatchObject({
+      variant: { variantId: "m-black" },
+      sizeMatched: false,
+    });
+  });
+
   it("falls back to the first saleable variant when recognized signals do not match", () => {
     const profile: VisionProfile = {
       personPresent: true,

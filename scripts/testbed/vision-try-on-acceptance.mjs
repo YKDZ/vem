@@ -854,6 +854,46 @@ export function validateRecommendationPresentation({
   return { variantId: detail.variantId, recommendedSize: null };
 }
 
+export function validateSizeControlPresentation(state) {
+  const detail = requiredObject(state, "product detail size control state");
+  if (detail.viewport?.width !== 1080 || detail.viewport?.height !== 1920) {
+    throw new Error("size control screenshot viewport must be 1080x1920");
+  }
+  if (
+    detail.horizontalOverflow === true ||
+    detail.sizeControlsOverflow === true
+  ) {
+    throw new Error("size controls must not overflow horizontally");
+  }
+  if (!Array.isArray(detail.sizeOptions) || detail.sizeOptions.length === 0) {
+    throw new Error("product detail must expose visible size controls");
+  }
+  for (const option of detail.sizeOptions) {
+    const bounds = option?.bounds;
+    if (
+      option?.visible !== true ||
+      !Number.isFinite(bounds?.left) ||
+      !Number.isFinite(bounds?.top) ||
+      !Number.isFinite(bounds?.right) ||
+      !Number.isFinite(bounds?.bottom) ||
+      bounds.left < 0 ||
+      bounds.top < 0 ||
+      bounds.right > detail.viewport.width ||
+      bounds.bottom > detail.viewport.height ||
+      bounds.right <= bounds.left ||
+      bounds.bottom <= bounds.top
+    ) {
+      throw new Error(
+        "size control must be visible within the screenshot viewport",
+      );
+    }
+  }
+  return {
+    viewport: detail.viewport,
+    sizeOptionCount: detail.sizeOptions.length,
+  };
+}
+
 export function validateTryOnPresentation({
   selectedProduct,
   tryOnState,
@@ -1717,21 +1757,49 @@ async function readProductDetailState(client) {
       const page = document.querySelector("[data-test='product-detail-page']");
       const tryOn = document.querySelector("[data-test='try-on-entry']");
       const buy = document.querySelector("[data-test='product-buy']");
+      const sizeControls = document.querySelector(
+        "[data-test='product-size-options']",
+      );
       const sizeOptions = Array.from(
         document.querySelectorAll("[data-test='product-size-option']"),
-      ).map((element) => ({
-        size: element.getAttribute("data-size") ?? "",
-        active: element.classList.contains("option-pill-active"),
-        recommended: element.getAttribute("data-vision-recommended") === "true",
-        recommendedClass: element.classList.contains("option-pill-recommended"),
-        disabled: element.disabled === true,
-      }));
+      ).map((element) => {
+        const bounds = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          size: element.getAttribute("data-size") ?? "",
+          active: element.classList.contains("option-pill-active"),
+          recommended: element.getAttribute("data-vision-recommended") === "true",
+          recommendedClass: element.classList.contains("option-pill-recommended"),
+          disabled: element.disabled === true,
+          visible:
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= 0 &&
+            bounds.top >= 0 &&
+            bounds.right <= innerWidth &&
+            bounds.bottom <= innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || "1") > 0,
+          bounds: {
+            left: bounds.left,
+            top: bounds.top,
+            right: bounds.right,
+            bottom: bounds.bottom,
+          },
+        };
+      });
       return page ? {
         route: location.hash,
         catalogKey: page.dataset.catalogKey || null,
         variantId: page.dataset.variantId || null,
         recommendationActive:
           page.dataset.visionRecommendationActive || "false",
+        viewport: { width: innerWidth, height: innerHeight },
+        horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+        sizeControlsOverflow:
+          sizeControls !== null &&
+          sizeControls.scrollWidth > sizeControls.clientWidth,
         sizeOptions,
         tryOnPresent: !!tryOn,
         tryOnDisabled: tryOn ? tryOn.disabled === true : null,
@@ -1757,6 +1825,7 @@ async function waitForRecommendationPresentation(
           phase,
           expectedVariantId,
         });
+        validateSizeControlPresentation(state);
         return { ok: true, value: { state, presentation } };
       } catch (error) {
         return { ok: false, value: { state, error: String(error) } };
@@ -2484,6 +2553,13 @@ async function runVisionTryOnAcceptance(options) {
       expectedResults,
       runtimeExpectation,
     });
+    const ordinaryVariantId = required(
+      baselineCatalogProjection.products.find(
+        (product) =>
+          product.catalogKey === recommendationSummary.selectedCatalogKey,
+      )?.variantId,
+      "ordinary selected product variantId",
+    );
     checkpoints.push(
       await captureCheckpoint(client, "catalog-recommendation", {
         screenshot: true,
@@ -2527,6 +2603,7 @@ async function runVisionTryOnAcceptance(options) {
     checkpoints.push(
       await captureCheckpoint(client, "automatic-recommendation-detail", {
         screenshot: true,
+        validatePng: true,
         screenshotSink: sink,
       }),
     );
@@ -2546,6 +2623,7 @@ async function runVisionTryOnAcceptance(options) {
     checkpoints.push(
       await captureCheckpoint(client, "manual-size-detail", {
         screenshot: true,
+        validatePng: true,
         screenshotSink: sink,
       }),
     );
@@ -2630,6 +2708,14 @@ async function runVisionTryOnAcceptance(options) {
       pollMs: 250,
     });
 
+    stage = "reestablish-automatic-recommendation";
+    const reestablishedAutomaticRecommendation =
+      await waitForRecommendationPresentation(
+        client,
+        "automatic",
+        recommendationSummary.selectedVariantId,
+      );
+
     const capabilityBeforeDegradation = await daemonGet(
       handoff,
       "/v1/sale-start-capability",
@@ -2652,10 +2738,15 @@ async function runVisionTryOnAcceptance(options) {
     assert.equal(degradedProductDetail?.buyDisabled, false);
     stage = "validate-vision-unavailable-recommendation-presentation";
     const unavailableRecommendationPresentation =
-      await waitForRecommendationPresentation(client, "vision_unavailable");
+      await waitForRecommendationPresentation(
+        client,
+        "vision_unavailable",
+        ordinaryVariantId,
+      );
     checkpoints.push(
       await captureCheckpoint(client, "vision-degraded-product", {
         screenshot: true,
+        validatePng: true,
         screenshotSink: sink,
       }),
     );
@@ -2717,6 +2808,8 @@ async function runVisionTryOnAcceptance(options) {
         recommendationPresentation: {
           automatic: automaticRecommendationPresentation.presentation,
           manual: manualRecommendationPresentation.presentation,
+          reestablishedAutomatic:
+            reestablishedAutomaticRecommendation.presentation,
           visionUnavailable: unavailableRecommendationPresentation.presentation,
         },
         tryOnSurface,

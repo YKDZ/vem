@@ -118,7 +118,7 @@ const automaticRecommendation = computed(() => {
     variantCandidates.value,
     currentProfile.value,
   );
-  return recommendation.score > 0 ? recommendation.variant : null;
+  return recommendation.sizeMatched ? recommendation.variant : null;
 });
 const isVisionRecommendationActive = computed(
   () =>
@@ -168,15 +168,29 @@ const featureCards = [
 ] as const;
 
 watch(
-  [variantCandidates, routedVariantId],
-  () => {
-    userSelectedVariant.value = false;
+  [catalogKey, variantCandidates, routedVariantId],
+  ([nextCatalogKey, candidates, nextRoutedVariantId], previous) => {
+    const productChanged = nextCatalogKey !== previous?.[0];
+    if (productChanged) {
+      userSelectedVariant.value = false;
+    }
+    if (userSelectedVariant.value) {
+      const selectedSaleableVariant = candidates.find(
+        (variant) =>
+          variant.variantId === selectedVariantId.value &&
+          variantIsSaleable(variant),
+      );
+      if (selectedSaleableVariant) {
+        selectedVariantId.value = selectedSaleableVariant.variantId;
+        return;
+      }
+      userSelectedVariant.value = false;
+    }
     selectedVariantId.value =
-      variantCandidates.value.find(
-        (variant) => variant.variantId === routedVariantId.value,
-      )?.variantId ??
-      variantCandidates.value.find(variantIsSaleable)?.variantId ??
-      variantCandidates.value[0]?.variantId ??
+      candidates.find((variant) => variant.variantId === nextRoutedVariantId)
+        ?.variantId ??
+      candidates.find(variantIsSaleable)?.variantId ??
+      candidates[0]?.variantId ??
       null;
   },
   { immediate: true },
@@ -415,7 +429,7 @@ async function enterTryOn(): Promise<void> {
               </button>
             </div>
             <p class="option-label">尺码</p>
-            <div class="option-row">
+            <div class="option-row" data-test="product-size-options">
               <button
                 v-for="option in sizeOptions"
                 :key="attributeKey(option.value)"
