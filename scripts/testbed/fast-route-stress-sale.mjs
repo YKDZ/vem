@@ -245,7 +245,20 @@ function compactRuntimeTrace(trace, maxEntries = 64) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
 
-function traceBoundary(entries, label) {
+function runtimeTraceIdentity(identity, label) {
+  if (
+    !identity ||
+    typeof identity.targetId !== "string" ||
+    identity.targetId.trim() === "" ||
+    typeof identity.sessionId !== "string" ||
+    identity.sessionId.trim() === ""
+  ) {
+    throw new Error(`${label} requires the bound runtime generation identity`);
+  }
+  return { targetId: identity.targetId, sessionId: identity.sessionId };
+}
+
+function traceBoundary(entries, label, runtimeIdentity) {
   if (!Array.isArray(entries)) {
     throw new Error(
       `${label} requires an installed Machine Runtime Trace array`,
@@ -266,10 +279,11 @@ function traceBoundary(entries, label) {
     source: "installed_machine_runtime_trace_cdp",
     lastEntryId,
     capturedAt: new Date().toISOString(),
+    runtimeIdentity: runtimeTraceIdentity(runtimeIdentity, label),
   };
 }
 
-function traceEntriesAfterBoundary(entries, boundary, label) {
+function traceEntriesAfterBoundary(entries, boundary, label, runtimeIdentity) {
   if (
     boundary?.source !== "installed_machine_runtime_trace_cdp" ||
     !Number.isInteger(boundary?.lastEntryId) ||
@@ -280,7 +294,24 @@ function traceEntriesAfterBoundary(entries, boundary, label) {
       `${label} must retain an installed-CDP trace id boundary and capture timestamp`,
     );
   }
-  return entries.filter((entry) => entry?.id > boundary.lastEntryId);
+  const boundaryIdentity = runtimeTraceIdentity(
+    boundary.runtimeIdentity,
+    `${label} boundary`,
+  );
+  const currentIdentity = runtimeTraceIdentity(runtimeIdentity, label);
+  const sameRuntime =
+    boundaryIdentity.targetId === currentIdentity.targetId &&
+    boundaryIdentity.sessionId === currentIdentity.sessionId;
+  return entries.filter((entry) => {
+    if (!Number.isInteger(entry?.id) || entry.id < 1) return false;
+    if (sameRuntime) return entry.id > boundary.lastEntryId;
+    // A trace id restarts with a recreated runtime. Its event must be newer
+    // than the captured boundary; callers still verify the target semantics.
+    return (
+      timestamp(entry?.at, `${label} restarted trace entry`) >
+      timestamp(boundary.capturedAt, `${label} boundary capture`)
+    );
+  });
 }
 
 function isCatalogRoute(route) {
@@ -887,15 +918,18 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const runtimeTrace = machineRuntimeTrace.entries;
+  const runtimeIdentity = machineRuntimeTrace.runtimeIdentity;
   const noCatalogTrace = traceEntriesAfterBoundary(
     runtimeTrace,
     input.noCatalogTraceBoundary,
     "no-Catalog trace boundary",
+    runtimeIdentity,
   );
   const repeatedTouchTrace = traceEntriesAfterBoundary(
     runtimeTrace,
     repeatedPaymentTouch.preDispatchTraceBoundary,
     "repeated payment touch pre-dispatch trace boundary",
+    runtimeIdentity,
   );
   const repeatedTouch = repeatedTouchTrace.find(
     (entry) =>
@@ -914,6 +948,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     runtimeTrace,
     vision.traceBoundary,
     "Vision departure control-request trace boundary",
+    runtimeIdentity,
   );
   const guardedDeparture = guardedDepartureTrace.find(
     (entry) =>
@@ -1371,8 +1406,19 @@ export async function startContinuousCdpLocationHashObservation(
   };
 }
 
+async function observeRuntimeTraceIdentity(client, label) {
+  if (!client || typeof client.observeIdentity !== "function") {
+    throw new Error(`${label} requires an installed CDP runtime identity`);
+  }
+  return runtimeTraceIdentity(await client.observeIdentity(), label);
+}
+
 async function captureRuntimeTraceBoundary(client, label) {
-  return traceBoundary(await readRuntimeTrace(client), label);
+  const [entries, runtimeIdentity] = await Promise.all([
+    readRuntimeTrace(client),
+    observeRuntimeTraceIdentity(client, label),
+  ]);
+  return traceBoundary(entries, label, runtimeIdentity);
 }
 
 async function waitForRepeatedCustomerTouchTrace(
@@ -1388,6 +1434,10 @@ async function waitForRepeatedCustomerTouchTrace(
       lastTrace,
       preDispatchTraceBoundary,
       "repeated payment touch pre-dispatch trace boundary",
+      await observeRuntimeTraceIdentity(
+        client,
+        "repeated payment touch runtime trace",
+      ),
     ).find(
       (entry) =>
         entry?.type === "navigation" &&
@@ -1421,6 +1471,10 @@ export async function waitForGuardedVisionDepartureTrace(
       lastTrace,
       traceBoundary,
       "Vision departure control-request trace boundary",
+      await observeRuntimeTraceIdentity(
+        client,
+        "Vision departure runtime trace",
+      ),
     ).find(
       (entry) =>
         entry?.type === "navigation" &&
@@ -2337,6 +2391,10 @@ async function runFastRouteStressSale(options) {
       machineRuntimeTrace: {
         source: "installed_machine_runtime_trace_cdp",
         capturedAt: new Date().toISOString(),
+        runtimeIdentity: await observeRuntimeTraceIdentity(
+          client,
+          "Machine Runtime Trace evidence",
+        ),
         entries: runtimeTrace,
       },
       createOrderGate: {

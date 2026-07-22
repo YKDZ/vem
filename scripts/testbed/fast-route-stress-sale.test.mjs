@@ -125,6 +125,10 @@ describe("pending create-order cleanup", () => {
 });
 
 function validEvidence() {
+  const runtimeIdentity = {
+    targetId: "machine-runtime-target-1",
+    sessionId: "cdp-connection:runtime-1",
+  };
   const inventory = {
     id: "inventory-1",
     slotId: "slot-1",
@@ -353,6 +357,7 @@ function validEvidence() {
         source: "installed_machine_runtime_trace_cdp",
         lastEntryId: 1,
         capturedAt: "2026-07-18T04:00:00.000Z",
+        runtimeIdentity,
       },
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
@@ -361,6 +366,7 @@ function validEvidence() {
       source: "installed_machine_runtime_trace_cdp",
       lastEntryId: 0,
       capturedAt: "2026-07-18T03:59:59.700Z",
+      runtimeIdentity,
     },
     repeatedPaymentTouch: {
       traceEntryId: 3,
@@ -370,6 +376,7 @@ function validEvidence() {
         source: "installed_machine_runtime_trace_cdp",
         lastEntryId: 2,
         capturedAt: "2026-07-18T04:00:00.110Z",
+        runtimeIdentity,
       },
     },
     continuousCdpLocationHash: {
@@ -409,6 +416,7 @@ function validEvidence() {
     machineRuntimeTrace: {
       source: "installed_machine_runtime_trace_cdp",
       capturedAt: "2026-07-18T04:00:04.100Z",
+      runtimeIdentity,
       entries: [
         {
           type: "navigation",
@@ -506,9 +514,13 @@ describe("fast route stress sale tracer", () => {
       source: "installed_machine_runtime_trace_cdp",
       lastEntryId: 256,
       capturedAt: "2026-07-18T04:00:00.000Z",
+      runtimeIdentity: {
+        targetId: "machine-runtime-target-1",
+        sessionId: "cdp-connection:runtime-1",
+      },
     };
     const result = await waitForGuardedVisionDepartureTrace(
-      null,
+      { observeIdentity: async () => traceBoundary.runtimeIdentity },
       traceBoundary,
       {
         timeoutMs: 100,
@@ -542,6 +554,52 @@ describe("fast route stress sale tracer", () => {
       },
     );
     assert.equal(result.sourceEventId, "presence-8:departure");
+    assert.equal(reads, 2);
+  });
+
+  it("accepts a restarted trace id only after the boundary and rejects its old departure", async () => {
+    let reads = 0;
+    const traceBoundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      lastEntryId: 256,
+      capturedAt: "2026-07-18T04:00:00.000Z",
+      runtimeIdentity: {
+        targetId: "machine-runtime-target-old",
+        sessionId: "cdp-connection:old",
+      },
+    };
+    const restartedIdentity = {
+      targetId: "machine-runtime-target-new",
+      sessionId: "cdp-connection:new",
+    };
+    const result = await waitForGuardedVisionDepartureTrace(
+      { observeIdentity: async () => restartedIdentity },
+      traceBoundary,
+      {
+        timeoutMs: 100,
+        sleepFn: async () => {},
+        readTrace: async () => {
+          reads += 1;
+          return [
+            {
+              id: 1,
+              at:
+                reads === 1
+                  ? "2026-07-18T04:00:00.000Z"
+                  : "2026-07-18T04:00:00.001Z",
+              type: "navigation",
+              intentType: "presence.departed",
+              sourceEventId: "presence-9:departure",
+              decision: "rejected",
+              reasonCode: "active_transaction_route",
+              finalRoute: "#/payment",
+            },
+          ];
+        },
+      },
+    );
+
+    assert.equal(result.id, 1);
     assert.equal(reads, 2);
   });
 
