@@ -470,8 +470,9 @@ describe("ResultView", () => {
         expect.objectContaining({
           stage: "product_refresh",
           customerMessage: "商品信息更新失败，请重新选择商品",
-          technicalMessage:
-            "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+          technical: expect.objectContaining({
+            message: "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+          }),
           operation: "result.refresh_catalog",
           orderId: transaction.orderId,
           paymentId: transaction.paymentId,

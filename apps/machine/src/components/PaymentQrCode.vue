@@ -36,7 +36,7 @@ watch(
       recordCustomerErrorEvidence({
         stage: projection.stage,
         customerMessage: projection.message,
-        technicalMessage: err instanceof Error ? err.message : String(err),
+        technicalError: err,
         operation: "payment_qr.render",
         checkoutAttemptIdempotencyKey:
           props.checkoutAttemptIdempotencyKey ?? null,

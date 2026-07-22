@@ -1,13 +1,15 @@
 import type { MachinePaymentOption } from "@vem/shared";
 
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   SaleStartCapabilitySnapshot,
   TransactionSnapshot,
 } from "@/daemon/schemas";
 
+import { installCustomerErrorEvidenceTrace } from "@/runtime/customer-error-evidence";
+import { createMachineRuntimeTrace } from "@/runtime/machine-runtime-trace";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
@@ -47,6 +49,10 @@ beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
   capabilityRevision = 0;
+});
+
+afterEach(() => {
+  installCustomerErrorEvidenceTrace(null);
 });
 
 function capabilityResponse(input: {
@@ -619,13 +625,17 @@ describe("checkout store", () => {
   it("shows customer-safe scanner copy when create-order local payment-code recheck fails", async () => {
     const technicalMessage =
       "selected payment option is not ready: open serial port COM3 failed: SCANNER_OPEN_FAILED (/v1/intents/create-order returned HTTP 400)";
-    createOrderMock.mockRejectedValue(
+    const trace = createMachineRuntimeTrace();
+    installCustomerErrorEvidenceTrace(trace);
+    const error = Object.assign(
       daemonRejectedRequestError(
         technicalMessage,
         "create_order_blocked",
         "selected payment option is not ready: open serial port COM3 failed: SCANNER_OPEN_FAILED",
       ),
+      { cause: new Error("scanner reconnect timed out") },
     );
+    createOrderMock.mockRejectedValue(error);
 
     const item = makeCatalogItem();
     const store = useCheckoutStore();
@@ -661,6 +671,26 @@ describe("checkout store", () => {
     expect(store.customerErrorMessage).not.toContain("selected payment option");
     expect(store.customerErrorMessage).not.toContain("HTTP");
     expect(store.customerErrorMessage).not.toContain("COM3");
+    expect(trace.entries()).toContainEqual(
+      expect.objectContaining({
+        type: "customer_error",
+        stage: "device",
+        customerMessage: "设备暂不可用，请联系工作人员",
+        operation: "checkout.create_order",
+        technical: {
+          name: "Error",
+          message: technicalMessage,
+          statusCode: 400,
+          responseCode: "create_order_blocked",
+          responseBody: JSON.stringify({
+            code: "create_order_blocked",
+            message:
+              "selected payment option is not ready: open serial port COM3 failed: SCANNER_OPEN_FAILED",
+          }),
+          cause: "scanner reconnect timed out",
+        },
+      }),
+    );
   });
 
   it("fails closed when selected item is missing from the latest sale view", async () => {

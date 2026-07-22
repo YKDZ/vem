@@ -127,7 +127,14 @@ describe("command log", () => {
       {
         stage: "payment_creation",
         customerMessage: "支付订单创建失败，请稍后重试",
-        technicalMessage: "HTTP 502 provider create timed out",
+        technical: {
+          name: "Error",
+          message: "HTTP 502 provider create timed out",
+          statusCode: 502,
+          responseCode: "payment_provider_unavailable",
+          responseBody: "provider response body",
+          cause: "upstream timed out",
+        },
         operation: "checkout.create_order",
         checkoutAttemptIdempotencyKey: "checkout:attempt-7",
         orderId: "order-7",
@@ -140,7 +147,11 @@ describe("command log", () => {
     expect(listCustomerErrorEvidence(storage)).toEqual([
       expect.objectContaining({
         checkoutAttemptIdempotencyKey: "checkout:attempt-7",
-        technicalMessage: "HTTP 502 provider create timed out",
+        technical: expect.objectContaining({
+          message: "HTTP 502 provider create timed out",
+          statusCode: 502,
+          responseCode: "payment_provider_unavailable",
+        }),
         orderId: "order-7",
         paymentId: "payment-7",
       }),

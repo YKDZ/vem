@@ -27,11 +27,20 @@ export type CommandLogEntry = {
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
+export type TechnicalErrorEvidence = {
+  name: string | null;
+  message: string;
+  statusCode: number | null;
+  responseCode: string | null;
+  responseBody: string | null;
+  cause: string | null;
+};
+
 export type CustomerErrorEvidence = {
   evidenceId: string;
   stage: string;
   customerMessage: string;
-  technicalMessage: string;
+  technical: TechnicalErrorEvidence;
   operation: string;
   checkoutAttemptIdempotencyKey: string | null;
   orderId: string | null;
@@ -62,17 +71,27 @@ function isCustomerErrorEvidence(
   if (!isRecord(value)) return false;
   const entry = value;
   return (
-    [
-      "evidenceId",
-      "stage",
-      "customerMessage",
-      "technicalMessage",
-      "operation",
-    ].every((key) => typeof entry[key] === "string") &&
+    ["evidenceId", "stage", "customerMessage", "operation"].every(
+      (key) => typeof entry[key] === "string",
+    ) &&
+    isTechnicalErrorEvidence(entry.technical) &&
     ["checkoutAttemptIdempotencyKey", "orderId", "paymentId", "orderNo"].every(
       (key) => entry[key] === null || typeof entry[key] === "string",
     ) &&
     Number.isFinite(entry.recordedAtMs)
+  );
+}
+
+function isTechnicalErrorEvidence(
+  value: unknown,
+): value is TechnicalErrorEvidence {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.message === "string" &&
+    ["name", "responseCode", "responseBody", "cause"].every(
+      (key) => value[key] === null || typeof value[key] === "string",
+    ) &&
+    (value.statusCode === null || Number.isInteger(value.statusCode))
   );
 }
 

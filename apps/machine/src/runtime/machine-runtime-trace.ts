@@ -1,3 +1,5 @@
+import type { TechnicalErrorEvidence } from "@/local/command-log";
+
 export type MachineRuntimeNavigationTraceRecord = {
   type: "navigation";
   id: number;
@@ -68,7 +70,7 @@ export type MachineRuntimeCustomerErrorTraceEntry = {
   recordedAt: string;
   stage: string;
   customerMessage: string;
-  technicalMessage: string;
+  technical: TechnicalErrorEvidence;
   operation: string;
   checkoutAttemptIdempotencyKey: string | null;
   orderId: string | null;

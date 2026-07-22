@@ -1928,7 +1928,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             </ul>
           </details>
           <details data-test="customer-error-evidence">
-            <summary>客户错误技术记录</summary>
+            <summary>客户错误记录</summary>
             <p v-if="customerErrorEvidence.length === 0">尚未记录客户错误。</p>
             <ul v-else>
               <li
@@ -1943,7 +1943,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 :data-order-no="evidence.orderNo ?? ''"
               >
                 {{ evidence.operation }} · {{ evidence.stage }} ·
-                {{ evidence.technicalMessage }}
+                {{ evidence.customerMessage }}
               </li>
             </ul>
           </details>

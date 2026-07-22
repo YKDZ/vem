@@ -138,16 +138,6 @@ function stringField(error: unknown, key: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function technicalErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return "unserializable error";
-  }
-}
-
 function customerErrorStageForCreateFailure(
   error: unknown,
 ): CustomerErrorStage {
@@ -366,7 +356,7 @@ export const useCheckoutStore = defineStore("checkout", {
       recordCustomerErrorEvidence({
         stage: projection.stage,
         customerMessage: projection.message,
-        technicalMessage: technicalErrorMessage(error),
+        technicalError: error,
         operation,
         checkoutAttemptIdempotencyKey:
           correlation?.checkoutAttemptIdempotencyKey ??

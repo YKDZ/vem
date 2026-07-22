@@ -1,6 +1,7 @@
 import { visionTryOnPreviewUrlSchema } from "@vem/shared";
 import { readonly, ref, type Ref } from "vue";
 
+import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import {
   isVisionTryOnCapabilityDegraded,
   openVisionTryOnSession,
@@ -8,6 +9,7 @@ import {
   type VisionTryOnSessionInput,
   type VisionTryOnStopReason,
 } from "@/native/vision";
+import { recordCustomerErrorEvidence } from "@/runtime/customer-error-evidence";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 
@@ -68,6 +70,7 @@ export function useTryOnPreview(): {
         if (isVisionTryOnCapabilityDegraded(error)) {
           visionStore.markTryOnCapabilityDegraded();
         }
+        recordTryOnFailure("try_on.start_preview", error);
         errorMessage.value =
           "虚拟试穿预览启动失败，请联系维护人员检查视觉服务与摄像头。";
       }
@@ -96,9 +99,24 @@ export function useTryOnPreview(): {
     if (!session) return;
     try {
       await session.stop(reason);
-    } catch {
+    } catch (error) {
+      recordTryOnFailure("try_on.stop_preview", error);
       return;
     }
+  }
+
+  function recordTryOnFailure(operation: string, error: unknown): void {
+    const projection = projectCustomerError("device", error);
+    recordCustomerErrorEvidence({
+      stage: projection.stage,
+      customerMessage: projection.message,
+      technicalError: error,
+      operation,
+      checkoutAttemptIdempotencyKey: null,
+      orderId: null,
+      paymentId: null,
+      orderNo: null,
+    });
   }
 
   return {

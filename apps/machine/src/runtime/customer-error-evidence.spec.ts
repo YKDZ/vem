@@ -18,7 +18,15 @@ describe("customer error evidence", () => {
     recordCustomerErrorEvidence({
       stage: "payment_creation",
       customerMessage: "支付订单创建失败，请稍后重试",
-      technicalMessage: "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+      technicalError: Object.assign(
+        new Error("HTTP 502 provider MQTT IPC serial COM3 schema failed"),
+        {
+          statusCode: 502,
+          responseCode: "payment_provider_unavailable",
+          responseBody: "provider response body",
+          cause: new Error("upstream timed out"),
+        },
+      ),
       operation: "checkout.create_order",
       checkoutAttemptIdempotencyKey: "checkout:attempt-error-001",
       orderId: "order-error-001",
@@ -31,8 +39,14 @@ describe("customer error evidence", () => {
         type: "customer_error",
         stage: "payment_creation",
         customerMessage: "支付订单创建失败，请稍后重试",
-        technicalMessage:
-          "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+        technical: {
+          name: "Error",
+          message: "HTTP 502 provider MQTT IPC serial COM3 schema failed",
+          statusCode: 502,
+          responseCode: "payment_provider_unavailable",
+          responseBody: "provider response body",
+          cause: "upstream timed out",
+        },
         operation: "checkout.create_order",
         checkoutAttemptIdempotencyKey: "checkout:attempt-error-001",
         orderId: "order-error-001",
