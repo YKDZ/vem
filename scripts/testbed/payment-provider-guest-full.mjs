@@ -22,7 +22,7 @@ const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
-export const INVALID_ALIPAY_CUSTOMER_CODE = "000000000000000000\r\n";
+export const INVALID_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
   "readiness",
@@ -825,6 +825,14 @@ async function paymentCodeAttempt({
     };
   } catch (error) {
     authoritativeError = error;
+    if (order) {
+      try {
+        await closePayment(input, token, order);
+        await waitForTerminal(input, runId, machineCode, order, timeoutMs);
+      } catch {
+        // Preserve the provider failure; bounded diagnostics report cleanup separately.
+      }
+    }
     throw error;
   } finally {
     try {
