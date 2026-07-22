@@ -1137,7 +1137,7 @@ export async function runPaymentProviderGuest(options) {
         await cleanAuthoritativeOrderBeforeDiagnostics(
           client,
           readJson(options.handoffPath),
-          timeoutMs,
+          timeoutMs * 3,
         );
         stage = "creation";
       }
