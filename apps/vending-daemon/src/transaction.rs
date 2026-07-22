@@ -539,6 +539,36 @@ impl TransactionStateMachine {
             }
             CheckoutCreationRole::Existing(current) => return Ok(current),
         };
+        let owner = self.clone();
+        let payment_method = payment_method.to_string();
+        tokio::spawn(async move {
+            owner
+                .run_checkout_creation_owner(
+                    payment_method,
+                    payment_provider_code,
+                    items,
+                    profile_snapshot,
+                    idempotency_key,
+                    machine_code,
+                    flight,
+                )
+                .await
+        })
+        .await
+        .map_err(|error| format!("CHECKOUT_CREATION_TASK_FAILED: {error}"))?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_checkout_creation_owner(
+        &self,
+        payment_method: String,
+        payment_provider_code: Option<String>,
+        items: serde_json::Value,
+        profile_snapshot: Option<serde_json::Value>,
+        idempotency_key: String,
+        machine_code: String,
+        flight: CheckoutCreationFlight,
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         // A new order must never inherit a scanner frame or arm from a
         // terminal/replaced transaction.
         self.clear_payment_code_scan_arm().await;
@@ -548,7 +578,7 @@ impl TransactionStateMachine {
             .create_order(
                 &machine_code,
                 vec![items.clone()],
-                payment_method,
+                &payment_method,
                 payment_provider_code.as_deref(),
                 profile_snapshot,
                 &idempotency_key,
@@ -558,7 +588,7 @@ impl TransactionStateMachine {
             Ok(response) => {
                 let result = self
                     .commit_created_order_under_sale_lease(
-                        payment_method,
+                        &payment_method,
                         payment_provider_code,
                         items,
                         machine_code,
@@ -1695,7 +1725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_checkout_creation_with_the_same_key_joins_one_durable_order() {
+    async fn canceled_checkout_caller_does_not_cancel_the_owned_durable_order() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1754,27 +1784,41 @@ mod tests {
             TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx);
 
         let first_machine = machine.clone();
-        let second_machine = machine.clone();
-        let (first, second) = tokio::join!(
-            first_machine.create_order_with_idempotency(
-                "mock",
-                Some("mock".to_string()),
-                json!([{ "slotId": "A1", "quantity": 1 }]),
-                None,
-                Some("checkout:first"),
-            ),
-            second_machine.create_order_with_idempotency(
-                "mock",
-                Some("mock".to_string()),
-                json!([{ "slotId": "A1", "quantity": 1 }]),
-                None,
-                Some("checkout:first"),
-            ),
-        );
+        let first = tokio::spawn(async move {
+            first_machine
+                .create_order_with_idempotency(
+                    "mock",
+                    Some("mock".to_string()),
+                    json!([{ "slotId": "A1", "quantity": 1 }]),
+                    None,
+                    Some("checkout:first"),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if machine.checkout_creation_flight.lock().await.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owner flight starts");
+        first.abort();
+        assert!(first.await.expect_err("caller is canceled").is_cancelled());
 
-        let first = first.expect("first checkout");
+        let second = machine
+            .create_order_with_idempotency(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
+                None,
+                Some("checkout:first"),
+            )
+            .await;
+
         let second = second.expect("same idempotency key joins active checkout");
-        assert_eq!(first.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
         assert_eq!(second.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
         let creates = server
             .received_requests()
