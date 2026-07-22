@@ -568,7 +568,17 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
   const route = await evaluateExpression(client, "location.hash");
-  if (!["#/catalog", "#/products"].includes(route)) {
+  if (/^#\/result\//.test(route)) {
+    await activateVisibleSelector(
+      client,
+      ".result-return-button, .failure-return-button",
+      { kind: "touch", timeoutMs, pollMs: POLL_INTERVAL_MS },
+    );
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    });
+  } else if (!["#/catalog", "#/products"].includes(route)) {
     await evaluateExpression(client, "location.hash = '#/catalog'");
     await waitForRoute(client, "#/catalog", {
       timeoutMs,
