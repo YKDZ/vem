@@ -1,9 +1,16 @@
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 use uuid::Uuid;
 use vending_core::domain::InternalCheckoutFlowAction;
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tokio::time::{Duration, Instant};
 
 use crate::backend::BackendClient;
@@ -29,6 +36,48 @@ struct CheckoutCreationRecovery {
     items: serde_json::Value,
     profile_snapshot: Option<serde_json::Value>,
     idempotency_key: String,
+    #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    planogram_version: Option<String>,
+}
+
+#[derive(Clone)]
+struct CheckoutCreationFlight {
+    idempotency_key: String,
+    generation: String,
+    completed: Arc<Notify>,
+    participants: Arc<AtomicUsize>,
+    participants_drained: Arc<Notify>,
+}
+
+impl CheckoutCreationFlight {
+    fn join(&self) -> Self {
+        self.participants.fetch_add(1, Ordering::AcqRel);
+        self.clone()
+    }
+
+    fn leave(&self) {
+        if self.participants.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.participants_drained.notify_waiters();
+        }
+    }
+
+    async fn wait_for_other_participants(&self) {
+        loop {
+            let drained = self.participants_drained.notified();
+            if self.participants.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            drained.await;
+        }
+    }
+}
+
+enum CheckoutCreationRole {
+    Owner(CheckoutCreationFlight),
+    Join(CheckoutCreationFlight),
+    Existing(vending_core::domain::InternalCurrentTransactionSnapshot),
 }
 
 pub type PaymentCodeSubmitGuard = Arc<
@@ -197,6 +246,10 @@ pub struct TransactionStateMachine {
     /// session is durable, but two IPC requests can both observe it as empty
     /// before either has received the platform's order response.
     checkout_creation_lock: Arc<Mutex<()>>,
+    /// A process-local flight is paired with the persistent recovery marker.
+    /// It lets duplicate IPC requests await the owner instead of replaying the
+    /// machine-order request while the marker is already durable.
+    checkout_creation_flight: Arc<Mutex<Option<CheckoutCreationFlight>>>,
     /// Shares the hardware-reconfiguration exclusion boundary with planogram
     /// and device-binding mutations. Recovery can create a checkout too.
     sale_binding_gate: Arc<SaleBindingOperationGate>,
@@ -217,6 +270,7 @@ impl TransactionStateMachine {
             payment_code_submit_guard: None,
             payment_code_scan_armer: PaymentCodeScanArmer::default(),
             checkout_creation_lock: Arc::new(Mutex::new(())),
+            checkout_creation_flight: Arc::new(Mutex::new(None)),
             sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
         }
     }
@@ -439,56 +493,29 @@ impl TransactionStateMachine {
             .map(ToString::to_string)
             .unwrap_or_else(|| format!("checkout:{}", Uuid::new_v4()));
 
-        let joining_existing_checkout = {
-            let _checkout_creation = self.checkout_creation_lock.lock().await;
-            let _sale = self.acquire_checkout_sale_lease().await?;
-            if let Some(current) = self
-                .state
-                .current_transaction_snapshot()
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                if is_active_transaction(&current) {
-                    self.sync_payment_code_scan_arm(Some(&current)).await;
-                    return Ok(current);
-                }
+        let role = self
+            .reserve_checkout_creation(
+                payment_method,
+                payment_provider_code.clone(),
+                items.clone(),
+                profile_snapshot.clone(),
+                idempotency_key.clone(),
+            )
+            .await?;
+        let flight = match role {
+            CheckoutCreationRole::Owner(flight) => flight,
+            CheckoutCreationRole::Join(flight) => {
+                let result = self.wait_for_joined_checkout(&flight).await;
+                flight.leave();
+                return result;
             }
-            if let Some(recovery) = self
-                .state
-                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                if recovery.idempotency_key != idempotency_key {
-                    true
-                } else {
-                    false
-                }
-            } else {
-                self.state
-                    .put_metadata(
-                        CHECKOUT_CREATION_RECOVERY_KEY,
-                        &CheckoutCreationRecovery {
-                            payment_method: payment_method.to_string(),
-                            payment_provider_code: payment_provider_code.clone(),
-                            items: items.clone(),
-                            profile_snapshot: profile_snapshot.clone(),
-                            idempotency_key: idempotency_key.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                false
-            }
+            CheckoutCreationRole::Existing(current) => return Ok(current),
         };
-        if joining_existing_checkout {
-            return self.wait_for_joined_checkout().await;
-        }
         // A new order must never inherit a scanner frame or arm from a
         // terminal/replaced transaction.
         self.clear_payment_code_scan_arm().await;
 
-        let response = match self
+        let (result, clear_marker_after_flight) = match self
             .backend
             .create_order(
                 &machine_code,
@@ -500,31 +527,34 @@ impl TransactionStateMachine {
             )
             .await
         {
-            Ok(response) => response,
+            Ok(response) => {
+                let result = self
+                    .commit_created_order_under_sale_lease(
+                        payment_method,
+                        payment_provider_code,
+                        items,
+                        machine_code,
+                        response,
+                        &flight,
+                    )
+                    .await;
+                let clear_marker_after_flight = result.is_ok();
+                (result, clear_marker_after_flight)
+            }
             Err(error) => {
                 self.refresh_platform_stock_after_order_refusal(&machine_code)
                     .await;
-                if is_deterministic_checkout_creation_error(&error) {
-                    let _checkout_creation = self.checkout_creation_lock.lock().await;
-                    let _sale = self.acquire_checkout_sale_lease().await?;
-                    self.state
-                        .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
-                        .await
-                        .map_err(|store_error| store_error.to_string())?;
-                }
-                return Err(error);
+                let clear_marker_after_flight = is_deterministic_checkout_creation_error(&error);
+                (Err(error), clear_marker_after_flight)
             }
         };
-
-        self.commit_created_order_under_sale_lease(
-            payment_method,
-            payment_provider_code,
-            items,
-            idempotency_key,
-            machine_code,
-            response,
-        )
-        .await
+        self.finish_checkout_creation_flight(&flight).await;
+        flight.leave();
+        flight.wait_for_other_participants().await;
+        if clear_marker_after_flight {
+            self.clear_checkout_recovery_if_owner(&flight).await?;
+        }
+        result
     }
 
     async fn commit_created_order_under_sale_lease(
@@ -532,9 +562,9 @@ impl TransactionStateMachine {
         payment_method: &str,
         payment_provider_code: Option<String>,
         items: serde_json::Value,
-        idempotency_key: String,
         machine_code: String,
         response: serde_json::Value,
+        flight: &CheckoutCreationFlight,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let order_no = response
             .get("orderNo")
@@ -560,6 +590,7 @@ impl TransactionStateMachine {
 
         let _checkout_creation = self.checkout_creation_lock.lock().await;
         let _sale = self.acquire_checkout_sale_lease().await?;
+        self.verify_checkout_recovery_owner(flight).await?;
         let current = {
             let _mutation = self.state.lock_transaction_mutation().await;
             self.state
@@ -578,19 +609,6 @@ impl TransactionStateMachine {
                 .await
                 .map_err(|error| error.to_string())?;
 
-            if self
-                .state
-                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-                .await
-                .map_err(|error| error.to_string())?
-                .is_some_and(|recovery| recovery.idempotency_key == idempotency_key)
-            {
-                self.state
-                    .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-
             self.state
                 .current_transaction_snapshot()
                 .await
@@ -602,11 +620,168 @@ impl TransactionStateMachine {
         Ok(current)
     }
 
+    async fn reserve_checkout_creation(
+        &self,
+        payment_method: &str,
+        payment_provider_code: Option<String>,
+        items: serde_json::Value,
+        profile_snapshot: Option<serde_json::Value>,
+        idempotency_key: String,
+    ) -> Result<CheckoutCreationRole, String> {
+        if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+            return Ok(CheckoutCreationRole::Join(flight.join()));
+        }
+
+        let _checkout_creation = self.checkout_creation_lock.lock().await;
+        if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+            return Ok(CheckoutCreationRole::Join(flight.join()));
+        }
+        let _sale = self.acquire_checkout_sale_lease().await?;
+        if let Some(current) = self
+            .state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if is_active_transaction(&current) {
+                self.sync_payment_code_scan_arm(Some(&current)).await;
+                return Ok(CheckoutCreationRole::Existing(current));
+            }
+        }
+
+        let planogram_version = self
+            .state
+            .active_planogram_version()
+            .await
+            .map_err(|error| error.to_string())?;
+        let recovery = self
+            .state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())?;
+        let recovery = match recovery {
+            Some(recovery) if recovery.idempotency_key != idempotency_key => {
+                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
+            }
+            Some(mut recovery) => {
+                // Legacy markers did not fence a planogram generation. A local
+                // replay owns the upgrade only while no flight exists.
+                recovery.generation = Uuid::new_v4().to_string();
+                recovery.planogram_version = planogram_version;
+                self.state
+                    .put_metadata(CHECKOUT_CREATION_RECOVERY_KEY, &recovery)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                recovery
+            }
+            None => {
+                let recovery = CheckoutCreationRecovery {
+                    payment_method: payment_method.to_string(),
+                    payment_provider_code,
+                    items,
+                    profile_snapshot,
+                    idempotency_key,
+                    generation: Uuid::new_v4().to_string(),
+                    planogram_version,
+                };
+                self.state
+                    .put_metadata(CHECKOUT_CREATION_RECOVERY_KEY, &recovery)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                recovery
+            }
+        };
+        let flight = CheckoutCreationFlight {
+            idempotency_key: recovery.idempotency_key,
+            generation: recovery.generation,
+            completed: Arc::new(Notify::new()),
+            participants: Arc::new(AtomicUsize::new(1)),
+            participants_drained: Arc::new(Notify::new()),
+        };
+        *self.checkout_creation_flight.lock().await = Some(flight.clone());
+        Ok(CheckoutCreationRole::Owner(flight))
+    }
+
+    async fn verify_checkout_recovery_owner(
+        &self,
+        flight: &CheckoutCreationFlight,
+    ) -> Result<(), String> {
+        let recovery = self
+            .state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "CHECKOUT_CREATION_RECOVERY_REPLACED".to_string())?;
+        let planogram_version = self
+            .state
+            .active_planogram_version()
+            .await
+            .map_err(|error| error.to_string())?;
+        if recovery.idempotency_key != flight.idempotency_key
+            || recovery.generation != flight.generation
+            || recovery.planogram_version != planogram_version
+        {
+            return Err("CHECKOUT_CREATION_RECOVERY_REPLACED".to_string());
+        }
+        Ok(())
+    }
+
+    async fn delete_checkout_recovery_if_owner(
+        &self,
+        flight: &CheckoutCreationFlight,
+    ) -> Result<(), String> {
+        let recovery = self
+            .state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())?;
+        if recovery.is_some_and(|recovery| {
+            recovery.idempotency_key == flight.idempotency_key
+                && recovery.generation == flight.generation
+        }) {
+            self.state
+                .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    async fn clear_checkout_recovery_if_owner(
+        &self,
+        flight: &CheckoutCreationFlight,
+    ) -> Result<(), String> {
+        let _checkout_creation = self.checkout_creation_lock.lock().await;
+        let _sale = self.acquire_checkout_sale_lease().await?;
+        self.delete_checkout_recovery_if_owner(flight).await
+    }
+
+    async fn finish_checkout_creation_flight(&self, flight: &CheckoutCreationFlight) {
+        let mut active = self.checkout_creation_flight.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|current| current.generation == flight.generation)
+        {
+            *active = None;
+            flight.completed.notify_waiters();
+        }
+    }
+
+    async fn checkout_creation_flight_is_active(&self, flight: &CheckoutCreationFlight) -> bool {
+        self.checkout_creation_flight
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|current| current.generation == flight.generation)
+    }
+
     async fn wait_for_joined_checkout(
         &self,
+        flight: &CheckoutCreationFlight,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
+            let completed = flight.completed.notified();
             if let Some(current) = self
                 .state
                 .current_transaction_snapshot()
@@ -618,13 +793,16 @@ impl TransactionStateMachine {
                     return Ok(current);
                 }
             }
-            if !Self::checkout_creation_in_flight(&self.state).await? {
+            if !self.checkout_creation_flight_is_active(flight).await {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
             if Instant::now() >= deadline {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::select! {
+                _ = completed => {},
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+            }
         }
     }
 
@@ -1468,7 +1646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_checkout_creation_joins_one_durable_order_even_for_different_keys() {
+    async fn concurrent_checkout_creation_with_the_same_key_joins_one_durable_order() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1541,12 +1719,12 @@ mod tests {
                 Some("mock".to_string()),
                 json!([{ "slotId": "B1", "quantity": 1 }]),
                 None,
-                Some("checkout:different-key"),
+                Some("checkout:first"),
             ),
         );
 
         let first = first.expect("first checkout");
-        let second = second.expect("second checkout joins active checkout");
+        let second = second.expect("same idempotency key joins active checkout");
         assert_eq!(first.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
         assert_eq!(second.order_no.as_deref(), Some("ORDER-SINGLEFLIGHT"));
         let creates = server
@@ -1557,6 +1735,132 @@ mod tests {
             .filter(|request| request.url.path() == "/machine-orders")
             .count();
         assert_eq!(creates, 1, "only one provider checkout may be active");
+    }
+
+    #[tokio::test]
+    async fn checkout_owner_keeps_its_marker_until_joined_request_has_left() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            Arc::new(BackendClient::new("http://127.0.0.1:9")),
+            Some("M-1".to_string()),
+            events_tx,
+        );
+
+        let owner = match machine
+            .reserve_checkout_creation(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
+                None,
+                "checkout:single-flight".to_string(),
+            )
+            .await
+            .expect("owner flight")
+        {
+            CheckoutCreationRole::Owner(flight) => flight,
+            _ => panic!("first request must own the flight"),
+        };
+        let joined = match machine
+            .reserve_checkout_creation(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
+                None,
+                "checkout:single-flight".to_string(),
+            )
+            .await
+            .expect("joined flight")
+        {
+            CheckoutCreationRole::Join(flight) => flight,
+            _ => panic!("same idempotency key must join the owner"),
+        };
+
+        machine.finish_checkout_creation_flight(&owner).await;
+        owner.leave();
+        assert!(
+            TransactionStateMachine::checkout_creation_in_flight(&state)
+                .await
+                .expect("marker state"),
+            "the owner must not clear a marker while a joined request is still in flight"
+        );
+
+        joined.leave();
+        owner.wait_for_other_participants().await;
+        machine
+            .clear_checkout_recovery_if_owner(&owner)
+            .await
+            .expect("owner clears marker after all joiners leave");
+        assert!(
+            !TransactionStateMachine::checkout_creation_in_flight(&state)
+                .await
+                .expect("marker state"),
+        );
+    }
+
+    #[tokio::test]
+    async fn checkout_commit_rejects_a_replaced_marker_or_planogram_generation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        sqlx::query(
+            "INSERT INTO machine_planogram_versions(planogram_version,active,source,applied_by,applied_at)
+             VALUES ('PLAN-A',1,'test',NULL,'2026-07-22T00:00:00Z')",
+        )
+        .execute(state.pool())
+        .await
+        .expect("seed planogram");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            Arc::new(BackendClient::new("http://127.0.0.1:9")),
+            Some("M-1".to_string()),
+            events_tx,
+        );
+        let owner = match machine
+            .reserve_checkout_creation(
+                "mock",
+                Some("mock".to_string()),
+                json!([{ "slotId": "A1", "quantity": 1 }]),
+                None,
+                "checkout:fenced".to_string(),
+            )
+            .await
+            .expect("owner flight")
+        {
+            CheckoutCreationRole::Owner(flight) => flight,
+            _ => panic!("first request must own the flight"),
+        };
+
+        sqlx::query("UPDATE machine_planogram_versions SET active = 0")
+            .execute(state.pool())
+            .await
+            .expect("deactivate old planogram");
+        sqlx::query(
+            "INSERT INTO machine_planogram_versions(planogram_version,active,source,applied_by,applied_at)
+             VALUES ('PLAN-B',1,'test',NULL,'2026-07-22T00:00:01Z')",
+        )
+        .execute(state.pool())
+        .await
+        .expect("activate replacement planogram");
+
+        assert_eq!(
+            machine.verify_checkout_recovery_owner(&owner).await,
+            Err("CHECKOUT_CREATION_RECOVERY_REPLACED".to_string())
+        );
+        assert!(
+            state
+                .current_transaction_snapshot()
+                .await
+                .expect("current state")
+                .is_none(),
+            "a response created under PLAN-A must not commit after PLAN-B activates"
+        );
     }
 
     #[tokio::test]
@@ -1574,6 +1878,8 @@ mod tests {
                     items: json!([{ "slotId": "A1", "quantity": 1 }]),
                     profile_snapshot: None,
                     idempotency_key: "checkout:restart-durable".to_string(),
+                    generation: String::new(),
+                    planogram_version: None,
                 },
             )
             .await
@@ -1667,6 +1973,8 @@ mod tests {
                     items: json!([{ "slotId": "A1", "quantity": 1 }]),
                     profile_snapshot: None,
                     idempotency_key: "checkout:recovery-gate".to_string(),
+                    generation: String::new(),
+                    planogram_version: None,
                 },
             )
             .await

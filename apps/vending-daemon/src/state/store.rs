@@ -749,6 +749,15 @@ pub struct LocalStateStore {
 }
 
 impl LocalStateStore {
+    pub async fn active_planogram_version(&self) -> Result<Option<String>, StoreError> {
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(active.map(|(planogram_version,)| planogram_version))
+    }
+
     pub async fn active_planogram_slot_by_id(
         &self,
         slot_id: &str,
