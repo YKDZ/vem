@@ -4,7 +4,7 @@ import {
   type VisionClientMessage,
   type VisionServerMessage,
 } from "@vem/shared/schemas/vision";
-import { createServer as createNetServer } from "node:net";
+import { createConnection, createServer as createNetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, type RawData } from "ws";
 
@@ -158,6 +158,22 @@ async function waitForSocketClose(socket: WebSocket): Promise<void> {
       resolve();
     });
   });
+}
+
+async function openIncompleteControlRequest(controlPort: number) {
+  const socket = createConnection({ host: "127.0.0.1", port: controlPort });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write(
+    "POST /control/departure HTTP/1.1\r\n" +
+      `Host: 127.0.0.1:${controlPort}\r\n` +
+      "Content-Type: application/json\r\n" +
+      "Content-Length: 2\r\n\r\n",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return socket;
 }
 
 type QueuedServerMessage =
@@ -342,6 +358,38 @@ describe("vision mock server - shutdown", () => {
       expect(await canListenOnPort(controlPort)).toBe(true);
     } finally {
       socket.terminate();
+      await closePromise.catch(() => undefined);
+    }
+  });
+
+  it("closes an incomplete HTTP control request before releasing the control listener", async () => {
+    const controlPort = await findAvailablePort();
+    const server = startMockVisionServer({
+      port: 0,
+      scenario: "controlled",
+      controlPort,
+    });
+    servers.push(server);
+    await server.ready;
+    const requestSocket = await openIncompleteControlRequest(controlPort);
+    const closePromise = server.close();
+
+    try {
+      await Promise.race([
+        closePromise,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(
+              new Error(
+                "mock server close waited for an incomplete control request",
+              ),
+            );
+          }, 500);
+        }),
+      ]);
+      expect(await canListenOnPort(controlPort)).toBe(true);
+    } finally {
+      requestSocket.destroy();
       await closePromise.catch(() => undefined);
     }
   });

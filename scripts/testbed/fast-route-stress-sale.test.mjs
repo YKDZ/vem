@@ -74,6 +74,21 @@ describe("controlled vision mock shutdown", () => {
       await closeServer(server);
     }
   });
+
+  it("does not wait or signal again after the child already exited by SIGTERM", async () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.signalCode = "SIGTERM";
+    const signals = [];
+    child.kill = (signal) => {
+      signals.push(signal);
+      return true;
+    };
+
+    await shutdownControlledVisionMock(child, 10, 0);
+
+    assert.deepEqual(signals, []);
+  });
 });
 
 describe("pending create-order cleanup", () => {
@@ -334,6 +349,11 @@ function validEvidence() {
       timestamp: "2026-07-18T04:00:00.000Z",
       requestedAt: "2026-07-18T04:00:00.000Z",
       completedAt: "2026-07-18T04:00:00.050Z",
+      traceBoundary: {
+        source: "installed_machine_runtime_trace_cdp",
+        entryCount: 1,
+        capturedAt: "2026-07-18T04:00:00.000Z",
+      },
       connectedRuntimeClients: 1,
       acceptedDeliveries: 1,
     },
@@ -406,7 +426,7 @@ function validEvidence() {
           type: "navigation",
           id: 2,
           intentType: "presence.departed",
-          sourceEventId: "departure-event-1",
+          sourceEventId: "presence-2:departure",
           decision: "rejected",
           reasonCode: "touchscreen_session_active",
           fromRoute: "#/checkout",
@@ -480,55 +500,47 @@ function validEvidence() {
 }
 
 describe("fast route stress sale tracer", () => {
-  it("awaits the correlated guarded Vision departure effect", async () => {
+  it("awaits a new stable Vision departure after the control-request trace boundary", async () => {
     let reads = 0;
-    const result = await waitForGuardedVisionDepartureTrace(null, "vision-1", {
-      timeoutMs: 100,
-      sleepFn: async () => {},
-      readTrace: async () => {
-        reads += 1;
-        return reads < 2
-          ? []
-          : [
-              {
-                type: "navigation",
-                intentType: "presence.departed",
-                sourceEventId: "vision-1",
-                decision: "rejected",
-                reasonCode: "active_transaction_route",
-                finalRoute: "#/payment",
-              },
-            ];
+    const traceBoundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      entryCount: 1,
+      capturedAt: "2026-07-18T04:00:00.000Z",
+    };
+    const result = await waitForGuardedVisionDepartureTrace(
+      null,
+      traceBoundary,
+      {
+        timeoutMs: 100,
+        sleepFn: async () => {},
+        readTrace: async () => {
+          reads += 1;
+          const priorDeparture = {
+            type: "navigation",
+            intentType: "presence.departed",
+            sourceEventId: "presence-7:departure",
+            decision: "rejected",
+            reasonCode: "active_transaction_route",
+            finalRoute: "#/checkout",
+          };
+          return reads < 2
+            ? [priorDeparture]
+            : [
+                priorDeparture,
+                {
+                  type: "navigation",
+                  intentType: "presence.departed",
+                  sourceEventId: "presence-8:departure",
+                  decision: "rejected",
+                  reasonCode: "active_transaction_route",
+                  finalRoute: "#/payment",
+                },
+              ];
+        },
       },
-    });
-    assert.equal(result.sourceEventId, "vision-1");
+    );
+    assert.equal(result.sourceEventId, "presence-8:departure");
     assert.equal(reads, 2);
-  });
-
-  it("waits for the guarded Vision departure after its stability window", async () => {
-    let elapsedMs = 0;
-    const result = await waitForGuardedVisionDepartureTrace(null, "vision-1", {
-      now: () => elapsedMs,
-      sleepFn: async (delayMs) => {
-        elapsedMs += delayMs;
-      },
-      readTrace: async () =>
-        elapsedMs < 10_000
-          ? []
-          : [
-              {
-                type: "navigation",
-                intentType: "presence.departed",
-                sourceEventId: "vision-1",
-                decision: "rejected",
-                reasonCode: "active_transaction_route",
-                finalRoute: "#/payment",
-              },
-            ],
-    });
-
-    assert.equal(result.sourceEventId, "vision-1");
-    assert.equal(elapsedMs, 10_000);
   });
 
   it("parses a guest-local tracer contract with handoff and guest input evidence", () => {
@@ -793,14 +805,14 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
-  it("fails closed when runtime trace does not bind the exact departed eventId", () => {
+  it("fails closed when the post-request trace has no stable departure session edge", () => {
     const evidence = validEvidence();
     evidence.machineRuntimeTrace.entries.find(
       (entry) => entry.intentType === "presence.departed",
     ).sourceEventId = "departure-event-other";
     assert.throws(
       () => validateFastRouteStressSaleEvidence(evidence),
-      /guarded Vision departure navigation effect for the accepted eventId/,
+      /guarded stable Vision departure navigation effect after the control-request boundary/,
     );
   });
 

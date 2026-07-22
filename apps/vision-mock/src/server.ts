@@ -640,6 +640,7 @@ export function startMockVisionServer(
                 }
                 resolve();
               });
+              controlServer.closeAllConnections();
             }),
       ]);
     },

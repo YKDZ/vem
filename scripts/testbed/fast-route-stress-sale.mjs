@@ -900,11 +900,16 @@ export function validateFastRouteStressSaleEvidence(input) {
       "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
     );
   }
-  const guardedDeparture = runtimeTrace.find(
+  const guardedDepartureTrace = traceEntriesAfterBoundary(
+    runtimeTrace,
+    vision.traceBoundary,
+    "Vision departure control-request trace boundary",
+  );
+  const guardedDeparture = guardedDepartureTrace.find(
     (entry) =>
       entry.type === "navigation" &&
       entry.intentType === "presence.departed" &&
-      entry.sourceEventId === vision.eventId &&
+      /^presence-\d+:departure$/.test(entry.sourceEventId ?? "") &&
       ["touchscreen_session_active", "active_transaction_route"].includes(
         entry.reasonCode,
       ) &&
@@ -913,7 +918,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   );
   if (!guardedDeparture) {
     throw new Error(
-      "installed runtime trace must contain the guarded Vision departure navigation effect for the accepted eventId",
+      "installed runtime trace must contain the guarded stable Vision departure navigation effect after the control-request boundary",
     );
   }
   const projectionRefresh = runtimeTrace.find(
@@ -1390,7 +1395,7 @@ async function waitForRepeatedCustomerTouchTrace(
 
 export async function waitForGuardedVisionDepartureTrace(
   client,
-  eventId,
+  traceBoundary,
   {
     timeoutMs = 15_000,
     readTrace = readRuntimeTrace,
@@ -1402,11 +1407,15 @@ export async function waitForGuardedVisionDepartureTrace(
   let lastTrace = [];
   do {
     lastTrace = await readTrace(client);
-    const departure = lastTrace.find(
+    const departure = traceEntriesAfterBoundary(
+      lastTrace,
+      traceBoundary,
+      "Vision departure control-request trace boundary",
+    ).find(
       (entry) =>
         entry?.type === "navigation" &&
         entry?.intentType === "presence.departed" &&
-        entry?.sourceEventId === eventId &&
+        /^presence-\d+:departure$/.test(entry?.sourceEventId ?? "") &&
         entry?.decision === "rejected" &&
         ["touchscreen_session_active", "active_transaction_route"].includes(
           entry?.reasonCode,
@@ -1417,7 +1426,7 @@ export async function waitForGuardedVisionDepartureTrace(
     await sleepFn(25);
   } while (now() < deadline);
   throw new Error(
-    `installed runtime did not trace guarded Vision departure ${eventId}: ${JSON.stringify(lastTrace.slice(-8))}`,
+    `installed runtime did not trace a guarded stable Vision departure after the control-request boundary: ${JSON.stringify(lastTrace.slice(-8))}`,
   );
 }
 
@@ -1846,8 +1855,12 @@ export async function waitForControlledVisionRuntimeClient(controlPort) {
   );
 }
 
+function hasChildExited(child) {
+  return child.exitCode != null || child.signalCode != null;
+}
+
 async function waitForChildExit(child, timeoutMs) {
-  if (child.exitCode !== null) return true;
+  if (hasChildExited(child)) return true;
   return await new Promise((resolvePromise) => {
     const timer = setTimeout(() => {
       child.off("exit", onExit);
@@ -1858,7 +1871,7 @@ async function waitForChildExit(child, timeoutMs) {
       resolvePromise(true);
     };
     child.once("exit", onExit);
-    if (child.exitCode !== null) {
+    if (hasChildExited(child)) {
       clearTimeout(timer);
       child.off("exit", onExit);
       resolvePromise(true);
@@ -1888,7 +1901,7 @@ export async function shutdownControlledVisionMock(
   visionPort = 7892,
 ) {
   if (!child) return;
-  if (child.exitCode == null) {
+  if (!hasChildExited(child)) {
     child.kill("SIGTERM");
     if (!(await waitForChildExit(child, timeoutMs))) {
       child.kill("SIGKILL");
@@ -2109,6 +2122,10 @@ async function runFastRouteStressSale(options) {
       );
     stage = "vision-departure-during-create-order";
     const pendingConfirmedAt = new Date().toISOString();
+    const visionDepartureTraceBoundary = await captureRuntimeTraceBoundary(
+      client,
+      "Vision departure control-request trace boundary",
+    );
     const visionRequestedAt = new Date().toISOString();
     let visionDeliveryResult;
     try {
@@ -2127,10 +2144,14 @@ async function runFastRouteStressSale(options) {
     }
     const visionDelivery = {
       ...visionDeliveryResult,
+      traceBoundary: visionDepartureTraceBoundary,
       requestedAt: visionRequestedAt,
       completedAt: new Date().toISOString(),
     };
-    await waitForGuardedVisionDepartureTrace(client, visionDelivery.eventId);
+    await waitForGuardedVisionDepartureTrace(
+      client,
+      visionDepartureTraceBoundary,
+    );
     const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
       client,
       "repeated payment touch pre-dispatch trace boundary",
