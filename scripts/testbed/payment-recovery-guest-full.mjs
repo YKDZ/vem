@@ -188,23 +188,29 @@ export async function waitForMachineOnline(
     `Service API machine ${code} did not become online (last status: ${lastStatus ?? "unknown"})`,
   );
 }
-export function selectCanonicalSlot(saleView, fixture) {
-  const slotDisplayLabel = required(
-    fixture?.slotDisplayLabel,
-    "fixture.slotDisplayLabel",
-  );
+export function selectFixtureSlot(saleView, fixture) {
+  const slotId = required(fixture?.slotId, "fixture.slotId");
   const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotDisplayLabel === slotDisplayLabel,
+    (entry) => entry?.slotId === slotId,
   );
-  if (!item?.slotId || !item.inventoryId || saleView?.planogramVersion == null)
+  if (!item?.inventoryId || saleView?.planogramVersion == null)
     throw new Error(
-      `canonical slot ${slotDisplayLabel} is not saleable in daemon sale-view`,
+      `fixture slot ${slotId} is not saleable in daemon sale-view`,
     );
   return {
-    slotDisplayLabel,
-    slotId: item.slotId,
+    slotId,
     inventoryId: item.inventoryId,
     planogramVersion: saleView.planogramVersion,
+  };
+}
+export function buildCreateOrderRequest(slot) {
+  return {
+    inventoryId: required(slot?.inventoryId, "slot.inventoryId"),
+    quantity: 1,
+    planogramVersion: required(slot?.planogramVersion, "slot.planogramVersion"),
+    slotId: required(slot?.slotId, "slot.slotId"),
+    paymentMethod: "mock",
+    paymentProviderCode: "mock",
   };
 }
 export function mqttEvidenceProvesNoDispense(evidence) {
@@ -805,17 +811,9 @@ export async function runPaymentRecoveryGuest(options) {
     const fixture =
       input.fixtureAllocation?.[options.fixtureKey ?? "paymentRecovery"] ??
       input.fixtureAllocation?.sale;
-    const slot = selectCanonicalSlot(saleView, fixture);
+    const slot = selectFixtureSlot(saleView, fixture);
     report.inventory = { id: slot.inventoryId, slotId: slot.slotId };
-    const orderRequest = {
-      inventoryId: slot.inventoryId,
-      quantity: 1,
-      planogramVersion: slot.planogramVersion,
-      slotId: slot.slotId,
-      slotDisplayLabel: slot.slotDisplayLabel,
-      paymentMethod: "mock",
-      paymentProviderCode: "mock",
-    };
+    const orderRequest = buildCreateOrderRequest(slot);
     const adminAccessToken = await refreshAdminAccessToken(input);
     await waitForMachineOnline(input, machineCode, adminAccessToken);
 

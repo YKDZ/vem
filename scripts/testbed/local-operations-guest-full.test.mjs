@@ -5,11 +5,11 @@ import {
   applyRestartedRuntimeHandoff,
   buildInstalledRuntimeRestartScript,
   collectAudioPreferencePersistenceEvidence,
-  canonicalPlanogramSlot,
   manualDispenseFrames,
   normalizeAudioPreferences,
   parseLocalOperationsGuestArgs,
   runLocalOperationsGuest,
+  selectPlanogramSlot,
   validateLocalOperationsEvidence,
 } from "./local-operations-guest-full.mjs";
 
@@ -29,26 +29,40 @@ describe("local operations guest full", () => {
       "full",
     );
   });
-  it("uses canonical slotDisplayLabel and planogram identity", () => {
+  it("resolves the fixture slotId from the planogram regardless of its display label", () => {
     assert.deepEqual(
-      canonicalPlanogramSlot(
+      selectPlanogramSlot(
         {
           planogramVersion: "P-8",
           items: [
             {
-              slotDisplayLabel: "R7C1",
+              slotDisplayLabel: "R1C1",
               slotId: "slot-7",
               inventoryId: "inv-7",
+              rowNo: 1,
+              cellNo: 1,
             },
           ],
         },
-        "R7C1",
-      ).planogramVersion,
-      "P-8",
+        { slotId: "slot-7" },
+      ),
+      {
+        slotDisplayLabel: "R1C1",
+        slotId: "slot-7",
+        inventoryId: "inv-7",
+        planogramVersion: "P-8",
+        rowNo: 1,
+        cellNo: 1,
+      },
     );
     assert.throws(
       () =>
-        canonicalPlanogramSlot({ planogramVersion: "P-8", items: [] }, "R7C1"),
+        selectPlanogramSlot(
+          { planogramVersion: "P-8", items: [] },
+          {
+            slotId: "slot-7",
+          },
+        ),
       /unavailable/,
     );
   });
@@ -265,7 +279,7 @@ describe("local operations guest full", () => {
       runId: "RUN-07",
       machineCode: "VEM-TESTBED-01",
       fixtureAllocation: {
-        localOperations: { slotDisplayLabel: "R7C1" },
+        localOperations: { slotId: "slot-7" },
       },
       hostControlPlane: {
         endpoint: "http://127.0.0.1:7788",
@@ -331,9 +345,11 @@ describe("local operations guest full", () => {
               planogramVersion: "P-8",
               items: [
                 {
-                  slotDisplayLabel: "R7C1",
+                  slotDisplayLabel: "R1C1",
                   slotId: "slot-7",
                   inventoryId: "inv-7",
+                  rowNo: 1,
+                  cellNo: 1,
                 },
               ],
             };
@@ -382,6 +398,14 @@ describe("local operations guest full", () => {
       writes.at(-1).value.audioPreferencePersistence.target.volume,
       0.35,
     );
+    assert.deepEqual(writes.at(-1).value.planogram, {
+      canonical: true,
+      planogramVersion: "P-8",
+      slotDisplayLabel: "R1C1",
+      slotId: "slot-7",
+      rowNo: 1,
+      cellNo: 1,
+    });
     assert.deepEqual(manualDispenseRequests, [
       {
         idempotencyKey: "RUN-07-local-operations",

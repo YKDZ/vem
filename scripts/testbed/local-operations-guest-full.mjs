@@ -727,16 +727,24 @@ async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
     serialScenario: "normal",
   });
 }
-export function canonicalPlanogramSlot(saleView, slotDisplayLabel) {
-  const code = required(slotDisplayLabel, "slotDisplayLabel");
+export function selectPlanogramSlot(saleView, fixture) {
+  const slotId = required(fixture?.slotId, "fixture.slotId");
   const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotDisplayLabel === code,
+    (entry) => entry?.slotId === slotId,
   );
-  if (!item?.slotId || !item.inventoryId || !saleView?.planogramVersion)
-    throw new Error(`active canonical planogram slot ${code} is unavailable`);
+  if (
+    !item?.inventoryId ||
+    !saleView?.planogramVersion ||
+    !Number.isInteger(item.rowNo) ||
+    !Number.isInteger(item.cellNo)
+  )
+    throw new Error(`active planogram fixture slot ${slotId} is unavailable`);
   return {
-    slotDisplayLabel: code,
-    slotId: item.slotId,
+    slotDisplayLabel: required(
+      item.slotDisplayLabel,
+      "sale-view slotDisplayLabel",
+    ),
+    slotId,
     inventoryId: item.inventoryId,
     planogramVersion: saleView.planogramVersion,
     rowNo: item.rowNo,
@@ -817,12 +825,14 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.local-operations`,
     });
     const saleView = await daemonRequest(handoff, "/v1/sale-view");
-    const slot = canonicalPlanogramSlot(saleView, fixture?.slotDisplayLabel);
+    const slot = selectPlanogramSlot(saleView, fixture);
     report.planogram = {
       canonical: true,
       planogramVersion: slot.planogramVersion,
       slotDisplayLabel: slot.slotDisplayLabel,
       slotId: slot.slotId,
+      rowNo: slot.rowNo,
+      cellNo: slot.cellNo,
     };
     report.hardware = {
       selfCheck: await daemonRequest(handoff, "/v1/hardware/self-check", {}),

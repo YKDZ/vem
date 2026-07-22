@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  buildCreateOrderRequest,
   mqttEvidenceProvesNoDispense,
   refreshAdminAccessToken,
   unwrapServiceApiEnvelope,
   waitForMachineOnline,
   parsePaymentRecoveryGuestArgs,
-  selectCanonicalSlot,
+  selectFixtureSlot,
   validatePaymentRecoveryEvidence,
 } from "./payment-recovery-guest-full.mjs";
 
@@ -72,22 +73,42 @@ describe("payment recovery guest full", () => {
       id: 17,
     });
   });
-  it("resolves a slot from daemon canonical sale-view", () => {
+  it("resolves the fixture slotId from daemon sale-view regardless of its display label", () => {
     assert.deepEqual(
-      selectCanonicalSlot(
+      selectFixtureSlot(
         {
           planogramVersion: "P-7",
           items: [
-            { slotDisplayLabel: "A1", slotId: "slot-1", inventoryId: "inv-1" },
+            {
+              slotDisplayLabel: "R1C1",
+              slotId: "slot-1",
+              inventoryId: "inv-1",
+            },
           ],
         },
-        { slotDisplayLabel: "A1" },
+        { slotId: "slot-1" },
       ),
       {
-        slotDisplayLabel: "A1",
         slotId: "slot-1",
         inventoryId: "inv-1",
         planogramVersion: "P-7",
+      },
+    );
+  });
+  it("builds strict create-order payloads without a slot display label", () => {
+    assert.deepEqual(
+      buildCreateOrderRequest({
+        slotId: "slot-1",
+        inventoryId: "inv-1",
+        planogramVersion: "P-7",
+      }),
+      {
+        inventoryId: "inv-1",
+        quantity: 1,
+        planogramVersion: "P-7",
+        slotId: "slot-1",
+        paymentMethod: "mock",
+        paymentProviderCode: "mock",
       },
     );
   });
