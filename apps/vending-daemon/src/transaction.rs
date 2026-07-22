@@ -1259,6 +1259,7 @@ fn is_deterministic_checkout_creation_error(error: &str) -> bool {
         || lower.contains("offline")
         || lower.contains("network")
         || lower.contains("connection")
+        || lower.contains("backend_http_error: 5")
         || lower.contains("status: 5")
         || lower.contains("status: 504"))
 }
@@ -1354,6 +1355,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    #[test]
+    fn checkout_creation_keeps_recovery_marker_for_backend_5xx() {
+        assert!(!is_deterministic_checkout_creation_error(
+            "BACKEND_HTTP_ERROR: 500 internal server error"
+        ));
+        assert!(!is_deterministic_checkout_creation_error(
+            "BACKEND_HTTP_ERROR: 503 service unavailable"
+        ));
+        assert!(is_deterministic_checkout_creation_error(
+            "BACKEND_HTTP_ERROR: 409 inventory unavailable"
+        ));
+    }
 
     fn transaction_snapshot_with_status(
         order_status: &str,
