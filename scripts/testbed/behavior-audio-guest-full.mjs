@@ -13,6 +13,7 @@ import {
   waitForControlledVisionRuntimeClient,
   waitForSaleStartReady,
 } from "./fast-route-stress-sale.mjs";
+import { setMachineUiAudioPreferences } from "./local-operations-guest-full.mjs";
 import {
   activateVisibleSelector,
   captureScreenshot,
@@ -371,6 +372,7 @@ function defaultDependencies() {
     captureScreenshotArtifact,
     readTrace: (client) =>
       evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []"),
+    setAudioPreferences: setMachineUiAudioPreferences,
     fetchJson,
     controlPlaneRequest,
     ensureControlledVisionMock,
@@ -655,6 +657,53 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       });
     }
 
+    await dependencies.setAudioPreferences(client, {
+      volume: 0.35,
+      cuesEnabled: true,
+      presenceCuesEnabled: false,
+      transactionCuesEnabled: true,
+    });
+    await dependencies.evaluateExpression(
+      client,
+      'location.hash = "#/catalog"',
+    );
+    await dependencies.waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    boundary = traceId(await readTrace());
+    await injectVisionPresence(guestInput, "empty", dependencies);
+    await dependencies.sleep(SUSTAINED_EMPTY_MS);
+    await injectVisionPresence(guestInput, "approach", dependencies);
+    const disabledWelcome = await waitForTraceEntry(
+      readTrace,
+      boundary,
+      (entry) =>
+        entry?.type === "audio_rejected" &&
+        String(entry?.transitionId).endsWith(":welcome") &&
+        entry?.message === "audio cue preference disabled",
+      dependencies,
+      "disabled presence welcome rejection",
+    );
+    checkpoints.push({
+      label: "disabled-presence-welcome-rejected",
+      traceId: Number(disabledWelcome.entry.id),
+    });
+    await dependencies.setAudioPreferences(client, {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    });
+    await dependencies.evaluateExpression(
+      client,
+      'location.hash = "#/catalog"',
+    );
+    await dependencies.waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+
     const audioStop = await dependencies.controlPlaneRequest(
       guestInput,
       `/v1/audio-captures/${audioCaptureId}/stop`,
@@ -707,6 +756,10 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
         },
         supportedCategoryKeys,
         categories,
+        preferenceSuppression: {
+          transitionId: disabledWelcome.entry.transitionId,
+          rejectedTraceId: Number(disabledWelcome.entry.id),
+        },
       },
     };
     runtimeTrace = await readTrace();

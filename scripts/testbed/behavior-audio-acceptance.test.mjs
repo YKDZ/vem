@@ -108,6 +108,17 @@ function passingAcceptance() {
         message: null,
       },
       ...traceLifecycle(underwear, 15, "2026-07-22T08:00:15.000Z"),
+      {
+        type: "audio_rejected",
+        id: 19,
+        at: "2026-07-22T08:00:20.000Z",
+        recordedAt: "2026-07-22T08:00:20.000Z",
+        transitionId: "vision:presence-4:welcome",
+        requestId: "audio-request-19",
+        terminalOutcomeId: null,
+        outcome: null,
+        message: "audio cue preference disabled",
+      },
     ],
     checkpoints: [
       { label: "stable-arrival-settled", traceId: 4 },
@@ -121,6 +132,7 @@ function passingAcceptance() {
       { label: "category-underwear-entry", traceId: 14 },
       { label: "category-underwear-detail", traceId: 19 },
       { label: "category-underwear-checkout", traceId: 19 },
+      { label: "disabled-presence-welcome-rejected", traceId: 19 },
     ],
     scenario: {
       welcome: {
@@ -129,6 +141,10 @@ function passingAcceptance() {
         rearmedTransitionId: rearmedWelcome,
       },
       supportedCategoryKeys: ["socks", "underwear"],
+      preferenceSuppression: {
+        transitionId: "vision:presence-4:welcome",
+        rejectedTraceId: 19,
+      },
       categories: [
         {
           key: "socks",
@@ -214,6 +230,10 @@ describe("behavior audio acceptance", () => {
             (entry.label === "transient-empty-recovered" ? 4 : 0)
           : entry.traceId + 4,
     }));
+    acceptance.scenario.preferenceSuppression.rejectedTraceId =
+      acceptance.runtimeTrace.find(
+        (entry) => entry.type === "audio_rejected",
+      ).id;
     assert.throws(
       () => validateBehaviorAudioAcceptanceEvidence(acceptance),
       /transient empty incorrectly rearmed welcome/,
@@ -267,6 +287,10 @@ describe("behavior audio acceptance", () => {
     acceptance.checkpoints.find(
       (entry) => entry.label === "category-underwear-checkout",
     ).traceId = 21;
+    acceptance.scenario.preferenceSuppression.rejectedTraceId =
+      acceptance.runtimeTrace.find(
+        (entry) => entry.type === "audio_rejected",
+      ).id;
     assert.throws(
       () => validateBehaviorAudioAcceptanceEvidence(acceptance),
       /category socks introduction started too late/,

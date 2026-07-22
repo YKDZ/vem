@@ -186,6 +186,17 @@ function report() {
           outcome: "completed",
           message: null,
         },
+        {
+          type: "audio_rejected",
+          id: 14,
+          at: "2026-07-22T08:00:11.000Z",
+          recordedAt: "2026-07-22T08:00:11.000Z",
+          transitionId: "vision:presence-4:welcome",
+          requestId: "audio-request-14",
+          terminalOutcomeId: null,
+          outcome: null,
+          message: "audio cue preference disabled",
+        },
       ],
       checkpoints: [
         { label: "stable-arrival-settled", traceId: 4 },
@@ -196,6 +207,7 @@ function report() {
         { label: "category-socks-entry", traceId: 9 },
         { label: "category-socks-detail", traceId: 13 },
         { label: "category-socks-checkout", traceId: 13 },
+        { label: "disabled-presence-welcome-rejected", traceId: 14 },
       ],
       scenario: {
         welcome: {
@@ -204,6 +216,10 @@ function report() {
           rearmedTransitionId: "vision:presence-3:welcome",
         },
         supportedCategoryKeys: ["socks"],
+        preferenceSuppression: {
+          transitionId: "vision:presence-4:welcome",
+          rejectedTraceId: 14,
+        },
         categories: [
           {
             key: "socks",
@@ -369,6 +385,20 @@ describe("behavior audio guest full", () => {
               appendLifecycle("vision:presence-1:welcome");
             if (approachCount === 4)
               appendLifecycle("vision:presence-3:welcome");
+            if (approachCount === 5) {
+              const at = traceTimestamp();
+              trace.push({
+                type: "audio_rejected",
+                id: nextId++,
+                at,
+                recordedAt: at,
+                transitionId: "vision:presence-4:welcome",
+                requestId: `audio-request-${nextId}`,
+                terminalOutcomeId: null,
+                outcome: null,
+                message: "audio cue preference disabled",
+              });
+            }
           }
           return { ok: true };
         },
@@ -401,6 +431,12 @@ describe("behavior audio guest full", () => {
             ? ["socks", "underwear"]
             : structuredClone(trace),
         readTrace: async () => structuredClone(trace),
+        setAudioPreferences: async (_client, preferences) => {
+          calls.push(
+            `audio-preferences:${preferences.presenceCuesEnabled ? "enabled" : "disabled"}`,
+          );
+          return preferences;
+        },
         sleep: async (milliseconds) => {
           now += milliseconds;
           if (milliseconds === 3_500) {
@@ -467,11 +503,12 @@ describe("behavior audio guest full", () => {
         "vision:approach",
         "vision:approach",
         "vision:approach",
+        "vision:approach",
       ],
     );
     assert.deepEqual(
       calls.filter((value) => value === "vision:empty"),
-      ["vision:empty", "vision:empty"],
+      ["vision:empty", "vision:empty", "vision:empty"],
     );
     assert.ok(
       calls.includes(

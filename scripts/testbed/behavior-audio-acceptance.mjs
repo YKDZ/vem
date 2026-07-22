@@ -229,6 +229,24 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
   );
   const scenario = acceptance?.scenario ?? {};
 
+  const rejectedTraceId = Number(
+    scenario?.preferenceSuppression?.rejectedTraceId,
+  );
+  const rejectedTransitionId = requiredString(
+    scenario?.preferenceSuppression?.transitionId,
+    "scenario.preferenceSuppression.transitionId",
+  );
+  const rejectedCue = trace.find(
+    (entry) =>
+      entry?.id === rejectedTraceId &&
+      entry?.type === "audio_rejected" &&
+      entry?.transitionId === rejectedTransitionId &&
+      entry?.message === "audio cue preference disabled",
+  );
+  if (!rejectedCue) {
+    throw new Error("disabled presence cue was not rejected by the runtime");
+  }
+
   const initialTransitionId = requiredString(
     scenario?.welcome?.initialTransitionId,
     "scenario.welcome.initialTransitionId",
