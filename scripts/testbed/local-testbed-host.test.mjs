@@ -223,10 +223,7 @@ describe("tracked local testbed host lifecycle", () => {
       runId: "display-proof",
       hostNow: "2026-07-20T11:00:00.000Z",
     });
-    assert.match(
-      admission[1].input,
-      /C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report\.json/,
-    );
+    assert.match(admission[1].input, /CurrentHorizontalResolution/);
   });
 
   it("prepares the published domain audio output for the unprivileged QEMU process", async () => {
@@ -273,13 +270,16 @@ describe("tracked local testbed host lifecycle", () => {
       plan[1].args.at(-1),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
     );
-    assert.match(plan[1].input, /interactive-display-report\.json/);
-    assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
+    assert.doesNotMatch(plan[1].input, /interactive-display-report\.json/);
     assert.match(plan[1].input, /CurrentHorizontalResolution/);
     assert.match(plan[1].input, /CurrentVerticalResolution/);
     assert.match(plan[1].input, /VEN_1AF4&DEV_1050/);
     assert.match(plan[1].input, /ConfigManagerErrorCode/);
     assert.equal(plan[1].type, "assert-interactive-display");
+    assert.ok(
+      plan[1].args.at(-1).length <= 8191,
+      "display admission must fit the Windows command-line boundary",
+    );
     assert.equal(
       plan[0].path,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -351,7 +351,7 @@ describe("tracked local testbed host lifecycle", () => {
           args.at(-1),
           /^powershell -NoProfile -NonInteractive -EncodedCommand /,
         );
-        if (!input.includes("interactive-display-report")) {
+        if (!input.includes("CurrentHorizontalResolution")) {
           return { stdout: "ok\n" };
         }
         return {

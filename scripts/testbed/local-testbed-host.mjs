@@ -209,11 +209,6 @@ $lines = @(quser 2>$null | Select-Object -Skip 1)
 $sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } | Where-Object { $null -ne $_ })
 $session = @($sessions | Where-Object { Test-ExpectedInteractiveSession $_ $expectedUser } | Select-Object -First 1)
 if ($session.Count -eq 0) { throw "interactive session for $expectedUser was not observed" }
-$displayReportPath = 'C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json'
-if (-not (Test-Path -LiteralPath $displayReportPath -PathType Leaf)) { throw 'interactive display report was not found' }
-$displayReport = Get-Content -LiteralPath $displayReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$currentBootIdentity = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o')
-if ($null -ne $displayReport.bootIdentity -and [string]$displayReport.bootIdentity -ne $currentBootIdentity) { throw 'interactive display report belongs to an earlier Windows boot' }
 $videoController = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object {
   [string]$_.PNPDeviceID -match '^PCI\\VEN_1AF4&DEV_1050' -and
   [string]$_.Status -eq 'OK' -and
