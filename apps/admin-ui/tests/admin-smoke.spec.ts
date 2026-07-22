@@ -190,21 +190,23 @@ test.describe("admin-smoke", () => {
       });
 
       await page.goto("/machines");
-      await page.getByRole("button", { name: "环境" }).click();
+      await page.getByRole("button", { name: /环\s*境/ }).click();
       const drawer = page.getByRole("dialog", {
         name: /环境 - E2E-ENVIRONMENT-001/,
       });
       await expect(drawer).toBeVisible();
       await drawer.getByRole("button", { name: "开启" }).click();
-      await expect(page.locator(".ant-message-notice")).toContainText(
-        "空调控制已完成",
-      );
+      await expect(
+        page.getByRole("alert").filter({ hasText: "空调控制已完成" }),
+      ).toBeVisible();
 
       await drawer.locator("select").selectOption("3");
       await drawer.getByRole("button", { name: "设定" }).last().click();
-      await expect(page.locator(".ant-message-notice")).toContainText(
-        "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
-      );
+      await expect(
+        page.getByRole("alert").filter({
+          hasText: "出风口与风速控制失败：控制器操作过于频繁，请稍后重试（E4）",
+        }),
+      ).toBeVisible();
       await expect(drawer).not.toContainText("失败：");
     });
 

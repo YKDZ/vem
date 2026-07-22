@@ -17,6 +17,12 @@ const serverConditions = [
   "node",
   "development|production",
 ];
+const apiProxy = {
+  "/api": {
+    target: apiProxyTarget,
+    changeOrigin: true,
+  },
+};
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -33,12 +39,10 @@ export default defineConfig({
     },
   },
   server: {
-    proxy: {
-      "/api": {
-        target: apiProxyTarget,
-        changeOrigin: true,
-      },
-    },
+    proxy: apiProxy,
+  },
+  preview: {
+    proxy: apiProxy,
   },
   test: {
     include: ["src/**/*.{spec,test}.ts"],
