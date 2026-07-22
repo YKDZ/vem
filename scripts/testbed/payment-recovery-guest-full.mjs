@@ -233,6 +233,7 @@ export function validatePaymentRecoveryEvidence(report) {
       !attempt.order?.id ||
       attempt.order.paymentId !== attempt.payment?.id ||
       !attempt.expectedTerminal ||
+      typeof attempt.expectedTerminal.customerCopy !== "string" ||
       attempt.terminal?.paymentStatus !==
         attempt.expectedTerminal.paymentStatus ||
       attempt.terminal?.orderStatus !== attempt.expectedTerminal.orderStatus ||
@@ -306,7 +307,11 @@ export function validatePaymentRecoveryEvidence(report) {
       attempt.customer?.resultKind !== attempt.expectedTerminal.resultKind ||
       typeof attempt.customer?.text !== "string" ||
       !/[\u3400-\u9fff]/.test(attempt.customer.text) ||
+      !attempt.customer.text.includes(attempt.expectedTerminal.customerCopy) ||
       attempt.customer.text.includes(attempt.payment.paymentNo) ||
+      /(?:provider|HTTP|MQTT|IPC|COM\d|schema|query_failed)/i.test(
+        attempt.customer.text,
+      ) ||
       attempt.technicalEvidence?.runtimeTrace?.source !==
         "installed_machine_runtime_trace_cdp" ||
       attempt.technicalEvidence.runtimeTrace.orderId !== attempt.order.id ||
@@ -561,6 +566,8 @@ async function waitForCustomerTerminal(client, order, expected) {
       surface?.orderId === order.orderId &&
       surface?.paymentId === order.paymentId &&
       surface?.resultKind === expected.resultKind &&
+      typeof surface?.text === "string" &&
+      surface.text.includes(expected.customerCopy) &&
       surface?.trace?.orderId === order.orderId &&
       surface?.trace?.paymentId === order.paymentId,
     60_000,
@@ -573,24 +580,28 @@ const RECOVERY_TERMINALS = Object.freeze({
     orderStatus: "canceled",
     paymentState: "payment_failed",
     resultKind: "payment_failed",
+    customerCopy: "支付失败",
   },
   query_failure: {
     paymentStatus: "canceled",
     orderStatus: "canceled",
     paymentState: "canceled",
     resultKind: "closed",
+    customerCopy: "订单已关闭",
   },
   canceled: {
     paymentStatus: "canceled",
     orderStatus: "canceled",
     paymentState: "canceled",
     resultKind: "closed",
+    customerCopy: "订单已关闭",
   },
   expired: {
     paymentStatus: "expired",
     orderStatus: "payment_expired",
     paymentState: "payment_expired",
     resultKind: "payment_expired",
+    customerCopy: "支付超时",
   },
 });
 

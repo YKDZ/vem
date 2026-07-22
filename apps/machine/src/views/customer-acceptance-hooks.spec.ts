@@ -247,4 +247,30 @@ describe("customer acceptance hooks", () => {
     expect(submit?.getAttribute("data-payment-method")).toBe("qr_code");
     expect(submit?.getAttribute("data-payment-provider")).toBe("alipay");
   });
+
+  it("renders projected payment creation copy instead of a raw daemon failure", async () => {
+    applySaleView();
+    applySaleCapability();
+    createOrderMock.mockRejectedValueOnce(
+      new Error(
+        "HTTP 502 provider MQTT IPC serial COM3 schema validation failed",
+      ),
+    );
+    const checkoutStore = useCheckoutStore();
+    const selectedItem = useCatalogStore().availableItems[0];
+    if (!selectedItem) throw new Error("expected saleable catalog item");
+    checkoutStore.selectItem(selectedItem);
+
+    const host = await mountView(CheckoutView);
+    const submit = host.querySelector('[data-test="checkout-submit"]');
+    submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("支付订单创建失败，请稍后重试");
+    });
+    expect(host.textContent).not.toContain("HTTP 502");
+    expect(host.textContent).not.toContain("MQTT");
+    expect(host.textContent).not.toContain("COM3");
+    expect(host.textContent).not.toContain("schema validation");
+  });
 });

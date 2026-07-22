@@ -3,6 +3,7 @@ import type { RouteLocationRaw, Router } from "vue-router";
 
 import { watch, type WatchStopHandle } from "vue";
 
+import { installCustomerErrorEvidenceTrace } from "@/runtime/customer-error-evidence";
 import {
   createMachineRuntimeTrace,
   type MachineRuntimeNavigationTraceRecord,
@@ -396,6 +397,7 @@ export function installTransactionRouteAuthority(
 ): () => void {
   installedAuthority?.dispose();
   installedAuthority = createMachineNavigationAuthority(router, pinia);
+  installCustomerErrorEvidenceTrace(installedAuthority.trace.runtimeTrace);
   if (typeof window !== "undefined") {
     Object.defineProperty(window, "__VEM_MACHINE_RUNTIME_TRACE__", {
       configurable: true,
@@ -405,6 +407,7 @@ export function installTransactionRouteAuthority(
   return () => {
     installedAuthority?.dispose();
     installedAuthority = null;
+    installCustomerErrorEvidenceTrace(null);
     if (typeof window !== "undefined") {
       delete (window as Window & { __VEM_MACHINE_RUNTIME_TRACE__?: unknown })
         .__VEM_MACHINE_RUNTIME_TRACE__;

@@ -11,6 +11,7 @@ import type { CheckoutResultKind } from "@/types/checkout";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
+import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import {
   installedMachineRuntimeTrace,
@@ -58,7 +59,7 @@ const copyMap: Record<CustomerCheckoutResultDisplayIntent, ResultCopy> = {
   },
   refund_pending: {
     title: "退款处理中",
-    subtitle: "出货异常已进入退款流程，请留意原支付渠道通知。",
+    subtitle: projectCustomerError("refund").message,
     tone: "warning",
     icon: "↺",
   },

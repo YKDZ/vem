@@ -61,14 +61,28 @@ export type MachineRuntimeTransactionSurfaceTraceEntry = {
   resultDisplayIntent: string | null;
 };
 
+export type MachineRuntimeCustomerErrorTraceEntry = {
+  type: "customer_error";
+  id: number;
+  at: string;
+  recordedAt: string;
+  stage: string;
+  customerMessage: string;
+  technicalMessage: string;
+  operation: string;
+  orderNo: string | null;
+};
+
 export type MachineRuntimeTraceEntry =
   | MachineRuntimeNavigationTraceRecord
   | MachineRuntimeAudioTraceEntry
-  | MachineRuntimeTransactionSurfaceTraceEntry;
+  | MachineRuntimeTransactionSurfaceTraceEntry
+  | MachineRuntimeCustomerErrorTraceEntry;
 
 type MachineRuntimeRecordedEntry =
   | MachineRuntimeAudioTraceEntry
-  | MachineRuntimeTransactionSurfaceTraceEntry;
+  | MachineRuntimeTransactionSurfaceTraceEntry
+  | MachineRuntimeCustomerErrorTraceEntry;
 
 // Omit must distribute over this discriminated union. A plain Omit collapses
 // the member-specific fields and makes valid trace records fail type checking.

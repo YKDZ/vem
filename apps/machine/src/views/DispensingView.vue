@@ -4,6 +4,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
+import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -22,6 +23,7 @@ const pickupReminder = computed(
 const hasCustomerVisibleError = computed(
   () => dispensingView.value?.customerVisibleError !== null,
 );
+const dispenseError = computed(() => projectCustomerError("dispense"));
 const orderCredential = computed(() => checkoutView.value.orderCredential);
 const pickupEvidenceSurface = computed(() => {
   if (pickupReminder.value?.stage === "pickup_completed")
@@ -47,7 +49,7 @@ const titleText = computed(() =>
 );
 const pickupTitle = computed(() =>
   hasCustomerVisibleError.value
-    ? "出货遇到问题"
+    ? dispenseError.value.message
     : pickupReminder.value?.stage === "pickup_completed"
       ? "正在复位"
       : pickupReminder.value?.urgency === "urgent"
@@ -57,7 +59,7 @@ const pickupTitle = computed(() =>
           : "设备出货中",
 );
 const pickupSubtitle = computed(() => {
-  if (hasCustomerVisibleError.value) return "请联系工作人员处理";
+  if (hasCustomerVisibleError.value) return dispenseError.value.message;
   if (pickupReminder.value?.stage === "pickup_completed") {
     return "已完成取货，设备正在复位";
   }

@@ -95,9 +95,7 @@ const cancelOrderDisabledReason = computed(() => {
   const reason = paymentView.value?.cancelDisabledReason;
   return reason ? cancelDisabledReasonCopy[reason] : null;
 });
-const syncErrorCopy = computed(() =>
-  checkoutStore.error ? "订单状态同步失败，请稍后重试" : null,
-);
+const syncErrorCopy = computed(() => checkoutStore.customerErrorMessage);
 
 async function cancelOrder(): Promise<void> {
   const catalogKey = checkoutStore.selectedItem?.catalogKey ?? null;
@@ -115,7 +113,7 @@ async function cancelOrder(): Promise<void> {
       });
     }
   } catch {
-    // checkoutStore.error already carries the operator-facing message.
+    // checkoutStore.customerErrorMessage contains only customer-facing copy.
   }
 }
 

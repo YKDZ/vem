@@ -405,7 +405,7 @@ describe("PaymentView", () => {
     const host = await mountView();
     await flushPromises();
 
-    expect(host.textContent).toContain("订单状态同步失败，请稍后重试");
+    expect(host.textContent).toContain("订单状态确认失败，请稍后重试");
     expect(host.textContent).not.toContain("ZodError");
     expect(host.textContent).not.toContain("Invalid option");
   });

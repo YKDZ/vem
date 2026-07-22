@@ -15,7 +15,13 @@ import {
   type CustomerCheckoutReturnRoute,
   type CustomerCheckoutView,
 } from "@/checkout/customer-checkout-view";
+import {
+  projectCustomerError,
+  type CustomerErrorProjection,
+  type CustomerErrorStage,
+} from "@/customer-error-projection/customer-error-projection";
 import { daemonClient } from "@/daemon/client";
+import { recordCustomerErrorEvidence } from "@/runtime/customer-error-evidence";
 import { useCatalogStore } from "@/stores/catalog";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
@@ -37,10 +43,6 @@ export type TransactionRefreshOutcome =
 const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
   "vem.machine.dismissedTerminalOrderNos";
 const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
-const PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE =
-  "扫码器暂不可用，请选择其他支付方式";
-const TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE =
-  "正在恢复当前交易，请稍候，暂不可修改交易";
 
 type TransactionRefreshCoordinator = {
   running: Promise<TransactionRefreshOutcome> | null;
@@ -121,28 +123,6 @@ function providerCodeFromSnapshot(
   return null;
 }
 
-function paymentCodeAttemptMessageFromSnapshot(
-  attempt: TransactionSnapshot["paymentCodeAttempt"],
-  operatorHint: string | null | undefined,
-): string | null {
-  if (!attempt) return operatorHint ?? null;
-  if (attempt.message) return attempt.message;
-  if (attempt.status === "failed") {
-    return "付款码无效或支付失败，请刷新付款码后重试";
-  }
-  if (attempt.status === "reversed" || attempt.status === "canceled") {
-    return "本次付款码交易已撤销，请刷新付款码后重试";
-  }
-  if (attempt.status === "unknown" || attempt.status === "manual_handling") {
-    return "支付结果待确认，请联系工作人员处理";
-  }
-  return operatorHint ?? null;
-}
-
-function errorString(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function stringField(error: unknown, key: string): string | null {
   if (typeof error !== "object" || error === null || !(key in error)) {
     return null;
@@ -151,28 +131,22 @@ function stringField(error: unknown, key: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function selectedPaymentCodeLocalGateError(
-  error: unknown,
-  selected: MachinePaymentOption | null,
-): boolean {
-  if (selected?.method !== "payment_code") return false;
-  const responseCode = stringField(error, "responseCode");
-  const text = [
-    errorString(error),
-    stringField(error, "responseMessage"),
-    stringField(error, "responseBody"),
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join("\n");
-  const lower = text.toLowerCase();
+function technicalErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "unserializable error";
+  }
+}
 
-  return (
-    responseCode === "create_order_blocked" &&
-    (text.includes("扫码器") ||
-      lower.includes("selected payment option is not ready") ||
-      lower.includes("selected payment method payment_code is unavailable") ||
-      lower.includes("scanner"))
-  );
+function customerErrorStageForCreateFailure(
+  error: unknown,
+): CustomerErrorStage {
+  return stringField(error, "responseCode") === "create_order_blocked"
+    ? "device"
+    : "payment_creation";
 }
 
 function latestSaleViewItem(
@@ -312,9 +286,8 @@ export const useCheckoutStore = defineStore("checkout", {
     transaction: null as TransactionSnapshot | null,
     nowMs: Date.now(),
     loading: false,
-    error: null as string | null,
+    customerError: null as CustomerErrorProjection | null,
     selectedPaymentOptionKey: null as MachinePaymentOptionKey | null,
-    paymentCodeMessage: null as string | null,
     paymentCodeLastMasked: null as string | null,
     checkoutAttemptIdempotencyKey: null as string | null,
     paymentCreationAttemptActive: false,
@@ -371,8 +344,25 @@ export const useCheckoutStore = defineStore("checkout", {
           ?.providerCode ?? null
       );
     },
+    customerErrorMessage: (state): string | null =>
+      state.customerError?.message ?? null,
   },
   actions: {
+    setCustomerError(
+      stage: CustomerErrorStage,
+      error: unknown,
+      operation: string,
+    ): void {
+      const projection = projectCustomerError(stage, error);
+      this.customerError = projection;
+      recordCustomerErrorEvidence({
+        stage: projection.stage,
+        customerMessage: projection.message,
+        technicalMessage: technicalErrorMessage(error),
+        operation,
+        orderNo: this.transaction?.orderNo ?? null,
+      });
+    },
     tick(nowMs = Date.now()): void {
       this.nowMs = nowMs;
     },
@@ -382,7 +372,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.transaction = null;
       this.paymentCreationAttemptActive = false;
       this.transactionRecoveryOrderNo = null;
-      this.error = null;
+      this.customerError = null;
       this.checkoutAttemptIdempotencyKey =
         createCheckoutAttemptIdempotencyKey();
       this.nowMs = Date.now();
@@ -390,14 +380,17 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     reset(): void {
       if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        this.setCustomerError(
+          "order_reconciliation",
+          new Error("transaction recovery mutation blocked"),
+          "checkout.reset",
+        );
         return;
       }
       this.selectedItem = null;
       this.transaction = null;
-      this.error = null;
+      this.customerError = null;
       this.loading = false;
-      this.paymentCodeMessage = null;
       this.paymentCodeLastMasked = null;
       this.paymentCreationAttemptActive = false;
       this.checkoutAttemptIdempotencyKey = null;
@@ -451,29 +444,29 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCreationAttemptActive = false;
       this.transactionRecoveryOrderNo = null;
 
-      const attempt = snapshot.paymentCodeAttempt;
-      this.paymentCodeMessage =
-        paymentCodeAttemptMessageFromSnapshot(attempt, snapshot.operatorHint) ??
-        this.paymentCodeMessage;
       this.paymentCodeLastMasked =
-        attempt?.maskedAuthCode ??
+        snapshot.paymentCodeAttempt?.maskedAuthCode ??
         snapshot.maskedAuthCode ??
         this.paymentCodeLastMasked;
       this.nowMs = Date.now();
     },
     syncPaymentOptions(): void {
       this.loading = true;
-      this.error = null;
+      this.customerError = null;
       try {
         if (!useSaleCapabilityStore().hasAcceptedCapability) return;
         this.selectedPaymentOptionKey =
           selectedPaymentOptionForCapability(this.selectedPaymentOptionKey)
             ?.optionKey ?? null;
         if (!this.selectedPaymentOptionKey) {
-          this.error = "当前机器暂无可用支付方式";
+          this.setCustomerError(
+            "device",
+            new Error("no payment options"),
+            "checkout.sync_payment_options",
+          );
         }
       } catch (error) {
-        this.error = errorString(error);
+        this.setCustomerError("device", error, "checkout.sync_payment_options");
         this.selectedPaymentOptionKey = null;
       } finally {
         this.loading = false;
@@ -481,7 +474,11 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     selectPaymentOption(optionKey: MachinePaymentOptionKey): void {
       if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
+        this.setCustomerError(
+          "order_reconciliation",
+          new Error("transaction recovery mutation blocked"),
+          "checkout.select_payment_option",
+        );
         return;
       }
       if (
@@ -494,34 +491,51 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
-        throw new Error(TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE);
+        const error = new Error("transaction recovery mutation blocked");
+        this.setCustomerError(
+          "order_reconciliation",
+          error,
+          "checkout.create_order",
+        );
+        throw error;
       }
       if (!this.selectedItem) throw new Error("No selected item");
       this.paymentCreationAttemptActive = true;
       this.transactionRefreshGeneration += 1;
       this.loading = true;
-      this.error = null;
+      this.customerError = null;
       const catalogStore = useCatalogStore();
       let selected: MachinePaymentOption | null = null;
+      let failureStage: CustomerErrorStage = "payment_creation";
       try {
         await catalogStore.refresh().catch(() => {
           // Keep the existing cached sale view; the backend still performs the authoritative stock check.
         });
         const selectedItem = latestSaleViewItem(this.selectedItem);
         if (!selectedItem) {
+          failureStage = "product_refresh";
           throw new Error("商品已更新，请重新选择");
         }
         if (!isSaleableItem(selectedItem)) {
+          failureStage = "product_refresh";
           throw new Error("商品已售罄");
         }
         this.selectedItem = selectedItem;
 
-        if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
+        if (!isMachineSaleReady()) {
+          failureStage = "device";
+          throw new Error("当前机器暂不可创建订单");
+        }
         selected = this.selectedPaymentOption;
-        if (!selected || selected.disabled) throw new Error("请选择支付方式");
+        if (!selected || selected.disabled) {
+          failureStage = "device";
+          throw new Error("请选择支付方式");
+        }
         const planogramVersion = activePlanogramVersion();
-        if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
+        if (!planogramVersion) {
+          failureStage = "product_refresh";
+          throw new Error("当前货道图暂不可创建订单");
+        }
         const idempotencyKey =
           this.checkoutAttemptIdempotencyKey ??
           createCheckoutAttemptIdempotencyKey();
@@ -541,12 +555,15 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);
       } catch (error) {
-        this.error =
-          selected && selectedPaymentCodeLocalGateError(error, selected)
-            ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
-            : errorString(error);
+        this.setCustomerError(
+          failureStage === "payment_creation"
+            ? customerErrorStageForCreateFailure(error)
+            : failureStage,
+          error,
+          "checkout.create_order",
+        );
         await catalogStore.refresh().catch(() => {
-          // Preserve the original order error; catalog refresh is best-effort after a rejected checkout.
+          // The original failure remains projected while refresh detail stays technical.
         });
         throw error;
       } finally {
@@ -567,7 +584,7 @@ export const useCheckoutStore = defineStore("checkout", {
           this.transactionRefreshRequestNo = generation;
           this.transactionRefreshInFlight = 1;
           this.loading = true;
-          this.error = null;
+          this.customerError = null;
           try {
             const snapshot = await daemonClient.getCurrentTransaction();
             if (generation !== this.transactionRefreshGeneration) {
@@ -580,7 +597,11 @@ export const useCheckoutStore = defineStore("checkout", {
               snapshot.orderNo !== currentView.orderCredential
             ) {
               this.transactionRecoveryOrderNo = currentView.orderCredential;
-              this.error = "正在恢复当前交易，请稍候";
+              this.setCustomerError(
+                "order_reconciliation",
+                new Error("transaction identity mismatch during recovery"),
+                "checkout.refresh_current_transaction",
+              );
               return { status: "refreshed", snapshot: null };
             }
             if (this.shouldIgnoreTransaction(snapshot)) {
@@ -618,7 +639,11 @@ export const useCheckoutStore = defineStore("checkout", {
             if (generation !== this.transactionRefreshGeneration) {
               return refreshGeneration();
             }
-            this.error = errorString(error);
+            this.setCustomerError(
+              "order_reconciliation",
+              error,
+              "checkout.refresh_current_transaction",
+            );
             const view = this.customerCheckoutView;
             if (view.stage !== "none") {
               this.transactionRecoveryOrderNo = view.orderCredential;
@@ -643,8 +668,13 @@ export const useCheckoutStore = defineStore("checkout", {
       preserveSelectedItem?: boolean;
     }): Promise<TransactionSnapshot | null> {
       if (this.customerCheckoutRecovery.active) {
-        this.error = TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE;
-        throw new Error(TRANSACTION_RECOVERY_MUTATION_BLOCKED_MESSAGE);
+        const error = new Error("transaction recovery mutation blocked");
+        this.setCustomerError(
+          "order_reconciliation",
+          error,
+          "checkout.cancel_order",
+        );
+        throw error;
       }
       const orderNo =
         this.customerCheckoutView.orderCredential ?? this.transaction?.orderNo;
@@ -655,7 +685,7 @@ export const useCheckoutStore = defineStore("checkout", {
       const selectedItemBeforeCancel = this.selectedItem;
 
       this.loading = true;
-      this.error = null;
+      this.customerError = null;
       try {
         const snapshot = await daemonClient.cancelOrder(orderNo);
         this.applyTransaction(snapshot);
@@ -667,11 +697,19 @@ export const useCheckoutStore = defineStore("checkout", {
         await useCatalogStore()
           .refresh()
           .catch((error: unknown) => {
-            this.error = `订单已取消，但目录刷新失败：${errorString(error)}`;
+            this.setCustomerError(
+              "product_refresh",
+              error,
+              "checkout.cancel_order_refresh_catalog",
+            );
           });
         return snapshot;
       } catch (error) {
-        this.error = errorString(error);
+        this.setCustomerError(
+          "order_reconciliation",
+          error,
+          "checkout.cancel_order",
+        );
         throw error;
       } finally {
         this.loading = false;

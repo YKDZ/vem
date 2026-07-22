@@ -101,7 +101,7 @@ async function submitOrder(): Promise<void> {
     await checkoutStore.createOrder();
     await submitMachineNavigationIntent({ type: "transaction.projection" });
   } catch {
-    // checkoutStore.error is rendered in the page.
+    // checkoutStore.customerErrorMessage is rendered in the page.
   }
 }
 </script>
@@ -268,7 +268,9 @@ async function submitOrder(): Promise<void> {
               "正在确认当前购买状态。"
             }}
           </p>
-          <p v-if="checkoutStore.error">{{ checkoutStore.error }}</p>
+          <p v-if="checkoutStore.customerErrorMessage">
+            {{ checkoutStore.customerErrorMessage }}
+          </p>
         </div>
         <img :src="mascotListImage" alt="" aria-hidden="true" />
       </section>

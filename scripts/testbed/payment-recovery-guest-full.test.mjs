@@ -246,6 +246,19 @@ describe("payment recovery guest full", () => {
       /customer surface|correlation/,
     );
   });
+
+  it("requires observed customer UI text to contain stable copy without raw technical detail", () => {
+    const report = recoveryReport();
+    const queryFailure = report.attempts.find(
+      (attempt) => attempt.kind === "query_failure",
+    );
+    queryFailure.customer.text = "订单已关闭 provider query_failed over HTTP";
+
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /customer surface|correlation/,
+    );
+  });
 });
 
 function recoveryReport() {
@@ -255,24 +268,28 @@ function recoveryReport() {
       orderStatus: "canceled",
       paymentState: "payment_failed",
       resultKind: "payment_failed",
+      customerCopy: "支付失败",
     },
     query_failure: {
       paymentStatus: "canceled",
       orderStatus: "canceled",
       paymentState: "canceled",
       resultKind: "closed",
+      customerCopy: "订单已关闭",
     },
     canceled: {
       paymentStatus: "canceled",
       orderStatus: "canceled",
       paymentState: "canceled",
       resultKind: "closed",
+      customerCopy: "订单已关闭",
     },
     expired: {
       paymentStatus: "expired",
       orderStatus: "payment_expired",
       paymentState: "payment_expired",
       resultKind: "payment_expired",
+      customerCopy: "支付超时",
     },
   };
   return {
@@ -338,7 +355,7 @@ function recoveryReport() {
               orderId: `order-${kind}`,
               paymentId: `pay-${kind}`,
               resultKind: terminal.resultKind,
-              text: "本次订单已取消，未完成扣款。",
+              text: terminal.customerCopy,
             },
       technicalEvidence:
         kind === "create_failure"

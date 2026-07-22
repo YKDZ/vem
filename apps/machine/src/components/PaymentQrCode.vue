@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 
+import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
+import { recordCustomerErrorEvidence } from "@/runtime/customer-error-evidence";
 import { renderPaymentQrDataUrl } from "@/utils/payment-qr";
 
 const props = defineProps<{
@@ -11,12 +13,12 @@ const props = defineProps<{
 }>();
 
 const dataUrl = ref("");
-const error = ref<string | null>(null);
+const customerError = ref<string | null>(null);
 
 watch(
   () => props.value,
   async (value) => {
-    error.value = null;
+    customerError.value = null;
     if (!value) {
       dataUrl.value = "";
       return;
@@ -25,7 +27,15 @@ watch(
       dataUrl.value = await renderPaymentQrDataUrl(value);
     } catch (err) {
       dataUrl.value = "";
-      error.value = err instanceof Error ? err.message : String(err);
+      const projection = projectCustomerError("payment_creation", err);
+      customerError.value = projection.message;
+      recordCustomerErrorEvidence({
+        stage: projection.stage,
+        customerMessage: projection.message,
+        technicalMessage: err instanceof Error ? err.message : String(err),
+        operation: "payment_qr.render",
+        orderNo: null,
+      });
     }
   },
   { immediate: true },
@@ -45,7 +55,7 @@ watch(
       v-else
       class="flex size-[320px] max-h-[45vh] max-w-full items-center justify-center rounded-lg bg-slate-100 text-center text-slate-500"
     >
-      {{ error ?? props.emptyText ?? "暂无支付二维码" }}
+      {{ customerError ?? props.emptyText ?? "暂无支付二维码" }}
     </div>
     <div
       v-if="blocked"

@@ -455,7 +455,7 @@ describe("checkout store", () => {
 
     expect(store.selectedPaymentOptionKey).toBeNull();
     expect(store.canCreateOrder).toBe(false);
-    expect(store.error).toBe("当前机器暂无可用支付方式");
+    expect(store.customerErrorMessage).toBe("设备暂不可用，请联系工作人员");
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
@@ -474,7 +474,7 @@ describe("checkout store", () => {
     expect(store.paymentOptionsLoaded).toBe(true);
     expect(store.selectedPaymentOptionKey).toBeNull();
     expect(store.canCreateOrder).toBe(false);
-    expect(store.error).toBe("当前机器暂无可用支付方式");
+    expect(store.customerErrorMessage).toBe("设备暂不可用，请联系工作人员");
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
@@ -565,7 +565,6 @@ describe("checkout store", () => {
         },
       },
     });
-    expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
   });
 
   it("reuses one checkout idempotency key when the customer retries a failed create", async () => {
@@ -653,12 +652,13 @@ describe("checkout store", () => {
 
     await expect(store.createOrder()).rejects.toThrow(technicalMessage);
 
-    expect(store.error).toBe("扫码器暂不可用，请选择其他支付方式");
-    expect(store.error).not.toContain("selected payment option");
-    expect(store.error).not.toContain("/v1/intents/create-order");
-    expect(store.error).not.toContain("HTTP");
-    expect(store.error).not.toContain("SCANNER_OPEN_FAILED");
-    expect(store.error).not.toContain("COM3");
+    expect(store.customerError).toEqual({
+      stage: "device",
+      message: "设备暂不可用，请联系工作人员",
+    });
+    expect(store.customerErrorMessage).not.toContain("selected payment option");
+    expect(store.customerErrorMessage).not.toContain("HTTP");
+    expect(store.customerErrorMessage).not.toContain("COM3");
   });
 
   it("fails closed when selected item is missing from the latest sale view", async () => {
@@ -1117,7 +1117,7 @@ describe("checkout store", () => {
       result: { kind: "success" },
     });
     expect(store.customerCheckoutRecovery.active).toBe(false);
-    expect(store.error).toBeNull();
+    expect(store.customerErrorMessage).toBeNull();
   });
 
   it("blocks cancel at the store boundary while the active transaction is recovering", async () => {
@@ -1129,8 +1129,9 @@ describe("checkout store", () => {
     await store.refreshCurrentTransaction();
 
     await expect(store.cancelCurrentOrder()).rejects.toThrow(
-      "正在恢复当前交易",
+      "transaction recovery mutation blocked",
     );
+    expect(store.customerErrorMessage).toBe("订单状态确认失败，请稍后重试");
 
     expect(cancelOrderMock).not.toHaveBeenCalled();
     expect(store.customerCheckoutView).toMatchObject({
@@ -1149,7 +1150,10 @@ describe("checkout store", () => {
     await store.refreshCurrentTransaction();
     getSaleViewMock.mockClear();
 
-    await expect(store.createOrder()).rejects.toThrow("正在恢复当前交易");
+    await expect(store.createOrder()).rejects.toThrow(
+      "transaction recovery mutation blocked",
+    );
+    expect(store.customerErrorMessage).toBe("订单状态确认失败，请稍后重试");
 
     expect(getSaleViewMock).not.toHaveBeenCalled();
     expect(createOrderMock).not.toHaveBeenCalled();
@@ -1557,9 +1561,6 @@ describe("checkout store", () => {
       state: "retryable",
       attemptStatus: "reversed",
     });
-    expect(store.paymentCodeMessage).toBe(
-      "本次付款码交易已撤销，请刷新付款码后重试",
-    );
     expect(store.customerCheckoutView.stage).toBe("payment");
   });
 
@@ -1601,7 +1602,6 @@ describe("checkout store", () => {
       },
     });
     expect(store.paymentCodeLastMasked).toBe("2876****4394");
-    expect(store.paymentCodeMessage).toBe("付款码已失效，请刷新付款码后重试");
   });
 
   it("keeps the current order while an unknown payment-code attempt is being queried", async () => {
@@ -1641,6 +1641,5 @@ describe("checkout store", () => {
         },
       },
     });
-    expect(store.paymentCodeMessage).toBe("正在确认支付结果");
   });
 });
