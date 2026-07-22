@@ -609,6 +609,7 @@ function paymentProviderReport() {
   return {
     schemaVersion: "vem-payment-provider-guest-full/v1",
     ok: true,
+    outcome: "passed",
     environment: { environment: "sandbox", readiness: "ready" },
     provider: {
       identity: {
@@ -693,7 +694,8 @@ function paymentProviderReport() {
             providerStatus: "FAILED",
           }),
           cleanup: {
-            action: "customer_cancel_order",
+            action: "close_or_reverse_uncertain_payment",
+            closure: { handled: true },
             providerConfigId: "provider-config-1",
             serialSession: { action: "abort", aborted: true },
           },

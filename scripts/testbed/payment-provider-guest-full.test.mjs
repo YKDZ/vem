@@ -5,6 +5,7 @@ import {
   UNATTENDED_ALIPAY_CUSTOMER_CODE,
   buildPaymentCodeSubmission,
   buildProviderFailureReport,
+  classifyProviderFailureOutcome,
   collectPaymentProviderFailureEvidence,
   parsePaymentProviderGuestArgs,
   sanitizeProviderEvidence,
@@ -13,6 +14,33 @@ import {
 } from "./payment-provider-guest-full.mjs";
 
 describe("payment provider guest full", () => {
+  it("classifies only explicit cleaned Alipay boundary failures as provider unavailable", () => {
+    assert.equal(
+      classifyProviderFailureOutcome({
+        stage: "creation",
+        error: new Error("支付宝支付通道暂不可用，请稍后重试"),
+        report: { cleanupBeforeDiagnostics: { transaction: null } },
+      }),
+      "provider_unavailable",
+    );
+    assert.equal(
+      classifyProviderFailureOutcome({
+        stage: "creation",
+        error: new Error("支付宝支付通道暂不可用，请稍后重试"),
+        report: { cleanupBeforeDiagnostics: { ok: false } },
+      }),
+      "failed",
+    );
+    assert.equal(
+      classifyProviderFailureOutcome({
+        stage: "creation",
+        error: new Error("Machine UI contract mismatch"),
+        report: { cleanupBeforeDiagnostics: { transaction: null } },
+      }),
+      "failed",
+    );
+  });
+
   it("submits the unattended Alipay customer code with real CRLF bytes", () => {
     const bytes = Buffer.from(UNATTENDED_ALIPAY_CUSTOMER_CODE, "utf8");
     assert.deepEqual([...bytes.subarray(-2)], [0x0d, 0x0a]);

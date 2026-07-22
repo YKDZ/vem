@@ -346,6 +346,7 @@ function validatePaymentProviderTrack(report, reportPath) {
   if (
     report?.schemaVersion !== "vem-payment-provider-guest-full/v1" ||
     report?.ok !== true ||
+    report?.outcome !== "passed" ||
     report?.environment?.environment !== "sandbox" ||
     report?.environment?.readiness !== "ready" ||
     report?.authoritative?.ok !== true
@@ -401,12 +402,22 @@ function validatePaymentProviderTrack(report, reportPath) {
     code?.submission?.providerCode === "alipay" &&
     typeof code?.submission?.attemptId === "string" &&
     code.submission.attemptId.length > 0 &&
-    code?.submission?.status === "failed" &&
-    typeof code?.submission?.failureCode === "string" &&
-    code.submission.failureCode.length > 0 &&
+    ["failed", "querying", "user_confirming"].includes(
+      code?.submission?.status,
+    ) &&
+    (code?.submission?.status !== "failed" ||
+      (typeof code?.submission?.failureCode === "string" &&
+        code.submission.failureCode.length > 0)) &&
+    (code?.submission?.status !== "user_confirming" ||
+      code?.submission?.providerStatus === "WAIT_BUYER_PAY") &&
+    (code?.submission?.status !== "querying" ||
+      ["aop.ACQ.SYSTEM_ERROR", "PAYMENT_CODE_QUERY_UNKNOWN"].includes(
+        code?.submission?.failureCode,
+      )) &&
     typeof code?.submission?.providerStatus === "string" &&
     code.submission.providerStatus.length > 0 &&
-    code?.cleanup?.action === "customer_cancel_order" &&
+    code?.cleanup?.action === "close_or_reverse_uncertain_payment" &&
+    code?.cleanup?.closure?.handled === true &&
     code?.cleanup?.serialSession?.action === "abort" &&
     code?.cleanup?.serialSession?.aborted === true &&
     typeof code?.cleanup?.providerConfigId === "string" &&

@@ -987,6 +987,7 @@ export function buildProviderFailureReport({
     ...report,
     schemaVersion: SCHEMA_VERSION,
     ok: false,
+    outcome: classifyProviderFailureOutcome({ stage, error, report }),
     runId,
     stage,
     error: { message: boundedText(errorMessage(error)) },
@@ -994,6 +995,28 @@ export function buildProviderFailureReport({
       .slice(0, MAX_DIAGNOSTIC_ATTEMPTS)
       .map(sanitizeProviderEvidence),
   };
+}
+
+export function classifyProviderFailureOutcome({ stage, error, report }) {
+  const message = errorMessage(error);
+  const explicitProviderUnavailable =
+    /支付宝支付通道暂不可用|aop\.ACQ\.SYSTEM_ERROR|ALIPAY_(?:REQUEST|QUERY|REVERSE)_UNKNOWN|gateway (?:time-out|timeout)/i.test(
+      message,
+    );
+  const providerStage = [
+    "creation",
+    "customer-code-submission",
+    "query",
+    "notification",
+    "closure",
+  ].includes(stage);
+  const cleanupProved =
+    report?.cleanupBeforeDiagnostics &&
+    report.cleanupBeforeDiagnostics.ok !== false &&
+    !report.cleanupBeforeDiagnostics.error;
+  return providerStage && explicitProviderUnavailable && cleanupProved
+    ? "provider_unavailable"
+    : "failed";
 }
 
 export async function collectPaymentProviderFailureEvidence({
@@ -1081,6 +1104,7 @@ export async function runPaymentProviderGuest(options) {
   const report = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
+    outcome: "failed",
     mode: options.mode,
     runId,
     machineCode,
@@ -1139,6 +1163,7 @@ export async function runPaymentProviderGuest(options) {
     );
     report.authoritative.ok = true;
     report.ok = true;
+    report.outcome = "passed";
     writeJson(options.outPath, report);
     return report;
   } catch (error) {
