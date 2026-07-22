@@ -73,7 +73,12 @@ function audioLifecycle(trace, transitionId) {
   };
 }
 
-function assertLifecycleOnce(trace, transitionId, label) {
+function assertLifecycleOnce(
+  trace,
+  transitionId,
+  label,
+  allowedTerminalOutcomes = ["completed"],
+) {
   const lifecycle = audioLifecycle(trace, transitionId);
   if (
     lifecycle.queued.length !== 1 ||
@@ -91,8 +96,10 @@ function assertLifecycleOnce(trace, transitionId, label) {
   ) {
     throw new Error(`${label} audio request correlation is invalid`);
   }
-  if (terminal.outcome !== "completed") {
-    throw new Error(`${label} audio terminal outcome must be completed`);
+  if (!allowedTerminalOutcomes.includes(terminal.outcome)) {
+    throw new Error(
+      `${label} audio terminal outcome must be ${allowedTerminalOutcomes.join(" or ")}`,
+    );
   }
   return { queued, started, terminal };
 }
@@ -255,6 +262,7 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
     trace,
     initialTransitionId,
     "initial welcome",
+    ["completed", "stopped"],
   );
   if (initialLifecycle.started.id > stableCheckpoint.traceId) {
     throw new Error("stable arrival did not start welcome before settling");
@@ -283,6 +291,7 @@ export function validateBehaviorAudioAcceptanceEvidence(acceptance) {
     trace,
     rearmedTransitionId,
     "rearmed welcome",
+    ["completed", "stopped"],
   );
   if (rearmedLifecycle.started.id <= departureCheckpoint.traceId) {
     throw new Error("rearmed welcome started before sustained departure");

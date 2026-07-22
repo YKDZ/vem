@@ -258,6 +258,42 @@ async function waitForAudioLifecycle(
   };
 }
 
+async function waitForAudioStart(
+  readTrace,
+  boundary,
+  transitionPredicate,
+  dependencies,
+  label,
+) {
+  const transition = await waitForTraceEntry(
+    readTrace,
+    boundary,
+    (entry) =>
+      entry?.type === "journey_transition" && transitionPredicate(entry),
+    dependencies,
+    `${label} transition`,
+  );
+  const transitionId = required(
+    transition.entry.transitionId,
+    `${label} transitionId`,
+  );
+  const started = await waitForTraceEntry(
+    readTrace,
+    Number(transition.entry.id),
+    (entry) =>
+      entry?.type === "audio_started" &&
+      entry?.transitionId === transitionId &&
+      entry?.message === "native",
+    dependencies,
+    `${label} native audio start`,
+  );
+  return {
+    transitionId,
+    startedTraceId: Number(started.entry.id),
+    trace: started.trace,
+  };
+}
+
 function categoryKeyFromTransition(transitionId) {
   const match = /^category:category-entry-([a-z0-9_-]+)-\d+$/i.exec(
     transitionId,
@@ -451,7 +487,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
     };
     let boundary = traceId(await readTrace());
     await injectVisionPresence(guestInput, "approach", dependencies);
-    const initialWelcome = await waitForAudioLifecycle(
+    const initialWelcome = await waitForAudioStart(
       readTrace,
       boundary,
       (entry) => String(entry.transitionId).endsWith(":welcome"),
@@ -461,7 +497,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
     const checkpoints = [
       {
         label: "stable-arrival-settled",
-        traceId: initialWelcome.terminalTraceId,
+        traceId: initialWelcome.startedTraceId,
       },
     ];
     await injectVisionPresence(guestInput, "approach", dependencies);
@@ -517,7 +553,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
 
     boundary = traceId(departure.trace);
     await injectVisionPresence(guestInput, "approach", dependencies);
-    const rearmedWelcome = await waitForAudioLifecycle(
+    const rearmedWelcome = await waitForAudioStart(
       readTrace,
       boundary,
       (entry) => String(entry.transitionId).endsWith(":welcome"),
@@ -526,7 +562,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
     );
     checkpoints.push({
       label: "rearmed-arrival-settled",
-      traceId: rearmedWelcome.terminalTraceId,
+      traceId: rearmedWelcome.startedTraceId,
     });
 
     const supportedCategoryKeys = await readSupportedCategoryKeys(

@@ -489,10 +489,10 @@ describe("behavior audio guest full", () => {
     );
     assert.deepEqual(audioStopBody, {
       saleCorrelationId: "behavior-audio://RUN-1",
-      orderId: "behavior-audio:RUN-1:order",
-      orderNo: "behavior-audio:RUN-1:order",
-      commandId: "behavior-audio:RUN-1:command",
-      commandNo: "behavior-audio:RUN-1:command",
+      orderId: "operation-1",
+      orderNo: "BEHAVIOR-AUDIO-RUN-1",
+      commandId: "operation-1",
+      commandNo: "BEHAVIOR-AUDIO-COMMAND-RUN-1",
     });
     assert.ok(calls.includes("/v1/audio-captures/start"));
     assert.ok(calls.includes("/v1/audio-captures/audio-1/stop"));

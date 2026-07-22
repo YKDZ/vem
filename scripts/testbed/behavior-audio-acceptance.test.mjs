@@ -176,6 +176,22 @@ describe("behavior audio acceptance", () => {
     assert.equal(summary.nativeSource, "windows_default_output");
   });
 
+  it("accepts welcome cues stopped by later higher-priority behavior edges", () => {
+    const acceptance = passingAcceptance();
+    for (const entry of acceptance.runtimeTrace) {
+      if (
+        entry.type === "audio_terminal" &&
+        entry.transitionId.endsWith(":welcome")
+      ) {
+        entry.outcome = "stopped";
+      }
+    }
+    assert.equal(
+      validateBehaviorAudioAcceptanceEvidence(acceptance).nativeSource,
+      "windows_default_output",
+    );
+  });
+
   it("rejects a transient empty scene that rearms welcome", () => {
     const acceptance = passingAcceptance();
     acceptance.runtimeTrace = renumberTrace([
