@@ -252,17 +252,20 @@ async function setMachineUiCheckbox(client, selector, expected) {
     client,
     `(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
-      return element ? Boolean(element.checked) : null;
+      return element
+        ? { checked: Boolean(element.checked), disabled: Boolean(element.disabled) }
+        : null;
     })()`,
   );
   if (current == null)
     throw new Error(`machine UI control is unavailable: ${selector}`);
-  if (current === expected) return;
-  await activateVisibleSelector(client, selector, {
-    kind: "touch",
-    timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
-    pollMs: 150,
-  });
+  if (current.checked !== expected) {
+    await activateVisibleSelector(client, selector, {
+      kind: "touch",
+      timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+      pollMs: 150,
+    });
+  }
   await waitForState(
     `machine UI checkbox ${selector}`,
     async () =>
@@ -270,10 +273,12 @@ async function setMachineUiCheckbox(client, selector, expected) {
         client,
         `(() => {
           const element = document.querySelector(${JSON.stringify(selector)});
-          return element ? { checked: Boolean(element.checked) } : null;
+          return element
+            ? { checked: Boolean(element.checked), disabled: Boolean(element.disabled) }
+            : null;
         })()`,
       ),
-    (value) => value?.checked === expected,
+    (value) => value?.checked === expected && value?.disabled === false,
   );
 }
 async function setMachineUiVolumePercent(client, expectedVolume) {
@@ -302,10 +307,12 @@ async function setMachineUiVolumePercent(client, expectedVolume) {
         client,
         `(() => {
           const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
-          return element ? { value: Number(element.value) } : null;
+          return element
+            ? { value: Number(element.value), disabled: Boolean(element.disabled) }
+            : null;
         })()`,
       ),
-    (value) => value?.value === percent,
+    (value) => value?.value === percent && value?.disabled === false,
   );
 }
 export async function setMachineUiAudioPreferences(client, expected) {
