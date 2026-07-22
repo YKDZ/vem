@@ -545,11 +545,12 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   handoff,
   timeoutMs,
 ) {
+  const initialRoute = await evaluateExpression(client, "location.hash");
   const visible = await evaluateExpression(
     client,
     "Boolean(document.querySelector('[data-installed-kiosk-sale-payment-surface]')?.getClientRects().length)",
   );
-  if (visible) {
+  if (visible && initialRoute === "#/payment") {
     const cancelReady = await evaluateExpression(
       client,
       "Boolean(document.querySelector('[data-test=\"payment-cancel\"]:not(:disabled)')?.getClientRects().length)",
