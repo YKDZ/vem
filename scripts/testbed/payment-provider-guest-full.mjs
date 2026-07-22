@@ -540,7 +540,15 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
     client,
     "Boolean(document.querySelector('[data-installed-kiosk-sale-payment-surface]')?.getClientRects().length)",
   );
-  if (visible) await cancelVisibleMachineOrder(client, timeoutMs);
+  if (visible) {
+    const cancelReady = await evaluateExpression(
+      client,
+      "Boolean(document.querySelector('[data-test=\"payment-cancel\"]:not(:disabled)')?.getClientRects().length)",
+    );
+    if (cancelReady) {
+      await cancelVisibleMachineOrder(client, timeoutMs);
+    }
+  }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
     (current) =>
@@ -549,6 +557,16 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       ["canceled", "failed", "expired"].includes(current?.paymentStatus),
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
+  if (
+    visible &&
+    (await evaluateExpression(client, "location.hash")) === "#/payment"
+  ) {
+    await evaluateExpression(client, "location.hash = '#/catalog'");
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    });
+  }
   return { machineBoundary: "installed_machine_ui_cdp", transaction };
 }
 
@@ -560,12 +578,22 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
         `/payments/payment-code-attempts?orderNo=${encodeURIComponent(order.orderNo)}&providerCode=alipay&page=1&pageSize=10`,
         { token },
       );
-      return (page?.items ?? []).find(
+      const attempt = (page?.items ?? []).find(
         (entry) =>
           entry?.orderId === order.orderId &&
           entry?.paymentNo === order.paymentNo &&
           entry?.providerCode === "alipay",
       );
+      if (
+        attempt?.status === "querying" &&
+        typeof attempt?.failureCode === "string" &&
+        attempt.failureCode.length > 0
+      ) {
+        throw new Error(
+          `Alipay payment-code provider call remained uncertain: ${attempt.failureCode}`,
+        );
+      }
+      return attempt;
     },
     (attempt) =>
       typeof attempt?.id === "string" &&
