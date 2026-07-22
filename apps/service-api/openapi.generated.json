@@ -246,22 +246,6 @@
         "tags": ["vending"]
       }
     },
-    "/api/vending-commands/{id}/retry": {
-      "post": {
-        "operationId": "VendingController_retry",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": { "type": "string" }
-          }
-        ],
-        "responses": { "201": { "description": "" } },
-        "security": [{ "bearer": [] }],
-        "tags": ["vending"]
-      }
-    },
     "/api/orders": {
       "get": {
         "operationId": "OrdersController_listOrders",
