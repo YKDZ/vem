@@ -156,6 +156,13 @@ export function refreshDaemonReadyHandoff({
   return handoff;
 }
 
+export function reloadRuntimeHandoff(handoffPath, handoff) {
+  const current = jsonIfPresent(handoffPath);
+  if (!current) throw new Error("runtime handoff is unavailable");
+  Object.assign(handoff, current);
+  return handoff;
+}
+
 function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
   if (!track.runner) return null;
   if (track.runner.kind === "powershell") {
@@ -915,6 +922,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
       return withClient((client) => refreshCatalogPageFromClient({ client }));
     },
     captureTerminal: async (track, context) => {
+      reloadRuntimeHandoff(handoffPath, handoff);
       refreshDaemonReadyHandoff({ handoffPath, handoff });
       return captureTrackTerminalFacts({
         track,

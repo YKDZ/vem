@@ -175,6 +175,13 @@ describe("Customer journey audio runtime", () => {
         "/audio/voice/product/socks.mp3",
         expect.objectContaining({ volume: 0.52 }),
       );
+      expect(runtime?.trace()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            transitionId: "category:category-entry-socks-1",
+          }),
+        ]),
+      );
     });
 
     journeyStore.enterCategory({ categoryKey: "socks", category: "袜子" });

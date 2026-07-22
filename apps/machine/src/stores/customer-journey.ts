@@ -15,7 +15,7 @@ export const useCustomerJourneyStore = defineStore("customer-journey", {
   actions: {
     enterCategory(input: { categoryKey: string; category: string }): void {
       if (this.categoryEntry?.categoryKey === input.categoryKey) return;
-      const entryId = `category-entry-${this.nextCategoryEntrySequence}`;
+      const entryId = `category-entry-${input.categoryKey}-${this.nextCategoryEntrySequence}`;
       this.nextCategoryEntrySequence += 1;
       this.categoryEntry = {
         entryId,

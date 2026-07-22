@@ -13,6 +13,7 @@ import {
   refreshCatalogPageFromClient,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
+  reloadRuntimeHandoff,
   refreshDaemonReadyHandoff,
   runSerialTrackLifecycle,
   waitForPlatformFixtureStock,
@@ -20,6 +21,21 @@ import {
 } from "./full-workflow-orchestrator.mjs";
 
 describe("full workflow serial lifecycle", () => {
+  it("reloads runtime identities changed by a track restart", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-reload-"));
+    const handoffPath = join(root, "handoff.json");
+    const handoff = { cdp: { targetId: "old-target" } };
+    writeFileSync(
+      handoffPath,
+      JSON.stringify({ cdp: { targetId: "new-target" } }),
+    );
+
+    assert.equal(
+      reloadRuntimeHandoff(handoffPath, handoff).cdp.targetId,
+      "new-target",
+    );
+  });
+
   it("replaces an aborted serial session for the next business set", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-session-"));
     const handoffPath = join(root, "handoff.json");
