@@ -646,6 +646,19 @@ async function qrAttempt({
     terminal: terminalFromReport(report, order),
   };
   validateUnattendedProviderAttempt(attempt);
+  await activateVisibleSelector(
+    client,
+    ".result-return-button, .failure-return-button",
+    {
+      kind: "touch",
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    },
+  );
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
   return attempt;
 }
 
