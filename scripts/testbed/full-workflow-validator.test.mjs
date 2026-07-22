@@ -283,6 +283,8 @@ function environmentControlReport() {
         edgeId: "presence-1:arrival",
         requestedSpeed: 2,
         outcome: "accepted",
+        b3FrameCountDelta: 1,
+        protocolFrames: ["B3"],
         frame: {
           parsedOpcode: "B3",
           rawFrameHex: "55b302",
@@ -304,11 +306,20 @@ function environmentControlReport() {
         edgeId: "presence-1:arrival",
         outcome: "deduplicated",
         b3FrameCountDelta: 0,
+        protocolFrames: [],
+        guardWindow: {
+          completed: true,
+          durationMs: 5_000,
+          protocolFrames: [],
+          b3FrameCountDelta: 0,
+        },
       },
       nextStableEdge: {
         edgeId: "presence-2:departure",
         requestedSpeed: 0,
         outcome: "accepted",
+        b3FrameCountDelta: 1,
+        protocolFrames: ["B3"],
         frame: {
           parsedOpcode: "B3",
           rawFrameHex: "55b300",
@@ -1054,6 +1065,59 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("environmentControl"),
         missingNextStableEdge,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const shortGuardWindow = environmentControlReport();
+    shortGuardWindow.precedence.sameEdgeAfterAdmin.guardWindow.durationMs = 4_999;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        shortGuardWindow,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const delayedAutomaticRebound = environmentControlReport();
+    delayedAutomaticRebound.precedence.sameEdgeAfterAdmin.guardWindow.protocolFrames.push(
+      "B3",
+    );
+    delayedAutomaticRebound.precedence.sameEdgeAfterAdmin.guardWindow.b3FrameCountDelta = 1;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        delayedAutomaticRebound,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const nextStableEdgeWithExtraB3 = environmentControlReport();
+    nextStableEdgeWithExtraB3.precedence.nextStableEdge.b3FrameCountDelta = 2;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        nextStableEdgeWithExtraB3,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const automaticPathSentB1 = environmentControlReport();
+    automaticPathSentB1.precedence.automaticArrival.protocolFrames.push("B1");
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        automaticPathSentB1,
+        "/reports/environment-control.json",
+      ).status,
+      "failed",
+    );
+    const automaticPathSentB2 = environmentControlReport();
+    automaticPathSentB2.precedence.nextStableEdge.protocolFrames.push("B2");
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("environmentControl"),
+        automaticPathSentB2,
         "/reports/environment-control.json",
       ).status,
       "failed",

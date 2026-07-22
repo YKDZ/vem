@@ -669,10 +669,35 @@ function validateEnvironmentControlTrack(report, reportPath) {
     frame?.parsedOpcode === "B3" &&
     b3Speed(frame) === speed &&
     Number.isFinite(Date.parse(frame?.capturedAt));
+  const onlyAutomaticB3 = (entry, expectedB3FrameCount) => {
+    const protocolFrames = entry?.protocolFrames;
+    if (!Array.isArray(protocolFrames)) return false;
+    const opcodeSet = new Set(protocolFrames);
+    return (
+      protocolFrames.length === expectedB3FrameCount &&
+      opcodeSet.size === 1 &&
+      opcodeSet.has("B3") &&
+      !opcodeSet.has("B1") &&
+      !opcodeSet.has("B2")
+    );
+  };
+  const validNoActionGuardWindow = (guardWindow) => {
+    const protocolFrames = guardWindow?.protocolFrames;
+    return (
+      guardWindow?.completed === true &&
+      Number.isFinite(guardWindow.durationMs) &&
+      guardWindow.durationMs >= 5_000 &&
+      Array.isArray(protocolFrames) &&
+      protocolFrames.length === 0 &&
+      guardWindow.b3FrameCountDelta === 0
+    );
+  };
   const precedenceCorrelated =
     automaticArrival.edgeId &&
     automaticArrival.requestedSpeed === 2 &&
     automaticArrival.outcome === "accepted" &&
+    automaticArrival.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(automaticArrival, 1) &&
     validPrecedenceFrame(automaticArrival.frame, 2) &&
     adminB3.commandNo === byAction.get("ventSpeed")?.admin?.commandNo &&
     adminB3.resultStatus === "succeeded" &&
@@ -682,10 +707,15 @@ function validateEnvironmentControlTrack(report, reportPath) {
     sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
     sameEdgeAfterAdmin.outcome === "deduplicated" &&
     sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
+    Array.isArray(sameEdgeAfterAdmin.protocolFrames) &&
+    sameEdgeAfterAdmin.protocolFrames.length === 0 &&
+    validNoActionGuardWindow(sameEdgeAfterAdmin.guardWindow) &&
     nextStableEdge.edgeId &&
     nextStableEdge.edgeId !== automaticArrival.edgeId &&
     nextStableEdge.requestedSpeed === 0 &&
     nextStableEdge.outcome === "accepted" &&
+    nextStableEdge.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(nextStableEdge, 1) &&
     validPrecedenceFrame(nextStableEdge.frame, 0) &&
     Date.parse(automaticArrival.frame.capturedAt) <
       Date.parse(adminB3.frame.capturedAt) &&

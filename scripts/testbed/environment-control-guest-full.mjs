@@ -11,6 +11,7 @@ import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
 const SCHEMA_VERSION = "vem-environment-control-guest-full/v1";
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
+const ADMIN_OVERRIDE_GUARD_MS = 5_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -268,6 +269,13 @@ function b3FramesSince(evidence, beforeFrameCount) {
     .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
 }
 
+export function automaticSerialEvidence(evidence, beforeFrameCount) {
+  return {
+    b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
+    protocolFrames: serialProtocolFrames(evidence, beforeFrameCount),
+  };
+}
+
 async function waitForB3Frame({
   guestInput,
   sessionId,
@@ -326,7 +334,8 @@ async function requestAutomaticVentIntent({
       edgeId,
       requestedSpeed: ventSpeed,
       outcome: response.outcome,
-      b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
+      beforeFrameCount,
+      ...automaticSerialEvidence(evidence, beforeFrameCount),
     };
   }
   const { evidence, frame } = await waitForB3Frame({
@@ -339,9 +348,43 @@ async function requestAutomaticVentIntent({
     edgeId,
     requestedSpeed: ventSpeed,
     outcome: response.outcome,
+    beforeFrameCount,
     frame,
-    b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
+    ...automaticSerialEvidence(evidence, beforeFrameCount),
   };
+}
+
+async function observeAdminOverrideGuard({
+  guestInput,
+  sessionId,
+  beforeFrameCount,
+}) {
+  const startedAt = Date.now();
+  const deadline = startedAt + ADMIN_OVERRIDE_GUARD_MS;
+  let evidence = null;
+  do {
+    evidence = await control(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/evidence`,
+      {},
+    );
+    const observation = automaticSerialEvidence(evidence, beforeFrameCount);
+    if (observation.protocolFrames.length > 0) {
+      return {
+        completed: false,
+        durationMs: Date.now() - startedAt,
+        ...observation,
+      };
+    }
+    if (Date.now() >= deadline) {
+      return {
+        completed: true,
+        durationMs: Date.now() - startedAt,
+        ...observation,
+      };
+    }
+    await sleep(100);
+  } while (true);
 }
 
 async function commandEnvironment({
@@ -571,6 +614,34 @@ export async function runEnvironmentControlGuest(options) {
       edgeId: automaticArrival.edgeId,
       ventSpeed: 2,
     });
+    sameEdgeAfterAdmin.guardWindow = await observeAdminOverrideGuard({
+      guestInput,
+      sessionId: session.sessionId,
+      beforeFrameCount: sameEdgeAfterAdmin.beforeFrameCount,
+    });
+    report.precedence = {
+      automaticArrival,
+      adminB3: {
+        commandNo: adminVent.admin.commandNo,
+        resultStatus: adminVent.result.status,
+        mqttCommandNo: adminVent.mqtt.commandNo,
+        mqttResultNo: adminVent.mqtt.resultCommandNo,
+        frame: adminVent.serial.protocolFrame ?? null,
+      },
+      sameEdgeAfterAdmin,
+      nextStableEdge: null,
+    };
+    if (sameEdgeAfterAdmin.guardWindow.completed !== true) {
+      const { protocolFrames, b3FrameCountDelta } =
+        sameEdgeAfterAdmin.guardWindow;
+      const reason =
+        b3FrameCountDelta > 0
+          ? "delayed automatic B3 rebound"
+          : "lower-controller activity";
+      throw new Error(
+        `Admin B3 override guard observed ${reason}: ${JSON.stringify(protocolFrames)}`,
+      );
+    }
     const nextStableEdge = await requestAutomaticVentIntent({
       guestInput,
       handoff,
@@ -588,18 +659,7 @@ export async function runEnvironmentControlGuest(options) {
         body: { targetTemperatureCelsius: 23 },
       }),
     );
-    report.precedence = {
-      automaticArrival,
-      adminB3: {
-        commandNo: adminVent.admin.commandNo,
-        resultStatus: adminVent.result.status,
-        mqttCommandNo: adminVent.mqtt.commandNo,
-        mqttResultNo: adminVent.mqtt.resultCommandNo,
-        frame: adminVent.serial.protocolFrame ?? null,
-      },
-      sameEdgeAfterAdmin,
-      nextStableEdge,
-    };
+    report.precedence.nextStableEdge = nextStableEdge;
     report.daemon = {
       health: await daemonGet(handoff, "/healthz"),
       readiness: await daemonGet(handoff, "/readyz"),
@@ -637,11 +697,22 @@ export async function runEnvironmentControlGuest(options) {
       sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
       sameEdgeAfterAdmin.outcome === "deduplicated" &&
       sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
+      sameEdgeAfterAdmin.protocolFrames.length === 0 &&
+      sameEdgeAfterAdmin.guardWindow.completed === true &&
+      sameEdgeAfterAdmin.guardWindow.durationMs >= ADMIN_OVERRIDE_GUARD_MS &&
+      sameEdgeAfterAdmin.guardWindow.protocolFrames.length === 0 &&
+      sameEdgeAfterAdmin.guardWindow.b3FrameCountDelta === 0 &&
       nextStableEdge.edgeId !== automaticArrival.edgeId &&
       nextStableEdge.outcome === "accepted" &&
       nextStableEdge.requestedSpeed === 0 &&
       nextStableEdge.frame?.parsedOpcode === "B3" &&
-      b3Speed(nextStableEdge.frame) === 0;
+      b3Speed(nextStableEdge.frame) === 0 &&
+      automaticArrival.b3FrameCountDelta === 1 &&
+      automaticArrival.protocolFrames.length === 1 &&
+      automaticArrival.protocolFrames[0] === "B3" &&
+      nextStableEdge.b3FrameCountDelta === 1 &&
+      nextStableEdge.protocolFrames.length === 1 &&
+      nextStableEdge.protocolFrames[0] === "B3";
     report.ok = Object.values(report.boundaries).every(Boolean);
     writeJson(options.outPath, report);
     return report;

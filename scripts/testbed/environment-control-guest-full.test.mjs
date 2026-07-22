@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { unwrapServiceApiEnvelope } from "./environment-control-guest-full.mjs";
+import {
+  automaticSerialEvidence,
+  unwrapServiceApiEnvelope,
+} from "./environment-control-guest-full.mjs";
 
 describe("environment control guest full", () => {
   it("unwraps successful Service API envelopes", () => {
@@ -19,5 +22,20 @@ describe("environment control guest full", () => {
 
     assert.strictEqual(unwrapServiceApiEnvelope(raw), raw);
     assert.strictEqual(unwrapServiceApiEnvelope(failure), failure);
+  });
+
+  it("preserves every lower-controller opcode for an automatic intent", () => {
+    const evidence = {
+      rawFrames: [
+        { parsedOpcode: "B3" },
+        { parsedOpcode: "B1" },
+        { parsedOpcode: "B2" },
+      ],
+    };
+
+    assert.deepEqual(automaticSerialEvidence(evidence, 0), {
+      b3FrameCountDelta: 1,
+      protocolFrames: ["B3", "B1", "B2"],
+    });
   });
 });
