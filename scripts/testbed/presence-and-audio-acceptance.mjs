@@ -63,6 +63,10 @@ function traceBetween(trace, startExclusive, endInclusive) {
   );
 }
 
+function welcomeStartsBetween(trace, startExclusive, endInclusive) {
+  return welcomeStarts(traceBetween(trace, startExclusive, endInclusive));
+}
+
 function audioLifecycle(trace, transitionId) {
   const entries = trace.filter((entry) => entry?.transitionId === transitionId);
   return {
@@ -374,6 +378,13 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     scenario?.welcome?.initialTransitionId,
     "scenario.welcome.initialTransitionId",
   );
+  const initialFenceTraceId = Number(scenario?.welcome?.initialFenceTraceId);
+  const duplicateFenceTraceId = Number(
+    scenario?.welcome?.duplicateFenceTraceId,
+  );
+  const transientFenceTraceId = Number(
+    scenario?.welcome?.transientFenceTraceId,
+  );
   const rearmedTransitionId = requiredString(
     scenario?.welcome?.rearmedTransitionId,
     "scenario.welcome.rearmedTransitionId",
@@ -382,6 +393,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     scenario?.welcome?.departureTransitionId,
     "scenario.welcome.departureTransitionId",
   );
+  const rearmedFenceTraceId = Number(scenario?.welcome?.rearmedFenceTraceId);
   const stableCheckpoint = checkpoints.get("stable-arrival-settled");
   const transientCheckpoint = checkpoints.get("transient-empty-recovered");
   const duplicateApproachCheckpoint = checkpoints.get(
@@ -394,7 +406,15 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     !duplicateApproachCheckpoint ||
     !transientCheckpoint ||
     !departureCheckpoint ||
-    !rearmedCheckpoint
+    !rearmedCheckpoint ||
+    !Number.isSafeInteger(initialFenceTraceId) ||
+    initialFenceTraceId < 0 ||
+    !Number.isSafeInteger(duplicateFenceTraceId) ||
+    duplicateFenceTraceId < 0 ||
+    !Number.isSafeInteger(transientFenceTraceId) ||
+    transientFenceTraceId < 0 ||
+    !Number.isSafeInteger(rearmedFenceTraceId) ||
+    rearmedFenceTraceId < 0
   ) {
     throw new Error("welcome checkpoints are incomplete");
   }
@@ -408,16 +428,32 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   if (initialLifecycle.started.id > stableCheckpoint.traceId) {
     throw new Error("stable arrival did not start welcome before settling");
   }
+  const initialWindow = welcomeStartsBetween(
+    trace,
+    initialFenceTraceId,
+    stableCheckpoint.traceId,
+  );
   if (
-    welcomeStarts(traceUpTo(trace, duplicateApproachCheckpoint.traceId))
-      .length !== 1
+    initialWindow.length !== 1 ||
+    initialWindow[0]?.id !== initialLifecycle.started.id
+  ) {
+    throw new Error("initial welcome did not use a fresh presence fence");
+  }
+  if (
+    welcomeStartsBetween(
+      trace,
+      duplicateFenceTraceId,
+      duplicateApproachCheckpoint.traceId,
+    ).length !== 0
   ) {
     throw new Error("duplicate initial approach incorrectly replayed welcome");
   }
-  const transientWelcomeStarts = welcomeStarts(
-    traceUpTo(trace, transientCheckpoint.traceId),
+  const transientWelcomeStarts = welcomeStartsBetween(
+    trace,
+    transientFenceTraceId,
+    transientCheckpoint.traceId,
   );
-  if (transientWelcomeStarts.length !== 1) {
+  if (transientWelcomeStarts.length !== 0) {
     throw new Error("transient empty incorrectly rearmed welcome");
   }
   const departureEvent = trace.find(
@@ -440,7 +476,21 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   if (rearmedLifecycle.started.id > rearmedCheckpoint.traceId) {
     throw new Error("new arrival did not replay welcome after sustained empty");
   }
-  if (welcomeStarts(trace).length !== 2) {
+  const rearmedWindow = welcomeStartsBetween(
+    trace,
+    rearmedFenceTraceId,
+    rearmedCheckpoint.traceId,
+  );
+  if (
+    rearmedWindow.length !== 1 ||
+    rearmedWindow[0]?.id !== rearmedLifecycle.started.id
+  ) {
+    throw new Error("rearmed welcome did not use a fresh presence fence");
+  }
+  if (
+    welcomeStartsBetween(trace, initialFenceTraceId, rearmedCheckpoint.traceId)
+      .length !== 2
+  ) {
     throw new Error("welcome played an unexpected number of times");
   }
 

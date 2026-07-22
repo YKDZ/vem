@@ -193,6 +193,18 @@ function traceId(trace) {
   );
 }
 
+function latestPresenceTransition(trace) {
+  return [...trace]
+    .reverse()
+    .find(
+      (entry) =>
+        entry?.type === "journey_transition" &&
+        /^vision:presence-.+:(?:welcome|departed)$/.test(
+          String(entry?.transitionId ?? ""),
+        ),
+    );
+}
+
 function traceEntryAfter(trace, boundary, predicate) {
   return trace.find(
     (entry) => Number(entry?.id) > boundary && predicate(entry),
@@ -738,6 +750,23 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       runtimeTrace = await dependencies.readTrace(client);
       return runtimeTrace;
     };
+    // A previous business set may leave the shared journey in a present state.
+    // Observe its real departure before proving a fresh arrival.
+    const preconditionTrace = await readTrace();
+    const preconditionBoundary = traceId(preconditionTrace);
+    const priorPresence = latestPresenceTransition(preconditionTrace);
+    await injectVisionPresence(guestInput, "empty", dependencies);
+    if (String(priorPresence?.transitionId ?? "").endsWith(":welcome")) {
+      await waitForTraceEntry(
+        readTrace,
+        preconditionBoundary,
+        (entry) =>
+          entry?.type === "journey_transition" &&
+          String(entry?.transitionId).endsWith(":departed"),
+        dependencies,
+        "initial sustained Vision departure",
+      );
+    }
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
@@ -746,6 +775,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       ? ventEvidenceBefore.rawFrames.length
       : 0;
     let boundary = traceId(await readTrace());
+    const initialFenceTraceId = boundary;
     const initialCapture = await startCueCapture("initial-welcome");
     await injectVisionPresence(guestInput, "approach", dependencies);
     const initialWelcome = await waitForAudioLifecycle(
@@ -786,6 +816,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         stableEdgeId(initialWelcome.transitionId),
         dependencies,
       );
+    const duplicateFenceTraceId = traceId(await readTrace());
     await injectVisionPresence(guestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
@@ -816,6 +847,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
 
     await injectVisionPresence(guestInput, "empty", dependencies);
     await dependencies.sleep(SHORT_EMPTY_MS);
+    const transientFenceTraceId = traceId(await readTrace());
     await injectVisionPresence(guestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
@@ -863,6 +895,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     });
 
     boundary = traceId(departure.trace);
+    const rearmedFenceTraceId = boundary;
     const rearmedCapture = await startCueCapture("rearmed-welcome");
     await injectVisionPresence(guestInput, "approach", dependencies);
     const rearmedWelcome = await waitForAudioLifecycle(
@@ -1036,8 +1069,12 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       checkpoints,
       scenario: {
         welcome: {
+          initialFenceTraceId,
+          duplicateFenceTraceId,
+          transientFenceTraceId,
           initialTransitionId: initialWelcome.transitionId,
           departureTransitionId: departure.entry.transitionId,
+          rearmedFenceTraceId,
           rearmedTransitionId: rearmedWelcome.transitionId,
         },
         supportedCategoryKeys,

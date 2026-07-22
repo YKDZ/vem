@@ -45,7 +45,7 @@ describe("environment control guest full", () => {
     });
   });
 
-  it("treats a reset evidence window as a fresh automatic-vent increment", () => {
+  it("uses frame count only for legacy evidence without a sequence cursor", () => {
     const evidence = {
       rawFrames: [
         {
@@ -58,6 +58,51 @@ describe("environment control guest full", () => {
 
     assert.deepEqual(serialFramesSince(evidence, 5), evidence.rawFrames);
     assert.deepEqual(automaticSerialEvidence(evidence, 5), {
+      b3FrameCountDelta: 1,
+      protocolFrames: ["B3"],
+    });
+  });
+
+  it("does not treat a sequence rollback as fresh command evidence", () => {
+    const beforeCursor = { frameCount: 64, lastSequence: 64 };
+    const evidence = {
+      rawFrames: [
+        {
+          boundaryId: "host-pty:serial-replacement:1",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(evidence, beforeCursor), []);
+    assert.deepEqual(automaticSerialEvidence(evidence, beforeCursor), {
+      b3FrameCountDelta: 0,
+      protocolFrames: [],
+    });
+  });
+
+  it("tracks new automatic frames by sequence when the 64-frame evidence window rolls", () => {
+    const beforeCursor = { frameCount: 64, lastSequence: 64 };
+    const evidence = {
+      rawFrames: [
+        {
+          boundaryId: "host-pty:serial-replacement:64",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b303",
+        },
+        {
+          boundaryId: "host-pty:serial-replacement:65",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(evidence, beforeCursor), [
+      evidence.rawFrames[1],
+    ]);
+    assert.deepEqual(automaticSerialEvidence(evidence, beforeCursor), {
       b3FrameCountDelta: 1,
       protocolFrames: ["B3"],
     });

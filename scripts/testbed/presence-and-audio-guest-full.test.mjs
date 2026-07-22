@@ -243,8 +243,12 @@ function report() {
       ],
       scenario: {
         welcome: {
+          initialFenceTraceId: 0,
+          duplicateFenceTraceId: 4,
           initialTransitionId: "vision:presence-1:welcome",
           departureTransitionId: "vision:presence-2:departed",
+          transientFenceTraceId: 4,
+          rearmedFenceTraceId: 5,
           rearmedTransitionId: "vision:presence-3:welcome",
         },
         supportedCategoryKeys: ["socks"],
@@ -654,6 +658,15 @@ describe("presence and audio guest full", () => {
       "socks",
       "underwear",
     ]);
+    assert.deepEqual(report.presenceAndAudio.scenario.welcome, {
+      initialFenceTraceId: 0,
+      duplicateFenceTraceId: 4,
+      initialTransitionId: "vision:presence-1:welcome",
+      departureTransitionId: "vision:presence-2:departed",
+      transientFenceTraceId: 4,
+      rearmedFenceTraceId: 5,
+      rearmedTransitionId: "vision:presence-3:welcome",
+    });
     assert.equal(report.presenceAndAudio.scenario.categories.length, 2);
     assert.equal(
       report.presenceAndAudio.runtimeTrace.filter(
@@ -676,7 +689,7 @@ describe("presence and audio guest full", () => {
     );
     assert.deepEqual(
       calls.filter((value) => value === "vision:empty"),
-      ["vision:empty", "vision:empty", "vision:empty"],
+      ["vision:empty", "vision:empty", "vision:empty", "vision:empty"],
     );
     assert.ok(
       calls.includes(
@@ -768,13 +781,15 @@ describe("presence and audio guest full", () => {
         waitForRoute: async () => {},
         waitForSaleStartReady: async () => {},
         readTrace: async () => [],
+        sleep: async () => {},
         controlPlaneRequest: async (_input, path) => {
           calls.push(path);
           if (path === "/v1/audio-captures/start")
             return { audioCaptureId: "audio-1", startReport: {} };
           return { cancelled: true };
         },
-        fetchJson: async () => {
+        fetchJson: async (_url, request) => {
+          if (JSON.parse(request.body).state === "empty") return { ok: true };
           throw new Error("controlled Vision unavailable");
         },
       },

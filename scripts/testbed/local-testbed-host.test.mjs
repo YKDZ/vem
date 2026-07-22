@@ -275,6 +275,10 @@ describe("tracked local testbed host lifecycle", () => {
     );
     assert.match(plan[1].input, /interactive-display-report\.json/);
     assert.match(plan[1].input, /-Encoding UTF8 \| ConvertFrom-Json/);
+    assert.match(plan[1].input, /CurrentHorizontalResolution/);
+    assert.match(plan[1].input, /CurrentVerticalResolution/);
+    assert.match(plan[1].input, /VEN_1AF4&DEV_1050/);
+    assert.match(plan[1].input, /ConfigManagerErrorCode/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(
       plan[0].path,
@@ -358,7 +362,7 @@ describe("tracked local testbed host lifecycle", () => {
             heightPx: 1920,
             sessionUser: "baseline",
             sessionId: 2,
-            source: "interactive_autologon_report",
+            source: "live_video_controller",
           })}\n`,
         };
       },

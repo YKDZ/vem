@@ -1089,6 +1089,27 @@ describe("vision try-on acceptance script", () => {
     assert.equal(reads, 2);
   });
 
+  it("treats a blank catalog Vision profile eventId as absent in the baseline", async () => {
+    const baseline = await waitForClearedVisionRecommendationBaseline(
+      {
+        readCatalogState: async () => ({
+          route: "#/catalog",
+          recommendationActive: "false",
+          profileEventId: "",
+          products: [{ catalogKey: "shirt:l" }],
+        }),
+        readRuntimeTraceSnapshot: async () => ({
+          runtimeGenerationId: "runtime:baseline-blank",
+          entries: [{ id: 9 }],
+        }),
+      },
+      50,
+      1,
+    );
+    assert.equal(baseline.catalogState.profileEventId, null);
+    assert.equal(baseline.runtimeGenerationId, "runtime:baseline-blank");
+  });
+
   it("times out while the previous Vision recommendation remains projected in the catalog baseline", async () => {
     await assert.rejects(
       waitForClearedVisionRecommendationBaseline(

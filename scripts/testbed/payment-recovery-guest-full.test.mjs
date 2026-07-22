@@ -7,6 +7,7 @@ import {
   mqttEvidenceProvesNoDispense,
   openFixtureProductFromCatalog,
   refreshAdminAccessToken,
+  runtimeTraceTechnicalMessage,
   unwrapServiceApiEnvelope,
   waitForMachineOnline,
   parsePaymentRecoveryGuestArgs,
@@ -397,6 +398,27 @@ describe("payment recovery guest full", () => {
     delete createFailure.technicalEvidence.localOperations;
 
     assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
+  });
+
+  it("reads create failure technical detail from the real nested runtime trace field", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.technicalEvidence.runtimeTrace.entry = {
+      id: 1,
+      technical: {
+        message: "mock payment create gate timed out before release",
+      },
+    };
+
+    assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
+    assert.equal(
+      runtimeTraceTechnicalMessage(
+        createFailure.technicalEvidence.runtimeTrace.entry,
+      ),
+      "mock payment create gate timed out before release",
+    );
   });
 });
 

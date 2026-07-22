@@ -964,8 +964,12 @@ function presenceAndAudioReport() {
       ],
       scenario: {
         welcome: {
+          initialFenceTraceId: 0,
+          duplicateFenceTraceId: 4,
           initialTransitionId: "vision:presence-1:welcome",
           departureTransitionId: "vision:presence-2:departed",
+          transientFenceTraceId: 4,
+          rearmedFenceTraceId: 5,
           rearmedTransitionId: "vision:presence-3:welcome",
         },
         supportedCategoryKeys: ["socks"],

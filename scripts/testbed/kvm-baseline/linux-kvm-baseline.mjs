@@ -27,7 +27,7 @@ const REQUIRED_COMMANDS = [
   "flock",
   "Xvfb",
   "openbox",
-  "gvncviewer",
+  "xtigervncviewer",
   "setpriv",
   "socat",
 ];
@@ -1019,7 +1019,10 @@ export async function startHeadlessVncActivator({
   const height = commands.height ?? 1920;
   const xvfbCommand = commands.xvfb ?? "Xvfb";
   const windowManagerCommand = commands.windowManager ?? "openbox";
-  const viewerCommand = commands.viewer ?? "gvncviewer";
+  const viewerCommand = commands.viewer ?? "xtigervncviewer";
+  const viewerArguments =
+    commands.viewerArguments ??
+    (commands.viewer ? [] : ["-RemoteResize=0", "-ViewOnly=1"]);
   let xvfb;
   let windowManager;
   let viewer;
@@ -1136,10 +1139,10 @@ export async function startHeadlessVncActivator({
     viewer = startSupervisor(
       "viewer",
       viewerCommand,
-      [...(commands.viewerArguments ?? []), endpoint],
+      [...viewerArguments, endpoint],
       { ...environment, DISPLAY: `:${displayNumber}` },
     );
-    monitor(viewer, "gvncviewer");
+    monitor(viewer, "TigerVNC viewer");
     viewerIdentity = await registeredSupervisorIdentity(
       viewer,
       metadataPath,

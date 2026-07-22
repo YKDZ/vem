@@ -236,6 +236,14 @@ export function mqttEvidenceProvesNoDispense(evidence) {
     evidence.mqtt.messages.length === 0
   );
 }
+
+export function runtimeTraceTechnicalMessage(entry) {
+  const legacy = entry?.technicalMessage;
+  if (typeof legacy === "string" && legacy !== "") return legacy;
+  const nested = entry?.technical?.message;
+  return typeof nested === "string" && nested !== "" ? nested : null;
+}
+
 export function validatePaymentRecoveryEvidence(report) {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true) {
     throw new Error("payment recovery report is not successful");
@@ -328,9 +336,9 @@ export function validatePaymentRecoveryEvidence(report) {
         attempt.technicalEvidence.runtimeTrace
           ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
         !Number.isFinite(attempt.technicalEvidence.runtimeTrace?.entry?.id) ||
-        !attempt.technicalEvidence.runtimeTrace?.entry?.technicalMessage?.includes(
-          "mock payment create gate timed out before release",
-        )
+        !runtimeTraceTechnicalMessage(
+          attempt.technicalEvidence.runtimeTrace?.entry,
+        )?.includes("mock payment create gate timed out before release")
       ) {
         throw new Error(
           "payment recovery create failure did not prove installed customer copy and durable technical evidence",
@@ -913,7 +921,7 @@ export async function runPaymentRecoveryGuest(options) {
             RECOVERY_TERMINALS.create_failure,
           );
           if (
-            !customerSurface.trace.technicalMessage.includes(
+            !runtimeTraceTechnicalMessage(customerSurface.trace)?.includes(
               "mock payment create gate timed out before release",
             )
           ) {

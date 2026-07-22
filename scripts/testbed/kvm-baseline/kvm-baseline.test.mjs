@@ -1056,7 +1056,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
 
         await assert.rejects(
           activator.runWhileActive(() => new Promise(() => {})),
-          /gvncviewer exited during VNC activation/,
+          /TigerVNC viewer exited during VNC activation/,
         );
       } finally {
         await activator?.stop();
@@ -1356,7 +1356,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "flock",
               "Xvfb",
               "openbox",
-              "gvncviewer",
+              "xtigervncviewer",
               "setpriv",
               "socat",
             ],
@@ -1392,7 +1392,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "flock",
               "Xvfb",
               "openbox",
-              "gvncviewer",
+              "xtigervncviewer",
               "setpriv",
               "socat",
             ],
@@ -1453,10 +1453,10 @@ await new Promise(() => setInterval(() => {}, 1_000));
           evaluateHostPreflight(config, {
             ...validObservation,
             commands: validObservation.commands.filter(
-              (command) => command !== "gvncviewer",
+              (command) => command !== "xtigervncviewer",
             ),
           }),
-        /missing host tools: gvncviewer/,
+        /missing host tools: xtigervncviewer/,
       );
       assert.throws(
         () =>
@@ -1478,7 +1478,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
               "flock",
               "Xvfb",
               "openbox",
-              "gvncviewer",
+              "xtigervncviewer",
               "setpriv",
             ],
             cpuCount: 8,

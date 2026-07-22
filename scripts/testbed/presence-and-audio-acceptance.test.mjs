@@ -152,8 +152,12 @@ function passingAcceptance() {
     ],
     scenario: {
       welcome: {
+        initialFenceTraceId: 0,
+        duplicateFenceTraceId: 4,
         initialTransitionId: initialWelcome,
         departureTransitionId: departed,
+        transientFenceTraceId: 4,
+        rearmedFenceTraceId: 5,
         rearmedTransitionId: rearmedWelcome,
       },
       supportedCategoryKeys: ["socks", "underwear"],
@@ -305,6 +309,46 @@ describe("presence and audio acceptance", () => {
     assert.throws(
       () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
       /transient empty incorrectly rearmed welcome/,
+    );
+  });
+
+  it("rejects a stale welcome that happened before the explicit fresh fence", () => {
+    const acceptance = passingAcceptance();
+    acceptance.scenario.welcome.initialFenceTraceId = 3;
+    assert.throws(
+      () => validatePresenceAndAudioAcceptanceEvidence(acceptance),
+      /initial welcome did not use a fresh presence fence/,
+    );
+  });
+
+  it("ignores welcome history before the explicit initial fence", () => {
+    const acceptance = passingAcceptance();
+    const priorWelcome = acceptance.runtimeTrace.find(
+      (entry) => entry.type === "audio_started",
+    );
+    acceptance.runtimeTrace = [
+      {
+        ...priorWelcome,
+        id: 1,
+        transitionId: "vision:prior-run:welcome",
+      },
+      ...acceptance.runtimeTrace.map((entry) => ({
+        ...entry,
+        id: entry.id + 1,
+      })),
+    ];
+    acceptance.checkpoints = acceptance.checkpoints.map((checkpoint) => ({
+      ...checkpoint,
+      traceId: checkpoint.traceId + 1,
+    }));
+    const welcome = acceptance.scenario.welcome;
+    welcome.initialFenceTraceId += 1;
+    welcome.duplicateFenceTraceId += 1;
+    welcome.transientFenceTraceId += 1;
+    welcome.rearmedFenceTraceId += 1;
+    acceptance.scenario.preferenceSuppression.rejectedTraceId += 1;
+    assert.doesNotThrow(() =>
+      validatePresenceAndAudioAcceptanceEvidence(acceptance),
     );
   });
 

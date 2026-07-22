@@ -214,10 +214,18 @@ if (-not (Test-Path -LiteralPath $displayReportPath -PathType Leaf)) { throw 'in
 $displayReport = Get-Content -LiteralPath $displayReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentBootIdentity = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o')
 if ($null -ne $displayReport.bootIdentity -and [string]$displayReport.bootIdentity -ne $currentBootIdentity) { throw 'interactive display report belongs to an earlier Windows boot' }
+$videoController = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object {
+  [string]$_.PNPDeviceID -match '^PCI\\VEN_1AF4&DEV_1050' -and
+  [string]$_.Status -eq 'OK' -and
+  [int]$_.ConfigManagerErrorCode -eq 0 -and
+  $null -ne $_.CurrentHorizontalResolution -and
+  $null -ne $_.CurrentVerticalResolution
+} | Select-Object -First 1)
+if ($videoController.Count -eq 0) { throw 'healthy active VirtIO GPU resolution was not observed' }
 $screen = [pscustomobject]@{
-  widthPx = [int]$displayReport.desktop.width
-  heightPx = [int]$displayReport.desktop.height
-  source = 'interactive_autologon_report'
+  widthPx = [int]$videoController[0].CurrentHorizontalResolution
+  heightPx = [int]$videoController[0].CurrentVerticalResolution
+  source = 'live_video_controller'
 }
 $proof = [ordered]@{
   schemaVersion = ${quotePowerShell(DISPLAY_PROOF_SCHEMA)}

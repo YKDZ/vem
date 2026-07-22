@@ -267,6 +267,23 @@ function serialFrameCount(evidence) {
   return Array.isArray(evidence?.rawFrames) ? evidence.rawFrames.length : 0;
 }
 
+function serialFrameSequence(frame) {
+  if (Number.isInteger(frame?.sequence) && frame.sequence >= 0) {
+    return frame.sequence;
+  }
+  const match = /:(\d+)$/.exec(String(frame?.boundaryId ?? ""));
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function serialEvidenceCursor(evidence) {
+  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+  const lastFrame = frames.at(-1) ?? null;
+  return {
+    frameCount: frames.length,
+    lastSequence: serialFrameSequence(lastFrame),
+  };
+}
+
 function serialTailIdentity(evidence) {
   const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
   return frames
@@ -307,6 +324,22 @@ function automaticVentHealth(health) {
 
 export function serialFramesSince(evidence, beforeFrameCount) {
   const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+  if (
+    beforeFrameCount &&
+    typeof beforeFrameCount === "object" &&
+    !Array.isArray(beforeFrameCount)
+  ) {
+    const lastSequence = Number.isInteger(beforeFrameCount.lastSequence)
+      ? beforeFrameCount.lastSequence
+      : null;
+    if (lastSequence !== null) {
+      return frames.filter((frame) => {
+        const sequence = serialFrameSequence(frame);
+        return sequence !== null && sequence > lastSequence;
+      });
+    }
+    beforeFrameCount = beforeFrameCount.frameCount;
+  }
   if (!Number.isInteger(beforeFrameCount) || beforeFrameCount < 0) {
     return frames.slice();
   }
@@ -364,7 +397,7 @@ async function requestAutomaticVentIntent({
     `/v1/serial-sessions/${sessionId}/evidence`,
     {},
   );
-  const beforeFrameCount = serialFrameCount(beforeEvidence);
+  const beforeCursor = serialEvidenceCursor(beforeEvidence);
   const response = await daemonPost(handoff, "/v1/intents/automatic-vent", {
     edgeId,
     ventSpeed,
@@ -384,23 +417,23 @@ async function requestAutomaticVentIntent({
       edgeId,
       requestedSpeed: ventSpeed,
       outcome: response.outcome,
-      beforeFrameCount,
-      ...automaticSerialEvidence(evidence, beforeFrameCount),
+      beforeFrameCount: beforeCursor.frameCount,
+      ...automaticSerialEvidence(evidence, beforeCursor),
     };
   }
   const { evidence, frame } = await waitForB3Frame({
     guestInput,
     sessionId,
-    beforeFrameCount,
+    beforeFrameCount: beforeCursor,
     expectedSpeed: ventSpeed,
   });
   return {
     edgeId,
     requestedSpeed: ventSpeed,
     outcome: response.outcome,
-    beforeFrameCount,
+    beforeFrameCount: beforeCursor.frameCount,
     frame,
-    ...automaticSerialEvidence(evidence, beforeFrameCount),
+    ...automaticSerialEvidence(evidence, beforeCursor),
   };
 }
 
@@ -450,7 +483,7 @@ async function commandEnvironment({
     `/v1/serial-sessions/${sessionId}/evidence`,
     {},
   );
-  const beforeFrameCount = serialFrameCount(beforeEvidence);
+  const beforeCursor = serialEvidenceCursor(beforeEvidence);
   const beforeTail = serialTailIdentity(beforeEvidence);
   const admin = await adminRequest(
     guestInput,
@@ -488,8 +521,8 @@ async function commandEnvironment({
     admin.commandNo,
     "/events/environment-control-result",
   );
-  const protocolFrames = serialProtocolFrames(afterEvidence, beforeFrameCount);
-  const protocolFrame = serialFramesSince(afterEvidence, beforeFrameCount).find(
+  const protocolFrames = serialProtocolFrames(afterEvidence, beforeCursor);
+  const protocolFrame = serialFramesSince(afterEvidence, beforeCursor).find(
     (frame) => frame?.parsedOpcode === expectedOpcode,
   );
   return {
@@ -511,16 +544,16 @@ async function commandEnvironment({
     },
     serial: {
       lowerBoundaryObserved:
-        serialFrameCount(afterEvidence) > beforeFrameCount ||
+        serialFrameCount(afterEvidence) > beforeCursor.frameCount ||
         serialTailIdentity(afterEvidence) !== beforeTail,
-      beforeFrameCount,
+      beforeFrameCount: beforeCursor.frameCount,
+      beforeFrameCursor: beforeCursor,
       afterFrameCount: serialFrameCount(afterEvidence),
       protocolFrames,
       expectedOpcode,
       protocolFrame,
       protocolFrameObserved: protocolFrames.includes(expectedOpcode),
-      automaticB3FrameCount: b3FramesSince(afterEvidence, beforeFrameCount)
-        .length,
+      automaticB3FrameCount: b3FramesSince(afterEvidence, beforeCursor).length,
     },
   };
 }

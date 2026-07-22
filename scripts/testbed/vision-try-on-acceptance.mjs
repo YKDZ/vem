@@ -1971,7 +1971,7 @@ async function readRuntimeTrace(client) {
 }
 
 async function readCatalogRecommendationState(client) {
-  return evaluateExpression(
+  const state = await evaluateExpression(
     client,
     `(() => {
       const el = document.querySelector("[data-test='catalog-page']");
@@ -1982,10 +1982,16 @@ async function readCatalogRecommendationState(client) {
       } : null;
     })()`,
   );
+  return state
+    ? {
+        ...state,
+        profileEventId: optionalString(state.profileEventId),
+      }
+    : state;
 }
 
 async function readCatalogProducts(client) {
-  return evaluateExpression(
+  const state = await evaluateExpression(
     client,
     `(() => {
       const page = document.querySelector("[data-test='catalog-page']");
@@ -2012,6 +2018,12 @@ async function readCatalogProducts(client) {
       };
     })()`,
   );
+  return state
+    ? {
+        ...state,
+        profileEventId: optionalString(state.profileEventId),
+      }
+    : state;
 }
 
 async function waitForCatalogProducts(client, timeoutMs = 30_000) {
@@ -2040,10 +2052,16 @@ export async function waitForClearedVisionRecommendationBaseline(
   return waitForCondition(
     "Vision recommendation baseline clear",
     async () => {
-      const [catalogState, runtimeTraceSnapshot] = await Promise.all([
+      const [rawCatalogState, runtimeTraceSnapshot] = await Promise.all([
         readCatalogState(),
         readRuntimeTraceSnapshot(),
       ]);
+      const catalogState = rawCatalogState
+        ? {
+            ...rawCatalogState,
+            profileEventId: optionalString(rawCatalogState.profileEventId),
+          }
+        : rawCatalogState;
       const runtime = normalizeRuntimeTraceSnapshot(
         runtimeTraceSnapshot,
         "Vision recommendation baseline runtime trace",
