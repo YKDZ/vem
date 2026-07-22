@@ -448,8 +448,8 @@ describe("full workflow serial lifecycle", () => {
     let saleViewReads = 0;
     const result = await ensureFixtureStockReady({
       fixtureAllocation: {
-        fast: { slotDisplayLabel: "A1", onHandQty: 3 },
-        scanner: { slotDisplayLabel: "A2", onHandQty: 4 },
+        fast: { slotId: "slot-1", slotDisplayLabel: "A1", onHandQty: 3 },
+        scanner: { slotId: "slot-2", slotDisplayLabel: "A2", onHandQty: 4 },
       },
       async daemonGet(path) {
         if (path === "/v1/stock/maintenance-task") {
@@ -457,9 +457,21 @@ describe("full workflow serial lifecycle", () => {
             taskId: "stock-count-01",
             mode: "recovery_count",
             slots: [
-              { slotDisplayLabel: "A1", currentQuantity: 0 },
-              { slotDisplayLabel: "A2", currentQuantity: 1 },
-              { slotDisplayLabel: "A9", currentQuantity: 2 },
+              {
+                slotId: "slot-1",
+                slotDisplayLabel: "stale-A1",
+                currentQuantity: 0,
+              },
+              {
+                slotId: "slot-2",
+                slotDisplayLabel: "stale-A2",
+                currentQuantity: 1,
+              },
+              {
+                slotId: "slot-9",
+                slotDisplayLabel: "stale-A9",
+                currentQuantity: 2,
+              },
             ],
           };
         }
@@ -467,12 +479,14 @@ describe("full workflow serial lifecycle", () => {
         return {
           items: [
             {
+              slotId: "slot-1",
               slotDisplayLabel: "A1",
               slotSalesState: saleViewReads > 1 ? "sale_ready" : "needs_count",
               saleableStock: saleViewReads > 1 ? 3 : 0,
               physicalStock: saleViewReads > 1 ? 3 : 0,
             },
             {
+              slotId: "slot-2",
               slotDisplayLabel: "A2",
               slotSalesState: "sale_ready",
               saleableStock: 4,
@@ -500,9 +514,9 @@ describe("full workflow serial lifecycle", () => {
           taskId: "stock-count-01",
           mode: "recovery_count",
           slots: [
-            { slotDisplayLabel: "A1", quantity: 3 },
-            { slotDisplayLabel: "A2", quantity: 4 },
-            { slotDisplayLabel: "A9", quantity: 2 },
+            { slotId: "slot-1", quantity: 3 },
+            { slotId: "slot-2", quantity: 4 },
+            { slotId: "slot-9", quantity: 2 },
           ],
         },
       },
@@ -513,7 +527,9 @@ describe("full workflow serial lifecycle", () => {
     let taskReads = 0;
     let saleViewReads = 0;
     const result = await ensureFixtureStockReady({
-      fixtureAllocation: { fast: { slotDisplayLabel: "A1", onHandQty: 3 } },
+      fixtureAllocation: {
+        fast: { slotId: "slot-1", slotDisplayLabel: "A1", onHandQty: 3 },
+      },
       async daemonGet(path) {
         if (path === "/v1/stock/maintenance-task") {
           taskReads += 1;
@@ -523,6 +539,7 @@ describe("full workflow serial lifecycle", () => {
         return {
           items: [
             {
+              slotId: "slot-1",
               slotDisplayLabel: "A1",
               slotSalesState: saleViewReads >= 3 ? "sale_ready" : "needs_count",
               saleableStock: saleViewReads >= 3 ? 3 : 0,
@@ -544,15 +561,17 @@ describe("full workflow serial lifecycle", () => {
     const posts = [];
     let saleViewReads = 0;
     const result = await ensureFixtureStockReady({
-      fixtureAllocation: { fast: { slotDisplayLabel: "A1", onHandQty: 3 } },
+      fixtureAllocation: {
+        fast: { slotId: "slot-1", slotDisplayLabel: "A1", onHandQty: 3 },
+      },
       async daemonGet(path) {
         if (path === "/v1/stock/maintenance-task") {
           return {
             taskId: "stock-refill-01",
             mode: "routine_refill",
             slots: [
-              { slotDisplayLabel: "A1", currentQuantity: 2 },
-              { slotDisplayLabel: "A2", currentQuantity: 3 },
+              { slotId: "slot-1", slotDisplayLabel: "A1", currentQuantity: 2 },
+              { slotId: "slot-2", slotDisplayLabel: "A2", currentQuantity: 3 },
             ],
           };
         }
@@ -560,6 +579,7 @@ describe("full workflow serial lifecycle", () => {
         return {
           items: [
             {
+              slotId: "slot-1",
               slotDisplayLabel: "A1",
               slotSalesState: "sale_ready",
               saleableStock: saleViewReads > 1 ? 3 : 2,
@@ -576,7 +596,7 @@ describe("full workflow serial lifecycle", () => {
     });
     assert.equal(result.mode, "routine_refill");
     assert.deepEqual(posts[0].body.slots, [
-      { slotDisplayLabel: "A1", addition: 1 },
+      { slotId: "slot-1", addition: 1 },
     ]);
   });
 
@@ -585,14 +605,20 @@ describe("full workflow serial lifecycle", () => {
     let saleViewReads = 0;
     const result = await ensureFixtureStockReady({
       fixtureAllocation: {
-        stockMaintenance: { slotDisplayLabel: "A1", onHandQty: 1 },
+        stockMaintenance: {
+          slotId: "slot-01",
+          slotDisplayLabel: "A1",
+          onHandQty: 1,
+        },
       },
       async daemonGet(path) {
         if (path === "/v1/stock/maintenance-task") {
           return {
             taskId: "stock-refill-01",
             mode: "routine_refill",
-            slots: [{ slotDisplayLabel: "A1", currentQuantity: 2 }],
+            slots: [
+              { slotId: "slot-01", slotDisplayLabel: "A1", currentQuantity: 2 },
+            ],
           };
         }
         saleViewReads += 1;
@@ -629,7 +655,6 @@ describe("full workflow serial lifecycle", () => {
       slots: [
         {
           slotId: "slot-01",
-          slotDisplayLabel: "A1",
           sku: "SKU-01",
           quantity: 1,
           enabled: true,
@@ -642,13 +667,17 @@ describe("full workflow serial lifecycle", () => {
     const posts = [];
     let saleViewReads = 0;
     const result = await ensureFixtureStockReady({
-      fixtureAllocation: { fast: { slotDisplayLabel: "A1", onHandQty: 3 } },
+      fixtureAllocation: {
+        fast: { slotId: "slot-01", slotDisplayLabel: "A1", onHandQty: 3 },
+      },
       async daemonGet(path) {
         if (path === "/v1/stock/maintenance-task") {
           return {
             taskId: "stock-refill-01",
             mode: "routine_refill",
-            slots: [{ slotDisplayLabel: "A1", currentQuantity: 3 }],
+            slots: [
+              { slotId: "slot-01", slotDisplayLabel: "A1", currentQuantity: 3 },
+            ],
           };
         }
         saleViewReads += 1;
@@ -678,7 +707,6 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(posts[0].body.slots, [
       {
         slotId: "slot-01",
-        slotDisplayLabel: "A1",
         sku: "SKU-01",
         quantity: 3,
         enabled: true,
@@ -689,10 +717,13 @@ describe("full workflow serial lifecycle", () => {
   it("skips stock maintenance when every fixture slot is already sale-ready", async () => {
     let postCount = 0;
     const result = await ensureFixtureStockReady({
-      fixtureAllocation: { fast: { slotDisplayLabel: "A1", onHandQty: 3 } },
+      fixtureAllocation: {
+        fast: { slotId: "slot-1", slotDisplayLabel: "A1", onHandQty: 3 },
+      },
       daemonGet: async () => ({
         items: [
           {
+            slotId: "slot-1",
             slotDisplayLabel: "A1",
             slotSalesState: "sale_ready",
             saleableStock: 3,

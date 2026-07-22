@@ -4084,7 +4084,10 @@ mod tests {
         )
         .expect("task json");
         let mode = task["mode"].as_str().expect("task mode");
-        assert_eq!(task["slots"][0]["slotId"], "550e8400-e29b-41d4-a716-446655440021");
+        assert_eq!(
+            task["slots"][0]["slotId"],
+            "550e8400-e29b-41d4-a716-446655440021"
+        );
         assert_eq!(task["slots"][0]["slotDisplayLabel"], "R1C1");
         let slot_input = if mode == "routine_refill" {
             serde_json::json!({ "slotId": "550e8400-e29b-41d4-a716-446655440021", "addition": 3 })

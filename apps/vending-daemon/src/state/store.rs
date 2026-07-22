@@ -22,9 +22,9 @@ use vending_core::domain::{
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2, MIGRATION_V3,
-    MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
-    SCHEMA_VERSION,
+    MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
+    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
+    MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -3187,17 +3187,15 @@ impl LocalStateStore {
         .await?;
         let slots = rows
             .into_iter()
-            .map(
-                |(slot_id, sku, capacity, inventory_id, variant_id)| {
-                    StockMaintenanceTaskIdentitySlot {
-                        slot_id,
-                        sku,
-                        capacity,
-                        inventory_id,
-                        variant_id,
-                    }
-                },
-            )
+            .map(|(slot_id, sku, capacity, inventory_id, variant_id)| {
+                StockMaintenanceTaskIdentitySlot {
+                    slot_id,
+                    sku,
+                    capacity,
+                    inventory_id,
+                    variant_id,
+                }
+            })
             .collect::<Vec<_>>();
         let revision = stock_maintenance_planogram_revision(planogram_version, mode, &slots)?;
         Ok((revision, slots))
@@ -3273,17 +3271,15 @@ impl LocalStateStore {
         .await?;
         let current_slots = rows
             .into_iter()
-            .map(
-                |(slot_id, sku, capacity, inventory_id, variant_id)| {
-                    StockMaintenanceTaskIdentitySlot {
-                        slot_id,
-                        sku,
-                        capacity,
-                        inventory_id,
-                        variant_id,
-                    }
-                },
-            )
+            .map(|(slot_id, sku, capacity, inventory_id, variant_id)| {
+                StockMaintenanceTaskIdentitySlot {
+                    slot_id,
+                    sku,
+                    capacity,
+                    inventory_id,
+                    variant_id,
+                }
+            })
             .collect::<Vec<_>>();
 
         let mut slot_ids = identity
@@ -3638,7 +3634,9 @@ impl LocalStateStore {
             rows.iter().map(|row| (row.0.as_str(), row)).collect();
         let mut seen = HashSet::new();
         for slot in &input.slots {
-            if !seen.insert(slot.slot_id.as_str()) || !by_slot_id.contains_key(slot.slot_id.as_str()) {
+            if !seen.insert(slot.slot_id.as_str())
+                || !by_slot_id.contains_key(slot.slot_id.as_str())
+            {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock task slot {} is duplicate or not in the active planogram",
                     slot.slot_id
@@ -5067,7 +5065,7 @@ impl LocalStateStore {
             .slots
             .iter()
             .map(|slot| (slot.slot_id.as_str(), slot))
-        .collect();
+            .collect();
         for row in rows {
             let slot_id: String = row.try_get("slot_id")?;
             let sku: String = row.try_get("sku")?;
@@ -5334,14 +5332,8 @@ impl LocalStateStore {
         .fetch_optional(tx.as_mut())
         .await?;
 
-        let Some((
-            planogram_version,
-            slot_id,
-            capacity,
-            inventory_id,
-            variant_id,
-            physical_stock,
-        )) = row
+        let Some((planogram_version, slot_id, capacity, inventory_id, variant_id, physical_stock)) =
+            row
         else {
             return Ok(None);
         };
@@ -6391,10 +6383,7 @@ async fn upsert_sale_view_projection_in_tx(
         slot_id: row.try_get("slot_id")?,
         row_no: row.try_get("row_no")?,
         cell_no: row.try_get("cell_no")?,
-        slot_display_label: slot_display_label(
-            row.try_get("row_no")?,
-            row.try_get("cell_no")?,
-        ),
+        slot_display_label: slot_display_label(row.try_get("row_no")?, row.try_get("cell_no")?),
         inventory_id: row.try_get("inventory_id")?,
         variant_id: row.try_get("variant_id")?,
         product_id: row.try_get("product_id")?,
@@ -6989,14 +6978,8 @@ async fn apply_dispense_success_to_local_stock_in_tx(
     .bind(command.slot.cell_no)
     .fetch_optional(tx.as_mut())
     .await?;
-    let Some((
-        planogram_version,
-        slot_id,
-        capacity,
-        inventory_id,
-        variant_id,
-        physical_stock,
-    )) = row
+    let Some((planogram_version, slot_id, capacity, inventory_id, variant_id, physical_stock)) =
+        row
     else {
         return Err(StoreError::InvalidStockInput(format!(
             "dispense slot {} ({},{}) is missing from the active counted planogram",
@@ -9237,7 +9220,9 @@ mod tests {
     async fn v18_planogram_address_upgrade_preserves_slot_ledger_projection_and_identity() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("state-v18-planogram.db");
-        let store = LocalStateStore::open(&path).await.expect("open current store");
+        let store = LocalStateStore::open(&path)
+            .await
+            .expect("open current store");
         seed_single_slot_planogram(&store).await;
         store
             .record_stock_movement(StockMovementInput {
@@ -9260,7 +9245,10 @@ mod tests {
         .execute(store.pool())
         .await
         .expect("seed movement sync");
-        let task = store.stock_maintenance_task().await.expect("seed task identity");
+        let task = store
+            .stock_maintenance_task()
+            .await
+            .expect("seed task identity");
         assert!(!task.task_id.is_empty());
 
         let mut connection = store.pool().acquire().await.expect("fixture connection");
@@ -9323,7 +9311,10 @@ mod tests {
                 .fetch_all(upgraded.pool())
                 .await
                 .expect("read v19 columns");
-        let names = columns.iter().map(|(name,)| name.as_str()).collect::<Vec<_>>();
+        let names = columns
+            .iter()
+            .map(|(name,)| name.as_str())
+            .collect::<Vec<_>>();
         assert!(names.contains(&"row_no"));
         assert!(names.contains(&"cell_no"));
         assert!(!names.contains(&"slot_code"));
@@ -9340,8 +9331,14 @@ mod tests {
         .await
         .expect("read preserved v18 facts");
         assert_eq!(preserved, (1, 1, 1, 1, 1));
-        let sale_view = upgraded.sale_view(None).await.expect("read migrated sale view");
-        assert_eq!(sale_view.items[0].slot_id, "550e8400-e29b-41d4-a716-446655440001");
+        let sale_view = upgraded
+            .sale_view(None)
+            .await
+            .expect("read migrated sale view");
+        assert_eq!(
+            sale_view.items[0].slot_id,
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
         assert_eq!(sale_view.items[0].slot_display_label, "R1C1");
     }
 

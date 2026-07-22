@@ -259,6 +259,7 @@ describe("local operations guest full", () => {
   });
   it("adds audio persistence evidence to the runner report", async () => {
     const writes = [];
+    const manualDispenseRequests = [];
     let evidenceReads = 0;
     const input = {
       runId: "RUN-07",
@@ -324,7 +325,7 @@ describe("local operations guest full", () => {
           }
           throw new Error(`unexpected control path: ${path}`);
         },
-        daemonRequest: async (_handoff, path) => {
+        daemonRequest: async (_handoff, path, body) => {
           if (path === "/v1/sale-view") {
             return {
               planogramVersion: "P-8",
@@ -341,6 +342,7 @@ describe("local operations guest full", () => {
           if (path === "/v1/hardware-bindings")
             return { lowerController: true };
           if (path === "/v1/maintenance/manual-dispense-diagnostic") {
+            manualDispenseRequests.push(body);
             return { outcome: "completed", diagnosticId: "diag-07" };
           }
           throw new Error(`unexpected daemon path: ${path}`);
@@ -380,5 +382,13 @@ describe("local operations guest full", () => {
       writes.at(-1).value.audioPreferencePersistence.target.volume,
       0.35,
     );
+    assert.deepEqual(manualDispenseRequests, [
+      {
+        idempotencyKey: "RUN-07-local-operations",
+        slotId: "slot-7",
+        quantity: 1,
+        timeoutSeconds: 15,
+      },
+    ]);
   });
 });

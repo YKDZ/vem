@@ -840,7 +840,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       "/v1/maintenance/manual-dispense-diagnostic",
       {
         idempotencyKey: `${runId}-local-operations`,
-        slotDisplayLabel: slot.slotDisplayLabel,
+        slotId: slot.slotId,
         quantity: 1,
         timeoutSeconds: 15,
       },

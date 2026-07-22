@@ -532,23 +532,23 @@ export async function ensureFixtureStockReady({
   pollMs = 500,
 }) {
   const fixtures = Object.values(fixtureAllocation ?? {});
-  const desiredBySlot = new Map(
-    fixtures.map((fixture) => [fixture.slotDisplayLabel, fixture.onHandQty]),
+  const desiredBySlotId = new Map(
+    fixtures.map((fixture) => [fixture.slotId, fixture.onHandQty]),
   );
-  if (desiredBySlot.size === 0) {
+  if (desiredBySlotId.size === 0 || desiredBySlotId.has(undefined)) {
     throw new Error("fixture stock preflight requires allocated slots");
   }
 
   const targetIsReady = (saleView) => {
     const bySlot = new Map(
-      (saleView?.items ?? []).map((item) => [item.slotDisplayLabel, item]),
+      (saleView?.items ?? []).map((item) => [item.slotId, item]),
     );
-    return [...desiredBySlot.keys()].every((slotDisplayLabel) => {
-      const item = bySlot.get(slotDisplayLabel);
+    return [...desiredBySlotId.keys()].every((slotId) => {
+      const item = bySlot.get(slotId);
       return (
         item?.slotSalesState === "sale_ready" &&
-        item.saleableStock === desiredBySlot.get(slotDisplayLabel) &&
-        item.physicalStock === desiredBySlot.get(slotDisplayLabel)
+        item.saleableStock === desiredBySlotId.get(slotId) &&
+        item.physicalStock === desiredBySlotId.get(slotId)
       );
     });
   };
@@ -582,19 +582,17 @@ export async function ensureFixtureStockReady({
     );
   }
   const initialBySlot = new Map(
-    (initialSaleView?.items ?? []).map((item) => [item.slotDisplayLabel, item]),
+    (initialSaleView?.items ?? []).map((item) => [item.slotId, item]),
   );
-  const requiresAttestation = [...desiredBySlot.keys()].some(
-    (slotDisplayLabel) => {
-      const item = initialBySlot.get(slotDisplayLabel);
-      const desired = desiredBySlot.get(slotDisplayLabel);
-      return (
-        item?.slotSalesState !== "sale_ready" ||
-        item?.saleableStock > desired ||
-        item?.physicalStock > desired
-      );
-    },
-  );
+  const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
+    const item = initialBySlot.get(slotId);
+    const desired = desiredBySlotId.get(slotId);
+    return (
+      item?.slotSalesState !== "sale_ready" ||
+      item?.saleableStock > desired ||
+      item?.physicalStock > desired
+    );
+  });
   let operationMode = task.mode;
   let operationId = task.taskId;
   if (task.mode === "routine_refill" && requiresAttestation) {
@@ -602,15 +600,14 @@ export async function ensureFixtureStockReady({
     operationId = `testbed-stock-recovery-${Date.now()}`;
     const slots = (initialSaleView?.items ?? []).map((item) => ({
       slotId: item.slotId,
-      slotDisplayLabel: item.slotDisplayLabel,
       sku: item.sku,
-      quantity: desiredBySlot.get(item.slotDisplayLabel) ?? item.physicalStock,
+      quantity: desiredBySlotId.get(item.slotId) ?? item.physicalStock,
       enabled: true,
     }));
     if (
       !initialSaleView?.planogramVersion ||
       slots.length === 0 ||
-      slots.some((slot) => !slot.slotId || !slot.slotDisplayLabel || !slot.sku)
+      slots.some((slot) => !slot.slotId || !slot.sku)
     ) {
       throw new Error("fixture stock attestation inputs are incomplete");
     }
@@ -625,18 +622,17 @@ export async function ensureFixtureStockReady({
       task.mode === "routine_refill"
         ? (task.slots ?? [])
             .map((slot) => ({
-              slotDisplayLabel: slot.slotDisplayLabel,
+              slotId: slot.slotId,
               addition: Math.max(
                 0,
-                (desiredBySlot.get(slot.slotDisplayLabel) ??
-                  slot.currentQuantity) - slot.currentQuantity,
+                (desiredBySlotId.get(slot.slotId) ?? slot.currentQuantity) -
+                  slot.currentQuantity,
               ),
             }))
             .filter((slot) => slot.addition > 0)
         : (task.slots ?? []).map((slot) => ({
-            slotDisplayLabel: slot.slotDisplayLabel,
-            quantity:
-              desiredBySlot.get(slot.slotDisplayLabel) ?? slot.currentQuantity,
+            slotId: slot.slotId,
+            quantity: desiredBySlotId.get(slot.slotId) ?? slot.currentQuantity,
           }));
     if (slots.length === 0) {
       throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
