@@ -6,6 +6,7 @@ import {
   buildPaymentCodeSubmission,
   buildProviderFailureReport,
   collectPaymentProviderFailureEvidence,
+  isRetryableAlipaySandboxError,
   parsePaymentProviderGuestArgs,
   sanitizeProviderEvidence,
   validateInstallationOwnedAlipaySandboxFixture,
@@ -17,6 +18,21 @@ describe("payment provider guest full", () => {
     const bytes = Buffer.from(UNATTENDED_ALIPAY_CUSTOMER_CODE, "utf8");
     assert.deepEqual([...bytes.subarray(-2)], [0x0d, 0x0a]);
     assert.equal(bytes.length, 20);
+  });
+
+  it("retries only the known transient Alipay sandbox system error", () => {
+    assert.equal(
+      isRetryableAlipaySandboxError(
+        new Error(
+          "Alipay payment-code provider call remained uncertain: aop.ACQ.SYSTEM_ERROR",
+        ),
+      ),
+      true,
+    );
+    assert.equal(
+      isRetryableAlipaySandboxError(new Error("ACQ.INVALID_AUTH_CODE")),
+      false,
+    );
   });
 
   it("accepts a real WAIT_BUYER_PAY response when it is deterministically closed", () => {

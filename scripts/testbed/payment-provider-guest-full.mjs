@@ -22,6 +22,7 @@ const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
+const MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS = 3;
 export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
@@ -114,6 +115,10 @@ export function sanitizeProviderEvidence(value, depth = 0) {
       .slice(0, 40)
       .map(([key, entry]) => [key, sanitizeProviderEvidence(entry, depth + 1)]),
   );
+}
+
+export function isRetryableAlipaySandboxError(error) {
+  return errorMessage(error).includes("aop.ACQ.SYSTEM_ERROR");
 }
 
 export function parsePaymentProviderGuestArgs(args) {
@@ -1101,20 +1106,42 @@ export async function runPaymentProviderGuest(options) {
       }),
     );
     stage = "creation";
-    report.authoritative.attempts.push(
-      await paymentCodeAttempt({
-        input,
-        handoff,
-        handoffPath: options.handoffPath,
-        client,
-        token,
-        timeoutMs,
-        provider,
-        setStage: (next) => {
-          stage = next;
-        },
-      }),
-    );
+    for (
+      let attemptNo = 1;
+      attemptNo <= MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS;
+      attemptNo += 1
+    ) {
+      try {
+        report.authoritative.attempts.push(
+          await paymentCodeAttempt({
+            input,
+            handoff: readJson(options.handoffPath),
+            handoffPath: options.handoffPath,
+            client,
+            token,
+            timeoutMs,
+            provider,
+            setStage: (next) => {
+              stage = next;
+            },
+          }),
+        );
+        break;
+      } catch (error) {
+        if (
+          attemptNo === MAX_PAYMENT_CODE_PROVIDER_ATTEMPTS ||
+          !isRetryableAlipaySandboxError(error)
+        ) {
+          throw error;
+        }
+        await cleanAuthoritativeOrderBeforeDiagnostics(
+          client,
+          readJson(options.handoffPath),
+          timeoutMs,
+        );
+        stage = "creation";
+      }
+    }
     report.authoritative.ok = true;
     report.ok = true;
     writeJson(options.outPath, report);
