@@ -337,6 +337,9 @@ describe("local testbed orchestration", () => {
       request: async (_baseUrl, path, options = {}) => {
         calls.push({ path, body: options.body });
         if (path === "/auth/login") return { accessToken: "host-token" };
+        if (path === "/payments/providers") {
+          return [{ id: "provider-alipay", code: "alipay" }];
+        }
         if (
           path === "/payments/provider-configs" &&
           options.method === "POST"
@@ -375,7 +378,11 @@ describe("local testbed orchestration", () => {
         preflight: "configured",
       },
     });
-    assert.equal(calls[1].body.sensitiveConfigJson.privateKeyPem, "host-only");
+    assert.deepEqual(calls[2], {
+      path: "/payments/providers/provider-alipay",
+      body: { status: "enabled" },
+    });
+    assert.equal(calls[3].body.sensitiveConfigJson.privateKeyPem, "host-only");
     assert.equal(JSON.stringify(prepared).includes("host-only"), false);
   });
   it("plans a non-destructive host runtime refresh from the committed workspace", () => {

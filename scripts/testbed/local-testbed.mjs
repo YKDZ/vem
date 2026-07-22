@@ -1050,6 +1050,16 @@ export async function prepareInstallationOwnedPaymentProvider({
     login?.accessToken,
     "host preparation admin access token",
   );
+  const providers = await request(baseUrl, "/payments/providers", { token });
+  const alipay = Array.isArray(providers)
+    ? providers.find((provider) => provider?.code === "alipay")
+    : null;
+  const providerId = required(alipay?.id, "Alipay provider id");
+  await request(baseUrl, `/payments/providers/${providerId}`, {
+    method: "PATCH",
+    token,
+    body: { status: "enabled" },
+  });
   const config = await request(baseUrl, "/payments/provider-configs", {
     method: "POST",
     token,

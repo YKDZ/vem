@@ -12,11 +12,11 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
   >
     <header class="flex items-center justify-between gap-3">
       <div
-        class="flex items-center gap-3"
+        class="flex h-14 items-center gap-3"
         data-test="maintenance-entry-header"
         @click="handleMaintenanceTap"
       >
-        <img :src="logoImage" alt="唐诗村" />
+        <img :src="logoImage" alt="唐诗村" class="h-10 w-auto object-contain" />
         <img
           :src="mascotTopImage"
           alt=""
