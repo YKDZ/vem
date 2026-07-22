@@ -718,6 +718,24 @@ export async function waitForBusinessHardwareReady({
   );
 }
 
+export async function replaceUnavailableTestbedLowerController({
+  capability,
+  sessionId,
+  replaceSerialSession,
+}) {
+  const unavailable = capability?.blockers?.some(
+    (blocker) => blocker?.code === "LOWER_CONTROLLER_UNAVAILABLE",
+  );
+  if (!unavailable) return { replaced: false };
+  if (!sessionId) {
+    throw new Error(
+      "testbed lower controller is unavailable without a serial session",
+    );
+  }
+  const replacement = await replaceSerialSession(sessionId);
+  return { replaced: true, replacement };
+}
+
 export async function returnToCatalogFromClient({
   client,
   evaluateExpressionFn = evaluateExpression,
@@ -900,6 +918,22 @@ function terminalOperations(guestInput, handoff, handoffPath) {
   };
   return {
     prepareTrack: async () => {
+      const capability = await daemonGet(
+        handoff,
+        "/v1/sale-start-capability",
+      ).catch(() => null);
+      await replaceUnavailableTestbedLowerController({
+        capability,
+        sessionId: handoff?.commissioningSerialSession?.sessionId,
+        replaceSerialSession: (sessionId) =>
+          replaceSerialSessionAndUpdateHandoff({
+            guestInput,
+            handoff,
+            handoffPath,
+            sessionId,
+            control: controlPlaneRequest,
+          }),
+      });
       await waitForBusinessHardwareReady({
         daemonGet: (path) => daemonGet(handoff, path),
       });

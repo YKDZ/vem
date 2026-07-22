@@ -11,6 +11,7 @@ import {
   fixtureAllocationForTrack,
   replaceSerialSessionAndUpdateHandoff,
   refreshCatalogPageFromClient,
+  replaceUnavailableTestbedLowerController,
   returnToCatalogFromClient,
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   reloadRuntimeHandoff,
@@ -87,6 +88,36 @@ describe("full workflow serial lifecycle", () => {
     });
     assert.equal(result.lower.ready, true);
     assert.equal(result.capability.canStartSale, true);
+  });
+
+  it("replaces only an explicitly unavailable testbed lower-controller session", async () => {
+    const replaced = [];
+    const result = await replaceUnavailableTestbedLowerController({
+      capability: {
+        blockers: [{ code: "LOWER_CONTROLLER_UNAVAILABLE" }],
+      },
+      sessionId: "serial-1",
+      replaceSerialSession: async (sessionId) => {
+        replaced.push(sessionId);
+        return { sessionId: "serial-2" };
+      },
+    });
+    assert.deepEqual(replaced, ["serial-1"]);
+    assert.deepEqual(result, {
+      replaced: true,
+      replacement: { sessionId: "serial-2" },
+    });
+
+    assert.deepEqual(
+      await replaceUnavailableTestbedLowerController({
+        capability: { blockers: [{ code: "PLATFORM_UNREACHABLE" }] },
+        sessionId: "serial-2",
+        replaceSerialSession: async () => {
+          throw new Error("must not replace for another blocker");
+        },
+      }),
+      { replaced: false },
+    );
   });
 
   it("uses the production self-check and clear endpoints for a persisted whole-machine lock", async () => {
