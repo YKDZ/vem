@@ -659,11 +659,7 @@ export async function runBehaviorAudioGuestFull(options, injected = {}) {
       guestInput,
       `/v1/audio-captures/${audioCaptureId}/stop`,
       {
-        saleCorrelationId: `behavior-audio://${guestInput.runId}`,
-        orderId: dependencies.randomUUID(),
-        orderNo: `BEHAVIOR-AUDIO-${guestInput.runId}`,
-        commandId: dependencies.randomUUID(),
-        commandNo: `BEHAVIOR-AUDIO-COMMAND-${guestInput.runId}`,
+        captureKind: "default-audio",
       },
     );
     audioStopped = true;

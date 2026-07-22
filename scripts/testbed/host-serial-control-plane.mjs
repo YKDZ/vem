@@ -28,6 +28,7 @@ import {
 import {
   abortSaleAudioCaptureSession,
   executeSaleAudioCaptureHostAdapter,
+  stopDefaultAudioCaptureSession,
 } from "./sale-audio-capture-host-adapter.mjs";
 
 const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
@@ -1101,34 +1102,45 @@ async function stopAudioCapture(server, input) {
   }
   const session = requireSession(server, capture.sessionId);
   const outPath = join(session.dir, "audio-capture-stop.json");
-  capture.stopReport = await server.dependencies.executeSaleAudioCapture(
-    {
-      phase: "stop",
-      runId: capture.startInput.runId,
-      lifecycleReference: capture.startInput.lifecycleReference,
-      targetIdentity: capture.startInput.targetIdentity,
-      transactionId: capture.startInput.transactionId,
-      runtime: cloneJson(capture.runtime),
-      captureSessionId: capture.startReport.captureSession.captureSessionId,
-      startOperationReference:
-        capture.startReport.captureSession.startOperationReference,
-      captureStartedAt: capture.startReport.captureSession.startedAt,
-      sale: {
-        saleCorrelationId: required(
-          input.saleCorrelationId,
-          "saleCorrelationId",
-        ),
-        orderId: required(input.orderId, "orderId"),
-        orderNo: required(input.orderNo, "orderNo"),
-        commandId: required(input.commandId, "commandId"),
-        commandNo: required(input.commandNo, "commandNo"),
-      },
-      evidenceDirectory: capture.evidenceDirectory,
-      outPath,
-      production: audioCaptureProductionBinding(server, session),
-    },
-    {},
-  );
+  capture.stopReport =
+    input.captureKind === "default-audio"
+      ? await server.dependencies.stopDefaultAudioCapture(
+          {
+            captureSessionId:
+              capture.startReport.captureSession.captureSessionId,
+            evidenceDirectory: capture.evidenceDirectory,
+          },
+          { production: audioCaptureProductionBinding(server, session) },
+        )
+      : await server.dependencies.executeSaleAudioCapture(
+          {
+            phase: "stop",
+            runId: capture.startInput.runId,
+            lifecycleReference: capture.startInput.lifecycleReference,
+            targetIdentity: capture.startInput.targetIdentity,
+            transactionId: capture.startInput.transactionId,
+            runtime: cloneJson(capture.runtime),
+            captureSessionId:
+              capture.startReport.captureSession.captureSessionId,
+            startOperationReference:
+              capture.startReport.captureSession.startOperationReference,
+            captureStartedAt: capture.startReport.captureSession.startedAt,
+            sale: {
+              saleCorrelationId: required(
+                input.saleCorrelationId,
+                "saleCorrelationId",
+              ),
+              orderId: required(input.orderId, "orderId"),
+              orderNo: required(input.orderNo, "orderNo"),
+              commandId: required(input.commandId, "commandId"),
+              commandNo: required(input.commandNo, "commandNo"),
+            },
+            evidenceDirectory: capture.evidenceDirectory,
+            outPath,
+            production: audioCaptureProductionBinding(server, session),
+          },
+          {},
+        );
   return {
     audioCaptureId: capture.id,
     stopReport: capture.stopReport,
@@ -1616,6 +1628,8 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
       executeSaleAudioCapture:
         dependencies.executeSaleAudioCapture ??
         executeSaleAudioCaptureHostAdapter,
+      stopDefaultAudioCapture:
+        dependencies.stopDefaultAudioCapture ?? stopDefaultAudioCaptureSession,
       abortSaleAudioCapture:
         dependencies.abortSaleAudioCapture ?? abortSaleAudioCaptureSession,
     },

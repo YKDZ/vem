@@ -803,6 +803,53 @@ export async function abortSaleAudioCaptureSession(
   return { aborted: true };
 }
 
+export async function stopDefaultAudioCaptureSession(
+  { captureSessionId, evidenceDirectory },
+  { production, backendFactory, testOnlyRunVirsh } = {},
+) {
+  const state = readSessionState(evidenceDirectory, captureSessionId);
+  if (state.status !== "started")
+    throw new Error("default audio capture session is not active");
+  const backend = backendFactory
+    ? backendFactory()
+    : createLibvirtDomainBackend(
+        libvirtDomainBinding(production),
+        testOnlyRunVirsh,
+      );
+  const stopped = await backend.stop(state.backend, {
+    evidenceDirectory,
+    state,
+  });
+  const inspection = inspectWavPcm(stopped.bytes, SALE_AUDIO_THRESHOLD);
+  if (!inspection.ok || inspection.kind !== "passed")
+    throw new Error("default-audio WAV is silent or malformed");
+  const audioEvidence = evidenceEntry(
+    evidenceDirectory,
+    "default-audio-capture",
+    stopped.bytes,
+    "wav",
+  );
+  writeSessionState(evidenceDirectory, captureSessionId, {
+    ...state,
+    status: "stopped",
+    completedAt: stopped.completedAt,
+  });
+  return {
+    schemaVersion: "vm-default-audio-session-stop/v1",
+    result: "succeeded",
+    capture: {
+      source: "windows_default_output",
+      startedAt: state.captureSession.startedAt,
+      completedAt: stopped.completedAt,
+      nonSilentFrameCount: inspection.nonSilentFrameCount,
+      peakAbsoluteSample: inspection.peakAbsoluteSample,
+      audioArtifact: audioEvidence.identity,
+      provenance: stopped.provenance ?? null,
+    },
+    evidence: [audioEvidence],
+  };
+}
+
 export function validateSaleAudioCaptureReport(report, requestInput) {
   const request = validateSaleAudioCaptureRequest(requestInput);
   exactKeys(

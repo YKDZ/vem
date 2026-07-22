@@ -487,13 +487,7 @@ describe("behavior audio guest full", () => {
       calls.some((value) => value.includes("checkout-submit")),
       false,
     );
-    assert.deepEqual(audioStopBody, {
-      saleCorrelationId: "behavior-audio://RUN-1",
-      orderId: "operation-1",
-      orderNo: "BEHAVIOR-AUDIO-RUN-1",
-      commandId: "operation-1",
-      commandNo: "BEHAVIOR-AUDIO-COMMAND-RUN-1",
-    });
+    assert.deepEqual(audioStopBody, { captureKind: "default-audio" });
     assert.ok(calls.includes("/v1/audio-captures/start"));
     assert.ok(calls.includes("/v1/audio-captures/audio-1/stop"));
     assert.ok(report.behaviorAudio.runtimeTrace.length > 0);

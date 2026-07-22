@@ -35,6 +35,7 @@ import {
 import {
   createFileBackedAudioCaptureTestBackend,
   executeSaleAudioCaptureHostAdapter,
+  stopDefaultAudioCaptureSession,
 } from "./sale-audio-capture-host-adapter.mjs";
 
 process.env.VEM_TEST_ALLOW_JSON_PTY_FIXTURE = "1";
@@ -909,6 +910,12 @@ describe("host serial control plane", () => {
                   .filter(Boolean)
                   .map((line) => JSON.parse(line)),
             }),
+          stopDefaultAudioCapture: (input, dependencies) =>
+            stopDefaultAudioCaptureSession(input, {
+              ...dependencies,
+              backendFactory: () =>
+                createFileBackedAudioCaptureTestBackend(capturedWavPath),
+            }),
           abortSaleAudioCapture: async () => ({ aborted: true }),
         },
       );
@@ -1074,6 +1081,38 @@ describe("host serial control plane", () => {
         serialCapture.frames.every(
           (frame) => typeof frame.capturedAt === "string",
         ),
+        true,
+      );
+      const behaviorCapture = await requestJson(
+        baseUrl,
+        token,
+        "/v1/audio-captures/start",
+        {
+          sessionId: session.sessionId,
+          runId: "RUN-17-CONTROL-PLANE",
+          lifecycleReference: "vm-lifecycle://run-17-control-plane.behavior",
+          transactionId: "transaction://run-17-control-plane.behavior",
+          targetIdentity: "vm-target://runtime-testbed",
+          operationId: "audio-operation-behavior",
+          runtime: {
+            processId: 42,
+            executablePath: "C:\\VEM\\bringup\\machine.exe",
+            principal: "FIELD\\Operator",
+            sessionId: 7,
+            cdpTargetId: "target-17",
+            cdpSessionId: "cdp-connection:33333333-3333-4333-8333-333333333333",
+          },
+        },
+      );
+      const behaviorStopped = await requestJson(
+        baseUrl,
+        token,
+        `/v1/audio-captures/${behaviorCapture.audioCaptureId}/stop`,
+        { captureKind: "default-audio" },
+      );
+      assert.equal(behaviorStopped.stopReport.evidence.length, 1);
+      assert.equal(
+        behaviorStopped.stopReport.capture.nonSilentFrameCount > 0,
         true,
       );
       const recovered = await requestJson(
