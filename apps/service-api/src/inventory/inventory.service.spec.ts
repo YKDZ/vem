@@ -218,6 +218,51 @@ describe("InventoryService.releaseReservation", () => {
   });
 });
 
+describe("InventoryService.listMovements", () => {
+  it("filters the Admin inventory-movement read model by the requested fixture inventory", async () => {
+    const whereArgs: unknown[] = [];
+    const listOffset = vi.fn().mockResolvedValue([]);
+    const totalWhere = vi.fn().mockResolvedValue([{ total: 0 }]);
+    const db = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({
+            leftJoin: () => ({
+              where: (whereClause: unknown) => {
+                whereArgs.push(whereClause);
+                return {
+                  orderBy: () => ({ limit: () => ({ offset: listOffset }) }),
+                };
+              },
+              orderBy: () => ({ limit: () => ({ offset: listOffset }) }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({ where: totalWhere }),
+        }),
+    };
+    const service = new InventoryService(
+      db as never,
+      mockNotificationsService as never,
+      mockHardwarePoliciesService as never,
+    );
+
+    await service.listMovements({
+      page: 1,
+      pageSize: 20,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440003",
+    });
+
+    expect(whereArgs).toHaveLength(1);
+    expect(objectGraphContainsColumnName(whereArgs[0], "inventory_id")).toBe(
+      true,
+    );
+    expect(totalWhere).toHaveBeenCalledWith(whereArgs[0]);
+  });
+});
+
 describe("MachineStockMovementsService pending failed line refunds", () => {
   it("dispatches the durable partial refund staged with the final line confirmation", async () => {
     const machine = {

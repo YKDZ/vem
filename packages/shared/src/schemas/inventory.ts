@@ -19,7 +19,9 @@ export const adminInventoryListQuerySchema = pageQuerySchema.extend(
   inventoryQuerySchema.shape,
 );
 
-export const adminInventoryMovementListQuerySchema = pageQuerySchema;
+export const adminInventoryMovementListQuerySchema = pageQuerySchema.extend({
+  inventoryId: z.uuid().optional(),
+});
 
 export const adjustInventorySchema = z.strictObject({
   inventoryId: z.uuid(),

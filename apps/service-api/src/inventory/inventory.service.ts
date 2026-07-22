@@ -25,6 +25,7 @@ import {
 } from "@vem/db";
 import {
   adjustInventorySchema,
+  adminInventoryMovementListQuerySchema,
   createInventorySchema,
   inventoryQuerySchema,
   pageQuerySchema,
@@ -48,7 +49,7 @@ type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
 type CreateInventoryInput = z.infer<typeof createInventorySchema>;
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type PageQueryInput = z.infer<typeof adminInventoryMovementListQuerySchema>;
 
 @Injectable()
 export class InventoryService {
@@ -148,6 +149,9 @@ export class InventoryService {
   }
 
   async listMovements(query: PageQueryInput) {
+    const whereClause = query.inventoryId
+      ? eq(inventoryMovements.inventoryId, query.inventoryId)
+      : undefined;
     const items = await this.db
       .select({
         id: inventoryMovements.id,
@@ -162,12 +166,14 @@ export class InventoryService {
       })
       .from(inventoryMovements)
       .leftJoin(orders, eq(orders.id, inventoryMovements.orderId))
+      .where(whereClause)
       .orderBy(desc(inventoryMovements.createdAt))
       .limit(query.pageSize)
       .offset(getOffset(query));
     const [totalRow] = await this.db
       .select({ total: count() })
-      .from(inventoryMovements);
+      .from(inventoryMovements)
+      .where(whereClause);
 
     return toPageResult(
       items.map(toAdminInventoryMovementResponse),

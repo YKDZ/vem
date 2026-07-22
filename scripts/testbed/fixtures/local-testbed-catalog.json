@@ -328,6 +328,16 @@
       "onHandQty": 3,
       "lowStockThreshold": 1,
       "priceCents": 4900
+    },
+    {
+      "slotCode": "B2",
+      "sourceRow": 7,
+      "layerNo": 2,
+      "cellNo": 2,
+      "capacity": 8,
+      "onHandQty": 1,
+      "lowStockThreshold": 1,
+      "priceCents": 4900
     }
   ]
 }

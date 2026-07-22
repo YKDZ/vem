@@ -153,6 +153,18 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "paymentProvider",
   }),
   descriptor({
+    name: "stockMaintenance",
+    core: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/stock-maintenance-guest-full.mjs",
+      args: ["--mode", "full"],
+      reportFileName: "stock-maintenance.json",
+      artifactDirectory: "stock-maintenance-artifacts",
+    },
+    validator: "stockMaintenance",
+  }),
+  descriptor({
     name: "hardwareLifecycle",
     runner: {
       kind: "node",

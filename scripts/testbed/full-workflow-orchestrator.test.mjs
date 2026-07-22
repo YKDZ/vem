@@ -142,6 +142,7 @@ describe("full workflow serial lifecycle", () => {
         "fulfillmentRecovery",
         "paymentRecovery",
         "paymentProvider",
+        "stockMaintenance",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",
@@ -151,7 +152,7 @@ describe("full workflow serial lifecycle", () => {
       FULL_WORKFLOW_TRACK_DESCRIPTORS.filter((track) => track.core).map(
         (track) => track.name,
       ),
-      ["sale"],
+      ["sale", "stockMaintenance"],
     );
     for (const track of FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
       (candidate) => candidate.runner,

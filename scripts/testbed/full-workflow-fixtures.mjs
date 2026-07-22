@@ -5,9 +5,18 @@ const FIXTURE_TRACK_KEYS = Object.freeze([
   "fulfillmentRecovery",
   "pickupProtocol",
   "ipcRecovery",
+  "stockMaintenance",
 ]);
 
-const FIXTURE_SLOT_CODES = Object.freeze(["A1", "A2", "A3", "A4", "A5", "B1"]);
+const FIXTURE_SLOT_CODES = Object.freeze([
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "B1",
+  "B2",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -26,6 +35,7 @@ function fixtureForSlot(slots, slotCode) {
       `fixture ${slotCode} inventoryId`,
     ),
     onHandQty: Number.isInteger(fixture.onHandQty) ? fixture.onHandQty : null,
+    sku: required(fixture.sku, `fixture ${slotCode} sku`),
   };
 }
 

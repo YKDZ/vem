@@ -1254,6 +1254,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
         <button
           v-for="task in maintenanceTasks"
           :key="task.key"
+          :data-test="`maintenance-task-${task.key}`"
           type="button"
           :class="{ active: activeTask === task.key }"
           @click="selectMaintenanceTask(task.key)"
@@ -1626,7 +1627,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
           </div>
         </section>
 
-        <div v-show="activeTask === 'stock'" class="maintenance-panel">
+        <div
+          v-show="activeTask === 'stock'"
+          class="maintenance-panel"
+          data-test="stock-maintenance"
+        >
           <p
             class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
           >
@@ -1642,6 +1647,9 @@ async function submitStockMaintenanceTask(): Promise<void> {
                   v-for="slot in stockMaintenance.task?.slots ?? []"
                   :key="slot.slotCode"
                   class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-left md:grid-cols-[1fr_11rem]"
+                  data-test="stock-maintenance-slot"
+                  :data-slot-code="slot.slotCode"
+                  :data-sku="slot.sku"
                 >
                   <div>
                     <p class="font-semibold text-white">
@@ -1668,6 +1676,8 @@ async function submitStockMaintenanceTask(): Promise<void> {
                     </span>
                     <input
                       v-model.number="stockMaintenance.values[slot.slotCode]"
+                      data-test="stock-maintenance-addition"
+                      :data-slot-code="slot.slotCode"
                       class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
                       :max="
                         stockTaskIsRefill
@@ -1682,7 +1692,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
                       step="1"
                       type="number"
                     />
-                    <span class="text-xs text-emerald-200">
+                    <span
+                      class="text-xs text-emerald-200"
+                      data-test="stock-maintenance-preview"
+                      :data-slot-code="slot.slotCode"
+                    >
                       {{ stockTaskIsRefill ? "补货后" : "提交后" }}
                       {{ resultingStock(slot) ?? "输入无效" }}/{{
                         slot.capacity
@@ -1702,6 +1716,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 </button>
                 <button
                   class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                  data-test="stock-maintenance-submit"
                   type="submit"
                   :disabled="stockMaintenance.loading || !stockTaskCanSubmit"
                 >

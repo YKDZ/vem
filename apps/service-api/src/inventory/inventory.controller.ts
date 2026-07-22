@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   adjustInventorySchema,
   createInventorySchema,
+  adminInventoryMovementListQuerySchema,
   inventoryQuerySchema,
   pageQuerySchema,
 } from "@vem/shared";
@@ -19,7 +20,7 @@ type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
 type CreateInventoryInput = z.infer<typeof createInventorySchema>;
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type PageQueryInput = z.infer<typeof adminInventoryMovementListQuerySchema>;
 const inventoryListQuerySchema = inventoryQuerySchema.extend(
   pageQuerySchema.shape,
 );
@@ -62,7 +63,8 @@ export class InventoryController {
   @RequirePermissions("inventory.read")
   @Get("inventory-movements")
   async listMovements(
-    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+    @Query(new ZodValidationPipe(adminInventoryMovementListQuerySchema))
+    query: PageQueryInput,
   ) {
     return await this.inventoryService.listMovements(query);
   }

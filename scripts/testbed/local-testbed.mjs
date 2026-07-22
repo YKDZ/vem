@@ -1260,10 +1260,11 @@ export async function seedThroughSupportedApis({
       tryOnCategoryKey: "tshirts",
       seededTryOnVariants,
     },
-    slots: seededSlots.map(({ slot, inventory }) => ({
+    slots: seededSlots.map(({ slot, product, inventory }) => ({
       slotCode: slot.slotCode,
       inventoryId: inventory.id,
       onHandQty: slot.onHandQty,
+      sku: product.variant.sku,
     })),
   };
 }

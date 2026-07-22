@@ -32,6 +32,60 @@ function descriptor(name) {
   return BUSINESS_CHECK_REGISTRY.find((entry) => entry.name === name);
 }
 
+function stockMaintenanceReport() {
+  return {
+    schemaVersion: "vem-stock-maintenance-guest-full/v1",
+    ok: true,
+    fixture: {
+      slotCode: "B2",
+      sku: "TSC-LOCAL-007",
+      inventoryId: "inventory-stock-1",
+      initialQuantity: 1,
+    },
+    firstSale: { orderId: "order-stock-1" },
+    unavailable: {
+      daemon: {
+        physicalStock: 0,
+        saleableStock: 0,
+        slotSalesState: "out_of_stock",
+      },
+      platform: { onHandQty: 0, reservedQty: 0 },
+    },
+    maintenance: {
+      taskId: "refill-task-1",
+      addition: 2,
+      previewQuantity: 2,
+      refillMovementCount: 1,
+    },
+    restored: {
+      daemon: {
+        physicalStock: 2,
+        saleableStock: 2,
+        slotSalesState: "sale_ready",
+      },
+      platform: { onHandQty: 2, reservedQty: 0 },
+    },
+    secondSale: { orderId: "order-stock-2" },
+    terminal: {
+      daemon: {
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      },
+      platform: { onHandQty: 1, reservedQty: 0 },
+      movements: {
+        saleDecrementOrderIds: ["order-stock-1", "order-stock-2"],
+        refillDeltas: [2],
+      },
+    },
+    screenshots: {
+      unavailable: { ref: "unavailable.png" },
+      refillConfirmed: { ref: "refill-confirmed.png" },
+      restoredSaleability: { ref: "restored.png" },
+    },
+  };
+}
+
 function hardwareLifecycleReport() {
   return {
     schemaVersion: "vem-hardware-lifecycle-guest-full/v1",
@@ -662,6 +716,27 @@ describe("full workflow aggregate validator", () => {
         descriptor("paymentProvider"),
         paid,
         "/reports/payment-provider.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts only the installed 1-to-0-to-2-to-1 stock maintenance loop", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("stockMaintenance"),
+        stockMaintenanceReport(),
+        "/reports/stock-maintenance.json",
+      ).status,
+      "passed",
+    );
+    const duplicateRefill = stockMaintenanceReport();
+    duplicateRefill.maintenance.refillMovementCount = 2;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("stockMaintenance"),
+        duplicateRefill,
+        "/reports/stock-maintenance.json",
       ).status,
       "failed",
     );

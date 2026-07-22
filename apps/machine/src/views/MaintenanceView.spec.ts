@@ -845,18 +845,35 @@ describe("Local Operations", () => {
     await vi.waitFor(() => {
       expect(host.textContent).toContain("Mineral Water");
     });
+    expect(
+      host.querySelector("[data-test='maintenance-task-stock']"),
+    ).not.toBeNull();
+    const stockPanel = host.querySelector("[data-test='stock-maintenance']");
+    expect(stockPanel).not.toBeNull();
+    expect(
+      stockPanel?.querySelector(
+        "[data-test='stock-maintenance-slot'][data-slot-code='A1'][data-sku='WATER-001']",
+      ),
+    ).not.toBeNull();
     const stockForm = Array.from(host.querySelectorAll("form")).find((form) =>
       form.textContent?.includes("补货数量"),
     );
     const addition = stockForm?.querySelector<HTMLInputElement>(
-      "input[type='number']",
+      "[data-test='stock-maintenance-addition'][data-slot-code='A1']",
     );
     if (!addition) throw new Error("stock addition input not found");
     addition.value = "2";
     addition.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
 
-    expect(host.textContent).toContain("补货后 4/8");
+    expect(
+      stockPanel?.querySelector(
+        "[data-test='stock-maintenance-preview'][data-slot-code='A1']",
+      )?.textContent,
+    ).toContain("补货后 4/8");
+    expect(
+      stockPanel?.querySelector("[data-test='stock-maintenance-submit']"),
+    ).not.toBeNull();
     button(host, "确认补货").click();
     await flush();
 

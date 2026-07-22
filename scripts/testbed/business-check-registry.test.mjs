@@ -21,6 +21,7 @@ describe("runtime business-check registry", () => {
         "fulfillmentRecovery",
         "paymentRecovery",
         "paymentProvider",
+        "stockMaintenance",
         "hardwareLifecycle",
         "localOperations",
         "environmentControl",
@@ -30,7 +31,7 @@ describe("runtime business-check registry", () => {
       BUSINESS_CHECK_REGISTRY.filter((descriptor) => descriptor.core).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale"],
+      ["sale", "stockMaintenance"],
     );
     assert.ok(
       BUSINESS_CHECK_REGISTRY.every((descriptor) => descriptor.fullRequired),
@@ -111,13 +112,32 @@ describe("runtime business-check registry", () => {
       selectBusinessChecks({ mode: "fast" }).map(
         (descriptor) => descriptor.name,
       ),
-      ["sale"],
+      ["sale", "stockMaintenance"],
     );
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast", focus: ["paymentProvider"] }).map(
         (descriptor) => descriptor.name,
       ),
       ["paymentProvider"],
+    );
+  });
+
+  it("runs stock maintenance as a core, independently focusable business set", () => {
+    const stockMaintenance = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "stockMaintenance",
+    );
+    assert.equal(
+      stockMaintenance?.runner?.script,
+      "scripts/testbed/stock-maintenance-guest-full.mjs",
+    );
+    assert.equal(stockMaintenance?.fixtureKey, "stockMaintenance");
+    assert.equal(stockMaintenance?.core, true);
+    assert.equal(stockMaintenance?.fullRequired, true);
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast", focus: ["stockMaintenance"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["stockMaintenance"],
     );
   });
 });
