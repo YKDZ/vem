@@ -16,7 +16,7 @@ function report() {
     fixture: {
       slotDisplayLabel: "B2",
       sku: "TSC-LOCAL-007",
-      slotId: "slot-stock-1",
+      slotId: "550e8400-e29b-41d4-a716-446655440007",
       inventoryId: "inventory-stock-1",
       initialQuantity: 1,
     },
@@ -54,7 +54,7 @@ function report() {
       projection: {
         taskStatus: "complete",
         slotSyncStatus: "accepted",
-        movementId: "refill-task-1:slot-stock-1",
+        movementId: "refill-task-1:550e8400-e29b-41d4-a716-446655440007",
         movementType: "planned_refill",
         source: "local_maintenance",
         attributedTo: "local_operations",
@@ -114,16 +114,19 @@ function report() {
       unavailable: {
         ref: "unavailable.png",
         route: "#/maintenance?source=operator",
+        slotId: "550e8400-e29b-41d4-a716-446655440007",
         slotDisplayLabel: "B2",
       },
       refillConfirmed: {
         ref: "refill-confirmed.png",
         route: "#/maintenance?source=operator",
+        slotId: "550e8400-e29b-41d4-a716-446655440007",
         slotDisplayLabel: "B2",
       },
       restoredSaleability: {
         ref: "restored.png",
         route: "#/catalog",
+        slotId: "550e8400-e29b-41d4-a716-446655440007",
         slotDisplayLabel: "B2",
       },
     },

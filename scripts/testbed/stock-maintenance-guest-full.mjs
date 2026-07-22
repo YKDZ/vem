@@ -232,24 +232,23 @@ async function inventory(input, token, inventoryId) {
 }
 
 function fixtureIdentity(saleView, fixture) {
-  const slotDisplayLabel = required(
-    fixture?.slotDisplayLabel,
-    "stock fixture slotDisplayLabel",
-  );
+  const slotId = required(fixture?.slotId, "stock fixture slotId");
+  const rowNo = fixture?.rowNo;
+  const cellNo = fixture?.cellNo;
   const sku = required(fixture?.sku, "stock fixture sku");
   const item = (saleView?.items ?? []).find(
     (entry) =>
-      entry?.slotDisplayLabel === slotDisplayLabel && entry?.sku === sku,
+      entry?.rowNo === rowNo && entry?.cellNo === cellNo && entry?.sku === sku,
   );
-  if (!item?.slotId || !item?.inventoryId) {
+  if (!item?.slotId || item.slotId !== slotId || !item?.inventoryId) {
     throw new Error(
-      `fixture ${sku} at ${slotDisplayLabel} is absent from the daemon sale view`,
+      `fixture ${sku} at R${rowNo}C${cellNo} is absent from the daemon sale view`,
     );
   }
   return {
-    slotDisplayLabel,
+    slotDisplayLabel: item.slotDisplayLabel,
     sku,
-    slotId: item.slotId,
+    slotId,
     inventoryId: item.inventoryId,
   };
 }
@@ -257,7 +256,6 @@ function fixtureIdentity(saleView, fixture) {
 function stockFact(saleView, identity) {
   const item = (saleView?.items ?? []).find(
     (entry) =>
-      entry?.slotDisplayLabel === identity.slotDisplayLabel &&
       entry?.slotId === identity.slotId &&
       entry?.inventoryId === identity.inventoryId &&
       entry?.sku === identity.sku,
@@ -370,13 +368,14 @@ async function captureStockScreenshot(client, sink, label, route, identity) {
       validatePng: true,
     })),
     route,
+    slotId: identity.slotId,
     slotDisplayLabel: identity.slotDisplayLabel,
   };
 }
 
 async function enterRoutineRefill(client, identity) {
-  const slotSelector = `[data-test='stock-maintenance-slot'][data-slot-id='${identity.slotDisplayLabel}'][data-sku='${identity.sku}']`;
-  const additionSelector = `[data-test='stock-maintenance-addition'][data-slot-id='${identity.slotDisplayLabel}']`;
+  const slotSelector = `[data-test='stock-maintenance-slot'][data-slot-id='${identity.slotId}'][data-sku='${identity.sku}']`;
+  const additionSelector = `[data-test='stock-maintenance-addition'][data-slot-id='${identity.slotId}']`;
   await waitFor(
     "fixture stock maintenance row",
     () =>
@@ -413,7 +412,7 @@ async function enterRoutineRefill(client, identity) {
       ),
     (value) => value === "2",
   );
-  const previewSelector = `[data-test='stock-maintenance-preview'][data-slot-id='${identity.slotDisplayLabel}']`;
+  const previewSelector = `[data-test='stock-maintenance-preview'][data-slot-id='${identity.slotId}']`;
   await waitFor(
     "visible refill preview",
     () =>
@@ -658,8 +657,7 @@ export function validateStockMaintenanceReport(report) {
     !["unavailable", "refillConfirmed", "restoredSaleability"].every(
       (key) =>
         typeof report?.screenshots?.[key]?.ref === "string" &&
-        report.screenshots[key].slotDisplayLabel ===
-          report.fixture.slotDisplayLabel,
+        report.screenshots[key].slotId === report.fixture.slotId,
     )
   ) {
     throw new Error(
@@ -749,14 +747,14 @@ export async function runStockMaintenanceGuest(options) {
         task?.mode === "routine_refill" &&
         task?.slots?.some(
           (slot) =>
-            slot?.slotDisplayLabel === identity.slotDisplayLabel &&
+            slot?.slotId === identity.slotId &&
             slot?.submittedAddition === 2 &&
             slot?.previewQuantity === 2 &&
             slot?.movementId === `${task.taskId}:${identity.slotId}`,
         ),
     );
     const submittedSlot = submittedTask.slots.find(
-      (slot) => slot.slotDisplayLabel === identity.slotDisplayLabel,
+      (slot) => slot.slotId === identity.slotId,
     );
     report.maintenance = {
       taskId: submittedTask.taskId,
@@ -798,7 +796,7 @@ export async function runStockMaintenanceGuest(options) {
         task?.status === "complete" &&
         task?.slots?.some(
           (slot) =>
-            slot?.slotDisplayLabel === identity.slotDisplayLabel &&
+            slot?.slotId === identity.slotId &&
             slot?.submittedAddition === 2 &&
             slot?.previewQuantity === 2 &&
             slot?.movementId === `${submittedTask.taskId}:${identity.slotId}` &&
@@ -811,7 +809,7 @@ export async function runStockMaintenanceGuest(options) {
         ),
     );
     const completedSlot = completedTask.slots.find(
-      (slot) => slot.slotDisplayLabel === identity.slotDisplayLabel,
+      (slot) => slot.slotId === identity.slotId,
     );
     report.maintenance.projection = {
       taskStatus: completedTask.status,
@@ -861,7 +859,7 @@ export async function runStockMaintenanceGuest(options) {
       () =>
         evaluateExpression(
           client,
-          `Boolean(document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-slot-id='${identity.slotDisplayLabel}']`)})?.getClientRects().length)`,
+          `Boolean(document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-slot-id='${identity.slotId}']`)})?.getClientRects().length)`,
         ),
       (visible) => visible === true,
     );

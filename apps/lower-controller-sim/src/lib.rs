@@ -198,7 +198,7 @@ enum UpperFrame {
     VentSpeed(VentSpeed),
     DebugDispenseFault,
     SingleDispense {
-        layer_no: u8,
+        row_no: u8,
         cell_no: u8,
         crc: u8,
         raw: Vec<u8>,
@@ -472,19 +472,19 @@ where
             }
         }
         UpperFrame::SingleDispense {
-            layer_no,
+            row_no,
             cell_no,
             crc,
             raw,
         } => {
-            handle_single_dispense(layer_no, cell_no, crc, raw, writer, state, options).await?;
+            handle_single_dispense(row_no, cell_no, crc, raw, writer, state, options).await?;
         }
     }
     Ok(())
 }
 
 async fn handle_single_dispense<W>(
-    layer_no: u8,
+    row_no: u8,
     cell_no: u8,
     crc: u8,
     raw: Vec<u8>,
@@ -495,7 +495,7 @@ async fn handle_single_dispense<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    if validate_slot_bounds(layer_no as u32, cell_no as u32).is_err() {
+    if validate_slot_bounds(row_no as u32, cell_no as u32).is_err() {
         trace(
             &options,
             &format!("rx invalid single dispense {raw:02X?} -> E1"),
@@ -503,7 +503,7 @@ where
         send_frame(&writer, LowerFrame::BoundaryError).await?;
         return Ok(());
     }
-    let expected_crc = crc8(&[layer_no, cell_no]);
+    let expected_crc = crc8(&[row_no, cell_no]);
     if crc != expected_crc {
         trace(
             &options,
@@ -512,7 +512,7 @@ where
         send_frame(&writer, LowerFrame::CrcError).await?;
         return Ok(());
     }
-    start_dispense(vec![(layer_no, cell_no)], writer, state, options).await
+    start_dispense(vec![(row_no, cell_no)], writer, state, options).await
 }
 
 async fn start_dispense<W>(
@@ -702,7 +702,7 @@ where
             0xB2 => read_air_conditioner_switch(reader, command_frame_gap).await,
             0xB3 => read_vent_speed(reader, command_frame_gap).await,
             0xFF => read_debug_or_single_dispense(reader, code).await,
-            layer_no => read_dispense_after_layer(reader, layer_no, command_frame_gap).await,
+            row_no => read_dispense_after_row(reader, row_no, command_frame_gap).await,
         };
     }
 }
@@ -796,7 +796,7 @@ where
     Ok(UpperFrame::VentSpeed(speed))
 }
 
-async fn read_debug_or_single_dispense<R>(reader: &mut R, layer_no: u8) -> io::Result<UpperFrame>
+async fn read_debug_or_single_dispense<R>(reader: &mut R, row_no: u8) -> io::Result<UpperFrame>
 where
     R: AsyncRead + Unpin,
 {
@@ -806,17 +806,17 @@ where
         Ok(UpperFrame::DebugDispenseFault)
     } else {
         Ok(UpperFrame::SingleDispense {
-            layer_no,
+            row_no,
             cell_no,
             crc,
-            raw: vec![FRAME_HEAD, layer_no, cell_no, crc],
+            raw: vec![FRAME_HEAD, row_no, cell_no, crc],
         })
     }
 }
 
-async fn read_dispense_after_layer<R>(
+async fn read_dispense_after_row<R>(
     reader: &mut R,
-    layer_no: u8,
+    row_no: u8,
     _command_frame_gap: Duration,
 ) -> io::Result<UpperFrame>
 where
@@ -825,10 +825,10 @@ where
     let cell_no = reader.read_u8().await?;
     let crc = reader.read_u8().await?;
     Ok(UpperFrame::SingleDispense {
-        layer_no,
+        row_no,
         cell_no,
         crc,
-        raw: vec![FRAME_HEAD, layer_no, cell_no, crc],
+        raw: vec![FRAME_HEAD, row_no, cell_no, crc],
     })
 }
 
@@ -1368,9 +1368,9 @@ mod tests {
             command_no: "CMD-SIM-PTY".to_string(),
             order_no: "ORD-SIM-PTY".to_string(),
             slot: SlotPayload {
-                layer_no: 2,
+                row_no: 2,
                 cell_no: 5,
-                slot_code: "R2C5".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
             },
             quantity: 1,
             timeout_seconds: 2,
@@ -1436,9 +1436,9 @@ mod tests {
                 command_no: "CMD-SIM-TCP".to_string(),
                 order_no: "ORD-SIM-TCP".to_string(),
                 slot: SlotPayload {
-                    layer_no: 2,
+                    row_no: 2,
                     cell_no: 5,
-                    slot_code: "R2C5".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
                 },
                 quantity: 1,
                 timeout_seconds: 2,

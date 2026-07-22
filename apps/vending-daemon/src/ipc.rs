@@ -1564,7 +1564,6 @@ async fn create_order(
     let selected = sale_view.items.iter().any(|item| {
         item.inventory_id == input.inventory_id
             && item.slot_id == input.slot_id
-            && item.slot_id == input.slot_id
             && item.slot_sales_state == "sale_ready"
             && item.saleable_stock >= 1
     });
@@ -1575,7 +1574,7 @@ async fn create_order(
             "selected slot is not saleable",
         );
     }
-    let item = serde_json::json!({ "inventoryId": input.inventory_id, "quantity": 1, "planogramVersion": input.planogram_version, "slotId": input.slot_id, "slotId": input.slot_id });
+    let item = serde_json::json!({ "inventoryId": input.inventory_id, "quantity": 1, "planogramVersion": input.planogram_version, "slotId": input.slot_id });
     match ctx
         .ui
         .transaction
@@ -1988,15 +1987,14 @@ async fn manual_dispense_diagnostic(
         || !key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        || request.slot_id.trim().is_empty()
-        || request.slot_id.len() > 32
+        || uuid::Uuid::parse_str(request.slot_id.trim()).is_err()
         || request.quantity != 1
         || !(1..=120).contains(&request.timeout_seconds)
     {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_manual_dispense_diagnostic_request",
-            "bounded idempotencyKey, slotId, quantity=1 and timeoutSeconds 1..120 are required",
+            "bounded idempotencyKey, UUID slotId, quantity=1 and timeoutSeconds 1..120 are required",
         );
     }
     let slot = match ctx
@@ -3839,7 +3837,6 @@ mod tests {
                             "quantity": 1,
                             "planogramVersion": "PLAN-CAPABILITY",
                             "slotId": "550e8400-e29b-41d4-a716-446655440011",
-                            "slotId": "A1",
                             "paymentMethod": "qr_code",
                             "paymentProviderCode": "alipay",
                             "profileSnapshot": null,
@@ -3958,7 +3955,6 @@ mod tests {
                             "quantity": 1,
                             "planogramVersion": "PLAN-CAPABILITY",
                             "slotId": "550e8400-e29b-41d4-a716-446655440011",
-                            "slotId": "A1",
                             "paymentMethod": "payment_code",
                             "paymentProviderCode": "alipay",
                             "profileSnapshot": null,
@@ -4030,7 +4026,6 @@ mod tests {
             "appliedBy": null,
             "slots": [{
                 "slotId": "550e8400-e29b-41d4-a716-446655440021",
-                "slotId": "A1",
                 "rowNo": 1,
                 "cellNo": 1,
                 "capacity": 8,
@@ -4089,10 +4084,12 @@ mod tests {
         )
         .expect("task json");
         let mode = task["mode"].as_str().expect("task mode");
-        let slot_input = if mode == "refill" {
-            serde_json::json!({ "slotId": "A1", "addition": 3 })
+        assert_eq!(task["slots"][0]["slotId"], "550e8400-e29b-41d4-a716-446655440021");
+        assert_eq!(task["slots"][0]["slotDisplayLabel"], "R1C1");
+        let slot_input = if mode == "routine_refill" {
+            serde_json::json!({ "slotId": "550e8400-e29b-41d4-a716-446655440021", "addition": 3 })
         } else {
-            serde_json::json!({ "slotId": "A1", "quantity": 3 })
+            serde_json::json!({ "slotId": "550e8400-e29b-41d4-a716-446655440021", "quantity": 3 })
         };
         let submit_response = build_router(ctx.clone())
             .oneshot(
@@ -4155,7 +4152,7 @@ mod tests {
             )
             .await
             .expect("manual response");
-        assert_eq!(manual_response.status(), StatusCode::CONFLICT);
+        assert_eq!(manual_response.status(), StatusCode::BAD_REQUEST);
 
         let retired_shape_response = build_router(ctx)
             .oneshot(

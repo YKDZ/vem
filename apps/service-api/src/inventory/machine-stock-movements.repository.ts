@@ -69,7 +69,6 @@ export type MovementApplicationContext = {
 };
 
 export type ActiveAcknowledgedPlanogramSlot = {
-  slotDisplayLabel?: string;
   capacity: number;
   inventoryId: string;
   variantId: string;
@@ -412,7 +411,6 @@ export class MachineStockMovementsRepository {
           sql`${orderItems.productSnapshot}->>'inventoryId' = ${orderContext.inventoryId}`,
           sql`${orderItems.productSnapshot}->>'variantId' = ${orderItems.variantId}::text`,
           sql`${orderItems.productSnapshot}->>'productId' IS NOT NULL`,
-          sql`${orderItems.productSnapshot}->>'slotDisplayLabel' = ${vendingCommands.payloadJson}->'slot'->>'slotDisplayLabel'`,
           sql`(${orderItems.productSnapshot}->>'vendingCommandQuantity')::int = ${input.quantity}`,
         ),
       )

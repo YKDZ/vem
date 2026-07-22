@@ -631,7 +631,7 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotId: "A1",
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
           rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
@@ -659,7 +659,7 @@ describe("Local Operations", () => {
     await flush();
     expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
-        slotId: "A1",
+        slotId: "550e8400-e29b-41d4-a716-446655440001",
         quantity: 1,
         timeoutSeconds: 30,
       }),
@@ -704,7 +704,7 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotId: "A1",
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
           rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
@@ -730,7 +730,7 @@ describe("Local Operations", () => {
         host.querySelector<HTMLSelectElement>(
           "[data-test='manual-dispense-diagnostic'] select",
         )?.value,
-      ).toBe("A1");
+      ).toBe("550e8400-e29b-41d4-a716-446655440001");
     });
 
     button(host, "出货一件").click();
@@ -763,7 +763,7 @@ describe("Local Operations", () => {
       status: "ready",
       slots: [
         {
-          slotId: "A1",
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
           rowNo: 1,
           cellNo: 1,
           productName: "Mineral Water",
@@ -779,7 +779,7 @@ describe("Local Operations", () => {
           reconciliationReason: null,
         },
         {
-          slotId: "B3",
+          slotId: "550e8400-e29b-41d4-a716-446655440002",
           rowNo: 2,
           cellNo: 3,
           productName: "Sparkling Water",
@@ -802,10 +802,10 @@ describe("Local Operations", () => {
     );
     if (!slotSelect) throw new Error("manual dispense slot selector not found");
     await vi.waitFor(() => {
-      expect(slotSelect.value).toBe("A1");
+      expect(slotSelect.value).toBe("550e8400-e29b-41d4-a716-446655440001");
     });
 
-    slotSelect.value = "B3";
+    slotSelect.value = "550e8400-e29b-41d4-a716-446655440002";
     slotSelect.dispatchEvent(new Event("change", { bubbles: true }));
     await nextTick();
     button(host, "出货一件").click();
@@ -813,7 +813,7 @@ describe("Local Operations", () => {
 
     expect(client.runManualDispenseDiagnostic).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
-      slotId: "B3",
+      slotId: "550e8400-e29b-41d4-a716-446655440002",
       quantity: 1,
       timeoutSeconds: 30,
     });

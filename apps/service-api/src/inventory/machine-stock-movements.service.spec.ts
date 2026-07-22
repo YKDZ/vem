@@ -35,7 +35,6 @@ class InMemoryMovementRepository {
     inventoryId: "550e8400-e29b-41d4-a716-446655440201",
     variantId: "550e8400-e29b-41d4-a716-446655440301",
   } as {
-    slotDisplayLabel?: string;
     capacity: number;
     inventoryId: string;
     variantId: string;
@@ -477,12 +476,6 @@ describe("MachineStockMovementsService", () => {
 
   it.each([
     [
-      "slotDisplayLabel",
-      {
-        ...movement.slotMappingSnapshot,
-      },
-    ],
-    [
       "capacity",
       {
         ...movement.slotMappingSnapshot,
@@ -517,13 +510,9 @@ describe("MachineStockMovementsService", () => {
         >,
       });
 
-      expect(result.status).toBe(
-        _field === "slotDisplayLabel" ? "accepted" : "reconciliation",
-      );
+      expect(result.status).toBe("reconciliation");
       expect(repo.activePlanogramSlotInputs).toHaveLength(1);
-      expect(repo.fieldStockApplicationInputs).toHaveLength(
-        _field === "slotDisplayLabel" ? 1 : 0,
-      );
+      expect(repo.fieldStockApplicationInputs).toHaveLength(0);
     },
   );
 

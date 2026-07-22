@@ -1292,7 +1292,6 @@ export async function seedThroughSupportedApis({
         body: {
           rowNo: slot.rowNo,
           cellNo: slot.cellNo,
-          slotDisplayLabel: slot.slotDisplayLabel,
           capacity: slot.capacity,
           status: "enabled",
         },
@@ -1322,7 +1321,6 @@ export async function seedThroughSupportedApis({
       planogramVersion,
       slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({
         slotId: machineSlot.id,
-        slotDisplayLabel: slot.slotDisplayLabel,
         rowNo: slot.rowNo,
         cellNo: slot.cellNo,
         inventoryId: inventory.id,
@@ -1371,7 +1369,10 @@ export async function seedThroughSupportedApis({
       tryOnCategoryKey: "tshirts",
       seededTryOnVariants,
     },
-    slots: seededSlots.map(({ slot, product, inventory }) => ({
+    slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({
+      slotId: machineSlot.id,
+      rowNo: slot.rowNo,
+      cellNo: slot.cellNo,
       slotDisplayLabel: slot.slotDisplayLabel,
       inventoryId: inventory.id,
       onHandQty: slot.onHandQty,
