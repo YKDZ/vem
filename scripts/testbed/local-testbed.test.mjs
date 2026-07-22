@@ -1217,7 +1217,7 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
-  it("cleans only the acceptance-owned Node Vision mock before both full and fast runs", () => {
+  it("cleans only attested canonical Vision and the acceptance-owned Node mock before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -1232,14 +1232,37 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /LocalPort -eq \$visionMockControlPort[\s\S]*processWmi\.CommandLine -match[\s\S]*vision-mock[\s\S]*Stop-Process -Id \$ownerId/,
+      /canonicalVisionAppDirectory = "C:\\VEM\\vision\\app"[\s\S]*canonicalVisionConfigPath = "C:\\ProgramData\\VEM\\vision\\site\.json"[\s\S]*\[IO\.Path\]::GetFullPath[\s\S]*Win32_Process/,
+    );
+    assert.match(
+      guestScript,
+      /canonicalVisionOwnerIds[\s\S]*LocalPort -eq 7892[\s\S]*ExecutablePath[\s\S]*CommandLine[\s\S]*--config[\s\S]*canonicalVisionConfigurationPath/,
+    );
+    assert.match(
+      guestScript,
+      /function Stop-TestbedCanonicalVision[\s\S]*Import-Module[\s\S]*-PassThru[\s\S]*Stop-VisionMainTask -AppDirectory \$CanonicalAppDirectory -ConfigurationPath \$CanonicalConfigurationPath[\s\S]*if \(\$canonicalVisionOwnerIds\.Count -gt 0\)[\s\S]*Stop-TestbedCanonicalVision \$canonicalVisionAppDirectory \$canonicalVisionConfigPath/,
+    );
+    assert.match(
+      guestScript,
+      /visionMockOwnerIds[\s\S]*LocalPort -eq \$visionMockControlPort[\s\S]*ExecutablePath -match[\s\S]*vision-mock[\s\S]*Stop-Process -Id \$ownerId/,
     );
     assert.doesNotMatch(guestScript, /Get-Process vending-vision/);
     assert.doesNotMatch(guestScript, /Stop-ScheduledTask -TaskName "StartVisionServer"/);
     assert.match(
       guestScript,
-      /Vision mock cleanup did not release ports/,
+      /unknownVisionListeners[\s\S]*throw "Vision bootstrap found unknown listener owners/,
     );
+    assert.match(
+      guestScript,
+      /Vision bootstrap cleanup did not release ports/,
+    );
+    const windowsHarness = readFileSync(
+      new URL("../windows/vision-main-consumer.windows-harness.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(windowsHarness, /canonical listener was not stopped/);
+    assert.match(windowsHarness, /mock listener was not stopped/);
+    assert.match(windowsHarness, /unknown listener owner did not fail closed/);
     assert.match(
       guestScript,
       /if \(\$Mode -in @\("fast", "full"\)\) \{\s+Clear-TestbedVisionProcesses \$guestInput\s+\}/,

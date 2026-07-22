@@ -300,6 +300,81 @@ try {
   [IO.File]::WriteAllText($relativeConfigPath, ($installedRecordedConfig | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
   Assert-VisionSiteConfiguration -ConfigurationPath $relativeConfigPath -FixtureRoot (Join-Path $root "program-data\vision\fixtures\$commit") | Out-Null
   Assert-True ($global:VisionHarnessTaskRegistrations -eq 3) "reinstall did not update the existing StartVisionServer task"
+
+  $guestScriptPath = Join-Path $PSScriptRoot "..\testbed\run-local-testbed-guest.ps1"
+  $guestScript = Get-Content -LiteralPath $guestScriptPath -Raw
+  $clearFunction = [regex]::Match($guestScript, '(?s)function Clear-TestbedVisionProcesses\(\[object\]\$GuestInput\) \{.*?\r?\n\}\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)').Value
+  Assert-True (-not [string]::IsNullOrWhiteSpace($clearFunction)) "could not extract testbed Vision cleanup function"
+  Invoke-Expression ($clearFunction -replace '\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)$', '')
+
+  function Get-NetTCPConnection {
+    [CmdletBinding()]
+    param([string]$State)
+    return @($global:TestbedVisionListeners)
+  }
+
+  function Get-CimInstance {
+    [CmdletBinding()]
+    param([string]$ClassName, [string]$Filter)
+    if ($ClassName -ne "Win32_Process" -or $Filter -notmatch 'ProcessId = (\d+)') { return $null }
+    return $global:TestbedVisionProcesses[[int]$Matches[1]]
+  }
+
+  function Stop-Process {
+    [CmdletBinding()]
+    param([int]$Id, [switch]$Force)
+    $global:TestbedVisionStoppedProcessIds += $Id
+    $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne $Id })
+  }
+
+  function Start-Sleep {
+    [CmdletBinding()]
+    param([int]$Milliseconds)
+  }
+
+  function Stop-TestbedCanonicalVision {
+    param([string]$AppDirectory, [string]$ConfigurationPath)
+    $global:TestbedCanonicalVisionStops += [pscustomobject]@{ appDirectory = $AppDirectory; configurationPath = $ConfigurationPath }
+    $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne 4101 })
+  }
+
+  function Set-TestbedVisionCleanupFixture([object[]]$Listeners, [hashtable]$Processes) {
+    $global:TestbedVisionListeners = @($Listeners)
+    $global:TestbedVisionProcesses = $Processes
+    $global:TestbedVisionStoppedProcessIds = @()
+    $global:TestbedCanonicalVisionStops = @()
+  }
+
+  $testbedGuestInput = [pscustomobject]@{ hostControlPlane = [pscustomobject]@{ visionMockControlPort = 7893 } }
+  $canonicalProcess = [pscustomobject]@{
+    ProcessId = 4101
+    ExecutablePath = "C:\VEM\vision\app\vending-vision.exe"
+    CommandLine = '"C:\VEM\vision\app\vending-vision.exe" --config "C:\ProgramData\VEM\vision\site.json"'
+  }
+  Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess }
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical listener was not stopped"
+  Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical listener remained bound"
+
+  $mockProcess = [pscustomobject]@{
+    ProcessId = 4102
+    ExecutablePath = "C:\Program Files\nodejs\node.exe"
+    CommandLine = 'node apps\vision-mock\src\server.ts'
+  }
+  Set-TestbedVisionCleanupFixture @(
+    [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4102 },
+    [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7893; OwningProcess = 4102 }
+  ) @{ 4102 = $mockProcess }
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4102) "mock listener was not stopped"
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0) "mock listener was misclassified as canonical Vision"
+
+  $unknownProcess = [pscustomobject]@{ ProcessId = 4103; ExecutablePath = "C:\unknown.exe"; CommandLine = "unknown" }
+  Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4103 }) @{ 4103 = $unknownProcess }
+  $unknownRejected = $false
+  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $unknownRejected = $_.Exception.Message -match "unknown listener owners" }
+  Assert-True $unknownRejected "unknown listener owner did not fail closed"
+  Assert-True ($global:TestbedVisionStoppedProcessIds.Count -eq 0 -and $global:TestbedCanonicalVisionStops.Count -eq 0) "unknown listener owner was stopped"
   [Console]::WriteLine("Vision main consumer harness passed")
 } finally {
   $remainingJobs = @(Get-Job -ErrorAction SilentlyContinue)

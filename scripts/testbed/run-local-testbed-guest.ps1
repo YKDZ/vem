@@ -459,24 +459,72 @@ function Invoke-FullVisionTryOnAcceptance(
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
+function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$ConfigurationPath) {
+  $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
+  & $visionModule {
+    param($CanonicalAppDirectory, $CanonicalConfigurationPath)
+    Stop-VisionMainTask -AppDirectory $CanonicalAppDirectory -ConfigurationPath $CanonicalConfigurationPath
+  } $AppDirectory $ConfigurationPath
+}
+
 function Clear-TestbedVisionProcesses([object]$GuestInput) {
   $visionMockControlPort = [int]$GuestInput.hostControlPlane.visionMockControlPort
   $visionPorts = @(7892, $visionMockControlPort) | Select-Object -Unique
-  $visionMockOwnerIds = @(
+  $canonicalVisionAppDirectory = "C:\VEM\vision\app"
+  $canonicalVisionConfigPath = "C:\ProgramData\VEM\vision\site.json"
+  $canonicalVisionExecutablePath = [IO.Path]::GetFullPath((Join-Path $canonicalVisionAppDirectory "vending-vision.exe"))
+  $canonicalVisionConfigurationPath = [IO.Path]::GetFullPath($canonicalVisionConfigPath)
+  $visionListeners = @(
     Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-      Where-Object { $_.LocalPort -eq $visionMockControlPort } |
-      Select-Object -ExpandProperty OwningProcess -Unique
+      Where-Object { $visionPorts -contains [int]$_.LocalPort } |
+      Select-Object LocalAddress, LocalPort, OwningProcess
   )
-  foreach ($ownerId in $visionMockOwnerIds) {
-    $process = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
-    $processWmi = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
-    if (
-      $null -ne $process -and
-      [string]$process.Path -match '\\node(?:\.exe)?$' -and
-      [string]$processWmi.CommandLine -match 'apps[\\/]vision-mock[\\/]src[\\/]server\.ts'
-    ) {
-      Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+  $ownerProcesses = @{}
+  foreach ($ownerId in @($visionListeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+    $ownerProcesses[[int]$ownerId] = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+  }
+  $visionMockOwnerIds = @(
+    $visionListeners |
+      Where-Object { [int]$_.LocalPort -eq $visionMockControlPort } |
+      ForEach-Object { [int]$_.OwningProcess } |
+      Where-Object {
+        $processWmi = $ownerProcesses[$_]
+        $null -ne $processWmi -and
+          [string]$processWmi.ExecutablePath -match '\\node(?:\.exe)?$' -and
+          [string]$processWmi.CommandLine -match 'apps[\\/]vision-mock[\\/]src[\\/]server\.ts'
+      } |
+      Select-Object -Unique
+  )
+  $canonicalVisionOwnerIds = @(
+    $visionListeners |
+      Where-Object { [int]$_.LocalPort -eq 7892 } |
+      ForEach-Object { [int]$_.OwningProcess } |
+      Where-Object {
+        $processWmi = $ownerProcesses[$_]
+        $normalizedCommandLine = if ($null -ne $processWmi) { ([string]$processWmi.CommandLine).Replace([string][char]34, '').ToLowerInvariant() } else { "" }
+        $null -ne $processWmi -and
+          $processWmi.ExecutablePath -and
+          $processWmi.CommandLine -and
+          [IO.Path]::GetFullPath([string]$processWmi.ExecutablePath) -ieq $canonicalVisionExecutablePath -and
+          $normalizedCommandLine.Contains("--config") -and
+          $normalizedCommandLine.Contains($canonicalVisionConfigurationPath.ToLowerInvariant())
+      } |
+      Select-Object -Unique
+  )
+  $unknownVisionListeners = @(
+    $visionListeners | Where-Object {
+      $ownerId = [int]$_.OwningProcess
+      $visionMockOwnerIds -notcontains $ownerId -and $canonicalVisionOwnerIds -notcontains $ownerId
     }
+  )
+  if ($unknownVisionListeners.Count -gt 0) {
+    throw "Vision bootstrap found unknown listener owners: $($unknownVisionListeners | ConvertTo-Json -Compress)"
+  }
+  if ($canonicalVisionOwnerIds.Count -gt 0) {
+    Stop-TestbedCanonicalVision $canonicalVisionAppDirectory $canonicalVisionConfigPath
+  }
+  foreach ($ownerId in $visionMockOwnerIds) {
+    Stop-Process -Id $ownerId -Force -ErrorAction Stop
   }
   $visionPortDeadline = (Get-Date).AddSeconds(10)
   while (
@@ -490,7 +538,7 @@ function Clear-TestbedVisionProcesses([object]$GuestInput) {
       Select-Object LocalAddress, LocalPort, OwningProcess
   )
   if ($remainingListeners.Count -gt 0) {
-    throw "Vision mock cleanup did not release ports $($visionPorts -join ', '): $($remainingListeners | ConvertTo-Json -Compress)"
+    throw "Vision bootstrap cleanup did not release ports $($visionPorts -join ', '): $($remainingListeners | ConvertTo-Json -Compress)"
   }
 }
 
