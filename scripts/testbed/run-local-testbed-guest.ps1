@@ -461,10 +461,14 @@ function Invoke-FullVisionTryOnAcceptance(
 
 function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$ConfigurationPath) {
   $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
-  & $visionModule {
-    param($CanonicalAppDirectory, $CanonicalConfigurationPath)
-    Stop-VisionMainTask -AppDirectory $CanonicalAppDirectory -ConfigurationPath $CanonicalConfigurationPath
-  } $AppDirectory $ConfigurationPath
+  try {
+    & $visionModule {
+      param($CanonicalAppDirectory, $CanonicalConfigurationPath)
+      Stop-VisionMainTask -AppDirectory $CanonicalAppDirectory -ConfigurationPath $CanonicalConfigurationPath
+    } $AppDirectory $ConfigurationPath
+  } catch {
+    if ($_.FullyQualifiedErrorId -notlike "NoProcessFoundForGivenId,*StopProcessCommand") { throw }
+  }
 }
 
 function Clear-TestbedVisionProcesses([object]$GuestInput) {

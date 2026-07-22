@@ -1261,6 +1261,7 @@ describe("Windows D cache contract", () => {
       "utf8",
     );
     assert.match(windowsHarness, /canonical listener was not stopped/);
+    assert.match(windowsHarness, /canonical exit race was not tolerated/);
     assert.match(windowsHarness, /mock listener was not stopped/);
     assert.match(windowsHarness, /unknown listener owner did not fail closed/);
     assert.match(

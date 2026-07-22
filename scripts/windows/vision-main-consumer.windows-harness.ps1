@@ -303,9 +303,9 @@ try {
 
   $guestScriptPath = Join-Path $PSScriptRoot "..\testbed\run-local-testbed-guest.ps1"
   $guestScript = Get-Content -LiteralPath $guestScriptPath -Raw
-  $clearFunction = [regex]::Match($guestScript, '(?s)function Clear-TestbedVisionProcesses\(\[object\]\$GuestInput\) \{.*?\r?\n\}\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)').Value
-  Assert-True (-not [string]::IsNullOrWhiteSpace($clearFunction)) "could not extract testbed Vision cleanup function"
-  Invoke-Expression ($clearFunction -replace '\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)$', '')
+  $cleanupFunctions = [regex]::Match($guestScript, '(?s)function Stop-TestbedCanonicalVision\(.*?\r?\n\}\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)').Value
+  Assert-True (-not [string]::IsNullOrWhiteSpace($cleanupFunctions)) "could not extract testbed Vision cleanup functions"
+  Invoke-Expression ($cleanupFunctions -replace '\r?\n\r?\nif \(\$Mode -eq "clear_cache"\)$', '')
 
   function Get-NetTCPConnection {
     [CmdletBinding()]
@@ -332,10 +332,21 @@ try {
     param([int]$Milliseconds)
   }
 
-  function Stop-TestbedCanonicalVision {
-    param([string]$AppDirectory, [string]$ConfigurationPath)
-    $global:TestbedCanonicalVisionStops += [pscustomobject]@{ appDirectory = $AppDirectory; configurationPath = $ConfigurationPath }
-    $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne 4101 })
+  $global:TestbedVisionModule = New-Module -ScriptBlock {
+    function Stop-VisionMainTask {
+      param([string]$AppDirectory, [string]$ConfigurationPath)
+      $global:TestbedCanonicalVisionStops += [pscustomobject]@{ appDirectory = $AppDirectory; configurationPath = $ConfigurationPath }
+      $global:TestbedVisionListeners = @($global:TestbedVisionListeners | Where-Object { [int]$_.OwningProcess -ne 4101 })
+      if ($global:TestbedCanonicalExitRace) {
+        Microsoft.PowerShell.Management\Stop-Process -Id 2147483647 -ErrorAction Stop
+      }
+    }
+  }
+
+  function Import-Module {
+    [CmdletBinding()]
+    param([string]$Name, [switch]$Force, [switch]$PassThru)
+    return $global:TestbedVisionModule
   }
 
   function Set-TestbedVisionCleanupFixture([object[]]$Listeners, [hashtable]$Processes) {
@@ -343,6 +354,7 @@ try {
     $global:TestbedVisionProcesses = $Processes
     $global:TestbedVisionStoppedProcessIds = @()
     $global:TestbedCanonicalVisionStops = @()
+    $global:TestbedCanonicalExitRace = $false
   }
 
   $testbedGuestInput = [pscustomobject]@{ hostControlPlane = [pscustomobject]@{ visionMockControlPort = 7893 } }
@@ -355,6 +367,12 @@ try {
   Clear-TestbedVisionProcesses $testbedGuestInput
   Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical listener was not stopped"
   Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical listener remained bound"
+
+  Set-TestbedVisionCleanupFixture @([pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 4101 }) @{ 4101 = $canonicalProcess }
+  $global:TestbedCanonicalExitRace = $true
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 1) "canonical exit race was not exercised"
+  Assert-True ($global:TestbedVisionListeners.Count -eq 0) "canonical exit race was not tolerated"
 
   $mockProcess = [pscustomobject]@{
     ProcessId = 4102
