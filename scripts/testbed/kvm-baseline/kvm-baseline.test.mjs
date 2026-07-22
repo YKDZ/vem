@@ -357,9 +357,9 @@ function completedInteractiveDisplayStatus(bootIdentity = "boot-complete") {
     reportPresent: true,
     reportValid: true,
     state: { phase: "complete" },
-    task: null,
+    task: { state: "Ready" },
     cleanup: {
-      taskRemoved: true,
+      taskRegistered: true,
       automaticLogonEnabled: true,
     },
     currentBootIdentity: bootIdentity,
@@ -2696,7 +2696,11 @@ await new Promise(() => setInterval(() => {}, 1_000));
       prepareInteractiveDisplay,
       /Complete-InteractiveDisplayPreparation/,
     );
-    assert.match(runtime, /Remove-InteractiveDisplayPreparationTask/);
+    assert.doesNotMatch(runtime, /Remove-InteractiveDisplayPreparationTask/);
+    assert.match(
+      runtime,
+      /function Initialize-InteractiveDisplayPreparation \{[\s\S]*Register-InteractiveDisplayPreparationTask/,
+    );
     assert.match(
       runtime,
       /function Enable-InteractiveAutomaticLogon[\s\S]*AutoAdminLogon[\s\S]*Remove-ItemProperty[^\n]+AutoLogonCount/,
@@ -3341,7 +3345,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                           state: { phase: "running" },
                           task: { state: "Running" },
                           cleanup: {
-                            taskRemoved: false,
+                            taskRegistered: false,
                             automaticLogonEnabled: false,
                           },
                         }
@@ -3407,19 +3411,19 @@ await new Promise(() => setInterval(() => {}, 1_000));
       },
       {
         ...completedInteractiveDisplayStatus(),
-        task: { state: "Ready" },
+        task: null,
       },
       {
         ...completedInteractiveDisplayStatus(),
         cleanup: {
-          taskRemoved: false,
+          taskRegistered: false,
           automaticLogonEnabled: true,
         },
       },
       {
         ...completedInteractiveDisplayStatus(),
         cleanup: {
-          taskRemoved: true,
+          taskRegistered: true,
           automaticLogonEnabled: false,
         },
       },
@@ -3547,7 +3551,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                         state: { phase: "failed" },
                         task: null,
                         cleanup: {
-                          taskRemoved: false,
+                          taskRegistered: false,
                           automaticLogonEnabled: false,
                         },
                         currentBootIdentity: "boot-before-rearm",
@@ -3633,7 +3637,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                         state: { phase: "failed" },
                         task: null,
                         cleanup: {
-                          taskRemoved: false,
+                          taskRegistered: false,
                           automaticLogonEnabled: false,
                         },
                         currentBootIdentity: null,
@@ -3645,7 +3649,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                           state: { phase: "failed" },
                           task: null,
                           cleanup: {
-                            taskRemoved: false,
+                            taskRegistered: false,
                             automaticLogonEnabled: false,
                           },
                           currentBootIdentity: "boot-before-rearm",
@@ -3730,7 +3734,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                       state: { phase: "failed" },
                       task: null,
                       cleanup: {
-                        taskRemoved: false,
+                        taskRegistered: false,
                         automaticLogonEnabled: false,
                       },
                       currentBootIdentity: "boot-before-rearm",
@@ -3749,7 +3753,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     state: { phase: "waiting-for-logon" },
                     task: null,
                     cleanup: {
-                      taskRemoved: false,
+                      taskRegistered: false,
                       automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-after-rearm",
@@ -3818,7 +3822,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     state: { phase: "running" },
                     task: { state: "Running", lastTaskResult: 267009 },
                     cleanup: {
-                      taskRemoved: false,
+                      taskRegistered: false,
                       automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-display",
@@ -3878,7 +3882,7 @@ await new Promise(() => setInterval(() => {}, 1_000));
                     state: { phase: "running" },
                     task: { state: "Running" },
                     cleanup: {
-                      taskRemoved: false,
+                      taskRegistered: false,
                       automaticLogonEnabled: false,
                     },
                     currentBootIdentity: "boot-display",
@@ -4187,7 +4191,7 @@ await writeFile(markerPath, "created");
     assert.match(rearm, /Start-Sleep -Seconds 60/);
   });
 
-  it("publishes the final display report only after cleanup and commits complete state last", () => {
+  it("keeps the logon repair task and commits complete state after the display report", () => {
     const runtime = readFileSync(
       new URL("./prepare-vm-runtime.ps1", import.meta.url),
       "utf8",
@@ -4198,20 +4202,9 @@ await writeFile(markerPath, "created");
         "function Complete-InteractiveDisplayPreparationFromValidReport",
       ),
     );
-    assert.ok(
-      completion.indexOf("Remove-InteractiveDisplayPreparationTask") <
-        completion.indexOf(
-          "Write-AtomicJson -Path $interactiveDisplayReportPath",
-        ),
-    );
+    assert.doesNotMatch(completion, /Remove-InteractiveDisplayPreparationTask/);
     assert.ok(
       completion.indexOf("Enable-InteractiveAutomaticLogon") <
-        completion.indexOf(
-          "Write-AtomicJson -Path $interactiveDisplayReportPath",
-        ),
-    );
-    assert.ok(
-      completion.indexOf("Get-InteractiveDisplayCleanupStatus") <
         completion.indexOf(
           "Write-AtomicJson -Path $interactiveDisplayReportPath",
         ),

@@ -212,6 +212,8 @@ if ($session.Count -eq 0) { throw "interactive session for $expectedUser was not
 $displayReportPath = 'C:\\ProgramData\\WindowsRuntimeBaseline\\interactive-display-report.json'
 if (-not (Test-Path -LiteralPath $displayReportPath -PathType Leaf)) { throw 'interactive display report was not found' }
 $displayReport = Get-Content -LiteralPath $displayReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$currentBootIdentity = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToUniversalTime().ToString('o')
+if ([string]$displayReport.bootIdentity -ne $currentBootIdentity) { throw 'interactive display report belongs to an earlier Windows boot' }
 $screen = [pscustomobject]@{
   widthPx = [int]$displayReport.desktop.width
   heightPx = [int]$displayReport.desktop.height

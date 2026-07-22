@@ -614,10 +614,6 @@ function Get-InteractiveDisplayTaskStatus {
   }
 }
 
-function Remove-InteractiveDisplayPreparationTask {
-  Unregister-ScheduledTask -TaskName $interactiveDisplayTaskName -Confirm:$false -ErrorAction SilentlyContinue
-}
-
 function Test-InteractiveAutomaticLogonEnabled {
   $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
   $configuredUser = [string](Get-ItemPropertyValue -Path $winlogon -Name "DefaultUserName" -ErrorAction SilentlyContinue)
@@ -631,7 +627,7 @@ function Get-InteractiveDisplayCleanupStatus {
   param([object] $Task)
   if ($null -eq $Task) { $Task = Get-InteractiveDisplayTaskStatus }
   return @{
-    taskRemoved = $null -eq $Task
+    taskRegistered = $null -ne $Task
     automaticLogonEnabled = Test-InteractiveAutomaticLogonEnabled
   }
 }
@@ -658,6 +654,7 @@ function Test-InteractiveDisplayReport {
   if ([string]$Report.interactiveUser -notmatch ("\\" + [regex]::Escape($InteractiveUser) + "$")) { return $false }
   $sessionId = 0
   if (-not [int]::TryParse([string]$Report.interactiveSessionId, [ref]$sessionId) -or $sessionId -lt 1) { return $false }
+  if ([string]$Report.bootIdentity -ne (Get-BootIdentity)) { return $false }
   return $Report.desktop.width -eq $DesktopWidth -and $Report.desktop.height -eq $DesktopHeight -and $Report.desktop.scalePercent -eq $DesktopScalePercent -and -not [string]::IsNullOrWhiteSpace([string]$Report.displayAdapter)
 }
 
@@ -666,7 +663,6 @@ function Complete-InteractiveDisplayPreparation {
   Assert-VirtioGpuDriverBinding
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt }
-  Remove-InteractiveDisplayPreparationTask
   Enable-InteractiveAutomaticLogon
   # The report is durable before the complete state commits it. A crash between
   # these writes is intentionally non-accepting and will be re-armed by host.
@@ -687,11 +683,12 @@ function Complete-InteractiveDisplayPreparationFromValidReport {
 
 function Initialize-InteractiveDisplayPreparation {
   Assert-VirtioGpuDriverBinding
+  Register-InteractiveDisplayPreparationTask
+  Enable-InteractiveAutomaticLogon
   if (Complete-InteractiveDisplayPreparationFromValidReport) { return }
   $state = Read-InteractiveDisplayPreparationState
   $attempt = if ($null -eq $state) { 1 } else { [int]$state.attempt + 1 }
   Write-InteractiveDisplayPreparationState -Phase "waiting-for-logon" -Attempt $attempt
-  Register-InteractiveDisplayPreparationTask
   if (Test-ExpectedInteractiveSession) {
     Start-ScheduledTask -TaskName $interactiveDisplayTaskName
   }
@@ -725,6 +722,7 @@ function Prepare-InteractiveDisplay {
     $report = @{
       schemaVersion = "win10-kvm-interactive-display/v1"
       capturedAt = (Get-Date).ToUniversalTime().ToString("o")
+      bootIdentity = Get-BootIdentity
       interactiveUser = $interactiveUser
       interactiveSessionId = $interactiveSessionId
       desktop = @{ width = $primary.Width; height = $primary.Height; scalePercent = $scalePercent }
@@ -764,17 +762,13 @@ function Get-InteractiveDisplayPreparationStatus {
     cleanup = $cleanup
     guestStageFailure = $guestStageFailure
     driverBindingValid = $driverBindingValid
-    completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRemoved -and $cleanup.automaticLogonEnabled
+    completionValid = $driverBindingValid -and (Test-InteractiveDisplayReport -Report $report) -and $state.phase -eq "complete" -and $cleanup.taskRegistered -and $cleanup.automaticLogonEnabled
     taskLogTail = $taskLogTail
     currentBootIdentity = Get-BootIdentity
   } | ConvertTo-Json -Depth 6
 }
 
 function Rearm-InteractiveDisplay {
-  if (Complete-InteractiveDisplayPreparationFromValidReport) {
-    Get-InteractiveDisplayPreparationStatus
-    return
-  }
   Initialize-InteractiveDisplayPreparation
   if (Complete-InteractiveDisplayPreparationFromValidReport) {
     Get-InteractiveDisplayPreparationStatus
