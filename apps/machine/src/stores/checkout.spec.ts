@@ -507,7 +507,7 @@ describe("checkout store", () => {
     expect(store.canCreateOrder).toBe(false);
   });
 
-  it("creates order without machineCode payload and applies transaction", async () => {
+  it("creates an order control payload with slotId but no slotDisplayLabel", async () => {
     createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
     const store = useCheckoutStore();
@@ -541,12 +541,14 @@ describe("checkout store", () => {
       quantity: 1,
       planogramVersion: "PLAN-1",
       slotId: "550e8400-e29b-41d4-a716-446655440001",
-      slotDisplayLabel: "A1",
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
       idempotencyKey: expect.stringMatching(/^checkout:/),
     });
+    expect(createOrderMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "slotDisplayLabel",
+    );
     expect(store.customerCheckoutView).toMatchObject({
       stage: "payment",
       orderCredential: "ORD-001",
@@ -817,7 +819,6 @@ describe("checkout store", () => {
       expect.objectContaining({
         inventoryId: "550e8400-e29b-41d4-a716-446655440012",
         slotId: "550e8400-e29b-41d4-a716-446655440011",
-        slotDisplayLabel: "B1",
       }),
     );
   });
