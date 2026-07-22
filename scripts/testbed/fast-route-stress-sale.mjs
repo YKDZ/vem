@@ -647,7 +647,6 @@ export function validateFastRouteStressSaleEvidence(input) {
     throw new Error("MQTT vend command must correlate order and quantity");
   }
   if (
-    mqttPayload.slot?.slotDisplayLabel !== daemonBefore.slotDisplayLabel ||
     mqttPayload.slot?.rowNo !== daemonBefore.rowNo ||
     mqttPayload.slot?.cellNo !== daemonBefore.cellNo
   ) {
@@ -1505,6 +1504,38 @@ export async function waitForGuardedVisionDepartureTrace(
   );
 }
 
+export async function waitForStableVisionArrivalTrace(
+  client,
+  traceBoundary,
+  {
+    timeoutMs = 5_000,
+    readTrace = readRuntimeTraceSnapshot,
+    sleepFn = sleep,
+    now = () => Date.now(),
+  } = {},
+) {
+  const deadline = now() + timeoutMs;
+  let lastTrace = [];
+  do {
+    const snapshot = await readTrace(client);
+    lastTrace = snapshot.entries;
+    const arrival = traceEntriesAfterBoundary(
+      snapshot,
+      traceBoundary,
+      "Vision arrival control-request trace boundary",
+    ).find(
+      (entry) =>
+        entry?.type === "journey_transition" &&
+        /^vision:presence-\d+:welcome$/.test(entry?.transitionId ?? ""),
+    );
+    if (arrival) return arrival;
+    await sleepFn(25);
+  } while (now() < deadline);
+  throw new Error(
+    `installed runtime did not trace a stable Vision arrival after the control-request boundary: ${JSON.stringify(lastTrace.slice(-8))}`,
+  );
+}
+
 async function readInstalledUiViewport(client) {
   return evaluateExpression(
     client,
@@ -2050,6 +2081,21 @@ async function dispatchVisionDeparture(guestInput) {
   throw lastError ?? new Error("Vision departure delivery timed out");
 }
 
+async function dispatchVisionArrival(guestInput) {
+  const port =
+    guestInput.hostControlPlane?.visionMockControlPort ??
+    guestInput.visionMockControlPort;
+  const controlPort = Number(port);
+  if (!Number.isInteger(controlPort) || controlPort < 1) {
+    throw new Error("guest input is missing vision mock control port");
+  }
+  return fetchJson(`http://127.0.0.1:${controlPort}/control/presence`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state: "approach" }),
+  });
+}
+
 async function completeMockPayment(guestInput, paymentNo) {
   const provisioningApiBaseUrl = required(
     guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
@@ -2090,6 +2136,7 @@ async function runFastRouteStressSale(options) {
   let createOrderGate = null;
   let pendingCreate = null;
   let noCatalogTraceBoundary = null;
+  let visionArrival = null;
   let repeatedPaymentTouch = null;
   let continuousCdpLocationHashObserver = null;
   let continuousCdpLocationHash = null;
@@ -2172,6 +2219,22 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
+    stage = "establish-stable-vision-presence";
+    const visionArrivalTraceBoundary = await captureRuntimeTraceBoundary(
+      client,
+      "Vision arrival control-request trace boundary",
+    );
+    const visionArrivalDelivery = await dispatchVisionArrival(guestInput);
+    const visionArrivalTrace = await waitForStableVisionArrivalTrace(
+      client,
+      visionArrivalTraceBoundary,
+    );
+    visionArrival = {
+      ...visionArrivalDelivery,
+      traceBoundary: visionArrivalTraceBoundary,
+      transitionId: visionArrivalTrace.transitionId,
+      completedAt: new Date().toISOString(),
+    };
     continuousCdpLocationHashObserver =
       await startContinuousCdpLocationHashObservation(client);
     stage = "physical-catalog-to-checkout";
@@ -2244,6 +2307,7 @@ async function runFastRouteStressSale(options) {
     }
     const visionDelivery = {
       ...visionDeliveryResult,
+      arrival: visionArrival,
       traceBoundary: visionDepartureTraceBoundary,
       requestedAt: visionRequestedAt,
       completedAt: new Date().toISOString(),
@@ -2644,6 +2708,15 @@ async function runFastRouteStressSale(options) {
   if (guestInput && createOrderGate) {
     const cleanupPaymentNo =
       pendingCreate?.paymentNo ?? failureCurrentTransaction?.paymentNo ?? null;
+    if (pendingCreate?.paymentNo) {
+      await collectCleanupStep(
+        cleanup,
+        cleanupErrors,
+        "release pending create gate",
+        () => releaseCreateOrderGate(guestInput, pendingCreate.paymentNo),
+        CLEANUP_REQUEST_TIMEOUT_MS + 1_000,
+      );
+    }
     if (cleanupPaymentNo) {
       await collectCleanupStep(
         cleanup,

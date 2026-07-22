@@ -607,14 +607,28 @@ export async function ensureFixtureStockReady({
       addition: Math.max(0, fixture.onHandQty - taskSlot.currentQuantity),
     };
   });
+  const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
+    const item = initialBySlot.get(slotId);
+    const desired = desiredBySlotId.get(slotId);
+    return (
+      item?.slotSalesState !== "sale_ready" ||
+      item?.saleableStock > desired ||
+      item?.physicalStock > desired
+    );
+  });
   if (
     task.mode === "routine_refill" &&
-    task.status === "complete" &&
+    (!requiresAttestation || ["pending", "complete"].includes(task.status)) &&
     routineRefillSlots.every((slot) => slot.addition === 0)
   ) {
-    const projection = await get(
-      `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
-    );
+    let projection = null;
+    while (Date.now() < deadline) {
+      projection = await get(
+        `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
+      );
+      if (projection?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+    }
     const projectedSlots = new Map(
       (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
     );
@@ -657,15 +671,6 @@ export async function ensureFixtureStockReady({
       )}`,
     );
   }
-  const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
-    const item = initialBySlot.get(slotId);
-    const desired = desiredBySlotId.get(slotId);
-    return (
-      item?.slotSalesState !== "sale_ready" ||
-      item?.saleableStock > desired ||
-      item?.physicalStock > desired
-    );
-  });
   let operationMode = task.mode;
   let operationId = task.taskId;
   if (task.mode === "routine_refill" && requiresAttestation) {

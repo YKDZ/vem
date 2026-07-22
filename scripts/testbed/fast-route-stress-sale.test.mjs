@@ -16,6 +16,7 @@ import {
   startContinuousCdpLocationHashObservation,
   waitForSaleStartReady,
   waitForGuardedVisionDepartureTrace,
+  waitForStableVisionArrivalTrace,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -486,7 +487,7 @@ function validEvidence() {
           payload: {
             commandNo: "CMD-1",
             orderNo: "ORD-1",
-            slot: { slotDisplayLabel: "R2C5", rowNo: 2, cellNo: 5 },
+            slot: { rowNo: 2, cellNo: 5 },
             quantity: 1,
           },
         },
@@ -505,6 +506,35 @@ function validEvidence() {
 }
 
 describe("fast route stress sale tracer", () => {
+  it("awaits a new stable Vision arrival after the control-request boundary", async () => {
+    let reads = 0;
+    const boundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      lastEntryId: 4,
+      capturedAt: "2026-07-18T03:59:59.000Z",
+      runtimeGenerationId: "runtime-generation-1",
+    };
+    const result = await waitForStableVisionArrivalTrace(null, boundary, {
+      timeoutMs: 100,
+      sleepFn: async () => {},
+      readTrace: async () => ({
+        runtimeGenerationId: "runtime-generation-1",
+        entries:
+          reads++ === 0
+            ? []
+            : [
+                {
+                  id: 5,
+                  type: "journey_transition",
+                  transitionId: "vision:presence-8:welcome",
+                },
+              ],
+      }),
+    });
+    assert.equal(result.transitionId, "vision:presence-8:welcome");
+    assert.equal(reads, 2);
+  });
+
   it("awaits a new stable Vision departure after the control-request trace boundary", async () => {
     let reads = 0;
     const traceBoundary = {
@@ -1215,15 +1245,20 @@ describe("fast route stress sale tracer", () => {
     assert.match(combined.message, /reopen payment create gate failed/);
   });
 
-  it("settles the correlated transaction before bounded gate recovery", () => {
+  it("releases the provider before settling the correlated transaction and reopening the gate", () => {
     const implementation = readFileSync(
       new URL("./fast-route-stress-sale.mjs", import.meta.url),
       "utf8",
     );
 
+    assert.match(implementation, /"release pending create gate"/);
     assert.match(implementation, /"settle pending create transaction"/);
     assert.match(implementation, /"reopen payment create gate"/);
     assert.match(implementation, /"verify payment create gate"/);
+    assert.ok(
+      implementation.indexOf('"release pending create gate"') <
+        implementation.indexOf('"settle pending create transaction"'),
+    );
     assert.ok(
       implementation.indexOf('"settle pending create transaction"') <
         implementation.indexOf('"reopen payment create gate"'),

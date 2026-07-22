@@ -660,10 +660,11 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(posts[0].body.slots, [{ slotId: "slot-1", addition: 1 }]);
   });
 
-  it("verifies a completed historical refill projection without rewriting unrelated slots", async () => {
+  it("waits for a zero-addition historical refill projection without rewriting unrelated slots", async () => {
     const posts = [];
     const reads = [];
     let saleViewReads = 0;
+    let projectionReads = 0;
     const result = await ensureFixtureStockReady({
       fixtureAllocation: {
         stockMaintenance: {
@@ -678,7 +679,7 @@ describe("full workflow serial lifecycle", () => {
           return {
             taskId: "historical-refill-01",
             mode: "routine_refill",
-            status: "complete",
+            status: "pending",
             slots: [
               { slotId: "slot-1", currentQuantity: 3 },
               { slotId: "slot-2", currentQuantity: 9 },
@@ -689,10 +690,11 @@ describe("full workflow serial lifecycle", () => {
           path ===
           "/v1/stock/maintenance-tasks/historical-refill-01/projection"
         ) {
+          projectionReads += 1;
           return {
             taskId: "historical-refill-01",
             mode: "routine_refill",
-            status: "complete",
+            status: projectionReads > 1 ? "complete" : "pending",
             slots: [
               {
                 slotId: "slot-1",
