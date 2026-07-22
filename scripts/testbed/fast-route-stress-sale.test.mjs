@@ -1215,16 +1215,24 @@ describe("fast route stress sale tracer", () => {
     assert.match(combined.message, /reopen payment create gate failed/);
   });
 
-  it("contains fail-closed cleanup for gate reopen, serial abort, and vision shutdown", () => {
+  it("settles the correlated transaction before bounded gate recovery", () => {
     const implementation = readFileSync(
       new URL("./fast-route-stress-sale.mjs", import.meta.url),
       "utf8",
     );
 
-    assert.match(
-      implementation,
-      /runCleanupStep\("reopen payment create gate"/,
+    assert.match(implementation, /"settle pending create transaction"/);
+    assert.match(implementation, /"reopen payment create gate"/);
+    assert.match(implementation, /"verify payment create gate"/);
+    assert.ok(
+      implementation.indexOf('"settle pending create transaction"') <
+        implementation.indexOf('"reopen payment create gate"'),
     );
+    assert.ok(
+      implementation.indexOf('"reopen payment create gate"') <
+        implementation.indexOf('"verify payment create gate"'),
+    );
+    assert.match(implementation, /CLEANUP_REQUEST_TIMEOUT_MS/);
     assert.match(implementation, /mock-payment-create-gate\/status/);
     assert.match(
       implementation,

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const SCHEMA_VERSION = "vem-environment-control-guest-full/v1";
 const ADMIN_USER = "local-testbed-admin";
@@ -151,6 +152,33 @@ function control(guestInput, path, body = {}) {
   );
 }
 
+export async function replaceEnvironmentSerialHandoff({
+  guestInput,
+  handoff,
+  handoffPath,
+  controlRequest = control,
+}) {
+  const previousControlPlaneSessionId = required(
+    handoff?.commissioningSerialSession?.sessionId,
+    "handoff commissioning serial session id",
+  );
+  const replacement = await replaceSerialSessionAndUpdateHandoff({
+    guestInput,
+    handoff,
+    handoffPath,
+    sessionId: previousControlPlaneSessionId,
+    control: controlRequest,
+  });
+  return {
+    previousControlPlaneSessionId,
+    replacementControlPlaneSessionId: required(
+      replacement?.replacement?.sessionId,
+      "replacement serial session id",
+    ),
+    aborted: replacement.aborted ?? null,
+  };
+}
+
 async function adminRequest(
   guestInput,
   path,
@@ -262,6 +290,22 @@ function b3Speed(frame) {
   return match ? Number.parseInt(match[1], 16) : null;
 }
 
+export function isReplacementSessionB3(frame, sessionId, speed) {
+  return (
+    frame?.sessionId === sessionId &&
+    frame?.parsedOpcode === "B3" &&
+    b3Speed(frame) === speed
+  );
+}
+
+function automaticVentHealth(health) {
+  return (
+    health?.components?.find(
+      (component) => component?.component === "automatic_vent",
+    ) ?? null
+  );
+}
+
 function b3FramesSince(evidence, beforeFrameCount) {
   return (evidence?.rawFrames ?? [])
     .slice(beforeFrameCount)
@@ -291,8 +335,8 @@ async function waitForB3Frame({
       `/v1/serial-sessions/${sessionId}/evidence`,
       {},
     );
-    const frame = b3FramesSince(evidence, beforeFrameCount).find(
-      (entry) => entry.speed === expectedSpeed,
+    const frame = b3FramesSince(evidence, beforeFrameCount).find((entry) =>
+      isReplacementSessionB3(entry, sessionId, expectedSpeed),
     );
     if (frame) return { evidence, frame };
     await sleep(100);
@@ -527,9 +571,10 @@ export async function runEnvironmentControlGuest(options) {
     runId,
     machineCode,
     handoffSerialSessionId: null,
+    serialSessionReplacement: null,
     commands: [],
     overlapRejection: null,
-    daemon: null,
+    daemon: { automaticVent: { health: null, outcomes: [] } },
     precedence: null,
     boundaries: {
       adminApi: false,
@@ -539,19 +584,12 @@ export async function runEnvironmentControlGuest(options) {
     },
   };
   try {
-    session = await control(guestInput, "/v1/serial-sessions/start", {
-      runId,
-      machineCode,
-      targetIdentity: required(
-        guestInput.hostControlPlane?.targetIdentity,
-        "hostControlPlane.targetIdentity",
-      ),
-      runtimeBase: required(
-        guestInput.hostControlPlane?.runtimeBaseIdentity,
-        "hostControlPlane.runtimeBaseIdentity",
-      ),
-      saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.environment-control`,
+    report.serialSessionReplacement = await replaceEnvironmentSerialHandoff({
+      guestInput,
+      handoff,
+      handoffPath: options.handoffPath,
     });
+    session = handoff.commissioningSerialSession;
     report.handoffSerialSessionId = required(
       session?.sessionId,
       "environment control serial session id",
@@ -603,6 +641,7 @@ export async function runEnvironmentControlGuest(options) {
       edgeId: `environment-control:${runId}:arrival`,
       ventSpeed: 2,
     });
+    report.daemon.automaticVent.outcomes.push(automaticArrival);
     const adminVent = await commandEnvironment({
       guestInput,
       token,
@@ -619,6 +658,7 @@ export async function runEnvironmentControlGuest(options) {
       edgeId: automaticArrival.edgeId,
       ventSpeed: 2,
     });
+    report.daemon.automaticVent.outcomes.push(sameEdgeAfterAdmin);
     sameEdgeAfterAdmin.guardWindow = await observeAdminOverrideGuard({
       guestInput,
       sessionId: session.sessionId,
@@ -654,6 +694,7 @@ export async function runEnvironmentControlGuest(options) {
       edgeId: `environment-control:${runId}:departure`,
       ventSpeed: 0,
     });
+    report.daemon.automaticVent.outcomes.push(nextStableEdge);
     report.commands.push(
       await commandEnvironment({
         guestInput,
@@ -665,9 +706,15 @@ export async function runEnvironmentControlGuest(options) {
       }),
     );
     report.precedence.nextStableEdge = nextStableEdge;
+    const health = await daemonGet(handoff, "/healthz");
     report.daemon = {
-      health: await daemonGet(handoff, "/healthz"),
+      ...report.daemon,
+      health,
       readiness: await daemonGet(handoff, "/readyz"),
+      automaticVent: {
+        ...report.daemon.automaticVent,
+        health: automaticVentHealth(health),
+      },
     };
     report.boundaries.adminApi = report.commands.every(
       (entry) =>
@@ -697,8 +744,16 @@ export async function runEnvironmentControlGuest(options) {
       report.daemon.readiness?.ready === true &&
       automaticArrival.outcome === "accepted" &&
       automaticArrival.requestedSpeed === 2 &&
-      automaticArrival.frame?.parsedOpcode === "B3" &&
-      b3Speed(automaticArrival.frame) === 2 &&
+      isReplacementSessionB3(
+        automaticArrival.frame,
+        report.serialSessionReplacement.replacementControlPlaneSessionId,
+        2,
+      ) &&
+      isReplacementSessionB3(
+        adminVent.serial.protocolFrame,
+        report.serialSessionReplacement.replacementControlPlaneSessionId,
+        3,
+      ) &&
       sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
       sameEdgeAfterAdmin.outcome === "deduplicated" &&
       sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
@@ -710,8 +765,11 @@ export async function runEnvironmentControlGuest(options) {
       nextStableEdge.edgeId !== automaticArrival.edgeId &&
       nextStableEdge.outcome === "accepted" &&
       nextStableEdge.requestedSpeed === 0 &&
-      nextStableEdge.frame?.parsedOpcode === "B3" &&
-      b3Speed(nextStableEdge.frame) === 0 &&
+      isReplacementSessionB3(
+        nextStableEdge.frame,
+        report.serialSessionReplacement.replacementControlPlaneSessionId,
+        0,
+      ) &&
       automaticArrival.b3FrameCountDelta === 1 &&
       automaticArrival.protocolFrames.length === 1 &&
       automaticArrival.protocolFrames[0] === "B3" &&
@@ -722,6 +780,22 @@ export async function runEnvironmentControlGuest(options) {
     writeJson(options.outPath, report);
     return report;
   } catch (error) {
+    const health = await daemonGet(handoff, "/healthz").catch(
+      (healthError) => ({
+        error:
+          healthError instanceof Error
+            ? healthError.message
+            : String(healthError),
+      }),
+    );
+    report.daemon = {
+      ...report.daemon,
+      health,
+      automaticVent: {
+        ...report.daemon?.automaticVent,
+        health: automaticVentHealth(health),
+      },
+    };
     report.error = {
       message: error instanceof Error ? error.message : String(error),
       stack: String(error?.stack ?? "").slice(0, 16 * 1024),

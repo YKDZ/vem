@@ -312,6 +312,11 @@ function environmentControlReport() {
   return {
     schemaVersion: "vem-environment-control-guest-full/v1",
     ok: true,
+    handoffSerialSessionId: "serial-replacement",
+    serialSessionReplacement: {
+      previousControlPlaneSessionId: "serial-previous",
+      replacementControlPlaneSessionId: "serial-replacement",
+    },
     commands: [
       environmentCommand("airConditionerOnTrue", "MCMD-1"),
       environmentCommand("airConditionerOnFalse", "MCMD-2"),
@@ -326,6 +331,18 @@ function environmentControlReport() {
     daemon: {
       health: { hardwareOnline: true },
       readiness: { ready: true },
+      automaticVent: {
+        health: {
+          component: "automatic_vent",
+          level: "ok",
+          code: "AUTOMATIC_VENT_READY",
+        },
+        outcomes: [
+          { edgeId: "presence-1:arrival", outcome: "accepted" },
+          { edgeId: "presence-1:arrival", outcome: "deduplicated" },
+          { edgeId: "presence-2:departure", outcome: "accepted" },
+        ],
+      },
     },
     precedence: {
       automaticArrival: {
@@ -335,6 +352,7 @@ function environmentControlReport() {
         b3FrameCountDelta: 1,
         protocolFrames: ["B3"],
         frame: {
+          sessionId: "serial-replacement",
           parsedOpcode: "B3",
           rawFrameHex: "55b302",
           capturedAt: "2026-07-22T08:00:00.000Z",
@@ -346,6 +364,7 @@ function environmentControlReport() {
         mqttCommandNo: "MCMD-3",
         mqttResultNo: "MCMD-3",
         frame: {
+          sessionId: "serial-replacement",
           parsedOpcode: "B3",
           rawFrameHex: "55b303",
           capturedAt: "2026-07-22T08:00:05.000Z",
@@ -370,6 +389,7 @@ function environmentControlReport() {
         b3FrameCountDelta: 1,
         protocolFrames: ["B3"],
         frame: {
+          sessionId: "serial-replacement",
           parsedOpcode: "B3",
           rawFrameHex: "55b300",
           capturedAt: "2026-07-22T08:00:10.000Z",
@@ -502,7 +522,11 @@ function paymentRecoveryReport() {
                 runtimeTrace: {
                   source: "installed_machine_runtime_trace_cdp",
                   checkoutAttemptIdempotencyKey: "checkout:create-failure",
-                  entry: { id: 1 },
+                  entry: {
+                    id: 1,
+                    technicalMessage:
+                      "mock payment create gate timed out before release",
+                  },
                 },
                 localOperations: {
                   source:

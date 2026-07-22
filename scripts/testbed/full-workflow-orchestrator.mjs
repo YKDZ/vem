@@ -584,6 +584,79 @@ export async function ensureFixtureStockReady({
   const initialBySlot = new Map(
     (initialSaleView?.items ?? []).map((item) => [item.slotId, item]),
   );
+  const taskSlotsById = new Map(
+    (task.slots ?? []).map((slot) => [slot?.slotId, slot]),
+  );
+  const fixtureTaskSlots = fixtures.map((fixture) => {
+    const taskSlot = taskSlotsById.get(fixture.slotId);
+    if (!taskSlot) {
+      throw new Error(
+        `fixture stock ${task.mode} task does not contain fixture slot ${fixture.slotId}`,
+      );
+    }
+    return { fixture, taskSlot };
+  });
+  const routineRefillSlots = fixtureTaskSlots.map(({ fixture, taskSlot }) => {
+    if (!Number.isInteger(taskSlot.currentQuantity)) {
+      throw new Error(
+        `fixture stock routine_refill task has invalid current quantity for ${fixture.slotId}`,
+      );
+    }
+    return {
+      slotId: fixture.slotId,
+      addition: Math.max(0, fixture.onHandQty - taskSlot.currentQuantity),
+    };
+  });
+  if (
+    task.mode === "routine_refill" &&
+    task.status === "complete" &&
+    routineRefillSlots.every((slot) => slot.addition === 0)
+  ) {
+    const projection = await get(
+      `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
+    );
+    const projectedSlots = new Map(
+      (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
+    );
+    const projectionMatchesFixtures =
+      projection?.taskId === task.taskId &&
+      projection?.mode === "routine_refill" &&
+      projection?.status === "complete" &&
+      fixtures.every((fixture) => {
+        const slot = projectedSlots.get(fixture.slotId);
+        return (
+          slot?.syncStatus === "accepted" &&
+          slot?.previewQuantity === fixture.onHandQty &&
+          Number.isInteger(slot?.submittedAddition) &&
+          slot.submittedAddition >= 0
+        );
+      });
+    if (!projectionMatchesFixtures) {
+      throw new Error(
+        `fixture stock routine_refill projection does not satisfy allocated fixtures: ${JSON.stringify(projection)}`,
+      );
+    }
+    let projectedSaleView = initialSaleView;
+    while (Date.now() < deadline) {
+      projectedSaleView = await get("/v1/sale-view");
+      if (targetIsReady(projectedSaleView)) {
+        return {
+          changed: false,
+          taskId: task.taskId,
+          mode: task.mode,
+          projection,
+        };
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+    }
+    throw new Error(
+      `fixture stock routine_refill projection did not become sale-ready without a positive addition: ${JSON.stringify(
+        (projectedSaleView?.items ?? []).filter((item) =>
+          desiredBySlotId.has(item?.slotId),
+        ),
+      )}`,
+    );
+  }
   const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
     const item = initialBySlot.get(slotId);
     const desired = desiredBySlotId.get(slotId);
@@ -598,12 +671,15 @@ export async function ensureFixtureStockReady({
   if (task.mode === "routine_refill" && requiresAttestation) {
     operationMode = "physical_stock_attestation";
     operationId = `testbed-stock-recovery-${Date.now()}`;
-    const slots = (initialSaleView?.items ?? []).map((item) => ({
-      slotId: item.slotId,
-      sku: item.sku,
-      quantity: desiredBySlotId.get(item.slotId) ?? item.physicalStock,
-      enabled: true,
-    }));
+    const slots = fixtures.map((fixture) => {
+      const item = initialBySlot.get(fixture.slotId);
+      return {
+        slotId: fixture.slotId,
+        sku: item?.sku,
+        quantity: fixture.onHandQty,
+        enabled: true,
+      };
+    });
     if (
       !initialSaleView?.planogramVersion ||
       slots.length === 0 ||
@@ -620,15 +696,7 @@ export async function ensureFixtureStockReady({
   } else {
     const slots =
       task.mode === "routine_refill"
-        ? (task.slots ?? [])
-            .map((slot) => ({
-              slotId: slot.slotId,
-              addition: Math.max(
-                0,
-                (desiredBySlotId.get(slot.slotId) ?? slot.currentQuantity) -
-                  slot.currentQuantity,
-              ),
-            }))
+        ? routineRefillSlots
             .filter((slot) => slot.addition > 0)
         : (task.slots ?? []).map((slot) => ({
             slotId: slot.slotId,

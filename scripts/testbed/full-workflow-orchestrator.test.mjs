@@ -660,6 +660,152 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(posts[0].body.slots, [{ slotId: "slot-1", addition: 1 }]);
   });
 
+  it("verifies a completed historical refill projection without rewriting unrelated slots", async () => {
+    const posts = [];
+    const reads = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: {
+        stockMaintenance: {
+          slotId: "slot-1",
+          slotDisplayLabel: "A1",
+          onHandQty: 3,
+        },
+      },
+      async daemonGet(path) {
+        reads.push(path);
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "historical-refill-01",
+            mode: "routine_refill",
+            status: "complete",
+            slots: [
+              { slotId: "slot-1", currentQuantity: 3 },
+              { slotId: "slot-2", currentQuantity: 9 },
+            ],
+          };
+        }
+        if (
+          path ===
+          "/v1/stock/maintenance-tasks/historical-refill-01/projection"
+        ) {
+          return {
+            taskId: "historical-refill-01",
+            mode: "routine_refill",
+            status: "complete",
+            slots: [
+              {
+                slotId: "slot-1",
+                submittedAddition: 2,
+                previewQuantity: 3,
+                syncStatus: "accepted",
+              },
+              {
+                slotId: "slot-2",
+                submittedAddition: 4,
+                previewQuantity: 9,
+                syncStatus: "accepted",
+              },
+            ],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          items: [
+            {
+              slotId: "slot-1",
+              slotSalesState:
+                saleViewReads > 1 ? "sale_ready" : "needs_count",
+              saleableStock: 3,
+              physicalStock: 3,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+      },
+      pollMs: 0,
+    });
+
+    assert.deepEqual(result, {
+      changed: false,
+      taskId: "historical-refill-01",
+      mode: "routine_refill",
+      projection: {
+        taskId: "historical-refill-01",
+        mode: "routine_refill",
+        status: "complete",
+        slots: [
+          {
+            slotId: "slot-1",
+            submittedAddition: 2,
+            previewQuantity: 3,
+            syncStatus: "accepted",
+          },
+          {
+            slotId: "slot-2",
+            submittedAddition: 4,
+            previewQuantity: 9,
+            syncStatus: "accepted",
+          },
+        ],
+      },
+    });
+    assert.deepEqual(posts, []);
+    assert.ok(
+      reads.includes(
+        "/v1/stock/maintenance-tasks/historical-refill-01/projection",
+      ),
+    );
+  });
+
+  it("rejects a historical refill projection that does not cover the allocated fixture", async () => {
+    await assert.rejects(
+      () =>
+        ensureFixtureStockReady({
+          fixtureAllocation: {
+            stockMaintenance: {
+              slotId: "slot-1",
+              slotDisplayLabel: "A1",
+              onHandQty: 3,
+            },
+          },
+          async daemonGet(path) {
+            if (path === "/v1/stock/maintenance-task") {
+              return {
+                taskId: "historical-refill-01",
+                mode: "routine_refill",
+                status: "complete",
+                slots: [{ slotId: "slot-1", currentQuantity: 3 }],
+              };
+            }
+            if (path.includes("/projection")) {
+              return {
+                taskId: "historical-refill-01",
+                mode: "routine_refill",
+                status: "complete",
+                slots: [],
+              };
+            }
+            return {
+              items: [
+                {
+                  slotId: "slot-1",
+                  slotSalesState: "frozen",
+                  saleableStock: 3,
+                  physicalStock: 3,
+                },
+              ],
+            };
+          },
+          daemonPost: async () => assert.fail("must not rewrite stock"),
+          pollMs: 0,
+        }),
+      /projection does not satisfy allocated fixtures/,
+    );
+  });
+
   it("restores an overstocked warm fixture to its exact baseline through physical stock attestation", async () => {
     const posts = [];
     let saleViewReads = 0;

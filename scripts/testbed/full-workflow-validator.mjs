@@ -658,6 +658,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
       optionalTemperature.serial?.automaticB3FrameCount === 0);
   const overlap = report.overlapRejection ?? {};
   const precedence = report.precedence ?? {};
+  const sessionReplacement = report.serialSessionReplacement ?? {};
+  const replacementSessionId = sessionReplacement.replacementControlPlaneSessionId;
   const automaticArrival = precedence.automaticArrival ?? {};
   const adminB3 = precedence.adminB3 ?? {};
   const sameEdgeAfterAdmin = precedence.sameEdgeAfterAdmin ?? {};
@@ -670,6 +672,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
     frame?.parsedOpcode === "B3" &&
     b3Speed(frame) === speed &&
     Number.isFinite(Date.parse(frame?.capturedAt));
+  const validReplacementB3 = (frame, speed) =>
+    validPrecedenceFrame(frame, speed) && frame?.sessionId === replacementSessionId;
   const onlyAutomaticB3 = (entry, expectedB3FrameCount) => {
     const protocolFrames = entry?.protocolFrames;
     if (!Array.isArray(protocolFrames)) return false;
@@ -699,12 +703,12 @@ function validateEnvironmentControlTrack(report, reportPath) {
     automaticArrival.outcome === "accepted" &&
     automaticArrival.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(automaticArrival, 1) &&
-    validPrecedenceFrame(automaticArrival.frame, 2) &&
+    validReplacementB3(automaticArrival.frame, 2) &&
     adminB3.commandNo === byAction.get("ventSpeed")?.admin?.commandNo &&
     adminB3.resultStatus === "succeeded" &&
     adminB3.mqttCommandNo === adminB3.commandNo &&
     adminB3.mqttResultNo === adminB3.commandNo &&
-    validPrecedenceFrame(adminB3.frame, 3) &&
+    validReplacementB3(adminB3.frame, 3) &&
     sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
     sameEdgeAfterAdmin.outcome === "deduplicated" &&
     sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
@@ -717,11 +721,40 @@ function validateEnvironmentControlTrack(report, reportPath) {
     nextStableEdge.outcome === "accepted" &&
     nextStableEdge.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(nextStableEdge, 1) &&
-    validPrecedenceFrame(nextStableEdge.frame, 0) &&
+    validReplacementB3(nextStableEdge.frame, 0) &&
     Date.parse(automaticArrival.frame.capturedAt) <
       Date.parse(adminB3.frame.capturedAt) &&
     Date.parse(adminB3.frame.capturedAt) <
       Date.parse(nextStableEdge.frame.capturedAt);
+  const automaticVent = report.daemon?.automaticVent ?? {};
+  const automaticVentOutcomes = Array.isArray(automaticVent.outcomes)
+    ? automaticVent.outcomes
+    : [];
+  const automaticVentEvidence =
+    automaticVent.health?.component === "automatic_vent" &&
+    automaticVent.health?.level === "ok" &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === automaticArrival.edgeId &&
+        entry?.outcome === automaticArrival.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === sameEdgeAfterAdmin.edgeId &&
+        entry?.outcome === sameEdgeAfterAdmin.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === nextStableEdge.edgeId &&
+        entry?.outcome === nextStableEdge.outcome,
+    );
+  const replacementEvidence =
+    typeof sessionReplacement.previousControlPlaneSessionId === "string" &&
+    sessionReplacement.previousControlPlaneSessionId !== "" &&
+    typeof replacementSessionId === "string" &&
+    replacementSessionId !== "" &&
+    replacementSessionId !== sessionReplacement.previousControlPlaneSessionId &&
+    report.handoffSerialSessionId === replacementSessionId;
   if (
     hasRequiredActions !== true ||
     hasTemperature !== true ||
@@ -734,7 +767,9 @@ function validateEnvironmentControlTrack(report, reportPath) {
     report.boundaries?.lowerSerial !== true ||
     report.daemon?.health?.hardwareOnline !== true ||
     report.daemon?.readiness?.ready !== true ||
-    precedenceCorrelated !== true
+    precedenceCorrelated !== true ||
+    replacementEvidence !== true ||
+    automaticVentEvidence !== true
   ) {
     return failedTrack(
       "environmentControl",
@@ -747,6 +782,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
         boundaries: report.boundaries ?? null,
         daemon: report.daemon ?? null,
         precedence,
+        sessionReplacement,
       },
     );
   }
@@ -758,6 +794,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
       adminCommandNo: adminB3.commandNo,
       automaticArrivalEdgeId: automaticArrival.edgeId,
       nextStableEdgeId: nextStableEdge.edgeId,
+      replacementSessionId,
     },
   });
 }

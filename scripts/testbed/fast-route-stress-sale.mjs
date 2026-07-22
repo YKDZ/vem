@@ -23,6 +23,8 @@ import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter
 
 const MODES = new Set(["fast", "full"]);
 const CLEANUP_TIMEOUT_MS = 10_000;
+const CLEANUP_REQUEST_TIMEOUT_MS = 3_000;
+const PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS = 15_000;
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
@@ -198,13 +200,6 @@ async function releaseCreateOrderGate(guestInput, paymentNo) {
     paymentNo,
     releasedAt: released.releasedAt,
   };
-}
-
-async function openCreateOrderGate(guestInput) {
-  return await controlPlaneRequest(
-    guestInput,
-    "/v1/mock-payment-create-gate/open",
-  );
 }
 
 function rows(raw, key) {
@@ -1137,7 +1132,10 @@ function daemonHeaders(handoff) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 30_000),
+  });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
@@ -1147,13 +1145,14 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-async function daemonGet(handoff, path) {
+async function daemonGet(handoff, path, options = {}) {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
+    timeoutMs: options.timeoutMs,
   });
 }
 
-async function daemonPost(handoff, path, body = {}) {
+async function daemonPost(handoff, path, body = {}, options = {}) {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     method: "POST",
     headers: {
@@ -1161,6 +1160,7 @@ async function daemonPost(handoff, path, body = {}) {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    timeoutMs: options.timeoutMs,
   });
 }
 
@@ -1175,7 +1175,7 @@ function transactionIsActive(transaction) {
 
 export async function settlePendingCreateOrder({
   paymentNo,
-  timeoutMs = 15_000,
+  timeoutMs = PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS,
   readTransaction,
   cancelTransaction,
   wait = sleep,
@@ -1184,7 +1184,11 @@ export async function settlePendingCreateOrder({
   const deadline = now() + timeoutMs;
   let transaction = null;
   while (now() < deadline) {
-    transaction = await readTransaction();
+    transaction = await runCleanupStep(
+      `read transaction for ${paymentNo}`,
+      readTransaction,
+      CLEANUP_REQUEST_TIMEOUT_MS,
+    ).then((result) => result.detail);
     if (transaction?.paymentNo === paymentNo) break;
     await wait(100);
   }
@@ -1194,9 +1198,17 @@ export async function settlePendingCreateOrder({
     );
   }
   if (!transactionIsActive(transaction)) return transaction;
-  await cancelTransaction(transaction);
+  await runCleanupStep(
+    `cancel transaction for ${paymentNo}`,
+    () => cancelTransaction(transaction),
+    CLEANUP_REQUEST_TIMEOUT_MS,
+  );
   while (now() < deadline) {
-    transaction = await readTransaction();
+    transaction = await runCleanupStep(
+      `read settled transaction for ${paymentNo}`,
+      readTransaction,
+      CLEANUP_REQUEST_TIMEOUT_MS,
+    ).then((result) => result.detail);
     if (
       transaction?.paymentNo === paymentNo &&
       !transactionIsActive(transaction)
@@ -1752,6 +1764,28 @@ export function combineCleanupError(primaryError, cleanupErrors) {
   );
 }
 
+async function collectCleanupStep(
+  cleanup,
+  cleanupErrors,
+  label,
+  action,
+  timeoutMs = CLEANUP_TIMEOUT_MS,
+) {
+  try {
+    const result = await runCleanupStep(label, action, timeoutMs);
+    cleanup.push(result);
+    return result.detail;
+  } catch (error) {
+    cleanupErrors.push(error);
+    cleanup.push({
+      label: error.cleanupLabel ?? label,
+      ok: false,
+      error: serializeError(error),
+    });
+    return null;
+  }
+}
+
 export function buildFastRouteStressSaleFailureReport(input) {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
@@ -1804,7 +1838,7 @@ export function buildFastRouteStressSaleFailureReport(input) {
   };
 }
 
-async function controlPlaneRequest(guestInput, path, body = {}) {
+async function controlPlaneRequest(guestInput, path, body = {}, options = {}) {
   const controlPlane = guestInput.hostControlPlane;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
     throw new Error(
@@ -1819,6 +1853,7 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    timeoutMs: options.timeoutMs,
   };
   let lastError;
   for (const retryDelayMs of [0, 100, 250]) {
@@ -2048,6 +2083,7 @@ async function runFastRouteStressSale(options) {
   let afterF1Platform = null;
   let afterF2SaleView = null;
   let afterF2Platform = null;
+  let failureCurrentTransaction = null;
   let stage = "read-input";
   const checkpoints = [];
   const sink = screenshotSink(options.outPath);
@@ -2504,7 +2540,7 @@ async function runFastRouteStressSale(options) {
     };
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
-    const failureCurrentTransaction = handoff
+    failureCurrentTransaction = handoff
       ? await daemonGet(handoff, "/v1/transactions/current").catch(
           (transactionError) => ({
             evidenceError:
@@ -2606,45 +2642,68 @@ async function runFastRouteStressSale(options) {
   const cleanup = [];
   const cleanupErrors = [];
   if (guestInput && createOrderGate) {
-    try {
-      cleanup.push(
-        await runCleanupStep("reopen payment create gate", async () => {
-          const opened = await openCreateOrderGate(guestInput);
-          const status = await controlPlaneRequest(
-            guestInput,
-            "/v1/mock-payment-create-gate/status",
-          );
-          if (
-            opened?.state !== "open" ||
-            status?.state !== "open" ||
-            status?.pending !== null
-          ) {
-            throw new Error(
-              "payment create gate did not return to open with no pending payment",
-            );
-          }
-          const transaction = pendingCreate?.paymentNo
-            ? await settlePendingCreateOrder({
-                paymentNo: pendingCreate.paymentNo,
-                readTransaction: () =>
-                  daemonGet(handoff, "/v1/transactions/current"),
-                cancelTransaction: (active) =>
-                  daemonPost(handoff, "/v1/intents/cancel-order", {
-                    orderNo: required(active?.orderNo, "active orderNo"),
-                  }),
-              })
-            : null;
-          return { opened, status, transaction };
-        }),
+    const cleanupPaymentNo =
+      pendingCreate?.paymentNo ?? failureCurrentTransaction?.paymentNo ?? null;
+    if (cleanupPaymentNo) {
+      await collectCleanupStep(
+        cleanup,
+        cleanupErrors,
+        "settle pending create transaction",
+        () =>
+          settlePendingCreateOrder({
+            paymentNo: cleanupPaymentNo,
+            readTransaction: () =>
+              daemonGet(handoff, "/v1/transactions/current", {
+                timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
+              }),
+            cancelTransaction: (active) =>
+              daemonPost(
+                handoff,
+                "/v1/intents/cancel-order",
+                { orderNo: required(active?.orderNo, "active orderNo") },
+                { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+              ),
+          }),
+        PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS + CLEANUP_REQUEST_TIMEOUT_MS,
       );
-    } catch (error) {
-      cleanupErrors.push(error);
-      cleanup.push({
-        label: error.cleanupLabel ?? "reopen payment create gate",
-        ok: false,
-        error: serializeError(error),
-      });
     }
+    const opened = await collectCleanupStep(
+      cleanup,
+      cleanupErrors,
+      "reopen payment create gate",
+      () =>
+        controlPlaneRequest(
+          guestInput,
+          "/v1/mock-payment-create-gate/open",
+          {},
+          { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+        ),
+      CLEANUP_REQUEST_TIMEOUT_MS + 1_000,
+    );
+    await collectCleanupStep(
+      cleanup,
+      cleanupErrors,
+      "verify payment create gate",
+      async () => {
+        const status = await controlPlaneRequest(
+          guestInput,
+          "/v1/mock-payment-create-gate/status",
+          {},
+          { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+        );
+        if (
+          opened?.state !== "open" ||
+          status?.state !== "open" ||
+          status?.pending !== null
+        ) {
+          throw new Error(
+            "payment create gate did not return to open with no pending payment",
+          );
+        }
+        return { opened, status };
+      },
+      CLEANUP_REQUEST_TIMEOUT_MS + 1_000,
+    );
   }
   if (guestInput && sessionStart?.sessionId) {
     try {

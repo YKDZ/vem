@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   automaticSerialEvidence,
+  isReplacementSessionB3,
+  replaceEnvironmentSerialHandoff,
   unwrapServiceApiEnvelope,
 } from "./environment-control-guest-full.mjs";
 
@@ -37,5 +42,58 @@ describe("environment control guest full", () => {
       b3FrameCountDelta: 1,
       protocolFrames: ["B3", "B1", "B2"],
     });
+  });
+
+  it("requires B3 evidence from the replacement serial session", () => {
+    const frame = {
+      sessionId: "serial-replacement",
+      parsedOpcode: "B3",
+      rawFrameHex: "55b302",
+    };
+
+    assert.equal(isReplacementSessionB3(frame, "serial-replacement", 2), true);
+    assert.equal(isReplacementSessionB3(frame, "serial-stale", 2), false);
+  });
+
+  it("replaces the serial session published by the current handoff", async () => {
+    const handoffPath = join(
+      mkdtempSync(join(tmpdir(), "vem-environment-handoff-")),
+      "handoff.json",
+    );
+    const handoff = { commissioningSerialSession: { sessionId: "serial-old" } };
+    const calls = [];
+    const replacement = await replaceEnvironmentSerialHandoff({
+      guestInput: {
+        runId: "RUN-92",
+        machineCode: "VEM-92",
+        hostControlPlane: {
+          targetIdentity: "vm-target://92",
+          runtimeBaseIdentity: "runtime-base://92",
+        },
+      },
+      handoff,
+      handoffPath,
+      controlRequest: async (_input, path) => {
+        calls.push(path);
+        return path.endsWith("/start")
+          ? { sessionId: "serial-replacement" }
+          : { aborted: true };
+      },
+    });
+
+    assert.deepEqual(calls, [
+      "/v1/serial-sessions/serial-old/abort",
+      "/v1/serial-sessions/start",
+    ]);
+    assert.deepEqual(replacement, {
+      previousControlPlaneSessionId: "serial-old",
+      replacementControlPlaneSessionId: "serial-replacement",
+      aborted: { aborted: true },
+    });
+    assert.equal(
+      JSON.parse(readFileSync(handoffPath, "utf8")).commissioningSerialSession
+        .sessionId,
+      "serial-replacement",
+    );
   });
 });
