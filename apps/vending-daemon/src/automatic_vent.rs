@@ -16,7 +16,7 @@ use crate::{
 
 const AUTOMATIC_VENT_GUARD: Duration = Duration::from_secs(5);
 const AUTOMATIC_VENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
-const AUTOMATIC_VENT_DEFER_RETRY: Duration = Duration::from_millis(100);
+const AUTOMATIC_VENT_DEFER_RETRY: Duration = Duration::from_millis(10);
 const AUTOMATIC_VENT_RETRY_BUDGET: Duration = Duration::from_secs(15);
 const AUTOMATIC_VENT_LIFECYCLE_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 const AUTOMATIC_VENT_RETRY_EXHAUSTED: &str = "automatic B3 retry budget exhausted";
@@ -32,11 +32,13 @@ pub enum AutomaticVentRequestOutcome {
 #[derive(Default)]
 struct AutomaticVentState {
     closed: bool,
-    worker_running: bool,
+    worker_running: Option<u64>,
+    worker_generation: u64,
     admin_superseded: bool,
     admin_execution_pending: bool,
     pending: Option<AutomaticVentIntent>,
     executing: Option<AutomaticVentIntent>,
+    executing_worker_generation: Option<u64>,
     confirmed_speed: Option<u8>,
     last_attempt_at: Option<Instant>,
     last_error: Option<String>,
@@ -51,6 +53,8 @@ struct AutomaticVentIntent {
     force: bool,
     generation: u64,
     retry_deadline: Instant,
+    total_deadline: Instant,
+    admin_wait_started_at: Option<Instant>,
 }
 
 enum AutomaticVentExecution {
@@ -72,6 +76,7 @@ pub struct AutomaticVentController {
     guard: Duration,
     operation_timeout: Duration,
     retry_budget: Duration,
+    total_retry_budget: Duration,
     lifecycle_wait_timeout: Duration,
     b3_protocol_guard: Arc<Mutex<()>>,
     state: Arc<Mutex<AutomaticVentState>>,
@@ -126,6 +131,7 @@ impl AutomaticVentController {
             guard,
             operation_timeout,
             retry_budget,
+            total_retry_budget: retry_budget.checked_mul(2).unwrap_or(retry_budget),
             lifecycle_wait_timeout,
             b3_protocol_guard: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(AutomaticVentState::default())),
@@ -216,19 +222,28 @@ impl AutomaticVentController {
             .latest_intent_generation
             .checked_add(1)
             .expect("automatic vent intent generation exhausted");
+        let now = std::time::Instant::now();
         state.pending = Some(AutomaticVentIntent {
             edge_id: edge_id.to_string(),
             speed,
             force,
             generation: state.latest_intent_generation,
-            retry_deadline: Instant::now()
-                .checked_add(self.retry_budget)
-                .unwrap_or_else(Instant::now),
+            retry_deadline: now.checked_add(self.retry_budget).unwrap_or(now),
+            // Admin receipt and one-shot execution pause the active retry
+            // window, but not indefinitely. The overall deadline remains the
+            // final bound for one stable presence edge.
+            total_deadline: now.checked_add(self.total_retry_budget).unwrap_or(now),
+            admin_wait_started_at: state.admin_execution_pending.then_some(now),
         });
-        if !state.worker_running {
-            state.worker_running = true;
+        if state.worker_running.is_none() {
+            state.worker_generation = state
+                .worker_generation
+                .checked_add(1)
+                .expect("automatic vent worker generation exhausted");
+            let worker_generation = state.worker_generation;
+            state.worker_running = Some(worker_generation);
             let controller = self.clone();
-            tokio::spawn(async move { controller.run().await });
+            tokio::spawn(async move { controller.run(worker_generation).await });
         }
         Ok(AutomaticVentRequestOutcome::Accepted)
     }
@@ -279,30 +294,35 @@ impl AutomaticVentController {
         state.pending = None;
     }
 
-    async fn run(self) {
+    async fn run(self, worker_generation: u64) {
         loop {
             let should_continue = {
-                let mut state = self.state.lock().await;
-                if state.closed || self.shutdown.is_cancelled() {
+                let state = self.state.lock().await;
+                if state.worker_running != Some(worker_generation)
+                    || state.closed
+                    || self.shutdown.is_cancelled()
+                {
                     false
                 } else if state.pending.is_none()
                     || (state.admin_superseded
                         && state.pending.as_ref().is_some_and(|intent| !intent.force))
                 {
-                    state.worker_running = false;
                     false
                 } else {
                     true
                 }
             };
             if !should_continue {
-                self.finish_worker().await;
+                if self.finish_worker(worker_generation).await {
+                    continue;
+                }
                 return;
             }
 
             let (intent, wait_for_admin) = {
                 let mut state = self.state.lock().await;
-                if state.closed
+                if state.worker_running != Some(worker_generation)
+                    || state.closed
                     || self.shutdown.is_cancelled()
                     || (state.admin_superseded
                         && state.pending.as_ref().is_some_and(|pending| !pending.force))
@@ -311,6 +331,11 @@ impl AutomaticVentController {
                 } else if state.admin_execution_pending
                     && state.pending.as_ref().is_some_and(|pending| !pending.force)
                 {
+                    if let Some(pending) = state.pending.as_mut() {
+                        pending
+                            .admin_wait_started_at
+                            .get_or_insert_with(Instant::now);
+                    }
                     (None, true)
                 } else {
                     let pending = state.pending.take();
@@ -320,6 +345,8 @@ impl AutomaticVentController {
                         (None, false)
                     } else {
                         state.executing = pending.clone();
+                        state.executing_worker_generation =
+                            pending.as_ref().map(|_| worker_generation);
                         (pending, false)
                     }
                 }
@@ -335,7 +362,13 @@ impl AutomaticVentController {
             };
             let result = self.execute_automatic_intent(&intent).await;
             let mut state = self.state.lock().await;
-            state.executing = None;
+            if state.worker_running != Some(worker_generation) {
+                return;
+            }
+            if state.executing_worker_generation == Some(worker_generation) {
+                state.executing = None;
+                state.executing_worker_generation = None;
+            }
             if matches!(result, AutomaticVentExecution::Deferred) {
                 // A newer edge wins. The current intent may retry only until its
                 // own deadline, so persistent B1/B2 or B3 contention cannot hold
@@ -380,8 +413,25 @@ impl AutomaticVentController {
         }
     }
 
-    async fn finish_worker(&self) {
-        self.state.lock().await.worker_running = false;
+    async fn finish_worker(&self, worker_generation: u64) -> bool {
+        let mut state = self.state.lock().await;
+        if state.worker_running != Some(worker_generation) {
+            return false;
+        }
+        if !state.closed
+            && !self.shutdown.is_cancelled()
+            && state.pending.is_some()
+            && !(state.admin_superseded
+                && state.pending.as_ref().is_some_and(|intent| !intent.force))
+        {
+            return true;
+        }
+        state.worker_running = None;
+        if state.executing_worker_generation == Some(worker_generation) {
+            state.executing = None;
+            state.executing_worker_generation = None;
+        }
+        false
     }
 
     async fn execute_automatic_intent(
@@ -520,11 +570,27 @@ impl AutomaticVentController {
     }
 
     fn retry_budget_exhausted(&self, intent: &AutomaticVentIntent) -> bool {
-        Instant::now() >= intent.retry_deadline
+        let now = Instant::now();
+        now >= intent.retry_deadline || now >= intent.total_deadline
     }
 
     async fn complete_admin_one_shot(&self) {
-        self.state.lock().await.admin_execution_pending = false;
+        let mut state = self.state.lock().await;
+        state.admin_execution_pending = false;
+        let Some(intent) = state.pending.as_mut().filter(|intent| !intent.force) else {
+            return;
+        };
+        let Some(wait_started_at) = intent.admin_wait_started_at.take() else {
+            return;
+        };
+        let now = Instant::now();
+        let remaining_retry_budget = intent
+            .retry_deadline
+            .saturating_duration_since(wait_started_at);
+        let rebuilt_retry_deadline = now
+            .checked_add(remaining_retry_budget)
+            .unwrap_or(intent.total_deadline);
+        intent.retry_deadline = rebuilt_retry_deadline.min(intent.total_deadline);
     }
 
     fn retry_delay(&self, intent: &AutomaticVentIntent) -> Duration {
@@ -540,7 +606,9 @@ impl AutomaticVentController {
             loop {
                 let idle = {
                     let state = self.state.lock().await;
-                    !state.worker_running && state.pending.is_none() && state.executing.is_none()
+                    state.worker_running.is_none()
+                        && state.pending.is_none()
+                        && state.executing.is_none()
                 };
                 if idle {
                     return;
@@ -620,7 +688,8 @@ mod tests {
     use crate::{hardware::HardwareSupervisor, state::LocalStateStore};
 
     use super::{
-        AutomaticVentController, AutomaticVentRequestOutcome, AUTOMATIC_VENT_RETRY_EXHAUSTED,
+        AutomaticVentController, AutomaticVentIntent, AutomaticVentRequestOutcome,
+        AUTOMATIC_VENT_RETRY_EXHAUSTED,
     };
 
     #[derive(Default)]
@@ -833,6 +902,76 @@ mod tests {
         .await
         .expect("deferred latest automatic intent must execute after Admin releases B3");
         assert!(controller.state.lock().await.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn admin_receipt_wait_pauses_the_retry_budget_but_keeps_a_total_deadline() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_timeouts(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(5),
+            Duration::from_millis(35),
+            Duration::from_secs(1),
+        );
+
+        controller.supersede_by_admin().await;
+        controller
+            .request("presence-2:departure", 0)
+            .await
+            .expect("automatic edge received during Admin receipt");
+        tokio::time::sleep(Duration::from_millis(45)).await;
+        controller.cancel_admin_one_shot().await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![0] {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Admin receipt wait must not consume the automatic retry opportunity");
+        assert!(controller.state.lock().await.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn admin_receipt_wait_cannot_extend_beyond_the_total_deadline() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_timeouts(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            Duration::from_secs(1),
+        );
+
+        controller.supersede_by_admin().await;
+        controller
+            .request("presence-2:departure", 0)
+            .await
+            .expect("automatic edge received during Admin receipt");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        controller.cancel_admin_one_shot().await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let state = controller.state.lock().await;
+                if state.worker_running.is_none()
+                    && state.last_error.as_deref() == Some(AUTOMATIC_VENT_RETRY_EXHAUSTED)
+                {
+                    return;
+                }
+                drop(state);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the paused retry budget must still honour the total deadline");
+        assert!(adapter.vent_speeds.lock().expect("speeds").is_empty());
     }
 
     #[tokio::test]
@@ -1054,7 +1193,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let state = controller.state.lock().await;
-                if !state.worker_running
+                if state.worker_running.is_none()
                     && state.pending.is_none()
                     && state.executing.is_none()
                     && state.last_error.as_deref() == Some(AUTOMATIC_VENT_RETRY_EXHAUSTED)
@@ -1226,7 +1365,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let state = controller.state.lock().await;
-                if !state.worker_running && state.executing.is_none() {
+                if state.worker_running.is_none() && state.executing.is_none() {
                     return;
                 }
                 drop(state);
@@ -1235,5 +1374,43 @@ mod tests {
         })
         .await
         .expect("shutdown must cancel the blocked B3 operation");
+    }
+
+    #[tokio::test]
+    async fn stale_worker_cannot_release_a_new_workers_execution_state() {
+        let controller = AutomaticVentController::new_with_guard(
+            HardwareSupervisor::from_adapter(Arc::new(RecordingHardware::default())),
+            CancellationToken::new(),
+            Duration::ZERO,
+        );
+        let now = std::time::Instant::now();
+        {
+            let mut state = controller.state.lock().await;
+            state.worker_generation = 2;
+            state.worker_running = Some(2);
+            state.executing = Some(AutomaticVentIntent {
+                edge_id: "presence-2:departure".to_string(),
+                speed: 0,
+                force: false,
+                generation: 2,
+                retry_deadline: now + Duration::from_secs(1),
+                total_deadline: now + Duration::from_secs(2),
+                admin_wait_started_at: None,
+            });
+            state.executing_worker_generation = Some(2);
+        }
+
+        assert!(!controller.finish_worker(1).await);
+
+        let state = controller.state.lock().await;
+        assert_eq!(state.worker_running, Some(2));
+        assert_eq!(state.executing_worker_generation, Some(2));
+        assert_eq!(
+            state
+                .executing
+                .as_ref()
+                .map(|intent| intent.edge_id.as_str()),
+            Some("presence-2:departure")
+        );
     }
 }
