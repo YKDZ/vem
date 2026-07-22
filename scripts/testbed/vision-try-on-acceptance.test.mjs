@@ -162,6 +162,10 @@ describe("vision try-on acceptance script", () => {
       source,
       /task\.State -eq 'Running'\) \{ throw 'Vision scheduled task is still running before start'/,
     );
+    assert.match(
+      source,
+      /`\$canonicalExecutablePath = \[IO\.Path\]::GetFullPath\('\$\{VISION_ENTRYPOINT_PATH\}'\)`/,
+    );
   });
 
   it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {

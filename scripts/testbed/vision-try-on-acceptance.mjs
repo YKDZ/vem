@@ -2301,12 +2301,12 @@ async function collectVisionInstalledBinding() {
       "$ErrorActionPreference = 'Stop'",
       `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
       "$action = @($task.Actions | Select-Object -First 1)",
-      "$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')",
+      `$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')`,
       "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; parentProcessId = [int]$_.ParentProcessId; creationDate = [string]$_.CreationDate; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
       "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
       "$listenerDetails = @($listener | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess } })",
       "$processOwner = $null; if ($visionProcesses.Count -eq 1 -and $listenerDetails.Count -eq 1 -and $visionProcesses[0].processId -eq $listenerDetails[0].owningProcess) { $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter \"ProcessId = $($visionProcesses[0].processId)\" -ErrorAction Stop) -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User }",
-      "$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }",
+      `$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }`,
       "[Console]::Out.Write((@{ canonicalProcesses = $visionProcesses; listeners = $listenerDetails; processOwner = $processOwner; task = $taskDetails } | ConvertTo-Json -Compress -Depth 4))",
     ].join("; ");
     return new Promise((resolvePromise, reject) => {
