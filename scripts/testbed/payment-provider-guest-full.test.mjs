@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  INVALID_ALIPAY_CUSTOMER_CODE,
+  UNATTENDED_ALIPAY_CUSTOMER_CODE,
   buildPaymentCodeSubmission,
   buildProviderFailureReport,
   collectPaymentProviderFailureEvidence,
@@ -13,10 +13,54 @@ import {
 } from "./payment-provider-guest-full.mjs";
 
 describe("payment provider guest full", () => {
-  it("submits the invalid Alipay customer code with real CRLF bytes", () => {
-    const bytes = Buffer.from(INVALID_ALIPAY_CUSTOMER_CODE, "utf8");
+  it("submits the unattended Alipay customer code with real CRLF bytes", () => {
+    const bytes = Buffer.from(UNATTENDED_ALIPAY_CUSTOMER_CODE, "utf8");
     assert.deepEqual([...bytes.subarray(-2)], [0x0d, 0x0a]);
     assert.equal(bytes.length, 20);
+  });
+
+  it("accepts a real WAIT_BUYER_PAY response when it is deterministically closed", () => {
+    assert.doesNotThrow(() =>
+      validateUnattendedProviderAttempt({
+        channel: "payment_code:alipay",
+        order: {
+          providerCode: "alipay",
+          orderId: "order-1",
+          paymentId: "payment-1",
+          orderNo: "order-no-1",
+        },
+        machine: {
+          boundary: "installed_machine_ui_cdp",
+          paymentMethod: "payment_code",
+          providerCode: "alipay",
+          surface: {
+            orderId: "order-1",
+            paymentId: "payment-1",
+            orderNo: "order-no-1",
+          },
+          scannerPrompt: "请出示付款码",
+        },
+        submission: {
+          status: "user_confirming",
+          providerCode: "alipay",
+          attemptId: "attempt-1",
+          providerStatus: "WAIT_BUYER_PAY",
+          failureCode: null,
+        },
+        cleanup: {
+          action: "close_or_reverse_uncertain_payment",
+          closure: { handled: true },
+          providerConfigId: "provider-config-1",
+          serialSession: { action: "abort", aborted: true },
+        },
+        terminal: {
+          paymentStatus: "canceled",
+          orderStatus: "canceled",
+          paymentState: "canceled",
+          reservedInventory: false,
+        },
+      }),
+    );
   });
 
   it("places the provider status at the payment-code submission contract path", () => {

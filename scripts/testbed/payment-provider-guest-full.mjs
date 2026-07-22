@@ -22,7 +22,7 @@ const SCHEMA_VERSION = "vem-payment-provider-guest-full/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
-export const INVALID_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
+export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
   "readiness",
@@ -595,15 +595,25 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
       }
       return attempt;
     },
-    (attempt) =>
-      typeof attempt?.id === "string" &&
-      attempt.id.length > 0 &&
-      attempt?.status === "failed" &&
-      typeof attempt?.failureCode === "string" &&
-      attempt.failureCode.length > 0,
+    (attempt) => {
+      const rejected =
+        attempt?.status === "failed" &&
+        typeof attempt?.failureCode === "string" &&
+        attempt.failureCode.length > 0;
+      const awaitingBuyer =
+        attempt?.status === "user_confirming" &&
+        attempt?.providerStatus === "WAIT_BUYER_PAY" &&
+        typeof attempt?.providerTradeNo === "string" &&
+        attempt.providerTradeNo.length > 0;
+      return (
+        typeof attempt?.id === "string" &&
+        attempt.id.length > 0 &&
+        (rejected || awaitingBuyer)
+      );
+    },
     {
       timeoutMs,
-      label: `provider rejected payment-code attempt for ${order.orderNo}`,
+      label: `provider handled payment-code attempt for ${order.orderNo}`,
     },
   );
 }
@@ -783,15 +793,17 @@ async function paymentCodeAttempt({
       {
         orderId: order.orderId,
         paymentId: order.paymentId,
-        scannerCodeBase64: Buffer.from(INVALID_ALIPAY_CUSTOMER_CODE).toString(
-          "base64",
-        ),
+        scannerCodeBase64: Buffer.from(
+          UNATTENDED_ALIPAY_CUSTOMER_CODE,
+        ).toString("base64"),
       },
     );
     setStage("notification");
     const row = await paymentCodeAttemptFromApi(input, token, order, timeoutMs);
     setStage("closure");
-    await cancelVisibleMachineOrder(client, timeoutMs);
+    const closure = sanitizeProviderEvidence(
+      await closePayment(input, token, order),
+    );
     setStage("terminal-state");
     const terminalReport = await waitForTerminal(
       input,
@@ -817,7 +829,8 @@ async function paymentCodeAttempt({
       },
       submission: buildPaymentCodeSubmission(row),
       cleanup: {
-        action: "customer_cancel_order",
+        action: "close_or_reverse_uncertain_payment",
+        closure,
         providerConfigId: provider.providerConfigId,
         serialSession: null,
       },
@@ -916,19 +929,23 @@ export function validateUnattendedProviderAttempt(attempt) {
       attempt.machine?.surface?.paymentId !== order.paymentId ||
       attempt.machine?.surface?.orderNo !== order.orderNo ||
       !String(attempt.machine?.scannerPrompt ?? "").includes("请出示付款码") ||
-      attempt.submission?.status !== "failed" ||
+      !["failed", "user_confirming"].includes(attempt.submission?.status) ||
       attempt.submission?.providerCode !== "alipay" ||
       !attempt.submission?.attemptId ||
-      !attempt.submission?.failureCode ||
       !attempt.submission?.providerStatus ||
-      attempt.cleanup?.action !== "customer_cancel_order" ||
+      (attempt.submission?.status === "failed" &&
+        !attempt.submission?.failureCode) ||
+      (attempt.submission?.status === "user_confirming" &&
+        attempt.submission?.providerStatus !== "WAIT_BUYER_PAY") ||
+      attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
+      attempt.cleanup?.closure?.handled !== true ||
       !attempt.cleanup?.providerConfigId ||
       attempt.cleanup?.serialSession?.action !== "abort" ||
       attempt.cleanup?.serialSession?.aborted !== true ||
       !["failed", "canceled", "expired"].includes(terminal.paymentStatus)
     ) {
       throw new Error(
-        "payment-code provider attempt did not prove an attributed gateway rejection",
+        "payment-code provider attempt did not prove gateway handling and deterministic closure",
       );
     }
     return;
