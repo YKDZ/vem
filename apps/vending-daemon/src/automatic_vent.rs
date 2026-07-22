@@ -15,6 +15,7 @@ use crate::{
 };
 
 const AUTOMATIC_VENT_GUARD: Duration = Duration::from_secs(5);
+const AUTOMATIC_VENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +56,7 @@ pub struct AutomaticVentController {
     hardware: HardwareSupervisor,
     shutdown: CancellationToken,
     guard: Duration,
+    operation_timeout: Duration,
     b3_protocol_guard: Arc<Mutex<()>>,
     state: Arc<Mutex<AutomaticVentState>>,
     evidence: Option<AutomaticVentEvidence>,
@@ -70,10 +72,25 @@ impl AutomaticVentController {
         shutdown: CancellationToken,
         guard: Duration,
     ) -> Self {
+        Self::new_with_guard_and_operation_timeout(
+            hardware,
+            shutdown,
+            guard,
+            AUTOMATIC_VENT_OPERATION_TIMEOUT,
+        )
+    }
+
+    pub(crate) fn new_with_guard_and_operation_timeout(
+        hardware: HardwareSupervisor,
+        shutdown: CancellationToken,
+        guard: Duration,
+        operation_timeout: Duration,
+    ) -> Self {
         Self {
             hardware,
             shutdown,
             guard,
+            operation_timeout,
             b3_protocol_guard: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(AutomaticVentState::default())),
             evidence: None,
@@ -275,20 +292,61 @@ impl AutomaticVentController {
         &self,
         intent: &AutomaticVentIntent,
     ) -> Option<Result<(), String>> {
-        let _protocol_guard = self.b3_protocol_guard.lock().await;
+        let _protocol_guard = match self.acquire_b3_protocol_guard().await {
+            None => return None,
+            Some(Err(error)) => return Some(Err(error)),
+            Some(Ok(guard)) => guard,
+        };
         if !self.automatic_intent_is_current(intent).await || !self.wait_for_protocol_guard().await
         {
             return None;
         }
         let hardware = tokio::select! {
             _ = self.shutdown.cancelled() => return None,
-            hardware = self.hardware.acquire_environment_hardware() => hardware,
+            result = tokio::time::timeout(
+                self.operation_timeout,
+                self.hardware.acquire_environment_hardware(),
+            ) => result,
+        };
+        let hardware = match hardware {
+            Ok(hardware) => hardware,
+            Err(_) => {
+                return Some(Err(
+                    "automatic B3 lower-controller ownership acquisition timed out".to_string(),
+                ));
+            }
         };
         if !self.automatic_intent_is_current(intent).await {
             return None;
         }
         self.state.lock().await.last_attempt_at = Some(Instant::now());
-        Some(hardware.set_vent_speed(intent.speed).await)
+        match tokio::select! {
+            _ = self.shutdown.cancelled() => return None,
+            result = tokio::time::timeout(
+                self.operation_timeout,
+                hardware.set_vent_speed(intent.speed),
+            ) => result,
+        } {
+            Ok(result) => Some(result),
+            Err(_) => Some(Err("automatic B3 operation timed out".to_string())),
+        }
+    }
+
+    async fn acquire_b3_protocol_guard(
+        &self,
+    ) -> Option<Result<tokio::sync::MutexGuard<'_, ()>, String>> {
+        match tokio::select! {
+            _ = self.shutdown.cancelled() => return None,
+            result = tokio::time::timeout(
+                self.operation_timeout,
+                self.b3_protocol_guard.lock(),
+            ) => result,
+        } {
+            Ok(guard) => Some(Ok(guard)),
+            Err(_) => Some(Err(
+                "automatic B3 protocol guard acquisition timed out".to_string()
+            )),
+        }
     }
 
     async fn automatic_intent_is_current(&self, intent: &AutomaticVentIntent) -> bool {
@@ -375,9 +433,17 @@ impl AutomaticVentController {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        future::pending,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        time::Duration,
+    };
 
     use async_trait::async_trait;
+    use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
     use vending_core::hardware::{
         DispenseCommandPayload, DispenseResultPayload, HardwareAdapter, HardwareStatus,
@@ -421,6 +487,53 @@ mod tests {
                 .push((speed, std::time::Instant::now()));
             if self.fail_vent {
                 return Err("simulated B3 transport failure".to_string());
+            }
+            Ok(())
+        }
+
+        async fn dispense(&self, command: DispenseCommandPayload) -> DispenseResultPayload {
+            DispenseResultPayload {
+                command_no: command.command_no,
+                success: true,
+                error_code: None,
+                message: "unused".to_string(),
+                reported_at: "now".to_string(),
+                lower_controller_fault: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingVentHardware {
+        vent_speeds: Mutex<Vec<u8>>,
+        block_first_vent: AtomicBool,
+        first_vent_started: Notify,
+    }
+
+    #[async_trait]
+    impl HardwareAdapter for BlockingVentHardware {
+        fn adapter_name(&self) -> &str {
+            "blocking"
+        }
+
+        async fn self_check(&self) -> HardwareStatus {
+            HardwareStatus {
+                adapter: "blocking".to_string(),
+                online: true,
+                message: "ready".to_string(),
+                port_path: None,
+                resolution_source: None,
+                bound_usb_identity: None,
+                candidates: vec![],
+                lower_controller_fault: None,
+            }
+        }
+
+        async fn set_vent_speed(&self, speed: u8) -> Result<(), String> {
+            self.vent_speeds.lock().expect("speeds").push(speed);
+            if self.block_first_vent.swap(false, Ordering::SeqCst) {
+                self.first_vent_started.notify_waiters();
+                pending().await
             }
             Ok(())
         }
@@ -667,5 +780,103 @@ mod tests {
             .expect("automatic vent log");
         assert!(log.contains("presence-1:arrival"));
         assert!(log.contains("AUTOMATIC_VENT_COMMAND_FAILED"));
+    }
+
+    #[tokio::test]
+    async fn b3_timeout_records_failure_and_allows_the_next_automatic_intent() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let adapter = Arc::new(BlockingVentHardware {
+            block_first_vent: AtomicBool::new(true),
+            ..Default::default()
+        });
+        let controller = AutomaticVentController::new_with_guard_and_operation_timeout(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            Duration::ZERO,
+            Duration::from_millis(10),
+        )
+        .with_evidence(state, temp.path().join("logs").join("machine-events.jsonl"));
+
+        let first_vent_started = adapter.first_vent_started.notified();
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("first intent accepted");
+        first_vent_started.await;
+
+        let health = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let health = controller.health_component().await;
+                if health.code == "AUTOMATIC_VENT_COMMAND_FAILED" {
+                    return health;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("blocked B3 must time out");
+        assert_eq!(health.code, "AUTOMATIC_VENT_COMMAND_FAILED");
+        assert!(health.message.contains("timed out"));
+        assert!(controller.state.lock().await.executing.is_none());
+
+        controller
+            .request("presence-2:departure", 0)
+            .await
+            .expect("next intent accepted");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if adapter.vent_speeds.lock().expect("speeds").len() == 2 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("next intent must run after the timeout");
+
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0]);
+        let log = tokio::fs::read_to_string(temp.path().join("logs").join("machine-events.jsonl"))
+            .await
+            .expect("automatic vent log");
+        assert!(log.contains("AUTOMATIC_VENT_COMMAND_FAILED"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_blocked_automatic_b3_operation() {
+        let adapter = Arc::new(BlockingVentHardware {
+            block_first_vent: AtomicBool::new(true),
+            ..Default::default()
+        });
+        let shutdown = CancellationToken::new();
+        let controller = AutomaticVentController::new_with_guard_and_operation_timeout(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            shutdown.clone(),
+            Duration::ZERO,
+            Duration::from_secs(10),
+        );
+
+        let first_vent_started = adapter.first_vent_started.notified();
+        controller
+            .request("presence-1:arrival", 2)
+            .await
+            .expect("first intent accepted");
+        first_vent_started.await;
+        shutdown.cancel();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let state = controller.state.lock().await;
+                if !state.worker_running && state.executing.is_none() {
+                    return;
+                }
+                drop(state);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("shutdown must cancel the blocked B3 operation");
     }
 }
