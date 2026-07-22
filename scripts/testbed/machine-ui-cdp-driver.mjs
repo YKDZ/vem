@@ -1094,8 +1094,8 @@ export async function probeSelectorBounds(client, selector, options = {}) {
           y: rect.top + rect.height / 2
         };
         const inViewport = (
-          rect.left >= 0 && rect.top >= 0 &&
-          rect.right <= innerWidth && rect.bottom <= innerHeight
+          center.x >= 0 && center.y >= 0 &&
+          center.x < innerWidth && center.y < innerHeight
         );
         const hit = inViewport
           ? document.elementFromPoint(center.x, center.y)
